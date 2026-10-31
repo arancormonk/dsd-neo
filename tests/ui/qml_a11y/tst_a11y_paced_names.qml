@@ -604,8 +604,12 @@ Item {
         // one was read at the step floor, once a second, for as long as the scan ran (the strip 21 times in 22 s on the
         // emulator). 50 hops at a 300 ms dwell, with the app's period, floor and dwell scaled down by ten (500 ms,
         // 100 ms, 30 ms): each reading renames once a period at most and once more, not at the floor, and ends on the
-        // value on screen. The steps that stay steps are said at once: a hold, then a lock.
-        function test_k_fast_scan_hops_are_not_steps() {
+        // value on screen. The steps that stay steps are said at once: a hold, then a lock. A -Y channel scan has no
+        // target count, so the scan is told by its running predicate (scanRotationActive), not by the list's size.
+        function test_k_fast_scan_hops_are_not_steps_data() {
+            return [{tag: "trunk scan", count: 3}, {tag: "channel scan", count: 0}];
+        }
+        function test_k_fast_scan_hops_are_not_steps(data) {
             var dwell = 30;
             var hops = 50;
             var paced = ["signalStrip", "scanTimingRow", "monitorHero", "spectrumStatusLine", "spectrumCenterReadout"];
@@ -613,7 +617,7 @@ Item {
             var timing = item(monitor, "scanTimingRow");
             var summary = item(monitor, "monitorDetailsRow");
             set({slot1CallState: 0, leadSlot: 0, carrierLock: false, syncedHere: false, syncLabel: "", scanHold: false,
-                scanTimerRemainingDs: 3, scanTimerSpanMs: 300});
+                scanTimerRemainingDs: 3, scanTimerSpanMs: 300, scanTargetCount: data.count, scanRotationActive: true});
             Ui.Navigation.speechPeriodMs = 500;
             Ui.Navigation.speechStepFloorMs = 100;
             wait(250);
@@ -654,6 +658,21 @@ Item {
             set({carrierLock: true, snrDb: 13.1});
             tryVerify(function () { return nameOf(strip).indexOf("SNR 13.1 dB") >= 0; }, 100,
                       "a lock is said at once: " + nameOf(strip));
+        }
+
+        // A paused trunk scan keeps its list's size, but nothing rotates: a frequency the operator tunes to is a step,
+        // said at once, not held to the period as a scan's hop is.
+        function test_k2_a_paused_scan_tune_is_a_step() {
+            set({slot1CallState: 0, leadSlot: 0, carrierLock: false, syncedHere: false, syncLabel: "", scanHold: false,
+                scanTargetCount: 3, scanRotationActive: false, centerFreqHz: 851012500, snrDb: 4.0});
+            Ui.Navigation.speechPeriodMs = 5000;
+            Ui.Navigation.speechStepFloorMs = 100;
+            var strip = item(monitor, "signalStrip");
+            wait(250);
+            set({centerFreqHz: 852012500, snrDb: 9.3});
+            tryVerify(function () { return nameOf(strip).indexOf("SNR 9.3 dB") >= 0; }, 300,
+                      "a tune on a paused scan is said at once: " + nameOf(strip));
+            set({scanRotationActive: true});
         }
 
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.

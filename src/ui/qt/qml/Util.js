@@ -7,9 +7,11 @@
 // those a step, every reading paced by one would be read out at the step
 // floor for as long as the scan runs. So while a scan rotates its step is
 // whether it is held, as the scan header's; off a scan, a new frequency or
-// target is a step.
+// target is a step. "Rotates" is the running-scan predicate (a trunk scan or
+// a -Y channel scan, not a paused one), not the list's size: a -Y scan has no
+// target count, and a paused trunk scan keeps its count while the operator tunes.
 function tuneStep(m) {
-    if (m.scanTargetCount > 0)
+    if (m.scanRotationActive === true)
         return "scan|" + (m.scanHold === true);
     return "tune|" + m.scanTargetId + "|" + m.centerFreqHz;
 }

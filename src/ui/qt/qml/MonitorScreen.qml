@@ -505,7 +505,7 @@ Item {
                 LiveText {
                     width: parent.width
                     objectName: "scanTargetHeader"
-                    step: screen.scanPaused ? "paused" : metrics.scanTargetCount > 0 ? ["scan", metrics.scanHold].join("|") : text
+                    step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
                     text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)

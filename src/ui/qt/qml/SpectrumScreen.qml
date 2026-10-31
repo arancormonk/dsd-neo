@@ -402,7 +402,7 @@ Item {
                     objectName: "spectrumCenterReadout"
                     // A drag moves it on every frame; where the radio lands is heard at once,
                     // except a scan's hop (Util.tuneStep), read at the readings' pace.
-                    step: metrics && metrics.scanTargetCount > 0 ? Util.tuneStep(metrics) : String(screen.tunedHz)
+                    step: metrics && metrics.scanRotationActive ? Util.tuneStep(metrics) : String(screen.tunedHz)
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
