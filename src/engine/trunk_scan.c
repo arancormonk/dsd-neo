@@ -1111,20 +1111,22 @@ scan_field_wrapped(char** fields, size_t count, int idx) {
    (dsd_scan_options_cell_csv_quoted()); any other cell is left as it is. */
 static void
 scan_csv_unescape_doubled_quotes(char* text) {
-    for (const char* p = text; *p; p++) {
-        if (*p == '"') {
-            if (p[1] != '"') {
-                return;
-            }
+    const char* p = text;
+    while (*p) {
+        if (*p != '"') {
             p++;
+        } else if (p[1] == '"') {
+            p += 2;
+        } else {
+            return;
         }
     }
     char* w = text;
-    for (const char* r = text; *r; r++) {
+    const char* r = text;
+    while (*r) {
         *w++ = *r;
-        if (*r == '"') {
-            r++;
-        }
+        /* A doubled quote is written once. */
+        r += *r == '"' ? 2 : 1;
     }
     *w = '\0';
 }
