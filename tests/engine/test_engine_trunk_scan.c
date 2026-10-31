@@ -8837,6 +8837,11 @@ test_peer_untyped_order(int reverse, int occupied) {
             seed_iden_entry(&state->p25_iden_fdma[5], 300, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
             seed_iden_entry(&state->p25_iden_fdma[6], 400, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
         }
+        // fdma[7]: one peer only learned it from an LCW, another has it typed; no TDMA anywhere.
+        if (kind < 2) {
+            seed_iden_entry(&state->p25_iden_fdma[7], kind == 0 ? 500 : 600, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+            state->p25_iden_fdma[7].flags = kind == 0 ? P25_IDEN_F_UNTYPED : 0;
+        }
         trunk_scan_test_set_now(0.26 * (peer + 1));
         dsd_engine_trunk_scan_tick(opts, state);
         rc |= iden_check("T15 peer parked", (long)dsd_engine_trunk_scan_active_index(state), peer + 1);
@@ -8861,6 +8866,8 @@ test_peer_untyped_order(int reverse, int occupied) {
     rc |= iden_check("T15 occupied replacement map", state->trunk_chan_map[0x4119], occupied ? 0 : 111);
     rc |= iden_check("T15 empty fill map", state->trunk_chan_map[0x5001], 222);
     rc |= iden_check("T15 typed replaces occupied without TDMA", state->p25_iden_fdma[6].base_freq, 400);
+    rc |= iden_check("T15 typed peer fills an empty slot first", state->p25_iden_fdma[7].base_freq, 600);
+    rc |= iden_check("T15 empty-slot fill is typed", state->p25_iden_fdma[7].flags & P25_IDEN_F_UNTYPED, 0);
     rc |= iden_check("T15 replacement purges map", state->trunk_chan_map[0x6001], 0);
     dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();

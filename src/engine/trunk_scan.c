@@ -2806,8 +2806,11 @@ trunk_scan_share_peer_fdma(const dsd_trunk_scan_coord* coord, size_t self, dsd_s
     if (occupied && !(fdma->flags & P25_IDEN_F_UNTYPED)) {
         return 0;
     }
-    const int skip_untyped = occupied || dsd_state_p25_iden_tdma_applies(state, iden);
-    if (!trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0, skip_untyped, fdma)) {
+    /* A typed peer first, from any peer; an untyped fallback only into an empty slot, only while no TDMA entry
+       applies, and only when no peer has a typed one. */
+    if (!trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0, 1, fdma)
+        && (occupied || dsd_state_p25_iden_tdma_applies(state, iden)
+            || !trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0, 0, fdma))) {
         return 0;
     }
     state->p25_chan_tdma_explicit[iden] |= 0x01;
