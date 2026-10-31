@@ -42,7 +42,7 @@ dsd_state_p25_iden_reconcile(dsd_state* state, int iden) {
         return 0;
     }
     DSD_MEMSET(e, 0, sizeof *e);
-    state->p25_chan_tdma_explicit[iden] &= (uint8_t)~0x01U;
+    state->p25_chan_tdma_explicit[iden] &= 0xFEU; // clear the FDMA bit
     return 1;
 }
 
@@ -146,7 +146,7 @@ bandplan_drop_shadowed_globals(dsd_state* state, uint16_t* mask) {
                 continue;
             }
             DSD_MEMSET(slot, 0, sizeof *slot);
-            state->p25_chan_tdma_explicit[iden] &= (uint8_t)~(is_tdma ? 0x02U : 0x01U);
+            state->p25_chan_tdma_explicit[iden] &= is_tdma ? 0xFDU : 0xFEU; // clear this class's bit
             *mask |= (uint16_t)(1U << iden);
         }
     }

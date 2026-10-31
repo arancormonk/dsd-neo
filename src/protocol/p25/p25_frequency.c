@@ -464,11 +464,11 @@ p25_drop_foreign_idens(dsd_state* state) {
     uint16_t mask = 0;
     for (int iden = 0; iden < 16; iden++) {
         if (p25_drop_foreign_iden(&state->p25_iden_fdma[iden], state)) {
-            state->p25_chan_tdma_explicit[iden] &= (uint8_t)~0x01U;
+            state->p25_chan_tdma_explicit[iden] &= 0xFEU; // clear the FDMA bit
             mask |= (uint16_t)(1U << iden);
         }
         if (p25_drop_foreign_iden(&state->p25_iden_tdma[iden], state)) {
-            state->p25_chan_tdma_explicit[iden] &= (uint8_t)~0x02U;
+            state->p25_chan_tdma_explicit[iden] &= 0xFDU; // clear the TDMA bit
             mask |= (uint16_t)(1U << iden);
         }
     }
