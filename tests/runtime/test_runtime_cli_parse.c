@@ -7188,7 +7188,7 @@ test_f_manual_selectors_leave_analog_monitor(void) {
         free(state);
     }
 
-    /* An -f selector no branch handles still changes nothing at all. */
+    /* An -f selector no branch handles is refused (issue #794) and changes nothing at all. */
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -7205,7 +7205,12 @@ test_f_manual_selectors_leave_analog_monitor(void) {
     char* argv[] = {arg0, arg1, arg2, NULL};
     int argc_effective = 0;
     int exit_rc = -1;
-    (void)dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    char err[1024];
+    const int parsed = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || !strstr(err, "-fQ is not a decode mode")) {
+        DSD_FPRINTF(stderr, "-fA -fQ: rc=%d exit_rc=%d\n%s\n", parsed, exit_rc, err);
+        test_rc = 1;
+    }
     if (opts->analog_only != 1 || opts->monitor_input_audio != 1) {
         DSD_FPRINTF(stderr, "an unrecognized -f selector half-left analog monitor (analog_only=%d monitor=%d)\n",
                     opts->analog_only, opts->monitor_input_audio);
@@ -7388,6 +7393,49 @@ test_f_tetra_needs_iq_or_symbols(void) {
         test_rc = 1;
     }
     am_cli_free(&run);
+    return test_rc;
+}
+
+/* Issue #794: `-f3` is no decode mode. It used to leave the session in Auto without a word; it now stops with the
+ * reason, on a radio input and on the default one alike. Every documented -f letter still parses (an I/Q input, which
+ * -fM and -fT need). */
+static int
+test_f_unknown_selector_refused(void) {
+    static const char* const refused[] = {"-f3", "-fq", "-fQ", "-f0"};
+    static const char* const accepted[] = {"-fa", "-fA", "-fM", "-fd", "-fx", "-ft", "-f1", "-f2", "-fs",
+                                           "-fr", "-fi", "-fn", "-fy", "-fm", "-fz", "-fT", "-fp", "-fh",
+                                           "-fH", "-fe", "-fE", "-fZ", "-fB", "-fP", "-fU"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        for (int with_input = 0; with_input < 2; with_input++) {
+            const char* const radio[] = {"dsd-neo", refused[i], "-i", "rtl:0:851.375M", NULL};
+            const char* const plain[] = {"dsd-neo", refused[i], NULL};
+            am_cli_run run;
+            if (am_cli_parse(with_input ? radio : plain, 0, &run) != 0) {
+                return 1;
+            }
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "%s is not a decode mode", refused[i]);
+            if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1 || !strstr(run.err, want)) {
+                DSD_FPRINTF(stderr, "%s (input %d): rc=%d exit_rc=%d\n%s\n", refused[i], with_input, run.rc,
+                            run.exit_rc, run.err);
+                test_rc = 1;
+            }
+            am_cli_free(&run);
+        }
+    }
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        const char* const args[] = {"dsd-neo", accepted[i], "-i", "rtl:0:851.375M", NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc == DSD_PARSE_ERROR || strstr(run.err, "is not a decode mode")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\n%s\n", accepted[i], run.rc, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
     return test_rc;
 }
 
@@ -11230,6 +11278,7 @@ main(void) {
     rc |= test_f_am_preset_on_iq_inputs();
     rc |= test_f_am_refused_on_pcm_input();
     rc |= test_f_tetra_needs_iq_or_symbols();
+    rc |= test_f_unknown_selector_refused();
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();

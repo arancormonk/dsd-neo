@@ -3467,6 +3467,11 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Decoding M17 UDP/IP Frames.\n");                                                     \
                 cli_decode_timing_seen = 0;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            } else {                                                                                                   \
+                /* Refused, not ignored (issue #794): `-f3` used to leave the session in Auto silently. */             \
+                LOG_ERROR("-f%s is not a decode mode; see dsd-neo -h for the -f letters\n", optarg);                  \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             break;                                                                                                     \
         }                                                                                                              \

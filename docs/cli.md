@@ -555,6 +555,10 @@ Notes
 
 ## Modes & Decoders (`-f`)
 
+`-f` takes one of the letters below. Any other letter (`-f3`, say) stops startup with
+`-f3 is not a decode mode; see dsd-neo -h for the -f letters` instead of leaving the session in Auto; a Qt or
+Android session whose saved extra arguments carry one refuses to start the same way.
+
 - Auto (the default): `-fa`, or no `-f` at all. Every digital mode except TETRA (NXDN48 and NXDN96 included; see
   the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
