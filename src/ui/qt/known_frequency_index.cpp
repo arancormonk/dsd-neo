@@ -144,6 +144,14 @@ csvColumns(const QStringList& fields) {
     }
     return columns;
 }
+
+/* A row's own name: a target CSV's `label`, which names the target as its calls are named (issue #782), else its name
+   or id column. */
+static QString
+rowName(const QStringList& fields, const CsvColumns& columns) {
+    const QString labelled = fields.value(columns.label);
+    return labelled.isEmpty() ? fields.value(columns.name) : labelled;
+}
 } // namespace
 
 /* The channel width @p mode names: a decode flag, compared exactly since its case is significant (-fm is dPMR, -fM is
@@ -250,9 +258,7 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
             continue;
         }
         QString name = label;
-        // A target CSV's `label` names the target as its calls are named (issue #782), else its id names it.
-        const QString labelled = fields.value(columns.label);
-        const QString channel = labelled.isEmpty() ? fields.value(columns.name) : labelled;
+        const QString channel = rowName(fields, columns);
         if (!channel.isEmpty()) {
             name += QStringLiteral(" / ") + channel;
         }
