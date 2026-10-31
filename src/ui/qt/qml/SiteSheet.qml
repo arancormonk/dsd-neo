@@ -126,7 +126,7 @@ ModalSheet {
             id: fieldSpeech
             group: fieldGrid
             shown: !fieldGrid.Accessible.ignored
-            step: [metrics.scanTargetId, metrics.siteProtocol, metrics.siteConfirmed].join("|")
+            step: [Util.tuneStep(metrics), metrics.siteProtocol, metrics.siteConfirmed].join("|")
         }
         Repeater {
             model: live ? fields : []

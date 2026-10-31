@@ -415,11 +415,12 @@ Item {
     }
 
     // What makes a moving reading worth hearing at once (issue #782; SpeechPacer):
-    // a call starting or ending on either slot, a new scan target or carrier,
-    // and a change of lock or sync. Between these, readings are re-read at
-    // most every 5 s.
-    readonly property string speechStep: [metrics.scanTargetId, metrics.centerFreqHz, metrics.carrierLock,
-        metrics.syncedHere, metrics.syncLabel, heroSlot, heroTgId, heroSrc, otherSlot, otherTgId].join("|")
+    // a call starting or ending on either slot, a change of lock or sync, and a
+    // scan held or released (off a scan, a new frequency). A scan's hop alone
+    // is not one (Util.tuneStep). Between these, readings are re-read at most
+    // every 5 s.
+    readonly property string speechStep: [Util.tuneStep(metrics), metrics.carrierLock, metrics.syncedHere,
+        metrics.syncLabel, heroSlot, heroTgId, heroSrc, otherSlot, otherTgId].join("|")
 
     // The disclosure's one-line summary, most important first: the radio's SNR,
     // decode quality (a codec fault in the alert colour ahead of it), the

@@ -400,8 +400,9 @@ Item {
 
                 LiveText {
                     objectName: "spectrumCenterReadout"
-                    // A drag moves it on every frame; where the radio lands is heard at once.
-                    step: String(screen.tunedHz)
+                    // A drag moves it on every frame; where the radio lands is heard at once,
+                    // except a scan's hop (Util.tuneStep), read at the readings' pace.
+                    step: metrics && metrics.scanTargetCount > 0 ? Util.tuneStep(metrics) : String(screen.tunedHz)
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
@@ -528,8 +529,9 @@ Item {
                         id: statusSpeech
                         group: statusLine
                         shown: !statusLine.Accessible.ignored
-                        // A new sync or call is heard at once; the SNR and offset at the readings' pace.
-                        step: [metrics.syncedHere, metrics.syncLabel, metrics.carrierLock, metrics.centerFreqHz,
+                        // A new sync or call is heard at once; the SNR and offset at the readings' pace,
+                        // and a scan's hop too (Util.tuneStep).
+                        step: [metrics.syncedHere, metrics.syncLabel, metrics.carrierLock, Util.tuneStep(metrics),
                             callLabel.text].join("|")
                     }
 

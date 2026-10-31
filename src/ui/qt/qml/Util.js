@@ -2,6 +2,18 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 .pragma library
 
+// The tuning part of a screen-reader step (issue #782; SpeechPacer). A scan
+// can hop every 300 ms, and each hop moves the target and its frequency: were
+// those a step, every reading paced by one would be read out at the step
+// floor for as long as the scan runs. So while a scan rotates its step is
+// whether it is held, as the scan header's; off a scan, a new frequency or
+// target is a step.
+function tuneStep(m) {
+    if (m.scanTargetCount > 0)
+        return "scan|" + (m.scanHold === true);
+    return "tune|" + m.scanTargetId + "|" + m.centerFreqHz;
+}
+
 // Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
 // An empty tgText is a target that has not decoded: no "TG " with nothing after it.
 function talkgroupHeadline(name, tgText, tgId) {

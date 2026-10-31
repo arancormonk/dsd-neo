@@ -255,8 +255,9 @@ Item {
             set({scanTimerRemainingDs: 37});
             wait(50);
             verify(nameOf(timing) !== timing.text, "the countdown alone waits: " + nameOf(timing));
-            set({scanTargetOrdinal: 2, scanTargetId: "target-2"});
-            tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "a new target is said at once");
+            // A scan's hop is not a step (case K); holding the scan is.
+            set({scanHold: true});
+            tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "a held scan is said at once");
             set({syncLabel: "DMR"});
             tryVerify(function () { return nameOf(status).indexOf("DMR") >= 0; }, 100, nameOf(status));
             // The call ends: its duration leaves the tree with it.
@@ -597,6 +598,62 @@ Item {
                 var node = testContext.accessibleNode(line);
                 return node.inTree && node.name.indexOf("SYS 3A0") >= 0;
             }, 500, JSON.stringify(testContext.accessibleNode(line)));
+        }
+
+        // A fast scan's hops are not steps: Local84 hops every 300 ms, and with each hop a step every reading paced by
+        // one was read at the step floor, once a second, for as long as the scan ran (the strip 21 times in 22 s on the
+        // emulator). 50 hops at a 300 ms dwell, with the app's period, floor and dwell scaled down by ten (500 ms,
+        // 100 ms, 30 ms): each reading renames once a period at most and once more, not at the floor, and ends on the
+        // value on screen. The steps that stay steps are said at once: a hold, then a lock.
+        function test_k_fast_scan_hops_are_not_steps() {
+            var dwell = 30;
+            var hops = 50;
+            var paced = ["signalStrip", "scanTimingRow", "monitorHero", "spectrumStatusLine", "spectrumCenterReadout"];
+            var strip = item(monitor, "signalStrip");
+            var timing = item(monitor, "scanTimingRow");
+            var summary = item(monitor, "monitorDetailsRow");
+            set({slot1CallState: 0, leadSlot: 0, carrierLock: false, syncedHere: false, syncLabel: "", scanHold: false,
+                scanTimerRemainingDs: 3, scanTimerSpanMs: 300});
+            Ui.Navigation.speechPeriodMs = 500;
+            Ui.Navigation.speechStepFloorMs = 100;
+            wait(250);
+            testContext.startAccessibilityCount();
+            var start = Date.now();
+            var freqs = [769393750, 151000000, 162400000, 460000000, 851012500, 154015000];
+            for (var i = 1; i <= hops; ++i) {
+                var ordinal = (i % 3) + 1;
+                set({scanTargetOrdinal: ordinal, scanTargetId: "target-" + ordinal, centerFreqHz: freqs[i % freqs.length],
+                    snrDb: 1.5 + (i % 7) * 0.3, scanTimerRemainingDs: 3});
+                wait(dwell / 2);
+                set({scanTimerRemainingDs: 1});
+                wait(dwell / 2);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var most = Math.ceil(elapsed / Ui.Navigation.speechPeriodMs) + 1;
+            for (var named of paced) {
+                var renames = raised(counts, "NameChanged", named);
+                verify(renames <= most, named + " renamed " + renames + " times for " + hops + " hops in " + elapsed
+                       + " ms (at most " + most + "): " + JSON.stringify(counts.chains));
+            }
+            var described = raised(counts, "DescriptionChanged", "monitorDetailsRow");
+            verify(described <= most, "Signal & site redescribed " + described + " times (at most " + most + ")");
+            // And it catches up with the target the scan is on.
+            var snr = "SNR " + Number(1.5 + (hops % 7) * 0.3).toFixed(1) + " dB";
+            tryVerify(function () { return nameOf(strip).indexOf(snr) >= 0; }, 1000, nameOf(strip) + " vs " + snr);
+            tryVerify(function () { return nameOf(timing) === timing.text; }, 1000, nameOf(timing));
+            tryVerify(function () { return descriptionOf(summary) === summary.accessibleDescription; }, 1000,
+                      descriptionOf(summary));
+            // What stays a step is still said at once.
+            wait(150);
+            set({scanHold: true, snrDb: 12.7});
+            tryVerify(function () { return nameOf(strip).indexOf("SNR 12.7 dB") >= 0; }, 100,
+                      "a hold is said at once: " + nameOf(strip));
+            wait(150);
+            set({carrierLock: true, snrDb: 13.1});
+            tryVerify(function () { return nameOf(strip).indexOf("SNR 13.1 dB") >= 0; }, 100,
+                      "a lock is said at once: " + nameOf(strip));
         }
 
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
