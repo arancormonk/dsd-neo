@@ -18,7 +18,8 @@ Text {
     property bool heading: false
     Accessible.role: heading ? Accessible.Heading : Accessible.StaticText
     // A heading is not focusable unless told (see MicroLabel); static text is.
-    Accessible.focusable: heading
+    // Only while in the tree (see OutlineButton).
+    Accessible.focusable: heading && navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible

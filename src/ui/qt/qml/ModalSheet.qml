@@ -35,7 +35,8 @@ Rectangle {
     property bool adjustingFocus: false
     readonly property bool isTopModal: Navigation.topModal === sheet
     Accessible.role: Accessible.Dialog
-    Accessible.name: accessibleName
+    // Issue #782: nameless while covered or closed, like the rest of it.
+    Accessible.name: isTopModal && visible ? accessibleName : ""
     Accessible.ignored: !visible || !isTopModal
     z: 100 + Math.max(0, Navigation.modals.indexOf(sheet))
 
@@ -154,6 +155,26 @@ Rectangle {
     anchors.fill: parent
     visible: false
     color: Qt.alpha("#000000", 0.5)
+
+    // Issue #782: tells Android's bridge to read the window's tree again each
+    // time this sheet becomes the top layer or stops being it (opened, covered
+    // by another sheet, uncovered, closed). Covered or closed, a sheet leaves
+    // the accessibility tree, and leaving it raises nothing the bridge passes
+    // on, so TalkBack went on swiping through the copy it held of a covered
+    // sheet. This item, under the window's content item and never left out of
+    // the tree, shows and hides with the sheet's turn on top; the bridge
+    // passes a show or hide on as a change to the whole subtree under its
+    // parent, the window. It has no size, so it is reported invisible, and no
+    // name: nothing reads or reaches it.
+    Item {
+        objectName: sheet.objectName.length ? sheet.objectName + "TreeRefresh" : "modalSheetTreeRefresh"
+        parent: sheet.Window.contentItem
+        width: 0
+        height: 0
+        visible: sheet.visible && sheet.isTopModal
+        Accessible.role: Accessible.Grouping
+        Accessible.focusable: false
+    }
 
     PointerBarrier {
         // A tap, not a click: MouseArea.clicked fires for any press and release

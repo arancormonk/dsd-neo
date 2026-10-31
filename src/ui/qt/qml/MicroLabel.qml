@@ -13,7 +13,7 @@ Text {
     // text roles are focusable by themselves, Heading is not one), and TalkBack
     // skips a text node that is not focusable: without this a section's lines
     // were heard without the section they belong to.
-    Accessible.focusable: true
+    Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(label)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible

@@ -13,7 +13,10 @@ Item {
     activeFocusOnTab: Navigation.allows(control) && enabled
     Accessible.role: Accessible.Button
     Accessible.name: text
-    Accessible.focusable: true
+    // Issue #782: focusable only while in the tree, so a copy Android still
+    // holds of a covered or hidden control (no event tells it the control
+    // left the tree) is not a swipe stop.
+    Accessible.focusable: navigationAllowed
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed
     Accessible.onPressAction: activate()

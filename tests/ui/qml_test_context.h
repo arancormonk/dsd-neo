@@ -2899,6 +2899,49 @@ class Setup : public QObject {
         return out;
     }
 
+    /**
+     * @brief Issue #782: every item under @p root that has an accessible interface, in or out of the tree, as
+     * {item, objectName, file, role, name, inTree, focusable, invisible}: what a platform bridge can still read of a
+     * node it learned of earlier, if nothing told it the node left the tree.
+     */
+    Q_INVOKABLE QVariantList
+    accessibleNodesUnder(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectAccessibleNodes(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectAccessibleNodes(QQuickItem* item, QVariantList& out) {
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        if (iface != nullptr && iface->isValid() && iface->object() == item) {
+            const QQmlContext* context = qmlContext(item);
+            out.append(
+                QVariantMap{{QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                            {QStringLiteral("objectName"), item->objectName()},
+                            {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+                            {QStringLiteral("role"), static_cast<int>(iface->role())},
+                            {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                            {QStringLiteral("inTree"), accessibleInTree(iface)},
+                            {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
+                            {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)}});
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectAccessibleNodes(child, out);
+        }
+    }
+
+    /** @brief Issue #782: the role of @p item's accessible parent (QAccessible::Role), -1 when it has none. */
+    Q_INVOKABLE int
+    accessibleParentRole(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleInterface* parent = iface != nullptr && iface->isValid() ? iface->parent() : nullptr;
+        return parent != nullptr && parent->isValid() ? static_cast<int>(parent->role()) : -1;
+    }
+
     /** @brief Issue #782: retune the canned spectrum frames to @p hz (0 puts back the default centre). */
     Q_INVOKABLE void
     setSpectrumCenterHz(double hz) const {

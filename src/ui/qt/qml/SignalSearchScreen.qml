@@ -792,7 +792,7 @@ Item {
                     // Not a control while paused: the heading of the open ranges.
                     Accessible.role: screen.editable ? Accessible.Heading : Accessible.Button
                     // A heading TalkBack can move to (see MicroLabel); it takes no Tab focus then.
-                    Accessible.focusable: screen.editable
+                    Accessible.focusable: screen.editable && rangesToggle.navigationAllowed && rangesToggle.visible
                     accessibleName: screen.editable ? qsTr("Search ranges, %1 enabled").arg(screen.enabledRanges) : screen.rangesExpanded ? qsTr("Hide search ranges") : qsTr("Show search ranges, %1 enabled").arg(screen.enabledRanges)
                     onTapped: screen.rangesExpanded = !screen.rangesExpanded
                 }

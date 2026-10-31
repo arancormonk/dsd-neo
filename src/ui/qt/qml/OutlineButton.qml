@@ -50,7 +50,10 @@ Rectangle {
     activeFocusOnTab: (Navigation.allows(control) && enabled && inputValid && visible) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
-    Accessible.focusable: true
+    // Issue #782: focusable only while in the tree, so a copy Android still
+    // holds of a covered or hidden control (no event tells it the control
+    // left the tree) is not a swipe stop.
+    Accessible.focusable: navigationAllowed && visible
     Accessible.checkable: checkable
     Accessible.checked: checkable && shownChecked
     readonly property bool navigationAllowed: Navigation.allows(control)

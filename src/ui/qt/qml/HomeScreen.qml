@@ -158,7 +158,8 @@ Item {
             Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
             Accessible.name: deviceStatus.accessibleName
             Accessible.description: deviceStatus.detailText
-            Accessible.focusable: true
+            // Issue #782: focusable only while in the tree (see OutlineButton).
+            Accessible.focusable: navigationAllowed && visible
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onReturnPressed: activate()

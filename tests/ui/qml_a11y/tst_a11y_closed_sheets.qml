@@ -266,6 +266,77 @@ Item {
             compare(testContext.accessibilityCountWithin(siteSheet, "ObjectShow"), 0, churn());
         }
 
+        // Issue #782: a sheet opened over another (Site → Network), closed with Back and opened again. Covered, the Site
+        // sheet is out of the tree, all of it; and because leaving the tree raises nothing Android's bridge passes on,
+        // the bridge is told to read the window's tree again each time a sheet takes or leaves the top (a show or hide
+        // under the window), so TalkBack does not keep a copy of the covered sheet to swipe through. What it may still
+        // ask of a node it learned of earlier reads nothing it could stop on: no heading or control is focusable, the
+        // sheet's panel is nameless, and text is unnamed.
+        function test_a_covered_sheet_leaves_the_tree() {
+            var network = liveNetworkLoader.item;
+            testContext.hopNetwork([0, 1]);
+            testContext.publishTarget(site(1));
+            siteSheet.visible = true;
+            waitForRendering(siteSheet);
+            wait(20);
+            compare(Ui.Navigation.topModal, siteSheet);
+            var open = testContext.accessibleNodesUnder(siteSheet).filter(function (node) { return node.inTree; });
+            verify(open.length > 3, "the open site sheet is in the tree: " + open.length);
+            network.open();
+            wait(20);
+            compare(Ui.Navigation.topModal, network);
+            network.visible = false;
+            wait(20);
+            compare(Ui.Navigation.topModal, siteSheet, "Back closes only the Network sheet");
+            var refresh = function (sheet) {
+                var found = null;
+                (function find(item) {
+                    for (var k = 0; k < item.children.length && found === null; ++k) {
+                        if (item.children[k].objectName === sheet.objectName + "TreeRefresh")
+                            found = item.children[k];
+                        else
+                            find(item.children[k]);
+                    }
+                })(sheet.Window.contentItem);
+                return found;
+            };
+            testContext.startAccessibilityCount();
+            network.open();
+            wait(20);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(Ui.Navigation.topModal, network);
+            var stops = [];
+            for (var node of testContext.accessibleNodesUnder(siteSheet)) {
+                if (node.inTree || (node.focusable && node.role !== Accessible.StaticText && node.role !== Accessible.EditableText)
+                        || ((node.role === Accessible.StaticText || node.role === Accessible.Heading
+                             || node.role === Accessible.Dialog) && node.name !== ""))
+                    stops.push(node.file + "#" + node.objectName + " role " + node.role + " " + JSON.stringify(node.name)
+                               + (node.inTree ? " in tree" : "") + (node.focusable ? " focusable" : ""));
+            }
+            compare(stops.length, 0, "the covered site sheet still offers: " + JSON.stringify(stops));
+            // Each sheet that took or left the top told the bridge to read the window's tree again.
+            var siteRefresh = refresh(siteSheet);
+            var networkRefresh = refresh(network);
+            verify(siteRefresh !== null && networkRefresh !== null, "each sheet has its refresh node");
+            compare(testContext.accessibleParentRole(siteRefresh), Accessible.Window, "its parent is the window");
+            var raised = function (chain) {
+                var total = 0;
+                for (var key in counts.chains) {
+                    if (key.indexOf(chain + " ") === 0 || key === chain)
+                        total += counts.chains[key];
+                }
+                return total;
+            };
+            compare(raised("ObjectHide siteSheetTreeRefresh"), 1, JSON.stringify(counts.chains));
+            compare(raised("ObjectShow networkSheetTreeRefresh"), 1, JSON.stringify(counts.chains));
+            verify(testContext.accessibleNode(networkRefresh).invisible, "and nothing reads or reaches it");
+            network.visible = false;
+            siteSheet.visible = false;
+            wait(20);
+            testContext.hopNetwork([]);
+        }
+
         // Issue #782: an open Network sheet reads each entry as its own row, and a refresh that hands a new list with
         // the same entries (the engine's last-seen times moved) rebuilds nothing: no row shows or hides, and none is
         // renamed. A changed entry renames its row only, at once; a new entry adds one row. A hop to a site that lists
