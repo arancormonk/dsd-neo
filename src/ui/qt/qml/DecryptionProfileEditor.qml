@@ -420,6 +420,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(14)
         Accessible.role: Accessible.AlertMessage
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(errorLabel) || !visible
     }
     GradientButton {
         objectName: "profileSave"

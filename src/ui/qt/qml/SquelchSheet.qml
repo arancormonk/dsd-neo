@@ -293,6 +293,7 @@ ModalSheet {
             // Read aloud as the terminal prints it, row note, default and status included.
             Accessible.role: Accessible.StaticText
             Accessible.name: squelchSpeech.spoken
+            Accessible.ignored: !Navigation.allows(squelchValueText) || !visible
             // The auto and noise squelch readings move every tick (issue #782): heard at
             // once when the gate opens or closes or the setting changes, else at their pace.
             SpeechPacer {

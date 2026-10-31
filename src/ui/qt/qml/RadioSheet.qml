@@ -808,6 +808,7 @@ ModalSheet {
                 // Read aloud as the terminal prints it, row note, default and floor included.
                 Accessible.role: Accessible.StaticText
                 Accessible.name: squelchSpeech.spoken
+                Accessible.ignored: !Navigation.allows(squelchValueText) || !visible
                 // The auto and noise squelch readings move every tick (issue #782): heard at
                 // once when the gate opens or closes or the setting changes, else at their pace.
                 SpeechPacer {
@@ -1072,6 +1073,7 @@ ModalSheet {
             width: parent.width
             spacing: 10
             Text {
+                id: analogBandwidthValueText
                 objectName: "radioAnalogBandwidthValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -1079,6 +1081,7 @@ ModalSheet {
                 // Read aloud as the terminal prints it, row note and default included.
                 Accessible.role: Accessible.StaticText
                 Accessible.name: sheet.analogRowOverride ? metrics.analogBandwidthReading : sheet.analogWidthReading
+                Accessible.ignored: !Navigation.allows(analogBandwidthValueText) || !visible
                 color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)

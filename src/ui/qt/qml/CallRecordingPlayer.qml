@@ -369,6 +369,7 @@ Column {
             spacing: 3
 
             Text {
+                id: recordingTimeText
                 objectName: "recordingTime"
                 width: parent.width
                 text: qsTr("%1 / %2").arg(player.positionText).arg(player.lengthText)
@@ -377,6 +378,7 @@ Column {
                 color: Theme.textPrimary
                 Accessible.role: Accessible.StaticText
                 Accessible.name: player.spokenTimeText
+                Accessible.ignored: !Navigation.allows(recordingTimeText) || !visible
             }
 
             // The position under the time, and a seek by tap or drag while the
@@ -498,6 +500,7 @@ Column {
             }
 
             Text {
+                id: recordingStatusText
                 objectName: "recordingStatus"
                 width: parent.width
                 visible: text.length > 0
@@ -508,11 +511,13 @@ Column {
                 color: Theme.textSubdued
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
+                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible
             }
         }
     }
 
     Text {
+        id: recordingProblemText
         objectName: "recordingProblem"
         width: parent.width
         visible: text.length > 0
@@ -523,6 +528,7 @@ Column {
         color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSecondary
         Accessible.role: player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(recordingProblemText) || !visible
     }
 
     // A call heard in pieces: a chip per part, the one shown checked, and Play all
@@ -586,6 +592,7 @@ Column {
     }
 
     Text {
+        id: recordingNoticeText
         objectName: "recordingNotice"
         width: parent.width
         visible: text.length > 0
@@ -596,6 +603,7 @@ Column {
         color: player.noticeProblem ? Theme.alert : Theme.textSecondary
         Accessible.role: player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(recordingNoticeText) || !visible
     }
 
     FileDialog {

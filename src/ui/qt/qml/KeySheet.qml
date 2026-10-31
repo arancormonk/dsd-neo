@@ -300,12 +300,13 @@ ModalSheet {
         }
     }
     Text {
+        id: outdatedProfileNote
         width: parent.width
         visible: sheet.materialProfile.outdated === true
         text: qsTr("The saved profile has changed since it was loaded. Apply the saved profile to use its current revision.")
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-        Accessible.ignored: !visible
+        Accessible.ignored: !Navigation.allows(outdatedProfileNote) || !visible
         color: Theme.alert
         wrapMode: Text.Wrap
         font.pixelSize: Theme.fontSize(13)
@@ -339,13 +340,14 @@ ModalSheet {
     // A plain Text is not in the accessibility tree; these lines name
     // themselves so a screen reader reaches them, and leave it while hidden.
     Text {
+        id: targetNameLine
         objectName: "keySheetTargetName"
         width: parent.width
         visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.openedTargetName.length > 0
         text: qsTr("Applies to %1").arg(sheet.openedTargetName)
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-        Accessible.ignored: !visible
+        Accessible.ignored: !Navigation.allows(targetNameLine) || !visible
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: Theme.sans
@@ -364,7 +366,7 @@ ModalSheet {
         text: sheet.openedTargetName.length ? qsTr("The scan has left %1. Reopen the editor before applying.").arg(sheet.openedTargetName) : qsTr("The scan target changed. Reopen the editor before applying.")
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-        Accessible.ignored: !visible
+        Accessible.ignored: !Navigation.allows(targetLeftNote) || !visible
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -413,12 +415,13 @@ ModalSheet {
         enabled: !applyFlow.pending
     }
     Text {
+        id: directOverrideText
         objectName: "directOverrideNote"
         width: parent.width
         text: qsTr("A direct override is for this session only and is cleared when you stop. It changes session defaults; an explicit scan profile stays effective until rotation restores them. Keys and listening policy are separate; excluded talkgroups remain blocked.")
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-        Accessible.ignored: !visible
+        Accessible.ignored: !Navigation.allows(directOverrideText) || !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
@@ -437,12 +440,13 @@ ModalSheet {
         }
     }
     Text {
+        id: keySheetNotice
         width: parent.width
         visible: text.length > 0
         text: sheet.notice
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-        Accessible.ignored: !visible
+        Accessible.ignored: !Navigation.allows(keySheetNotice) || !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)

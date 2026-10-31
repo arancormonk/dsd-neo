@@ -603,6 +603,7 @@ Item {
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
+            Accessible.ignored: !Navigation.allows(exportError) || !visible
         }
         GradientButton {
             objectName: "backupEncryptButton"
@@ -710,6 +711,7 @@ Item {
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
+            Accessible.ignored: !Navigation.allows(unlockError) || !visible
         }
         // The primary action: Unlock, or another file once this one is the problem.
         GradientButton {

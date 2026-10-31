@@ -449,6 +449,33 @@ Item {
             compare(problems.length, 0, report(problems));
         }
 
+        // Issue #782: each sheet, open with every branch shown, then covered by another sheet: nothing of it is in the
+        // tree. A part with no gate of its own (Accessible.ignored on the navigation gate) would stay in the tree under
+        // the top sheet, its covered panel skipped, and a swipe would reach it.
+        function test_3b_covered_sheet_leaves_the_tree_data() {
+            return components_data().filter(function (row) {
+                return /Sheet$|Dialog$|Menu$|Flow$|Editor$|Selector$/.test(row.spec.file);
+            });
+        }
+        function test_3b_covered_sheet_leaves_the_tree(data) {
+            var item = build(data.spec);
+            open(item, data.spec);
+            reveal(item);
+            var cover = Qt.createQmlObject("import QtQuick; Item { visible: true }", host);
+            Ui.Navigation.layers = [];
+            Ui.Navigation.modals = isSheet(item) ? [item, cover] : [cover];
+            waitForRendering(host);
+            wait(20);
+            var left = testContext.accessibleNodesUnder(item).filter(function (node) {
+                return node.inTree;
+            }).map(function (node) {
+                return node.file + "#" + node.objectName + " " + JSON.stringify(node.name);
+            });
+            cover.destroy();
+            dispose(item);
+            compare(left.length, 0, data.spec.file + " covered still has in the tree: " + JSON.stringify(left));
+        }
+
         // The monitor in a two-slot call with its details open: the hero, the other slot and every reading group.
         function test_4_monitor_in_a_call() {
             testContext.setHostRunning(true);

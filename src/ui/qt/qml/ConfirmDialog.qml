@@ -54,6 +54,7 @@ ModalSheet {
         color: Theme.textSubdued
     }
     Text {
+        id: confirmErrorText
         objectName: "confirmError"
         width: parent.width
         visible: text.length > 0
@@ -65,6 +66,7 @@ ModalSheet {
         color: Theme.alert
         Accessible.role: Accessible.AlertMessage
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(confirmErrorText) || !visible
     }
     OutlineButton {
         objectName: "confirmActionButton"
