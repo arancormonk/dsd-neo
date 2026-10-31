@@ -26,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/protocol/p25/p25_vpdu.h"
 #include "p25_iden_test_vectors.h"
 #include "test_support.h"
 
