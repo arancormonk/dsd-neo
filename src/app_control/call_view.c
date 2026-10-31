@@ -198,6 +198,11 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
     if (!staged_group_name(state, slot, out->tg_id, out->tg_label, sizeof(out->tg_label))) {
         (void)cached_group_name(call, out->tg_id, out->tg_label, sizeof(out->tg_label));
     }
+    /* Once the row has committed (an ended call the view still holds), the channel label the event layer cached on
+       the call names it as it did on air (issue #782). */
+    if (out->channel[0] == '\0' && call->channel_label_epoch != 0U && call->channel_label_epoch == call->epoch) {
+        DSD_SNPRINTF(out->channel, sizeof(out->channel), "%s", call->channel_label);
+    }
     DSD_SNPRINTF(out->service, sizeof(out->service), "%s", call->service_label);
     out->receive_identity = call->receive_identity;
     if (call->service_label[0]) {

@@ -2672,6 +2672,31 @@ watchdog_event_cache_target_label(dsd_state* state, uint8_t slot, uint64_t epoch
     ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
 }
 
+_Static_assert(sizeof(((dsd_call_snapshot*)0)->channel_label) == sizeof(((Event_History*)0)->channel_label),
+               "a call's cached channel label holds a row's");
+
+// Keep the label of the channel the epoch's row was heard on (a `-Y` row name or a trunk-scan target label) on the
+// canonical call (dsd_call_snapshot::channel_label), so a view of the ended call names it as it did while active once
+// the staged row has committed (issue #782): read from the staged row, a held call with no name of its own fell back
+// to its talkgroup number for the whole hold. Keyed by epoch. Caller holds the call-state lock.
+static void
+watchdog_event_cache_channel_label(dsd_state* state, uint8_t slot, uint64_t epoch, const Event_History* row) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (ext == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || row == NULL) {
+        return;
+    }
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch) {
+        return;
+    }
+    const char* channel = row->channel_label_resolved != 0U ? row->channel_label : "";
+    if (call->channel_label_epoch == epoch && strcmp(call->channel_label, channel) == 0) {
+        return;
+    }
+    DSD_SNPRINTF(call->channel_label, sizeof call->channel_label, "%s", channel);
+    call->channel_label_epoch = epoch;
+}
+
 static void
 watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                               dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
@@ -2702,6 +2727,7 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         // The staged row is about to leave index 0, where views of the ended call read its source and target labels.
         watchdog_event_cache_source_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
         watchdog_event_cache_target_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
+        watchdog_event_cache_channel_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
         // A new row, a merge into the row the interrupted transmission already owns, or -- for
         // a voice epoch that never learned an identity -- a drop. The empty-staged-row branch
         // has nothing to commit; enrichment resolves that case by push sequence and declines.

@@ -324,6 +324,13 @@ typedef struct {
      */
     char target_label[DSD_CALL_IDENTITY_TEXT_SIZE];
     uint64_t target_label_id;
+    /**
+     * Issue #782: the label of the channel the epoch's row was heard on (a `-Y` row name or a trunk-scan target label),
+     * cached when the row commits so a view of the ended call names it as it did on air. Valid only while
+     * channel_label_epoch equals epoch; empty when the row had none.
+     */
+    char channel_label[64];
+    uint64_t channel_label_epoch;
 } dsd_call_snapshot;
 
 /** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */
