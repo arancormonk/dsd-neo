@@ -50,6 +50,14 @@ class TalkgroupFilterModel : public QSortFilterProxyModel {
      * filtered rows, once per show.
      */
     Q_INVOKABLE int rowForTalkgroup(qulonglong idStart, qulonglong idEnd) const;
+    /**
+     * @brief The view row of the card the Talkgroups screen kept its place on, or -1 when none lists it.
+     *
+     * A card is its bounds, its pattern and its table index, the token its edits carry: pattern rows all have the
+     * bounds 0-0, and a table can list the same bounds twice. A row whose bounds and pattern match but whose index
+     * moved (a row added or removed above it) is the next best, so the reader is put back near where they were.
+     */
+    Q_INVOKABLE int rowForCard(qulonglong idStart, qulonglong idEnd, const QString& pattern, int tableIndex) const;
 
   Q_SIGNALS:
     void countChanged();

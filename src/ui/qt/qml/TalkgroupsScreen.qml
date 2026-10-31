@@ -290,12 +290,14 @@ Item {
         id: gridPlace
         list: grid
         model: talkgroupView
-        // A card is its bounds: an exact row and a range can share a start.
+        // A card is its bounds, pattern and table index, the token its edits
+        // carry: an exact row and a range can share a start, every pattern row
+        // has the bounds 0-0, and a table can list the same bounds twice.
         keyOf: function (card) {
-            return {start: card.idStart, end: card.idEnd};
+            return {start: card.idStart, end: card.idEnd, pattern: card.pattern, table: card.tableIndex};
         }
-        rowOf: function (bounds) {
-            return talkgroupView.rowForTalkgroup(bounds.start, bounds.end);
+        rowOf: function (key) {
+            return talkgroupView.rowForCard(key.start, key.end, key.pattern, key.table);
         }
     }
     // A search or category set while the grid is hidden is a new question:
