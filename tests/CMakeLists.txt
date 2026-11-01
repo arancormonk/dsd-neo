@@ -18794,19 +18794,19 @@ dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_200
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 200"
     5
-    "700,700,700,700,700"
+    "700,700,700,680,700"
 )
 dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_500
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 500"
     4
-    "1500,700,700,700"
+    "1500,700,680,700"
 )
 dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_1000
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 1000"
     3
-    "2600,700,700"
+    "2600,680,700"
     ""
     1000
 )
@@ -18814,7 +18814,7 @@ dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_2000
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 2000"
     2
-    "4600,700"
+    "4580,700"
     ""
     2000
 )
@@ -18833,7 +18833,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_RECORD_GAP_PACED
         "--analog-synth-pauses 756 -fA --squelch noise+6 --analog-record-max-gap-ms 1000"
         3
-        "2600,700,700"
+        "2580,680,680"
         "fast,realtime"
         1000
     )

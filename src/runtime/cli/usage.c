@@ -120,6 +120,7 @@ dsd_cli_usage_section_io(void) {
     printf("      --record-unknown-only  Record only calls whose talkgroup has no row in the group list (-G)\n");
     printf("      --analog-record-max-gap-ms <ms>  Keep an NFM call in one recording through pauses up to <ms>\n");
     printf("                 (0 to 10000; the pause is saved as silence; 200 or less is off, the default)\n");
+    printf("                 (Works only while -P per-call recording is on)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");

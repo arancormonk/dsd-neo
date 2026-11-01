@@ -21,6 +21,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
+
+#include <dsd-neo/core/opts.h>
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -52,7 +54,7 @@ struct SessionArgPrefs {
     bool recordUnknownOnly = false;
     /* Issue #756: the longest pause one analog NFM call recording keeps going through, in ms, sent with -P
        (--analog-record-max-gap-ms); 200 or less is off, the decoder's default. */
-    int analogMaxGapMs = 200;
+    int analogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     QString recordingFolder;
     /* The store was asked for a folder and had none (no storage available): an extra -P is refused, since it would
        record outside any folder the app manages. False for a validation-only build, which asks for none. */
