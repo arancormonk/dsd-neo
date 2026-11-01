@@ -2997,6 +2997,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_ncurses_visualizers_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
@@ -3068,6 +3069,7 @@ add_executable(
     dsd-neo_test_app_control_site_identity_view
     ui/test_app_control_site_identity_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
 )
 target_include_directories(
@@ -3357,6 +3359,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
             ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
             ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -4272,6 +4275,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
