@@ -2966,10 +2966,10 @@ int dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from);
 void dsd_state_lcn_on_air_note(dsd_state* state, int row);
 
 /**
- * A step's tune failed hard (refused, either direction, manual or timed). A recorded row that still describes the list
- * stays: the receiver is still on it. With none, the row heard becomes none, not the row before lcn_freq_roll, which
- * the failure may have moved past the row it never tuned, until a row is recorded or the records are reset
- * (dsd_state_lcn_nav_reset(): a list loaded or replaced).
+ * A step's tune failed hard (refused, either direction, manual or timed, a P25 hunt probe of a -T channel-map row
+ * included). A recorded row that still describes the list stays: the receiver is still on it. With none, the row heard
+ * becomes none, not the row before lcn_freq_roll, which the failure may have moved past the row it never tuned, until
+ * a row is recorded or the records are reset (dsd_state_lcn_nav_reset(): a list loaded or replaced).
  */
 void dsd_state_lcn_on_air_note_refused(dsd_state* state);
 

@@ -167,8 +167,8 @@ Generated (do not edit/commit):
     step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
     another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
     none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. A hard-failed step (either
-    direction, manual or timed, typed or untyped, late failures included) that finds no valid record calls
-    `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the
+    direction, manual or timed, typed or untyped, late failures included, and a refused P25 hunt probe of a `-T`
+    channel-map row) that finds no valid record calls `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the
     `roll - 1` the failure moved past, until a step records a row or `dsd_state_lcn_nav_reset()` runs; a valid record
     is left alone. The value rides both snapshots with the record. `lcn_back_retry_row`/`_freq`
     (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
@@ -216,7 +216,8 @@ Generated (do not edit/commit):
       reselects the row. While a row is outstanding a press services it, either way.
     - The retry is dropped by any position write and at the start of every forward step: Next on either list, the timed
       untyped step (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`)
-      and Avoid's step, so a refused Previous, a refused Next, then Previous starts from the row heard again.
+      and Avoid's step, and the P25 hunt's `-T` channel-map pick (`next_lcn_freq()`), so a refused Previous, a refused
+      Next (or hunt probe), then Previous starts from the row heard again.
     - `-^` candidates: `p25_cc_prev_candidate()` (`dsd_trunk_cc_candidates_prev()`), with the same checkpoint and
       restore on a deferral as Next.
     - Tests: `APP_COMMAND_QUEUE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_NO_CARRIER_RESET`, `RUNTIME_TRUNK_CC_CANDIDATES`,
@@ -2290,9 +2291,14 @@ suite runs under this compiler.
       `dsd_trunk_cc_candidates_restore()` when the tune is DEFERRED (no retune scheduled: "retry without advancing
       state"), so the next try picks the same entry; a refused or timed-out tune keeps it passed. The P25 hunt
       (`try_next_cc()` through `p25_hunt_reject_outcome()`) puts its user-list cursor `lcn_freq_roll` back the same
-      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`. Only an accepted P25 user-list probe writes the row
-      heard (`dsd_state_lcn_on_air_note()`, as an accepted `L` does), so `J` goes back from the row the hunt tuned; a
-      deferred or failed probe writes nothing, and the DMR hunt, which walks no list position, never does. Tests:
+      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`. A P25 user-list probe keeps the position as a manual
+      `L` does (`lcn_cycle_on_tune_outcome()`'s forward rules, mirrored with the core `dsd_state_lcn_*` helpers since
+      the SM cannot reach app-control): its pick drops the backward retry whatever the tune does (`next_lcn_freq()`),
+      an accepted tune records the row (`dsd_state_lcn_on_air_note()` in `try_next_cc()`), a refused or timed-out one
+      calls `dsd_state_lcn_on_air_note_refused()` (`p25_hunt_reject_outcome()`; a valid row heard stays), and a deferral
+      writes nothing. So `J` goes back from the row the hunt tuned, never from one it was refused. A 0 Hz row's
+      control-channel fallback is no list row and writes nothing. The DMR hunt walks no list position and never writes
+      it. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and

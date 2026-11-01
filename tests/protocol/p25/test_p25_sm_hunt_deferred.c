@@ -179,11 +179,52 @@ test_accepted_channel_row_is_the_row_heard(void) {
     assert(dsd_state_lcn_heard_row(&s) == 0);
 }
 
+/* Review gate fix 3: the rest of a manual Next's bookkeeping. A refused channel-list probe passes its row, which the
+   receiver was never on, so with no row recorded the row heard is none, not the refused row before the cursor; a
+   recorded row stays. Every channel-list probe is a forward step and drops a refused Previous's retry row, deferred
+   or not. */
+static void
+test_refused_channel_row_is_not_the_row_heard(void) {
+    static dsd_opts o;
+    static dsd_state s;
+    init_hunt(&o, &s);
+    DSD_SNPRINTF(o.chan_in_file, sizeof(o.chan_in_file), "%s", "site.csv");
+    s.trunk_lcn_freq[0] = 852000000;
+    s.trunk_lcn_freq[1] = 853000000;
+    s.trunk_lcn_freq[2] = 854000000;
+    s.trunk_lcn_freq[3] = 855000000;
+    s.lcn_freq_count = 4;
+    s.lcn_freq_roll = 0;
+    dsd_state_lcn_nav_reset(&s);
+
+    hunt_once(&o, &s, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_tuned[0] == 852000000);
+    assert(s.lcn_freq_roll == 1);
+    assert(dsd_state_lcn_heard_row(&s) == -1); // not row 0, which was refused
+
+    // A recorded row stays through a refusal, and each probe drops the retry, a deferred one included.
+    dsd_state_lcn_on_air_note(&s, 0);
+    dsd_state_lcn_back_retry_note(&s, 3);
+    hunt_once(&o, &s, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_tuned[1] == 853000000);
+    assert(s.lcn_freq_roll == 2);
+    assert(dsd_state_lcn_heard_row(&s) == 0);
+    assert(dsd_state_lcn_back_retry_row(&s) == -1);
+
+    dsd_state_lcn_back_retry_note(&s, 3);
+    hunt_once(&o, &s, DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(g_tuned[2] == 854000000);
+    assert(s.lcn_freq_roll == 2);
+    assert(dsd_state_lcn_heard_row(&s) == 0);
+    assert(dsd_state_lcn_back_retry_row(&s) == -1);
+}
+
 int
 main(void) {
     test_deferred_candidate_is_retried();
     test_deferred_channel_row_is_retried();
     test_accepted_channel_row_is_the_row_heard();
+    test_refused_channel_row_is_not_the_row_heard();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
     return 0;

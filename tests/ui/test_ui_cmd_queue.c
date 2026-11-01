@@ -5753,15 +5753,61 @@ test_channel_cycle_prev_walks_back(void) {
 }
 
 /* The P25 hunt's control-channel tune off the wrap toolchains (on them __wrap_dsd_trunk_tuning_hook_tune_to_cc answers
-   with g_cc_tune_result first): accepted. */
+   with g_cc_tune_result first): g_hunt_cc_result. */
+static dsd_trunk_tune_result g_hunt_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
 static dsd_trunk_tune_result
-hunt_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+hunt_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
     (void)request_id;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    return g_hunt_cc_result;
+}
+
+/* A -T P25 session on the user channel map @p rows (@p count rows, the cursor at row 0, no row heard), the manual walk
+   on the portable seam and the hunt's tune on hunt_tune_to_cc(). */
+static int
+init_p25_hunt_context(dsd_opts* opts, dsd_state* state, const long* rows, int count) {
+    init_manual_walk_context(opts, state, rows, count);
+    opts->scanner_mode = 0;
+    opts->trunk_enable = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "site.csv");
+    state->p25_cc_freq = rows[0];
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25; // a P25 site is on air
+    g_hunt_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = hunt_tune_to_cc});
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+    return expect_true("hunt: P25 owns the trunk", dsd_trunk_p25_recovery_allowed(opts, state) == 1);
+}
+
+/* The control channel is lost and the hunt's next probe, the row at the cursor, ends in @p result. */
+static void
+hunt_probe(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
+    g_hunt_cc_result = result;
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    reset_cc_tune_stub(result);
+#endif
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_tick_guard_enter();
+    sm->state = P25_SM_HUNTING;
+    sm->t_hunt_try_m = 0.0;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
+    p25_sm_tick_ctx(sm, opts, state);
+    p25_sm_tick_guard_leave();
+}
+
+static void
+end_p25_hunt_context(dsd_state* state) {
+    p25_sm_init_ctx(p25_sm_get_ctx(), NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(state);
 }
 
 /*
@@ -5773,46 +5819,74 @@ hunt_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
 static int
 test_channel_cycle_prev_after_p25_hunt(void) {
     static const long kRows[] = {871000000L, 872000000L, 873000000L};
-    int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
-    init_manual_walk_context(&opts, &state, kRows, 3);
-    opts.scanner_mode = 0;
-    opts.trunk_enable = 1;
-    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "site.csv");
-    state.p25_cc_freq = 871000000L;
-    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25; // a P25 site is on air
-    rc |= expect_true("hunt: P25 owns the trunk", dsd_trunk_p25_recovery_allowed(&opts, &state) == 1);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = hunt_tune_to_cc_ok});
-#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
-    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-#endif
-    p25_sm_ctx_t* sm = p25_sm_get_ctx();
-    p25_sm_init_ctx(sm, &opts, &state);
+    int rc = init_p25_hunt_context(&opts, &state, kRows, 3);
 
     const int calls = g_manual_leg_calls;
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "hunt: next to A");
     rc |= expect_prev_tuned("hunt: next tunes A", 871000000U, calls);
     rc |= expect_true("hunt: A is the row heard", state.lcn_freq_roll == 1 && dsd_state_lcn_heard_row(&state) == 0);
 
-    /* The control channel is lost: the hunt's next probe is the row at the cursor, B. */
-    p25_sm_tick_guard_enter();
-    sm->state = P25_SM_HUNTING;
-    sm->t_hunt_try_m = 0.0;
-    state.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
-    p25_sm_tick_ctx(sm, &opts, &state);
-    p25_sm_tick_guard_leave();
-    rc |= expect_int("hunt: the probe was accepted", p25_sm_get_state(sm), P25_SM_ON_CC);
+    hunt_probe(&opts, &state, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("hunt: the probe was accepted", p25_sm_get_state(p25_sm_get_ctx()), P25_SM_ON_CC);
     rc |= expect_int("hunt: the cursor passed B", state.lcn_freq_roll, 2);
     rc |= expect_int("hunt: B is the row heard", dsd_state_lcn_heard_row(&state), 1);
 
     rc |= prev_lands(&opts, &state, 871000000U, 1, 0, "hunt: previous goes back from B to A");
+    end_p25_hunt_context(&state);
+    return rc;
+}
 
-    p25_sm_init_ctx(sm, NULL, NULL);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
-    dsd_trunk_tuning_requests_reset();
-    dsd_app_command_test_set_manual_tune_leg(NULL);
-    freeState(&state);
+/*
+ * Issue #666 (review gate, fix 3): a hunt probe the tuner refuses passes its row, as a refused Next does, and with no
+ * row recorded it left the row before the cursor -- the refused row -- as the row heard. On [A, B, C], refused probes
+ * of A and B made Previous go back from B and tune A; with no row heard it now starts at the last row, C.
+ */
+static int
+test_channel_cycle_prev_after_refused_p25_hunt(void) {
+    static const long kRows[] = {874000000L, 875000000L, 876000000L};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = init_p25_hunt_context(&opts, &state, kRows, 3);
+
+    hunt_probe(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED);
+    hunt_probe(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_int("refused hunt: the cursor passed A and B", state.lcn_freq_roll, 2);
+    rc |= expect_int("refused hunt: no row heard", dsd_state_lcn_heard_row(&state), -1);
+
+    rc |= prev_lands(&opts, &state, 876000000U, 3, 2, "refused hunt: previous starts at the end");
+    end_p25_hunt_context(&state);
+    return rc;
+}
+
+/*
+ * Issue #666 (review gate, fix 3): the hunt's channel-map probe is a forward step, which drops the row a refused
+ * Previous left to retry whatever its tune does, as Next does. On [A, B, C, D] with C heard, Previous refused on B,
+ * then a hunt probe refused on D, left B to retry, so the next Previous went back from B to A instead of from C to B.
+ */
+static int
+test_channel_cycle_p25_hunt_drops_the_retry(void) {
+    static const long kRows[] = {877000000L, 878000000L, 879000000L, 880000000L};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = init_p25_hunt_context(&opts, &state, kRows, 4);
+    state.lcn_freq_roll = 2;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "hunt retry: next to C");
+    rc |= expect_true("hunt retry: C landed", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+
+    manual_leg_script(878000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "hunt retry: B refused");
+    rc |= expect_int("hunt retry: B is the row to go on from", dsd_state_lcn_back_retry_row(&state), 1);
+
+    hunt_probe(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_int("hunt retry: the cursor passed D", state.lcn_freq_roll, 4);
+    rc |= expect_int("hunt retry: the hunt drops the retry", dsd_state_lcn_back_retry_row(&state), -1);
+    rc |= expect_int("hunt retry: C is still the row heard", dsd_state_lcn_heard_row(&state), 2);
+
+    manual_leg_script(878000000U, RTL_STREAM_TUNE_OK);
+    rc |= prev_lands(&opts, &state, 878000000U, 2, 1, "hunt retry: previous goes back from C to B");
+    end_p25_hunt_context(&state);
     return rc;
 }
 
@@ -24693,6 +24767,8 @@ main(void) {
     rc |= test_trunk_scan_next_that_stays_says_so();
     rc |= test_channel_cycle_prev_walks_back();
     rc |= test_channel_cycle_prev_after_p25_hunt();
+    rc |= test_channel_cycle_prev_after_refused_p25_hunt();
+    rc |= test_channel_cycle_p25_hunt_drops_the_retry();
     rc |= test_channel_cycle_prev_duplicate_runs();
     rc |= test_channel_cycle_prev_refused_row();
     rc |= test_channel_cycle_prev_after_avoid_and_reload();
