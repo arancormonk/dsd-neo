@@ -454,3 +454,35 @@ dsd_call_site_compatible(const dsd_received_identity* site_a, uint8_t kind_a, co
     return site_snapshots_compatible(&sa, &sb) && site_kind_fits(kind_a, &sa) && site_kind_fits(kind_a, &sb)
            && site_kind_fits(kind_b, &sa) && site_kind_fits(kind_b, &sb);
 }
+
+/* The DMR trunking system whole record @p r names by any of its trunking parts, the moment's rest LSN and free LCN
+   included; NONE when it names none. */
+static uint8_t
+record_dmr_trunk(const dsd_received_identity* r) {
+    if (r == NULL || r->family != (uint8_t)DSD_RXID_FAMILY_DMR
+        || (r->valid & (SITE_DMR | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN)) == 0U) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    return r->dmr_trunk;
+}
+
+/* Whether channel @p kind fits trunking system @p trunk: no kind, or no trunk, fits anything. */
+static int
+record_kind_fits_trunk(uint8_t kind, uint8_t trunk) {
+    return kind == (uint8_t)DSD_CALL_CHANNEL_NONE || trunk == (uint8_t)DSD_RXID_DMR_TRUNK_NONE
+           || site_kind_names_trunk(kind, trunk);
+}
+
+int
+dsd_call_record_site_compatible(const dsd_received_identity* record_a, uint8_t kind_a,
+                                const dsd_received_identity* record_b, uint8_t kind_b) {
+    const uint8_t trunk_a = record_dmr_trunk(record_a);
+    const uint8_t trunk_b = record_dmr_trunk(record_b);
+    if (trunk_a != (uint8_t)DSD_RXID_DMR_TRUNK_NONE && trunk_b != (uint8_t)DSD_RXID_DMR_TRUNK_NONE
+        && trunk_a != trunk_b) {
+        return 0;
+    }
+    const uint8_t trunk = trunk_a != (uint8_t)DSD_RXID_DMR_TRUNK_NONE ? trunk_a : trunk_b;
+    return dsd_call_site_compatible(record_a, kind_a, record_b, kind_b) && record_kind_fits_trunk(kind_a, trunk)
+           && record_kind_fits_trunk(kind_b, trunk);
+}

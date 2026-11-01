@@ -76,6 +76,13 @@ int dsd_nxdn_location_valid(uint8_t category, uint32_t sys, uint16_t site);
 int dsd_call_site_compatible(const dsd_received_identity* site_a, uint8_t kind_a, const dsd_received_identity* site_b,
                              uint8_t kind_b);
 
+/** dsd_call_site_compatible() for two whole records (dsd_state::rx_id, dsd_call_snapshot::ended_rx_id; NULL counts as
+ * empty) rather than site identities: each record's DMR trunking system (dmr_trunk while any of its DMR trunking parts
+ * is valid, the Capacity Plus rest LSN and the XPT free LCN that a site snapshot drops included) must also equal the
+ * other's when both are known, and fit both channel kinds. */
+int dsd_call_record_site_compatible(const dsd_received_identity* record_a, uint8_t kind_a,
+                                    const dsd_received_identity* record_b, uint8_t kind_b);
+
 #ifdef __cplusplus
 }
 #endif

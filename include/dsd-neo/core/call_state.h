@@ -313,6 +313,14 @@ typedef struct {
      * on another carrier, does not.
      */
     dsd_received_identity ended_rx_id;
+    /**
+     * 1 when ended_rx_id is empty because the record had moved to another identity (dsd_received_identity::epoch, a
+     * reset or another system named) while the call was on the air, so the system and site it was heard on are lost;
+     * 0 while active, and when the record was still the call's (nothing received leaves ended_rx_id empty with 0). A
+     * lost end is never reacquired (dsd_call_snapshot_may_reacquire()): nothing tells the same call from another
+     * system's.
+     */
+    uint8_t ended_rx_id_lost;
     /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
      * call history marks the ended row direct mode from it. */
     uint8_t ended_tetra_direct;

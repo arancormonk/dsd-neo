@@ -1032,8 +1032,13 @@ suite runs under this compiler.
   machine's slot identities and NXDN's held call (`dsd_state::nxdn_call`) below. `dsd_call_snapshot_may_reacquire()`
   says whether an ended epoch may still be healed (a recoverable end of a call that names one, within its reason's own
   window: `DSD_CALL_REACQUIRE_GAP_S` after a sync loss, `DSD_CALL_TERMINATOR_HEAL_GAP_S` after an unverified
-  terminator), the rule the store's own reacquisition applies short of what the reopening observation must satisfy; a
-  binding renamed meanwhile keeps its transmission only while it says yes.
+  terminator, and never when the received identity moved to another one while the call was on the air,
+  `dsd_call_snapshot::ended_rx_id_lost`), the rule the store's own reacquisition applies short of what the reopening
+  observation must satisfy; a binding renamed meanwhile keeps its transmission only while it says yes. The reopening
+  observation must also fit the system and site the call ended on (`dsd_call_record_site_compatible()`: the record its
+  end captured with its channel's kind, against the live `dsd_state::rx_id` with the observation's channel kind, DMR
+  trunking system included), so another system's call on the same TG/SRC inside the window is a fresh transmission
+  that inherits no channel, frequency or crypto.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`

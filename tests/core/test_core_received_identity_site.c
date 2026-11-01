@@ -5,8 +5,9 @@
 
 /*
  * Site identities a call row keeps: the snapshot that keeps only site parts, the part-by-part compare and union, the
- * one-record consistency check, the NXDN location ranges, and the row-level check with the call's channel kind. The
- * module is built into this test on its own (no decoder state), as the Qt tests build it.
+ * one-record consistency check, the NXDN location ranges, and the row-level check with the call's channel kind, on site
+ * identities and on whole records. The module is built into this test on its own (no decoder state), as the Qt tests
+ * build it.
  */
 
 #include <dsd-neo/core/call_channel.h>
@@ -734,6 +735,53 @@ test_call_channel_kind_vs_trunk(void) {
     expect_s("label unknown", dsd_call_channel_kind_label(9U), "");
 }
 
+/* Whole records also carry the trunking system their moment's parts name (a Capacity Plus rest LSN, an XPT free LCN),
+   which a site snapshot drops: it must agree with the other record's and with both channel kinds. */
+static void
+test_call_record_trunk_from_moment_parts(void) {
+    dsd_received_identity rest;
+    dsd_received_identity free_lcn;
+    dsd_received_identity t3;
+    dsd_received_identity empty;
+    clear_id(&rest);
+    rest.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    rest.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS;
+    rest.dmr_rest_lsn = 3U;
+    rest.valid = DSD_RXID_DMR_REST_LSN;
+    clear_id(&free_lcn);
+    free_lcn.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    free_lcn.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_XPT;
+    free_lcn.dmr_xpt_free_lcn = 4U;
+    free_lcn.valid = DSD_RXID_DMR_XPT_FREE_LCN;
+    dmr_id(&t3, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, NULL);
+    clear_id(&empty);
+    const uint8_t none = (uint8_t)DSD_CALL_CHANNEL_NONE;
+    const uint8_t lsn = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    const uint8_t lpcn = (uint8_t)DSD_CALL_CHANNEL_LPCN;
+
+    /* The snapshot-level check cannot see them. */
+    expect_u("site: lpcn vs rest lsn", (unsigned long)dsd_call_site_compatible(&empty, lpcn, &rest, none), 1U);
+    /* The record-level check does, either way round and on either side's kind. */
+    expect_u("lpcn vs rest lsn", (unsigned long)dsd_call_record_site_compatible(&empty, lpcn, &rest, none), 0U);
+    expect_u("rest lsn vs lpcn", (unsigned long)dsd_call_record_site_compatible(&rest, none, &empty, lpcn), 0U);
+    expect_u("lpcn on rest lsn", (unsigned long)dsd_call_record_site_compatible(&rest, lpcn, &empty, none), 0U);
+    expect_u("lpcn vs free lcn", (unsigned long)dsd_call_record_site_compatible(&empty, lpcn, &free_lcn, none), 0U);
+    expect_u("lsn vs rest lsn", (unsigned long)dsd_call_record_site_compatible(&empty, lsn, &rest, lsn), 1U);
+    expect_u("lsn vs free lcn", (unsigned long)dsd_call_record_site_compatible(&empty, lsn, &free_lcn, none), 1U);
+    expect_u("lpcn vs t3", (unsigned long)dsd_call_record_site_compatible(&empty, lpcn, &t3, none), 1U);
+    /* Two trunking systems are two systems, with no kind at all. */
+    expect_u("rest lsn vs free lcn", (unsigned long)dsd_call_record_site_compatible(&rest, none, &free_lcn, none), 0U);
+    expect_u("rest lsn vs t3", (unsigned long)dsd_call_record_site_compatible(&t3, none, &rest, none), 0U);
+    expect_u("rest lsn vs itself", (unsigned long)dsd_call_record_site_compatible(&rest, none, &rest, none), 1U);
+    /* What the snapshot-level check refuses stays refused. */
+    expect_u("lpcn vs lsn", (unsigned long)dsd_call_record_site_compatible(&empty, lpcn, &empty, lsn), 0U);
+    expect_u("null records", (unsigned long)dsd_call_record_site_compatible(NULL, lsn, NULL, none), 1U);
+    /* A trunk value left beside no trunking part names nothing. */
+    dsd_received_identity stale = rest;
+    stale.valid = 0U;
+    expect_u("stale trunk", (unsigned long)dsd_call_record_site_compatible(&stale, none, &empty, lpcn), 1U);
+}
+
 int
 main(void) {
     test_snapshot_drops_moment_parts();
@@ -751,6 +799,7 @@ main(void) {
     test_nxdn_location_ranges();
     test_consistent_rejects_ranges_and_cross_parts();
     test_call_channel_kind_vs_trunk();
+    test_call_record_trunk_from_moment_parts();
     if (g_fail) {
         return 1;
     }

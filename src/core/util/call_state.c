@@ -3,11 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -464,6 +467,11 @@ dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
     if (!dsd_call_state_snapshot_has_identity(call)) {
         return 0;
     }
+    // The record moved to another identity while the call was on the air, so the system and site it was heard on are
+    // lost: nothing could tell the same call heard again from another system's call on the same TG/SRC.
+    if (call->ended_rx_id_lost != 0U) {
+        return 0;
+    }
     // The heal window after an unverified terminator is much tighter than the sync-loss window:
     // the mis-typed voice burst it exists for is followed by the transmission's next voice frame
     // within a burst or two, while a real end followed by a fast re-key whose headers fail to
@@ -474,6 +482,20 @@ dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
     return call->ended_m > 0.0 && now_m >= call->ended_m && (now_m - call->ended_m) <= gap;
 }
 
+// Whether the ending call @p previous could have been heard on the system and site @p live (dsd_state::rx_id) names:
+// the record its end captured, with its channel's kind, against the live record with the reopening observation's
+// channel kind (dsd_call_record_site_compatible(); an identity-less side fits). A reopen under another system's identity
+// would seed that system's call with this one's channel, frequency, crypto and transmission, and a channel the reopened
+// epoch inherits is never replaced (call_state_apply_channel()).
+static int
+call_state_reacquire_site_fits(const dsd_call_snapshot* previous, const dsd_received_identity* live,
+                               const dsd_call_observation* observation) {
+    const uint8_t previous_kind = previous->channel != 0U ? previous->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    const uint8_t observed_kind =
+        observation->channel != 0U ? observation->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    return dsd_call_record_site_compatible(&previous->ended_rx_id, previous_kind, live, observed_kind);
+}
+
 // True when this observation reopens an epoch that a recoverable end closed moments ago while
 // describing the same call -- one transmission the decoder lost and regained, not two
 // transmissions. The boundary token is deliberately not consulted: the paths that reopen
@@ -482,7 +504,7 @@ dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
 // other re-announcing protocols pass CONTINUE. Both must arm.
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
-                                  double now_m) {
+                                  const dsd_received_identity* live, double now_m) {
     if (!dsd_call_snapshot_may_reacquire(current, now_m)) {
         return 0;
     }
@@ -498,7 +520,8 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
         && call_state_observation_has_identity(observation)) {
         return 0;
     }
-    return !call_state_observation_changes_identity(current, observation);
+    return !call_state_observation_changes_identity(current, observation)
+           && call_state_reacquire_site_fits(current, live, observation);
 }
 
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
@@ -646,7 +669,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     const int begins_epoch = service_changed || call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
     const int reacquires_ended_epoch =
-        begins_epoch && !service_changed && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
+        begins_epoch && !service_changed
+        && call_state_reacquires_ended_epoch(snapshot, observation, &state->rx_id, now_m);
     // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
     // must not execute under the canonical lock. Every read is dominated by the begins_epoch
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
@@ -964,8 +988,10 @@ static void
 call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* snapshot) {
     if (state->rx_id.epoch == snapshot->rx_id_epoch) {
         snapshot->ended_rx_id = state->rx_id;
+        snapshot->ended_rx_id_lost = 0U;
     } else {
         DSD_MEMSET(&snapshot->ended_rx_id, 0, sizeof(snapshot->ended_rx_id));
+        snapshot->ended_rx_id_lost = 1U;
     }
     const uint8_t mode = state->tetra_pub.mode;
     snapshot->ended_tetra_direct = (DSD_SYNC_IS_TETRA(snapshot->protocol) && mode >= DSD_TETRA_MODE_DMO_DIRECT
