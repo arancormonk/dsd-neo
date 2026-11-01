@@ -201,6 +201,15 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing scan_max_visit_ms range hint or default\n");
         rc = 1;
     }
+    /* [recording] (issue #756): the NFM max gap's range and its default, which is off, under the schema's text. */
+    if (!strstr(content, "# Range: 0 to 10000\n# analog_max_gap_ms = 200\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing analog_max_gap_ms range hint or default\n");
+        rc = 1;
+    }
+    if (!strstr(content, "200 or less is off")) {
+        DSD_FPRINTF(stderr, "FAIL: template does not say analog_max_gap_ms of 200 or less is off\n");
+        rc = 1;
+    }
     /* [analog] (issue #525): the NFM width's range and the width its default resolves to. Uncommenting the line is not
      * the same as leaving the key out: an explicit 16000 always runs the channel filter and is held to the DSP rate,
      * where the unset default runs DSP-limited below a 20 kHz rate. The description has to say so. */

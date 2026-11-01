@@ -92,6 +92,11 @@ private fun anotherOptionsOperandIsNoInput() {
         of("-i", "rtl", "-7", "/data/Call recordings/s1", "--wav-journal", "/data/Call recordings/s1/journal.tsv", "-P",
             "--record-unknown-only") == "usb"
     ) { "a call recording start keeps its RTL-SDR" }
+    // #756: the NFM max gap, separate or attached.
+    check(
+        of("-i", "rtl", "-P", "--analog-record-max-gap-ms", "2000") == "usb" &&
+            of("-i", "rtl", "-P", "--analog-record-max-gap-ms=2000") == "usb"
+    ) { "a start with the NFM max gap keeps its RTL-SDR" }
     check(of("-i", "udp:0.0.0.0:7355", "--wav-journal", "-irtl") == "") { "the journal path is no input" }
 }
 

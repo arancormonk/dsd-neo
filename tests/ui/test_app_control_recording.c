@@ -1402,6 +1402,8 @@ test_folder_change_while_nfm_held(void) {
         cfg.has_recording = 1;
         cfg.per_call_wav = 1;
         DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", other);
+        /* A [recording] applies its max gap too, so the config keeps the session's: only the folder changes. */
+        cfg.analog_max_gap_ms = 1000;
         dsd_wav_test_fail_opens_after(fail ? 0 : -1);
         (void)dsd_app_command_apply_config(&cfg);
         (void)drain(&r);

@@ -1874,6 +1874,25 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--analog-record-max-gap-ms") == 0) {                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--analog-record-max-gap-ms requires a millisecond value\n");                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0, 10000,          \
+                                           &opts->analog_record_max_gap_ms, out_exit_rc)) {                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--analog-record-max-gap-ms=", 27) == 0) {                                                \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", argv[i] + 27, 0, 10000,                       \
+                                           &opts->analog_record_max_gap_ms, out_exit_rc)) {                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
             opts->dmr_debug_burst = 1;                                                                                 \
             continue;                                                                                                  \

@@ -649,6 +649,19 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
     *out_value = v;
 }
 
+/* Issue #756: the NFM max gap is refused, never clamped: a value outside 0..10000, or not a whole number, is reported
+   and the one already loaded (the default, for a base file) stays. --validate-config reports it from the schema. */
+static void
+apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
+    int ms = 0;
+    if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > 10000) {
+        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to 10000); keeping %d\n", val,
+                 cfg->analog_max_gap_ms);
+        return;
+    }
+    cfg->analog_max_gap_ms = ms;
+}
+
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
@@ -667,6 +680,8 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
         if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->unknown_talkgroups_only = b;
         }
+    } else if (strcmp(key_lc, "analog_max_gap_ms") == 0) {
+        apply_recording_analog_max_gap(cfg, val);
     } else {
         return 0;
     }

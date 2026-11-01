@@ -107,7 +107,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
     printf("                 (Use ./folder for Nested Directory!)\n");
     printf("                 (Use /path/to/folder for hard coded directory!)\n");
-    printf("                 (Use Before the -P option!)\n");
+    printf("                 (Works before or after -P.)\n");
     printf("  -8            Enable Source Audio Monitor\n");
     printf("                 (Set Squelch in RTL, SDR++ or GQRX, etc, if monitoring mixed analog/digital)\n");
     printf("  -w <file>     Output synthesized speech to a single static .wav file. (Do not use with -P Per Call "
@@ -118,6 +118,8 @@ dsd_cli_usage_section_io(void) {
     printf("                 (Also records conventional NFM transmissions, named by their service.)\n");
     printf("      --wav-journal <file>  Append a JSON line for each per-call WAV published, discarded or failed\n");
     printf("      --record-unknown-only  Record only calls whose talkgroup has no row in the group list (-G)\n");
+    printf("      --analog-record-max-gap-ms <ms>  Keep an NFM call in one recording through pauses up to <ms>\n");
+    printf("                 (0 to 10000; the pause is saved as silence; 200 or less is off, the default)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");

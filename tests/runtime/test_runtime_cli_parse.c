@@ -7611,6 +7611,107 @@ test_am_bandwidth_option(void) {
     return test_rc;
 }
 
+/* Issue #756: --analog-record-max-gap-ms takes 0 to 10000 ms in both spellings and refuses anything else, never
+ * clamping; the last one given wins. Left out, the hold stays off at its 200 ms default. */
+static int
+test_analog_record_max_gap_option(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        int want_rc;
+        int want_ms;
+        const char* want_text;
+    } cases[] = {
+        {"-P", NULL, NULL, DSD_PARSE_CONTINUE, 200, NULL},
+        {"--analog-record-max-gap-ms", "2000", NULL, DSD_PARSE_CONTINUE, 2000, NULL},
+        {"--analog-record-max-gap-ms=500", NULL, NULL, DSD_PARSE_CONTINUE, 500, NULL},
+        {"--analog-record-max-gap-ms", "0", NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {"--analog-record-max-gap-ms=10000", NULL, NULL, DSD_PARSE_CONTINUE, 10000, NULL},
+        {"--analog-record-max-gap-ms", "300", "--analog-record-max-gap-ms=900", DSD_PARSE_CONTINUE, 900, NULL},
+        {"--analog-record-max-gap-ms=900", "--analog-record-max-gap-ms", "300", DSD_PARSE_CONTINUE, 300, NULL},
+        {"--analog-record-max-gap-ms", "-1", NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"-1\" (expected 0..10000)"},
+        {"--analog-record-max-gap-ms=10001", NULL, NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"10001\" (expected 0..10000)"},
+        {"--analog-record-max-gap-ms", "2s", NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"2s\""},
+        {"--analog-record-max-gap-ms=", NULL, NULL, DSD_PARSE_ERROR, 200, "Invalid --analog-record-max-gap-ms value"},
+        {"--analog-record-max-gap-ms", NULL, NULL, DSD_PARSE_ERROR, 200,
+         "--analog-record-max-gap-ms requires a millisecond value"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->analog_record_max_gap_ms != cases[i].want_ms || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s: rc=%d gap=%d exit_rc=%d\n%s\n", cases[i].a, cases[i].b ? cases[i].b : "",
+                        cases[i].c ? cases[i].c : "", run.rc, run.opts->analog_record_max_gap_ms, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* What -h prints, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it. */
+static int
+help_text(char* out, size_t out_size) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_help");
+    if (fd < 0) {
+        return -1;
+    }
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        return -1;
+    }
+    dsd_close(fd);
+    const char* const args[] = {"dsd-neo", "-h", NULL};
+    am_cli_run run;
+    const int parsed = am_cli_parse(args, 0, &run);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    if (parsed == 0) {
+        am_cli_free(&run);
+    }
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    return (parsed == 0 && run.rc == DSD_PARSE_ONE_SHOT) ? read_rc : -1;
+}
+
+/* Issue #756 (B3): -h, which is also the man page, says -7 works before or after -P (true since issue #708), never the
+ * old "Use Before the -P option!", and lists the NFM max gap in the -P group. */
+static int
+test_help_describes_recording_options(void) {
+    static char text[65536];
+    if (help_text(text, sizeof text) != 0) {
+        DSD_FPRINTF(stderr, "could not read the -h text\n");
+        return 1;
+    }
+    const char* const max_gap = strstr(text, "--analog-record-max-gap-ms <ms>");
+    const char* const per_call = strstr(text, "  -P ");
+    if (strstr(text, "Use Before the -P option") || !strstr(text, "(Works before or after -P.)") || !max_gap
+        || !per_call || max_gap < per_call || !strstr(max_gap, "200 or less is off")) {
+        DSD_FPRINTF(stderr, "-h recording text is wrong:\n%s\n", text);
+        return 1;
+    }
+    return 0;
+}
+
 /* Issue #756 (B4): a value-taking option given last, its value forgotten, is refused with exit code 1. It used to be
  * dropped without a word, so `-P --wav-journal` recorded with no journal and exited 0. */
 static int
@@ -11392,6 +11493,8 @@ main(void) {
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();
+    rc |= test_analog_record_max_gap_option();
+    rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();
     rc |= test_config_am_on_pcm_input_falls_back();
