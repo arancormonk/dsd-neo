@@ -8863,6 +8863,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "RF gain", DSD_APP_CMD_RTL_SET_GAIN, 0},
         {&value, sizeof value, "squelch level", DSD_APP_CMD_RTL_SET_SQL_DB, 0},
         {&value, sizeof value, "eye diagram", DSD_APP_CMD_EYE_TOGGLE, 0},
+        {&value, sizeof value, "mouse wheel", DSD_APP_CMD_MOUSE_WHEEL_TOGGLE, 0},
         {&value, sizeof value, "per-call WAV start", DSD_APP_CMD_WAV_START, 0},
         {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
     };

@@ -2668,16 +2668,17 @@ test_snapshot_roundtrip(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_opts_and_state(opts, state);
+    /* A live On: a config without terminal_mouse_wheel must leave it alone. */
+    opts.frontend_terminal_display.mouse_wheel = 1;
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
     opts.call_alert = 1;
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
     int rc = 0;
-    if (opts.frontend_terminal_display.mouse_wheel != 0) {
-        DSD_FPRINTF(stderr, "an absent terminal_mouse_wheel must leave the wheel off\n");
+    if (opts.frontend_terminal_display.mouse_wheel != 1) {
+        DSD_FPRINTF(stderr, "an absent terminal_mouse_wheel must leave the live wheel setting alone\n");
         rc |= 1;
     }
-    opts.frontend_terminal_display.mouse_wheel = 1;
 
     dsdneoUserConfig snap;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
