@@ -123,6 +123,9 @@ typedef struct {
     int channel; // the channel the call was announced on (0: none)
     /* dsd_call_channel_kind of channel: a Tier III LPCN, a Connect Plus LCN, a Cap+ or XPT LSN. */
     uint8_t channel_kind;
+    /* DSD_CRC_* bits of what named the channel (the grant's, move's or status's burst; a status filling an LC's record):
+       its own provenance, which an LC naming the call keeps with the channel and the channel's publication carries. */
+    uint8_t channel_crc_flags;
     long carrier_hz; // the carrier the identity belongs to
     double follow_m; // decode clock
 
@@ -420,7 +423,8 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
  * LSN, whose named call is over (an LC's included: its authority ends with its call), or that has no identity at all
  * (one that expired with its call while the companion slot kept the carrier), takes the group, with a new follow time
  * unless it is the same call, and the status's CRC provenance (@p crc_flags, DSD_CRC_*: every fragment's). An @p active LSN with no group (@p tg 0: a private or data call) leaves that
- * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
+ * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing. A current checked LC's
+ * record that names no channel takes the LSN alone, with the status's provenance.
  */
 void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,
                                       int active, uint8_t crc_flags);

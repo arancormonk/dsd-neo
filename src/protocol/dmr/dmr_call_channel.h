@@ -18,7 +18,7 @@
    guards a grant, a C_MOVE, the CdefParms LPCN and the channel map they teach. */
 static inline int
 dmr_t3_lpcn_is_channel(uint32_t lpcn) {
-    return lpcn >= 1U && lpcn <= 4094U;
+    return (lpcn >= 1U && lpcn <= 4094U) ? 1 : 0;
 }
 
 /* The LSN of Hytera XPT repeater (LCN) @p lcn: its first slot, LSN 2n - 1, as the site-status bank and the LSN-keyed

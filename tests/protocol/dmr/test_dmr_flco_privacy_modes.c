@@ -2223,9 +2223,20 @@ test_capplus_seed_lsn_kind(void) {
     capplus_env_done(&state);
 }
 
-// A Hytera XPT site status (bank 0) with group calls @p tg_a on LSN 3 (TS1) and @p tg_b on LSN 4 (TS2).
+// A CSBK heard on TS1 inside the DSD_CRC_* scope @p crc_flags (a RAS-accepted burst under -F: DSD_CRC_RAS_UNVERIFIED).
 static void
-xpt_run_status(dsd_opts* opts, dsd_state* state, uint8_t tg_a, uint8_t tg_b) {
+run_csbk_in_scope(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint8_t crc_flags) {
+    state->currentslot = 0;
+    const uint8_t saved = state->event_crc_invalid[0];
+    state->event_crc_invalid[0] = crc_flags;
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    state->event_crc_invalid[0] = saved;
+}
+
+// A Hytera XPT site status (bank 0) with group calls @p tg_a on LSN 3 (TS1) and @p tg_b on LSN 4 (TS2), heard in the
+// CRC scope @p crc_flags.
+static void
+xpt_run_status(dsd_opts* opts, dsd_state* state, uint8_t tg_a, uint8_t tg_b, uint8_t crc_flags) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -2237,7 +2248,7 @@ xpt_run_status(dsd_opts* opts, dsd_state* state, uint8_t tg_a, uint8_t tg_b) {
     write_bits_u64(bits, 32U + 16U, tg_a, 8U);
     write_bits_u64(bits, 32U + 24U, tg_b, 8U);
     state->last_vc_sync_time = 0;
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    run_csbk_in_scope(opts, state, bits, bytes, crc_flags);
 }
 
 // A checked group voice LC header for @p tg from @p radio on @p slot.
@@ -2252,37 +2263,99 @@ run_group_lc(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t tg, uint32
 }
 
 // Two group calls on one XPT repeater (LSN 3 on TS1, followed; LSN 4 on TS2): each call, its slot's record and its row
-// carry its own LSN, whether the status named the companion slot before its voice LC or after it.
+// carry its own LSN, whether the status named the companion slot before its voice LC or after it. The LSN keeps the
+// provenance of the status that named it: a RAS-accepted status under -F marks the companion's row [RAS] even though
+// its checked LC named the call.
 static void
 test_xpt_companion_slot_lsn_rows(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I history[2];
 
-    for (int status_first = 1; status_first >= 0; status_first--) {
+    for (int variant = 0; variant < 4; variant++) {
+        const int status_first = (variant & 1) == 0;
+        const uint8_t status_crc = (variant & 2) != 0 ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
         capplus_follow_env(&opts, &state, history);
         opts.audio_in_type = AUDIO_IN_RTL;
-        xpt_run_status(&opts, &state, 77U, 88U);
+        xpt_run_status(&opts, &state, 77U, 88U, 0U);
         dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
         assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_VC_FREQ && sm->vc_slot == 0);
         capplus_voice_superframe(&opts, &state, 0U);
         assert_call_channel(&state, 0U, 3U, DSD_CALL_CHANNEL_LSN);
         if (status_first) {
-            xpt_run_status(&opts, &state, 77U, 88U);
+            xpt_run_status(&opts, &state, 77U, 88U, status_crc);
         }
         capplus_clock_advance(CAPPLUS_FRAME_NS);
         run_group_lc(&opts, &state, 1U, 88U, 4321U);
         if (!status_first) {
             assert(sm->slots[1].channel == 0 && sm->slots[1].channel_kind == DSD_CALL_CHANNEL_NONE);
-            xpt_run_status(&opts, &state, 77U, 88U);
+            xpt_run_status(&opts, &state, 77U, 88U, status_crc);
         }
         capplus_voice_superframe(&opts, &state, 1U);
         assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 88U, 4321U);
         assert_call_channel(&state, 1U, 4U, DSD_CALL_CHANNEL_LSN);
         assert(sm->slots[0].channel == 3 && sm->slots[0].channel_kind == DSD_CALL_CHANNEL_LSN);
         assert(sm->slots[1].channel == 4 && sm->slots[1].channel_kind == DSD_CALL_CHANNEL_LSN);
+        assert(sm->slots[1].channel_crc_flags == status_crc);
         assert_staged_row_channel(&opts, &state, history, 0U, 3U);
         assert_staged_row_channel(&opts, &state, history, 1U, 4U);
+        assert(history[1].Event_History_Items[0].crc_invalid == status_crc);
+        capplus_env_done(&state);
+    }
+}
+
+// A Connect Plus voice grant (CSBK 0x03, FID 0x06) for group @p tg from @p src on repeater @p lcn, timeslot @p slot.
+static void
+run_con_plus_grant(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t tg, uint8_t lcn, uint8_t slot) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 0x03U;
+    bytes[1] = 0x06U;
+    for (int i = 0; i < 3; i++) {
+        bytes[2 + i] = (uint8_t)(src >> (16 - (i * 8)));
+        bytes[5 + i] = (uint8_t)(tg >> (16 - (i * 8)));
+    }
+    bytes[8] = (uint8_t)(((lcn & 0x0FU) << 4U) | ((slot & 1U) << 3U));
+    bytes[9] = 2U; // group call
+    bytes_to_bits(bits, bytes, 12U);
+    state->last_vc_sync_time = 0;
+    run_csbk_in_scope(opts, state, bits, bytes, 0U);
+}
+
+// A Tier III LPCN names the physical channel, both timeslots (TS 102 361-4 §7.1.1.1.1.1.1), and a Connect Plus LCN the
+// repeater: the companion slot's call is on the followed grant's channel too. Its call and row take it with the grant's
+// provenance (a RAS-accepted Tier III grant under -F marks the companion's row [RAS]).
+static void
+test_carrier_wide_companion_channel_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+
+    for (int variant = 0; variant < 3; variant++) {
+        const int con_plus = variant == 2;
+        const uint8_t grant_crc = variant == 1 ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
+        const uint8_t kind = con_plus ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_LPCN;
+        capplus_follow_env(&opts, &state, history);
+        if (con_plus) {
+            run_con_plus_grant(&opts, &state, 4321U, 109U, 3U, 0U);
+        } else {
+            uint8_t bits[256];
+            uint8_t bytes[48];
+            build_group_voice_grant_csbk(bits, bytes, 3U, 109U, 4321U);
+            run_csbk_in_scope(&opts, &state, bits, bytes, grant_crc);
+        }
+        assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_VC_FREQ && dmr_sm_get_ctx()->vc_slot == 0);
+        capplus_voice_superframe(&opts, &state, 0U);
+        assert_call_channel(&state, 0U, 3U, kind);
+        capplus_clock_advance(CAPPLUS_FRAME_NS);
+        run_group_lc(&opts, &state, 1U, 110U, 5555U);
+        capplus_voice_superframe(&opts, &state, 1U);
+        assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 110U, 5555U);
+        assert_call_channel(&state, 1U, 3U, kind);
+        assert_staged_row_channel(&opts, &state, history, 1U, 3U);
+        assert(history[1].Event_History_Items[0].crc_invalid == grant_crc);
         capplus_env_done(&state);
     }
 }
@@ -4090,6 +4163,7 @@ main(void) {
     test_capacity_plus_status_names_calls_no_lc_named();
     test_capplus_seed_lsn_kind();
     test_xpt_companion_slot_lsn_rows();
+    test_carrier_wide_companion_channel_rows();
     test_capacity_plus_status_seed_yields_to_lc_identity();
     test_capacity_plus_status_seed_names_adopted_resident_call();
     test_capacity_plus_status_seed_expires_with_its_carrier();

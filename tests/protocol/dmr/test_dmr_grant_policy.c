@@ -1840,31 +1840,50 @@ test_xpt_status_lsn_kind(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-/* Two group calls on one XPT repeater (LSN 1 on TS1, LSN 2 on TS2, one frequency): each slot's record carries its own
-   entry's LSN, the companion's voice LC (which names no channel) does not inherit the followed slot's, and the
-   companion's call takes its LSN from the record the status proved, whether the status came before its LC or after. */
-static int
-test_xpt_companion_slot_lsn(dsd_opts* opts, dsd_state* st) {
+/* An XPT site status naming group @p tg_a on LSN 1 and @p tg_b on LSN 2, heard on TS1 inside the DSD_CRC_* scope
+   @p crc_flags (a RAS-accepted burst under -F). */
+static void
+xpt_status_lsn12(dsd_opts* opts, dsd_state* st, uint8_t tg_a, uint8_t tg_b, uint8_t crc_flags) {
     uint8_t bits[256];
     uint8_t bytes[48];
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 3U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){tg_a, tg_b, 0U, 0U, 0U, 0U});
+    status_window_closed(st);
+    st->currentslot = 0;
+    const uint8_t saved = st->event_crc_invalid[0];
+    st->event_crc_invalid[0] = crc_flags;
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    st->event_crc_invalid[0] = saved;
+}
+
+static int
+call_crc_is(const dsd_state* st, uint8_t slot, uint8_t crc_flags) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, slot, &call) > 0 && call.crc_invalid == crc_flags;
+}
+
+/* Two group calls on one XPT repeater (LSN 1 on TS1, LSN 2 on TS2, one frequency): each slot's record carries its own
+   entry's LSN, the companion's voice LC (which names no channel) does not inherit the followed slot's, and the
+   companion's call takes its LSN from the record the status proved, whether the status came before its LC or after,
+   with that status's provenance: a RAS-accepted status leaves the companion's call unverified though its LC checked. */
+static int
+test_xpt_companion_slot_lsn(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
-    for (int status_first = 1; status_first >= 0; status_first--) {
+    for (int variant = 0; variant < 4; variant++) {
+        const int status_first = (variant & 1) == 0;
+        const uint8_t status_crc = (variant & 2) != 0 ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
         status_env(opts, st);
         opts->audio_in_type = AUDIO_IN_RTL;
         opts->rtlsdr_center_freq = 461250000U;
         st->trunk_chan_map[1] = 461262500L;
         st->trunk_chan_map[2] = 461262500L;
-        status_window_closed(st);
-        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 3U, 0U, 0U, 0U, 0U},
-                              (const uint8_t[6]){77U, 88U, 0U, 0U, 0U, 0U});
-        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        xpt_status_lsn12(opts, st, 77U, 88U, 0U);
         rc |= expect_true("xpt follows LSN 1", st->trunk_vc_freq[0] == 461262500L && dmr_sm_get_ctx()->vc_slot == 0);
         status_clock_at(0.5);
         accepted_voice_now(opts, st, 0);
         rc |= expect_true("xpt the followed call is on LSN 1", call_channel_is(st, 0U, 1U, DSD_CALL_CHANNEL_LSN));
         if (status_first) {
-            status_window_closed(st);
-            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            xpt_status_lsn12(opts, st, 77U, 88U, status_crc);
             rc |= expect_true("xpt the status names the companion slot on its own LSN",
                               slot_channel_is(1, 2, DSD_CALL_CHANNEL_LSN));
         }
@@ -1874,20 +1893,78 @@ test_xpt_companion_slot_lsn(dsd_opts* opts, dsd_state* st) {
         if (!status_first) {
             rc |= expect_true("xpt the companion's LC does not take the followed slot's LSN",
                               slot_channel_is(1, 0, DSD_CALL_CHANNEL_NONE));
-            status_window_closed(st);
-            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            xpt_status_lsn12(opts, st, 77U, 88U, status_crc);
         }
         rc |= expect_true("xpt the companion's record keeps the LC and its own LSN",
                           dmr_sm_get_ctx()->slots[1].prov == (uint8_t)DMR_SM_ID_LC
                               && slot_channel_is(1, 2, DSD_CALL_CHANNEL_LSN));
+        rc |= expect_true("xpt the companion's LSN keeps the naming status's provenance",
+                          dmr_sm_get_ctx()->slots[1].channel_crc_flags == status_crc);
         status_clock_at(1.5);
         accepted_voice_now(opts, st, 1);
         rc |= expect_true("xpt the companion's call is on LSN 2", call_channel_is(st, 1U, 2U, DSD_CALL_CHANNEL_LSN));
+        rc |= expect_true("xpt the companion's call carries the LSN's provenance", call_crc_is(st, 1U, status_crc));
         rc |=
             expect_true("xpt the followed slot keeps LSN 1", slot_channel_is(0, 1, DSD_CALL_CHANNEL_LSN)
                                                                  && call_channel_is(st, 0U, 1U, DSD_CALL_CHANNEL_LSN));
         status_env_done(st);
     }
+    return rc;
+}
+
+/* Decided limit L5, as the code does it: an XPT private follow's call has no channel until its voice LC names it, and
+   then takes the followed slot's LSN (the record the LC names keeps the followed grant's LSN). */
+static int
+test_xpt_private_follow_takes_lsn_after_lc(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    opts->trunk_tune_private_calls = 1;
+    st->trunk_chan_map[3] = 461287500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 2U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 5U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    int rc = expect_true("xpt follows the private LSN 3",
+                         st->trunk_vc_freq[0] == 461287500L && dmr_sm_get_ctx()->vc_identity_known == 0);
+    status_clock_at(0.5);
+    seed_voice_call(st, 0U, DSD_CALL_KIND_PRIVATE_VOICE, 5001U, 7U);
+    accepted_voice_now(opts, st, 0);
+    rc |=
+        expect_true("xpt the unnamed private call has no channel", call_channel_is(st, 0U, 0U, DSD_CALL_CHANNEL_NONE));
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 5001U, 7U);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    rc |=
+        expect_true("xpt the private call its LC named is on LSN 3", call_channel_is(st, 0U, 3U, DSD_CALL_CHANNEL_LSN));
+    status_env_done(st);
+    return rc;
+}
+
+/* Capacity Plus as XPT: a companion call a checked LC named before any status named its LSN takes the LSN from the
+   next status (fill-only), and its call shows it. */
+static int
+test_cap_plus_lc_record_takes_status_lsn(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    int rc = expect_true("cap+ follows LSN 1", st->trunk_vc_freq[0] == ST_F1);
+    status_clock_at(0.5);
+    seed_voice_call(st, 1U, DSD_CALL_KIND_GROUP_VOICE, 88U, 9U);
+    accepted_voice_now(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 88U, 9U);
+    rc |= expect_true("cap+ the companion's LC names no channel", slot_channel_is(1, 0, DSD_CALL_CHANNEL_NONE));
+    status_clock_at(1.0);
+    status_window_closed(st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 88U, 0U, 0U});
+    rc |= expect_true("cap+ the status fills the LC's record with LSN 2",
+                      dmr_sm_get_ctx()->slots[1].prov == (uint8_t)DMR_SM_ID_LC
+                          && slot_channel_is(1, 2, DSD_CALL_CHANNEL_LSN));
+    status_clock_at(1.5);
+    accepted_voice_now(opts, st, 1);
+    rc |= expect_true("cap+ the companion's call is on LSN 2", call_channel_is(st, 1U, 2U, DSD_CALL_CHANNEL_LSN));
+    status_env_done(st);
     return rc;
 }
 
@@ -1905,6 +1982,10 @@ test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
     dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 9U);
     rc |= expect_true("con+ the companion slot's record is on the repeater's LCN",
                       slot_channel_is(0, 6, DSD_CALL_CHANNEL_LCN) && slot_channel_is(1, 6, DSD_CALL_CHANNEL_LCN));
+    status_clock_at(1.5);
+    accepted_voice_now(opts, st, 0);
+    rc |= expect_true("con+ the companion's call is on the repeater's LCN",
+                      call_channel_is(st, 0U, 6U, DSD_CALL_CHANNEL_LCN));
     status_env_done(st);
     return rc;
 }
@@ -2762,6 +2843,8 @@ main(void) {
     rc |= test_cap_plus_status_names_anonymous_private_slot(opts, st);
     rc |= test_xpt_status_lsn_kind(opts, st);
     rc |= test_xpt_companion_slot_lsn(opts, st);
+    rc |= test_xpt_private_follow_takes_lsn_after_lc(opts, st);
+    rc |= test_cap_plus_lc_record_takes_status_lsn(opts, st);
     rc |= test_conplus_grant_lcn_kind(opts, st);
     rc |= test_xpt_csbk_hint_converts(opts, st);
     if (rc == 0) {
