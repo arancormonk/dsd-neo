@@ -107,12 +107,12 @@ static void
 test_dmr_site_parts(void) {
     dsd_state* state = new_state();
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x1170U);
     dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 16U, 1U,
-                           "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
+                           "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 1170");
     dsd_app_site_identity view;
     dsd_app_site_identity_view(state, &view);
-    static const char* const texts[] = {"CC 1", "TIII Small", "Net 12", "Site 3.1", "SYS 0A3F"};
+    static const char* const texts[] = {"CC 1", "TIII Small", "Net 12", "Site 3.1", "SYS 1170"};
     static const uint8_t compact[] = {1U, 0U, 1U, 1U, 0U};
     expect_u("tier iii tokens", view.token_count, 5U);
     for (size_t i = 0U; i < 5U && i < view.token_count; i++) {
@@ -124,7 +124,7 @@ test_dmr_site_parts(void) {
     }
     expect_text("tier iii compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "CC 1" DOT "Net 12" DOT "Site 3.1");
     expect_text("tier iii full", state, DSD_APP_SITE_IDENTITY_FULL, 0,
-                "CC 1" DOT "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
+                "CC 1" DOT "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 1170");
 
     dsd_rxid_reset(state);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);

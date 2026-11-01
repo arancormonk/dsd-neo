@@ -703,11 +703,11 @@ test_site() {
     model.refresh(&opts, &state);
     expect("DMR brand", model.siteProtocol() == "DMR" && model.dmrBrand() == QStringLiteral("Hytera XPT")
                             && model.dmrT3Syscode() == -1);
-    dsd_rxid_note_dmr_t3_syscode(&state, 0x0A3FU);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0x1001U);
     model.refresh(&opts, &state);
-    expect("DMR system code", model.dmrT3Syscode() == 0x0A3F);
+    expect("DMR system code", model.dmrT3Syscode() == 0x1001);
     dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 1U, 1U,
-                           "TIII Small · Net 1 · Site 2 · SYS 0A3F");
+                           "TIII Small · Net 1 · Site 2 · SYS 1001");
     model.refresh(&opts, &state);
     expect("DMR system code in the site text", model.dmrT3Syscode() == -1);
 

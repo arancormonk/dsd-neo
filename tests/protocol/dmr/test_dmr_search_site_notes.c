@@ -715,7 +715,7 @@ test_capplus_slco_reserved_bits_no_site(dsd_opts* opts, dsd_state* state) {
     clear_record(state);
     cap_plus_neighbours(opts, state, 9);
     const uint32_t epoch = id->epoch;
-    slco_cap_plus_high(opts, state, 4, 2, 1); // 01001b in the five-bit reading
+    slco_cap_plus_high(opts, state, 4, 1, 1); // 01001b = 9 in the five-bit reading
     rc |= expect_int("cap+ high bits keep the csbk site", (id->valid & DSD_RXID_DMR_SITE) != 0U ? id->dmr_site : -1, 9);
     rc |= expect_text("cap+ high bits keep the csbk text", id->dmr_site_text, "Cap+" DOT "Site 9");
     rc |= expect_int("cap+ high bits keep the epoch", (long)id->epoch, (long)epoch);
