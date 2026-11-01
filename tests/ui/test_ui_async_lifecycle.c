@@ -42,6 +42,10 @@
 
 #if UI_KEY_HAVE_WHEEL && !defined(DSD_USE_PDCURSES)
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/platform.h>
+#if DSD_PLATFORM_POSIX
+#include <signal.h>
+#endif
 #endif
 
 WINDOW* stdscr;
@@ -93,6 +97,7 @@ static const char* g_env_gpm_terms;
 static char g_kmous[8] = "\033[<";
 static char g_xm[48];
 static int g_xm_num = -1;
+static bool g_isendwin;
 
 int
 dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
@@ -312,6 +317,11 @@ putp(const char* str) {
     g_putp_calls++;
     DSD_SNPRINTF(g_last_putp, sizeof g_last_putp, "%s", str);
     return 0;
+}
+
+bool
+isendwin(void) {
+    return g_isendwin;
 }
 
 static size_t
@@ -583,6 +593,7 @@ reset_frame_counters(void) {
     DSD_SNPRINTF(g_kmous, sizeof g_kmous, "%s", "\033[<");
     g_xm[0] = '\0';
     g_xm_num = -1;
+    g_isendwin = false;
 }
 
 static int
@@ -974,18 +985,61 @@ test_wheel_close_leaves_capture_off(void) {
     dsd_neo_ui_async_test_close_curses_if_opened(1);
     rc |= expect_int("close: terminal closed", g_ncurses_close_calls, 1);
     rc |= expect_int("close: capture off", ui_mouse_capture_is_on(), 0);
-    rc |= expect_tracking_write("close: tracking off", 0, 1);
+    /* ncurses too releases the mask (mousemask(0) turns tracking off), which it would otherwise keep past endwin()
+       and turn back on at a reopened terminal's first refresh. */
+    rc |= expect_int("close: mask released", g_mousemask_calls, 2);
+    rc |= expect_int("close: mask 0", (int)(g_last_mousemask == 0UL), 1);
+    rc |= expect_int("close: no tracking string", g_putp_calls, 0);
 
     wheel_frame(&osnap);
     rc |= expect_int("reopened: capture on", ui_mouse_capture_is_on(), 1);
-#if defined(DSD_USE_PDCURSES)
     rc |= expect_int("reopened: mask set again", g_mousemask_calls, 3);
-#else
-    rc |= expect_int("reopened: mask set again", g_mousemask_calls, 2);
-#endif
     rc |= expect_int("reopened: mouseinterval again", g_mouseinterval_calls, 2);
     return rc;
 }
+
+#if !defined(DSD_USE_PDCURSES) && DSD_PLATFORM_POSIX
+/* After Ctrl+Z / fg ncurses' resume turns tracking on (the mask is set): SIGCONT makes the next frame after the resume
+   send the capture's state once more, however the capture stands, and later frames send nothing. While isendwin()
+   holds, the resume is still to come, so the frame waits. */
+static int
+test_wheel_resume_resends_tracking(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    reset_frame_counters();
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    DSD_SNPRINTF(g_xm, sizeof g_xm, "%s", "\033[?1006;1000%?%p1%{1}%=%th%el%;");
+    wheel_snapshots_ready(&osnap, &ssnap);
+    wheel_frame(&osnap);
+    g_menu_open = 1;
+    wheel_frame(&osnap);
+    int rc = expect_tracking_write("capture off", 0, 1);
+
+    g_isendwin = true;
+    (void)raise(SIGCONT);
+    wheel_frame(&osnap);
+    rc |= expect_int("before the resume: nothing sent", g_putp_calls, 1);
+    g_isendwin = false;
+    wheel_frame(&osnap);
+    rc |= expect_tracking_write("resumed: tracking off again", 0, 2);
+    wheel_frame(&osnap);
+    rc |= expect_int("next frame: nothing sent", g_putp_calls, 2);
+
+    g_menu_open = 0;
+    wheel_frame(&osnap);
+    rc |= expect_tracking_write("capture on", 1, 3);
+    (void)raise(SIGCONT);
+    wheel_frame(&osnap);
+    rc |= expect_tracking_write("resumed: tracking on again", 1, 4);
+    wheel_frame(&osnap);
+    rc |= expect_int("next frame: nothing sent", g_putp_calls, 4);
+    return rc;
+}
+#endif
 
 #endif /* UI_KEY_HAVE_WHEEL */
 
@@ -1005,6 +1059,9 @@ main(void) {
 #endif
     rc |= test_wheel_steps_throttled();
     rc |= test_wheel_close_leaves_capture_off();
+#if !defined(DSD_USE_PDCURSES) && DSD_PLATFORM_POSIX
+    rc |= test_wheel_resume_resends_tracking();
+#endif
 #endif
 
     if (rc == 0) {

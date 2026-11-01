@@ -2878,7 +2878,11 @@ off and the `-Y` scan stops, a click, a lone press and a wheel notch are each qu
 every frame must return within 1 s, leave the input empty, step nothing and hand no key to a handler. The bound is
 loose on purpose: a frame that blocks waits for a key that never comes, so 1 s only has to clear a scheduler stall on a
 loaded runner. A frame that blocks would hang, so `alarm()` fails the test after 20 s. It also checks the tracking strings reach the
-terminal (`ESC [?1006;1000h` / `l`) and that wheel notches step with the capture on. The admission reads `TERM` and
+terminal (`ESC [?1006;1000h` / `l`) and that wheel notches step with the capture on. Ctrl+Z / `fg` is run as
+ncurses' SIGTSTP handler runs it, without the stop: `endwin()`, `raise(SIGCONT)` and the resume's `doupdate()` (or a
+frame, whose refresh resumes): the resume turns tracking on, the next frame must leave it as the capture is (off, or
+on), and idle frames after it must write nothing. A closed terminal's `endwin()` and a reopened one's first
+`doupdate()` must not turn tracking on. The admission reads `TERM` and
 `NCURSES_GPM_TERMS` through session overrides, so the host's environment does not matter. It exits 77 (skipped) with
 no pty, no `xterm-256color` terminfo, or an ncurses without button 5.
 

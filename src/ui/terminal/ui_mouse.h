@@ -14,7 +14,9 @@
  * and 5, and mouseinterval(0). That parse mask is never cleared at runtime: with a narrower mask, ncurses' getch()
  * loops back into a blocking read when a queued click does not match it, and the UI thread would freeze until the
  * next key. On and off afterwards is the terminal's own tracking switch, the terminfo XM string (or ncurses' default
- * for it), so a late report still parses and reads as ERR. endwin() turns tracking off at close.
+ * for it), so a late report still parses and reads as ERR. Because the mask stays set, ncurses' resume after Ctrl+Z /
+ * fg turns tracking on: a SIGCONT handler marks it, and the next frame sends the capture's state once more. The close
+ * releases the mask (mousemask(0)), so a reopened terminal's first refresh does not turn tracking on.
  *
  * PDCurses: mousemask() with those buttons plus MOUSE_WHEEL_SCROLL on, mousemask(0) off (its read never blocks, and
  * mask 0 gives the console its QuickEdit selection back), and mouseinterval(0) once.
@@ -56,8 +58,8 @@ bool ui_mouse_wheel_available(const void* ctx);
 int ui_mouse_xterm_admitted(const char* term, const char* gpm_terms, const char* kmous);
 
 /**
- * Turn the wheel capture on or off. Acts only on a change, so the frame loop calls it every frame. A request to turn
- * it on where the wheel is unavailable leaves it off.
+ * Turn the wheel capture on or off. Acts only on a change, or once after ncurses resumed from Ctrl+Z / fg, so the
+ * frame loop calls it every frame. A request to turn it on where the wheel is unavailable leaves it off.
  */
 void ui_mouse_capture_set(int on);
 
@@ -65,8 +67,8 @@ void ui_mouse_capture_set(int on);
 int ui_mouse_capture_is_on(void);
 
 /**
- * Turn the capture off before the terminal closes, and forget what this terminal offered, so a reopened one starts
- * over.
+ * Turn the capture off before the terminal closes (on ncurses releasing the mask), and forget what this terminal
+ * offered, so a reopened one starts over.
  */
 void ui_mouse_capture_close(void);
 

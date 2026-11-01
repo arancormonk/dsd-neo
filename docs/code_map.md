@@ -8663,12 +8663,19 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `dsd_env_copy()`) does not contain "linux"; otherwise `mousemask()` is never called and the row is hidden. A
     `mousemask()` that returns 0 hides it too. PDCurses: `mousemask()` with that mask plus `MOUSE_WHEEL_SCROLL` on and 0
     off (its read never blocks, and mask 0 gives conhost its QuickEdit back), `mouseinterval(0)` once.
-    `ui_mouse_capture_close()` before `dsd_terminal_close()` turns the capture off and forgets the terminal; `endwin()`
-    turns tracking off too. Each accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or
+    Because the ncurses mask stays set, ncurses' resume after Ctrl+Z / `fg` (its SIGTSTP handler: `endwin()`, the
+    stop, then `doupdate()`, which calls `_nc_mouse_resume()`) turns tracking on whatever the capture is. The first
+    capture installs a SIGCONT handler (only over the default action, with `SA_RESTART`) that sets a `sig_atomic_t`
+    flag; the next `ui_mouse_capture_set()` that finds it while `isendwin()` is false (the resume has run, on whichever
+    thread took the signal) sends the capture's state once more. Steady frames read the flag and write nothing.
+    `ui_mouse_capture_close()` before `dsd_terminal_close()` turns the capture off, on ncurses with `mousemask(0)`,
+    which releases the mask so `endwin()` and a reopened terminal's first refresh (a second `initscr()` keeps the
+    screen, so it resumes) leave tracking off, and forgets the terminal. Each accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or
     `DSD_APP_CMD_CHANNEL_CYCLE` (down) through `dsd_app_command_action()`, at most one per 150 ms on
     `dsd_realtime_mono_ns()` (later notches dropped, so a flick cannot flood the 128-slot queue, which drops its oldest
-    command). Decided limits: after Ctrl+Z / `fg` ncurses turns tracking back on until the next capture change (reports
-    are parsed and dropped); a hard crash leaves an ncurses terminal in mouse mode. Tests: `UI_READ_KEY`,
+    command). Decided limits: a hard crash leaves an ncurses terminal in mouse mode; after `fg` tracking is on until the
+    next frame, and stays on until the next capture change if something else already handles SIGCONT (dsd-neo does
+    not). Tests: `UI_READ_KEY`,
     `UI_ASYNC_LIFECYCLE` (curses and terminfo stubs), `UI_MOUSE` (admission), `UI_MOUSE_NO_WHEEL` (built against the
     fake `tests/ui/curses.h`, which has no button 5: the row is hidden), `UI_MOUSE_PTY` (real ncurses on a pty,
     `docs/testing.md`), `UI_PROMPT_VALIDATION`.

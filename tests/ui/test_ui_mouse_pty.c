@@ -14,7 +14,9 @@
  * setting goes off and the scan stops, a queued click (press and release) and a lone press are each read and dropped
  * in one frame with no key typed after them. A frame that blocked would hang; SIGALRM fails the test instead. A burst
  * of wheel reports typed at once (a flick) steps once, however many frames follow, and a key typed after it is still
- * handled; notches typed apart each step.
+ * handled; notches typed apart each step. After Ctrl+Z / fg (endwin(), SIGCONT and the resume's doupdate(), as
+ * ncurses' SIGTSTP handler runs them), whose resume turns tracking on, the next frame turns it back off when the
+ * capture is off, and idle frames after it write nothing. A closed and reopened terminal does not turn tracking on.
  *
  * Exit 77 (skipped) when the host has no pty, no xterm-256color terminfo, or an ncurses without button 5.
  */
@@ -206,6 +208,23 @@ screen_wrote(const char* seq) {
     return strstr(g_screen_out, seq) != NULL;
 }
 
+static void
+screen_output_clear(void) {
+    g_screen_out_len = 0;
+    g_screen_out[0] = '\0';
+}
+
+/* The direction of the last tracking string the screen wrote since the clear: 'h' on, 'l' off, 0 none. */
+static char
+last_tracking(void) {
+    static const char kXm[] = "\033[?1006;1000";
+    char dir = 0;
+    for (const char* p = strstr(g_screen_out, kXm); p != NULL; p = strstr(p + 1, kXm)) {
+        dir = p[sizeof kXm - 1U];
+    }
+    return dir;
+}
+
 /* 1 when @p fd has input within @p timeout_ms. select(), not poll(): macOS documents poll() as unsupported on
    devices, a pty among them (it can report POLLNVAL as an event). */
 static int
@@ -371,6 +390,62 @@ spread_notches_each_step(int slave, const char* tag) {
     return rc;
 }
 
+/*
+ * Ctrl+Z / fg, as ncurses' SIGTSTP handler runs it: endwin(), the stop, SIGCONT, then doupdate(), which resumes the
+ * mouse and so turns tracking back on (the parse mask stays set). With @p frame_between a frame runs between SIGCONT
+ * and that doupdate(), as when the handler runs on another thread, and the frame's own refresh resumes. By the next
+ * frame the tracking is the capture's again, and idle frames after it write nothing.
+ */
+static int
+resume_restores_tracking(const char* tag, int frame_between) {
+    const char want = ui_mouse_capture_is_on() ? 'h' : 'l';
+    screen_output_clear();
+    endwin();
+    drain_screen_output();
+    (void)raise(SIGCONT);
+    int rc = 0;
+    if (frame_between) {
+        rc |= frame(tag);
+    } else {
+        doupdate();
+        drain_screen_output();
+    }
+    if (last_tracking() != 'h') {
+        DSD_FPRINTF(stderr, "%s: the resume did not turn tracking on, so this case shows nothing\n", tag);
+        rc = 1;
+    }
+    rc |= frame(tag);
+    if (last_tracking() != want) {
+        DSD_FPRINTF(stderr, "%s: tracking '%c' after the resume (want '%c')\n", tag, last_tracking(), want);
+        rc = 1;
+    }
+    screen_output_clear();
+    for (int i = 0; i < 3; i++) {
+        rc |= frame(tag);
+    }
+    if (g_screen_out_len != 0U) {
+        DSD_FPRINTF(stderr, "%s: idle frames wrote %zu bytes\n", tag, g_screen_out_len);
+        rc = 1;
+    }
+    return rc;
+}
+
+/* The terminal closes (the capture's close, then dsd_terminal_close()'s endwin()) and a reopened one refreshes
+   (initscr() again is a no-op that keeps the screen, so its first doupdate() is a resume): nothing turns tracking on
+   before a capture asks for it. */
+static int
+reopen_leaves_tracking_off(void) {
+    dsd_neo_ui_async_test_close_curses_if_opened(1);
+    drain_screen_output();
+    int rc = expect("closed: tracking off", ui_mouse_capture_is_on() == 0 && last_tracking() == 'l');
+    screen_output_clear();
+    endwin();
+    doupdate();
+    drain_screen_output();
+    rc |= expect("reopened: tracking stays off", !screen_wrote("\033[?1006;1000h"));
+    return rc;
+}
+
 static int
 run_transitions(int slave) {
     int rc = capture_on_and_step(slave, "first capture");
@@ -380,8 +455,7 @@ run_transitions(int slave) {
     g_handled_keys = 0;
     rc |= expect("tracking turned on", screen_wrote("\033[?1006;1000h"));
 
-    g_screen_out_len = 0;
-    g_screen_out[0] = '\0';
+    screen_output_clear();
     g_menu_open = 1;
     rc |= frame("menu open");
     rc |= expect("menu open: capture off", ui_mouse_capture_is_on() == 0);
@@ -399,6 +473,15 @@ run_transitions(int slave) {
     rc |= frame("scan stopped");
     rc |= expect("scan stopped: capture off", ui_mouse_capture_is_on() == 0);
     rc |= queued_clicks_never_block(slave, "scan stopped");
+
+    rc |= resume_restores_tracking("resumed, capture off", 0);
+    rc |= resume_restores_tracking("resumed in a frame, capture off", 1);
+    rc |= queued_clicks_never_block(slave, "resumed");
+    rc |= capture_on_and_step(slave, "before a resume");
+    rc |= resume_restores_tracking("resumed, capture on", 0);
+    rc |= spread_notches_each_step(slave, "resumed, capture on");
+    screen_output_clear();
+    rc |= reopen_leaves_tracking_off();
     return rc;
 }
 
@@ -504,7 +587,6 @@ run_on_screen(int slave) {
     (void)alarm(20);
     int rc = run_transitions(slave);
     (void)alarm(0);
-    dsd_neo_ui_async_test_close_curses_if_opened(1);
     return rc;
 }
 

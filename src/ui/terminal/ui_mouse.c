@@ -19,10 +19,15 @@
 #include <curses.h>
 #endif
 #if UI_KEY_HAVE_WHEEL && !defined(DSD_USE_PDCURSES)
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/platform.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#if DSD_PLATFORM_POSIX
+#include <signal.h>
+#endif
 #endif
 
 int
@@ -107,7 +112,71 @@ ui_mouse_set_tracking(int on) {
     }
 }
 
+#if DSD_PLATFORM_POSIX
+
+/*
+ * Ctrl+Z / fg: ncurses' SIGTSTP handler calls endwin(), stops, and once continued calls doupdate(), whose resume
+ * sends the mouse-on string because the mask is set, whatever the capture is. The frame after it sends the capture's
+ * own state once more. SIGCONT marks the resume; it is caught only where nothing else handles it (as ncurses catches
+ * its own signals), and with SA_RESTART.
+ */
+static volatile sig_atomic_t g_resumed;
+static int g_resume_watched;
+
+static void
+ui_mouse_on_sigcont(int sig) {
+    (void)sig;
+    g_resumed = 1;
+}
+
+static void
+ui_mouse_watch_resume(void) {
+    if (g_resume_watched) {
+        return;
+    }
+    g_resume_watched = 1;
+    struct sigaction old;
+    if (sigaction(SIGCONT, NULL, &old) != 0 || (old.sa_flags & SA_SIGINFO) != 0 || old.sa_handler != SIG_DFL) {
+        return;
+    }
+    struct sigaction act;
+    DSD_MEMSET(&act, 0, sizeof act);
+    act.sa_handler = ui_mouse_on_sigcont;
+    (void)sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_RESTART;
+    (void)sigaction(SIGCONT, &act, NULL);
+}
+
+/* 1 once per resume, after ncurses' resume ran: while isendwin() holds, the doupdate() that resumes (the handler's,
+   on whichever thread took the signal, or this thread's next refresh) is still to come. */
+static int
+ui_mouse_take_resume(void) {
+    if (!g_resumed || isendwin()) {
+        return 0;
+    }
+    g_resumed = 0;
+    return 1;
+}
+
 #else
+
+static void
+ui_mouse_watch_resume(void) {}
+
+static int
+ui_mouse_take_resume(void) {
+    return 0;
+}
+
+#endif
+
+#else
+
+/* PDCurses has no suspend. */
+static int
+ui_mouse_take_resume(void) {
+    return 0;
+}
 
 static void
 ui_mouse_set_tracking(int on) {
@@ -116,7 +185,7 @@ ui_mouse_set_tracking(int on) {
 
 #endif
 
-/* The first capture: the mask (which turns tracking on) and no click wait. ncurses keeps this mask for good. */
+/* The first capture: the mask (which turns tracking on) and no click wait. ncurses keeps this mask until the close. */
 static int
 ui_mouse_prime(void) {
     (void)mouseinterval(0);
@@ -126,6 +195,7 @@ ui_mouse_prime(void) {
     }
 #if !defined(DSD_USE_PDCURSES)
     g_xm = ui_mouse_xm_template();
+    ui_mouse_watch_resume();
 #endif
     g_primed = 1;
     return 1;
@@ -160,7 +230,11 @@ ui_mouse_wheel_available(const void* ctx) {
 void
 ui_mouse_capture_set(int on) {
     on = on ? 1 : 0;
+    const int resumed = ui_mouse_take_resume();
     if (on == g_on) {
+        if (resumed && g_primed) {
+            ui_mouse_set_tracking(on);
+        }
         return;
     }
     if (on && !ui_mouse_wheel_available(NULL)) {
@@ -181,9 +255,18 @@ ui_mouse_capture_is_on(void) {
 
 void
 ui_mouse_capture_close(void) {
+#if defined(DSD_USE_PDCURSES)
     if (g_on) {
         ui_mouse_set_tracking(0);
     }
+#else
+    /* mousemask(0) turns tracking off and releases the mask, which ncurses keeps past endwin(): a reopened terminal's
+       first doupdate() is a resume, which would turn tracking on again before any capture. No key is read before the
+       next capture sets the mask again. */
+    if (g_primed) {
+        (void)mousemask((mmask_t)0, NULL);
+    }
+#endif
     ui_mouse_forget();
 }
 
