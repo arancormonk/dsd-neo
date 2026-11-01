@@ -17,6 +17,7 @@
 #include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <iterator>
+#include <limits>
 #include "realtime_clock.h"
 
 namespace dsd_qt {
@@ -160,6 +161,32 @@ as_scalar(const QVariant& stored) {
  * dropped, leaving the file permanently disagreeing with the app.
  */
 
+/**
+ * @brief Whether @p raw holds an int, stored in @p value when it does.
+ *
+ * Read wide, then narrowed: a restored backup keeps a large JSON number as a
+ * 64-bit integer, and the ini file hands one back as text, and QVariant::toInt()
+ * takes either one's low 32 bits and reports success. A value past int's range is
+ * not a number this preference can hold, so it reads as the default.
+ */
+bool
+stored_int(const QVariant& raw, int* value) {
+    bool ok = false;
+    const qlonglong wide = raw.toLongLong(&ok);
+    if (!ok || wide < std::numeric_limits<int>::min() || wide > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    *value = static_cast<int>(wide);
+    return true;
+}
+
+/** @brief The int @p raw holds, else @p fallback; text that is not a number included. */
+int
+stored_int_or(const QVariant& raw, int fallback) {
+    int value = fallback;
+    return stored_int(raw, &value) ? value : fallback;
+}
+
 /** @brief Finite seconds in the UI range, rounded to the displayed precision. */
 double
 sane_hangtime(double seconds) {
@@ -205,8 +232,8 @@ constexpr int kDefaultScreenDelaySec = 30;
 /** @brief @p raw if it holds a ScreenMode code, else System default; text that is not a number included. */
 int
 sane_screen_mode(const QVariant& raw) {
-    bool ok = false;
-    const int mode = raw.toInt(&ok);
+    int mode = 0;
+    const bool ok = stored_int(raw, &mode);
     return (ok && mode >= AppPrefs::ScreenSystem && mode <= AppPrefs::ScreenOffBetweenCalls) ? mode
                                                                                              : AppPrefs::ScreenSystem;
 }
@@ -214,8 +241,8 @@ sane_screen_mode(const QVariant& raw) {
 /** @brief @p raw if it holds one of the offered delays, else the default; text that is not a number included. */
 int
 sane_screen_delay(const QVariant& raw) {
-    bool ok = false;
-    const int seconds = raw.toInt(&ok);
+    int seconds = 0;
+    const bool ok = stored_int(raw, &seconds);
     const bool offered = ok
                          && std::any_of(std::begin(kScreenDelayChoices), std::end(kScreenDelayChoices),
                                         [seconds](int choice) { return choice == seconds; });
@@ -230,8 +257,8 @@ constexpr int kDefaultRecordingLimitMb = 1000;
 /** @brief @p raw if it holds one of the offered limits, else the default; text that is not a number included. */
 int
 sane_recording_limit(const QVariant& raw) {
-    bool ok = false;
-    const int mb = raw.toInt(&ok);
+    int mb = 0;
+    const bool ok = stored_int(raw, &mb);
     const bool offered = ok
                          && std::any_of(std::begin(kRecordingLimitChoices), std::end(kRecordingLimitChoices),
                                         [mb](int choice) { return choice == mb; });
@@ -250,8 +277,8 @@ constexpr int kMaxAnalogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_MAX_MS;
  *         included. */
 int
 sane_analog_max_gap(const QVariant& raw) {
-    bool ok = false;
-    const int ms = raw.toInt(&ok);
+    int ms = 0;
+    const bool ok = stored_int(raw, &ms);
     return ok && ms >= 0 && ms <= kMaxAnalogMaxGapMs ? ms : kDefaultAnalogMaxGapMs;
 }
 
@@ -264,9 +291,8 @@ sane_analog_max_gap(const QVariant& raw) {
  */
 bool
 stored_int_differs(const QVariant& stored, int next) {
-    bool ok = false;
-    const int value = stored.toInt(&ok);
-    return !ok || value != next;
+    int value = 0;
+    return !stored_int(stored, &value) || value != next;
 }
 
 } // namespace
@@ -368,13 +394,13 @@ AppPrefs::expireLocation() const {
 
 int
 AppPrefs::appearance() const {
-    return sane_appearance(m_settings.value(key_name(kAppearance), FollowSystem).toInt());
+    return sane_appearance(stored_int_or(m_settings.value(key_name(kAppearance)), FollowSystem));
 }
 
 void
 AppPrefs::setAppearance(int mode) {
     const int next = sane_appearance(mode);
-    if (next == m_settings.value(key_name(kAppearance), FollowSystem).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kAppearance), FollowSystem), next)) {
         return;
     }
     m_settings.setValue(key_name(kAppearance), next);
@@ -561,12 +587,12 @@ AppPrefs::setRelaxedCrc(bool on) {
 
 int
 AppPrefs::gainDb() const {
-    return m_settings.value(key_name(kGainDb), 30).toInt();
+    return stored_int_or(m_settings.value(key_name(kGainDb)), 30);
 }
 
 void
 AppPrefs::setGainDb(int db) {
-    if (db == gainDb()) {
+    if (!stored_int_differs(m_settings.value(key_name(kGainDb), 30), db)) {
         return;
     }
     m_settings.setValue(key_name(kGainDb), db);
@@ -575,12 +601,12 @@ AppPrefs::setGainDb(int db) {
 
 int
 AppPrefs::ppm() const {
-    return m_settings.value(key_name(kPpm), 0).toInt();
+    return stored_int_or(m_settings.value(key_name(kPpm)), 0);
 }
 
 void
 AppPrefs::setPpm(int value) {
-    if (value == ppm()) {
+    if (!stored_int_differs(m_settings.value(key_name(kPpm), 0), value)) {
         return;
     }
     m_settings.setValue(key_name(kPpm), value);
@@ -589,12 +615,12 @@ AppPrefs::setPpm(int value) {
 
 int
 AppPrefs::bandwidthKhz() const {
-    return m_settings.value(key_name(kBandwidthKhz), 48).toInt();
+    return stored_int_or(m_settings.value(key_name(kBandwidthKhz)), 48);
 }
 
 void
 AppPrefs::setBandwidthKhz(int khz) {
-    if (khz == bandwidthKhz()) {
+    if (!stored_int_differs(m_settings.value(key_name(kBandwidthKhz), 48), khz)) {
         return;
     }
     m_settings.setValue(key_name(kBandwidthKhz), khz);
@@ -688,13 +714,13 @@ AppPrefs::setExploreHost(const QString& host) {
 
 int
 AppPrefs::explorePort() const {
-    return sane_tuner_port(m_settings.value(key_name(kExplorePort), 1234).toInt());
+    return sane_tuner_port(stored_int_or(m_settings.value(key_name(kExplorePort)), 1234));
 }
 
 void
 AppPrefs::setExplorePort(int port) {
     const int next = sane_tuner_port(port);
-    if (next == m_settings.value(key_name(kExplorePort), 1234).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kExplorePort), 1234), next)) {
         return;
     }
     m_settings.setValue(key_name(kExplorePort), next);
@@ -749,13 +775,13 @@ AppPrefs::setSearchHost(const QString& host) {
 
 int
 AppPrefs::searchPort() const {
-    return sane_tuner_port(m_settings.value(key_name(kSearchPort), 1234).toInt());
+    return sane_tuner_port(stored_int_or(m_settings.value(key_name(kSearchPort)), 1234));
 }
 
 void
 AppPrefs::setSearchPort(int port) {
     const int next = sane_tuner_port(port);
-    if (next == m_settings.value(key_name(kSearchPort), 1234).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kSearchPort), 1234), next)) {
         return;
     }
     m_settings.setValue(key_name(kSearchPort), next);

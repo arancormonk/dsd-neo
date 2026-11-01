@@ -616,6 +616,74 @@ test_analog_max_gap_pref() {
     stored.remove(key);
 }
 
+/* An integer preference read wide: a backup keeps a large JSON number as a 64-bit integer (or a double), and the ini
+ * file hands it back as text, and QVariant::toInt() takes either one's low 32 bits and reports success. A value past
+ * int's range reads as the preference's default, never as its low bits, and a write of those low bits replaces it. */
+struct WideIntPref {
+    const char* key;
+    int (AppPrefs::*get)() const;
+    void (AppPrefs::*set)(int);
+    int fallback; /* what a damaged value reads as */
+    int low;      /* a valid value, different from the fallback, that the oversized one truncates to */
+};
+
+const WideIntPref kWideIntPrefs[] = {
+    {"ui/appearance", &AppPrefs::appearance, &AppPrefs::setAppearance, AppPrefs::FollowSystem, AppPrefs::Dark},
+    {"listen/screenMode", &AppPrefs::screenMode, &AppPrefs::setScreenMode, 0, AppPrefs::ScreenOffBetweenCalls},
+    {"listen/screenDelaySec", &AppPrefs::screenDelaySec, &AppPrefs::setScreenDelaySec, 30, 120},
+    {"tuner/gainDb", &AppPrefs::gainDb, &AppPrefs::setGainDb, 30, 42},
+    {"tuner/ppm", &AppPrefs::ppm, &AppPrefs::setPpm, 0, 5},
+    {"tuner/bandwidthKhz", &AppPrefs::bandwidthKhz, &AppPrefs::setBandwidthKhz, 48, 24},
+    {"explore/port", &AppPrefs::explorePort, &AppPrefs::setExplorePort, 1234, 80},
+    {"search/port", &AppPrefs::searchPort, &AppPrefs::setSearchPort, 1234, 80},
+    {"recording/limitMb", &AppPrefs::recordingLimitMb, &AppPrefs::setRecordingLimitMb, 1000, 2000},
+    {"recording/analogMaxGapMs", &AppPrefs::analogMaxGapMs, &AppPrefs::setAnalogMaxGapMs, 200, 2000},
+};
+
+/* @p wide as a restored backup holds it (a JSON integer, a JSON number too big for one), or as the file reads back. */
+QVariant
+oversized_as(int form, qlonglong wide) {
+    if (form == 0) {
+        return QVariant(wide);
+    }
+    if (form == 1) {
+        return QVariant(static_cast<double>(wide) * 1.0e10);
+    }
+    return QVariant(QString::number(wide));
+}
+
+void
+test_prefs_past_int_range() {
+    const qlonglong past = 1LL << 32;
+    for (int form = 0; form < 3; form++) {
+        QVariantMap incoming;
+        for (const WideIntPref& pref : kWideIntPrefs) {
+            incoming.insert(QLatin1String(pref.key), oversized_as(form, past + pref.low));
+        }
+        expect("a backup with oversized integers restores", AppPrefs::replacePortable(incoming));
+        AppPrefs prefs;
+        for (const WideIntPref& pref : kWideIntPrefs) {
+            if ((prefs.*pref.get)() != pref.fallback) {
+                DSD_FPRINTF(stderr, "FAIL: %s (form %d) read %d, not %d\n", pref.key, form, (prefs.*pref.get)(),
+                            pref.fallback);
+                g_failures++;
+            }
+        }
+    }
+    /* The setters compare with what is stored, read wide: writing the low bits is a change, so it lands. */
+    AppPrefs prefs;
+    QSettings stored = prefs_file();
+    for (const WideIntPref& pref : kWideIntPrefs) {
+        stored.setValue(QLatin1String(pref.key), past + pref.low);
+        (prefs.*pref.set)(pref.low);
+        if (stored.value(QLatin1String(pref.key)).toLongLong() != pref.low || (prefs.*pref.get)() != pref.low) {
+            DSD_FPRINTF(stderr, "FAIL: %s: writing %d over its oversized value did not land\n", pref.key, pref.low);
+            g_failures++;
+        }
+        stored.remove(QLatin1String(pref.key));
+    }
+}
+
 /* Issue #574: the screen mode and its delay, which replaced the keep-awake switch.
  * The mode codes are a contract with the Android policy (ScreenPolicy.Mode). */
 void
@@ -1213,6 +1281,7 @@ main(int argc, char** argv) {
     test_screen_policy_prefs();
     test_recording_prefs();
     test_analog_max_gap_pref();
+    test_prefs_past_int_range();
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();
