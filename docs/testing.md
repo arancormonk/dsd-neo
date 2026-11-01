@@ -2865,6 +2865,22 @@ example, `APP_CONTROL_TRUNK_SCAN_VALIDATE` builds in
 `dsd_app_trunk_scan_validate_bundle()` call inspects and the files it dry-runs,
 so the test can show that rows naming the same file share one check.
 
+### Terminal input on a real pty
+
+`UI_MOUSE_PTY` (`tests/ui/test_ui_mouse_pty.c`, every host but Windows) runs the terminal's frame loop
+(`ui_async.c`) with the real mouse capture (`ui_mouse.c`) and key read (`ui_read_key.c`) on the host's ncurses,
+through a pseudo-terminal: `posix_openpt()`, the slave dup'ed onto stdout (as `initscr()` writes there, and `putp()`
+always does) and `newterm("xterm-256color", stdout, slave)`. The test writes SGR mouse reports into the master and
+polls the slave until they are queued, then runs frames. It covers a class that stubs cannot show: ncurses' `wgetch()`
+loops into a blocking read when a queued report does not match the parse mask, so a capture switched off with
+`mousemask(0)` froze the UI thread on the next click until another key arrived. After the menu opens, the setting goes
+off and the `-Y` scan stops, a click, a lone press and a wheel notch are each queued with no key typed after them, and
+every frame must return within one UI frame (66 ms), leave the input empty, step nothing and hand no key to a handler.
+A frame that blocks would hang, so `alarm()` fails the test after 20 s. It also checks the tracking strings reach the
+terminal (`ESC [?1006;1000h` / `l`) and that wheel notches step with the capture on. The admission reads `TERM` and
+`NCURSES_GPM_TERMS` through session overrides, so the host's environment does not matter. It exits 77 (skipped) with
+no pty, no `xterm-256color` terminfo, or an ncurses without button 5.
+
 ### Decode time in unit tests
 
 Decode decisions and decoded-output stamps read the decode clock (`<dsd-neo/runtime/decode_clock.h>`), never the

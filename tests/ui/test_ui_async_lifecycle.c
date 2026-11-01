@@ -8,6 +8,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -21,9 +22,12 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
@@ -33,6 +37,12 @@
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "rr_panel.h"
+#include "ui_keys.h"
+#include "ui_mouse.h"
+
+#if UI_KEY_HAVE_WHEEL && !defined(DSD_USE_PDCURSES)
+#include <dsd-neo/platform/env.h>
+#endif
 
 WINDOW* stdscr;
 
@@ -63,6 +73,26 @@ static const dsd_opts* g_printer_opts;
 static const dsd_state* g_printer_state;
 static int g_redraw_requested;
 static uint64_t g_time_ns;
+
+/* Commands the frame loop posted itself (the wheel). */
+static int g_posted_cmds[16];
+static int g_posted_count;
+
+/* Mouse: what the frame loop asked of curses, and the event getmouse() reports. */
+static int g_mousemask_calls;
+static unsigned long g_last_mousemask;
+static int g_mouseinterval_calls;
+static int g_last_mouseinterval = -1;
+static int g_getmouse_rc = OK;
+static int g_mouse_queued;
+static unsigned long g_mouse_bstate;
+static int g_putp_calls;
+static char g_last_putp[96];
+static const char* g_env_term = "xterm-256color";
+static const char* g_env_gpm_terms;
+static char g_kmous[8] = "\033[<";
+static char g_xm[48];
+static int g_xm_num = -1;
 
 int
 dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
@@ -201,6 +231,114 @@ dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
     return 0U;
 }
 
+int
+dsd_app_command_action(int cmd_id) {
+    if (g_posted_count < (int)(sizeof g_posted_cmds / sizeof g_posted_cmds[0])) {
+        g_posted_cmds[g_posted_count] = cmd_id;
+    }
+    g_posted_count++;
+    return 0;
+}
+
+#if UI_KEY_HAVE_WHEEL
+mmask_t
+mousemask(mmask_t newmask, mmask_t* oldmask) {
+    (void)oldmask;
+    g_mousemask_calls++;
+    g_last_mousemask = (unsigned long)newmask;
+    return newmask;
+}
+
+int
+mouseinterval(int erval) {
+    g_mouseinterval_calls++;
+    g_last_mouseinterval = erval;
+    return 166;
+}
+
+/* One event behind each KEY_MOUSE getch() returns; ERR once it was read (ncurses' queue is empty). */
+static int
+fake_getmouse(MEVENT* event) {
+    DSD_MEMSET(event, 0, sizeof(*event));
+    if (!g_mouse_queued) {
+        return ERR;
+    }
+    g_mouse_queued = 0;
+    event->bstate = (mmask_t)g_mouse_bstate;
+    return g_getmouse_rc;
+}
+
+#if defined(DSD_USE_PDCURSES)
+int
+nc_getmouse(MEVENT* event) {
+    return fake_getmouse(event);
+}
+#else
+int
+getmouse(MEVENT* event) {
+    return fake_getmouse(event);
+}
+
+char*
+tigetstr(const char* cap) {
+    if (strcmp(cap, "kmous") == 0) {
+        return g_kmous[0] != '\0' ? g_kmous : NULL;
+    }
+    if (strcmp(cap, "XM") == 0) {
+        return g_xm[0] != '\0' ? g_xm : NULL;
+    }
+    return NULL;
+}
+
+int
+tigetnum(const char* cap) {
+    return strcmp(cap, "XM") == 0 ? g_xm_num : -1;
+}
+
+/* The template and its one parameter, so a test sees which tracking string and which direction were written. */
+char*
+tiparm(const char* str, ...) {
+    static char out[96];
+    va_list ap;
+    va_start(ap, str);
+    const int param = va_arg(ap, int);
+    va_end(ap);
+    DSD_SNPRINTF(out, sizeof out, "%s|%d", str, param);
+    return out;
+}
+
+int
+putp(const char* str) {
+    g_putp_calls++;
+    DSD_SNPRINTF(g_last_putp, sizeof g_last_putp, "%s", str);
+    return 0;
+}
+
+static size_t
+fake_env_copy_value(const char* value, char* buf, size_t cap) {
+    if (value == NULL) {
+        if (cap > 0) {
+            buf[0] = '\0';
+        }
+        return 0;
+    }
+    DSD_SNPRINTF(buf, cap, "%s", value);
+    return strlen(value) + 1U;
+}
+
+size_t
+dsd_env_copy(const char* name, char* buf, size_t cap) {
+    if (strcmp(name, "TERM") == 0) {
+        return fake_env_copy_value(g_env_term, buf, cap);
+    }
+    if (strcmp(name, "NCURSES_GPM_TERMS") == 0) {
+        return fake_env_copy_value(g_env_gpm_terms, buf, cap);
+    }
+    return fake_env_copy_value(NULL, buf, cap);
+}
+#endif
+#endif
+
 uint64_t
 dsd_realtime_mono_ns(void) {
     return g_time_ns;
@@ -252,6 +390,7 @@ int
 wgetch(WINDOW* win) {
     (void)win;
     g_getch_calls++;
+    g_mouse_queued = g_getch_value == KEY_MOUSE;
     return g_getch_value;
 }
 
@@ -430,6 +569,20 @@ reset_frame_counters(void) {
     g_latest_state = NULL;
     g_redraw_requested = 0;
     g_time_ns = 0U;
+    g_posted_count = 0;
+    g_mousemask_calls = 0;
+    g_last_mousemask = 0UL;
+    g_mouseinterval_calls = 0;
+    g_last_mouseinterval = -1;
+    g_getmouse_rc = OK;
+    g_mouse_bstate = 0UL;
+    g_putp_calls = 0;
+    g_last_putp[0] = '\0';
+    g_env_term = "xterm-256color";
+    g_env_gpm_terms = NULL;
+    DSD_SNPRINTF(g_kmous, sizeof g_kmous, "%s", "\033[<");
+    g_xm[0] = '\0';
+    g_xm_num = -1;
 }
 
 static int
@@ -519,6 +672,312 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     return rc;
 }
 
+#if UI_KEY_HAVE_WHEEL
+
+/* The mask the first capture sets: press and release of buttons 1-3 and the wheel presses, and on PDCurses its
+   MOUSE_WHEEL_SCROLL. */
+#if defined(DSD_USE_PDCURSES) && defined(MOUSE_WHEEL_SCROLL)
+#define TEST_WHEEL_ON_MASK (TEST_WHEEL_PARSE_MASK | MOUSE_WHEEL_SCROLL)
+#else
+#define TEST_WHEEL_ON_MASK TEST_WHEEL_PARSE_MASK
+#endif
+#define TEST_WHEEL_PARSE_MASK                                                                                          \
+    (BUTTON1_PRESSED | BUTTON1_RELEASED | BUTTON2_PRESSED | BUTTON2_RELEASED | BUTTON3_PRESSED | BUTTON3_RELEASED      \
+     | BUTTON4_PRESSED | BUTTON5_PRESSED)
+
+/* A running -Y scan with the wheel setting on, in the published snapshots. */
+static void
+wheel_snapshots_ready(dsd_opts* osnap, dsd_state* ssnap) {
+    DSD_MEMSET(osnap, 0, sizeof(*osnap));
+    DSD_MEMSET(ssnap, 0, sizeof(*ssnap));
+    osnap->frontend_kind = DSD_FRONTEND_TERMINAL;
+    osnap->frontend_terminal_display.mouse_wheel = 1;
+    osnap->scanner_mode = 1;
+    g_latest_opts = osnap;
+    g_latest_state = ssnap;
+}
+
+/* One frame of the UI thread with the published snapshots, as ui_thread_main() runs it. */
+static void
+wheel_frame(const dsd_opts* osnap) {
+    dsd_neo_ui_async_test_process_input_frame(osnap);
+}
+
+#if defined(DSD_USE_PDCURSES)
+/* PDCurses switches with the mask: the full one on, 0 off. */
+static int
+expect_tracking_write(const char* tag, int on, int switches) {
+    int rc = expect_int(tag, g_mousemask_calls, 1 + switches);
+    rc |= expect_int(tag, (int)(g_last_mousemask == (on ? (unsigned long)TEST_WHEEL_ON_MASK : 0UL)), 1);
+    return rc;
+}
+#else
+/* ncurses keeps the mask and switches the terminal's tracking with the XM string. */
+static int
+expect_tracking_write(const char* tag, int on, int switches) {
+    char want[96];
+    DSD_SNPRINTF(want, sizeof want, "%s|%d", "\033[?1006;1000%?%p1%{1}%=%th%el%;", on);
+    int rc = expect_int(tag, g_mousemask_calls, 1);
+    rc |= expect_int(tag, g_putp_calls, switches);
+    if (strcmp(g_last_putp, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: wrote \"%s\" want \"%s\"\n", tag, g_last_putp, want);
+        rc = 1;
+    }
+    return rc;
+}
+#endif
+
+/* The capture follows the setting, the running scan, the overlay and the input kind in the published snapshots,
+   whatever the decoder's live structs say; the first capture sets the mask and mouseinterval(0) once, and every later
+   switch is the terminal's tracking string (ncurses) or the mask (PDCurses). */
+static int
+test_wheel_capture_follows_the_snapshots(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    DSD_MEMSET(&live_state, 0, sizeof(live_state));
+    reset_frame_counters();
+    /* The live structs say the opposite of the snapshots throughout. */
+    live_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    live_opts.frontend_terminal_display.mouse_wheel = 0;
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    DSD_SNPRINTF(g_xm, sizeof g_xm, "%s", "\033[?1006;1000%?%p1%{1}%=%th%el%;");
+    wheel_snapshots_ready(&osnap, &ssnap);
+
+    int rc = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("wheel on: capture", ui_mouse_capture_is_on(), 1);
+    rc |= expect_int("wheel on: mask once", g_mousemask_calls, 1);
+    rc |= expect_int("wheel on: full mask", (int)(g_last_mousemask == (unsigned long)TEST_WHEEL_ON_MASK), 1);
+    rc |= expect_int("wheel on: mouseinterval once", g_mouseinterval_calls, 1);
+    rc |= expect_int("wheel on: no click wait", g_last_mouseinterval, 0);
+    rc |= expect_int("wheel on: no tracking string yet", g_putp_calls, 0);
+    wheel_frame(&osnap);
+    rc |= expect_int("wheel on again: no curses call", g_mousemask_calls + g_putp_calls, 1);
+
+    g_menu_open = 1;
+    wheel_frame(&osnap);
+    rc |= expect_int("menu open: capture off", ui_mouse_capture_is_on(), 0);
+    rc |= expect_tracking_write("menu open: tracking off", 0, 1);
+    g_menu_open = 0;
+    live_opts.frontend_terminal_display.mouse_wheel = 1;
+    wheel_frame(&osnap);
+    rc |= expect_int("menu closed: capture on", ui_mouse_capture_is_on(), 1);
+    rc |= expect_tracking_write("menu closed: tracking on", 1, 2);
+
+    osnap.frontend_terminal_display.mouse_wheel = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("setting off: capture off", ui_mouse_capture_is_on(), 0);
+    rc |= expect_tracking_write("setting off: tracking off", 0, 3);
+    osnap.frontend_terminal_display.mouse_wheel = 1;
+    wheel_frame(&osnap);
+    rc |= expect_tracking_write("setting on: tracking on", 1, 4);
+
+    /* -Y stopped in the snapshot while the live opts still run it. */
+    live_opts.scanner_mode = 1;
+    osnap.scanner_mode = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("scan stopped: capture off", ui_mouse_capture_is_on(), 0);
+    rc |= expect_tracking_write("scan stopped: tracking off", 0, 5);
+
+    /* A running --trunk-scan captures; a paused one does not, though trunk_scan_enabled stays 1. */
+    osnap.trunk_scan_enabled = 1;
+    wheel_frame(&osnap);
+    rc |= expect_int("trunk scan running: capture on", ui_mouse_capture_is_on(), 1);
+    ssnap.trunk_scan_paused = 1;
+    wheel_frame(&osnap);
+    rc |= expect_int("trunk scan paused: capture off", ui_mouse_capture_is_on(), 0);
+    ssnap.trunk_scan_paused = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("trunk scan resumed: capture on", ui_mouse_capture_is_on(), 1);
+
+    /* No state snapshot yet: no scan can be shown running. */
+    g_latest_state = NULL;
+    wheel_frame(&osnap);
+    rc |= expect_int("no state snapshot: capture off", ui_mouse_capture_is_on(), 0);
+    g_latest_state = &ssnap;
+
+    /* STDIN input reads no keys, so it captures nothing. */
+    osnap.audio_in_type = AUDIO_IN_STDIN;
+    wheel_frame(&osnap);
+    rc |= expect_int("stdin input: capture off", ui_mouse_capture_is_on(), 0);
+    osnap.audio_in_type = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("back on: capture on", ui_mouse_capture_is_on(), 1);
+    rc |= expect_int("mouseinterval still once", g_mouseinterval_calls, 1);
+#if !defined(DSD_USE_PDCURSES)
+    rc |= expect_int("ncurses mask still set once", g_mousemask_calls, 1);
+#endif
+    rc |= expect_int("no command posted", g_posted_count, 0);
+    rc |= expect_int("no key handed on", g_ncurses_input_calls + g_menu_handle_calls, 0);
+    return rc;
+}
+
+#if !defined(DSD_USE_PDCURSES)
+/* With no XM string in terminfo, the tracking string is ncurses' own: the SGR form when XM is the number 1006, else
+   plain mode 1000. */
+static int
+test_wheel_tracking_string_fallback(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    int rc = 0;
+    for (int num = 0; num < 2; num++) {
+        DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+        reset_frame_counters();
+        dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+        stdscr = (WINDOW*)0x1;
+        g_xm_num = num ? 1006 : -1;
+        wheel_snapshots_ready(&osnap, &ssnap);
+        wheel_frame(&osnap);
+        g_menu_open = 1;
+        wheel_frame(&osnap);
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "%s|0",
+                     num ? "\033[?1006;1000%?%p1%{1}%=%th%el%;" : "\033[?1000%?%p1%{1}%=%th%el%;");
+        if (strcmp(g_last_putp, want) != 0) {
+            DSD_FPRINTF(stderr, "XM fallback %d: wrote \"%s\" want \"%s\"\n", num, g_last_putp, want);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* A terminal ncurses would read through GPM, or one without an ESC [ kmous, never turns the capture on. */
+static int
+test_wheel_refused_without_the_xterm_driver(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    int rc = 0;
+    for (int which = 0; which < 3; which++) {
+        DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+        reset_frame_counters();
+        dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+        stdscr = (WINDOW*)0x1;
+        if (which == 0) {
+            g_env_term = "linux";
+        } else if (which == 1) {
+            g_env_gpm_terms = "";
+        } else {
+            g_kmous[0] = '\0';
+        }
+        wheel_snapshots_ready(&osnap, &ssnap);
+        wheel_frame(&osnap);
+        rc |= expect_int("refused: row hidden", ui_mouse_wheel_available(NULL) ? 1 : 0, 0);
+        rc |= expect_int("refused: capture off", ui_mouse_capture_is_on(), 0);
+        rc |= expect_int("refused: no curses call", g_mousemask_calls + g_mouseinterval_calls + g_putp_calls, 0);
+    }
+    return rc;
+}
+#endif
+
+/* Wheel up posts Previous and down posts Next, at most once per 150 ms; neither reaches the key handler. */
+static int
+test_wheel_steps_throttled(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    reset_frame_counters();
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    wheel_snapshots_ready(&osnap, &ssnap);
+    wheel_frame(&osnap);
+
+    const uint64_t ms = 1000ULL * 1000ULL;
+    int rc = 0;
+    g_getch_value = KEY_MOUSE;
+    g_mouse_bstate = (unsigned long)BUTTON4_PRESSED;
+    g_time_ns = 1000U * ms;
+    wheel_frame(&osnap);
+    rc |= expect_int("first notch steps", g_posted_count, 1);
+    rc |= expect_int("wheel up is Previous", g_posted_cmds[0], DSD_APP_CMD_CHANNEL_CYCLE_PREV);
+    /* A burst inside 150 ms is one step. */
+    for (uint64_t t = 1010U; t < 1150U; t += 20U) {
+        g_time_ns = t * ms;
+        wheel_frame(&osnap);
+    }
+    g_time_ns = 1149U * ms;
+    wheel_frame(&osnap);
+    rc |= expect_int("burst is one step", g_posted_count, 1);
+    g_mouse_bstate = (unsigned long)BUTTON5_PRESSED;
+    g_time_ns = 1150U * ms;
+    wheel_frame(&osnap);
+    rc |= expect_int("next notch after the gap steps", g_posted_count, 2);
+    rc |= expect_int("wheel down is Next", g_posted_cmds[1], DSD_APP_CMD_CHANNEL_CYCLE);
+
+    /* A click or an unreadable event is nothing. */
+    g_mouse_bstate = (unsigned long)BUTTON1_PRESSED;
+    g_time_ns = 2000U * ms;
+    wheel_frame(&osnap);
+    g_mouse_bstate = (unsigned long)BUTTON4_PRESSED;
+    g_getmouse_rc = ERR;
+    wheel_frame(&osnap);
+    rc |= expect_int("click and unreadable event post nothing", g_posted_count, 2);
+    g_getmouse_rc = OK;
+
+    /* A notch queued before the menu opened arrives while the capture is off: dropped, and the menu sees no key. */
+    g_menu_open = 1;
+    g_time_ns = 3000U * ms;
+    wheel_frame(&osnap);
+    rc |= expect_int("menu open: notch dropped", g_posted_count, 2);
+    rc |= expect_int("menu open: menu gets no key", g_menu_handle_calls, 0);
+    rc |= expect_int("menu open: menu still ticks", g_menu_tick_calls, 1);
+    g_menu_open = 0;
+    osnap.frontend_terminal_display.mouse_wheel = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("setting off: notch dropped", g_posted_count, 2);
+    osnap.frontend_terminal_display.mouse_wheel = 1;
+    osnap.scanner_mode = 0;
+    wheel_frame(&osnap);
+    rc |= expect_int("no scan: notch dropped", g_posted_count, 2);
+    rc |= expect_int("wheel never reaches the key handler", g_ncurses_input_calls, 0);
+    return rc;
+}
+
+/* Closing the terminal turns the capture off, and a reopened terminal starts over with the mask. */
+static int
+test_wheel_close_leaves_capture_off(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts osnap;
+    static dsd_state ssnap;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    reset_frame_counters();
+    live_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    DSD_SNPRINTF(g_xm, sizeof g_xm, "%s", "\033[?1006;1000%?%p1%{1}%=%th%el%;");
+    wheel_snapshots_ready(&osnap, &ssnap);
+    wheel_frame(&osnap);
+
+    int rc = expect_int("before close: capture on", ui_mouse_capture_is_on(), 1);
+    g_ncurses_close_calls = 0;
+    dsd_neo_ui_async_test_close_curses_if_opened(1);
+    rc |= expect_int("close: terminal closed", g_ncurses_close_calls, 1);
+    rc |= expect_int("close: capture off", ui_mouse_capture_is_on(), 0);
+    rc |= expect_tracking_write("close: tracking off", 0, 1);
+
+    wheel_frame(&osnap);
+    rc |= expect_int("reopened: capture on", ui_mouse_capture_is_on(), 1);
+#if defined(DSD_USE_PDCURSES)
+    rc |= expect_int("reopened: mask set again", g_mousemask_calls, 3);
+#else
+    rc |= expect_int("reopened: mask set again", g_mousemask_calls, 2);
+#endif
+    rc |= expect_int("reopened: mouseinterval again", g_mouseinterval_calls, 2);
+    return rc;
+}
+
+#endif /* UI_KEY_HAVE_WHEEL */
+
 int
 main(void) {
     int rc = 0;
@@ -527,6 +986,15 @@ main(void) {
     rc |= test_ui_start_stop_idempotency_and_control_pump();
     rc |= test_ui_curses_close_uses_opened_state();
     rc |= test_ui_single_frame_snapshot_input_and_draw_helpers();
+#if UI_KEY_HAVE_WHEEL
+    rc |= test_wheel_capture_follows_the_snapshots();
+#if !defined(DSD_USE_PDCURSES)
+    rc |= test_wheel_tracking_string_fallback();
+    rc |= test_wheel_refused_without_the_xterm_driver();
+#endif
+    rc |= test_wheel_steps_throttled();
+    rc |= test_wheel_close_leaves_capture_off();
+#endif
 
     if (rc == 0) {
         printf("UI_ASYNC_LIFECYCLE: OK\n");

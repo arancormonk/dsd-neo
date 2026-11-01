@@ -2546,7 +2546,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_async_lifecycle
         ui/test_ui_async_lifecycle.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
     )
     # NCURSES_REENTRANT=0 keeps stdscr an extern variable (rather than a
     # function-call macro) so the curses stubs below can define and assign it.
@@ -3989,6 +3991,78 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(dsd-neo_test_ui_read_key PRIVATE ${CURSES_LIBRARIES})
     add_test(NAME UI_READ_KEY COMMAND dsd-neo_test_ui_read_key)
+
+    # The mouse wheel's xterm-driver admission, and its Display row against the
+    # host curses (issue #666).
+    add_executable(
+        dsd-neo_test_ui_mouse
+        ui/test_ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_mouse
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_mouse
+        PRIVATE dsd-neo_platform ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_MOUSE COMMAND dsd-neo_test_ui_mouse)
+
+    # The same against the fake tests/ui/curses.h, which has no button 5 (an
+    # ncurses with mouse version 1): the wheel is built out and its row hidden.
+    add_executable(
+        dsd-neo_test_ui_mouse_no_wheel
+        ui/test_ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_mouse_no_wheel
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/ui
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_MOUSE_NO_WHEEL COMMAND dsd-neo_test_ui_mouse_no_wheel)
+
+    # The frame loop's wheel capture on the host's real ncurses through a pty:
+    # a queued click after the capture switches off never blocks a frame. Skips
+    # (77) without a pty, xterm-256color terminfo or button 5.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_ui_mouse_pty
+            ui/test_ui_mouse_pty.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE DSD_NEO_TEST_HOOKS
+        )
+        target_include_directories(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+                ${CURSES_INCLUDE_DIRS}
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE dsd-neo_platform ${CURSES_LIBRARIES}
+        )
+        add_test(NAME UI_MOUSE_PTY COMMAND dsd-neo_test_ui_mouse_pty)
+        set_tests_properties(
+            UI_MOUSE_PTY
+            PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+        )
+    endif()
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase

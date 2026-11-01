@@ -25,7 +25,25 @@ extern "C" {
  * A character above 0xFF read by a wide PDCurses build. Outside every curses key range, so no hotkey handles it;
  * a prompt shows it as '?'.
  */
-#define UI_KEY_WIDE_CHAR 0x7FFF0001
+#define UI_KEY_WIDE_CHAR  0x7FFF0001
+
+/**
+ * One notch of the mouse wheel away from the user (button 4) or toward the user (button 5), read from a KEY_MOUSE
+ * event while the wheel capture (ui_mouse.h) is on. Outside every curses key range like UI_KEY_WIDE_CHAR: the main
+ * screen's frame loop (ui_async.c) handles them itself, and no hotkey, menu or prompt sees them.
+ */
+#define UI_KEY_WHEEL_UP   0x7FFF0002
+#define UI_KEY_WHEEL_DOWN 0x7FFF0003
+
+/**
+ * 1 when this curses reports the wheel: KEY_MOUSE with BUTTON4_PRESSED and BUTTON5_PRESSED. ncurses defines button 5
+ * only for mouse version 2 and later (ABI 6), so an older ncurses (the macOS SDK's 5.7) builds the wheel out.
+ */
+#if defined(KEY_MOUSE) && defined(BUTTON4_PRESSED) && defined(BUTTON5_PRESSED)
+#define UI_KEY_HAVE_WHEEL 1
+#else
+#define UI_KEY_HAVE_WHEEL 0
+#endif
 
 /**
  * Non-zero when @p ch submits: Enter as '\n' or '\r', KEY_ENTER, or PDCurses keypad Enter (PADENTER) or Shift+keypad
@@ -48,7 +66,11 @@ ui_key_is_enter(int ch) {
 /**
  * Read one key without changing the window's delay mode.
  *
- * @return ERR when no key is waiting, a function key code, a character up to 0xFF, or UI_KEY_WIDE_CHAR.
+ * A KEY_MOUSE event reads as UI_KEY_WHEEL_UP or UI_KEY_WHEEL_DOWN for a button 4 or 5 press and as ERR for anything
+ * else: a click, a horizontal wheel, an event getmouse() refuses or reports empty, and on ncurses a notch with Shift,
+ * Ctrl or Alt held. PDCurses reports no modifiers with the wheel, so every vertical notch counts there.
+ *
+ * @return ERR when no key is waiting, a function key code, a character up to 0xFF, UI_KEY_WIDE_CHAR, or a wheel code.
  */
 int ui_read_key(void);
 
@@ -60,6 +82,12 @@ typedef int (*ui_read_key_get_wch_fn)(unsigned long* wch);
 
 /** Install the reads ui_read_key() uses; NULL restores the curses call. */
 void ui_read_key_set_hooks_for_test(ui_read_key_getch_fn read_getch, ui_read_key_get_wch_fn read_wch);
+
+/** Replaces getmouse() (nc_getmouse() on PDCurses) after KEY_MOUSE: returns OK or ERR and sets *bstate. */
+typedef int (*ui_read_key_getmouse_fn)(unsigned long* bstate);
+
+/** Install the mouse event read ui_read_key() uses; NULL restores the curses call. */
+void ui_read_key_set_mouse_hook_for_test(ui_read_key_getmouse_fn read_mouse);
 #endif
 
 #ifdef __cplusplus

@@ -4,8 +4,10 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -25,6 +27,11 @@
 #include "dsd-neo/platform/platform.h"
 #include "rr_panel.h"
 #include "ui_keys.h"
+#include "ui_mouse.h"
+
+/* At most one wheel step per 150 ms: a touchpad flick sends dozens of notches, and the command queue drops its
+   oldest entry when full. Notches inside the gap are dropped, not queued. */
+#define UI_WHEEL_STEP_GAP_NS (150ULL * 1000ULL * 1000ULL)
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
@@ -34,6 +41,9 @@ static dsd_opts* g_ui_opts = NULL;
 static dsd_state* g_ui_state = NULL;
 static int g_ui_curses_cfg_done = 0;
 static atomic_int g_ui_in_context = 0;
+// UI thread only: when the last wheel notch stepped the channel.
+static uint64_t g_ui_wheel_step_ns = 0;
+static int g_ui_wheel_stepped = 0;
 
 int
 ui_is_thread_context(void) {
@@ -99,10 +109,63 @@ ui_handle_normal_input(int ch) {
     }
 }
 
+/*
+ * The wheel steps channels only while the setting is on, a -Y or --trunk-scan rotation runs (a paused scan does not),
+ * no menu, prompt or other overlay is open (the `=` prompt is one), keys are read at all (not with STDIN input) and
+ * the terminal can report the wheel. Decided from the frame's snapshots, never the decoder's live structs.
+ */
+static int
+ui_wheel_capture_wanted(const dsd_opts* osnap, const dsd_state* ssnap) {
+    if (osnap->frontend_terminal_display.mouse_wheel == 0 || osnap->audio_in_type == AUDIO_IN_STDIN) {
+        return 0;
+    }
+    if (ui_menu_is_open()) {
+        return 0;
+    }
+    dsd_app_scan_state_view scan;
+    if (dsd_app_scan_state_view_get(osnap, ssnap, &scan) != 0 || !scan.running) {
+        return 0;
+    }
+    return ui_mouse_wheel_available(NULL) ? 1 : 0;
+}
+
+static int
+ui_key_is_wheel(int ch) {
+    return ch == UI_KEY_WHEEL_UP || ch == UI_KEY_WHEEL_DOWN;
+}
+
+/* Wheel up (away from the user) is Previous and down is Next, as Up and Down move through a list. */
 static void
-ui_process_input_frame(const dsd_opts* osnap) {
+ui_handle_wheel(int ch, int eligible) {
+    if (!eligible) {
+        return;
+    }
+    const uint64_t now_ns = dsd_realtime_mono_ns();
+    if (g_ui_wheel_stepped && now_ns - g_ui_wheel_step_ns < UI_WHEEL_STEP_GAP_NS) {
+        return;
+    }
+    g_ui_wheel_stepped = 1;
+    g_ui_wheel_step_ns = now_ns;
+    (void)dsd_app_command_action(ch == UI_KEY_WHEEL_UP ? DSD_APP_CMD_CHANNEL_CYCLE_PREV : DSD_APP_CMD_CHANNEL_CYCLE);
+}
+
+static void
+ui_wheel_forget(void) {
+    g_ui_wheel_stepped = 0;
+    g_ui_wheel_step_ns = 0;
+}
+
+static void
+ui_process_input_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
     ui_configure_curses_once();
+    const int wheel_wanted = ui_wheel_capture_wanted(osnap, ssnap);
+    ui_mouse_capture_set(wheel_wanted);
     int ch = ui_read_key_nonblocking(osnap);
+    if (ui_key_is_wheel(ch)) {
+        // Handled here: dsd_terminal_handle_input() and the menu never see a wheel code.
+        ui_handle_wheel(ch, wheel_wanted && ui_mouse_capture_is_on());
+        ch = ERR;
+    }
     if (ui_menu_is_open()) {
         ui_handle_menu_input(ch);
         return;
@@ -122,6 +185,8 @@ ui_open_curses_if_needed(void) {
 static void
 ui_close_curses_if_opened(int curses_opened) {
     if (curses_opened) {
+        ui_mouse_capture_close();
+        ui_wheel_forget();
         dsd_terminal_close();
     }
 }
@@ -159,6 +224,8 @@ dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
     g_ui_curses_cfg_done = 0;
     (void)dsd_app_frontend_redraw_consume();
     atomic_store(&g_ui_in_context, 0);
+    ui_mouse_reset_for_test();
+    ui_wheel_forget();
 }
 
 const dsd_opts*
@@ -178,7 +245,7 @@ dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts) {
 
 void
 dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
-    ui_process_input_frame(opts);
+    ui_process_input_frame(opts, dsd_app_get_latest_snapshot());
 }
 
 int
@@ -218,8 +285,9 @@ static DSD_THREAD_RETURN_TYPE
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays are single-owner in the UI thread.
         const dsd_opts* osnap = ui_get_opts_snapshot_or_default();
+        const dsd_state* ssnap = dsd_app_get_latest_snapshot();
         if (ui_curses_is_active(osnap)) {
-            ui_process_input_frame(osnap);
+            ui_process_input_frame(osnap, ssnap);
             ui_draw_if_needed(osnap, &last_draw_ns, frame_ns);
         }
 

@@ -76,6 +76,7 @@ AUDIT_LABELS_RADIO(DEFINE_LABEL_STUB)
         return true;                                                                                                   \
     }
 AUDIT_PREDICATES(DEFINE_PREDICATE_STUB)
+AUDIT_PREDICATES_WHEEL(DEFINE_PREDICATE_STUB)
 #ifdef USE_RADIO
 AUDIT_PREDICATES_RADIO(DEFINE_PREDICATE_STUB)
 #endif
