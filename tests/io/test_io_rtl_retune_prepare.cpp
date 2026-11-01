@@ -2505,11 +2505,18 @@ expect_fll_mixer_retune_policy(void) {
  * what is left, never a count of sleeps a coarse timer tick stretches. */
 static int
 test_retune_drain_wait_bound(void) {
+    /* Pinned, so an exported override (an immediate clear, another drain time) cannot change what is measured. */
+    (void)dsd_test_setenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_RETUNE_DRAIN_MS", "50", 1);
+    dsd_neo_config_init();
     uint64_t waited_ms = 0U;
     size_t used_after = 1U;
     int failed = expect_int_eq("drain wait ran", rtl_stream_test_retune_drain_wait(64U, &waited_ms, &used_after), 0);
     failed |= expect_waited("a retune's drain wait on an output no reader takes", waited_ms, 45U, 500U);
     failed |= expect_int_eq("a drain that timed out clears the output", (int)used_after, 0);
+    (void)dsd_test_unsetenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
+    (void)dsd_test_unsetenv("DSD_NEO_RETUNE_DRAIN_MS");
+    dsd_neo_config_init();
     return failed;
 }
 
