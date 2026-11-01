@@ -297,6 +297,9 @@ analog_call_hold(dsd_opts* opts, dsd_state* state, analog_call* call, size_t cou
 static void
 analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const float* samples, size_t count,
                     int sample_rate) {
+    /* One decode-clock read, before the block's file work: the block's media stamp is where the call ends, whenever
+       that is decided, and the time a slow disk takes to write a pause or close a recording is not the call's. */
+    const double now_m = dsd_decode_now_mono_s();
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, DSD_SYNC_ANALOG, 0, &identity);
     if (call->active && dsd_receive_identity_changed(&call->identity, &identity)) {
@@ -311,6 +314,7 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
         .slot = 0,
         .kind = DSD_CALL_KIND_VOICE,
         .frequency_hz = (int64_t)dsd_opts_tuned_freq_hz(opts),
+        .observed_m = now_m,
     };
     (void)dsd_call_state_observe(state, &observation,
                                  call->active ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
@@ -323,10 +327,12 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
         call->boundaries_seen = state->analog_rx.boundaries;
     }
     call->active = 1;
-    const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1,
+        .observed_m = now_m,
+    };
     (void)dsd_call_state_update_crypto(state, 0, &crypto);
-    /* One decode-clock read: the block's media stamp is where the call ends, whenever that is decided. */
-    const double now_m = dsd_decode_now_mono_s();
     (void)dsd_call_state_update_media(state, 0, 1, now_m);
     dsd_event_sync_slot(opts, state, 0);
     analog_call_record(opts, state, call, samples, count, sample_rate);

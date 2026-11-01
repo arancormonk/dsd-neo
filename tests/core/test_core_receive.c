@@ -903,24 +903,50 @@ hold_slow_write(SNDFILE* file, const short* samples, long long count) {
     return (long long)sf_write_short(file, samples, (sf_count_t)count);
 }
 
-/* The row ends at the last reception's media stamp, read once per block: the time its recording write took is not the
-   call's. The end read the clock again after the write. */
+static void
+hold_expect_stamps(const hold_rig* r, int phase, double started_m, double last_m) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(r->state, 0U, &call) > 0 && (int)call.phase == phase);
+    assert(fabs(call.started_m - started_m) < 1e-9);
+    assert(fabs(call.media_updated_m - last_m) < 1e-9);
+    assert(phase != DSD_CALL_PHASE_ENDED || fabs(call.ended_m - last_m) < 1e-9);
+}
+
+/* The call's stamps are the block's, read once per block before any of its file work: the time a recording write takes
+   is not the call's. The end read the clock again after the block's write, and a resumed block's stamp was read after
+   the pause's silence was written. */
 static void
 test_hold_row_end_is_the_block_stamp(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_stamp", 1000);
     dsd_wav_test_set_io(hold_slow_write, NULL);
-    hold_receive(&r, 2, 1000);
-    const double last_m = hold_now_m(&r);
+    hold_receive(&r, 1, 1000);
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 1, 1000);
+    double last_m = hold_now_m(&r);
     hold_closed(&r, 3);
     dsd_engine_analog_call_end(r.opts, r.state);
-    dsd_wav_test_set_io(NULL, NULL);
-    dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof call);
-    assert(dsd_call_state_get(r.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    assert(fabs(call.media_updated_m - last_m) < 1e-9);
-    assert(fabs(call.ended_m - last_m) < 1e-9);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, first_m, last_m);
     hold_expect_one_burst(&r, 2, 1000);
+
+    /* A resume as the call's last reception: three held blocks of silence are written before its own audio. */
+    hold_receive(&r, 1, 1000);
+    const double resumed_first_m = hold_now_m(&r);
+    hold_receive(&r, 1, 1000);
+    hold_closed(&r, 3);
+    hold_receive(&r, 1, 2000);
+    last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, resumed_first_m, last_m);
+    hold_files found;
+    hold_take(&r, &found, 1);
+    assert(found.frames[0] == 6L * HOLD_BLOCK);
+    assert(hold_run_is(found.samples[0], 0, 2L * HOLD_BLOCK, 1000));
+    assert(hold_run_is(found.samples[0], 2L * HOLD_BLOCK, 3L * HOLD_BLOCK, 0));
+    assert(hold_run_is(found.samples[0], 5L * HOLD_BLOCK, HOLD_BLOCK, 2000));
+    hold_release(&found);
+    dsd_wav_test_set_io(NULL, NULL);
     hold_close(&r);
 }
 
@@ -1254,6 +1280,39 @@ test_hold_identity_on_resume(void) {
     assert(dsd_dir_list(r.dir, take_hold_service, &two) == 0);
     assert(two.traveler == 1 && two.dispatch == 1 && two.frames[0] == 2L * HOLD_BLOCK
            && two.frames[1] == 2L * HOLD_BLOCK);
+    hold_close(&r);
+}
+
+/* A recording close that takes decode time, as hold_slow_write() does. */
+static int
+hold_slow_close(SNDFILE* file) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + 7000000ULL);
+    return sf_close(file);
+}
+
+/* D4 on a slow disk: a new identity on the resume ends the held call and closes its recording before the new call
+   begins with the block, whose start is still the block's stamp. It was read after the close. */
+static void
+test_hold_new_identity_starts_at_the_block_stamp(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_hold_identity_stamp", 1000);
+    assert(dsd_receive_names_parse("--tone-name '141.3=Traveler' --tone-name 'D023I=Dispatch'", &r.opts->receive.names,
+                                   NULL, 0)
+           == 0);
+    dsd_wav_test_set_io(hold_slow_write, hold_slow_close);
+    hold_lock_tone(&r, 1413);
+    hold_receive(&r, 2, 1000);
+    hold_closed(&r, 3);
+    hold_lock_tone(&r, 0);
+    hold_receive(&r, 1, 2000);
+    const double last_m = hold_now_m(&r);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, last_m, last_m);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    dsd_wav_test_set_io(NULL, NULL);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, last_m, last_m);
+    hold_services two = {.dir = r.dir};
+    assert(dsd_dir_list(r.dir, take_hold_service, &two) == 0);
+    assert(two.traveler == 1 && two.dispatch == 1 && two.frames[0] == 2L * HOLD_BLOCK && two.frames[1] == HOLD_BLOCK);
     hold_close(&r);
 }
 
@@ -1592,6 +1651,7 @@ test_analog_hold(void) {
     test_hold_counts_the_gap_at_the_block_rate();
     test_hold_tone_checks_age_the_gap();
     test_hold_identity_on_resume();
+    test_hold_new_identity_starts_at_the_block_stamp();
     test_hold_ends_without_the_pause();
     test_hold_tick_precedence();
     test_hold_tick_ends_a_moved_epoch();
