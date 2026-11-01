@@ -491,16 +491,20 @@ Item {
                 verify(text.width <= sheet.width, "the line is wider than the sheet")
                 verify(text.contentWidth <= text.width + 0.5, "the line is clipped: " + text.contentWidth)
                 // Laid out part by part, the lines hold exactly the parts that
-                // fit, each but the last ending on its separator's dot.
-                var parts = line.split(" · ")
+                // fit, each but the last ending on its separator's dot. Each
+                // candidate is spelled as the delegate shows it: no-break spaces
+                // inside a part and before a dot.
+                var parts = line.split(" · ").map(function (part) {
+                    return part.replace(/ /g, "\u00a0")
+                })
                 partWidth.font = text.font
                 var lines = 1
                 var current = ""
                 for (var i = 0; i < parts.length; ++i) {
-                    var tail = i + 1 < parts.length ? " ·" : ""
+                    var tail = i + 1 < parts.length ? "\u00a0·" : ""
                     partWidth.text = parts[i] + tail
                     verify(partWidth.advanceWidth <= text.width, parts[i] + " alone is wider than the line")
-                    var candidate = current.length > 0 ? current + " · " + parts[i] : parts[i]
+                    var candidate = current.length > 0 ? current + "\u00a0· " + parts[i] : parts[i]
                     partWidth.text = candidate + tail
                     if (current.length > 0 && partWidth.advanceWidth > text.width) {
                         lines++

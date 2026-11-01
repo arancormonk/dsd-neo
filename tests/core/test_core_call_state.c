@@ -1028,16 +1028,16 @@ test_reacquire_refused_when_site_changed_before_end(void) {
     dsd_state_ext_free_all(state);
     free(state);
 
-    state = (dsd_state*)calloc(1U, sizeof(*state));
-    assert(state != NULL);
-    const uint64_t quiet = open_crypto_call(state, &call);
-    assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
-    assert(dsd_call_state_get(state, 0U, &s) == 1);
+    dsd_state* silent = (dsd_state*)calloc(1U, sizeof(*silent));
+    assert(silent != NULL);
+    const uint64_t quiet = open_crypto_call(silent, &call);
+    assert(dsd_call_state_end_ex(silent, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
+    assert(dsd_call_state_get(silent, 0U, &s) == 1);
     assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE && s.reacquire_rx_id.family == DSD_RXID_FAMILY_NONE);
     assert(dsd_call_snapshot_may_reacquire(&s, 10.3) == 1);
-    assert(reentry_reacquires(state, &reentry, quiet, call.channel, DSD_CALL_CHANNEL_NONE, call.frequency_hz) == 1);
-    dsd_state_ext_free_all(state);
-    free(state);
+    assert(reentry_reacquires(silent, &reentry, quiet, call.channel, DSD_CALL_CHANNEL_NONE, call.frequency_hz) == 1);
+    dsd_state_ext_free_all(silent);
+    free(silent);
 }
 
 // A sync of another protocol family (noise passing its sync word during the fade) wipes the record mid-call. The call
@@ -1063,6 +1063,31 @@ test_reacquire_kept_after_cross_family_wipe(void) {
         dsd_state_ext_free_all(state);
         free(state);
     }
+}
+
+// The same wipe, then a DMR site noted before the end: the reentry is heard under another family's system, so it is
+// another system's call (P25 against DMR), not the faded one.
+static void
+test_reacquire_refused_after_cross_family_wipe_and_dmr_site(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    const dsd_call_observation call = group_call(0U, 500U, 600U, 10.0);
+    const uint64_t first = open_crypto_call(state, &call);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_VOICE_POS);
+    assert(state->rx_id.family == DSD_RXID_FAMILY_NONE);
+    dsd_rxid_note_dmr_site(state, DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small · Net 12 · Site 301");
+    assert(state->rx_id.family == DSD_RXID_FAMILY_DMR);
+    assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_call_snapshot s;
+    assert(dsd_call_state_get(state, 0U, &s) == 1);
+    assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE);
+    assert(s.reacquire_rx_id.family == DSD_RXID_FAMILY_P25 && s.reacquire_rx_id.p25_wacn == 0xBEE00U);
+    assert(dsd_call_snapshot_may_reacquire(&s, 10.3) == 1);
+    const dsd_call_observation reentry = reentry_of(&call);
+    assert(reentry_reacquires(state, &reentry, first, 0U, 0U, 0) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
 }
 
 // Wiped, healed under the empty record, faded again: the reopened epoch kept the site the call was heard on, so a
@@ -1202,6 +1227,7 @@ main(void) {
     test_reacquire_kept_on_compatible_site();
     test_reacquire_refused_when_site_changed_before_end();
     test_reacquire_kept_after_cross_family_wipe();
+    test_reacquire_refused_after_cross_family_wipe_and_dmr_site();
     test_reacquire_two_fades_keep_the_heard_site();
     test_reacquire_identity_less_kept();
     test_reacquire_channel_only_t3_then_conplus_refused();
