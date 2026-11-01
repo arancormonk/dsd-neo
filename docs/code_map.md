@@ -2782,8 +2782,14 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
   target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
-  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed and "paused" while
-  it is paused (`src/app_control/app_command_queue.c`)
+  active target, clear avoids, advance now, retreat now); answers "unavailable" when trunk scan is not installed and
+  "paused" while it is paused (`src/app_control/app_command_queue.c`)
+  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided and cooling
+    targets skipped), the original last in both directions, so the fallback and rollback are shared. Avoid and every
+    automatic rotation walk forward; no op changes the hold.
+  - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
+    switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
+    stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl

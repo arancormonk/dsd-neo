@@ -5534,6 +5534,63 @@ test_replay_refuses_channel_cycle_and_return_cc(void) {
 }
 #endif
 
+static int g_stay_control_calls = 0;
+static int g_stay_control_last_op = -1;
+static int g_stay_control_result = 0;
+
+static int
+stay_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    (void)opts;
+    (void)state;
+    g_stay_control_calls++;
+    g_stay_control_last_op = op;
+    return g_stay_control_result;
+}
+
+/* Issue #666 (B8): under --trunk-scan the coordinator answers Next with 1 when the target on air did not change -- no
+   other target eligible, no switch prepared, or every alternate failed and the receiver fell back. The press used to
+   say nothing; now it names the target the receiver stays on, whichever the cause. A move (0) stays silent. Portable:
+   the trunk-scan leg reaches only the control hook. */
+static int
+test_trunk_scan_next_that_stays_says_so(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county");
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.control = stay_scan_control;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_stay_control_calls = 0;
+    g_stay_control_last_op = -1;
+
+    g_stay_control_result = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "stayed next");
+    rc |= expect_int("stayed next reaches the hook", g_stay_control_calls, 1);
+    rc |= expect_int("stayed next op", g_stay_control_last_op, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    rc |= expect_contains("stayed next names the target on air", state.ui_msg, "Staying on target county");
+
+    g_stay_control_result = 0;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "moved next");
+    rc |= expect_int("moved next reaches the hook", g_stay_control_calls, 2);
+    rc |= expect_true("moved next has no toast", state.ui_msg[0] == '\0');
+
+    g_stay_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "refused next");
+    rc |= expect_contains("refused next keeps its own toast", state.ui_msg, "only one target");
+
+    /* Avoid's "stayed" keeps its own toast: the target was avoided either way. */
+    g_stay_control_result = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "stayed avoid");
+    rc |= expect_contains("stayed avoid keeps the avoid toast", state.ui_msg, "Avoiding target county");
+
+    dsd_trunk_scan_hooks_set(NULL);
+    freeState(&state);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* The codes the carrier on air decoded, and the Phase 2 seed it proved. */
 static void
@@ -24092,6 +24149,7 @@ main(void) {
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
+    rc |= test_trunk_scan_next_that_stays_says_so();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_channel_cycle_retries_a_cc_deferred_candidate();

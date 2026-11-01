@@ -4,7 +4,7 @@
  */
 
 /*
- * The trunk-scan control hook: app_control drives hold / avoid / clear / advance on the
+ * The trunk-scan control hook: app_control drives hold / avoid / clear / advance / retreat on the
  * engine-owned coordinator through this slot, so the thunk has to say "unavailable" when
  * nothing is installed and pass the op through untouched when something is.
  */
@@ -20,15 +20,20 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* The four ops and three failure codes are distinct, so a caller can switch on them. */
-_Static_assert(DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE != DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE
-                   && DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE != DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR
-                   && DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR != DSD_TRUNK_SCAN_CONTROL_ADVANCE,
-               "trunk scan control ops must be distinct");
-_Static_assert(DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE < 0 && DSD_TRUNK_SCAN_CONTROL_BUSY < 0
-                   && DSD_TRUNK_SCAN_CONTROL_REFUSED < 0,
+/* The five ops and four failure codes are distinct, so a caller can switch on them. The ops are numbered in the
+   order they were added and never renumbered; RETREAT (issue #666) is appended after ADVANCE. */
+_Static_assert(DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE == 1 && DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE == 2
+                   && DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR == 3 && DSD_TRUNK_SCAN_CONTROL_ADVANCE == 4
+                   && DSD_TRUNK_SCAN_CONTROL_RETREAT == 5,
+               "trunk scan control ops must be distinct and keep their numbers");
+_Static_assert(DSD_TRUNK_SCAN_CONTROL_PAUSED < 0 && DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE < 0
+                   && DSD_TRUNK_SCAN_CONTROL_BUSY < 0 && DSD_TRUNK_SCAN_CONTROL_REFUSED < 0,
                "trunk scan control failure codes must be negative");
-_Static_assert(DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE != DSD_TRUNK_SCAN_CONTROL_BUSY
+_Static_assert(DSD_TRUNK_SCAN_CONTROL_PAUSED != DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE
+                   && DSD_TRUNK_SCAN_CONTROL_PAUSED != DSD_TRUNK_SCAN_CONTROL_BUSY
+                   && DSD_TRUNK_SCAN_CONTROL_PAUSED != DSD_TRUNK_SCAN_CONTROL_REFUSED
+                   && DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE != DSD_TRUNK_SCAN_CONTROL_BUSY
+                   && DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE != DSD_TRUNK_SCAN_CONTROL_REFUSED
                    && DSD_TRUNK_SCAN_CONTROL_BUSY != DSD_TRUNK_SCAN_CONTROL_REFUSED,
                "trunk scan control failure codes must be distinct");
 
@@ -254,11 +259,18 @@ main(void) {
     assert(g_last_op == DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     assert(g_control_calls == 4);
 
+    g_control_result = 1;
+    assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT) == 1);
+    assert(g_last_op == DSD_TRUNK_SCAN_CONTROL_RETREAT);
+    assert(g_control_calls == 5);
+
     /* Uninstalling (NULL clears every slot) restores the unavailable answer. */
     dsd_trunk_scan_hooks_set(NULL);
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
-    assert(g_control_calls == 4);
+    assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT)
+           == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(g_control_calls == 5);
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
     test_recovery_ownership();

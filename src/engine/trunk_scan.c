@@ -3185,9 +3185,34 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     return 0;
 }
 
-/* Return 1 when a target park was accepted, including a pending fallback park. */
+/* The walk's @p attempts-th candidate: forward (@p step > 0) from the target after the original, backward (@p step < 0)
+ * from the one before it, wrapping either way. The last candidate is the original in both directions, so the fallback
+ * onto it and the rollback behave the same whichever way the operator stepped. Returns coord->count when the walk
+ * passes the candidate over. */
+static size_t
+trunk_scan_advance_candidate(const dsd_trunk_scan_coord* coord, size_t original_active, size_t attempts, int step,
+                             int attempted_alternate_retune, double now_m) {
+    const size_t offset = step < 0 ? coord->count - 1U - attempts : 1U + attempts;
+    const size_t next = (original_active + offset) % coord->count;
+    if (next == original_active && !attempted_alternate_retune) {
+        return coord->count;
+    }
+    if (coord->targets[next].retry_until_m > now_m) {
+        return coord->count;
+    }
+    /* An operator avoid is for the session, not a cooldown. The original is not
+     * exempt: when every alternate fails the receiver stays on it and the
+     * publication says so. */
+    if (coord->targets[next].avoided && next != original_active) {
+        return coord->count;
+    }
+    return next;
+}
+
+/* Return 1 when a target park was accepted, including a pending fallback park. @p step picks the direction: the
+ * operator's previous-target control walks backward (issue #666); every automatic rotation walks forward. */
 static int
-trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+trunk_scan_advance_step(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int step) {
     if (!coord || coord->count < 2) {
         return 0;
     }
@@ -3212,17 +3237,9 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     int tried = 0;
 
     for (size_t attempts = 0; attempts < coord->count; attempts++) {
-        size_t next = (original_active + 1U + attempts) % coord->count;
-        if (next == original_active && !attempted_alternate_retune) {
-            continue;
-        }
-        if (coord->targets[next].retry_until_m > now_m) {
-            continue;
-        }
-        /* An operator avoid is for the session, not a cooldown. The original is not
-         * exempt: when every alternate fails the receiver stays on it and the
-         * publication says so. */
-        if (coord->targets[next].avoided && next != original_active) {
+        const size_t next =
+            trunk_scan_advance_candidate(coord, original_active, attempts, step, attempted_alternate_retune, now_m);
+        if (next >= coord->count) {
             continue;
         }
         const int switch_rc = trunk_scan_switch_to(opts, state, coord, next, save_current);
@@ -3273,6 +3290,11 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
     return 0;
+}
+
+static int
+trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    return trunk_scan_advance_step(opts, state, coord, 1);
 }
 
 /* Single/held targets retry in place. A failed forced fallback also owes a fresh CC
@@ -3788,7 +3810,7 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
     }
 }
 
-/* Somewhere else to go: the same candidate filter trunk_scan_advance() walks, so the cap can
+/* Somewhere else to go: the same candidate filter trunk_scan_advance_candidate() applies, so the cap can
  * never fire on a rotation the advance would refuse. An alternate avoided for the session or
  * still cooling down from a failed retune is not an alternate. */
 static int
@@ -3921,15 +3943,15 @@ dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* A departure that hands the outgoing carrier back before the target is saved (#507): the visit cap's, and an operator's
- * advance or avoid, which ends the call in progress the same way (issue #637). @p operator_departure leaves out the cap's
- * own bookkeeping, a fresh limit after a preparation failure, since an operator's departure is not retried. Returns
- * whether a park was accepted. */
+ * advance, retreat or avoid, which ends the call in progress the same way (issue #637). @p operator_departure leaves
+ * out the cap's own bookkeeping, a fresh limit after a preparation failure, since an operator's departure is not
+ * retried. @p step is the walk's direction (trunk_scan_advance_step()). Returns whether a park was accepted. */
 static int
 trunk_scan_advance_releasing(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m,
-                             int operator_departure) {
+                             int operator_departure, int step) {
     const size_t before = coord->active;
     coord->forced_visit_release = 1;
-    const int park_accepted = trunk_scan_advance(opts, state, coord);
+    const int park_accepted = trunk_scan_advance_step(opts, state, coord, step);
     /* The switch clears the flag exactly when it hands the carrier back, so a flag still set means
      * no attempt ever got that far and there is nothing to scrub below. */
     const int released = coord->forced_visit_release == 0;
@@ -3970,7 +3992,7 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     }
     const int limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
     LOG_INFO("NOTICE: Trunk scan target '%s' reached its %d ms visit limit; advancing\n", rt->target.id, limit_ms);
-    (void)trunk_scan_advance_releasing(opts, state, coord, now_m, 0);
+    (void)trunk_scan_advance_releasing(opts, state, coord, now_m, 0, 1);
     return 1;
 }
 
@@ -4156,19 +4178,19 @@ trunk_scan_usable_count(const dsd_trunk_scan_coord* coord) {
     return coord->count - trunk_scan_avoided_count(coord);
 }
 
-/* Advance under the same guard the tick takes: trunk_scan_switch_to() drives the P25 SM.
- * Returns 0 when the receiver moved, 1 when it stayed. */
+/* Advance (@p step 1) or retreat (@p step -1) under the same guard the tick takes: trunk_scan_switch_to() drives the
+ * P25 SM. Returns 0 when the receiver moved, 1 when it stayed. */
 static int
-trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int step) {
     const size_t original = coord->active;
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[original];
     /* The operator chose to leave: a parked visit's call ends with its carrier handed back, as the visit cap ends it
        (issue #637), so its row and recording close under this target. A park still in flight, or one that never
        landed, carries no call to hand back, and its ordinary departure keeps the request the switch reconciles. */
     if (!rt->tune_pending && rt->visit_since_m >= 0.0) {
-        (void)trunk_scan_advance_releasing(opts, state, coord, trunk_scan_now_m(), 1);
+        (void)trunk_scan_advance_releasing(opts, state, coord, trunk_scan_now_m(), 1, step);
     } else {
-        trunk_scan_advance(opts, state, coord);
+        trunk_scan_advance_step(opts, state, coord, step);
     }
     return coord->active != original ? 0 : 1;
 }
@@ -4214,21 +4236,21 @@ trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
         return DSD_TRUNK_SCAN_CONTROL_BUSY;
     }
     coord->targets[coord->active].avoided = 1;
-    const int rc = trunk_scan_control_advance_locked(opts, state, coord);
+    const int rc = trunk_scan_control_advance_locked(opts, state, coord, 1);
     trunk_scan_publish_active_target(state, coord);
     p25_sm_tick_guard_leave();
     return rc;
 }
 
 static int
-trunk_scan_control_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+trunk_scan_control_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int step) {
     if (coord->count < 2) {
         return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
     if (!p25_sm_tick_guard_try_enter()) {
         return DSD_TRUNK_SCAN_CONTROL_BUSY;
     }
-    const int rc = trunk_scan_control_advance_locked(opts, state, coord);
+    const int rc = trunk_scan_control_advance_locked(opts, state, coord, step);
     p25_sm_tick_guard_leave();
     return rc;
 }
@@ -4249,7 +4271,8 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: rc = trunk_scan_control_hold_toggle(state, coord); break;
         case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: rc = trunk_scan_control_avoid_clear(state, coord); break;
         case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: rc = trunk_scan_control_avoid_active(opts, state, coord); break;
-        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: rc = trunk_scan_control_advance(opts, state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: rc = trunk_scan_control_advance(opts, state, coord, 1); break;
+        case DSD_TRUNK_SCAN_CONTROL_RETREAT: rc = trunk_scan_control_advance(opts, state, coord, -1); break;
         default: return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
     // The command queue publishes immediately, possibly while input is stalled.

@@ -7425,28 +7425,13 @@ apply_manual_scan_avoid_clear(dsd_state* state) {
     ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
 }
 
-/* A scan control (hold, avoid, clear avoids, next) asked of a paused scan, -Y or trunk scan (issue #671): the scan has
-   no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
+/* A scan control (hold, avoid, clear avoids, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the
+   scan has no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
 static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
 
-/* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
-static int
-apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
-    char target_id[sizeof(state->trunk_scan_active_id)];
-    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
-    const int rc = dsd_trunk_scan_hook_control(opts, state, op);
-    if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
-        ui_set_toast(state, 3, "Trunk scan busy; try again");
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
-        ui_set_toast(state, 3, "Trunk scan is not running");
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    if (rc == DSD_TRUNK_SCAN_CONTROL_PAUSED) {
-        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
-        return UI_CMD_APPLY_FAILED;
-    }
+/* The toast for an op the coordinator answered. @p target_id is the target that was on air before the op. */
+static void
+trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id) {
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
             if (rc >= 0) {
@@ -7467,12 +7452,38 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
             }
             break;
         case DSD_TRUNK_SCAN_CONTROL_ADVANCE:
+        case DSD_TRUNK_SCAN_CONTROL_RETREAT:
             if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
                 ui_set_toast(state, 3, "Trunk scan has only one target");
+            } else if (rc == 1) {
+                /* Stayed: nothing else was eligible, no switch could be prepared, or every alternate failed and the
+                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. */
+                ui_set_toast(state, 3, "Staying on target %s", state->trunk_scan_active_id);
             }
             break;
         default: break;
     }
+}
+
+/* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
+static int
+apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    char target_id[sizeof(state->trunk_scan_active_id)];
+    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
+    const int rc = dsd_trunk_scan_hook_control(opts, state, op);
+    if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
+        ui_set_toast(state, 3, "Trunk scan busy; try again");
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
+        ui_set_toast(state, 3, "Trunk scan is not running");
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_PAUSED) {
+        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
+        return UI_CMD_APPLY_FAILED;
+    }
+    trunk_scan_control_toast(state, op, rc, target_id);
     return UI_CMD_APPLY_COMPLETED;
 }
 

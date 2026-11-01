@@ -27,7 +27,7 @@ extern "C" {
 /**
  * @brief Operator-driven scan controls, routed from app_control to the coordinator.
  *
- * One op-coded slot rather than four: the coordinator is the only implementer and the
+ * One op-coded slot rather than one per op: the coordinator is the only implementer and the
  * command queue the only caller, so the op keeps the table small while the return
  * codes below give the caller enough to choose a status message.
  */
@@ -36,6 +36,7 @@ typedef enum {
     DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE = 2, /**< Avoid the parked target for the session and move on */
     DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR = 3,  /**< Put every avoided target back into the rotation */
     DSD_TRUNK_SCAN_CONTROL_ADVANCE = 4,      /**< Move to the next eligible target now */
+    DSD_TRUNK_SCAN_CONTROL_RETREAT = 5,      /**< Move to the previous eligible target now (issue #666) */
 } dsd_trunk_scan_control_op;
 
 enum { DSD_TRUNK_KEY_MATERIAL = 1U, DSD_TRUNK_KEY_MAP = 2U, DSD_TRUNK_KEY_FORCE = 4U };
@@ -52,10 +53,10 @@ enum {
     DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,      /**< The scan is paused (issue #671): nothing to hold, avoid or advance */
     DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
     DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
-    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, or nothing to do */
-    /* >= 0 is op-specific: HOLD_TOGGLE returns the new hold state; AVOID_ACTIVE and ADVANCE
-     * return 0 when the receiver moved and 1 when it stayed; AVOID_CLEAR returns how many
-     * avoids it cleared. */
+    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, a single-target step, or unknown op */
+    /* >= 0 is op-specific: HOLD_TOGGLE returns the new hold state; AVOID_ACTIVE, ADVANCE and
+     * RETREAT return 0 when the receiver moved and 1 when it stayed; AVOID_CLEAR returns how
+     * many avoids it cleared. */
 };
 
 typedef struct {

@@ -7471,6 +7471,119 @@ test_scan_advance_moves_now_and_keeps_hold(void) {
     return test_rc;
 }
 
+/* Issue #666: retreat walks the list backward with the advance's own filter and fallback. It wraps from the first
+ * target, keeps the hold, skips avoided and cooling targets, steps past one whose retune fails, and falls back onto the
+ * original (1, "stayed") when every alternate fails or none is eligible. Avoid and the rotation still walk forward. */
+static int
+test_scan_retreat_moves_back_and_keeps_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n"
+                          "d,p25-trunk,854000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* Through the runtime hook, as app-control sends it: from the first target it wraps to the last. */
+    test_rc |= expect_control_rc("retreat from a",
+                                 dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat from a", 3U);
+    test_rc |= expect_published_target(&state, "retreat from a", "d", 4U, 4U);
+    /* The rotation carries on forward from there. */
+    trunk_scan_test_set_now(0.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation after a retreat", 0U);
+
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("retreat while held",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_control_rc("retreat again while held",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat while held", 2U);
+    test_rc |= expect_scan_control_publication(&state, "retreat while held", 1U, 0U, 0U);
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+
+    /* c -> b, then avoid b, which steps forward to c; a retreat from c passes the avoided b. */
+    test_rc |= expect_control_rc("retreat to b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat to b", 1U);
+    test_rc |= expect_control_rc("avoid b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid b steps forward", 2U);
+    test_rc |= expect_control_rc("retreat past avoided b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat past avoided b", 0U);
+
+    /* From a, d's retune fails: the walk goes on backward to c, and d cools down. */
+    g_counting_tune_to_cc_failures_remaining = 1;
+    test_rc |= expect_control_rc("retreat past a failing d",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "retreat past a failing d", 2U);
+    test_rc |= expect_published_target(&state, "retreat past a failing d", "c", 3U, 4U);
+    test_rc |= expect_control_rc("retreat to a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat to a", 0U);
+    test_rc |= expect_control_rc("retreat past a cooling d",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_active_target(&state, "retreat past a cooling d", 2U);
+
+    /* Out of the cooldown, from c: a and d both fail (b is avoided), and the receiver falls back onto c. */
+    trunk_scan_test_set_now(10.0);
+    g_counting_tune_to_cc_failures_remaining = 2;
+    test_rc |= expect_control_rc("retreat with failing alternates",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "retreat fallback", 2U);
+    test_rc |= expect_published_target(&state, "retreat fallback", "c", 3U, 4U);
+    /* a and d cooling, b avoided: nothing is eligible either way, and the receiver stays. */
+    test_rc |= expect_control_rc("retreat with nothing eligible",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 1);
+    test_rc |= expect_control_rc("advance with nothing eligible",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
+    test_rc |= expect_active_target(&state, "nothing eligible", 2U);
+    test_rc |= expect_published_target(&state, "nothing eligible", "c", 3U, 4U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #666: on two targets the previous target is the next one. */
+static int
+test_scan_retreat_on_two_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("retreat to b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_published_target(&state, "retreat to b", "b", 2U, 2U);
+    test_rc |= expect_control_rc("retreat to a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_published_target(&state, "retreat to a", "a", 1U, 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_scan_avoid_steps_on_and_skips_the_target_thereafter(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -7603,6 +7716,9 @@ test_scan_controls_on_a_single_target(void) {
     test_rc |= expect_control_rc("single advance",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
                                  DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_control_rc("single retreat",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT),
+                                 DSD_TRUNK_SCAN_CONTROL_REFUSED);
     test_rc |= expect_control_rc("single avoid",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
                                  DSD_TRUNK_SCAN_CONTROL_REFUSED);
@@ -7633,6 +7749,9 @@ test_scan_controls_report_busy_while_p25_guard_held(void) {
     g_p25_tick_guard_available = 0;
     test_rc |=
         expect_control_rc("busy advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                          DSD_TRUNK_SCAN_CONTROL_BUSY);
+    test_rc |=
+        expect_control_rc("busy retreat", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT),
                           DSD_TRUNK_SCAN_CONTROL_BUSY);
     test_rc |= expect_control_rc("busy avoid",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
@@ -11193,11 +11312,11 @@ test_visit_limit_failed_retune_cools_down_not_capped(void) {
  * stays released: rollback preserves the ended call and its event bookkeeping, without
  * resurrecting a phantom ACTIVE call or ending the same epoch twice (requirement 8).
  */
-/* Issue #637: an operator's advance or avoid away from a call in progress ends it as the visit cap does, with the
- * carrier handed back while the outgoing target is still the one published (its row and recordings close under its own
- * label and names), and the revisit restores no call. @p avoid takes the avoid control instead of the advance. */
+/* Issue #637: an operator's advance, retreat (issue #666) or avoid away from a call in progress ends it as the visit
+ * cap does, with the carrier handed back while the outgoing target is still the one published (its row and recordings
+ * close under its own label and names), and the revisit restores no call. @p op is the control taken. */
 static int
-test_manual_departure_releases_the_call_in_progress(int avoid) {
+test_manual_departure_releases_the_call_in_progress(int op) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
@@ -11210,7 +11329,13 @@ test_manual_departure_releases_the_call_in_progress(int avoid) {
         != 0) {
         return 1;
     }
-    const char* label = avoid ? "manual avoid" : "manual advance";
+    const char* label = "manual advance";
+    if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE) {
+        label = "manual avoid";
+    } else if (op == DSD_TRUNK_SCAN_CONTROL_RETREAT) {
+        label = "manual retreat";
+    }
+    const size_t landed = op == DSD_TRUNK_SCAN_CONTROL_RETREAT ? 2U : 1U;
     int test_rc = 0;
     opts.trunk_is_tuned = 1;
     state.p25_vc_freq[0] = 851112500;
@@ -11219,12 +11344,8 @@ test_manual_departure_releases_the_call_in_progress(int avoid) {
     const int ends_before = g_explicit_call_ends;
     g_release_seen_target[0] = '\0';
     trunk_scan_test_set_now(0.20);
-    test_rc |= expect_control_rc(
-        label,
-        dsd_engine_trunk_scan_control(&opts, &state,
-                                      avoid ? DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE : DSD_TRUNK_SCAN_CONTROL_ADVANCE),
-        0);
-    test_rc |= expect_active_target(&state, label, 1U);
+    test_rc |= expect_control_rc(label, dsd_engine_trunk_scan_control(&opts, &state, op), 0);
+    test_rc |= expect_active_target(&state, label, landed);
     if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "a") != 0) {
         DSD_FPRINTF(stderr, "%s ended %d calls under '%s', want 1 under 'a'\n", label,
                     g_explicit_call_ends - ends_before, g_release_seen_target);
@@ -11235,16 +11356,19 @@ test_manual_departure_releases_the_call_in_progress(int avoid) {
         test_rc = 1;
     }
     test_rc |= expect_vc_mirrors_clear(&state, label);
-    if (!avoid) {
-        /* b and c run out their idle dwells and the rotation comes back to a, which holds no call. */
+    if (op != DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE) {
+        /* The targets after the landing run out their idle dwells and the forward rotation comes back to a, which
+           holds no call: b and c after an advance, c alone after a retreat. */
         trunk_scan_test_set_now(0.46);
         dsd_engine_trunk_scan_tick(&opts, &state);
-        trunk_scan_test_set_now(0.72);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        test_rc |= expect_active_target(&state, "revisit after a manual advance", 0U);
-        test_rc |= expect_no_active_call_row(&state, "revisit after a manual advance");
+        if (landed == 1U) {
+            trunk_scan_test_set_now(0.72);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+        }
+        test_rc |= expect_active_target(&state, "revisit after a manual departure", 0U);
+        test_rc |= expect_no_active_call_row(&state, "revisit after a manual departure");
         if (g_explicit_call_ends != ends_before + 1) {
-            DSD_FPRINTF(stderr, "revisit after a manual advance ended the call again\n");
+            DSD_FPRINTF(stderr, "revisit after a %s ended the call again\n", label);
             test_rc = 1;
         }
     }
@@ -11256,12 +11380,17 @@ test_manual_departure_releases_the_call_in_progress(int avoid) {
 
 static int
 test_manual_advance_releases_the_call_in_progress(void) {
-    return test_manual_departure_releases_the_call_in_progress(0);
+    return test_manual_departure_releases_the_call_in_progress(DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+}
+
+static int
+test_manual_retreat_releases_the_call_in_progress(void) {
+    return test_manual_departure_releases_the_call_in_progress(DSD_TRUNK_SCAN_CONTROL_RETREAT);
 }
 
 static int
 test_manual_avoid_releases_the_call_in_progress(void) {
-    return test_manual_departure_releases_the_call_in_progress(1);
+    return test_manual_departure_releases_the_call_in_progress(DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
 }
 
 /* Issue #637: a park still in flight has no visit to hand back, so an operator's advance from it is an ordinary
@@ -11310,10 +11439,11 @@ test_manual_advance_from_a_pending_park_ends_calls_without_release(void) {
     return test_rc;
 }
 
-/* Issue #637: an operator's advance whose alternate and fallback parks both fail rolls back with the call it released
- * still ended, ends it once, and a later departure and revisit neither revive nor end it again. */
+/* Issue #637: an operator's advance (or retreat, issue #666) whose alternate and fallback parks both fail rolls back
+ * with the call it released still ended, ends it once, and a later departure and revisit neither revive nor end it
+ * again. @p op is the step taken. */
 static int
-test_manual_advance_rollback_keeps_the_release(void) {
+test_manual_step_rollback_keeps_the_release(int op) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
@@ -11332,22 +11462,23 @@ test_manual_advance_rollback_keeps_the_release(void) {
     test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
     g_counting_tune_to_cc_failures_remaining = 2;
     const int ends_before = g_explicit_call_ends;
+    const char* label = op == DSD_TRUNK_SCAN_CONTROL_RETREAT ? "manual retreat rollback" : "manual advance rollback";
     trunk_scan_test_set_now(0.20);
-    test_rc |= expect_control_rc("manual advance rollback",
-                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
-    test_rc |= expect_active_target(&state, "manual advance rollback", 0U);
-    test_rc |= expect_no_active_call_row(&state, "manual advance rollback");
-    test_rc |= expect_vc_mirrors_clear(&state, "manual advance rollback");
+    test_rc |= expect_control_rc(label, dsd_engine_trunk_scan_control(&opts, &state, op), 1);
+    test_rc |= expect_active_target(&state, label, 0U);
+    test_rc |= expect_published_target(&state, label, "a", 1U, 2U);
+    test_rc |= expect_no_active_call_row(&state, label);
+    test_rc |= expect_vc_mirrors_clear(&state, label);
     if (g_explicit_call_ends != ends_before + 1) {
-        DSD_FPRINTF(stderr, "failed manual advance ended the call %d times\n", g_explicit_call_ends - ends_before);
+        DSD_FPRINTF(stderr, "%s ended the call %d times\n", label, g_explicit_call_ends - ends_before);
         test_rc = 1;
     }
-    /* Out of the cooldown, another advance (its re-park never landed, so an ordinary departure) and the revisit. */
+    /* Out of the cooldown, another step (its re-park never landed, so an ordinary departure) and the revisit. */
     opts.trunk_is_tuned = 0;
     trunk_scan_test_set_now(3.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
     trunk_scan_test_set_now(3.35);
-    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    (void)dsd_engine_trunk_scan_control(&opts, &state, op);
     trunk_scan_test_set_now(3.70);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_no_active_call_row(&state, "revisit after the manual rollback");
@@ -11360,6 +11491,16 @@ test_manual_advance_rollback_keeps_the_release(void) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
+}
+
+static int
+test_manual_advance_rollback_keeps_the_release(void) {
+    return test_manual_step_rollback_keeps_the_release(DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+}
+
+static int
+test_manual_retreat_rollback_keeps_the_release(void) {
+    return test_manual_step_rollback_keeps_the_release(DSD_TRUNK_SCAN_CONTROL_RETREAT);
 }
 
 static int
@@ -15080,10 +15221,8 @@ test_paused_scan_gates_every_consumer(void) {
     }
     /* Controls refused, the hold kept. */
     static const int ops[] = {
-        DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE,
-        DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE,
-        DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR,
-        DSD_TRUNK_SCAN_CONTROL_ADVANCE,
+        DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR,
+        DSD_TRUNK_SCAN_CONTROL_ADVANCE,     DSD_TRUNK_SCAN_CONTROL_RETREAT,
     };
     for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
         test_rc |= expect_control_rc("gates: control while paused", dsd_trunk_scan_hook_control(&opts, &state, ops[i]),
@@ -15555,6 +15694,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_control_unavailable_without_coordinator);
     rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);
     rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
+    rc |= run_with_default_tune_hook(test_scan_retreat_moves_back_and_keeps_hold);
+    rc |= run_with_default_tune_hook(test_scan_retreat_on_two_targets);
     rc |= run_with_default_tune_hook(test_scan_avoid_steps_on_and_skips_the_target_thereafter);
     rc |= run_with_default_tune_hook(test_scan_avoid_refuses_the_last_usable_target);
     rc |= run_with_default_tune_hook(test_scan_avoid_falls_back_on_the_original_when_alternates_fail);
@@ -15609,9 +15750,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_visit_limit_failed_retune_cools_down_not_capped);
     rc |= run_with_default_tune_hook(test_visit_limit_forced_advance_rollback_rearms);
     rc |= run_with_default_tune_hook(test_manual_advance_releases_the_call_in_progress);
+    rc |= run_with_default_tune_hook(test_manual_retreat_releases_the_call_in_progress);
     rc |= run_with_default_tune_hook(test_manual_avoid_releases_the_call_in_progress);
     rc |= run_with_default_tune_hook(test_manual_advance_from_a_pending_park_ends_calls_without_release);
     rc |= run_with_default_tune_hook(test_manual_advance_rollback_keeps_the_release);
+    rc |= run_with_default_tune_hook(test_manual_retreat_rollback_keeps_the_release);
     rc |= run_with_default_tune_hook(test_visit_failed_fallback_recovers);
     rc |= run_with_default_tune_hook(test_visit_pending_fallback_anchors_on_completion);
     /* Issue #521 */
