@@ -130,8 +130,8 @@ dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
 _Static_assert(DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS == DSD_ANALOG_CARRIER_HANGOVER_MS,
                "the default NFM max gap must be the carrier hangover: off");
 
-/* The max gap in 48 kHz samples, or 0 when it is off: a gap no longer than the hangover joins nothing, and the hold is a
-   recording setting, so it is off while per-call recording is (a call is then held for no file). */
+/* The max gap in 48 kHz samples, or 0 when it is off: a gap no longer than the hangover joins nothing, and the hold is
+   a recording setting, so it is off while per-call recording is (a call is then held for no file). */
 static uint64_t
 analog_call_max_gap48(const dsd_opts* opts) {
     const int ms = opts->analog_record_max_gap_ms;

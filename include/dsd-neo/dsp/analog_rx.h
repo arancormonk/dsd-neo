@@ -366,8 +366,8 @@ void dsd_analog_rx_block_restart(const dsd_state* state);
  * the scanner moved on, it delivers a channel other than the one the scanner shows. A scanner therefore never holds a
  * row on another channel's carrier, and one a failed retune left the receiver on lets the row's hangtime run out.
  * Before the tap has run there is nothing to compare, and the publication stands as it is. On the AM monitor, where no
- * detection runs, the tap keeps the carrier all the same (issue #524). The published carrier and
- * dsd_analog_rx_boundaries_current(). Read-only.
+ * detection runs, the tap keeps the carrier all the same (issue #524). It returns the published carrier only while
+ * dsd_analog_rx_boundaries_current() holds, else 0. Read-only.
  */
 int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
 

@@ -470,7 +470,8 @@ unchanged. Applying a config in a running session changes it at once.
 `analog_max_gap_ms` outside 0 to 10000, or not a whole number, is refused with a warning, and the value already loaded
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a
 running session changes it from the next block of audio: a lower value, or off, ends an NFM call already paused
-longer than that. The hold works only while `per_call_wav` is on; with it off, NFM calls end as before. How pauses are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
+longer than that. The hold works only while `per_call_wav` is on; with it off, NFM calls end as before. How pauses
+are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.

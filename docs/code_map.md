@@ -11367,17 +11367,17 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and rows per max gap; a call still held when the input ends
     is published and linked by the teardown) and `DECODE_IQ_ANALOG_RECORD_GAP_PACED` (fast and paced replay record the
     same), see `docs/testing.md`.
-  Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
-  `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
-  An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;
-  `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer has the row publishes
-  it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no rdio export), so it
-  is never left under its temp name nor given the digital shape.
-  A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption,
-  and the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing
-  received-tone freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP
-  only when data returns), each ended at its last reception. Replay reads keep their
-  sample-driven behavior. `IO_RTL_RETUNE_PREPARE`, `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
+  - Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz
+    call-WAV conversion lane; `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing
+    diagnostic raw capture. An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup,
+    source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer
+    has the row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no
+    rdio export), so it is never left under its temp name nor given the digital shape.
+  - A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption, and
+    the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
+    freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data
+    returns), each ended at its last reception. Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
+    `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
 - App-control receive commands validate complete edits before application. Row commands retain scanner session and
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.
   The Qt ReceivePolicySheet uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured

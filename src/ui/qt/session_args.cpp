@@ -330,7 +330,7 @@ append_recording_args(QStringList& args, const SessionArgPrefs& prefs) {
             args << QStringLiteral("--record-unknown-only");
         }
         // Always, off included, so the session holds what Settings shows. An extra option comes later and wins;
-        // Settings then shows the session's own value while it records.
+        // Settings then shuts the row, with a note that says so.
         args << QStringLiteral("--analog-record-max-gap-ms") << QString::number(prefs.analogMaxGapMs);
     }
 }
