@@ -136,23 +136,31 @@ dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added, uint
     return 1;
 }
 
-int
-dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
+/* What Next and Previous share, so both walks skip the same candidates: the list (NULL when there is nothing to walk)
+   and the control channel to pass over, the trunk CC else P25's. */
+static dsd_trunk_cc_candidates*
+dsd_trunk_cc_candidates_walk_begin(dsd_state* state, const long* out_freq_hz, long* skip_cc_freq) {
     if (!state || !out_freq_hz) {
-        return 0;
+        return NULL;
     }
 
     dsd_trunk_cc_candidates* cc =
         DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    if (!cc || !dsd_trunk_cc_candidates_has_valid_count(cc)) {
+        return NULL;
+    }
+
+    *skip_cc_freq = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+    return cc;
+}
+
+int
+dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
+    long skip_cc_freq = 0;
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_walk_begin(state, out_freq_hz, &skip_cc_freq);
     if (!cc) {
         return 0;
     }
-
-    if (!dsd_trunk_cc_candidates_has_valid_count(cc)) {
-        return 0;
-    }
-
-    const long skip_cc_freq = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
 
     const int start = cc->idx;
     for (int tries = 0; tries < cc->count; tries++) {
@@ -172,21 +180,12 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t r
 
 int
 dsd_trunk_cc_candidates_prev(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
-    if (!state || !out_freq_hz) {
-        return 0;
-    }
-
-    dsd_trunk_cc_candidates* cc =
-        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    long skip_cc_freq = 0;
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_walk_begin(state, out_freq_hz, &skip_cc_freq);
     if (!cc) {
         return 0;
     }
 
-    if (!dsd_trunk_cc_candidates_has_valid_count(cc)) {
-        return 0;
-    }
-
-    const long skip_cc_freq = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
     const int count = cc->count;
     /* The last entry handed out, or past the end when none was, so the walk starts at the last entry. */
     const int anchor = (cc->idx > 0 && cc->idx <= count) ? cc->idx - 1 : count;
