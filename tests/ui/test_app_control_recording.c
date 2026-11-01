@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1348,9 +1349,25 @@ take_nfm_frames(const char* dir) {
     return remove(path) == 0 ? frames : -1;
 }
 
-/* Recording commands while an NFM call is held (issue #756) change its recording, never the hold. A stop publishes
-   what was recorded, and the call stays held; a later start opens a new recording at the resumed block, with no
-   silence for a pause it did not span. */
+/* The slot's last call: ended, with its row ending at its last block's media stamp (@p last_m). */
+static int
+nfm_ended_at(const rig* r, double last_m) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED && last_m > 0.0
+           && fabs(call.ended_m - last_m) < 1e-9;
+}
+
+static double
+nfm_media_m(const rig* r) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 ? call.media_updated_m : 0.0;
+}
+
+/* The NFM hold is a recording setting (issue #756): a stop while a call is held publishes what was recorded, and the
+   call ends at its last audio at the next block, with nothing written for the pause; a start after that begins a new
+   call, its recording with no silence for a pause it did not span. */
 static int
 test_stop_and_start_while_nfm_held(void) {
     rig r;
@@ -1361,19 +1378,46 @@ test_stop_and_start_while_nfm_held(void) {
     (void)drain(&r);
     nfm_block(r.opts, r.state);
     const uint64_t epoch = nfm_epoch(&r);
+    const double last_m = nfm_media_m(&r);
     nfm_hold(&r, 5);
+    rc |= expect_true("held: the call waits through the pause", epoch != 0U && nfm_epoch(&r) == epoch);
     submit(DSD_APP_CMD_WAV_STOP);
     (void)drain(&r);
     rc |= expect_int("held: the stop publishes the first burst", take_nfm_frames(r.dir), 960);
-    rc |= expect_true("held: the stop keeps the call", epoch != 0U && nfm_epoch(&r) == epoch);
-    nfm_hold(&r, 3);
+    nfm_hold(&r, 1);
+    rc |= expect_true("held: the next block ends the call", nfm_epoch(&r) == 0U);
+    rc |= expect_true("held: at its last audio", nfm_ended_at(&r, last_m));
+    nfm_hold(&r, 2);
     submit(DSD_APP_CMD_WAV_START);
     (void)drain(&r);
     nfm_hold(&r, 2);
     nfm_block(r.opts, r.state);
-    rc |= expect_true("held: the call goes on after the start", nfm_epoch(&r) == epoch);
+    const uint64_t next = nfm_epoch(&r);
+    rc |= expect_true("held: the start's block begins a new call", next != 0U && next != epoch);
     dsd_engine_analog_call_end(r.opts, r.state);
     rc |= expect_int("held: the new recording has no leading silence", take_nfm_frames(r.dir), 960);
+    rig_close(&r);
+    return rc;
+}
+
+/* Per-call recording off, the hold holds nothing: the block after the hangover ends the call at its last audio, as
+   with the hold off, and no later reception joins it. */
+static int
+test_nfm_hold_off_without_recording(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_no_hold");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_max_gap_ms = 1000;
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = nfm_epoch(&r);
+    const double last_m = nfm_media_m(&r);
+    nfm_hold(&r, 1);
+    rc |= expect_true("unrecorded: the closed carrier ends the call", epoch != 0U && nfm_epoch(&r) == 0U);
+    rc |= expect_true("unrecorded: at its last audio", nfm_ended_at(&r, last_m));
+    nfm_block(r.opts, r.state);
+    rc |= expect_true("unrecorded: a new call", nfm_epoch(&r) != 0U && nfm_epoch(&r) != epoch);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_int("unrecorded: no recording", count_dir(r.dir).published, 0);
     rig_close(&r);
     return rc;
 }
@@ -1814,6 +1858,7 @@ main(void) {
     rc |= test_config_delete_after_upload_keeps_its_value_under_a_journal();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
     rc |= test_stop_and_start_while_nfm_held();
+    rc |= test_nfm_hold_off_without_recording();
     rc |= test_folder_change_while_nfm_held();
     rc |= test_max_gap_set_applies_and_reports();
     rc |= test_max_gap_set_while_nfm_held();

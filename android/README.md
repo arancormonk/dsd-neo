@@ -272,7 +272,8 @@ An analog FM (NFM) call ends 0.2 seconds after the signal drops, so each pause i
 and a new History row. **NFM pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10 seconds:
 one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved as
 silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose a
-time, and it is disabled while Record calls is off. Digital calls are not affected.
+time. It works only while Record calls is on, so it is disabled while Record calls is off, and turning Record calls off
+ends a paused call at its last audio. Digital calls are not affected.
 
 - While a call is paused it still shows as active, and its timer keeps running, until the pause is decided.
 - Under a tone filter, the tone is checked again each time the signal comes back. That takes about 0.4 to 0.8 seconds

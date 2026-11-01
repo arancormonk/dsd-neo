@@ -276,12 +276,12 @@ Windows console runs:
   keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
   `docs/code_map.md` ("Recording journal").
 - `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional NFM call in one
-  recording, and one call history row, through a pause of up to `<ms>`. When the signal comes back in time, the pause
-  is saved as silence, so the recording keeps time. A longer pause ends the call at its last audio, and the next
-  transmission starts a new one. 200 or less turns it off, the default: a call then ends 200 ms after its carrier
-  drops, as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI:
-  `[recording] analog_max_gap_ms`. How pauses are counted, and the limits, are under
-  [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
+  (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence, so the
+  recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one.
+  200 or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0
+  to 10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted,
+  and the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
@@ -1629,6 +1629,9 @@ call, with its own history row and its own recording. `--analog-record-max-gap-m
 analog_max_gap_ms`) keeps the call going through a pause of up to `<ms>`, so one exchange stays one row and one
 recording. It changes nothing else: the hangover, the squelch, the scan and the tone filter work as before.
 
+- It works only while per-call recording is on (`-P`, INI `[recording] per_call_wav`). With recording off, a call ends
+  200 ms after its carrier drops, as before. Recording turned off in a running session ends a paused call at its last
+  audio, from the next block of audio; a change of recording folder does not.
 - The pause counts from the last moment the carrier was there. Its first 200 ms is saved as received, as before:
   silence under the noise or auto squelch, the input itself under a level squelch. Nothing more is saved while the
   carrier is away.

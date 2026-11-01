@@ -126,15 +126,17 @@ dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
     analog_call_finish(opts, state, call);
 }
 
-/* The max gap in 48 kHz samples, or 0 when it is off: a gap no longer than the hangover joins nothing. */
+/* The max gap in 48 kHz samples, or 0 when it is off: a gap no longer than the hangover joins nothing, and the hold is a
+   recording setting, so it is off while per-call recording is (a call is then held for no file). */
 static uint64_t
 analog_call_max_gap48(const dsd_opts* opts) {
     const int ms = opts->analog_record_max_gap_ms;
-    return ms > DSD_ANALOG_CARRIER_HANGOVER_MS ? (uint64_t)ms * 48U : 0U;
+    return opts->dmr_stereo_wav && ms > DSD_ANALOG_CARRIER_HANGOVER_MS ? (uint64_t)ms * 48U : 0U;
 }
 
-/* D10: a held call the max gap in force no longer covers (turned off, or lowered below the gap so far) ends at its last
-   reception. A gap equal to the max gap is still joined. Returns 1 when the call ended. */
+/* D10: a held call the max gap in force no longer covers (turned off, lowered below the gap so far, or per-call
+   recording stopped) ends at its last reception. A gap equal to the max gap is still joined. Returns 1 when the call
+   ended. */
 static int
 analog_call_reconcile(dsd_opts* opts, dsd_state* state, analog_call* call) {
     if (!call->held) {
@@ -201,7 +203,8 @@ dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state) {
     if (!call) {
         return;
     }
-    /* A held call stays held: only its recording ends here. */
+    /* Only the recording ends here: a held call ends at its next block or tick if recording stays off, and a folder
+       change (recording back on before then) keeps it held. */
     analog_call_close_recording(opts, state, call);
     /* A start later in the same call opens a new recording at the next block. */
     call->rec.attempted = 0;
@@ -308,10 +311,12 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
     call->active = 1;
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
     (void)dsd_call_state_update_crypto(state, 0, &crypto);
-    (void)dsd_call_state_update_media(state, 0, 1, 0.0);
+    /* One decode-clock read: the block's media stamp is where the call ends, whenever that is decided. */
+    const double now_m = dsd_decode_now_mono_s();
+    (void)dsd_call_state_update_media(state, 0, 1, now_m);
     dsd_event_sync_slot(opts, state, 0);
     analog_call_record(opts, state, call, samples, count, sample_rate);
-    call->last_m = dsd_decode_now_mono_s();
+    call->last_m = now_m;
 }
 
 /* A block no call spans: BREAK, a block that is not one, trunking, no detection, or (B6) the receiver crossed a hard

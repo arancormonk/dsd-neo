@@ -11327,40 +11327,46 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   `last_m`, `boundaries_seen`, the identity) from its recording segment (`analog_call_recording`: file, folder, open
   stamp, `spans_pause`), which a stop or folder change closes while the call goes on.
   - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
-    With the hold off a HOLDABLE block ends the call, as every non-reception block did. With it on, a HOLDABLE block
-    holds the call: the call and its row stay active, and nothing is committed. The gap (`age48`) is counted in 48 kHz
-    samples from the blocks' spans at their block rate, the remainder carried (`rem48`), plus the 200 ms hangover when
-    the hold began with the carrier closed (`credited`; a hold that begins with a tone check under a continuing carrier
-    gets none). Tone-check blocks age the gap too. The owed silence (`owed48`) is the held blocks' spans alone. The
-    hold reads no clock: replay, files and live input are decided on the same samples. Reconciliation runs first on
-    every block and tick, and again right after a hold begins: a held call ends when the hold is off or its gap is
-    over the max gap (equal still joins), so a live change (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, API
-    `analog_record_max_gap_set`, the terminal's Recording & logs > WAV files > `NFM pause hold...` row) applies at the
-    next block or tick and never reopens an ended call. A RECEPTION block resumes a held call unless its identity is
-    confirmed different (known against known, `dsd_receive_identity_changed()`), which ends it and begins a new call
-    with the block. A resumed call writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through
-    `dsd_wav_segment_write()`, so a short write's latch stops the rest), only into a file written before the pause
-    (`spans_pause`; a file opened after a stop or folder change starts at the resumed block). The CALL_WAV lane starts
-    over at the resumed block on its own, as no held block was written to it. The tick ends a call, held or not, on
-    detection off, a REJECTED tone or a boundary not current; with the hold off also on a closed carrier or a tone
-    check; and on the stale deadline. With the hold on a closed carrier waits for the next block.
-    `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()` (every scan leave, retune, input switch,
-    mode change, Stop, finalize) ends a held call at once without the pause; `dsd_engine_analog_call_stop_recording()`
-    closes the segment and leaves the hold.
+    It is a recording setting: it holds a call only while per-call recording is on (`opts->dmr_stereo_wav`, `-P`), and
+    is off otherwise (`analog_call_max_gap48()`). With the hold off a HOLDABLE block ends the call, as every
+    non-reception block did. With it on, a HOLDABLE block holds the call: the call and its row stay active, and nothing
+    is committed. The gap (`age48`) is counted in 48 kHz samples from the blocks' spans at their block rate, the
+    remainder carried (`rem48`), plus the 200 ms hangover when the hold began with the carrier closed (`credited`; a
+    hold that begins with a tone check under a continuing carrier gets none). Tone-check blocks age the gap too. The
+    owed silence (`owed48`) is the held blocks' spans alone. The hold reads no clock: replay, files and live input are
+    decided on the same samples. Reconciliation runs first on every block and tick, and again right after a hold begins:
+    a held call ends when the hold is off (per-call recording stopped included) or its gap is over the max gap (equal
+    still joins), so a live change (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, API `analog_record_max_gap_set`, the
+    terminal's Recording & logs > WAV files > `NFM pause hold...` row) applies at the next block or tick and never
+    reopens an ended call. A RECEPTION block resumes a held call unless its identity is confirmed different (known
+    against known, `dsd_receive_identity_changed()`), which ends it and begins a new call with the block. A resumed call
+    writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short
+    write's latch stops the rest), only into a file written before the pause (`spans_pause`; a file opened after a stop
+    or folder change starts at the resumed block). The CALL_WAV lane starts over at the resumed block on its own, as no
+    held block was written to it. The tick ends a call, held or not, on detection off, a REJECTED tone or a boundary not
+    current; with the hold off also on a closed carrier or a tone check; and on the stale deadline. With the hold on a
+    closed carrier waits for the next block. `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()`
+    (every scan leave, retune, input switch, mode change, Stop, finalize) ends a held call at once without the pause;
+    `dsd_engine_analog_call_stop_recording()` closes the segment only. A held call then ends at its next block or tick
+    if recording stays off; a folder change (stop and start inside one recording transition) keeps it held, and the next
+    file starts at the resumed block.
   - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
     `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input (stdin and TCP block in the
     read, so their call ends only when data returns). With the hold off a row ends one block earlier than "now" did.
   - Boundaries (B6): a call compares the published `state->analog_rx.boundaries` with the epoch it began under. A move
     ends the call at `last_m`; the block that carries it straddles the boundary, so it is not written either, and the
     next RECEPTION block begins a new call. This catches a stream pause or reconnect inside a long PCM block, which no
-    straddle marks. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and 44100 Hz, tone checks, identity, ends,
-    tick order, live changes, the default's payloads, the write latch, teardown, B1, B6), `CORE_WAV_JOURNAL` (one
-    publish and link), `APP_CONTROL_RECORDING` (stop, start and folder changes while held; the max gap command's
-    states, refusals, and raising, lowering and turning it off while held), `APP_COMMAND_QUEUE` (the command waits
-    while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`,
-    `UI_MENU_CALLBACKS`; end to end through the real engine, `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and
-    rows per max gap; a call still held when the input ends is published and linked by the teardown) and
-    `DECODE_IQ_ANALOG_RECORD_GAP_PACED` (fast and paced replay record the same), see `docs/testing.md`.
+    straddle marks. With no call running, a RECEPTION block whose epoch moved begins a call as on main, so a call may
+    start with up to one block of pre-boundary, squelched audio. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and
+    44100 Hz, tone checks, identity, ends, tick order, live changes, the hold off without per-call recording, the
+    default's payloads, the write latch, teardown, B1, B6), `CORE_WAV_JOURNAL` (one publish and link),
+    `APP_CONTROL_RECORDING` (a stop while held ends the call, a folder change keeps it; no hold without per-call
+    recording; the max gap command's states, refusals, and raising, lowering and turning it off while held),
+    `APP_COMMAND_QUEUE` (the command waits while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`,
+    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`; end to end through the real engine,
+    `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and rows per max gap; a call still held when the input ends
+    is published and linked by the teardown) and `DECODE_IQ_ANALOG_RECORD_GAP_PACED` (fast and paced replay record the
+    same), see `docs/testing.md`.
   Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
   `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
   An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;

@@ -896,6 +896,84 @@ test_hold_row_ends_at_the_last_reception(void) {
     hold_close(&r);
 }
 
+/* A recording write that takes decode time, as a slow disk does under a live clock: the clock moves 7 ms on. */
+static long long
+hold_slow_write(SNDFILE* file, const short* samples, long long count) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + 7000000ULL);
+    return (long long)sf_write_short(file, samples, (sf_count_t)count);
+}
+
+/* The row ends at the last reception's media stamp, read once per block: the time its recording write took is not the
+   call's. The end read the clock again after the write. */
+static void
+test_hold_row_end_is_the_block_stamp(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_hold_stamp", 1000);
+    dsd_wav_test_set_io(hold_slow_write, NULL);
+    hold_receive(&r, 2, 1000);
+    const double last_m = hold_now_m(&r);
+    hold_closed(&r, 3);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    dsd_wav_test_set_io(NULL, NULL);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(r.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    assert(fabs(call.media_updated_m - last_m) < 1e-9);
+    assert(fabs(call.ended_m - last_m) < 1e-9);
+    hold_expect_one_burst(&r, 2, 1000);
+    hold_close(&r);
+}
+
+/* The hold is a recording setting: it holds a call only while per-call recording is on. With recording off, a closed
+   carrier ends the call at its last reception on the next block or tick, as with the hold off. Recording stopped while
+   a call is held publishes the recording, and the next block or tick ends the call there, with no silence; a start
+   after that begins a new call. */
+static void
+test_hold_needs_recording(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_hold_unrecorded", 1000);
+    r.opts->dmr_stereo_wav = 0;
+    for (int tick = 0; tick < 2; tick++) {
+        hold_receive(&r, 2, 1000);
+        const double last_m = hold_now_m(&r);
+        if (tick) {
+            r.state->analog_rx.carrier_open = 0;
+            dsd_engine_analog_call_tick(r.opts, r.state);
+        } else {
+            hold_closed(&r, 1);
+        }
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_expect_span(&r, last_m - 0.020, last_m);
+    }
+    hold_files found;
+    hold_take(&r, &found, 0);
+
+    for (int tick = 0; tick < 2; tick++) {
+        r.opts->dmr_stereo_wav = 1;
+        hold_receive(&r, 2, 1000);
+        const double last_m = hold_now_m(&r);
+        hold_closed(&r, 3);
+        r.opts->dmr_stereo_wav = 0;
+        dsd_engine_analog_call_stop_recording(r.opts, r.state);
+        assert(dsd_engine_analog_call_active(r.state));
+        hold_expect_one_burst(&r, 2, 1000);
+        if (tick) {
+            dsd_engine_analog_call_tick(r.opts, r.state);
+        } else {
+            hold_closed(&r, 1);
+        }
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_expect_span(&r, last_m - 0.020, last_m);
+    }
+    r.opts->dmr_stereo_wav = 1;
+    hold_receive(&r, 2, 2000);
+    const double last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_one_burst(&r, 2, 2000);
+    hold_close(&r);
+}
+
 /* B6: the receiver crossed a hard boundary (a stream pause, a reconnect, a retune) since the call began, and the block
    that carries the moved epoch holds the old reception's end and the new one's start: the call ends at its last
    reception, that block is not written, and the next block begins a new call. Main wrote both receptions into one. */
@@ -1456,6 +1534,8 @@ test_hold_largest_silence_write(void) {
 static void
 test_analog_hold(void) {
     test_hold_row_ends_at_the_last_reception();
+    test_hold_row_end_is_the_block_stamp();
+    test_hold_needs_recording();
     test_hold_boundary_move_ends_the_call();
     test_hold_off_keeps_main_payloads();
     test_hold_joins_a_pause_up_to_the_max_gap();
