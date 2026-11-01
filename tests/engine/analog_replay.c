@@ -1006,6 +1006,24 @@ analog_tap_resample(const double* x, size_t n, long rate_in, long rate_out, size
     return y;
 }
 
+/* Scales one sample in @p step of @p disc (@p disc_n samples) to int16 into @p pcm (@p out_n samples); returns how many
+ * clipped. The reads stop at the end of @p disc as well as at the end of @p pcm. */
+static size_t
+analog_tap_quantize(const double* disc, size_t disc_n, size_t step, int16_t* pcm, size_t out_n) {
+    const double scale = ANALOG_TAP_SCALE * pow(10.0, (g_pcm_gain_db.set ? g_pcm_gain_db.value : 0.0) / 20.0);
+    size_t clipped = 0U;
+    size_t k = 0U;
+    for (size_t src = 0U; k < out_n && src < disc_n; src += step, k++) {
+        double v = floor((disc[src] * scale) + 0.5);
+        if (v > 32767.0 || v < -32768.0) {
+            clipped++;
+            v = v > 0.0 ? 32767.0 : -32768.0;
+        }
+        pcm[k] = (int16_t)v;
+    }
+    return clipped;
+}
+
 /* Writes the discriminator tap of @p cap into the private directory (see the file comment); 0, or -1 with a message. */
 static int
 analog_tap_write(const analog_capture* cap) {
@@ -1013,7 +1031,7 @@ analog_tap_write(const analog_capture* cap) {
     const long rate_in = analog_tap_capture_rate((const char*)cap->json);
     const long rate_out = (long)g_pcm_tap_hz.value;
     const size_t n = cap->data_len / 2U;
-    if (rate_in <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || n < 2U) {
+    if (rate_in <= 0 || rate_out <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || n < 2U) {
         DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap %g cannot be made from the capture's %ld Hz\n",
                     g_pcm_tap_hz.value, rate_in);
         return -1;
@@ -1023,6 +1041,7 @@ analog_tap_write(const analog_capture* cap) {
     const int divides = rate_out <= rate_in && rate_in % rate_out == 0;
     const long factor = divides ? rate_in / rate_out : 1;
     size_t out_n = divides ? n / (size_t)factor : 0U;
+    size_t disc_n = n; /* the samples disc holds */
     if (disc != NULL && g_pcm_lowpass_hz.set
         && analog_tap_lowpass_in_place(disc, n, g_pcm_lowpass_hz.value / (double)rate_in, ANALOG_TAP_LPF_TAPS) != 0) {
         free(disc);
@@ -1032,22 +1051,15 @@ analog_tap_write(const analog_capture* cap) {
         double* resampled = analog_tap_resample(disc, n, rate_in, rate_out, &out_n);
         free(disc);
         disc = resampled;
+        disc_n = out_n;
     }
-    int16_t* pcm = out_n > 0U ? (int16_t*)malloc(out_n * sizeof(int16_t)) : NULL;
+    int16_t* pcm = out_n > 0U ? (int16_t*)calloc(out_n, sizeof(int16_t)) : NULL;
     if (disc != NULL && pcm != NULL
         && (factor == 1
-            || analog_tap_lowpass_in_place(disc, n, ANALOG_TAP_ALIAS_FRACTION / (double)factor, ANALOG_TAP_CHANNEL_TAPS)
+            || analog_tap_lowpass_in_place(disc, disc_n, ANALOG_TAP_ALIAS_FRACTION / (double)factor,
+                                           ANALOG_TAP_CHANNEL_TAPS)
                    == 0)) {
-        const double scale = ANALOG_TAP_SCALE * pow(10.0, (g_pcm_gain_db.set ? g_pcm_gain_db.value : 0.0) / 20.0);
-        size_t clipped = 0U;
-        for (size_t k = 0; k < out_n; k++) {
-            double v = floor((disc[k * (size_t)factor] * scale) + 0.5);
-            if (v > 32767.0 || v < -32768.0) {
-                clipped++;
-                v = v > 0.0 ? 32767.0 : -32768.0;
-            }
-            pcm[k] = (int16_t)v;
-        }
+        const size_t clipped = analog_tap_quantize(disc, disc_n, (size_t)factor, pcm, out_n);
         DSD_FPRINTF(stderr, "analog replay: discriminator tap at %ld Hz, %zu samples, %zu clipped\n", rate_out, out_n,
                     clipped);
         if (analog_tap_write_wav(pcm, out_n, (int)rate_out) == 0

@@ -1484,6 +1484,10 @@ static int
 test_max_gap_set_applies_and_reports(void) {
     rig r;
     int rc = rig_open(&r, "dsdneo_rec_max_gap");
+    if (rc != 0) {
+        rig_close(&r);
+        return rc;
+    }
     rc |= expect_int("default off", r.opts->analog_record_max_gap_ms, 200);
     rc |= expect_int("max gap queued", dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 2000),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
