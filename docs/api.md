@@ -414,6 +414,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `rigctl_connect` | – |
 | `return_cc` | – |
 | `channel_cycle` | – |
+| `channel_cycle_prev` | – |
 | `symcap_save` | – |
 | `symcap_stop` | – |
 | `replay_last` | – |
@@ -720,6 +721,12 @@ field, and the decoder refuses the rest when it applies the command.
   configured decoder, and `status.message` ends in `; scan paused`. A refused or
   deferred tune changes nothing and says why. An entry while a scan is paused
   only tunes; the scan stays paused.
+* **`channel_cycle`** and **`channel_cycle_prev`**: one step forward or back
+  through the list the session runs: the trunk-scan targets, a `-Y` channel
+  map, the P25 control-channel candidates (`-^`) or the channel list, with the
+  same skip rules either way. Each is refused during an I/Q replay, while
+  Signal search runs, while the scan is paused, and without a tuner (a radio
+  input or a rigctl peer); `status.message` gives the reason.
 * **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a
   running `-Y` scan or trunk scan pauses where it is (`Automatic tuning
   paused`). A scan already paused stays paused. A trunk scan that cannot pause

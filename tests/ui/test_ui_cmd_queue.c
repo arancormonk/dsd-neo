@@ -219,6 +219,8 @@ void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
 void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
 void __real_dsd_engine_legacy_tune_caches_forget(void);
 void __wrap_dsd_engine_legacy_tune_caches_forget(void);
+int __real_dsd_engine_signal_search_active(const dsd_state* state);
+int __wrap_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
                                       uint64_t* out_pending_id);
 void __real_dsd_frame_sync_reset_mod_state(void);
@@ -392,6 +394,14 @@ void
 __wrap_dsd_engine_legacy_tune_caches_forget(void) {
     g_legacy_cache_forgets++;
     __real_dsd_engine_legacy_tune_caches_forget();
+}
+
+/* Signal search running, as a case says (a real one needs a live SDR), or as the engine says. */
+static int g_signal_search_active;
+
+int
+__wrap_dsd_engine_signal_search_active(const dsd_state* state) {
+    return g_signal_search_active || __real_dsd_engine_signal_search_active(state);
 }
 
 /* The frame-sync modulation votes dropped (issue #671): counted, and dropped for real. Only calls from outside the
@@ -5591,6 +5601,372 @@ test_trunk_scan_next_that_stays_says_so(void) {
     return rc;
 }
 
+/* A press of Previous that must ask the seam for @p hz (a fresh tune: @p calls is the count before it). */
+static int
+expect_prev_tuned(const char* label, uint32_t hz, int calls) {
+    if (g_manual_leg_calls != calls + 1 || g_manual_leg_hz != hz) {
+        DSD_FPRINTF(stderr, "%s: %d tune(s) to %u Hz (want 1 to %u Hz)\n", label, g_manual_leg_calls - calls,
+                    g_manual_leg_hz, hz);
+        return 1;
+    }
+    return 0;
+}
+
+/* Drain one Previous that must tune @p hz and leave the cursor at @p roll and the row heard at @p heard. */
+static int
+prev_lands(dsd_opts* opts, dsd_state* state, uint32_t hz, int roll, int heard, const char* label) {
+    const int calls = g_manual_leg_calls;
+    int rc = drain_action(opts, state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, label);
+    rc |= expect_prev_tuned(label, hz, calls);
+    rc |= expect_int(label, state->lcn_freq_roll, roll);
+    rc |= expect_int(label, dsd_state_lcn_heard_row(state), heard);
+    return rc;
+}
+
+/*
+ * Issue #666: Previous on an untyped -Y list. With no row heard yet it starts at the last row; then each press goes
+ * back from the row heard, past placeholders and avoided rows, wrapping. Every landing moves the cursor past the row,
+ * so Next goes on forward from where Previous landed. A hold stays on: Previous moves the scan, as Next does.
+ */
+static int
+test_channel_cycle_prev_walks_back(void) {
+    static const long kRows[] = {881000000L, 882000000L, 0L, 884000000L, 885000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 5);
+    rc |= expect_int("prev: avoid E", dsd_state_trunk_lcn_avoid_set(&state, 4U, 1), 0);
+    rc |= prev_lands(&opts, &state, 884000000U, 4, 3, "prev: first use starts at the end");
+    rc |= prev_lands(&opts, &state, 882000000U, 2, 1, "prev: past the placeholder");
+    rc |= prev_lands(&opts, &state, 881000000U, 1, 0, "prev: to the first row");
+    rc |= prev_lands(&opts, &state, 884000000U, 4, 3, "prev: wraps past the avoided row");
+
+    const int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "prev: then next");
+    rc |= expect_prev_tuned("prev: next goes on forward from there", 881000000U, calls);
+    rc |= expect_true("prev: next lands A", state.lcn_freq_roll == 1 && dsd_state_lcn_heard_row(&state) == 0);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "prev: hold");
+    rc |= expect_int("prev: held", (int)state.lcn_scan_hold, 1);
+    rc |= prev_lands(&opts, &state, 884000000U, 4, 3, "prev: moves while held");
+    rc |= expect_int("prev: the hold stays", (int)state.lcn_scan_hold, 1);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666: rows on one frequency in a row are one channel, from either side: Previous lands on a run's first row,
+ * goes back from the first row of the run heard (here a timed step had landed its second row), and skips a run whose
+ * first row is avoided. The first and last rows never join across the wrap.
+ */
+static int
+test_channel_cycle_prev_duplicate_runs(void) {
+    /* P, Q, Q, R, R, P */
+    static const long kRows[] = {891000000L, 892000000L, 892000000L, 893000000L, 893000000L, 891000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 6);
+    /* As a timed step leaves it on R's second row. */
+    state.lcn_freq_roll = 5;
+    dsd_state_lcn_on_air_note(&state, 4);
+    rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "runs: back from the run heard, onto Q's first row");
+    rc |= prev_lands(&opts, &state, 891000000U, 1, 0, "runs: to P");
+    rc |= prev_lands(&opts, &state, 891000000U, 6, 5, "runs: the last P is its own row across the wrap");
+    rc |= prev_lands(&opts, &state, 893000000U, 4, 3, "runs: onto R's first row");
+    rc |= expect_int("runs: avoid R's first row", dsd_state_trunk_lcn_avoid_set(&state, 3U, 1), 0);
+    rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "runs: an avoided first row skips its run");
+    rc |= prev_lands(&opts, &state, 891000000U, 1, 0, "runs: P again");
+    rc |= prev_lands(&opts, &state, 891000000U, 6, 5, "runs: and the last P");
+    rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "runs: past the avoided run from its other side");
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/* Row @p row's own key set: one keyloader key, @p value at index 9. */
+static int
+set_row_key(dsd_state* state, size_t row, unsigned long long value) {
+    dsd_key_set ks;
+    DSD_MEMSET(&ks, 0, sizeof(ks));
+    ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+    if (ks.entries == NULL) {
+        return 1;
+    }
+    ks.count = 1U;
+    ks.present = 1;
+    ks.keyloader = 1;
+    ks.entries[0].index = 9U;
+    ks.entries[0].value = value;
+    ks.entries[0].loaded = 1U;
+    return dsd_state_trunk_lcn_keys_set(state, row, &ks) != 0;
+}
+
+/*
+ * Issue #666: Previous onto a row the tuner defers tries the same row on the next press; onto one it refuses (a rigctl
+ * peer answering RPRT -1 out of its band) the press fails and nothing moves: the cursor, the row heard, its name and
+ * keys stay, and the next Previous goes back from the refused row, so it passes it on the second press. A failed
+ * Previous, then a failed Next, then Previous starts from the row heard again: Next drops the retry.
+ */
+static int
+test_channel_cycle_prev_refused_row(void) {
+    static const long kRows[] = {900000000L, 902000000L, 901000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    rc |= expect_int("prev dead row: name A", dsd_state_trunk_lcn_name_set(&state, 2U, "ALPHA"), 0);
+    rc |= expect_int("prev dead row: key A", set_row_key(&state, 2U, 999ULL), 0);
+    state.lcn_freq_roll = 2;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "prev dead row: next to A");
+    rc |= expect_true("prev dead row: A landed", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+    rc |= expect_u64("prev dead row: A's key", state.rkey_array[9], 999ULL);
+
+    manual_leg_script(902000000U, RTL_STREAM_TUNE_DEFERRED);
+    int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev dead row: X deferred");
+    rc |= expect_prev_tuned("prev dead row: X tried", 902000000U, calls);
+    rc |= expect_true("prev dead row: a deferral moves nothing",
+                      state.lcn_freq_roll == 3 && dsd_state_lcn_back_retry_row(&state) == -1);
+
+    manual_leg_script(902000000U, RTL_STREAM_TUNE_FAILED);
+    calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev dead row: X refused");
+    rc |= expect_prev_tuned("prev dead row: the deferred row is retried", 902000000U, calls);
+    rc |= expect_int("prev dead row: the refusal fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("prev dead row: the cursor and the row heard stay",
+                      state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+    rc |= expect_int("prev dead row: X is the row to go on from", dsd_state_lcn_back_retry_row(&state), 1);
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    (void)dsd_channel_label_current(&opts, &state, label, sizeof label);
+    rc |= expect_str("prev dead row: A still names the calls", label, "ALPHA");
+    rc |= expect_u64("prev dead row: A's key stays", state.rkey_array[9], 999ULL);
+    rc |= prev_lands(&opts, &state, 900000000U, 1, 0, "prev dead row: the second press passes X");
+    rc |= expect_int("prev dead row: the landing drops the retry", dsd_state_lcn_back_retry_row(&state), -1);
+
+    /* Failed Previous (A), failed Next (X), then Previous: from the row heard (W), so A again, not X. */
+    manual_leg_script(901000000U, RTL_STREAM_TUNE_FAILED);
+    calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev then next: A refused");
+    rc |= expect_prev_tuned("prev then next: A tried", 901000000U, calls);
+    rc |= expect_int("prev then next: A to retry", dsd_state_lcn_back_retry_row(&state), 2);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "prev then next: X refused");
+    rc |= expect_true("prev then next: next tried X", g_manual_leg_hz == 902000000U && state.lcn_freq_roll == 2);
+    rc |= expect_int("prev then next: next drops the retry", dsd_state_lcn_back_retry_row(&state), -1);
+    calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev then next: prev again");
+    rc |= expect_prev_tuned("prev then next: from the row heard again", 901000000U, calls);
+    rc |= expect_int("prev then next: W still heard", dsd_state_lcn_heard_row(&state), 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666: between two Previous presses, Avoid (which steps forward) drops a refused Previous's retry and the next
+ * Previous goes back from the row Avoid landed; after a channel map reload nothing on the new list has landed, so
+ * Previous starts at its last row.
+ */
+static int
+test_channel_cycle_prev_after_avoid_and_reload(void) {
+    static const long kRows[] = {911000000L, 912000000L, 913000000L, 914000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 4);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "avoid between: next to A");
+    manual_leg_script(914000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "avoid between: D refused");
+    rc |= expect_int("avoid between: D to retry", dsd_state_lcn_back_retry_row(&state), 3);
+    manual_leg_script(914000000U, RTL_STREAM_TUNE_OK);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid between: avoid A");
+    rc |= expect_true("avoid between: avoid stepped to B",
+                      g_manual_leg_hz == 912000000U && dsd_state_lcn_heard_row(&state) == 1);
+    rc |= expect_int("avoid between: the retry is gone", dsd_state_lcn_back_retry_row(&state), -1);
+    rc |= prev_lands(&opts, &state, 914000000U, 4, 3, "avoid between: back from B past the avoided A");
+
+    /* A reloaded list starts over: nothing on it has landed, so Previous starts at its last row. */
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_prev_reload") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        dsd_app_command_test_set_manual_tune_leg(NULL);
+        freeState(&state);
+        return 1;
+    }
+    static const char kMap[] = "channel,frequency_hz\n1,921000000\n2,922000000\n3,923000000\n";
+    rc |= write_file_bytes("prev_reload.csv", kMap, strlen(kMap));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "prev_reload.csv");
+    rc |= expect_int("reload: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("reload: a new list, nothing heard",
+                      state.lcn_freq_count == 3 && state.lcn_freq_roll == 0 && dsd_state_lcn_heard_row(&state) == -1);
+    rc |= prev_lands(&opts, &state, 923000000U, 3, 2, "reload: first use starts at the end again");
+    rc |= expect_int("reload: remove the map", remove("prev_reload.csv"), 0);
+    rc |= expect_int("reload: leave the temp directory", dsd_test_temp_cwd_leave(&cwd), 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666 (D7): Previous on a control-channel candidate list walks it backward, from the last candidate when none
+ * was handed out, and Next goes on forward from where it landed. A deferred tune leaves the walk where it was, so the
+ * next press picks the same candidate; a refusal passes it, as on the way forward.
+ */
+static int
+test_channel_cycle_prev_candidates(void) {
+    static const long kCands[] = {386012500L, 387012500L, 388012500L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.p25_prefer_candidates = 1;
+    for (int i = 0; i < 3; i++) {
+        (void)dsd_trunk_cc_candidates_add(&state, kCands[i], 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    }
+    arm_manual_leg();
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: first use");
+    rc |= expect_true("prev candidate: C tuned", g_manual_leg_hz == 388012500U);
+    rc |= expect_candidate_walk("prev candidate: C handed out", &state, 3, 1U);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: back to B");
+    rc |= expect_true("prev candidate: B tuned", g_manual_leg_hz == 387012500U);
+    rc |= expect_candidate_walk("prev candidate: B handed out", &state, 2, 2U);
+
+    manual_leg_script(386012500U, RTL_STREAM_TUNE_DEFERRED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: A deferred");
+    rc |= expect_true("prev candidate: deferred A tried", g_manual_leg_hz == 386012500U);
+    rc |= expect_candidate_walk("prev candidate: a deferral keeps the walk", &state, 2, 2U);
+    manual_leg_script(386012500U, RTL_STREAM_TUNE_OK);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: retry");
+    rc |= expect_true("prev candidate: the retry tunes A", g_manual_leg_hz == 386012500U);
+    rc |= expect_candidate_walk("prev candidate: A handed out once", &state, 1, 3U);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "prev candidate: next");
+    rc |= expect_true("prev candidate: next goes on forward to B", g_manual_leg_hz == 387012500U);
+    manual_leg_script(386012500U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: A refused");
+    rc |= expect_int("prev candidate: the refusal fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_candidate_walk("prev candidate: a refusal passes A", &state, 1, 5U);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: after the refusal");
+    rc |= expect_true("prev candidate: the next press wraps to C", g_manual_leg_hz == 388012500U);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666 (B7): Next and Previous with nothing to tune (neither a radio input nor a rigctl peer: a -Y list on
+ * Pulse input, say) used to do nothing and say nothing. Each now fails and says what can step channels; the list is
+ * left as it was.
+ */
+static int
+test_channel_cycle_without_a_tuner_says_so(void) {
+    static const long kRows[] = {931000000L, 932000000L};
+    static const int kIds[] = {DSD_APP_CMD_CHANNEL_CYCLE, DSD_APP_CMD_CHANNEL_CYCLE_PREV};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int i = 0; i < 2; i++) {
+        init_manual_walk_context(&opts, &state, kRows, 2);
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        opts.use_rigctl = 0;
+        rc |= drain_action(&opts, &state, kIds[i], i ? "no tuner: previous" : "no tuner: next");
+        rc |= expect_str("no tuner: the toast says what can step channels", state.ui_msg,
+                         "No tuner to change channel: use a radio input or a rigctl peer");
+        rc |= expect_int("no tuner: the press fails", dsd_app_command_test_last_failed(), 1);
+        rc |= expect_true("no tuner: nothing tuned or moved", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
+        dsd_app_command_test_set_manual_tune_leg(NULL);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
+ * Issue #666: Previous is refused where Next is. During an I/Q replay (a retune the user asked for) with the replay's
+ * reason; on a paused -Y scan, and on a paused trunk scan (whose coordinator answers PAUSED), with the paused toast;
+ * none reaches the tuner. Under a running trunk scan Previous is the coordinator's RETREAT, and a retreat that stays
+ * on its target says so, as Next does.
+ */
+static int
+test_channel_cycle_prev_refusals_and_trunk_scan(void) {
+    static const long kRows[] = {941000000L, 942000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev refused: replay");
+    rc |= expect_contains("prev refused: the replay's reason", state.ui_msg, "An I/Q replay cannot retune.");
+    rc |= expect_int("prev refused: replay fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("prev refused: replay tunes nothing", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    state.lcn_scan_paused = 1U;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev refused: paused -Y");
+    rc |= expect_str("prev refused: paused -Y toast", state.ui_msg, "Scan paused: resume it first");
+    rc |= expect_int("prev refused: paused -Y fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("prev refused: paused -Y tunes nothing", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county");
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.control = stay_scan_control;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_stay_control_calls = 0;
+    g_stay_control_result = 0;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev trunk scan: moved");
+    rc |= expect_true("prev trunk scan: a retreat",
+                      g_stay_control_calls == 1 && g_stay_control_last_op == DSD_TRUNK_SCAN_CONTROL_RETREAT);
+    rc |= expect_true("prev trunk scan: a move is silent", state.ui_msg[0] == '\0');
+    g_stay_control_result = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev trunk scan: stayed");
+    rc |= expect_str("prev trunk scan: a stay says so", state.ui_msg, "Staying on target county");
+    g_stay_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev trunk scan: one target");
+    rc |= expect_str("prev trunk scan: one target", state.ui_msg, "Trunk scan has only one target");
+    g_stay_control_result = DSD_TRUNK_SCAN_CONTROL_PAUSED;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev trunk scan: paused");
+    rc |= expect_str("prev trunk scan: paused toast", state.ui_msg, "Scan paused: resume it first");
+    rc |= expect_int("prev trunk scan: paused fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("prev trunk scan: every press reached the coordinator", g_stay_control_calls, 4);
+    dsd_trunk_scan_hooks_set(NULL);
+    freeState(&state);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Issue #666: while Signal search runs it owns the receiver, so Previous is refused with the search's notice, as Next
+   is, and nothing is tuned; once the search stops Previous goes through. */
+static int
+test_signal_search_refuses_channel_cycle_prev(void) {
+    static const long kRows[] = {951000000L, 952000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    g_signal_search_active = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "search: previous");
+    rc |= expect_contains("search: the search's notice", state.ui_msg, "Stop Signal search");
+    rc |= expect_int("search: previous fails", dsd_app_command_test_last_failed(), 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "search: next");
+    rc |= expect_contains("search: next refused alike", state.ui_msg, "Stop Signal search");
+    rc |= expect_true("search: nothing tuned", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
+    g_signal_search_active = 0;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "search: stopped");
+    rc |= expect_true("search: previous goes through", g_manual_leg_hz == 952000000U && state.lcn_freq_roll == 2);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* The codes the carrier on air decoded, and the Phase 2 seed it proved. */
 static void
@@ -8455,6 +8831,7 @@ test_commands_that_need_the_frame_loop(void) {
     } cases[] = {
         {&value, sizeof value, "scan avoid", DSD_APP_CMD_SCAN_AVOID, 1},
         {&value, sizeof value, "channel cycle", DSD_APP_CMD_CHANNEL_CYCLE, 1},
+        {&value, sizeof value, "previous channel", DSD_APP_CMD_CHANNEL_CYCLE_PREV, 1},
         {&value, sizeof value, "skip slot", DSD_APP_CMD_SKIP_SLOT, 1},
         {&value, sizeof value, "lockout slot", DSD_APP_CMD_LOCKOUT_SLOT, 1},
         {&value, sizeof value, "pulse input", DSD_APP_CMD_PULSE_IN_SET, 1},
@@ -24150,6 +24527,16 @@ main(void) {
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
+    rc |= test_channel_cycle_prev_walks_back();
+    rc |= test_channel_cycle_prev_duplicate_runs();
+    rc |= test_channel_cycle_prev_refused_row();
+    rc |= test_channel_cycle_prev_after_avoid_and_reload();
+    rc |= test_channel_cycle_prev_candidates();
+    rc |= test_channel_cycle_without_a_tuner_says_so();
+    rc |= test_channel_cycle_prev_refusals_and_trunk_scan();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_signal_search_refuses_channel_cycle_prev();
+#endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_channel_cycle_retries_a_cc_deferred_candidate();

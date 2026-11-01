@@ -8262,6 +8262,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
+            "LINKER:--wrap=dsd_engine_signal_search_active"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"

@@ -184,6 +184,34 @@ Generated (do not edit/commit):
     deferred tune is no refusal and keeps the cursor for a retry: `DSD_UNTYPED_STEP_DEFERRED` in the step and the
     resume (whose toast then says "deferred", as a typed resume's does), and `request_manual_tune()`'s io_control leg
     reports `DSD_TRUNK_TUNE_RESULT_DEFERRED` apart from a failure.
+  - Previous channel (`DSD_APP_CMD_CHANNEL_CYCLE_PREV` = 220, API `channel_cycle_prev`; issue #666) is Next
+    (`CHANNEL_CYCLE`) walked backward through the same list, and `apply_cmd_channel_cycle()` takes both ids with the
+    same refusals in the same order: an I/Q replay, Signal search (`command_allowed_during_search()`), a paused scan,
+    then no tuner (neither rigctl nor `AUDIO_IN_RTL`: `No tuner to change channel: use a radio input or a rigctl peer`,
+    a failed command, for both ids; it used to do nothing silently). Under `--trunk-scan` it posts RETREAT. One step per
+    press; the rotation, Next and a resume carry on forward from where it lands, since a landing writes `roll = row + 1`
+    either way.
+    - Untyped and `-T` lists (`apply_manual_lcn_cycle_untyped_dir_locked()`, `lcn_cycle_back_start()`): the walk goes
+      back from the row a refused Previous left to retry, else from the row heard taken back to the first row of its
+      run of equal frequencies (never across row 0), else from the last row; it lands on a run's first row
+      (`lcn_cycle_pick()`), so an avoided first row skips its run and the first and last rows never join. A refusal
+      keeps the cursor and the row heard and notes the row to retry (`dsd_state_lcn_back_retry_note()`); a deferral and
+      a walk with nowhere to land change nothing.
+    - Typed `-Y` lists (`dsd_engine_channel_scan_step_manual_dir()`): back from the retry, else from the position
+      (`dsd_state_lcn_on_air_row()`, not a failed or pending row), else from the last row; rows on one frequency are all
+      kept. `channel_scan::step_dir` says which way the staged row's step went: each start sets it before staging
+      (`channel_scan_begin_step()`; a Previous creates the extension for it), a restage of the row keeps it, and a pause
+      drops it. Its failure, at the tune or late (`dsd_engine_channel_scan_pending()`), goes through
+      `channel_scan_row_refused()`: forward moves the cursor past the row, back keeps the cursor and notes the retry. A
+      restage the tuner defers leaves nothing outstanding and the position on the row before, so the next Previous
+      reselects the row. While a row is outstanding a press services it, either way.
+    - The retry is dropped by any position write and at the start of every forward step: Next on either list, the timed
+      untyped step (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`)
+      and Avoid's step, so a refused Previous, a refused Next, then Previous starts from the row heard again.
+    - `-^` candidates: `p25_cc_prev_candidate()` (`dsd_trunk_cc_candidates_prev()`), with the same checkpoint and
+      restore on a deferral as Next.
+    - Tests: `APP_COMMAND_QUEUE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_NO_CARRIER_RESET`, `RUNTIME_TRUNK_CC_CANDIDATES`,
+      `P25_NEXT_CC_CANDIDATE_EDGES`, `API_COMMANDS`.
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
@@ -2245,6 +2273,10 @@ suite runs under this compiler.
     the P25 and DMR hunts and the manual `L` candidate leg.
     - `dsd_trunk_cc_candidates_next()` hands out the next eligible entry and counts it in `used`. Finding none leaves
       `idx` where it was, so `idx` 0 still means nothing was handed out (issue #666).
+    - `dsd_trunk_cc_candidates_prev()` (issue #666) walks backward with the same filter: from the entry before the last
+      one handed out (`idx - 1`), wrapping and ending at that entry, or with none handed out from the last entry. The
+      entry found becomes the last handed out (`idx = j + 1`, `used++`), so either walk goes on from it; finding none
+      changes nothing.
     - A pick comes before its tune. Each caller takes `dsd_trunk_cc_candidates_checkpoint()` first and hands it to
       `dsd_trunk_cc_candidates_restore()` when the tune is DEFERRED (no retune scheduled: "retry without advancing
       state"), so the next try picks the same entry; a refused or timed-out tune keeps it passed. The P25 hunt
@@ -3075,16 +3107,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
     `RTL_SET_FREQ` (the terminal's frequency entry, `=` or Input > `Frequency...`, Qt's Spectrum "Go to" and the API's
     `rtl_set_freq`), `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases,
-    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` (every leg: LCN, P25
-    candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q replay cannot retune."
-    (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail on the backend's
-    deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their main effect is on
-    the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts point at a release;
-    every refusal of the tap, the owner gates included, is a failed command with its reason toasted, as the frequency
-    entry's are. Qt and the control API learn it from the toast: they see only whether the command was queued. Qt's
-    Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call
-    codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading
-    follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV`
+    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
+    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
+    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+    main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
+    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
+    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
+    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
+    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
     the `-Y` avoid (`Avoiding <MHz> (<n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads stay Hz (the
@@ -3126,14 +3159,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     no paused scan to resume`), and a second one while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are
     refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
     stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
-    and trunking off leaves the pause. Hold, avoid, clear avoids and Next channel on a paused scan answer `Scan paused:
-    resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan keeps its hold,
-    while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan ends at an input
-    switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference adoption,
-    and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`, `SCAN_RESUME` and
-    `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part. `operator_tuned` is cleared
-    only by a resume and at session start, never by turning trunking or `-Y` on (an Explore followed by "Follow this
-    system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`.
+    and trunking off leaves the pause. Hold, avoid, clear avoids and Next and Previous channel on a paused scan answer
+    `Scan paused: resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan
+    keeps its hold, while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan
+    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
+    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
+    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
+    `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
+    followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
+    `API_COMMANDS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result

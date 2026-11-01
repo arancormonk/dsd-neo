@@ -915,6 +915,7 @@ static const api_command_desc k_commands[] = {
     API_ACTION("rigctl_connect", DSD_APP_CMD_RIGCTL_CONNECT),
     API_ACTION("return_cc", DSD_APP_CMD_RETURN_CC),
     API_ACTION("channel_cycle", DSD_APP_CMD_CHANNEL_CYCLE),
+    API_ACTION("channel_cycle_prev", DSD_APP_CMD_CHANNEL_CYCLE_PREV),
     API_ACTION("symcap_save", DSD_APP_CMD_SYMCAP_SAVE),
     API_ACTION("symcap_stop", DSD_APP_CMD_SYMCAP_STOP),
     API_ACTION("replay_last", DSD_APP_CMD_REPLAY_LAST),
