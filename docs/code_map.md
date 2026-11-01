@@ -159,10 +159,10 @@ Generated (do not edit/commit):
     `src/core/util/dsd_state_lcn_nav.c` declared in `<dsd-neo/core/state.h>`. It is written by exactly the events that
     move the cursor past a row the receiver was put on: `untyped_install_row()` (`engine.c`) for a non-zero row (the
     timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
-    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), and the manual untyped
-    `L` where it writes `roll = next + 1`. Never at a placeholder park, a deferral, a pending or failed step, a pause,
-    a late failure or a resume rollback. So after every accepted step `dsd_state_lcn_heard_row()` equals `roll - 1`; it
-    differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
+    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), and a manual untyped
+    step (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`. Never at a placeholder
+    park, a deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
+    step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
     another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
     none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. `lcn_back_retry_row`/`_freq`
     (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
@@ -178,7 +178,7 @@ Generated (do not edit/commit):
     step (`no_carrier_step_scanner_mode_if_needed()`, a refusal by any leg, a partial move included) and a late failure
     of its pending tune (`dsd_engine_scan_untyped_poll()`) set `roll = row + 1`; the boundary, the tone reset and the
     deadline behave as for any abandoned step, and a step with no front end keeps the cursor. The manual walk
-    (`apply_manual_lcn_cycle_untyped_locked()` in `app_command_queue.c`, through `lcn_cycle_pick()`,
+    (`apply_manual_lcn_cycle_untyped_dir_locked()` in `app_command_queue.c`, through `lcn_cycle_pick()`,
     `lcn_cycle_on_tune_outcome()` and `lcn_cycle_finish()`) does the same and also sets the voice gate's and visit cap's
     `*_roll_seen` to the new cursor, since both read any cursor move as a retune and the receiver did not move. A
     deferred tune is no refusal and keeps the cursor for a retry: `DSD_UNTYPED_STEP_DEFERRED` in the step and the
