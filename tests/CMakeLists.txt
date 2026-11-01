@@ -14828,6 +14828,17 @@ if(DSD_HAS_RADIO)
             PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
         )
     endif()
+    # A Windows-like timer tick for the waits (dsd_sleep_ms wrapped; GNU ld only).
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_retune_prepare
+            PRIVATE DSD_NEO_TEST_SLEEP_WRAP=1
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_retune_prepare
+            PRIVATE "-Wl,--wrap=dsd_sleep_ms"
+        )
+    endif()
     add_test(
         NAME IO_RTL_RETUNE_PREPARE
         COMMAND dsd-neo_test_io_rtl_retune_prepare

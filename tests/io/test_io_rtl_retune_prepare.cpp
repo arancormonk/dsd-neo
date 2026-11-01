@@ -29,6 +29,26 @@
 #include "rtl_stream_test_support.h"
 #include "test_env.h"
 
+#if defined(DSD_NEO_TEST_SLEEP_WRAP)
+/* A Windows-like timer tick: with it set, every dsd_sleep_ms() lasts at least that long, as Sleep(1) lasts a whole
+   tick (about 15.6 ms) at Windows' default timer resolution. A wait that counts sleeps instead of real time then runs
+   many times its bound. */
+static std::atomic<unsigned int> g_sleep_tick_ms{0U};
+
+// GNU ld --wrap requires external linkage and the reserved symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier, misc-use-internal-linkage)
+extern "C" void __real_dsd_sleep_ms(unsigned int ms);
+extern "C" void __wrap_dsd_sleep_ms(unsigned int ms);
+
+void
+__wrap_dsd_sleep_ms(unsigned int ms) {
+    const unsigned int tick = g_sleep_tick_ms.load(std::memory_order_relaxed);
+    __real_dsd_sleep_ms(ms < tick ? tick : ms);
+}
+
+// NOLINTEND(bugprone-reserved-identifier, misc-use-internal-linkage)
+#endif
+
 /* NaN and infinity built from their bit patterns: the global fast-math option warns on NAN and INFINITY, and these
  * cases check that the stream's own guards reject the values whatever the build mode. */
 static double
@@ -2481,6 +2501,34 @@ expect_fll_mixer_retune_policy(void) {
     return failed;
 }
 
+/* A retune's drain wait is bounded in real time: on an output no reader takes it waits the 50 ms default and clears
+ * what is left, never a count of sleeps a coarse timer tick stretches. */
+static int
+test_retune_drain_wait_bound(void) {
+    uint64_t waited_ms = 0U;
+    size_t used_after = 1U;
+    int failed = expect_int_eq("drain wait ran", rtl_stream_test_retune_drain_wait(64U, &waited_ms, &used_after), 0);
+    failed |= expect_waited("a retune's drain wait on an output no reader takes", waited_ms, 45U, 500U);
+    failed |= expect_int_eq("a drain that timed out clears the output", (int)used_after, 0);
+    return failed;
+}
+
+/* The waits again with a Windows-like 15 ms timer tick (IO_RTL_RETUNE_PREPARE failed on the Windows runner when a
+ * 150 ms delay counted as 150 one-millisecond sleeps took 2 s). Only where the linker wraps dsd_sleep_ms. */
+static int
+test_waits_under_coarse_timer_tick(void) {
+#if defined(DSD_NEO_TEST_SLEEP_WRAP)
+    g_sleep_tick_ms.store(15U, std::memory_order_relaxed);
+    int failed = test_retune_drain_wait_bound();
+    failed |= test_live_read_without_stream();
+    g_sleep_tick_ms.store(0U, std::memory_order_relaxed);
+    return failed;
+#else
+    DSD_FPRINTF(stderr, "SKIP: coarse timer tick cases need GNU ld --wrap\n");
+    return 0;
+#endif
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -3410,6 +3458,8 @@ main(void) {
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
     failed |= test_live_read_without_stream();
+    failed |= test_retune_drain_wait_bound();
+    failed |= test_waits_under_coarse_timer_tick();
     failed |= test_signal_search_drop_forgets_uplink_lookahead();
 
     return failed ? 1 : 0;
