@@ -14,8 +14,17 @@ extern "C" {
 #endif
 /** Enter the next eligible row. 1 committed, 0 parked/pending, -1 failed. Ignores hold for manual use. */
 int dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
-/** Manual next-row action: skip zero-frequency placeholders in one bounded pass. */
+/** Manual next-row action: dsd_engine_channel_scan_step_manual_dir() forward. */
 int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
+/** Manual step one row in direction @p dir (1 Next, -1 Previous; issue #666), skipping zero-frequency placeholders and
+ * avoided rows in one bounded pass and keeping rows that share a frequency (each may run another mode, options or
+ * keys). Forward starts at the cursor (lcn_freq_roll). Back starts before the row a refused Previous left to retry,
+ * else before the row heard (the last row a step landed: dsd_state_lcn_on_air_row()), wrapping, else at the last row.
+ * A row that lands moves the cursor past it either way; a refused one moves the cursor past it going forward, and
+ * going back keeps the cursor and is the row the next Previous retries; a deferral changes nothing. While a row's tune
+ * is outstanding or owed a restage, the press services it instead, either way. 1 committed, 0 parked/pending or
+ * nothing to land on, -1 failed. */
+int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */

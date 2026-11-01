@@ -1669,6 +1669,8 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
         return result > 0;
     }
     no_carrier_reset_nxdn_scan_markers(state);
+    /* The rotation goes on forward from the cursor, whatever a refused Previous left to retry (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
     // Rows the operator avoided are stepped over in this same pass rather than costing a
     // hangtime each, so a long run of avoids does not stall the scan.
     const int row = dsd_engine_scan_untyped_find_row(state, state->lcn_freq_roll, 0);

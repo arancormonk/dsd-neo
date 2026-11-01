@@ -118,6 +118,11 @@ typedef struct {
        not prepared before it or its decode mode not entered after it landed. A refused resume reports it. */
     int resume_roll;
     int start_failure;
+    /* The direction of the step the staged row belongs to (issue #666): -1 for a Previous, else forward (0, as a new
+       scan starts, reads as forward). Every start sets it before it stages its row, and a restage of that row keeps it,
+       so the row's failure, at its tune or late, is handled as that step's: going forward the cursor moves past the
+       row, going back it stays and the row is the one the next Previous retries (channel_scan_row_refused()). */
+    int step_dir;
 } channel_scan;
 
 static void
@@ -134,6 +139,23 @@ channel_scan_free(void* ptr) {
 static channel_scan*
 channel_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(channel_scan, state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN);
+}
+
+/* The scan's extension, created by the first row a scan starts. NULL when it cannot be allocated. */
+static channel_scan*
+channel_scan_obtain(dsd_state* state) {
+    channel_scan* scan = channel_scan_get(state);
+    if (scan) {
+        return scan;
+    }
+    scan = (channel_scan*)calloc(1, sizeof(*scan));
+    if (!scan) {
+        return NULL;
+    }
+    scan->committed_row = -1;
+    scan->session = dsd_scan_row_edit_new_session();
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
+    return scan;
 }
 
 static channel_scan_row_edit*
@@ -392,6 +414,22 @@ channel_scan_commit_owned(dsd_opts* opts, dsd_state* state, channel_scan* scan) 
     return result;
 }
 
+/* The staged row's tune ended in @p result without landing. A refusal (FAILED) of a forward step moves the cursor past
+   the row, so a bad row does not keep a later one from recovering the receiver and retiring the failed tune's frame
+   gate; a Previous's (issue #666) keeps the cursor and leaves the row for the next Previous to retry. A deferral or a
+   timeout changes neither: the same row is tried again. */
+static void
+channel_scan_row_refused(dsd_state* state, const channel_scan* scan, dsd_trunk_tune_result result) {
+    if (result != DSD_TRUNK_TUNE_RESULT_FAILED) {
+        return;
+    }
+    if (scan->step_dir < 0) {
+        dsd_state_lcn_back_retry_note(state, scan->row);
+        return;
+    }
+    state->lcn_freq_roll = scan->row + 1;
+}
+
 /* A resume's row never landed (issue #671): its tune failed late, or a retry was refused. The scan the resume began
    stays paused, its cursor back where the resume found its row. */
 static void
@@ -440,8 +478,8 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     channel_scan_end_calls(opts, state);
-    if (result == DSD_TRUNK_TUNE_RESULT_FAILED && scan->map_sequence == state->trunk_chan_map_seq) {
-        state->lcn_freq_roll = scan->row + 1;
+    if (scan->map_sequence == state->trunk_chan_map_seq) {
+        channel_scan_row_refused(state, scan, result);
     }
     scan->request = 0;
     return 0;
@@ -1009,7 +1047,6 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
 
 static int
 channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
-    channel_scan* scan = channel_scan_get(state);
     if (row < 0 || row >= state->lcn_freq_count) {
         return 0;
     }
@@ -1021,14 +1058,9 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
         return 0;
     }
+    channel_scan* scan = channel_scan_obtain(state);
     if (!scan) {
-        scan = (channel_scan*)calloc(1, sizeof(*scan));
-        if (!scan) {
-            return -1;
-        }
-        scan->committed_row = -1;
-        scan->session = dsd_scan_row_edit_new_session();
-        (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
+        return -1;
     }
     channel_scan_check_rows(opts, state, scan);
     scan->start_failure = DSD_SCAN_RESUME_FAILED_SETUP;
@@ -1084,13 +1116,25 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->start_failure =
         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
     channel_scan_end_calls(opts, state);
-    if (result == DSD_TRUNK_TUNE_RESULT_FAILED) {
-        /* A bad row must not prevent a later successful row from recovering
-         * the receiver and retiring the failed tune's frame gate. */
-        state->lcn_freq_roll = row + 1;
-    }
+    channel_scan_row_refused(state, scan, result);
     scan->request = 0;
     return -1;
+}
+
+/* A step in direction @p dir begins (issue #666): its row's failure is handled as that step's
+   (channel_scan_row_refused()). A forward step also starts from the cursor, whatever a refused Previous left to retry.
+   A scan's first row creates the extension, which reads as forward; a Previous creates it here. Returns -1 when it
+   cannot be allocated. */
+static int
+channel_scan_begin_step(dsd_state* state, int dir) {
+    if (dir > 0) {
+        dsd_state_lcn_back_retry_clear(state);
+    }
+    channel_scan* scan = dir < 0 ? channel_scan_obtain(state) : channel_scan_get(state);
+    if (scan) {
+        scan->step_dir = dir;
+    }
+    return (dir < 0 && !scan) ? -1 : 0;
 }
 
 int
@@ -1102,11 +1146,44 @@ dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
         (void)dsd_engine_channel_scan_pending(opts, state);
         return 0;
     }
+    (void)channel_scan_begin_step(state, 1);
     return channel_scan_start_row(opts, state, channel_scan_next_row(state));
 }
 
+/* Where a manual step in direction @p dir starts looking (issue #666). Forward: the cursor. Back: the row before the
+   one a refused Previous left to retry, else before the row heard (the position: the last row a step landed, not a
+   row it failed or still waits on), wrapping; with neither, the last row. */
+static int
+channel_scan_manual_start(const dsd_state* state, int dir) {
+    const int count = state->lcn_freq_count;
+    if (dir > 0) {
+        return (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= count) ? 0 : state->lcn_freq_roll;
+    }
+    int anchor = dsd_state_lcn_back_retry_row(state);
+    if (anchor < 0) {
+        anchor = dsd_state_lcn_on_air_row(state);
+    }
+    return anchor < 0 ? count - 1 : (anchor - 1 + count) % count;
+}
+
+/* The row a manual step lands on: from @p start, which is examined first, one row at a time in direction @p dir,
+   wrapping, the first with a frequency that is not avoided. Rows on one frequency are all kept: each may run another
+   mode, options or keys. One pass at most; -1 for none. */
+static int
+channel_scan_pick_row(const dsd_state* state, int start, int dir) {
+    const int count = state->lcn_freq_count;
+    int row = start;
+    for (int examined = 0; examined < count; examined++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+            return row;
+        }
+        row = (row + dir + count) % count;
+    }
+    return -1;
+}
+
 int
-dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
+dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir) {
     if (!opts || !state || opts->trunk_scan_enabled == 1 || state->lcn_freq_count <= 0) {
         return 0;
     }
@@ -1114,22 +1191,29 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
     if (scan && (scan->request || scan->retry)) {
         return dsd_engine_channel_scan_step(opts, state);
     }
-    int row = state->lcn_freq_roll;
-    if (row < 0 || row >= state->lcn_freq_count) {
-        row = 0;
-    }
-    for (int examined = 0; examined < state->lcn_freq_count; examined++) {
-        const long freq = *dsd_state_trunk_lcn_slot(state, row);
-        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
-            const int result = channel_scan_start_row(opts, state, row);
-            if (result >= 0) {
-                LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
-            }
-            return result;
+    dir = dir < 0 ? -1 : 1;
+    const int row = channel_scan_pick_row(state, channel_scan_manual_start(state, dir), dir);
+    if (row < 0) {
+        /* Nowhere to land: nothing is tuned, though a forward press still drops what a refused Previous left to retry. */
+        if (dir > 0) {
+            dsd_state_lcn_back_retry_clear(state);
         }
-        row = (row + 1) % state->lcn_freq_count;
+        return 0;
     }
-    return 0;
+    if (channel_scan_begin_step(state, dir) < 0) {
+        return -1;
+    }
+    const int result = channel_scan_start_row(opts, state, row);
+    if (result >= 0) {
+        LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n",
+                 (double)*dsd_state_trunk_lcn_slot_const(state, row) / 1000000);
+    }
+    return result;
+}
+
+int
+dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
+    return dsd_engine_channel_scan_step_manual_dir(opts, state, 1);
 }
 
 /* Put the RTL front end back on the configured receive family. Under -fA that is the configured analog profile
@@ -1231,6 +1315,8 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->family_requests = 0U;
     scan->familyless_supersedes = 0U;
     scan->family_attached = 0;
+    /* The direction of the step the row belonged to goes too: a resume's row is a forward step's (issue #666). */
+    scan->step_dir = 0;
 }
 
 void

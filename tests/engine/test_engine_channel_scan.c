@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "scan_analog_internal.h"
@@ -187,10 +188,16 @@ dsd_engine_scan_tune_moved(void) {
    a resume tunes its row as the running scan does, after the manual session's calls have ended). */
 static int tune_saw_open_call;
 static int tune_saw_scanner_mode = -1;
+/* The frequency the next tune must ask for: every list here sits on 150 MHz unless a case lays out rows on distinct
+   frequencies to see which row a step picked (issue #666). */
+static long expected_tune_hz = 150000000;
 
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
-    assert(freq == 150000000);
+    if (freq != expected_tune_hz) {
+        DSD_FPRINTF(stderr, "tune to %ld Hz, want %ld Hz\n", freq, expected_tune_hz);
+    }
+    assert(freq == expected_tune_hz);
     assert(opts->frame_nxdn48 == expected_nxdn);
     dsd_call_snapshot open_call;
     tune_saw_open_call = dsd_call_state_get(state, 0U, &open_call) > 0 && open_call.phase == DSD_CALL_PHASE_ACTIVE;
@@ -3144,6 +3151,180 @@ test_typed_unlanded_step_keeps_the_row_heard(void) {
     }
 }
 
+/* Issue #666: a typed -Y list laid out on distinct frequencies, so each step shows the row it picked: North 151 MHz,
+   East 152 MHz, a placeholder, West 154 MHz and, on West's frequency, "West P25", a row of another mode (rows that
+   share a frequency are kept: each may run another mode, options or keys). No row has landed yet. */
+static const long k_walk_hz[] = {151000000, 152000000, 0, 154000000, 154000000};
+
+static void
+typed_walk_fixture(dsd_opts* opts, dsd_state* state) {
+    static const char* const k_names[] = {"North", "East", NULL, "West", "West P25"};
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 5;
+    for (int row = 0; row < 5; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = k_walk_hz[row];
+        assert(dsd_channel_mode_set(state, row, row == 4 ? DSD_SCAN_MODE_P25 : DSD_SCAN_MODE_DMR) == 0);
+        if (k_names[row]) {
+            assert(dsd_state_trunk_lcn_name_set(state, (size_t)row, k_names[row]) == 0);
+        }
+    }
+    dsd_state_lcn_nav_reset(state);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+typed_walk_fixture_free(dsd_opts* opts, dsd_state* state) {
+    typed_pause_fixture_free(opts, state);
+    expected_tune_hz = 150000000;
+}
+
+/* One manual step in direction @p dir that must ask for row @p row's frequency. */
+static int
+typed_walk_step(dsd_opts* opts, dsd_state* state, int dir, int row) {
+    expected_tune_hz = k_walk_hz[row];
+    const int tunes_before = tunes;
+    const int result = dsd_engine_channel_scan_step_manual_dir(opts, state, dir);
+    assert(tunes == tunes_before + 1);
+    return result;
+}
+
+/* Issue #666: Previous on a typed list walks the rows backward: from the last row on first use, then from the row
+   heard, skipping the placeholder, keeping both rows on one frequency, and wrapping. Next and the timed step carry on
+   forward from where it landed. */
+static void
+test_typed_previous_walks_back(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    assert(typed_walk_step(opts, state, -1, 4) == 1);
+    assert(state->lcn_freq_roll == 5 && dsd_state_lcn_heard_row(state) == 4);
+    assert(strcmp(row_named(opts, state), "West P25") == 0);
+    assert(typed_walk_step(opts, state, -1, 3) == 1);
+    assert(state->lcn_freq_roll == 4 && dsd_state_lcn_heard_row(state) == 3);
+    assert(strcmp(row_named(opts, state), "West") == 0);
+    assert(typed_walk_step(opts, state, -1, 1) == 1); /* past the placeholder */
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+    assert(typed_walk_step(opts, state, -1, 0) == 1);
+    assert(typed_walk_step(opts, state, -1, 4) == 1); /* wrapping */
+    assert(state->lcn_freq_roll == 5 && dsd_state_lcn_heard_row(state) == 4);
+    /* Next goes on forward from there (the cursor wraps to row 0), and so does the timed step. */
+    assert(typed_walk_step(opts, state, 1, 0) == 1);
+    assert(state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+    /* An avoided row is skipped. */
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0, 1) == 0);
+    assert(typed_walk_step(opts, state, -1, 4) == 1);
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #666: a Previous whose row is refused, at once or after it was pending, keeps the cursor and the row heard
+   (and so the label); the next Previous goes on from the refused row, past it. A deferral retries the same row. Any
+   forward step -- Next, or the timed step -- starts from the cursor again, dropping the retry. */
+static void
+test_typed_previous_refusal_keeps_the_cursor(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 1;
+    assert(typed_walk_step(opts, state, 1, 1) == 1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(typed_walk_step(opts, state, -1, 0) == -1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_back_retry_row(state) == -1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(typed_walk_step(opts, state, -1, 0) == -1); /* the deferred row, retried */
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+    assert(dsd_state_lcn_back_retry_row(state) == 0 && strcmp(row_named(opts, state), "East") == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(typed_walk_step(opts, state, -1, 4) == 1); /* past the refused row, wrapping */
+    assert(state->lcn_freq_roll == 5 && dsd_state_lcn_heard_row(state) == 4);
+    assert(dsd_state_lcn_back_retry_row(state) == -1);
+
+    /* Pending, then refused late: the same. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_walk_step(opts, state, -1, 3) == 0);
+    assert(state->lcn_freq_roll == 5 && dsd_engine_channel_scan_waiting(state));
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(state->lcn_freq_roll == 5 && dsd_state_lcn_heard_row(state) == 4);
+    assert(dsd_state_lcn_back_retry_row(state) == 3 && strcmp(row_named(opts, state), "West P25") == 0);
+
+    /* The timed step goes forward from the cursor and drops the retry. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    expected_tune_hz = k_walk_hz[0];
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(state->lcn_freq_roll == 1 && dsd_state_lcn_back_retry_row(state) == -1);
+    /* So does Next: a refused Previous, then a refused Next, then Previous starts before the row heard again. */
+    assert(typed_walk_step(opts, state, -1, 3) == -1);
+    assert(dsd_state_lcn_back_retry_row(state) == 3);
+    assert(typed_walk_step(opts, state, 1, 1) == -1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_back_retry_row(state) == -1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(typed_walk_step(opts, state, -1, 3) == 1);
+    assert(state->lcn_freq_roll == 4 && dsd_state_lcn_heard_row(state) == 3);
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #666 (G4): a Previous whose row lands but is restaged (a setting it was prepared from changed while it was
+   outstanding) stays that Previous's: the row on air (Avoid's) is the landed row, frames stay gated until a commit,
+   and the row heard stays the one before. A restage the tuner defers leaves nothing outstanding, so the next Previous
+   reselects the same row and commits it; one the tuner refuses keeps the cursor and leaves the row to retry, as a
+   Previous's own refusal does. A Next in between starts from the cursor instead. */
+static void
+test_typed_previous_restaged(void) {
+    for (int variant = 0; variant < 3; variant++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_walk_fixture(opts, state);
+        state->lcn_freq_roll = 3;
+        assert(typed_walk_step(opts, state, 1, 3) == 1);
+        assert(state->lcn_freq_roll == 4 && dsd_state_lcn_heard_row(state) == 3);
+
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        assert(typed_walk_step(opts, state, -1, 1) == 0);
+        assert(dsd_scan_mode_suspend(opts, state));
+        opts->inverted_dmr = !opts->inverted_dmr;
+        (void)dsd_scan_mode_resume(opts, state);
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+        assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, owed a restage */
+        tune_result = variant == 2 ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        assert(!dsd_engine_channel_scan_waiting(state) && dsd_engine_channel_scan_on_air_row(state) == 1);
+        assert(state->lcn_freq_roll == 4 && dsd_state_lcn_heard_row(state) == 3);
+        assert(strcmp(row_named(opts, state), "West") == 0);
+        state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        assert(dsd_engine_channel_scan_service_sync(opts, state) == 0 && state->synctype == DSD_SYNC_NONE);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (variant == 2) {
+            /* Refused at the restage: the row is the one to retry, so the next Previous goes past it. */
+            assert(dsd_state_lcn_back_retry_row(state) == 1);
+            assert(typed_walk_step(opts, state, -1, 0) == 1);
+            assert(state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+        } else if (variant == 1) {
+            /* Next instead: forward from the cursor. */
+            assert(typed_walk_step(opts, state, 1, 4) == 1);
+            assert(state->lcn_freq_roll == 5 && dsd_state_lcn_heard_row(state) == 4);
+        } else {
+            assert(dsd_state_lcn_back_retry_row(state) == -1);
+            assert(typed_walk_step(opts, state, -1, 1) == 1);
+            assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+            assert(strcmp(row_named(opts, state), "East") == 0);
+        }
+        assert(dsd_engine_channel_scan_service_sync(opts, state) == 1);
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
 /* An untyped list resumes through the untyped step's entry (ENGINE_NO_CARRIER_RESET drives the real one): the first
    row from the kept cursor with a frequency, after the manual call ends; landed, pending or refused as it answers. */
 static void
@@ -3346,6 +3527,9 @@ main(void) {
     test_resume_without_a_landing_stays_paused();
     test_resume_pending_waits_for_its_row();
     test_typed_unlanded_step_keeps_the_row_heard();
+    test_typed_previous_walks_back();
+    test_typed_previous_refusal_keeps_the_cursor();
+    test_typed_previous_restaged();
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
     test_resume_skips_a_row_every_visit_skips();

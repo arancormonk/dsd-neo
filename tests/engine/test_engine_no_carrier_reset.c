@@ -2525,6 +2525,35 @@ test_untyped_step_passes_a_refused_row(void) {
     return rc;
 }
 
+/* Issue #666 (F8): the timed untyped step is forward navigation, so it drops the row a refused Previous left to retry,
+   even when its own row is refused: the next Previous then starts before the row heard again, not before the row an
+   earlier Previous was refused on. */
+static int
+test_untyped_step_drops_a_previous_retry(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_named_list(opts, state, 3, -1) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    untyped_step_now(opts, state);
+    dsd_state_lcn_back_retry_note(state, 2);
+    rc |= expect_true("previous-retry-noted", dsd_state_lcn_back_retry_row(state) == 2);
+    /* A step that lands writes the row heard, which drops the retry anyway; a refused one writes nothing. */
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    untyped_step_now(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_true("previous-retry-step-refused", g_rtl_tune_freq == 962012500U && state->lcn_freq_roll == 2
+                                                         && dsd_state_lcn_heard_row(state) == 0);
+    rc |= expect_true("previous-retry-dropped", dsd_state_lcn_back_retry_row(state) == -1);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #666 (N2): an untyped resume whose row tune the controller deferred behind another owner's said the tune
    failed. It says the tune was deferred, as a typed list's resume does, and the scan stays paused on its cursor. */
 static int
@@ -8527,6 +8556,7 @@ main(void) {
     rc |= test_untyped_unlanded_step_keeps_the_row_heard();
     rc |= test_untyped_park_keeps_the_row_heard();
     rc |= test_untyped_step_passes_a_refused_row();
+    rc |= test_untyped_step_drops_a_previous_retry();
     rc |= test_untyped_resume_says_a_deferral();
     rc |= test_entry_late_failure_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
