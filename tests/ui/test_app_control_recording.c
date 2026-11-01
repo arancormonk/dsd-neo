@@ -578,6 +578,48 @@ test_view_reports_pending_and_outcome(void) {
     return rc;
 }
 
+/* The view names the latest recording switch still in the queue apart from the latest recording command: a setting
+   sent behind a start names itself as the command, while the start is what records once the queue applies it. A switch
+   applied, refused or dropped is no longer pending. */
+static int
+test_view_names_the_pending_switch(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_view_switch");
+    rc |= expect_int("nothing pending at first", view_now().pending_switch_id, 0);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 2000);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("the setting is the latest command", v.command_id, DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET);
+    rc |= expect_int("the start is the pending switch", v.pending_switch_id, DSD_APP_CMD_WAV_START);
+    rc |= expect_int("not recording yet", v.per_call, 0);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("an applied start is no longer pending", v.pending_switch_id, 0);
+    rc |= expect_int("and records", v.per_call, 1);
+
+    submit(DSD_APP_CMD_WAV_STOP);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0);
+    v = view_now();
+    rc |= expect_int("a stop behind which a setting went pends", v.pending_switch_id, DSD_APP_CMD_WAV_STOP);
+    rc |= expect_int("while the view still records", v.per_call, 1);
+    (void)drain(&r);
+    rc |= expect_int("an applied stop is no longer pending", view_now().pending_switch_id, 0);
+
+    submit(DSD_APP_CMD_WAV_START);
+    submit(DSD_APP_CMD_WAV_STOP);
+    rc |= expect_int("the latest of two switches pends", view_now().pending_switch_id, DSD_APP_CMD_WAV_STOP);
+    dsd_app_frontend_runtime_stop();
+    rc |= expect_int("switches dropped with the session are not pending", view_now().pending_switch_id, 0);
+    dsd_app_frontend_runtime_start(r.opts, r.state);
+
+    submit(DSD_APP_CMD_WAV_TOGGLE);
+    rc |= expect_int("a toggle is a switch", view_now().pending_switch_id, DSD_APP_CMD_WAV_TOGGLE);
+    (void)drain(&r);
+    rc |= expect_int("applied, it is not pending", view_now().pending_switch_id, 0);
+    rig_close(&r);
+    return rc;
+}
+
 /* Per-call recording failures: which writer a case drives. */
 enum { WRITER_DIGITAL = 0, WRITER_EDACS = 1, WRITER_NFM = 2, WRITER_COUNT = 3 };
 
@@ -1700,6 +1742,7 @@ test_config_recording_reports_its_outcome(void) {
     DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
     rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("the config's recording pends", view_now().command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    rc |= expect_int("as a switch", view_now().pending_switch_id, DSD_APP_CMD_CONFIG_APPLY);
     (void)drain(&r);
     dsd_app_recording_view v = view_now();
     rc |= expect_int("the config's recording applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
@@ -1814,9 +1857,11 @@ test_unknown_only_set_refused_during_signal_search(void) {
     rc |= expect_int("the switch stays off", r.opts->record_unknown_only, 0);
     rc |= expect_true("the search's notice", strstr(r.state->ui_msg, "Stop Signal search") != NULL);
     submit(DSD_APP_CMD_WAV_START);
+    rc |= expect_int("the start pends", view_now().pending_switch_id, DSD_APP_CMD_WAV_START);
     (void)drain(&r);
     v = view_now();
     rc |= expect_int("a WAV start is refused the same way", v.command_state, DSD_APP_RECORDING_COMMAND_REFUSED);
+    rc |= expect_int("a refused start is no longer pending", v.pending_switch_id, 0);
     rc |= expect_int("and records nothing", r.opts->dmr_stereo_wav, 0);
     rc |= expect_int("nothing opened", count_dir(r.dir).files, 0);
     g_signal_search_active = 0;
@@ -1842,6 +1887,7 @@ main(void) {
     rc |= test_stop_publishes_the_nfm_recording_at_once();
     rc |= test_toggle_follows_the_mode();
     rc |= test_view_reports_pending_and_outcome();
+    rc |= test_view_names_the_pending_switch();
     for (int writer = 0; writer < WRITER_COUNT; writer++) {
         rc |= test_short_write_latches_the_segment(writer);
         rc |= test_close_failure_keeps_the_temp_file(writer);

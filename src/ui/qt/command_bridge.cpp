@@ -408,11 +408,13 @@ CommandBridge::sendWhileRecording(int command, int value) const {
     if (!recordingSessionLive(&view)) {
         return false;
     }
-    // Whether the session records each call, a start or stop still applying counted as done.
-    const bool pending = view.command_state == DSD_APP_RECORDING_COMMAND_PENDING;
-    const bool recording = pending && view.command_id == DSD_APP_CMD_WAV_START  ? true
-                           : pending && view.command_id == DSD_APP_CMD_WAV_STOP ? false
-                                                                                : view.per_call != 0U;
+    // Whether the session records each call, a switch still applying counted as done. That is the queue's latest
+    // switch, not the view's latest command: a setting sent behind a start names itself there, and the start is still
+    // on its way. A toggle or a config's recording still applying counts as recording: sent, a setting changes nothing
+    // while no call records, and kept back it would be lost if one does.
+    const int queued = view.pending_switch_id;
+    const bool recording =
+        queued == 0 ? view.per_call != 0U : queued != DSD_APP_CMD_WAV_STOP && queued != DSD_APP_CMD_WAV_STATIC_OPEN;
     if (!recording) {
         return true;
     }

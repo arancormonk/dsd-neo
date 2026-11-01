@@ -67,6 +67,11 @@ typedef struct {
     /** the longest pause, in ms, one NFM call and its recording survive (opts->analog_record_max_gap_ms, issue #756);
      *  200 or less is off */
     int32_t analog_max_gap_ms;
+    /** the latest recording switch submitted (WAV start, stop, toggle, static open, or a config carrying [recording])
+     *  while no published view shows its outcome yet: what records once the queue applies it, while @c mode still
+     *  shows the state before it; 0 for none. Set by dsd_app_recording_view_get() only, and kept apart from
+     *  @c command_id, which names the latest recording command of any kind (a setting sent after a start) */
+    int32_t pending_switch_id;
 } dsd_app_recording_view;
 
 /**

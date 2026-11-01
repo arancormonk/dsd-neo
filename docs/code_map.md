@@ -1259,7 +1259,9 @@ suite runs under this compiler.
   `DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, a recording command in the deferred list that refuses a value outside
   0..10000 and only stores the value: the analog call takes it at its next block or tick, below); `journal_state` is
   the recording journal's (below); `journal_named` is whether the run names one at all (the Qt app names one exactly
-  when it has a folder to record into). Tests: `APP_CONTROL_RECORDING`
+  when it has a folder to record into). `pending_switch_id` names the latest switch (start, stop, toggle, static open,
+  a config's [recording]) that no published view shows yet, apart from `command_id`, which a setting sent behind it
+  takes over: what records once the queue applies it. Tests: `APP_CONTROL_RECORDING`
   (every command case through the queue and through config applies, the transition table (every from-mode to every
   to-mode, folder, static and raw changes, each open failing), each writer's short write and close failure behind the
   seams in `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's
@@ -9032,12 +9034,14 @@ Qt Quick frontend (`src/ui/qt`):
     options ("static-wav": a start or a stop would close the user's file); the preference applies at the next start.
     `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the refusal, and its
     command readings stay "none" until this session sends a switch (the decoder's command state is process-wide).
-    `setRecordUnknownOnly()` and `setAnalogRecordMaxGap()` are sent only while the session records each call (a start
-    still applying counts) and are otherwise inert: they travel with the next Record calls on. `RecordingStatus`
-    (`recording_status.{h,cpp}`, context property `recordingStatus`, refreshed every UI tick by `UiController`) reads
-    `recording_view` for QML: per-call, slot files, unknown-only, the NFM pause hold (`analogMaxGapMs`), static WAV,
-    `storageNamed`, journal, the last command and its state ("pending" is Settings' "Applying..."; the hold's command
-    reads "analogMaxGap"), failures by kind and the last one, and the bridge's refusal.
+    `setRecordUnknownOnly()` and `setAnalogRecordMaxGap()` are sent only while the session records each call (the
+    view's `pending_switch_id` decides while a switch is still applying: a start counts, a stop does not, so a second
+    change behind a queued start is not lost) and are otherwise inert: they travel with the next Record calls on.
+    `RecordingStatus` (`recording_status.{h,cpp}`, context property `recordingStatus`, refreshed every UI tick by
+    `UiController`) reads `recording_view` for QML: per-call, slot files, unknown-only, the NFM pause hold
+    (`analogMaxGapMs`), static WAV, `storageNamed`, journal, the last command and its state ("pending" is Settings'
+    "Applying..."; the hold's command reads "analogMaxGap"), failures by kind and the last one, and the bridge's
+    refusal.
   - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
     `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
     and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
