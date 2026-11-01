@@ -404,8 +404,7 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         .protocol = state->synctype,
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
-        .channel =
-            state->dPMRVoiceFS2Frame.ColorCode[0] == (unsigned int)(-1) ? 0U : state->dPMRVoiceFS2Frame.ColorCode[0],
+        /* No channel: dPMR names no trunk channel, and the colour code is the row's access code. */
         .service_options = (uint16_t)((state->dPMRVoiceFS2Frame.Version[0] << 8U)
                                       | (state->dPMRVoiceFS2Frame.CommunicationMode[0] << 4U)
                                       | state->dPMRVoiceFS2Frame.CommsFormat[0]),

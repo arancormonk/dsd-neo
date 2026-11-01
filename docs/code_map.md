@@ -1174,8 +1174,8 @@ suite runs under this compiler.
   its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`, `RAN: --;`; `watchdog_event_code_text()`), and for
   an NXDN stand-in, which is never the row's access code (`dsd_access_code_current()`); the access code's numeric sys id
   (DMR `sys_id2`, P25 and NXDN `sys_id3`) holds the row's code or its "not decoded" value (DMR 16, P25 0, NXDN
-  `(unsigned)-1`), since 0 is a DMR and NXDN code, never a Phase 2 seed or a stand-in. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the
-  call's `channel`, which `dpmr_publish_call()` sets to 0 for an undecoded code. In
+  `(unsigned)-1`), since 0 is a DMR and NXDN code, never a Phase 2 seed or a stand-in. The dPMR event line's `CC:` is the row's decoded colour code (its access code); the
+  call's `channel` stays 0, as dPMR names no trunk channel (`dpmr_publish_call()`). In
   `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired segment that decoded
   one fills it (0 included), and a decoded code is never replaced. The DMR, NXDN and dPMR strings are then rebuilt from
   the merged row (`watchdog_event_rebuild_code_sysid()`), so a code one segment decoded and a system code or site only

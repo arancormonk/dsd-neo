@@ -610,6 +610,37 @@ test_confirmed_target_only_call_publishes_the_color_code(void) {
     return rc;
 }
 
+/* The colour code is the carrier's access code, never the call's channel: dPMR has no trunk channel number, and the
+   API documents `channel` as one. A confirmed call with a decoded colour code keeps channel 0 and reads the code as its
+   access code. */
+static int
+test_dpmr_channel_not_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_color_code = -1;
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    dpmr_publish_call(&opts, &state);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("cc-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("cc-call-channel", (int)call.channel, 0);
+    uint8_t kind = 0U;
+    uint16_t code = 0U;
+    rc |= expect_int(
+        "cc-access-code-read",
+        dsd_access_code_current(&state, call.protocol, call.service_options, call.has_service_metadata, &kind, &code),
+        1);
+    rc |= expect_int("cc-access-code-kind", kind, DSD_ACCESS_CODE_COLOR_CODE);
+    rc |= expect_int("cc-access-code", code, 12);
+    return rc;
+}
+
 /* An unconfirmed frame publishes nothing, the colour code included, even with a caller identity retained from an
    earlier transmission in the canonical call (issue #575). */
 static int
@@ -851,6 +882,7 @@ main(void) {
     rc |= test_unconfirmed_superframe_part_publishes_nothing();
     rc |= test_id_print_does_not_publish_the_color_code();
     rc |= test_confirmed_target_only_call_publishes_the_color_code();
+    rc |= test_dpmr_channel_not_colour_code();
     rc |= test_unconfirmed_frame_with_retained_caller_publishes_no_color_code();
     rc |= test_id_print_side_effects_suppress_invalid_ids();
     rc |= test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice();

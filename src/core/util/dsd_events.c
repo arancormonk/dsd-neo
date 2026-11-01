@@ -2069,8 +2069,7 @@ watchdog_event_current_build_event_m17(const watchdog_event_current_ctx* ctx, co
 static void
 watchdog_event_current_build_event_dpmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
-    // The row's decoded colour code, not the call's channel: the protocol sets the channel to 0 when no colour code
-    // decoded, which would read as CC 0 (issue #575).
+    // The row's decoded colour code (issue #575): dPMR names no channel, so the call's channel is 0.
     char cc_buf[12];
     const char* cc = watchdog_event_code_text(
         cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
