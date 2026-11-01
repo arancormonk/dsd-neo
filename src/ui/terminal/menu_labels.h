@@ -137,6 +137,7 @@ const char* lbl_lrrp_current(const void* vctx, char* b, size_t n);
 
 // Display
 const char* lbl_ui_compact(const void* v, char* b, size_t n);
+const char* lbl_ui_mouse_wheel(const void* v, char* b, size_t n);
 const char* lbl_ui_channels(const void* v, char* b, size_t n);
 const char* lbl_ui_p25_metrics(const void* v, char* b, size_t n);
 const char* lbl_ui_p25_affil(const void* v, char* b, size_t n);

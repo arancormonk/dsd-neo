@@ -393,6 +393,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `const_gate_delta` | `{value:number}` |
 | `eye_toggle` | – |
 | `eye_unicode_toggle` | – |
+| `mouse_wheel_toggle` | – |
 | `eye_color_toggle` | – |
 | `fsk_hist_toggle` | – |
 | `spectrum_toggle` | – |

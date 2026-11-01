@@ -40,6 +40,7 @@
 #include "menu_items.h"
 #include "menu_labels.h" // IWYU pragma: keep (prototypes for the label and predicate stubs)
 #include "test_ui_menu_tree_audit_stubs.h"
+#include "ui_mouse.h" // IWYU pragma: keep (prototype for the wheel predicate stub)
 
 #ifdef USE_RADIO
 #define AUDIT_NAME "UI_MENU_TREE_AUDIT"

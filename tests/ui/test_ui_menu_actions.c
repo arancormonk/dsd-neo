@@ -2028,6 +2028,7 @@ test_signal_chain_rows(void) {
         {act_vis_const_norm, DSD_APP_CMD_CONST_NORM_TOGGLE, "constellation norm"},
         {act_vis_eye, DSD_APP_CMD_EYE_TOGGLE, "eye"},
         {act_vis_eye_unicode, DSD_APP_CMD_EYE_UNICODE_TOGGLE, "eye unicode"},
+        {act_toggle_ui_mouse_wheel, DSD_APP_CMD_MOUSE_WHEEL_TOGGLE, "mouse wheel"},
         {act_vis_eye_color, DSD_APP_CMD_EYE_COLOR_TOGGLE, "eye color"},
         {act_vis_fsk, DSD_APP_CMD_FSK_HIST_TOGGLE, "fsk histogram"},
         {act_vis_spectrum, DSD_APP_CMD_SPECTRUM_TOGGLE, "spectrum"},

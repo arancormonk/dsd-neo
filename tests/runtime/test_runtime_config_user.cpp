@@ -812,6 +812,8 @@ test_render_input_variants_and_save_atomic(void) {
     DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "speaker");
     cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
     cfg.frontend_kind_is_set = 1;
+    cfg.terminal_mouse_wheel = 1;
+    cfg.terminal_mouse_wheel_is_set = 1;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_M17;
     cfg.has_demod = 1;
@@ -861,6 +863,7 @@ test_render_input_variants_and_save_atomic(void) {
     rc |= expect_contains("render rtl explicit zero ppm", rendered, "rtl_ppm = 0\n");
     rc |= expect_contains("render auto demod", rendered, "demod = \"auto\"\n");
     rc |= expect_contains("render pulse sink", rendered, "pulse_sink = \"speaker\"\n");
+    rc |= expect_contains("render mouse wheel", rendered, "terminal_mouse_wheel = true\n");
     rc |= expect_contains("render event log", rendered, "event_log = \"/tmp/events.log\"\n");
     rc |= expect_contains("render static wav", rendered, "static_wav = \"/tmp/static.wav\"\n");
     rc |= expect_contains("render raw wav", rendered, "raw_wav = \"/tmp/raw.wav\"\n");
@@ -967,6 +970,7 @@ test_load_and_apply_basic(void) {
                              "[output]\n"
                              "backend = \"null\"\n"
                              "frontend = \"terminal\"\n"
+                             "terminal_mouse_wheel = true\n"
                              "\n"
                              "[mode]\n"
                              "decode = \"dmr\"\n"
@@ -1064,6 +1068,11 @@ test_load_and_apply_basic(void) {
     }
     if (opts.frontend_kind != DSD_FRONTEND_TERMINAL) {
         DSD_FPRINTF(stderr, "terminal frontend not enabled\n");
+        rc |= 1;
+    }
+    if (!cfg.terminal_mouse_wheel_is_set || !cfg.terminal_mouse_wheel
+        || opts.frontend_terminal_display.mouse_wheel != 1) {
+        DSD_FPRINTF(stderr, "terminal_mouse_wheel = true not loaded or applied\n");
         rc |= 1;
     }
     if (!(opts.frame_dmr == 1 && opts.frame_p25p1 == 0 && opts.frame_p25p2 == 0 && opts.frame_ysf == 0)) {
@@ -2663,11 +2672,20 @@ test_snapshot_roundtrip(void) {
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
     opts.call_alert = 1;
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    int rc = 0;
+    if (opts.frontend_terminal_display.mouse_wheel != 0) {
+        DSD_FPRINTF(stderr, "an absent terminal_mouse_wheel must leave the wheel off\n");
+        rc |= 1;
+    }
+    opts.frontend_terminal_display.mouse_wheel = 1;
 
     dsdneoUserConfig snap;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
 
-    int rc = 0;
+    if (!snap.terminal_mouse_wheel_is_set || snap.terminal_mouse_wheel != 1) {
+        DSD_FPRINTF(stderr, "snapshot must carry the live wheel setting\n");
+        rc |= 1;
+    }
     if (!snap.has_input || snap.input_source != DSDCFG_INPUT_UDP) {
         DSD_FPRINTF(stderr, "snapshot input_source mismatch\n");
         rc |= 1;
@@ -2698,15 +2716,13 @@ test_snapshot_roundtrip(void) {
         rc |= 1;
     }
 
-    // Render snapshot to an in-memory file to ensure INI output does not crash.
-    FILE* tmp = tmpfile();
-    if (!tmp) {
-        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+    // Render the snapshot as Save config does; the live wheel setting must be written.
+    static char saved[16384];
+    if (render_config_to_buffer(&snap, saved, sizeof saved) != 0) {
         (void)remove(path);
         return 1;
     }
-    dsd_user_config_render_ini(&snap, tmp);
-    fclose(tmp);
+    rc |= expect_contains("save writes the wheel setting", saved, "terminal_mouse_wheel = true\n");
 
     (void)remove(path);
     return rc;

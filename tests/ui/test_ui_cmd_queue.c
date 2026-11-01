@@ -1184,6 +1184,16 @@ test_key_and_runtime_state_commands(void) {
     rc |= expect_int("slot preference auto set", opts.slot_preference, 2);
     rc |= expect_true("slot preference auto toast", strstr(state.ui_msg, "Slot preference -> Auto") != NULL);
 
+    opts.frontend_terminal_display.mouse_wheel = 0;
+    post_empty(DSD_APP_CMD_MOUSE_WHEEL_TOGGLE);
+    rc |= expect_int("mouse wheel on drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("mouse wheel toggled on", opts.frontend_terminal_display.mouse_wheel, 1);
+    rc |= expect_true("mouse wheel on toast", strstr(state.ui_msg, "Mouse wheel steps channels: On") != NULL);
+    post_empty(DSD_APP_CMD_MOUSE_WHEEL_TOGGLE);
+    rc |= expect_int("mouse wheel off drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("mouse wheel toggled off", opts.frontend_terminal_display.mouse_wheel, 0);
+    rc |= expect_true("mouse wheel off toast", strstr(state.ui_msg, "Mouse wheel steps channels: Off") != NULL);
+
     uint8_t short_payload = 0xFFU;
     state.K = 0x99999999U;
     state.A1[0] = 0x55U;
@@ -1403,6 +1413,7 @@ test_io_and_state_commands(void) {
     opts.frontend_display.const_norm_mode = 0;
     opts.frontend_terminal_display.eye_unicode = 0;
     opts.frontend_terminal_display.eye_color = 0;
+    opts.frontend_terminal_display.mouse_wheel = 0;
     opts.use_lpf = 0;
     opts.use_hpf = 0;
     opts.use_pbf = 0;
@@ -1425,6 +1436,7 @@ test_io_and_state_commands(void) {
     post_float(DSD_APP_CMD_CONST_GATE_DELTA, 1.0f);
     post_empty(DSD_APP_CMD_EYE_TOGGLE);
     post_empty(DSD_APP_CMD_EYE_UNICODE_TOGGLE);
+    post_empty(DSD_APP_CMD_MOUSE_WHEEL_TOGGLE);
     post_empty(DSD_APP_CMD_EYE_COLOR_TOGGLE);
     post_empty(DSD_APP_CMD_FSK_HIST_TOGGLE);
     post_empty(DSD_APP_CMD_SPECTRUM_TOGGLE);
@@ -1458,7 +1470,7 @@ test_io_and_state_commands(void) {
     post_empty(DSD_APP_CMD_LRRP_DISABLE);
     post_empty(DSD_APP_CMD_DMR_RESET);
 
-    rc |= expect_int("io/state commands applied", dsd_app_drain_cmds(&opts, &state), 37);
+    rc |= expect_int("io/state commands applied", dsd_app_drain_cmds(&opts, &state), 38);
     /* The M17 stream encoder keeps the input it started on, whose rate set its decimation: the four input switches
        are refused and open nothing (issue #634). */
     rc |= expect_int("input switches refused under the m17 stream encoder", opts.audio_in_type, AUDIO_IN_RTL);
@@ -1490,6 +1502,7 @@ test_io_and_state_commands(void) {
     rc |= expect_int("eye toggled", opts.frontend_display.eye_view, 1);
     rc |= expect_int("eye unicode toggled", opts.frontend_terminal_display.eye_unicode, 1);
     rc |= expect_int("eye color toggled", opts.frontend_terminal_display.eye_color, 1);
+    rc |= expect_int("mouse wheel toggled", opts.frontend_terminal_display.mouse_wheel, 1);
     rc |= expect_int("fsk histogram toggled", opts.frontend_display.fsk_hist_view, 1);
     rc |= expect_int("spectrum toggled", opts.frontend_display.spectrum_view, 1);
     rc |= expect_int("m17 tx toggled", state.m17encoder_tx, 1);

@@ -1259,6 +1259,14 @@ lbl_ui_compact(const void* v, char* b, size_t n) {
 }
 
 const char*
+lbl_ui_mouse_wheel(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Mouse wheel steps channels [%s]",
+                 onoff(c && c->opts && c->opts->frontend_terminal_display.mouse_wheel));
+    return b;
+}
+
+const char*
 lbl_ui_channels(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Channels [%s]", onoff(c && c->opts && c->opts->frontend_display.show_channels));

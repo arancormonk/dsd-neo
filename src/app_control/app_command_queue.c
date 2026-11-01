@@ -4523,6 +4523,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_CONST_NORM_TOGGLE,
     DSD_APP_CMD_EYE_TOGGLE,
     DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE,
     DSD_APP_CMD_EYE_COLOR_TOGGLE,
     DSD_APP_CMD_FSK_HIST_TOGGLE,
     DSD_APP_CMD_SPECTRUM_TOGGLE,
@@ -5197,6 +5198,17 @@ ui_cmd_handle_eye_unicode_toggle(dsd_opts* opts, dsd_state* state, const struct 
     return 1;
 }
 
+/* Opt-in terminal wheel stepping (issue #666). The toast names the state because the setting changes nothing on screen
+   until a -Y or --trunk-scan list runs. */
+static int
+ui_cmd_handle_mouse_wheel_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    opts->frontend_terminal_display.mouse_wheel = opts->frontend_terminal_display.mouse_wheel ? 0 : 1;
+    ui_set_toast(state, 3, "Mouse wheel steps channels: %s",
+                 opts->frontend_terminal_display.mouse_wheel ? "On" : "Off");
+    return 1;
+}
+
 static int
 ui_cmd_handle_eye_color_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
@@ -5262,6 +5274,7 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_EYE_TOGGLE, ui_cmd_handle_eye_toggle},
         {DSD_APP_CMD_EYE_UNICODE_TOGGLE, ui_cmd_handle_eye_unicode_toggle},
+        {DSD_APP_CMD_MOUSE_WHEEL_TOGGLE, ui_cmd_handle_mouse_wheel_toggle},
         {DSD_APP_CMD_EYE_COLOR_TOGGLE, ui_cmd_handle_eye_color_toggle},
         {DSD_APP_CMD_FSK_HIST_TOGGLE, ui_cmd_handle_fsk_hist_toggle},
         {DSD_APP_CMD_SPECTRUM_TOGGLE, ui_cmd_handle_spectrum_toggle},
@@ -9781,6 +9794,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_CONST_GATE_DELTA,
     DSD_APP_CMD_EYE_TOGGLE,
     DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE,
     DSD_APP_CMD_EYE_COLOR_TOGGLE,
     DSD_APP_CMD_FSK_HIST_TOGGLE,
     DSD_APP_CMD_SPECTRUM_TOGGLE,

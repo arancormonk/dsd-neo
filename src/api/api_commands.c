@@ -891,6 +891,7 @@ static const api_command_desc k_commands[] = {
     API_KIND("const_gate_delta", DSD_APP_CMD_CONST_GATE_DELTA, submit_float, "{value:number}"),
     API_ACTION("eye_toggle", DSD_APP_CMD_EYE_TOGGLE),
     API_ACTION("eye_unicode_toggle", DSD_APP_CMD_EYE_UNICODE_TOGGLE),
+    API_ACTION("mouse_wheel_toggle", DSD_APP_CMD_MOUSE_WHEEL_TOGGLE),
     API_ACTION("eye_color_toggle", DSD_APP_CMD_EYE_COLOR_TOGGLE),
     API_ACTION("fsk_hist_toggle", DSD_APP_CMD_FSK_HIST_TOGGLE),
     API_ACTION("spectrum_toggle", DSD_APP_CMD_SPECTRUM_TOGGLE),

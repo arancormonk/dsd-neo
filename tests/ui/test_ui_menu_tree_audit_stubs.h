@@ -118,6 +118,7 @@
     X(act_toggle_invert)                                                                                               \
     X(act_toggle_payload)                                                                                              \
     X(act_toggle_ui_channels)                                                                                          \
+    X(act_toggle_ui_mouse_wheel)                                                                                       \
     X(act_toggle_ui_compact)                                                                                           \
     X(act_toggle_ui_p25_affil)                                                                                         \
     X(act_toggle_ui_p25_callsign)                                                                                      \
@@ -315,6 +316,7 @@
     X(lbl_tune_group)                                                                                                  \
     X(lbl_tune_priv)                                                                                                   \
     X(lbl_ui_channels)                                                                                                 \
+    X(lbl_ui_mouse_wheel)                                                                                              \
     X(lbl_ui_compact)                                                                                                  \
     X(lbl_ui_p25_affil)                                                                                                \
     X(lbl_ui_p25_callsign)                                                                                             \
@@ -362,7 +364,8 @@
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
     X(scan_rotation_active)                                                                                            \
-    X(trunk_enabled)
+    X(trunk_enabled)                                                                                                   \
+    X(ui_mouse_wheel_available)
 
 #define AUDIT_PREDICATES_RADIO(X)                                                                                      \
     X(is_airspy_input)                                                                                                 \

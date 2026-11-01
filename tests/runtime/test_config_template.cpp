@@ -102,6 +102,10 @@ test_template_contains_sections(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing [output] section\n");
         rc = 1;
     }
+    if (!strstr(content, "terminal_mouse_wheel")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing the terminal_mouse_wheel key\n");
+        rc = 1;
+    }
     if (!strstr(content, "[mode]")) {
         DSD_FPRINTF(stderr, "FAIL: template missing [mode] section\n");
         rc = 1;

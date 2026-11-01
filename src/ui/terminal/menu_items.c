@@ -31,6 +31,7 @@
 
 #include "menu_actions.h"
 #include "menu_labels.h"
+#include "ui_mouse.h"
 
 #define NC_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -1113,6 +1114,12 @@ const NcMenuItem DISPLAY_MENU_ITEMS[] = {
      .help = "Collapse the screen to a scanner-style layout.",
      .hotkey = "c",
      .on_select = act_toggle_ui_compact},
+    {.id = "disp.mouse_wheel",
+     .label_fn = lbl_ui_mouse_wheel,
+     .help = "Wheel up steps to the Previous channel, down to the Next, while a -Y or --trunk-scan list runs. "
+             "Hold Shift to select text.",
+     .is_enabled = ui_mouse_wheel_available,
+     .on_select = act_toggle_ui_mouse_wheel},
     {.id = "disp.sections",
      .label = "Sections",
      .help = "Which on-screen sections are shown.",

@@ -694,6 +694,33 @@ test_analog_am_bandwidth_validation(void) {
     return result;
 }
 
+/* [output] terminal_mouse_wheel is a known BOOL: a boolean validates cleanly and anything else is an error. */
+static int
+test_terminal_mouse_wheel_validation(void) {
+    static const char* const good = "[output]\nterminal_mouse_wheel = true\n";
+    static const char* const bad = "[output]\nterminal_mouse_wheel = maybe\n";
+    int result = 0;
+    for (int i = 0; i < 2; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(i == 0 ? good : bad, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        const int rc = dsd_user_config_validate(path, &diags);
+        const int clean = (rc == 0 && diags.error_count == 0 && diags.warning_count == 0);
+        if (clean != (i == 0)) {
+            DSD_FPRINTF(stderr, "FAIL: terminal_mouse_wheel %s should %s (rc=%d errors=%d warnings=%d)\n",
+                        i == 0 ? "true" : "maybe", i == 0 ? "validate cleanly" : "be rejected", rc, diags.error_count,
+                        diags.warning_count);
+            result = 1;
+        }
+        dsdcfg_diags_free(&diags);
+        (void)remove(path);
+    }
+    return result;
+}
+
 static int
 test_trunk_scan_enabled_requires_targets_csv(void) {
     static const char* ini = "[trunk_scan]\n"
@@ -2266,6 +2293,7 @@ main(void) {
     rc |= test_inline_comments_match_composed_loader();
     rc |= test_include_cycle_and_depth_validation();
     rc |= test_trunk_scan_enabled_requires_targets_csv();
+    rc |= test_terminal_mouse_wheel_validation();
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_rejects_scanner();
     rc |= test_trunk_scan_include_composed_targets_csv_is_valid();

@@ -1857,6 +1857,12 @@ act_toggle_ui_compact(void* v) {
 }
 
 void
+act_toggle_ui_mouse_wheel(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_MOUSE_WHEEL_TOGGLE);
+}
+
+void
 act_toggle_ui_p25_callsign(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);

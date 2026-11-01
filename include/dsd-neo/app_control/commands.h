@@ -322,6 +322,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE = 625,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE = 626,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE = 627,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE = 628,
 
     // Key management
     DSD_APP_CMD_KEY_BASIC_SET = 640,     // payload: uint32_t

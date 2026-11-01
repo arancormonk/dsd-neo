@@ -288,6 +288,7 @@ Main Menu
 │   └── DSP structured output...
 ├── Display
 │   ├── Compact view [Off]                       c
+│   ├── Mouse wheel steps channels [Off]
 │   ├── Sections
 │   │   ├── Channels [On]
 │   │   ├── DSP panel [Off]                          (radio input only)

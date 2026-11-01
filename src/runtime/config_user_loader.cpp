@@ -430,6 +430,12 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
         if (parse_frontend_kind_value(val, &frontend) == 0) {
             set_config_frontend_kind(cfg, frontend);
         }
+    } else if (strcmp(key_lc, "terminal_mouse_wheel") == 0) {
+        int enabled = 0;
+        if (user_config_parse_bool_value(val, &enabled) == 0) {
+            cfg->terminal_mouse_wheel = enabled;
+            cfg->terminal_mouse_wheel_is_set = 1;
+        }
     } else if (strcmp(key_lc, "ncurses_ui") == 0) {
         int enabled = 0;
         if (user_config_parse_bool_value(val, &enabled) == 0) {
