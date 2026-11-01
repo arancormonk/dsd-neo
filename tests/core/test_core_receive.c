@@ -700,9 +700,15 @@ hold_close(hold_rig* r) {
     dsd_decode_clock_use_system();
 }
 
+/* The rig's time in seconds, as the decode clock converts it. Fast-math may turn a division by 1e9 here into a
+   multiplication by its rounded reciprocal, one ulp off the clock's exact division, so the clock does the conversion. */
 static double
 hold_now_m(const hold_rig* r) {
-    return (double)r->now_ns / 1e9;
+    const uint64_t live_ns = dsd_decode_now_mono_ns();
+    dsd_decode_clock_test_set_ns(r->now_ns);
+    const double now_m = dsd_decode_now_mono_s();
+    dsd_decode_clock_test_set_ns(live_ns);
+    return now_m;
 }
 
 static void
