@@ -16513,12 +16513,13 @@ if(DSD_HAS_RADIO)
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
     # must bypass the RAS-masked CSBK CRC so the TIII site identity decodes.
     # The second case pins colour code 0, which must not be mistaken for the
-    # "unknown" sentinel.
+    # "unknown" sentinel. Tier III numbers show one-based: raw network 1, site 1
+    # read "Net ID: 2; Site ID: 2" (issue #799 D1).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC
         dmr_t3_ras_cc
         "-fs -F"
-        "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1"
+        "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC_COLOR_CODE

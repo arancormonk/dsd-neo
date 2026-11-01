@@ -4731,7 +4731,8 @@ test_identity_lines_read_the_received_record(void) {
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);
     assert_capture_equals("| DMR BS - DCC: 01; SYS: 0A3F; Freq: 452.000000 MHz");
-    dsd_rxid_note_dmr_site_text(state, "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 1U, 1U,
+                           "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2");
     g_unicode_stub = 0;
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);

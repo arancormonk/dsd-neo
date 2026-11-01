@@ -159,7 +159,7 @@ dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, u
 }
 
 static void dmr_gateway_identifier(uint32_t source, uint32_t target);
-static void dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type);
+static void dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type);
 
 enum { DMR_T3_MAX_LCN = 4094 };
 
@@ -1690,9 +1690,15 @@ dmr_cspdu_cap_plus_handle_3b(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
         return;
     }
 
+    /* Its own site, bits 25..28, as SDRTrunk (CapacityPlusNeighbors) and OP25 (tk_trbo.py op 59) read it. */
+    const uint8_t site = (uint8_t)convert_bits_into_output(&cs_pdu_bits[25], 4);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, " Capacity Plus Adjacent Sites\n  ");
+    DSD_FPRINTF(stderr, " Capacity Plus Site: %d - Adjacent Sites\n  ", site);
+    if (dmr_csbk_crc_checked(state)) {
+        dmr_cap_plus_note_site(state, site);
+        dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    }
     DSD_MEMSET(nl, 0, sizeof(nl));
     DSD_MEMSET(nr, 0, sizeof(nr));
 
@@ -3210,30 +3216,20 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     }
 }
 
-static uint16_t
-dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t site_bits, uint8_t* is_capmax) {
-    uint16_t default_n = site_bits;
-
-    if (is_capmax) {
-        *is_capmax = 0;
+/* Whether a system code CSBK of feature set @p csbk_fid is Capacity Max's (Motorola's, FID 0x10), which brands the
+   carrier Motorola. Its sites read as any Tier III ones: the same -D split and numbering (dmr_tiii_site.h). */
+static uint8_t
+dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
+    if (csbk_fid != 0x10) {
+        return 0U;
     }
-    if (csbk_fid == 0x10) {
-        if (is_capmax) {
-            *is_capmax = 1;
-        }
-        if (opts->dmr_dmrla_is_set == 0) {
-            opts->dmr_dmrla_is_set = 1;
-            opts->dmr_dmrla_n = 0;
-        }
-        default_n = 0;
-        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
-    }
-    return dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
+    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    return 1U;
 }
 
 static void
-dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* model_str, uint16_t net, uint16_t site,
-                        uint16_t n, uint16_t sub_mask, const char* par_str, uint16_t syscode, uint8_t is_capmax) {
+dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* model_str, uint16_t net,
+                        const char* site_label, const char* par_str, uint16_t syscode, uint8_t is_capmax) {
     uint8_t reserved = cs_pdu_bits[16];
     uint8_t tsccas = cs_pdu_bits[17];
     uint8_t sync = cs_pdu_bits[18];
@@ -3247,15 +3243,8 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint8_t backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
     uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
-    if (n != 0) {
-        uint16_t display_net = dmr_tiii_display_net(net, n);
-        uint16_t display_site = dmr_tiii_display_site(site, n);
-        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
-        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, display_net,
-                    display_site, display_subsite, par_str);
-    } else {
-        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", model_str, net, site);
-    }
+    DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Cat: %s;", model_str,
+                (unsigned)dmr_tiii_display_net(net), site_label, par_str);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     if (is_capmax) {
         DSD_FPRINTF(stderr, " Capacity Max");
@@ -3297,33 +3286,25 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
 }
 
 static void
-dmr_syscode_print_type1(const char* model_str, uint16_t net, uint16_t site, uint16_t n, uint16_t sub_mask,
-                        uint16_t syscode) {
-    if (n != 0) {
-        uint16_t display_net = dmr_tiii_display_net(net, n);
-        uint16_t display_site = dmr_tiii_display_site(site, n);
-        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
-        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, display_net, display_site, display_subsite);
-    } else {
-        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d;", model_str, net, site);
-    }
+dmr_syscode_print_type1(const char* model_str, uint16_t net, const char* site_label, uint16_t syscode) {
+    DSD_FPRINTF(stderr, " %s; Net ID: %u; Site ID: %s;", model_str, (unsigned)dmr_tiii_display_net(net), site_label);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
 }
 
 static void
-dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type) {
+dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type) {
     uint8_t bpbits1[14];
     uint16_t syscode;
     uint8_t model;
     uint16_t net = 0;
     uint16_t site = 0;
     uint16_t site_bits = 0;
-    uint16_t n = 0;
-    uint16_t sub_mask = 0;
+    uint16_t dmrla = dmr_tiii_dmrla(opts->dmr_dmrla_is_set, opts->dmr_dmrla_n);
     uint8_t par;
     uint8_t is_capmax = 0;
     char model_str[8];
     char par_str[8];
+    char site_label[16];
 
     for (int i = 0; i < 14; i++) {
         bpbits1[i] = cs_pdu_bits[21 + i];
@@ -3342,32 +3323,24 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     model = (uint8_t)convert_bits_into_output(&cs_pdu_bits[40], 2);
     dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
 
-    n = dmr_syscode_effective_split_n(opts, state, csbk_fid, site_bits, &is_capmax);
-    sub_mask = dmr_tiii_subsite_mask(n);
+    is_capmax = dmr_syscode_note_capmax(state, csbk_fid);
+    dmr_tiii_site_label(site_label, sizeof(site_label), site, site_bits, dmrla);
     par = (uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2);
     dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
 
     if (type == 0) {
-        dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site, n, sub_mask, par_str, syscode, is_capmax);
-        if (n != 0) {
-            uint16_t display_net = dmr_tiii_display_net(net, n);
-            uint16_t display_site = dmr_tiii_display_site(site, n);
-            uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
-            DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", model_str,
-                         display_net, display_site, display_subsite, syscode);
-        } else {
-            DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", model_str, net,
-                         site, syscode);
-        }
+        dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site_label, par_str, syscode, is_capmax);
+        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%u-%s;%04X; ", model_str,
+                     (unsigned)dmr_tiii_display_net(net), site_label, syscode);
         /* Type 0 is C_ALOHA, naming this site; type 1 (C_BCAST vote or adjacent) names another and is no note.
            dmr_cspdu()'s gate also passes a burst -F accepted by RAS, or an MBC whose header CRC failed: the dispatcher
            flags those for the slot, and only a CRC that matched names the site. */
         if (dmr_csbk_crc_checked(state)) {
-            dmr_tiii_note_search_site(state, model_str, net, site, n, sub_mask, syscode);
+            dmr_tiii_note_search_site(state, model_str, net, site, dmrla, syscode);
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
         }
     } else if (type == 1) {
-        dmr_syscode_print_type1(model_str, net, site, n, sub_mask, syscode);
+        dmr_syscode_print_type1(model_str, net, site_label, syscode);
     }
 }

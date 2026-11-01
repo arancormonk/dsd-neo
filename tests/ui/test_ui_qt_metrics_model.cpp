@@ -601,7 +601,7 @@ test_site() {
     /* Another protocol replaces the identity. */
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
     dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 7U);
-    dsd_rxid_note_dmr_site_text(&state, "Cap+ · Site 3");
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 3U, 0U, "Cap+ · Site 3");
     dsd_rxid_note_dmr_rest_lsn(&state, 4U);
     dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
     DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "stale; ");
@@ -706,7 +706,8 @@ test_site() {
     dsd_rxid_note_dmr_t3_syscode(&state, 0x0A3FU);
     model.refresh(&opts, &state);
     expect("DMR system code", model.dmrT3Syscode() == 0x0A3F);
-    dsd_rxid_note_dmr_site_text(&state, "TIII Small · Net 1 · Site 2 · SYS 0A3F");
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 1U, 1U,
+                           "TIII Small · Net 1 · Site 2 · SYS 0A3F");
     model.refresh(&opts, &state);
     expect("DMR system code in the site text", model.dmrT3Syscode() == -1);
 

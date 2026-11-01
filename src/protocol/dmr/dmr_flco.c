@@ -1868,14 +1868,14 @@ typedef struct {
     uint16_t csc;
     uint16_t net;
     uint16_t site;
-    uint16_t n;
-    uint16_t sub_mask;
+    uint16_t site_bits;
+    uint16_t dmrla; /* the user's -D (dmr_tiii_site.h) */
     char model_str[8];
     char ts1_str[25];
     char ts2_str[25];
     uint8_t ts1_hash;
     uint8_t ts2_hash;
-    uint8_t con_netid;
+    uint16_t con_netid; /* 12 bits */
     uint8_t con_siteid;
     uint8_t capsite;
     uint8_t restchannel;
@@ -1909,34 +1909,28 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
 static void
 dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_data* data) {
     uint8_t model = (uint8_t)convert_bits_into_output(&slco_bits[4], 2);
-    uint16_t site_bits = 0;
-    uint16_t default_n = dmr_tiii_model_default_split_n(model);
     DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "");
 
     if (model == 0) {
         data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 9);
         data->site = (uint16_t)convert_bits_into_output(&slco_bits[15], 3);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Tiny");
-        site_bits = 3;
     } else if (model == 1) {
         data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 7);
         data->site = (uint16_t)convert_bits_into_output(&slco_bits[13], 5);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Small");
-        site_bits = 5;
     } else if (model == 2) {
         data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 4);
         data->site = (uint16_t)convert_bits_into_output(&slco_bits[10], 8);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Large");
-        site_bits = 8;
     } else if (model == 3) {
         data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 2);
         data->site = (uint16_t)convert_bits_into_output(&slco_bits[8], 10);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Huge");
-        site_bits = 10;
     }
 
-    data->n = dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
-    data->sub_mask = dmr_tiii_subsite_mask(data->n);
+    data->site_bits = dmr_tiii_site_bits(model);
+    data->dmrla = dmr_tiii_dmrla(opts->dmr_dmrla_is_set, opts->dmr_dmrla_n);
 }
 
 static void
@@ -1961,7 +1955,8 @@ dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) 
     data->slco = (uint8_t)convert_bits_into_output(&slco_bits[0], 4);
     data->reg = slco_bits[18];
     data->csc = (uint16_t)convert_bits_into_output(&slco_bits[19], 9);
-    data->con_netid = (uint8_t)convert_bits_into_output(&slco_bits[8], 8);
+    /* The Connect Plus network is bits 4..15, as SDRTrunk and OP25 read it (issue #799 F1). */
+    data->con_netid = (uint16_t)convert_bits_into_output(&slco_bits[4], 12);
     data->con_siteid = (uint8_t)convert_bits_into_output(&slco_bits[16], 8);
     data->capsite = (uint8_t)convert_bits_into_output(&slco_bits[22], 3);
     data->restchannel = (uint8_t)convert_bits_into_output(&slco_bits[16], 4);
@@ -1975,39 +1970,27 @@ dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) 
     }
 }
 
+/* The site as dsd-neo shows it (dmr_tiii_site_label()) and the site parameters the terminal shows, one-based. */
 static void
-dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint16_t syscode) {
-    if (data->n != 0) {
-        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
-        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
-        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
-        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", data->model_str,
-                     display_net, display_site, display_subsite, syscode);
-    } else {
-        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", data->model_str,
-                     data->net, data->site, syscode);
-    }
+dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint16_t syscode, char* site_label,
+                               size_t site_label_size) {
+    dmr_tiii_site_label(site_label, site_label_size, data->site, data->site_bits, data->dmrla);
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%u-%s;%04X; ", data->model_str,
+                 (unsigned)dmr_tiii_display_net(data->net), site_label, syscode);
 }
 
 static void
 dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)convert_bits_into_output(&slco_bits[4], 14);
-    if (data->n != 0) {
-        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
-        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
-        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
-        DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Reg Req: %d; CSC: %d;", data->model_str,
-                    display_net, display_site, display_subsite, data->reg, data->csc);
-    } else {
-        DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d; Reg Req: %d;", data->model_str, data->net,
-                    data->site, data->reg);
-    }
+    char site_label[16];
+    dmr_slco_print_tiii_site_parms(state, data, syscode, site_label, sizeof(site_label));
+    DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Reg Req: %d; CSC: %d;", data->model_str,
+                (unsigned)dmr_tiii_display_net(data->net), site_label, data->reg, data->csc);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
-    dmr_slco_print_tiii_site_parms(state, data, syscode);
 
     /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. C_SYS_PARMS is a control
        channel's: this carrier, where the receiver is tuned before the state machine hears of it. */
-    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
+    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->dmrla, syscode);
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
     dmr_sm_note_cc_activity(opts, state, 0);
 }
@@ -2015,18 +1998,12 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
 static void
 dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)convert_bits_into_output(&slco_bits[4], 14);
-    if (data->n != 0) {
-        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
-        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
-        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
-        DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Comp CC: %d;", data->model_str,
-                    display_net, display_site, display_subsite, data->reg);
-    } else {
-        DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", data->model_str, data->net, data->site);
-    }
+    char site_label[16];
+    dmr_slco_print_tiii_site_parms(state, data, syscode, site_label, sizeof(site_label));
+    DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Comp CC: %d;", data->model_str,
+                (unsigned)dmr_tiii_display_net(data->net), site_label, data->reg);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
-    dmr_slco_print_tiii_site_parms(state, data, syscode);
-    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
+    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->dmrla, syscode);
 }
 
 static int
@@ -2051,12 +2028,14 @@ dmr_slco_tg_hold_not_on_slot(const dsd_state* state) {
 }
 
 /* Every short LC reaches its handler only once Hamming(17,12,3) and its CRC-8 passed (dmr_slco()): what it names of the
-   site is the carrier's received identity. */
+   site is the carrier's received identity. The site field's width is disputed (bits 22..24 here, with 20..21 reserved;
+   20..24 in SDRTrunk), so the site is noted only while bits 20..21 are clear, where both readings agree; the CSBK 0x3B
+   names it otherwise (issue #799 F10, L1). */
 static void
 dmr_slco_note_cap_plus_site(dsd_state* state, const dmr_slco_data* data) {
-    char text[32];
-    DSD_SNPRINTF(text, sizeof(text), "Cap+ \xC2\xB7 Site %u", (unsigned)data->capsite);
-    dsd_rxid_note_dmr_site_text(state, text);
+    if (data->cap_reserved == 0U) {
+        dmr_cap_plus_note_site(state, data->capsite);
+    }
     if (data->restchannel != 0U) {
         dsd_rxid_note_dmr_rest_lsn(state, data->restchannel);
     }
@@ -2068,7 +2047,8 @@ dmr_slco_note_con_plus_site(dsd_state* state, const dmr_slco_data* data) {
     char text[48];
     DSD_SNPRINTF(text, sizeof(text), "Con+ \xC2\xB7 Net %u \xC2\xB7 Site %u", (unsigned)data->con_netid,
                  (unsigned)data->con_siteid);
-    dsd_rxid_note_dmr_site_text(state, text);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, data->con_netid, data->con_siteid, 0U,
+                           text);
     dsd_rxid_note_dmr_brand(state, "Connect Plus");
 }
 

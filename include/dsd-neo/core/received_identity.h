@@ -21,10 +21,10 @@
  * pass clears, so a retained value never reads as live.
  *
  * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, DMR site, NXDN
- * location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one: the parts that bind to
- * it and the control-channel frequency. A DMR site is told apart by its raw network and site numbers, never by the
- * display text built from them (only a site noted without numbers, dsd_rxid_note_dmr_site_text(), by its text). An IDAS carrier names its site twice, in the SCCH site
- * ID and in a Type-D SRV_INFO: when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a
+ * location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one: the parts that bind
+ * to it and the control-channel frequency. A DMR site is told apart by its raw network and site numbers, never by the
+ * display text built from them. An IDAS carrier names its site twice, in the SCCH site ID and in a Type-D SRV_INFO:
+ * when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a
  * location ID) and IDAS Type-D (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops
  * what the other sent and the control channel. A RAN is Type-C's (a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3,
  * NXDN TS 1-E 4.2.3, none of which carries one): a Type-D note drops a Type-C location and a RAN, and a RAN drops the
@@ -200,10 +200,10 @@ typedef struct dsd_received_identity {
     uint8_t tetra_colour;
 
     /* Text: */
-    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F",
-     * "Cap+ · Site 2", "Con+ · Net 3 · Site 5"; NUL-terminated, zero past the NUL (equal notes leave equal bytes). The
-     * view shows each part as a token, the "Net n" and "Site n" parts on the compact line. Presentation only: it
-     * follows the -D split, so no compare reads it while the raw numbers are valid. */
+    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 13 · Site 4 · SYS 1183" (Tier III
+     * one-based, "Site 1.4" with a -D split), "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"; NUL-terminated, zero past
+     * the NUL (equal notes leave equal bytes). The view shows each part as a token, the "Net n" and "Site n" parts on
+     * the compact line. Presentation only, always noted with the raw numbers, which every compare reads instead. */
     char dmr_site_text[64];
     char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated, zero past the NUL. */
 } dsd_received_identity;
@@ -261,10 +261,6 @@ void dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn);
  * same raw parts is the same site: the text is replaced and nothing else changes. */
 void dsd_rxid_note_dmr_site(dsd_state* state, uint8_t trunk, int has_net, uint16_t net, uint16_t site, uint8_t t3_model,
                             const char* text);
-/** Site text with no raw numbers, for a caller that has none (copied, truncated to the record's capacity): its prefix
- * names the trunking system, and another text than a valid one is another site, dropped as dsd_rxid_note_dmr_site()
- * drops one (the raw numbers included). */
-void dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text);
 void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
 /** The manufacturer's feature set ID @p mfid of a checked full LC or CSBK (0, the standard set, names none). */
 void dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid);

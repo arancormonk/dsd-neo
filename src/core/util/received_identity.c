@@ -322,27 +322,20 @@ rxid_dmr(dsd_state* state, uint8_t trunk) {
     return id;
 }
 
-/* The trunking system a brand or a site text's first part names. */
+/* The trunking system a brand names. */
 static uint8_t
-rxid_dmr_trunk_named(const char* text, int site_text) {
+rxid_dmr_trunk_named(const char* brand) {
     static const struct {
         const char* brand;
-        const char* site_prefix;
         uint8_t trunk;
     } k_names[] = {
-        {"Capacity Plus", "Cap+", (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS},
-        {"Connect Plus", "Con+", (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS},
-        {"Hytera XPT", NULL, (uint8_t)DSD_RXID_DMR_TRUNK_XPT},
-        {NULL, "TIII", (uint8_t)DSD_RXID_DMR_TRUNK_TIER3},
+        {"Capacity Plus", (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS},
+        {"Connect Plus", (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS},
+        {"Hytera XPT", (uint8_t)DSD_RXID_DMR_TRUNK_XPT},
     };
 
     for (size_t i = 0U; i < sizeof(k_names) / sizeof(k_names[0]); i++) {
-        const char* const name = site_text ? k_names[i].site_prefix : k_names[i].brand;
-        if (name == NULL) {
-            continue;
-        }
-        const int match = site_text ? strncmp(text, name, strlen(name)) == 0 : strcmp(text, name) == 0;
-        if (match) {
+        if (strcmp(brand, k_names[i].brand) == 0) {
             return k_names[i].trunk;
         }
     }
@@ -357,25 +350,6 @@ dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn) {
     }
     id->dmr_rest_lsn = lsn;
     rxid_set(id, DSD_RXID_DMR_REST_LSN);
-}
-
-void
-dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text) {
-    if (text == NULL || text[0] == '\0') {
-        return;
-    }
-    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(text, 1));
-    if (id == NULL) {
-        return;
-    }
-    char next[sizeof(id->dmr_site_text)];
-    rxid_copy_text(next, sizeof(next), text);
-    if (rxid_has(id, DSD_RXID_DMR_SITE_TEXT) && strcmp(id->dmr_site_text, next) != 0) {
-        /* Another site: its numbers, the rest channel and free channel it named and its control channel go with it. */
-        rxid_invalidate(id, RXID_DMR_SITE_PARTS);
-    }
-    DSD_MEMCPY(id->dmr_site_text, next, sizeof(next));
-    rxid_set(id, DSD_RXID_DMR_SITE_TEXT);
 }
 
 /* Whether a site note's raw parts name another site than the record's valid ones (the trunking system already is the
@@ -426,7 +400,7 @@ dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand) {
     if (brand == NULL || brand[0] == '\0') {
         return;
     }
-    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(brand, 0));
+    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(brand));
     if (id == NULL) {
         return;
     }

@@ -2063,8 +2063,8 @@ suite runs under this compiler.
   "Received identity note points"); content accepted only because `-F` or RAS relaxed a check keeps decoding and
   following but is never noted. Each part has a valid and a fresh bit. A DMR site keeps its raw network and site
   numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
-  text by `dsd_rxid_note_dmr_site()`), and only they tell one site from another: the site text is presentation (it
-  follows `-D`), compared only for a site noted without numbers (`dsd_rxid_note_dmr_site_text()`). Text copies zero
+  text by `dsd_rxid_note_dmr_site()`, the only way a DMR site is noted), and only they tell one site from another:
+  the site text is presentation (it follows `-D` and shows Tier III one-based) and is never compared. Text copies zero
   their whole field, so equal notes leave equal bytes. Threading: the decoder thread owns the record
   and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
@@ -7120,15 +7120,25 @@ the message passed its own check, with that message's values, an unchanged repea
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
-  system code and site text at `dmr_tiii_note_search_site()` (C_ALOHA with a genuine CRC, C/P_SYS_PARMS short LCs),
-  which notes the record whether or not a search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site
-  text and brand from its control (0xA, with the control channel) and traffic (0x9) short LCs and the brand from its
-  CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, and site text, rest LSN
-  and brand from its short LC; the Hytera XPT brand from its CSBKs, LC and short LC (XPT sends no site number of its
-  own), and the site's free channel (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's
-  `Free LCN: n;`) from its site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts
-  joined by ` · ` ("TIII Small · Net 12 · Site 3.1 · SYS 0A3F", "Cap+ · Site 2", "Con+ · Net 3 · Site 5"). The colour
-  code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
+  system code and site (raw network, site and model, and the text) at `dmr_tiii_note_search_site()` (C_ALOHA with a
+  genuine CRC, Capacity Max's FID 0x10 one included, C/P_SYS_PARMS short LCs), which notes the record whether or not a
+  search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site (its 12-bit network, short LC bits
+  4..15, and 8-bit site) and brand from its control (0xA, with the control channel) and traffic (0x9) short LCs and the
+  brand from its CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, its site
+  (`dmr_cap_plus_note_site()`) and brand from the checked neighbour CSBK 0x3B (own site, bits 25..28), and rest LSN,
+  brand and, only while bits 20..21 are clear, site from its short LC (decided limit: the short LC site field's width
+  is disputed, 3 bits here and 5 in SDRTrunk, and the two readings agree only with those bits clear); the Hytera XPT
+  brand from its CSBKs, LC and short LC (XPT sends no site number of its own), and the site's free channel
+  (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's `Free LCN: n;`) from its site status
+  CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts
+  joined by ` · ` ("TIII Small · Net 13 · Site 4 · SYS 1183", "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"). Tier III
+  numbers are shown one-based on every path (issue #799 D1: the network, the site and, with a `-D` split, the area
+  and the site in it, each the raw value + 1; `dmr_tiii_site.h`), and `-D n` is the spec's DMRLA (TS 102 361-4
+  §6.3.2.2.3, Figure 6.19): the top n SITE bits are the area, clamped to the model's SITE width; no `-D` or `-D 0`
+  shows the site whole. The decoder never writes `-D` (`dsd_opts::dmr_dmrla_*`): a Capacity Max C_ALOHA reads as any
+  Tier III one, keeping only its "Capacity Max" label and Motorola branding. Capacity Plus and Connect Plus numbers
+  are shown as sent. The colour code a slot type or EMB split by a carrier boundary would carry is neither noted nor
+  fed to the confidence lock
   (`dmr_data_carrier_left()`, `dsd_state_frame_read_lost()` before the decode). A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
   under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
   `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8. Nor does the

@@ -94,7 +94,7 @@ test_dmr(void) {
     expect_text("xpt compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 1, "DMR" DOT "CC 2" DOT "Free LCN 4");
     expect_text("xpt full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "CC 2" DOT "Free LCN 4" DOT "Hytera XPT");
     /* A Capacity Plus site on the same carrier is another system: the XPT site's free channel goes. */
-    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
     dsd_rxid_note_dmr_rest_lsn(state, 5U);
     expect_text("another trunking system replaces the xpt site", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
                 "CC 2" DOT "Site 2" DOT "Rest LSN 5");
@@ -108,7 +108,8 @@ test_dmr_site_parts(void) {
     dsd_state* state = new_state();
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
     dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
-    dsd_rxid_note_dmr_site_text(state, "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 16U, 1U,
+                           "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
     dsd_app_site_identity view;
     dsd_app_site_identity_view(state, &view);
     static const char* const texts[] = {"CC 1", "TIII Small", "Net 12", "Site 3.1", "SYS 0A3F"};
@@ -127,7 +128,7 @@ test_dmr_site_parts(void) {
 
     dsd_rxid_reset(state);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    dsd_rxid_note_dmr_site_text(state, "Cap+" DOT "Site 2");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+" DOT "Site 2");
     dsd_rxid_note_dmr_rest_lsn(state, 3U);
     dsd_rxid_note_dmr_brand(state, "Capacity Plus");
     expect_text("cap+ compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "CC 1" DOT "Site 2" DOT "Rest LSN 3");
@@ -135,7 +136,8 @@ test_dmr_site_parts(void) {
                 "CC 1" DOT "Cap+" DOT "Site 2" DOT "Rest LSN 3" DOT "Capacity Plus");
 
     dsd_rxid_reset(state);
-    dsd_rxid_note_dmr_site_text(state, "Con+" DOT "Net 3" DOT "Site 5");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 3U, 5U, 0U,
+                           "Con+" DOT "Net 3" DOT "Site 5");
     dsd_rxid_note_dmr_brand(state, "Connect Plus");
     expect_text("con+ compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "Net 3" DOT "Site 5");
     expect_text("con+ full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "Con+" DOT "Net 3" DOT "Site 5" DOT "Connect Plus");
@@ -221,7 +223,8 @@ test_dmr_ras(void) {
     dsd_rxid_note_dmr_ras(state);
     expect_text("ras compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 1, "DMR" DOT "CC 0" DOT "RAS");
     expect_text("ras full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "CC 0" DOT "RAS");
-    dsd_rxid_note_dmr_site_text(state, "TIII Large \xC2\xB7 Net 1 \xC2\xB7 Site 1");
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 0U, 2U,
+                           "TIII Large \xC2\xB7 Net 1 \xC2\xB7 Site 1");
     dsd_rxid_note_dmr_brand(state, "Motorola Tier III");
     expect_text("ras with a site compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
                 "CC 0" DOT "Net 1" DOT "Site 1" DOT "RAS");

@@ -1813,7 +1813,14 @@ setting, shown apart from what is received, and it is off by default: then the o
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
   the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
   another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it.
-- DMR Tier III Location Area n‑bits: `-D <0–10>`
+- DMR Tier III location area (DMRLA): `-D <0–10>`. A radio is programmed with how many of the top Site ID bits form
+  its location area (ETSI TS 102 361-4 §6.3.2.2.3); no message sends it, so `-D n` tells dsd-neo. With `-D n` the top
+  n bits are the area and the rest the site in it, shown `Site area.site`; with no `-D` or `-D 0` the Site ID is
+  shown whole. A value past the model's Site ID width (Tiny 3, Small 5, Large 8, Huge 10 bits) is treated as that
+  width, which leaves nothing to split. dsd-neo counts every Tier III number shown from 1 (the network, the site, the
+  area and the site in it are the value sent + 1, Capacity Max included), so raw Small network 2, site 27 (11011₂)
+  reads `Net 3 · Site 28`, or `Net 3 · Site 4.4` with `-D 2`. Sites are told apart by the values sent, never by this
+  text. Capacity Plus and Connect Plus numbers are shown as sent.
 - Env (CQPSK timing):
   - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.
   - When using RTL CQPSK input, the symbol sampler may gently nudge `symbolCenter` based on the smoothed CQPSK Gardner residual.
