@@ -441,9 +441,10 @@ Item {
                 compare(buttons[1].y, buttons[0].y)
                 compare(buttons[3].y, buttons[2].y)
                 compare(buttons[2].y > buttons[0].y, data.columns === 2, "Prev starts the second row")
-                compare(buttons[1].x - buttons[0].x, b.width + row.spacing)
-                compare(buttons[3].x - buttons[2].x, b.width + row.spacing)
-                compare(buttons[2].x, data.columns === 2 ? buttons[0].x : buttons[1].x + b.width + row.spacing)
+                var cell = buttons[0].width
+                compare(buttons[1].x - buttons[0].x, cell + row.spacing)
+                compare(buttons[3].x - buttons[2].x, cell + row.spacing)
+                compare(buttons[2].x, data.columns === 2 ? buttons[0].x : buttons[1].x + cell + row.spacing)
 
                 testContext.setMetric("scanRotationActive", false)
                 testContext.setMetric("scanPaused", true)
@@ -467,6 +468,7 @@ Item {
         // Issue #666 (B10): a scan button's label never breaks inside a word,
         // whatever the text size. On a 320 dp phone at Android's 200% font size
         // "Avoid" outgrew a third of the row and its label read "Avoi" over "d".
+        // The paused row's Resume scan is held to the same rule.
         function test_03f_scan_labels_never_break_inside_a_word_data() {
             return [
                 {tag: "360@1", width: 360, scale: 1},
@@ -486,8 +488,29 @@ Item {
             }
             return null
         }
+        // The visible labels in the scan row, each checked whole-word: returns
+        // their texts in row order.
+        function checkScanLabels(row) {
+            var seen = []
+            for (var i = 0; i < row.children.length; ++i) {
+                var button = row.children[i]
+                var label = button.visible && button.text !== undefined ? labelOf(button) : null
+                if (label === null)
+                    continue
+                var words = button.text.split(" ")
+                verify(label.lineCount <= words.length,
+                       button.objectName + ": \"" + button.text + "\" breaks inside a word (" + label.lineCount + " lines)")
+                for (var word of words)
+                    verify(label.width >= labelMetrics.advanceWidth(word),
+                           button.objectName + ": \"" + word + "\" does not fit its cell")
+                verify(!label.truncated, button.objectName + ": \"" + button.text + "\" is cut short")
+                seen.push(button.text)
+            }
+            return seen
+        }
         function test_03f_scan_labels_never_break_inside_a_word(data) {
             var row = findChild(screenLoader.item, "scanControlsRow")
+            var resume = findChild(screenLoader.item, "scanResumeButton")
             root.width = data.width
             Ui.Theme.fontScale = data.scale
             testContext.setHostRunning(true)
@@ -495,23 +518,17 @@ Item {
                 testContext.setMetric("scanRotationActive", true)
                 tryVerify(function () { return row.visible })
                 waitForRendering(screenLoader.item)
-                var checked = 0
-                for (var i = 0; i < row.children.length; ++i) {
-                    var button = row.children[i]
-                    var label = button.visible && button.text !== undefined ? labelOf(button) : null
-                    if (label === null)
-                        continue
-                    var words = button.text.split(" ")
-                    verify(label.lineCount <= words.length,
-                           button.objectName + ": \"" + button.text + "\" breaks inside a word (" + label.lineCount + " lines)")
-                    for (var word of words)
-                        verify(label.width >= labelMetrics.advanceWidth(word),
-                               button.objectName + ": \"" + word + "\" does not fit its cell")
-                    verify(!label.truncated, button.objectName + ": \"" + button.text + "\" is cut short")
-                    ++checked
-                }
-                verify(checked >= 3, "only " + checked + " scan labels found")
+                compare(checkScanLabels(row), ["Hold", "Avoid", "Prev", "Next"])
+
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setMetric("scanPaused", true)
+                testContext.setMetric("scanResumable", true)
+                tryVerify(function () { return resume.visible })
+                waitForRendering(screenLoader.item)
+                compare(checkScanLabels(row), ["Resume scan"])
             } finally {
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("scanResumable", false)
                 testContext.setMetric("scanRotationActive", false)
                 testContext.setHostRunning(false)
                 Ui.Theme.resetFontScale()
