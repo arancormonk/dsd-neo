@@ -112,10 +112,11 @@ ui_read_wheel_key(void) {
 #define UI_READ_KEY_MOUSE_RUN_MAX 16
 
 /*
- * ncurses reads every mouse report already waiting into its queue and returns one KEY_MOUSE for the run, leaving the
- * rest for getmouse() calls with no KEY_MOUSE of their own: an event left there would surface with the next report,
- * a notch made with the menu open stepping after it closes. So the whole run is read now, and its first notch
- * counts; any others arrived with it, inside the step throttle.
+ * ncurses may return one KEY_MOUSE for several reports already waiting (a button press with what follows it, say) and
+ * leave the rest in its queue with no KEY_MOUSE of their own. Separate notches can also come as one KEY_MOUSE each.
+ * An event left in the queue would surface with the next report, a notch made with the menu open stepping after it
+ * closes, so every read empties the queue and the first notch in it counts; any others arrived with it, inside the
+ * step throttle.
  */
 static int
 ui_read_wheel_key(void) {

@@ -8618,35 +8618,36 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `KEY_MOUSE`) into `UI_KEY_WHEEL_UP` (button 4 press) or `UI_KEY_WHEEL_DOWN` (button 5 press), private codes beside
     `UI_KEY_WIDE_CHAR` in `ui_keys.h`, and anything else into `ERR`: clicks, releases, a horizontal wheel, a refused
     `getmouse()` or `bstate` 0, and on ncurses a notch with `BUTTON_SHIFT`/`CTRL`/`ALT` (PDCurses reports no wheel
-    modifiers, so every vertical notch counts there). ncurses returns one `KEY_MOUSE` for every report already waiting
-    and keeps the rest in its queue with no `KEY_MOUSE` of their own, so the read drains the queue with `getmouse()`
-    and the run's first notch counts; PDCurses has no queue and reads `nc_getmouse()` once. `UI_KEY_HAVE_WHEEL`
-    (`KEY_MOUSE`, `BUTTON4_PRESSED` and `BUTTON5_PRESSED` defined) builds the wheel in; an ncurses with mouse version
-    1 builds it out. The frame loop (`ui_async.c`) handles the wheel codes itself: `dsd_terminal_handle_input()` (live
-    decoder pointers) and the menu never see them, and a wheel code read while ineligible is dropped. Capture rule
-    (`ui_mouse.{h,c}`, UI thread only): each frame wants the capture when `frontend_terminal_display.mouse_wheel` is
-    on, `dsd_app_scan_state_view_get()` on the frame's opts and state snapshots (fetched once per frame) reports
-    `running` (a paused scan does not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt
-    counts), the input is not STDIN, and `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate);
-    `ui_mouse_capture_set()` acts on a change only. ncurses: the first capture calls `mouseinterval(0)` and
-    `mousemask()` with buttons 1-3 press and release plus the 4 and 5 presses; that parse mask is never cleared at
-    runtime, because a report outside the mask makes `wgetch()` loop into a blocking read (a click after
-    `mousemask(0)` froze the UI thread until the next key). On and off after that is the terminal's tracking string:
-    terminfo `XM` through `tiparm()` and `putp()` (which writes to stdout, so it is flushed), else ncurses' own default
-    by the same rule as its `init_xterm_mouse()` (numeric `XM` 1006 gives the SGR form). ncurses is admitted only
-    where it uses its xterm mouse driver (`ui_mouse_xterm_admitted()`, pure): `kmous` begins with ESC `[`,
-    `NCURSES_GPM_TERMS` is unset (any value refuses) and `TERM` (both read through `dsd_env_copy()`) does not contain
-    "linux"; otherwise `mousemask()` is never called and the row is hidden. A `mousemask()` that returns 0 hides it
-    too. PDCurses: `mousemask()` with that mask plus `MOUSE_WHEEL_SCROLL` on and 0 off (its read never blocks, and mask
-    0 gives conhost its QuickEdit back), `mouseinterval(0)` once. `ui_mouse_capture_close()` before
-    `dsd_terminal_close()` turns the capture off and forgets the terminal; `endwin()` turns tracking off too. Each
-    accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or `DSD_APP_CMD_CHANNEL_CYCLE` (down) through
-    `dsd_app_command_action()`, at most one per 150 ms on `dsd_realtime_mono_ns()` (later notches dropped, so a flick
-    cannot flood the 128-slot queue, which drops its oldest command). Decided limits: after Ctrl+Z / `fg` ncurses
-    turns tracking back on until the next capture change (reports are parsed and dropped); a hard crash leaves an
-    ncurses terminal in mouse mode. Tests: `UI_READ_KEY`, `UI_ASYNC_LIFECYCLE` (curses and terminfo stubs),
-    `UI_MOUSE` (admission), `UI_MOUSE_NO_WHEEL` (built against the fake `tests/ui/curses.h`, which has no button 5:
-    the row is hidden), `UI_MOUSE_PTY` (real ncurses on a pty, `docs/testing.md`), `UI_PROMPT_VALIDATION`.
+    modifiers, so every vertical notch counts there). ncurses may return one `KEY_MOUSE` for several reports already
+    waiting and leave the rest in its queue with no `KEY_MOUSE` of their own (separate notches can also come as one
+    each), so every read drains the queue with `getmouse()` and the first notch in it counts; PDCurses has no queue and
+    reads `nc_getmouse()` once. `UI_KEY_HAVE_WHEEL` (`KEY_MOUSE`, `BUTTON4_PRESSED` and `BUTTON5_PRESSED` defined)
+    builds the wheel in; an ncurses with mouse version 1 builds it out. The frame loop (`ui_async.c`) handles the wheel
+    codes itself: `dsd_terminal_handle_input()` (live decoder pointers) and the menu never see them, and a wheel code
+    read while ineligible is dropped. Capture rule (`ui_mouse.{h,c}`, UI thread only): each frame wants the capture when
+    `frontend_terminal_display.mouse_wheel` is on, `dsd_app_scan_state_view_get()` on the frame's opts and state
+    snapshots (fetched once per frame; the draw renders the same state snapshot) reports `running` (a paused scan does
+    not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt counts), the input is not STDIN,
+    and `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate); `ui_mouse_capture_set()` acts on a
+    change only. ncurses: the first capture calls `mouseinterval(0)` and `mousemask()` with buttons 1-3 press and
+    release plus the 4 and 5 presses; that parse mask is never cleared at runtime, because a report outside the mask
+    makes `wgetch()` loop into a blocking read (a click after `mousemask(0)` froze the UI thread until the next key). On
+    and off after that is the terminal's tracking string: terminfo `XM` through `tiparm()` and `putp()` (which writes to
+    stdout, so it is flushed), else ncurses' own default by the same rule as its `init_xterm_mouse()` (numeric `XM` 1006
+    gives the SGR form). ncurses is admitted only where it uses its xterm mouse driver (`ui_mouse_xterm_admitted()`,
+    pure): `kmous` begins with ESC `[`, `NCURSES_GPM_TERMS` is unset (any value refuses) and `TERM` (both read through
+    `dsd_env_copy()`) does not contain "linux"; otherwise `mousemask()` is never called and the row is hidden. A
+    `mousemask()` that returns 0 hides it too. PDCurses: `mousemask()` with that mask plus `MOUSE_WHEEL_SCROLL` on and 0
+    off (its read never blocks, and mask 0 gives conhost its QuickEdit back), `mouseinterval(0)` once.
+    `ui_mouse_capture_close()` before `dsd_terminal_close()` turns the capture off and forgets the terminal; `endwin()`
+    turns tracking off too. Each accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or
+    `DSD_APP_CMD_CHANNEL_CYCLE` (down) through `dsd_app_command_action()`, at most one per 150 ms on
+    `dsd_realtime_mono_ns()` (later notches dropped, so a flick cannot flood the 128-slot queue, which drops its oldest
+    command). Decided limits: after Ctrl+Z / `fg` ncurses turns tracking back on until the next capture change (reports
+    are parsed and dropped); a hard crash leaves an ncurses terminal in mouse mode. Tests: `UI_READ_KEY`,
+    `UI_ASYNC_LIFECYCLE` (curses and terminfo stubs), `UI_MOUSE` (admission), `UI_MOUSE_NO_WHEEL` (built against the
+    fake `tests/ui/curses.h`, which has no button 5: the row is hidden), `UI_MOUSE_PTY` (real ncurses on a pty,
+    `docs/testing.md`), `UI_PROMPT_VALIDATION`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in

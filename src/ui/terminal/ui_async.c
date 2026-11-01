@@ -192,25 +192,24 @@ ui_close_curses_if_opened(int curses_opened) {
 }
 
 static void
-ui_draw_frame(const dsd_opts* osnap) {
-    /* Draw using a state snapshot when available */
-    const dsd_state* snap = dsd_app_get_latest_snapshot();
-    if (snap) {
-        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)snap);
+ui_draw_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
+    /* Draw using the frame's state snapshot when available */
+    if (ssnap) {
+        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)ssnap);
     } else {
         dsd_terminal_render((dsd_opts*)osnap, g_ui_state);
     }
 }
 
 static void
-ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
+ui_draw_if_needed(const dsd_opts* osnap, const dsd_state* ssnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
     uint64_t now_ns = dsd_realtime_mono_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
     if (!(dsd_app_frontend_redraw_consume() || dt_ns >= frame_ns)) {
         return;
     }
     atomic_store(&g_ui_in_context, 1);
-    ui_draw_frame(osnap);
+    ui_draw_frame(osnap, ssnap);
     atomic_store(&g_ui_in_context, 0);
     ui_commit_frame();
     *last_draw_ns = now_ns;
@@ -263,7 +262,7 @@ dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_n
     if (last_draw_ns == NULL) {
         return;
     }
-    ui_draw_if_needed(opts, last_draw_ns, frame_ns);
+    ui_draw_if_needed(opts, dsd_app_get_latest_snapshot(), last_draw_ns, frame_ns);
 }
 #endif
 
@@ -288,7 +287,7 @@ static DSD_THREAD_RETURN_TYPE
         const dsd_state* ssnap = dsd_app_get_latest_snapshot();
         if (ui_curses_is_active(osnap)) {
             ui_process_input_frame(osnap, ssnap);
-            ui_draw_if_needed(osnap, &last_draw_ns, frame_ns);
+            ui_draw_if_needed(osnap, ssnap, &last_draw_ns, frame_ns);
         }
 
         dsd_sleep_ms(sleep_ms);

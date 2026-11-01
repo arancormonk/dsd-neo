@@ -35,14 +35,15 @@
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
@@ -53,18 +54,12 @@
 
 enum { kSkip = 77 };
 
-/* The UI thread's frame: it draws at most every 66 ms (ui_async.c). */
-static const uint64_t kFrameBudgetNs = 66ULL * 1000ULL * 1000ULL;
-
 static dsd_opts* g_osnap;
 static dsd_state* g_ssnap;
 static int g_menu_open;
 static int g_posted[16];
 static int g_posted_count;
 static int g_handled_keys;
-static int g_master = -1;
-static char g_screen_out[65536];
-static size_t g_screen_out_len;
 
 /* ---- The rest of the program, as the frame loop sees it ---- */
 
@@ -166,7 +161,16 @@ dsd_realtime_mono_ns(void) {
     return dsd_time_monotonic_ns();
 }
 
+#if UI_KEY_HAVE_WHEEL
+
 /* ---- The pty ---- */
+
+/* The UI thread's frame: it draws at most every 66 ms (ui_async.c). */
+static const uint64_t kFrameBudgetNs = 66ULL * 1000ULL * 1000ULL;
+
+static int g_master = -1;
+static char g_screen_out[65536];
+static size_t g_screen_out_len;
 
 static void
 on_alarm(int sig) {
@@ -198,6 +202,23 @@ screen_wrote(const char* seq) {
     return strstr(g_screen_out, seq) != NULL;
 }
 
+/* 1 when @p fd has input within @p timeout_ms. select(), not poll(): macOS documents poll() as unsupported on
+   devices, a pty among them (it can report POLLNVAL as an event). */
+static int
+fd_readable(int fd, int timeout_ms) {
+    for (;;) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        struct timeval tv = {.tv_sec = (time_t)(timeout_ms / 1000), .tv_usec = (suseconds_t)(timeout_ms % 1000) * 1000};
+        int n = select(fd + 1, &rfds, NULL, NULL, &tv);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        return n > 0 && FD_ISSET(fd, &rfds);
+    }
+}
+
 /* Type @p report into the terminal and wait until the screen's input has it. */
 static int
 queue_input(int slave, const char* report) {
@@ -205,14 +226,12 @@ queue_input(int slave, const char* report) {
     if (write(g_master, report, len) != (ssize_t)len) {
         return 1;
     }
-    struct pollfd pfd = {.fd = slave, .events = POLLIN};
-    return poll(&pfd, 1, 2000) == 1 ? 0 : 1;
+    return fd_readable(slave, 2000) ? 0 : 1;
 }
 
 static int
 input_pending(int slave) {
-    struct pollfd pfd = {.fd = slave, .events = POLLIN};
-    return poll(&pfd, 1, 0) == 1;
+    return fd_readable(slave, 0);
 }
 
 /* One UI frame: input (with the capture switch), then the draw's doupdate(). Fails when it took over a frame. */
@@ -430,6 +449,8 @@ run_on_screen(int slave) {
     dsd_neo_ui_async_test_close_curses_if_opened(1);
     return rc;
 }
+
+#endif /* UI_KEY_HAVE_WHEEL */
 
 int
 main(void) {
