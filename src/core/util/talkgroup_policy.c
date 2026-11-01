@@ -2659,16 +2659,29 @@ tg_policy_route_is_complete(const dsd_tg_policy_call_route* route) {
     return 1;
 }
 
+/* Whether two routes are on the same channel: the same channel number when both name one, else the same carrier (a
+   route without a channel, such as an unresolved Tier III absolute grant, is only known by its frequency). Two routes
+   that name neither a channel nor a carrier are never the same. */
+static int
+tg_policy_route_same_channel(int channel_a, long freq_a, int channel_b, long freq_b) {
+    if (channel_a > 0 && channel_b > 0) {
+        return channel_a == channel_b;
+    }
+    return freq_a > 0 && freq_a == freq_b;
+}
+
 /* Whether active call @p c is the candidate's own call (@p route on @p slot, of class @p private_call): its target,
-   channel and slot, and its group or private class, as tg_policy_describe_slot() keeps a record only for the same
-   class. A talkgroup and a unit may share a number, so a candidate of the other class is another call. */
+   channel (tg_policy_route_same_channel()) and slot, and its group or private class, as tg_policy_describe_slot() keeps
+   a record only for the same class. A talkgroup and a unit may share a number, so a candidate of the other class is
+   another call. */
 static int
 tg_policy_active_call_matches_route_slot(const dsd_tg_policy_active_call* c, const dsd_tg_policy_call_route* route,
                                          int slot, int private_call) {
     if (!c || !route) {
         return 0;
     }
-    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == slot
+    return c->valid && c->tg == route->target_id
+           && tg_policy_route_same_channel(c->channel, c->freq_hz, route->channel, route->freq_hz) && c->slot == slot
            && (c->private_call != 0) == (private_call != 0);
 }
 
@@ -2806,7 +2819,9 @@ tg_policy_active_call_matches_route(const dsd_tg_policy_active_call* c, const ds
     if (!c || !route) {
         return 0;
     }
-    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == route->slot;
+    return c->valid && c->tg == route->target_id
+           && tg_policy_route_same_channel(c->channel, c->freq_hz, route->channel, route->freq_hz)
+           && c->slot == route->slot;
 }
 
 static int

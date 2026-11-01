@@ -1638,8 +1638,11 @@ suite runs under this compiler.
   cooldown; nothing is stamped). A candidate is the held call itself, and never preempts it, only when it matches a
   record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
   describe matches): a talkgroup and a unit may share a number, so a candidate of the other class is another call that
-  displaces the record by priority. An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()`
-  after the preempting call is acquired, because the release cleared the displaced records. `note_active_call()`
+  displaces the record by priority. The channel matches by `tg_policy_route_same_channel()`: the same channel number
+  when both routes name one, else the same positive frequency (a route without a channel, such as an unresolved DMR
+  Tier III absolute grant, is known only by its carrier; two such routes on different carriers are different calls).
+  An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()` after the preempting call is
+  acquired, because the release cleared the displaced records. `note_active_call()`
   stamps a cooldown only when it replaces a valid, different record. A list reload or clear carries the records and
   the last cooldown into the new context; `install` (a scan target transition) restarts them.
 - Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while

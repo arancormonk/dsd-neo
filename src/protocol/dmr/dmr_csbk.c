@@ -326,8 +326,8 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
     if (!state) {
         return;
     }
-    // DMR Tier III logical/physical channel numbers are 12-bit (1..4094 typical)
-    if (lpcn == 0 || lpcn >= 0xFFFF) {
+    // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
+    if (!dmr_t3_lpcn_is_channel(lpcn)) {
         return;
     }
     if (freq <= 0) {
@@ -445,6 +445,15 @@ dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu
     return 0;
 }
 
+/* The grant's call channel, the one value the trunk state machine, the call and the policy route all name: its LPCN, or
+   for the absolute escape the LPCN its MBC's CdefParms define; 0 when that names no channel (TS 102 361-4
+   §7.1.1.1.1.1.1, §7.2.42 Table 7.103). */
+static uint16_t
+dmr_cspdu_pf0_call_channel(uint16_t lpchannum, uint16_t mbc_lpchannum) {
+    const uint16_t channel = lpchannum == 0xFFF ? mbc_lpchannum : lpchannum;
+    return dmr_t3_lpcn_is_channel(channel) ? channel : 0U;
+}
+
 static void
 dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
     if (freq != 0) {
@@ -483,7 +492,8 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
 
 static void
 dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
-                                 int data_call, uint16_t lpchannum, long int freq, uint32_t target, uint32_t source) {
+                                 int data_call, uint16_t call_channel, long int freq, uint32_t target,
+                                 uint32_t source) {
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
         return;
     }
@@ -508,7 +518,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         return;
     }
     res.freq_hz = freq;
-    res.lpcn = lpchannum;
+    res.lpcn = call_channel;
     res.opcode = (uint8_t)csbk_o;
     res.target = target;
     res.source = source;
@@ -557,8 +567,8 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, lpchannum, freq, target,
-                                     source);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call,
+                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq, target, source);
 }
 
 static void
@@ -614,6 +624,9 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
 
     UNUSED(move_ts);
     dmr_cspdu_pf0_move_resolve_freq(opts, state, cs_pdu_bits, &move_lpcn, &move_freq);
+    if (!dmr_t3_lpcn_is_channel(move_lpcn)) {
+        move_lpcn = 0; // as for a grant: CHNULL, or an absolute escape whose CdefParms name no channel
+    }
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
     if (move_lpcn != 0) {
@@ -628,7 +641,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
        the busy gate. Its effects on the carrier being decoded (the burst indicators, the other slot's activity row)
        apply only once it was accepted: a refused move leaves the call being heard alone. */
     if (opts->trunk_enable == 1 && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
-        && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
+        && (move_freq > 0 || move_lpcn != 0)) {
         dsd_tg_policy_decision policy_decision;
         (void)dmr_policy_tune_allowed(opts, state, mv_target, mv_source, 1, 0, &policy_decision);
         dmr_sm_event_t ev = dmr_sm_ev_group_grant(move_freq, move_lpcn, (int)mv_target, (int)mv_source);
