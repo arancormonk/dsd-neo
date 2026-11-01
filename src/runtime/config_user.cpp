@@ -228,7 +228,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_upload_retries = 1;
     cfg->rdio_api_delete_after_upload = 0;
     cfg->unknown_talkgroups_only = 0;
-    cfg->analog_max_gap_ms = 200;
+    cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
 
     // DSP defaults (match runtime defaults)
     cfg->iq_balance = 0;

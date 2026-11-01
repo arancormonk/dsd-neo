@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -654,9 +655,9 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
 static void
 apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     int ms = 0;
-    if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > 10000) {
-        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to 10000); keeping %d\n", val,
-                 cfg->analog_max_gap_ms);
+    if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
+        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to %d); keeping %d\n", val,
+                 DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, cfg->analog_max_gap_ms);
         return;
     }
     cfg->analog_max_gap_ms = ms;

@@ -1922,15 +1922,17 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0, 10000,          \
-                                           &opts->analog_record_max_gap_ms, out_exit_rc)) {                            \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0,                 \
+                                           DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, &opts->analog_record_max_gap_ms,          \
+                                           out_exit_rc)) {                                                             \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--analog-record-max-gap-ms=", 27) == 0) {                                                \
-            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", argv[i] + 27, 0, 10000,                       \
-                                           &opts->analog_record_max_gap_ms, out_exit_rc)) {                            \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", argv[i] + 27, 0,                              \
+                                           DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, &opts->analog_record_max_gap_ms,          \
+                                           out_exit_rc)) {                                                             \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \

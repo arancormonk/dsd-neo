@@ -7572,8 +7572,9 @@ ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const 
     if (!ui_cmd_parse_i32_payload(c, &ms)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    if (ms < 0 || ms > 10000) {
-        ui_set_toast(state, 5, "Refused: NFM pause hold must be 0..10000 ms, not %ld", (long)ms);
+    if (ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
+        ui_set_toast(state, 5, "Refused: NFM pause hold must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
+                     (long)ms);
         return UI_CMD_APPLY_FAILED;
     }
     opts->analog_record_max_gap_ms = (int)ms;

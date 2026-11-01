@@ -769,7 +769,9 @@ function playbackLengthText(ms) {
 // Issue #756: the NFM pause hold, in ms, as Settings shows it: "Off" at 200 or
 // less (the carrier's own 200 ms hangover), else seconds spelled out, as the
 // Screen delay is, and as exact as the value: "0.5 seconds", "1 second",
-// "1.25 seconds". A value Settings does not offer reads as itself.
+// "1.25 seconds". A value Settings does not offer reads as itself. 200 (the
+// default) and 10000 (the largest value) are the decoder's
+// DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS and DSD_ANALOG_RECORD_MAX_GAP_MAX_MS.
 function pauseHoldText(ms) {
     var value = Number(ms) || 0
     if (!pauseHoldOn(value))

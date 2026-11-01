@@ -15,6 +15,7 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/core/opts.h>
 #include <iterator>
 #include "realtime_clock.h"
 
@@ -240,9 +241,10 @@ sane_recording_limit(const QVariant& raw) {
 // The NFM pause holds the settings offer, in ms (200: off, the decoder's default; 200 or less is off), and the range
 // the decoder takes (--analog-record-max-gap-ms). A value in range but not offered is kept as it is: it came from a
 // backup or an older build, and Settings shows it as itself.
-constexpr int kAnalogMaxGapChoices[] = {200, 500, 1000, 2000, 3000, 5000, 10000};
-constexpr int kDefaultAnalogMaxGapMs = 200;
-constexpr int kMaxAnalogMaxGapMs = 10000;
+constexpr int kAnalogMaxGapChoices[] = {DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS, 500, 1000, 2000, 3000, 5000,
+                                        DSD_ANALOG_RECORD_MAX_GAP_MAX_MS};
+constexpr int kDefaultAnalogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
+constexpr int kMaxAnalogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_MAX_MS;
 
 /** @brief @p raw if it holds a value the decoder takes (0..10000 ms), else the default; text that is not a number
  *         included. */
