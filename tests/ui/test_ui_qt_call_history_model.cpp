@@ -2806,6 +2806,38 @@ test_update_conflicting_after_fold_keeps_row_identity(void) {
                       == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 1 \xC2\xB7 WACN BEE00"));
 }
 
+/* An update found by its fragment is not merged again (H1), so nothing there checks the source: a fragment of unknown
+ * source that folded into one radio's row, then learned another radio, keeps the row's radio and that radio's name.
+ * The end it brings is still applied. */
+void
+test_update_learning_another_source_keeps_row_source(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754532000;
+    Event_History* first = ring.commit(0, 27001, 222, when, when + 4);
+    DSD_SNPRINTF(first->s_name, sizeof(first->s_name), "%s", "Unit 222");
+    Event_History* later = ring.commit(0, 27001, 0, when + 5, when + 8);
+    model.refresh(ring.state);
+    expect("the unknown-source fragment folds into the radio's row",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 222U
+               && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Unit 222"));
+
+    later->source_id = 111;
+    DSD_SNPRINTF(later->s_name, sizeof(later->s_name), "%s", "Unit 111");
+    later->event_time = when + 9;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("the update logs no other row", model.count() == 1);
+    expect("the row keeps its radio and that radio's name",
+           model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 222U
+               && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Unit 222"));
+    expect("the end the update brings is applied",
+           model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 9);
+}
+
 /* A channel names its numbering: a channel-only Tier III fragment (LPCN) is not the same call as a Connect Plus
  * fragment (LCN), nor as an LSN one, nor as a P25 site's. Two fragments in one numbering merge, and the row shows the
  * newest fragment's channel. */
@@ -3898,6 +3930,7 @@ main(int argc, char** argv) {
     test_site_text_cut_mid_character_survives_reload();
     test_seen_store_rejects_unknown_channel_kind();
     test_update_conflicting_after_fold_keeps_row_identity();
+    test_update_learning_another_source_keeps_row_source();
     test_channel_kind_conflict_stays_apart();
     test_dmr_text_differs_raw_equal_merges_and_keeps_text();
     test_record_for_uid();

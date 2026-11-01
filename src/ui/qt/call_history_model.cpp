@@ -1386,7 +1386,12 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows) {
 
 void
 CallHistoryModel::foldRow(Row& existing, const Row& row) {
-    merge_source_label(existing, row);
+    // A row keeps one radio and that radio's name. The merge never folds two known sources, but an update found by
+    // its fragment (ingestRow()) is not merged again: a fragment of unknown source that joined one radio's row and
+    // then learned another radio keeps the row's radio, so it must not bring that other radio's name.
+    if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
+        merge_source_label(existing, row);
+    }
     if (receive_adopt_identity(existing, row)) {
         existing.service = row.service;
         /* A service name outranks every other name a row has (row_take_name()). */
