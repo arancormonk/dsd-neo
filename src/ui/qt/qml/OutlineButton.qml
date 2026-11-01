@@ -31,11 +31,12 @@ Rectangle {
     property bool checkable: false
     property bool checked: false
     // A toggle whose `checked` reads back a command the decoder applies later
-    // (Hold scan, Hold TG, Mute): it shows and reports the state asked for from
-    // the moment it is pressed, until `checked` changes or a few seconds pass
-    // (issue #782). Android's bridge builds the click event TalkBack reads out
-    // as soon as the press returns, and the decoder's state reaches `checked`
-    // only on a later refresh, so TalkBack said the state before the press.
+    // (the scan's Hold, Hold TG, Mute): it shows and reports the state asked
+    // for from the moment it is pressed, until `checked` changes or a few
+    // seconds pass (issue #782). Android's bridge builds the click event
+    // TalkBack reads out as soon as the press returns, and the decoder's state
+    // reaches `checked` only on a later refresh, so TalkBack said the state
+    // before the press.
     property bool commandToggle: false
     property bool asked: false
     readonly property bool shownChecked: pendingToggle.running ? asked : checked

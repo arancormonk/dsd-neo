@@ -2818,7 +2818,8 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   "paused" while it is paused (`src/app_control/app_command_queue.c`)
   - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided and cooling
     targets skipped), the original last in both directions, so the fallback and rollback are shared. Avoid and every
-    automatic rotation walk forward; no op changes the hold.
+    automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on the target
+    a step or avoid lands on.
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
     stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast.
@@ -8594,9 +8595,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     opens the prompt or one line of help with the reason (an I/Q replay; no connected rigctl peer). The `y` row
     (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
     resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold,
-    avoid and clear avoids (`scan_rotation_active()`) and Next channel under a trunk scan (`trunk_enabled()`) need the
-    scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`,
-    `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
+    avoid and clear avoids (`scan_rotation_active()`) and Next and Previous channel under a trunk scan
+    (`trunk_enabled()`) need the scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`,
+    `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
@@ -9386,10 +9387,11 @@ Qt Quick frontend (`src/ui/qt`):
     `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet says Tune pauses the scan while one runs, and closes
     with the reason when `goToAllowed` falls (a replay keeps its own). `CommandBridge::resumeScan()` (`SCAN_RESUME`)
     backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of
-    Hold/Avoid/Prev/Next while paused, one row across the grid's columns; the header reads
-    `SCAN PAUSED · n targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a queued command: `syncOperatorHold()` (on the lifecycle's Running
-    with options known) swaps `sessionSystem` for an "Exploring" map while `operatorTuned` holds, keeping the session's
-    map and row in `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
+    Hold/Avoid/Prev/Next while paused, one row across the grid's columns; the header reads `SCAN PAUSED · n
+    targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a
+    queued command: `syncOperatorHold()` (on the lifecycle's Running with options known) swaps `sessionSystem` for an
+    "Exploring" map while `operatorTuned` holds, keeping the session's map and row in
+    `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
     resume; a scan list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its
     spectrum takes taps until Resume scan, or for good once the paused scan is stopped. The decoder sets
     `operator_tuned` on every accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection,

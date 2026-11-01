@@ -1819,7 +1819,8 @@ is delayed.
   pausing `-Y` (scanner toggle, trunk set, tuner release, a frequency entry) hands the foreground keyring back to the
   global keys. A row may not mix direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
-  rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
+  rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
+  the same rows backward; the scan then carries on forward from there) and clear all avoids; see
   `docs/ui-terminal.md`.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
@@ -1856,12 +1857,13 @@ is delayed.
   the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played:
   `-o null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies
   to an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes
-  take effect at the first scheduled row entry, including manual `L` cycling. Existing dwell and voice-hold defaults
-  remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may change.
+  take effect at the first scheduled row entry, including manual `L` and `J` steps. Existing dwell and voice-hold
+  defaults remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may
+  change.
   Global mode and modulation commands update the saved configuration, and exiting scanning restores it. Blank-mode rows
   retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning releases the row's
-  decoder and keys. Manual `L` skips zero-frequency placeholders, while automatic scanning continues to park on them for
-  the configured dwell.
+  decoder and keys. Manual `L` and `J` skip zero-frequency placeholders, while automatic scanning continues to park on
+  them for the configured dwell.
   Pausing for a manual tune (issue #671): a frequency you enter wins over the scan, typed list or untyped, and pauses it
   rather than ending it. That is the terminal's frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**
   and the API's `rtl_set_freq`; a tuner release (Qt/Android **Explore from here**, the API's `tuner_release`) pauses the
@@ -1876,9 +1878,10 @@ is delayed.
   why. While a resume waits on its row, a frequency entry or a spectrum tap takes the receiver back and the scan stays
   paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
   leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
-  resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused, another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused:
-  resume it first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference
-  import that replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused,
+  another entry or a spectrum tap only tunes; `Y`, `b`, `J`, `L` and "Clear avoids" answer `Scan paused: resume it
+  first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference import that
+  replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
   row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
@@ -2074,8 +2077,8 @@ does.
   windows, and an NXDN frame whose own CRCs confirmed the transmission (a call on a traffic channel) restarts the P25
   and NXDN windows, so a search never leaves a frequency mid-call. Neither names the system. Sync alone, which noise can
   produce, never holds the search.
-- A frequency entry, **Next channel** (`L`), a radio configuration change, a RadioReference apply or an input switch
-  restarts the window on the new frequency.
+- A frequency entry, **Next channel** (`L`) or **Previous channel** (`J`), a radio configuration change, a
+  RadioReference apply or an input switch restarts the window on the new frequency.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
   system is not changed. Once validated control names the system, the search ends there; losing that control channel
   later uses the ordinary hunt (NXDN as above).
@@ -2091,9 +2094,9 @@ does.
 - A followed DMR call (a grant, or a call a Capacity Plus status followed) is held by its own voice that passed the
   colour-code check, not by a voice sync alone; with no such voice it returns at the grant timeout, otherwise a
   hangtime after the last of it. With data calls followed (`-e`), data that passed the check holds it too. Repeated statuses naming the followed call change nothing.
-- A frequency entry, **Next channel** (`L`) or **Return to CC** during DMR recovery gives a followed call up and listens
-  on the new frequency for a full window before the ordinary hunt resumes; nothing heard there is credited to the old
-  control channel.
+- A frequency entry, **Next channel** (`L`), **Previous channel** (`J`) or **Return to CC** during DMR recovery gives a
+  followed call up and listens on the new frequency for a full window before the ordinary hunt resumes; nothing heard
+  there is credited to the old control channel.
 - The search runs on the decoder's own pass, so it needs an input that keeps delivering samples. RTL-family inputs
   always do, and a silent UDP stream gives way to it after a short pause; a TCP audio stream with rigctl that stops
   sending pauses it until audio resumes.

@@ -733,7 +733,7 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime) |
 | `C` | Return to control channel (when following a voice channel) |
 | `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels or P25 control-channel candidates (`-^`), or move to the next `--trunk-scan` target. Needs a radio input or a rigctl peer |
-| `J` | Previous channel: the same list as `L`, one step back. Same requirements |
+| `J` | Previous channel: the same list as `L`, one step back; a running scan carries on forward from there. Same requirements |
 | `Y` | Hold the scan on the channel or target on air; press again to resume (`J` and `L` still move while held) |
 | `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
@@ -744,10 +744,10 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the avoids,
-and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or paused,
-`t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on
-stops the scan.
+While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the
+avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or
+paused, `t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning
+trunking on stops the scan.
 
 **Mouse wheel.** Off by default: turn on Display → **Mouse wheel steps channels**, or set `terminal_mouse_wheel = true`
 under `[output]` in the config file (Save config keeps the menu setting). While a `-Y` or `--trunk-scan` list runs,

@@ -227,7 +227,7 @@ int dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state*
  * Hold keeps the idle dwell on the active target from expiring without stopping its state machine;
  * avoid flags the active target for the session and moves on; clear puts every avoided
  * target back; advance moves to the next eligible target now and retreat to the previous one
- * (issue #666). Avoid and every automatic rotation walk forward; no op changes the hold.
+ * (issue #666). Avoid and every automatic rotation walk forward; only the hold toggle changes the hold.
  *
  * Returns the codes documented beside the op enum; DSD_TRUNK_SCAN_CONTROL_PAUSED for every op
  * while the scan is paused (issue #671). Avoid, advance and retreat return 0 when the active
