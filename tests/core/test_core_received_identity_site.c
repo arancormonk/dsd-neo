@@ -651,6 +651,11 @@ test_consistent_rejects_ranges_and_cross_parts(void) {
     expect_u("dmr consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
     id.dmr_t3_model = 4U;
     expect_inconsistent("dmr model > 3", &id);
+    /* A model only Tier III has: the record keeps 0 for another trunking system. */
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+");
+    expect_u("cap+ model 0 consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+    id.dmr_t3_model = 1U;
+    expect_inconsistent("cap+ site with a tier iii model", &id);
     dmr_id(&id, 5U, 1, 11U, 300U, 0U, NULL);
     expect_inconsistent("dmr trunk unknown", &id);
     dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_NONE, 1, 11U, 300U, 0U, NULL);

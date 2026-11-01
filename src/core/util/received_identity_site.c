@@ -358,7 +358,11 @@ site_dmr_consistent(const dsd_received_identity* a) {
     if (site_has(a, DSD_RXID_DMR_T3_SYSCODE) && a->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
         return 0;
     }
-    return !site_has(a, DSD_RXID_DMR_SITE) || a->dmr_t3_model <= 3U;
+    /* A model is Tier III's (0..3); a site of another trunking system is noted with model 0. */
+    if (!site_has(a, DSD_RXID_DMR_SITE)) {
+        return 1;
+    }
+    return a->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3 ? a->dmr_t3_model <= 3U : a->dmr_t3_model == 0U;
 }
 
 static int
