@@ -139,8 +139,9 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     /**
      * @brief Start or stop recording each call in the running session (issue #708, D8), into the folder the session
-     * was started with. On sends @p unknownOnly and then WAV start; off sends unknown-only off and then WAV stop
-     * (unknown-only travels with Record calls: an off switch filters no recording of the user's own options).
+     * was started with. On sends @p analogMaxGapMs (the NFM pause hold, issue #756), @p unknownOnly and then WAV start;
+     * off sends WAV stop and then unknown-only off (unknown-only travels with Record calls: an off switch filters no
+     * recording of the user's own options).
      *
      * Refused without sending anything, and said in RecordingStatus::refusal(), when no session is on ("no-session"),
      * while its run is not up yet ("starting"),
@@ -149,13 +150,19 @@ class CommandBridge : public QObject {
      * the preference then applies at the next start. Queued like every command; the decoder holds it while a carrier loop
      * of its own runs and refuses it during Signal search, which RecordingStatus shows.
      */
-    Q_INVOKABLE bool setRecordCalls(bool on, bool unknownOnly) const;
+    Q_INVOKABLE bool setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) const;
     /**
      * @brief Record only calls no talkgroup row knows, or every call (issue #708). Sent only while the session records
      * each call (or a Record calls on is still applying); otherwise nothing is sent and it answers true: the switch
      * travels with the next Record calls on.
      */
     Q_INVOKABLE bool setRecordUnknownOnly(bool on) const;
+    /**
+     * @brief The longest pause in ms one analog NFM call recording keeps going through (issue #756), sent as
+     * setRecordUnknownOnly() is: only while the session records each call, otherwise it travels with the next Record
+     * calls on. The decoder refuses a value outside 0..10000, which the status shows as failed.
+     */
+    Q_INVOKABLE bool setAnalogRecordMaxGap(int ms) const;
 
     /** @brief Where a refused recording switch says why; nullptr: nowhere. */
     void
@@ -388,6 +395,9 @@ class CommandBridge : public QObject {
     void noteRecording(const QString& refusal) const;
     /* The recording view of the session on, or false (refused as "no-session") with none. */
     bool recordingSessionLive(dsd_app_recording_view* view) const;
+    /* Send the i32 @p command with @p value while the session records each call; answer true, sending nothing, while
+       it does not. */
+    bool sendWhileRecording(int command, int value) const;
 
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;

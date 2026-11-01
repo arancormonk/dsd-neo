@@ -8990,13 +8990,16 @@ Qt Quick frontend (`src/ui/qt`):
     engine then opens that journal. A session that turns active with no `beginSession()` before it (that one) holds
     every folder until it ends; an Idle report between a start's mark and its Starting changes nothing.
   - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
-    `recordCalls`, `recordUnknownOnly` and `recordingLimitMb` (keys `recording/*`, portable; the limit one of
-    `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
-    returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after `-t`/`-F` and before the
-    extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a
-    managed folder), then `-P` when Record calls is on, with `--record-unknown-only` only beside it (unknown-only
-    travels with Record calls, so a disabled switch never filters the user's own `-w`, extra `-P` or MBE capture); no
-    folder (no root available, or a validation-only build) names no recording at all. A scan list passes it through its
+    `recordCalls`, `recordUnknownOnly`, `recordingLimitMb` and `analogMaxGapMs` (keys `recording/*`, portable; the limit
+    one of `recordingLimitChoices`, 1000 by default; the NFM pause hold any value 0..10000 the decoder takes, kept as it
+    is when not one of `analogMaxGapChoices`, else 200, off, issue #756) map to `SessionArgPrefs`; the starter puts the
+    folder `beginSession()` returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after
+    `-t`/`-F` and before the extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra
+    `-P` records into a managed folder), then `-P` when Record calls is on, with `--record-unknown-only` and
+    `--analog-record-max-gap-ms <ms>` (always, off included) only beside it (both travel with Record calls, so a
+    disabled setting never filters or holds the user's own `-w`, extra `-P` or MBE capture; an extra hold comes later
+    and wins); no folder (no root available, or a validation-only build) names no recording at all.
+    A scan list passes it through its
     tuner build, once; a draft list asks for no folder. The caller says what a start is
     (`SessionArgsBuilder::start(system, host, kind)`: "saved", "explore", "search"), since an edited Explore map can
     carry a saved system's uid. Extra options naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse
@@ -9017,8 +9020,10 @@ Qt Quick frontend (`src/ui/qt`):
     on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
-  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV
-    stop then unknown-only off, best effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs)` sends the NFM pause hold
+    (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756), unknown-only, then WAV start (a refused submission sends
+    nothing after it), or WAV stop then unknown-only off, best effort once the stop is in
+    (`RecordingStatus::noteFollowUp()`: the status keeps
     describing the stop, whose outcome the follow-up's stands in for, as the queue applies in order); it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
     ("no-session", from the host, since a view outlives its run), while its run is not up yet ("starting": until then
     the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for
@@ -9027,11 +9032,13 @@ Qt Quick frontend (`src/ui/qt`):
     options ("static-wav": a start or a stop would close the user's file); the preference applies at the next start.
     `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the refusal, and its
     command readings stay "none" until this session sends a switch (the decoder's command state is process-wide).
-    `setRecordUnknownOnly()` is sent only while the session records each call (a start still applying counts) and is
-    otherwise inert: it travels with the next Record calls on. `RecordingStatus` (`recording_status.{h,cpp}`, context
-    property `recordingStatus`, refreshed every UI tick by `UiController`) reads `recording_view` for QML: per-call,
-    slot files, unknown-only, static WAV, `storageNamed`, journal, the last command and its state ("pending" is
-    Settings' "Applying..."), failures by kind and the last one, and the bridge's refusal.
+    `setRecordUnknownOnly()` and `setAnalogRecordMaxGap()` are sent only while the session records each call (a start
+    still applying counts) and are otherwise inert: they travel with the next Record calls on. `RecordingStatus`
+    (`recording_status.{h,cpp}`, context property `recordingStatus`, refreshed every UI tick by `UiController`) reads
+    `recording_view` for QML: per-call, slot files, unknown-only, the NFM pause hold (`analogMaxGapMs`), static WAV,
+    `storageNamed`, journal, the last command and its state ("pending" is Settings' "Applying..."; the hold's command
+    reads "analogMaxGap"), failures by kind and the last one, the bridge's refusal, and `runUp` (whether the view is
+    this session's run's; a change emits `changed()`).
   - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
     `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
     and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
@@ -9050,8 +9057,12 @@ Qt Quick frontend (`src/ui/qt`):
     `RecordingStore::selectPath()` and `releaseSelection()`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
-    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
-    them come from `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next
+    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); NFM pause hold
+    (issue #756) is a ChoiceSheet of `analogMaxGapChoices` that goes live through `setAnalogRecordMaxGap()`, disabled
+    and travelling with Record calls the same way; it shows the session's own hold while that records each call
+    (`recordingStatus.runUp` and `perCall`, so an Extra decoder arguments value shows as itself), else the preference,
+    any value as itself (`Util.pauseHoldText()`); the lines under them come from `recordingStatus` while a session is on
+    (Applying..., refused, a refusal that applies at the next
     start, judged per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped
     command, recording failures, a failed journal); Storage limit (a ChoiceSheet of `recordingLimitChoices`), then the
     store's lines (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage

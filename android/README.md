@@ -260,11 +260,28 @@ its own (radio names learned over the air, radio ID list rows and talkgroup rows
 you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
-Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the
-session cannot take (while Signal search runs, while the session is still starting, with no storage for recordings, or
-when the session's Extra decoder arguments record to one file with `-w`) is saved and applies at the next start, and
-Settings says so. A call that could not be recorded (the phone's storage is full, or the file could not be written) is
-reported under the switches.
+Both switches, and **NFM pause hold** below, also change a running session: Settings reads **Applying…** until the
+decoder confirms. A change the session cannot take (while Signal search runs, while the session is still starting, with
+no storage for recordings, or when the session's Extra decoder arguments record to one file with `-w`) is saved and
+applies at the next start, and Settings says so. A call that could not be recorded (the phone's storage is full, or the
+file could not be written) is reported under the switches.
+
+### Pauses in NFM calls
+
+An analog FM (NFM) call ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
+and a new History row. **NFM pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10 seconds:
+one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved as
+silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose a
+time, and it is disabled while Record calls is off. Digital calls are not affected.
+
+- While a call is paused it still shows as active, and its timer keeps running, until the pause is decided.
+- Under a tone filter, the tone is checked again each time the signal comes back. That takes about 0.4 to 0.8 seconds
+  and counts as part of the pause, so allow for it: 0.5 seconds rarely joins anything there.
+- A feed that stops sending between transmissions (a UDP or TCP audio stream with nothing in the pauses) is not a pause
+  in the signal, and still ends the call. Keep the stream running while the channel is quiet.
+- `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start, and Settings shows the
+  session's own value while it records. The details are in
+  [Pauses in an NFM recording](../docs/cli.md#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 
 ### Where the files are
 
@@ -360,9 +377,9 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- A backup carries the Record calls, Only unknown talkgroups and Storage limit settings, never the recordings. A
-  restored Storage limit lower than what the recordings on the phone take removes the oldest of them when DSD-neo next
-  opens.
+- A backup carries the Record calls, Only unknown talkgroups, NFM pause hold and Storage limit settings, never the
+  recordings. A restored Storage limit lower than what the recordings on the phone take removes the oldest of them when
+  DSD-neo next opens.
 
 ## Backup and restore
 

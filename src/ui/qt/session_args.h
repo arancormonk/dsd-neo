@@ -50,6 +50,9 @@ struct SessionArgPrefs {
        a validation-only build) the argv names no recording at all. */
     bool recordCalls = false;
     bool recordUnknownOnly = false;
+    /* Issue #756: the longest pause one analog NFM call recording keeps going through, in ms, sent with -P
+       (--analog-record-max-gap-ms); 200 or less is off, the decoder's default. */
+    int analogMaxGapMs = 200;
     QString recordingFolder;
     /* The store was asked for a folder and had none (no storage available): an extra -P is refused, since it would
        record outside any folder the app manages. False for a validation-only build, which asks for none. */

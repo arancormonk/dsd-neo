@@ -85,6 +85,9 @@ enum Key {
     // writes lastStarted* (issue #671): what a recreated Activity finds running, which this device's service runs.
     kAcceptedStartKind,
     kAcceptedStartUid,
+    // Issue #756: the longest pause one analog NFM call recording keeps going through (--analog-record-max-gap-ms).
+    // Portable with the other recording choices.
+    kRecordingAnalogMaxGapMs,
     kKeyCount
 };
 
@@ -129,6 +132,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"recording/limitMb", true},
     {"listen/acceptedStartKind", false},
     {"listen/acceptedStartUid", false},
+    {"recording/analogMaxGapMs", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -231,6 +235,22 @@ sane_recording_limit(const QVariant& raw) {
                          && std::any_of(std::begin(kRecordingLimitChoices), std::end(kRecordingLimitChoices),
                                         [mb](int choice) { return choice == mb; });
     return offered ? mb : kDefaultRecordingLimitMb;
+}
+
+// The NFM pause holds the settings offer, in ms (200: off, the decoder's default; 200 or less is off), and the range
+// the decoder takes (--analog-record-max-gap-ms). A value in range but not offered is kept as it is: it came from a
+// backup or an older build, and Settings shows it as itself.
+constexpr int kAnalogMaxGapChoices[] = {200, 500, 1000, 2000, 3000, 5000, 10000};
+constexpr int kDefaultAnalogMaxGapMs = 200;
+constexpr int kMaxAnalogMaxGapMs = 10000;
+
+/** @brief @p raw if it holds a value the decoder takes (0..10000 ms), else the default; text that is not a number
+ *         included. */
+int
+sane_analog_max_gap(const QVariant& raw) {
+    bool ok = false;
+    const int ms = raw.toInt(&ok);
+    return ok && ms >= 0 && ms <= kMaxAnalogMaxGapMs ? ms : kDefaultAnalogMaxGapMs;
 }
 
 /**
@@ -933,6 +953,30 @@ QVariantList
 AppPrefs::recordingLimitChoices() const {
     QVariantList choices;
     for (const int choice : kRecordingLimitChoices) {
+        choices.append(choice);
+    }
+    return choices;
+}
+
+int
+AppPrefs::analogMaxGapMs() const {
+    return sane_analog_max_gap(m_settings.value(key_name(kRecordingAnalogMaxGapMs), kDefaultAnalogMaxGapMs));
+}
+
+void
+AppPrefs::setAnalogMaxGapMs(int ms) {
+    const int next = sane_analog_max_gap(ms);
+    if (!stored_int_differs(m_settings.value(key_name(kRecordingAnalogMaxGapMs), kDefaultAnalogMaxGapMs), next)) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordingAnalogMaxGapMs), next);
+    Q_EMIT analogMaxGapMsChanged();
+}
+
+QVariantList
+AppPrefs::analogMaxGapChoices() const {
+    QVariantList choices;
+    for (const int choice : kAnalogMaxGapChoices) {
         choices.append(choice);
     }
     return choices;

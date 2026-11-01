@@ -94,6 +94,10 @@ class AppPrefs : public QObject {
     Q_PROPERTY(bool recordUnknownOnly READ recordUnknownOnly WRITE setRecordUnknownOnly NOTIFY recordUnknownOnlyChanged)
     Q_PROPERTY(int recordingLimitMb READ recordingLimitMb WRITE setRecordingLimitMb NOTIFY recordingLimitMbChanged)
     Q_PROPERTY(QVariantList recordingLimitChoices READ recordingLimitChoices CONSTANT)
+    /* Issue #756: the longest pause one analog NFM call recording keeps going through, in ms; sent with -P and live by
+     * Settings like the switches above. */
+    Q_PROPERTY(int analogMaxGapMs READ analogMaxGapMs WRITE setAnalogMaxGapMs NOTIFY analogMaxGapMsChanged)
+    Q_PROPERTY(QVariantList analogMaxGapChoices READ analogMaxGapChoices CONSTANT)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -267,6 +271,15 @@ class AppPrefs : public QObject {
     /** @brief The limits offered, in MB: 250, 500, 1000, 2000, 5000 and 0 (no limit). */
     QVariantList recordingLimitChoices() const;
 
+    /** @brief The longest pause in ms one analog NFM call recording keeps going through (--analog-record-max-gap-ms):
+     *         any value the decoder takes, 0..10000, 200 or less meaning off; else 200 (off, the decoder's default).
+     *         A value in range that Settings does not offer is kept as it is. */
+    int analogMaxGapMs() const;
+    void setAnalogMaxGapMs(int ms);
+
+    /** @brief The pause holds offered, in ms: 200 (off), 500, 1000, 2000, 3000, 5000 and 10000. */
+    QVariantList analogMaxGapChoices() const;
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -298,6 +311,7 @@ class AppPrefs : public QObject {
     void recordCallsChanged();
     void recordUnknownOnlyChanged();
     void recordingLimitMbChanged();
+    void analogMaxGapMsChanged();
 
   private:
     void expireLocation() const;

@@ -349,7 +349,7 @@ CommandBridge::recordingSessionLive(dsd_app_recording_view* view) const {
 }
 
 bool
-CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
+CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) const {
     dsd_app_recording_view view{};
     if (!recordingSessionLive(&view)) {
         return false;
@@ -365,12 +365,14 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
         noteRecording(QStringLiteral("static-wav"));
         return false;
     }
-    // On: unknown-only first, so the first call recorded already follows it, and the start last. Off: the stop first,
-    // so a refused second submit never leaves the session recording more than it did (unknown-only cleared, the stop
-    // refused). The stop is the switch: once it is in, unknown-only follows best effort, as it applies only while
-    // calls record and a later start sends it first, and the status keeps describing the stop.
+    // On: the NFM pause hold and unknown-only first, so the first call recorded already follows them, and the start
+    // last. Off: the stop first, so a refused second submit never leaves the session recording more than it did
+    // (unknown-only cleared, the stop refused). The stop is the switch: once it is in, unknown-only follows best
+    // effort, as it applies only while calls record and a later start sends it first, and the status keeps describing
+    // the stop. The hold is left as it is: it changes nothing while no call records.
     if (on) {
-        const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
+        const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, analogMaxGapMs))
+                          && accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
                           && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0));
         if (sent) {
             noteRecording(QString());
@@ -389,6 +391,16 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
 
 bool
 CommandBridge::setRecordUnknownOnly(bool on) const {
+    return sendWhileRecording(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, on ? 1 : 0);
+}
+
+bool
+CommandBridge::setAnalogRecordMaxGap(int ms) const {
+    return sendWhileRecording(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ms);
+}
+
+bool
+CommandBridge::sendWhileRecording(int command, int value) const {
     dsd_app_recording_view view{};
     if (!recordingSessionLive(&view)) {
         return false;
@@ -402,7 +414,7 @@ CommandBridge::setRecordUnknownOnly(bool on) const {
         return true;
     }
     // Sent, it is the command the status shows applying, or refused (under Signal search), like Record calls.
-    const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, on ? 1 : 0));
+    const bool sent = accepted(dsd_app_command_set_i32(command, value));
     if (sent) {
         noteRecording(QString());
     }

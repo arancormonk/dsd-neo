@@ -766,6 +766,17 @@ function playbackLengthText(ms) {
     return fmtDuration(value > 0 ? Math.max(1, Math.round(value / 1000)) : 0)
 }
 
+// Issue #756: the NFM pause hold, in ms, as Settings shows it: "Off" at 200 or
+// less (the carrier's own 200 ms hangover), else seconds spelled out, as the
+// Screen delay is, and as exact as the value: "0.5 seconds", "1 second",
+// "1.25 seconds". A value Settings does not offer reads as itself.
+function pauseHoldText(ms) {
+    var value = Number(ms) || 0
+    if (value <= 200)
+        return qsTr("Off")
+    return value === 1000 ? qsTr("1 second") : qsTr("%1 seconds").arg(value / 1000)
+}
+
 // Issue #708: the store notices Settings and the Call recordings screen share.
 function recordingStorageAwayText() {
     return qsTr("Storage for call recordings isn't available right now. Saved recordings are kept.")

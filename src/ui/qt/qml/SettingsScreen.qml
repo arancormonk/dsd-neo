@@ -196,13 +196,23 @@ Item {
     function setRecordCalls(on) {
         prefs.recordCalls = on;
         if (recordingLive)
-            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly); });
+            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly, prefs.analogMaxGapMs); });
     }
     // Unknown-only travels with Record calls: it applies only while calls record.
     function setRecordUnknownOnly(on) {
         prefs.recordUnknownOnly = on;
         if (recordingLive && prefs.recordCalls)
             sendRecordingSwitch(function () { return commands.setRecordUnknownOnly(on); });
+    }
+    // Issue #756: the NFM pause hold travels with Record calls, as unknown-only
+    // does. The row shows the session's own value while it records each call (one
+    // from Extra decoder arguments included), else the preference.
+    readonly property bool recordingSessionRecords: recordingLive && recordingStatus.runUp === true && recordingStatus.perCall === true
+    readonly property int analogMaxGapShownMs: recordingSessionRecords ? recordingStatus.analogMaxGapMs : prefs.analogMaxGapMs
+    function setAnalogMaxGap(ms) {
+        prefs.analogMaxGapMs = ms;
+        if (recordingLive && prefs.recordCalls)
+            sendRecordingSwitch(function () { return commands.setAnalogRecordMaxGap(ms); });
     }
 
     signal openDiagnostics
@@ -699,8 +709,25 @@ Item {
                         subtitle: qsTr("Skip talkgroups in your talkgroup list")
                         checked: prefs.recordUnknownOnly
                         enabled: prefs.recordCalls
-                        showDivider: !sessionNoticeList.visible
+                        showDivider: true
                         onToggled: function (value) { screen.setRecordUnknownOnly(value); }
+                    }
+
+                    DisclosureRow {
+                        objectName: "analogMaxGapRow"
+                        title: qsTr("NFM pause hold")
+                        subtitle: screen.analogMaxGapShownMs > 200 ? qsTr("%1 · Pauses up to this long stay in one recording").arg(Util.pauseHoldText(screen.analogMaxGapShownMs)) : qsTr("Off · Each pause over 0.2 seconds starts a new recording")
+                        enabled: prefs.recordCalls
+                        showCaret: enabled
+                        showDivider: !sessionNoticeList.visible
+                        onTapped: {
+                            var holds = prefs.analogMaxGapChoices;
+                            screenChoices.open(title, holds.map(function (ms) {
+                                return Util.pauseHoldText(ms);
+                            }), function (index) {
+                                screen.setAnalogMaxGap(holds[index]);
+                            });
+                        }
                     }
 
                     NoticeList {

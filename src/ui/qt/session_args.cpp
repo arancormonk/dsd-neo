@@ -311,8 +311,9 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
 
 /**
  * @brief Append the call recording the app owns (issue #708), before the extra options: the store's folder and its
- * journal always, so a -P among the extra options records into a folder the app manages, then -P and
- * --record-unknown-only as the preferences say. Nothing without a folder.
+ * journal always, so a -P among the extra options records into a folder the app manages, then -P,
+ * --record-unknown-only and the NFM pause hold (--analog-record-max-gap-ms, issue #756) as the preferences say.
+ * Nothing without a folder.
  */
 void
 append_recording_args(QStringList& args, const SessionArgPrefs& prefs) {
@@ -328,6 +329,9 @@ append_recording_args(QStringList& args, const SessionArgPrefs& prefs) {
         if (prefs.recordUnknownOnly) {
             args << QStringLiteral("--record-unknown-only");
         }
+        // Always, off included, so the session holds what Settings shows. An extra option comes later and wins;
+        // Settings then shows the session's own value while it records.
+        args << QStringLiteral("--analog-record-max-gap-ms") << QString::number(prefs.analogMaxGapMs);
     }
 }
 
@@ -986,6 +990,7 @@ session_args_prefs(const AppPrefs* prefs) {
         out.extraArgs = prefs->extraArgs();
         out.recordCalls = prefs->recordCalls();
         out.recordUnknownOnly = prefs->recordUnknownOnly();
+        out.analogMaxGapMs = prefs->analogMaxGapMs();
     }
     return out;
 }

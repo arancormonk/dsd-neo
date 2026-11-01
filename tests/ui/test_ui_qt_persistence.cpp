@@ -566,6 +566,56 @@ test_recording_prefs() {
     stored.remove(limitKey);
 }
 
+/* Issue #756: the NFM pause hold. Off (200, the decoder's default) unless chosen; any value the decoder takes is kept
+ * as it is, offered or not, so a restored or older value shows as itself; anything else reads and writes as off. */
+void
+test_analog_max_gap_pref() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString key = QStringLiteral("recording/analogMaxGapMs");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::analogMaxGapMsChanged, &prefs, [&changes]() { ++changes; });
+        expect("the pause hold is off by default", prefs.analogMaxGapMs() == 200 && !stored.contains(key));
+        expect("the holds Settings offers",
+               prefs.analogMaxGapChoices() == QVariantList({200, 500, 1000, 2000, 3000, 5000, 10000}));
+        prefs.setAnalogMaxGapMs(2000);
+        expect("a choice is saved",
+               prefs.analogMaxGapMs() == 2000 && stored.value(key).toInt() == 2000 && changes == 1);
+        prefs.setAnalogMaxGapMs(2000);
+        expect("a repeated hold does not notify", changes == 1);
+        prefs.setAnalogMaxGapMs(1500);
+        expect("a value not offered is kept as it is", prefs.analogMaxGapMs() == 1500 && changes == 2);
+        prefs.setAnalogMaxGapMs(0);
+        expect("0 is kept (off)", prefs.analogMaxGapMs() == 0 && changes == 3);
+        prefs.setAnalogMaxGapMs(10000);
+        expect("the largest is kept", prefs.analogMaxGapMs() == 10000 && changes == 4);
+        prefs.setAnalogMaxGapMs(10001);
+        expect("one past the range is written as off",
+               prefs.analogMaxGapMs() == 200 && stored.value(key).toInt() == 200 && changes == 5);
+        prefs.setAnalogMaxGapMs(-1);
+        expect("a negative hold is written as off, unchanged", prefs.analogMaxGapMs() == 200 && changes == 5);
+        prefs.setAnalogMaxGapMs(3000);
+    }
+    {
+        AppPrefs reloaded;
+        expect("the hold persists", reloaded.analogMaxGapMs() == 3000);
+        stored.setValue(key, 20000);
+        expect("a stored hold past the range reads as off", reloaded.analogMaxGapMs() == 200);
+        stored.setValue(key, QStringLiteral("abc"));
+        expect("an unparsable stored hold reads as off", reloaded.analogMaxGapMs() == 200);
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::analogMaxGapMsChanged, &reloaded, [&changes]() { ++changes; });
+        reloaded.setAnalogMaxGapMs(200);
+        expect("a corrective hold write replaces the damage",
+               stored.value(key).toString() == QStringLiteral("200") && changes == 1);
+        stored.setValue(key, 1234);
+        expect("a stored custom hold reads as itself", reloaded.analogMaxGapMs() == 1234);
+    }
+    stored.remove(key);
+}
+
 /* Issue #574: the screen mode and its delay, which replaced the keep-awake switch.
  * The mode codes are a contract with the Android policy (ScreenPolicy.Mode). */
 void
@@ -920,6 +970,7 @@ test_prefs_key_table(void) {
         {"recordCalls", true, "recording/recordCalls"},
         {"recordUnknownOnly", true, "recording/recordUnknownOnly"},
         {"recordingLimitMb", 5000, "recording/limitMb"},
+        {"analogMaxGapMs", 2000, "recording/analogMaxGapMs"},
         {"acceptedStartKind", QStringLiteral("scan"), "listen/acceptedStartKind"},
         {"acceptedStartUid", QStringLiteral("uid-2"), "listen/acceptedStartUid"},
     };
@@ -1018,7 +1069,8 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port"))
                && portable.contains(QStringLiteral("recording/recordCalls"))
                && portable.contains(QStringLiteral("recording/recordUnknownOnly"))
-               && portable.contains(QStringLiteral("recording/limitMb")));
+               && portable.contains(QStringLiteral("recording/limitMb"))
+               && portable.contains(QStringLiteral("recording/analogMaxGapMs")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys",
@@ -1160,6 +1212,7 @@ main(int argc, char** argv) {
     test_receiver_prefs();
     test_screen_policy_prefs();
     test_recording_prefs();
+    test_analog_max_gap_pref();
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();

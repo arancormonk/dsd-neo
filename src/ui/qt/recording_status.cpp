@@ -32,9 +32,9 @@ same_view(const dsd_app_recording_view& a, const dsd_app_recording_view& b) {
         }
     }
     return a.published == b.published && a.mode == b.mode && a.per_call == b.per_call && a.slot_files == b.slot_files
-           && a.unknown_only == b.unknown_only && a.journal_state == b.journal_state
-           && a.journal_named == b.journal_named && a.command_state == b.command_state && a.command_id == b.command_id
-           && a.last_error == b.last_error;
+           && a.unknown_only == b.unknown_only && a.analog_max_gap_ms == b.analog_max_gap_ms
+           && a.journal_state == b.journal_state && a.journal_named == b.journal_named
+           && a.command_state == b.command_state && a.command_id == b.command_id && a.last_error == b.last_error;
 }
 
 } // namespace
@@ -119,7 +119,11 @@ RecordingStatus::sessionActive() const {
 
 void
 RecordingStatus::setRunUp(bool up) {
+    if (up == m_runUp) {
+        return;
+    }
     m_runUp = up;
+    Q_EMIT changed();
 }
 
 bool
@@ -181,6 +185,11 @@ RecordingStatus::unknownOnly() const {
     return m_view.unknown_only != 0U;
 }
 
+int
+RecordingStatus::analogMaxGapMs() const {
+    return m_view.analog_max_gap_ms;
+}
+
 bool
 RecordingStatus::staticWav() const {
     return m_view.mode == DSD_APP_RECORDING_MODE_STATIC;
@@ -212,6 +221,7 @@ RecordingStatus::command() const {
         case DSD_APP_CMD_WAV_TOGGLE: return QStringLiteral("toggle");
         case DSD_APP_CMD_WAV_STATIC_OPEN: return QStringLiteral("static");
         case DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET: return QStringLiteral("unknownOnly");
+        case DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET: return QStringLiteral("analogMaxGap");
         case DSD_APP_CMD_CONFIG_APPLY: return QStringLiteral("config");
         default: return {};
     }
