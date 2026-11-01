@@ -784,15 +784,6 @@ function pauseHoldOn(ms) {
     return (Number(ms) || 0) > 200
 }
 
-// Whether Extra decoder arguments set the pause hold themselves: the parser
-// takes a long option out wherever it stands, and the last one wins, so one
-// there decides every session whatever Settings holds.
-function extraArgsSetPauseHold(text) {
-    return String(text || "").split(/\s+/).some(function (token) {
-        return token === "--analog-record-max-gap-ms" || token.indexOf("--analog-record-max-gap-ms=") === 0
-    })
-}
-
 // Issue #708: the store notices Settings and the Call recordings screen share.
 function recordingStorageAwayText() {
     return qsTr("Storage for call recordings isn't available right now. Saved recordings are kept.")

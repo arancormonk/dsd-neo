@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QList>
 #include <QMap>
+#include <QMetaProperty>
 #include <QObject>
 #include <QSettings>
 #include <QString>
@@ -374,6 +375,56 @@ test_recording_refused_extras(void) {
     appPrefs.setRecordCalls(false);
     expect("and lets it start once Record calls is off", builder.build(usb_system()).value("ok").toBool());
     appPrefs.setExtraArgs(QString());
+}
+
+/* Issue #756: Settings shuts the NFM pause hold row only when the extra options set the hold as the decoder reads them:
+ * wherever a long option stands, in either form, but never as another option's value or after a "--" that is no
+ * value. Read by name alone, those two set nothing the decoder takes, and Record calls on then sent no hold. */
+void
+test_extra_sets_pause_hold(void) {
+    using dsd_qt::session_args_extra_sets_pause_hold;
+    for (const auto& tokens : QStringList{
+             "--analog-record-max-gap-ms 7000",
+             "--analog-record-max-gap-ms=7000",
+             "-Z --analog-record-max-gap-ms 7500",
+             // A value-taking option before it, with its value: the hold is the next option.
+             "--api-token secret --analog-record-max-gap-ms 7000",
+             "--api-token=secret --analog-record-max-gap-ms 7000",
+             // The long options come out first, a short option's value position included, as the decoder takes them.
+             "-c --analog-record-max-gap-ms 7000",
+             "--analog-record-max-gap-ms 7000 -- -Z",
+         }) {
+        expect(qPrintable(QStringLiteral("sets the hold: %1").arg(tokens)), session_args_extra_sets_pause_hold(tokens));
+    }
+    for (const auto& tokens : QStringList{
+             "",
+             "-Z",
+             "-- --analog-record-max-gap-ms 7000",
+             "-Z -- --analog-record-max-gap-ms=7000",
+             "--api-token --analog-record-max-gap-ms",
+             "-Z --api-token --analog-record-max-gap-ms 7000",
+             "--frame-log --analog-record-max-gap-ms=7000",
+             "--analog-record-max-gap-msx 1",
+             "--analog-record-max-gap 7000",
+         }) {
+        expect(qPrintable(QStringLiteral("sets no hold: %1").arg(tokens)), !session_args_extra_sets_pause_hold(tokens));
+    }
+
+    // Settings reads it from the builder, off the app-wide extra options every session starts with, and follows them.
+    expect("no preferences, no hold", !dsd_qt::SessionArgsBuilder(nullptr).extraArgsSetPauseHold());
+    dsd_qt::AppPrefs appPrefs;
+    const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+    int changes = 0;
+    QObject::connect(&builder, &dsd_qt::SessionArgsBuilder::extraArgsSetPauseHoldChanged, [&changes] { changes++; });
+    appPrefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms=7000"));
+    expect("the builder reads a hold", builder.extraArgsSetPauseHold() && changes == 1);
+    appPrefs.setExtraArgs(QStringLiteral("-- --analog-record-max-gap-ms 7000"));
+    expect("the builder reads no hold after --", !builder.extraArgsSetPauseHold() && changes == 2);
+    appPrefs.setExtraArgs(QString());
+    expect("QML reads it as a property",
+           dsd_qt::SessionArgsBuilder::staticMetaObject
+               .property(dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfProperty("extraArgsSetPauseHold"))
+               .hasNotifySignal());
 }
 
 /* Issue #708: a start asks the call recording store for the session's folder before the host starts, names it in the
@@ -1460,6 +1511,7 @@ main(int argc, char** argv) {
     test_prefs_mapping();
     test_recording_args();
     test_recording_refused_extras();
+    test_extra_sets_pause_hold();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();

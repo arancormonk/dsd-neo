@@ -431,12 +431,16 @@ Item {
         }
 
         // A hold in Extra decoder arguments wins at every start: the row is shut and says so, and Record calls on
-        // sends no hold (-1), so the session keeps the one its extra options set.
+        // sends no hold (-1), so the session keeps the one its extra options set. The options are read as the
+        // decoder reads them: after a "--", or as another option's value, the hold's name sets nothing.
         function test_analog_max_gap_in_extra_arguments_data() {
             return [
                 {tag: "spaced", extra: "-Z --analog-record-max-gap-ms 7500", set: true},
                 {tag: "equals", extra: "--analog-record-max-gap-ms=7500", set: true},
+                {tag: "after a value", extra: "--api-token secret --analog-record-max-gap-ms 7500", set: true},
                 {tag: "other option", extra: "--analog-record-max-gap-msx 1", set: false},
+                {tag: "after --", extra: "-- --analog-record-max-gap-ms 7500", set: false},
+                {tag: "a value", extra: "--api-token --analog-record-max-gap-ms", set: false},
                 {tag: "none", extra: "-Z", set: false}
             ];
         }

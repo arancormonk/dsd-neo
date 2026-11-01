@@ -121,6 +121,16 @@ constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::CallRecordin
  */
 SessionArgsError session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool noStorage = false);
 
+/**
+ * @brief Whether the extra options @p tokens set the NFM pause hold themselves (--analog-record-max-gap-ms, issue
+ * #756), in either option form.
+ *
+ * The decoder takes a long option out wherever it stands, and the last one wins, so one there decides every session
+ * whatever Settings holds. Tokens are walked as session_args_recording_extra_error() walks them: another option's
+ * value ("--api-token --analog-record-max-gap-ms") and anything after a "--" that is no value set nothing.
+ */
+bool session_args_extra_sets_pause_hold(const QString& tokens);
+
 /** Every Unicode space (QChar::isSpace(): NBSP and the rest included), '-' and ':' grouping removed, then a leading
  * 0x or 0X stripped, uppercase hex. Only for hex material (session_args_key_type_hex() types and the profile model's
  * managed hex formats): decimal keys and vendor grammars keep their own rules. QString copies cannot promise erasure;
@@ -174,6 +184,9 @@ QStringList session_args_build(const QVariantMap& system, const SessionArgPrefs&
 /** @brief QML-facing wrapper binding the pure builder to the live AppPrefs. */
 class SessionArgsBuilder : public QObject {
     Q_OBJECT
+    /** @brief Whether the app-wide Extra decoder arguments the builder starts every session with set the NFM pause
+     *  hold themselves, so Settings' row changes nothing (issue #756); see session_args_extra_sets_pause_hold(). */
+    Q_PROPERTY(bool extraArgsSetPauseHold READ extraArgsSetPauseHold NOTIFY extraArgsSetPauseHoldChanged)
 
   public:
     explicit SessionArgsBuilder(const AppPrefs* prefs, QObject* parent = nullptr);
@@ -222,6 +235,11 @@ class SessionArgsBuilder : public QObject {
      */
     Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force,
                                  const QString& protocol = QString()) const;
+
+    bool extraArgsSetPauseHold() const;
+
+  Q_SIGNALS:
+    void extraArgsSetPauseHoldChanged();
 
   private:
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,

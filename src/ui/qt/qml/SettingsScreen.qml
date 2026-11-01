@@ -207,8 +207,10 @@ Item {
     // Issue #756: the NFM pause hold travels with Record calls, as unknown-only
     // does, and the row shows the preference, as the switches do. A hold in Extra
     // decoder arguments wins at every start, so the row then changes nothing and
-    // says why, and Record calls on leaves the session's own hold alone.
-    readonly property bool analogMaxGapInExtras: Util.extraArgsSetPauseHold(prefs.extraArgs)
+    // says why, and Record calls on leaves the session's own hold alone. The
+    // session builder reads the options as the decoder does: a hold that is
+    // another option's value, or comes after "--", is no hold.
+    readonly property bool analogMaxGapInExtras: sessionArgs.extraArgsSetPauseHold
     function setAnalogMaxGap(ms) {
         prefs.analogMaxGapMs = ms;
         if (recordingLive && prefs.recordCalls)

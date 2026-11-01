@@ -9063,8 +9063,10 @@ Qt Quick frontend (`src/ui/qt`):
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); NFM pause hold
     (issue #756) is a ChoiceSheet of `analogMaxGapChoices` that goes live through `setAnalogRecordMaxGap()`, disabled
     and travelling with Record calls the same way; it shows the preference, as the switches do, any value as itself
-    (`Util.pauseHoldText()`). A hold in the app's Extra decoder arguments (`Util.extraArgsSetPauseHold()`) wins at
-    every start: the row is then shut with a note saying so, and Record calls on sends no hold (-1), so the session
+    (`Util.pauseHoldText()`). A hold in the app's Extra decoder arguments wins at every start
+    (`sessionArgs.extraArgsSetPauseHold`, `session_args_extra_sets_pause_hold()`: the options walked as the decoder reads
+    them, as `session_args_recording_extra_error()` walks them, so a hold that is another option's value or follows a
+    "--" is none): the row is then shut with a note saying so, and Record calls on sends no hold (-1), so the session
     keeps its own; a saved system's own extra options are not seen there. The lines under them come from
     `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next start, judged
     per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped

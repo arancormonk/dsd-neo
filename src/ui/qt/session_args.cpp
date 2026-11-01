@@ -454,6 +454,14 @@ session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool
                                                                : SessionArgsError::None;
 }
 
+bool
+session_args_extra_sets_pause_hold(const QString& tokens) {
+    const QStringList options = option_tokens(tokens);
+    return std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
+        return long_option_is(token, QLatin1String("--analog-record-max-gap-ms"));
+    });
+}
+
 static QString
 validateScanEndpoint(const QVariantMap& list) {
     if (list.value("sourceType") == "rtltcp") {
@@ -966,7 +974,11 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     return args;
 }
 
-SessionArgsBuilder::SessionArgsBuilder(const AppPrefs* prefs, QObject* parent) : QObject(parent), m_prefs(prefs) {}
+SessionArgsBuilder::SessionArgsBuilder(const AppPrefs* prefs, QObject* parent) : QObject(parent), m_prefs(prefs) {
+    if (m_prefs != nullptr) {
+        connect(m_prefs, &AppPrefs::extraArgsChanged, this, &SessionArgsBuilder::extraArgsSetPauseHoldChanged);
+    }
+}
 
 SessionArgsBuilder::~SessionArgsBuilder() = default;
 
@@ -1121,6 +1133,11 @@ SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz
     }
     return session_args_am_fits_bandwidth(sourceType, khz) ? QString()
                                                            : session_args_error_text(SessionArgsError::AmBandwidth);
+}
+
+bool
+SessionArgsBuilder::extraArgsSetPauseHold() const {
+    return m_prefs != nullptr && session_args_extra_sets_pause_hold(m_prefs->extraArgs());
 }
 
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.
