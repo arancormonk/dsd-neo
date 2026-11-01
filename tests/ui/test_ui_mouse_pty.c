@@ -29,6 +29,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -382,7 +383,7 @@ close_screen(pty_screen* p) {
     }
     (void)fflush(stdout);
     if (p->saved_stdout >= 0) {
-        (void)dup2(p->saved_stdout, STDOUT_FILENO);
+        (void)dsd_dup2(p->saved_stdout, STDOUT_FILENO);
         (void)close(p->saved_stdout);
     }
     if (p->in != NULL) {
@@ -410,7 +411,7 @@ open_screen(pty_screen* p, const char** why) {
     }
     (void)fflush(stdout);
     p->saved_stdout = dup(STDOUT_FILENO);
-    if (p->saved_stdout < 0 || dup2(p->slave, STDOUT_FILENO) < 0) {
+    if (p->saved_stdout < 0 || dsd_dup2(p->slave, STDOUT_FILENO) < 0) {
         *why = "dup2 failed";
         return -1;
     }
