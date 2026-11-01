@@ -5929,6 +5929,38 @@ test_channel_cycle_p25_hunt_drops_the_retry(void) {
 }
 
 /*
+ * Issue #666 (review gate, fix 5): the P25 hunt's probe is a forward start whichever leg picks it. On a -T map
+ * [A, B, C, D] on C, Previous refused on B, then an automatic candidate probe (Prefer CC candidates) refused, kept B to
+ * retry, so with candidates off the next Previous went back from B to A instead of from C to B.
+ */
+static int
+test_channel_cycle_p25_candidate_hunt_drops_the_retry(void) {
+    static const long kRows[] = {861000000L, 862000000L, 863000000L, 864000000L};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = init_p25_hunt_context(&opts, &state, kRows, 4);
+    state.lcn_freq_roll = 2;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "cand hunt: next to C");
+    rc |= expect_true("cand hunt: C landed", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+
+    manual_leg_script(862000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "cand hunt: B refused");
+    rc |= expect_int("cand hunt: B is the row to go on from", dsd_state_lcn_back_retry_row(&state), 1);
+
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("cand hunt: candidate X seeded", p25_cc_add_candidate(&state, 869000000L, 1), 1);
+    hunt_probe(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_int("cand hunt: the probe left the list cursor", state.lcn_freq_roll, 3);
+    rc |= expect_int("cand hunt: the probe drops the retry", dsd_state_lcn_back_retry_row(&state), -1);
+
+    opts.p25_prefer_candidates = 0;
+    manual_leg_script(862000000U, RTL_STREAM_TUNE_OK);
+    rc |= prev_lands(&opts, &state, 862000000U, 2, 1, "cand hunt: previous goes back from C to B");
+    end_p25_hunt_context(&state);
+    return rc;
+}
+
+/*
  * Issue #666: rows on one frequency in a row are one channel, from either side: Previous lands on a run's first row,
  * goes back from the first row of the run heard (here a timed step had landed its second row), and skips a run whose
  * first row is avoided. The first and last rows never join across the wrap.
@@ -24808,6 +24840,7 @@ main(void) {
     rc |= test_channel_cycle_prev_after_refused_p25_hunt();
     rc |= test_channel_cycle_p25_hunt_drops_the_retry();
     rc |= test_channel_cycle_candidate_next_drops_the_retry();
+    rc |= test_channel_cycle_p25_candidate_hunt_drops_the_retry();
     rc |= test_channel_cycle_prev_duplicate_runs();
     rc |= test_channel_cycle_prev_refused_row();
     rc |= test_channel_cycle_prev_after_avoid_and_reload();

@@ -5487,15 +5487,13 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 #define CC_HUNT_INTERVAL_S 5.0
 
 /* Get next LCN frequency from user-provided list. @p out_row gets the row picked, or -1 when the pick is the known
-   control channel instead (no list, or a 0 Hz row). A forward step through the list, as Next is, so it drops the row a
-   refused Previous left to retry, whatever its tune does (issue #666). */
+   control channel instead (no list, or a 0 Hz row). */
 static int
 next_lcn_freq(dsd_state* state, long* out_freq, int* out_row) {
     if (!state || !out_freq || !out_row) {
         return 0;
     }
     *out_row = -1;
-    dsd_state_lcn_back_retry_clear(state);
     if (state->lcn_freq_count <= 0) {
         long cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
         if (cc > 0) {
@@ -5756,6 +5754,9 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (!p25_sm_hunt_may_probe(ctx, opts, state, now_m)) {
         return;
     }
+    /* A probe is a forward start, as Next is, whichever leg picks it and whatever its tune does: it drops the row a
+       refused Previous left to retry (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
     long cand = 0;
     int sps = cc_ted_sps(opts, state);
 

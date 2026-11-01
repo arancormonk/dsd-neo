@@ -427,6 +427,30 @@ dmr_deferred_mapped_probe_is_retried(void) {
     return rc;
 }
 
+/*
+ * Issue #666 (review gate, fix 5): a hunt probe is a forward start, as Next is, so it drops the row a refused Previous
+ * left to retry on the channel map, whatever its tune does. Kept, it sent the next Previous back from the refused row,
+ * past the row it should have retried.
+ */
+static int
+dmr_probe_drops_the_back_retry(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    aloha(1);
+    dsd_state_lcn_back_retry_note(&g_state, 3);
+    int rc = expect(dsd_state_lcn_back_retry_row(&g_state) == 3, "retry: a refused Previous left row 3");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) != 0, "retry: a probe was refused");
+    rc |= expect(dsd_state_lcn_back_retry_row(&g_state) == -1, "retry: a refused probe drops it");
+    dsd_state_lcn_back_retry_note(&g_state, 3);
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED) != 0, "retry: a probe was deferred");
+    rc |= expect(dsd_state_lcn_back_retry_row(&g_state) == -1, "retry: a deferred probe drops it");
+    cleanup();
+    return rc;
+}
+
 /* The same for a site with no channel map, whose hunt walks the current-site control-channel candidates: a deferred
    probe keeps the candidate walk (its index and use count), a refused one passes the candidate. */
 static int
@@ -2452,6 +2476,7 @@ main(void) {
     rc |= hunt_and_reacquire();
     rc |= pending_and_failed_probes();
     rc |= dmr_deferred_mapped_probe_is_retried();
+    rc |= dmr_probe_drops_the_back_retry();
     rc |= dmr_deferred_candidate_probe_is_retried();
     rc |= cap_plus_rest_recovery();
     rc |= switch_while_probe_pending();

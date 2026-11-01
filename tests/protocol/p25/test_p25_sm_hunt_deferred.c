@@ -219,12 +219,40 @@ test_refused_channel_row_is_not_the_row_heard(void) {
     assert(dsd_state_lcn_back_retry_row(&s) == -1);
 }
 
+/* Review gate fix 5: a probe is a forward start whichever leg picks it, so a current-site candidate probe drops a
+   refused Previous's retry row on the channel map too, refused or deferred. */
+static void
+test_candidate_probe_drops_the_retry(void) {
+    static dsd_opts o;
+    static dsd_state s;
+    init_hunt(&o, &s);
+    DSD_SNPRINTF(o.chan_in_file, sizeof(o.chan_in_file), "%s", "site.csv");
+    o.p25_prefer_candidates = 1;
+    s.trunk_lcn_freq[0] = 852000000;
+    s.trunk_lcn_freq[1] = 853000000;
+    s.lcn_freq_count = 2;
+    s.lcn_freq_roll = 1;
+    dsd_state_lcn_nav_reset(&s);
+    (void)dsd_trunk_cc_candidates_add(&s, 857000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+
+    dsd_state_lcn_back_retry_note(&s, 0);
+    hunt_once(&o, &s, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_tuned[0] == 857000000);
+    assert(s.lcn_freq_roll == 1);
+    assert(dsd_state_lcn_back_retry_row(&s) == -1);
+
+    dsd_state_lcn_back_retry_note(&s, 0);
+    hunt_once(&o, &s, DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(dsd_state_lcn_back_retry_row(&s) == -1);
+}
+
 int
 main(void) {
     test_deferred_candidate_is_retried();
     test_deferred_channel_row_is_retried();
     test_accepted_channel_row_is_the_row_heard();
     test_refused_channel_row_is_not_the_row_heard();
+    test_candidate_probe_drops_the_retry();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
     return 0;

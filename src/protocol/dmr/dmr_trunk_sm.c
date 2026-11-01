@@ -887,6 +887,9 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     }
     ctx->cc_window_lost = 0;
     ctx->cc_retry_after_m = now_m + 2.0;
+    /* A probe is a forward start, as Next is, so it drops the row a refused Previous left to retry on the channel map,
+       whatever its tune does (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
     const int hunt_index = ctx->cc_hunt_index;
     dsd_trunk_cc_candidates_cursor candidates;
     dsd_trunk_cc_candidates_checkpoint(state, &candidates);

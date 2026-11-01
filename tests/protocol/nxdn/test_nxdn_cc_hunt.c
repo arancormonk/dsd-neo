@@ -435,6 +435,20 @@ test_refused_anchor(void) {
     expect("refused anchor: the map is still walked", saw_c && saw_a, 1);
 }
 
+/* Issue #666 (review gate, fix 5): a probe is a forward start, as Next is, so it drops the row a refused Previous left
+   to retry on the channel map, whatever its tune does. */
+static void
+test_probe_drops_the_back_retry(void) {
+    session();
+    g_refuse_hz = ROW_A;
+    dsd_state_lcn_back_retry_note(g_state, 2);
+    expect("retry: a refused Previous left row C", dsd_state_lcn_back_retry_row(g_state), 2);
+    tick_at(0.0);
+    run_until(0.0, 6.5); // the grace runs out: the first probe, A, is refused
+    expect("retry: A probed", g_tune_count, 1);
+    expect("retry: the probe drops it", dsd_state_lcn_back_retry_row(g_state), -1);
+}
+
 /* The receiver stays on the control channel when the first alternate is refused: visiting it without a retune still
    counts, so the hunt goes on to the next row. */
 static void
@@ -648,6 +662,7 @@ main(void) {
     test_system_replaced();
     test_superseded_probe_attribution();
     test_refused_anchor();
+    test_probe_drops_the_back_retry();
     test_refused_alternate_on_anchor();
     test_late_completion_dwell();
     test_operator_move_resets_evidence();

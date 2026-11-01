@@ -218,8 +218,10 @@ Generated (do not edit/commit):
       (`apply_manual_channel_cycle_dir_locked()` clears it before the leg is chosen, so a `-^` candidate Next drops
       it too; the list walk keeps its own clear for Avoid's step), the timed untyped step
       (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`), Avoid's
-      step, and the P25 hunt's `-T` channel-map pick (`next_lcn_freq()`), so a refused Previous, a refused Next (or hunt
-      probe), then Previous starts from the row heard again.
+      step, and every control-channel hunt probe, whatever its tune does (the P25 `try_next_cc()` before it picks a
+      leg, candidate or list; the DMR `dmr_cc_hunt()`; the NXDN `nxdn_cc_hunt_probe()`; each after its own pacing
+      gate, so a tick that does not probe changes nothing), so a refused Previous, a refused Next (or hunt probe), then
+      Previous starts from the row heard again.
     - `-^` candidates: `p25_cc_prev_candidate()` (`dsd_trunk_cc_candidates_prev()`), with the same checkpoint and
       restore on a deferral as Next.
     - Tests: `APP_COMMAND_QUEUE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_NO_CARRIER_RESET`, `RUNTIME_TRUNK_CC_CANDIDATES`,
@@ -2295,13 +2297,14 @@ suite runs under this compiler.
       (`try_next_cc()` through `p25_hunt_reject_outcome()`) puts its user-list cursor `lcn_freq_roll` back the same
       way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`. A P25 user-list probe keeps the position as a manual
       `L` does (`lcn_cycle_on_tune_outcome()`'s forward rules, mirrored with the core `dsd_state_lcn_*` helpers since
-      the SM cannot reach app-control): its pick drops the backward retry whatever the tune does (`next_lcn_freq()`),
-      an accepted tune records the row (`dsd_state_lcn_on_air_note()` in `try_next_cc()`), a refused or timed-out one
+      the SM cannot reach app-control): the probe drops the backward retry whatever the tune does, on either leg
+      (`try_next_cc()`), an accepted tune records the row (`dsd_state_lcn_on_air_note()` in `try_next_cc()`), a refused or timed-out one
       calls `dsd_state_lcn_on_air_note_refused()` (`p25_hunt_reject_outcome()`; a valid row heard stays), and a deferral
       writes nothing. So `J` goes back from the row the hunt tuned, never from one it was refused. A 0 Hz row's
-      control-channel fallback is no list row and writes nothing. The DMR hunt walks no list position and never writes
-      it. Tests:
-      `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`.
+      control-channel fallback is no list row and writes nothing. The DMR and NXDN hunts walk no list position and
+      never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
+      `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
+      `NXDN_CC_HUNT`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
       `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),
