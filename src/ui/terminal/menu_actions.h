@@ -253,6 +253,7 @@ void act_provoice_esk(void* v);
 void act_provoice_mode(void* v);
 void act_return_cc(void* v);
 void act_channel_cycle(void* v);
+void act_channel_prev(void* v);
 void act_tg_lockout_persist(void* v);
 void act_tg_session_avoid_clear(void* v);
 void act_lockout_slot1(void* v);

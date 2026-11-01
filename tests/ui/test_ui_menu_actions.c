@@ -2014,6 +2014,7 @@ test_signal_chain_rows(void) {
         {act_provoice_mode, DSD_APP_CMD_PROVOICE_MODE_TOGGLE, "provoice mode"},
         {act_return_cc, DSD_APP_CMD_RETURN_CC, "return to cc"},
         {act_channel_cycle, DSD_APP_CMD_CHANNEL_CYCLE, "channel cycle"},
+        {act_channel_prev, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "channel prev"},
         {act_scan_hold_toggle, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "scan hold"},
         {act_scan_avoid, DSD_APP_CMD_SCAN_AVOID, "scan avoid"},
         {act_scan_avoid_clear, DSD_APP_CMD_SCAN_AVOID_CLEAR, "scan avoid clear"},

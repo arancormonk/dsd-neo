@@ -177,6 +177,7 @@ Main Menu
 │   ├── Conventional scanning [Off]              y   ([On], [Paused]; Trunk scan [Running] or [Paused] under --trunk-scan)
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning, not while a scan is paused)
+│   ├── Previous channel                         J   (while trunking or scanning, not while a scan is paused)
 │   ├── Scan hold [Off]                          Y   (while a -Y or --trunk-scan scan runs)
 │   ├── Avoid current channel                    b   (while a -Y or --trunk-scan scan runs)
 │   ├── Clear avoids [0]                             (while a -Y or --trunk-scan scan runs)
@@ -730,8 +731,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `=` | Frequency entry over the main screen (Input > `Frequency...`); a running scan pauses on the frequency typed. On Windows also `Shift+Enter` and `Shift`+keypad Enter |
 | `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime) |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
-| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels or P25 control-channel candidates (`-^`), or move to the next `--trunk-scan` target. Needs a radio input or a rigctl peer |
+| `J` | Previous channel: the same list as `L`, one step back. Same requirements |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`J` and `L` still move while held) |
 | `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
@@ -741,7 +743,7 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the avoids,
+While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the avoids,
 and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or paused,
 `t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on
 stops the scan.

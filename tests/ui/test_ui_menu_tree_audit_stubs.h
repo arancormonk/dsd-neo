@@ -25,6 +25,7 @@
     X(act_auto_ppm_zerohz_prompt)                                                                                      \
     X(act_auto_ppm_zeroppm_prompt)                                                                                     \
     X(act_channel_cycle)                                                                                               \
+    X(act_channel_prev)                                                                                                \
     X(act_config_load)                                                                                                 \
     X(act_config_load_profile)                                                                                         \
     X(act_config_save_as)                                                                                              \
