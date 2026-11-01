@@ -35,8 +35,10 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7609,6 +7611,80 @@ test_am_bandwidth_option(void) {
     return test_rc;
 }
 
+/* Issue #756 (B4): a value-taking option given last, its value forgotten, is refused with exit code 1. It used to be
+ * dropped without a word, so `-P --wav-journal` recorded with no journal and exited 0. */
+static int
+test_value_options_refuse_a_missing_value(void) {
+    static const char* const options[] = {
+        "--wav-journal",         "--rdio-mode",           "--rdio-system-id",
+        "--rdio-api-url",        "--rdio-api-key",        "--rdio-upload-timeout-ms",
+        "--rdio-upload-retries", "--frame-log",           "--p25-sm-log",
+        "--input-volume",        "--input-level-warn-db",
+    };
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "%s requires a value", options[i]);
+        const char* const args[] = {"dsd-neo", "-P", options[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1 || !strstr(run.err, want)) {
+            DSD_FPRINTF(stderr, "-P %s with no value: rc=%d exit_rc=%d\n%s\n", options[i], run.rc, run.exit_rc,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* Issue #756 (B5): these options clamp to their range in the parsed width before the value becomes an int, so a value
+ * past int's range clamps to the nearer bound instead of wrapping to an unrelated accepted value (each case wraps to
+ * one on a 64-bit long). Where long is 32 bits (Windows), the values are past long's range too and refused as invalid,
+ * as before. */
+static int
+test_wide_values_clamp_before_narrowing(void) {
+    static const struct {
+        const char* option;
+        const char* value;
+        size_t field;
+        int want;
+    } cases[] = {
+        {"--input-volume", "4294967300", offsetof(dsd_opts, input_volume_multiplier), 16},
+        {"--input-volume", "-4294967292", offsetof(dsd_opts, input_volume_multiplier), 1},
+        {"--rdio-system-id", "4294967301", offsetof(dsd_opts, rdio_system_id), 65535},
+        {"--rdio-system-id", "-4294967291", offsetof(dsd_opts, rdio_system_id), 0},
+        {"--rdio-upload-timeout-ms", "4294967796", offsetof(dsd_opts, rdio_upload_timeout_ms), 120000},
+        {"--rdio-upload-timeout-ms", "-4294966796", offsetof(dsd_opts, rdio_upload_timeout_ms), 100},
+        {"--rdio-upload-retries", "4294967299", offsetof(dsd_opts, rdio_upload_retries), 10},
+        {"--rdio-upload-retries", "-4294967293", offsetof(dsd_opts, rdio_upload_retries), 0},
+    };
+
+    const int long_is_wide = LONG_MAX > INT_MAX;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].option, cases[i].value, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        int got = 0;
+        DSD_MEMCPY(&got, (const char*)run.opts + cases[i].field, sizeof got);
+        const int ok = long_is_wide ? (run.rc == DSD_PARSE_CONTINUE && got == cases[i].want)
+                                    : (run.rc == DSD_PARSE_ERROR && run.exit_rc == 1);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "%s %s (long %s): rc=%d exit_rc=%d value=%d, want %d\n%s\n", cases[i].option,
+                        cases[i].value, long_is_wide ? "64-bit" : "32-bit", run.rc, run.exit_rc, got, cases[i].want,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* [mode] decode = am from a loaded config on a PCM input: the same reason, logged, and the session monitors with the
  * Analog preset instead. Autosave is off for the session, so the saved decode = am stays as it was, and a toast says
  * so. On an IQ input the config's AM stands. */
@@ -11316,6 +11392,8 @@ main(void) {
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();
+    rc |= test_value_options_refuse_a_missing_value();
+    rc |= test_wide_values_clamp_before_narrowing();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

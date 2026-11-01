@@ -648,6 +648,31 @@ cli_parse_long_option(const char* option_name, const char* in, int base, long* o
     return 0;
 }
 
+/* @p value clamped to @p lo..@p hi while still a long, then narrowed: a value past int's range clamps to the nearer
+   bound instead of wrapping to an unrelated one in the range (issue #756). */
+static int
+cli_clamp_long_to_int(long value, int lo, int hi) {
+    if (value < lo) {
+        return lo;
+    }
+    if (value > hi) {
+        return hi;
+    }
+    return (int)value;
+}
+
+/* Whether a long option at argv[@p i] has its value, the next argument: given last, without one, it is refused (issue
+   #756), never dropped as if it had not been given. */
+static int
+cli_has_value(const char* option_name, int i, int argc, int* out_exit_rc) {
+    if (i + 1 < argc) {
+        return 1;
+    }
+    LOG_ERROR("%s requires a value\n", option_name);
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
 static int
 cli_parse_ulong_option(const char* option_name, const char* in, int base, unsigned long* out, int* out_exit_rc) {
     if (cli_parse_ulong_base(in, base, out)) {
@@ -1764,47 +1789,80 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             frontend_cli = argv[i] + 11;                                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--input-volume") == 0) {                                                                  \
+            if (!cli_has_value("--input-volume", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             input_vol_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--input-level-warn-db") == 0) {                                                           \
+            if (!cli_has_value("--input-level-warn-db", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             input_warn_db_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--frame-log") == 0) {                                                                     \
+            if (!cli_has_value("--frame-log", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--wav-journal") == 0 && i + 1 < argc) {                                                   \
+        if (strcmp(argv[i], "--wav-journal") == 0) {                                                                   \
+            if (!cli_has_value("--wav-journal", i, argc, out_exit_rc)) {                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             recording_cli.wav_journal = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
+        if (strcmp(argv[i], "--p25-sm-log") == 0) {                                                                    \
+            if (!cli_has_value("--p25-sm-log", i, argc, out_exit_rc)) {                                                \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             p25_sm_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--rdio-mode") == 0) {                                                                     \
+            if (!cli_has_value("--rdio-mode", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {                                                \
+        if (strcmp(argv[i], "--rdio-system-id") == 0) {                                                                \
+            if (!cli_has_value("--rdio-system-id", i, argc, out_exit_rc)) {                                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_system_id_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--rdio-api-url") == 0) {                                                                  \
+            if (!cli_has_value("--rdio-api-url", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--rdio-api-key") == 0) {                                                                  \
+            if (!cli_has_value("--rdio-api-key", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {                                        \
+        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0) {                                                        \
+            if (!cli_has_value("--rdio-upload-timeout-ms", i, argc, out_exit_rc)) {                                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_upload_timeout_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--rdio-upload-retries") == 0) {                                                           \
+            if (!cli_has_value("--rdio-upload-retries", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_upload_retries_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -2285,13 +2343,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (!cli_parse_long_option("--input-volume", input_vol_cli, 10, &parsed_mv, out_exit_rc)) {                    \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int mv = (int)parsed_mv;                                                                                       \
-        if (mv < 1) {                                                                                                  \
-            mv = 1;                                                                                                    \
-        }                                                                                                              \
-        if (mv > 16) {                                                                                                 \
-            mv = 16;                                                                                                   \
-        }                                                                                                              \
+        const int mv = cli_clamp_long_to_int(parsed_mv, 1, 16);                                                        \
         opts->input_volume_multiplier = mv;                                                                            \
         char b[16];                                                                                                    \
         DSD_SNPRINTF(b, sizeof b, "%d", mv);                                                                           \
@@ -2357,13 +2409,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (!cli_parse_long_option("--rdio-system-id", rdio_system_id_cli, 10, &parsed_sid, out_exit_rc)) {            \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int sid = (int)parsed_sid;                                                                                     \
-        if (sid < 0) {                                                                                                 \
-            sid = 0;                                                                                                   \
-        }                                                                                                              \
-        if (sid > 65535) {                                                                                             \
-            sid = 65535;                                                                                               \
-        }                                                                                                              \
+        const int sid = cli_clamp_long_to_int(parsed_sid, 0, 65535);                                                   \
         opts->rdio_system_id = sid;                                                                                    \
         LOG_INFO("NOTICE: Rdio system ID: %d\n", opts->rdio_system_id);                                                \
     }                                                                                                                  \
@@ -2383,13 +2429,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                    out_exit_rc)) {                                                                     \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int timeout_ms = (int)parsed_timeout_ms;                                                                       \
-        if (timeout_ms < 100) {                                                                                        \
-            timeout_ms = 100;                                                                                          \
-        }                                                                                                              \
-        if (timeout_ms > 120000) {                                                                                     \
-            timeout_ms = 120000;                                                                                       \
-        }                                                                                                              \
+        const int timeout_ms = cli_clamp_long_to_int(parsed_timeout_ms, 100, 120000);                                  \
         opts->rdio_upload_timeout_ms = timeout_ms;                                                                     \
         LOG_INFO("NOTICE: Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);                                \
     }                                                                                                                  \
@@ -2399,13 +2439,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                    out_exit_rc)) {                                                                     \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int retries = (int)parsed_retries;                                                                             \
-        if (retries < 0) {                                                                                             \
-            retries = 0;                                                                                               \
-        }                                                                                                              \
-        if (retries > 10) {                                                                                            \
-            retries = 10;                                                                                              \
-        }                                                                                                              \
+        const int retries = cli_clamp_long_to_int(parsed_retries, 0, 10);                                              \
         opts->rdio_upload_retries = retries;                                                                           \
         LOG_INFO("NOTICE: Rdio upload retries: %d\n", opts->rdio_upload_retries);                                      \
     }                                                                                                                  \
