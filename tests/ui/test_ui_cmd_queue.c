@@ -4827,11 +4827,14 @@ manual_leg_script(uint32_t hz, int result) {
             return;
         }
     }
-    if (g_manual_leg_row_count < (int)(sizeof g_manual_leg_rows / sizeof g_manual_leg_rows[0])) {
-        g_manual_leg_rows[g_manual_leg_row_count].hz = hz;
-        g_manual_leg_rows[g_manual_leg_row_count].result = result;
-        g_manual_leg_row_count++;
+    if (g_manual_leg_row_count >= (int)(sizeof g_manual_leg_rows / sizeof g_manual_leg_rows[0])) {
+        /* A dropped entry would answer OK and pass a case it should fail: stop here instead. */
+        DSD_FPRINTF(stderr, "manual_leg_script: no room for %u Hz; enlarge g_manual_leg_rows\n", hz);
+        abort();
     }
+    g_manual_leg_rows[g_manual_leg_row_count].hz = hz;
+    g_manual_leg_rows[g_manual_leg_row_count].result = result;
+    g_manual_leg_row_count++;
 }
 
 /* An untyped -Y list of @p count rows from @p rows on a tuner the seam answers for, the cursor at row 0. */
@@ -4948,6 +4951,43 @@ test_channel_cycle_refusal_keeps_the_visit_windows(void) {
     tick_scan_visit(&opts, &state);
     rc |= expect_true("windows: B's visit starts over", state.scan_visit_since_m > since + 0.5);
     rc |= expect_true("windows: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 0.5);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666 (H1, review): a press that lands and one refused queued together (auto-repeat, a quick double press) and
+ * applied by one drain. The refusal's sync tells only a timer that had seen the cursor, so it never hides the landing:
+ * the landed row's visit cap anchor and voice gate arrival start over. The drain ticks both timers after each command
+ * it applies under -Y, so here the landing is seen before the refusal runs; the case pins the outcome either way.
+ */
+static int
+test_channel_cycle_refusal_after_a_landing_in_one_drain(void) {
+    static const long kRows[] = {869000000L, 870000000L, 871000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    opts.scan_max_visit_ms = 2000;
+    opts.scan_voice_only = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "one drain: cycle to A");
+    tick_scan_visit(&opts, &state);
+    age_scan_visit(&state, 1.0);
+    const double since = state.scan_visit_since_m;
+    const double arrive = state.scan_voice_gate_arrive_m;
+
+    manual_leg_script(871000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("one drain: B queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("one drain: X queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("one drain: both applied", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("one drain: B landed, X passed",
+                      g_manual_leg_calls == 3 && state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 1);
+    tick_scan_visit(&opts, &state);
+    rc |= expect_true("one drain: B's visit starts over", state.scan_visit_since_m > since + 0.5);
+    rc |= expect_true("one drain: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 0.5);
     dsd_app_command_test_set_manual_tune_leg(NULL);
     freeState(&state);
     return rc;
@@ -23959,6 +23999,7 @@ main(void) {
     rc |= test_scan_voice_gate_commands();
     rc |= test_channel_cycle_passes_a_refused_row();
     rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
+    rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_with_nothing_to_land_on();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();

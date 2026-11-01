@@ -3668,8 +3668,9 @@ lcn_cycle_pick(const dsd_state* state, int start, int dir) {
    @p result (issue #666). Landed (either way): the cursor past the row, which becomes the row heard. Deferred: nothing,
    so the next press tries the same row. Refused: going back, the row is the one to retry; going forward, the cursor
    moves past it, so a row the tuner never takes cannot hold `L` on it, and the row heard stays. The scan's visit
-   timers read any cursor move as a retune, which a refusal is not, so they are told the new cursor and keep their
-   windows. */
+   timers read any cursor move as a retune, which a refusal is not, so each one that had seen the cursor is told the
+   new one and keeps its windows. One that had not seen it is left alone: the move it has yet to see (a landing, say)
+   still restarts its windows. */
 static void
 lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_result result) {
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -3684,9 +3685,14 @@ lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_res
         dsd_state_lcn_back_retry_note(state, row);
         return;
     }
+    const int seen = state->lcn_freq_roll;
     state->lcn_freq_roll = row + 1;
-    state->scan_voice_gate_roll_seen = state->lcn_freq_roll;
-    state->scan_visit_roll_seen = state->lcn_freq_roll;
+    if (state->scan_voice_gate_roll_seen == seen) {
+        state->scan_voice_gate_roll_seen = state->lcn_freq_roll;
+    }
+    if (state->scan_visit_roll_seen == seen) {
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+    }
 }
 
 /* A walk's accepted tune of @p row (@p tune_result, @p request_id from request_manual_tune()), whichever way it went:
