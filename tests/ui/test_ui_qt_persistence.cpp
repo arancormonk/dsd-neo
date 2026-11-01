@@ -249,6 +249,42 @@ test_saved_systems(void) {
     expect("removal persists", emptied.count() == 0);
 }
 
+/* A restored systems file whose whole numbers are past int's range (a backup keeps a large JSON number as a 64-bit
+ * integer): each reads as the field's default, as an absent key does, never as its low 32 bits. Main read port 1234,
+ * gain 36 dB, bandwidth 12 kHz, bias tee on, force key 1, RadioReference system 77 site 5 and a "hex" key type. */
+void
+test_saved_systems_past_int_range(void) {
+    const qint64 past = qint64(1) << 32;
+    QJsonObject row;
+    row.insert(QStringLiteral("name"), QStringLiteral("Restored"));
+    row.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    row.insert(QStringLiteral("port"), past + 1234);
+    row.insert(QStringLiteral("gainDb"), past + 36);
+    row.insert(QStringLiteral("bandwidthKhz"), past + 12);
+    row.insert(QStringLiteral("biasTee"), past + 1);
+    row.insert(QStringLiteral("encForceKey"), past + 1);
+    row.insert(QStringLiteral("rrSid"), past + 77);
+    row.insert(QStringLiteral("rrSiteId"), past + 5);
+    row.insert(QStringLiteral("encKeyType"), past + 1);
+    expect("an oversized systems file saves", json_store_save_array(QStringLiteral("saved_systems.json"), {row}));
+    {
+        SavedSystemsModel model;
+        const QVariantMap got = model.get(0);
+        expect("an oversized row loads", model.count() == 1);
+        expect("an oversized port reads as 0", got.value(QStringLiteral("port")).toInt() == 0);
+        expect("oversized tuning overrides follow the app",
+               got.value(QStringLiteral("gainDb")).toInt() == -1
+                   && got.value(QStringLiteral("bandwidthKhz")).toInt() == -1
+                   && got.value(QStringLiteral("biasTee")).toInt() == -1);
+        expect("an oversized force key reads as none", got.value(QStringLiteral("encForceKey")).toInt() == 0);
+        expect("an oversized RadioReference origin reads as none",
+               got.value(QStringLiteral("rrSid")).toInt() == 0 && got.value(QStringLiteral("rrSiteId")).toInt() == 0);
+        expect("an oversized legacy key type is no key type",
+               got.value(QStringLiteral("encKeyType")).toString() != QStringLiteral("hex"));
+        model.remove(0);
+    }
+}
+
 void
 test_saved_systems_csv_fields(void) {
     const QString groupPath = QStringLiteral("/data/imports/county.csv");
@@ -1275,6 +1311,7 @@ main(int argc, char** argv) {
     test_json_store();
     test_private_key_store();
     test_saved_systems();
+    test_saved_systems_past_int_range();
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_receiver_prefs();

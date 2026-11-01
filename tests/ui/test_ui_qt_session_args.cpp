@@ -1115,6 +1115,59 @@ test_bias_tee_tristate(void) {
            input_spec(session_args_build(sys, prefOn, &error)).endsWith(QStringLiteral(":bias")));
 }
 
+/* A restored system or scan list whose whole numbers are past int's range (a backup keeps a large JSON number as a
+ * 64-bit integer) never starts on their low 32 bits. Unchecked fields read as their defaults, as absent keys do: the
+ * port as 0, gain, bandwidth and bias tee follow the app, a profile's force adds no option. Checked fields fail their
+ * checks: the force key and a scan list's port. A scan list's dwell is left to its default. */
+void
+test_past_int_range(void) {
+    const qlonglong past = qlonglong(1) << 32;
+    SessionArgsError error = SessionArgsError::None;
+    QVariantMap rtltcp = usb_system();
+    rtltcp.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    rtltcp.insert(QStringLiteral("host"), QStringLiteral("192.168.1.10"));
+    rtltcp.insert(QStringLiteral("port"), past + 1234);
+    rtltcp.insert(QStringLiteral("gainDb"), past + 36);
+    rtltcp.insert(QStringLiteral("bandwidthKhz"), past + 12);
+    rtltcp.insert(QStringLiteral("biasTee"), past + 1);
+    QStringList args = session_args_build(rtltcp, SessionArgPrefs(), &error);
+    expect("oversized tuning reads as the defaults",
+           error == SessionArgsError::None
+               && input_spec(args) == QStringLiteral("rtltcp:192.168.1.10:0:851.375M:30:0:48:0:2"));
+    const QVariantMap udp{
+        {QStringLiteral("sourceType"), QStringLiteral("udp")},
+        {QStringLiteral("port"), past + 7355},
+    };
+    expect("an oversized udp port reads as 0",
+           input_spec(session_args_build(udp, SessionArgPrefs(), &error)) == QStringLiteral("udp:0.0.0.0:0"));
+
+    QVariantMap forced = usb_system();
+    forced.insert(QStringLiteral("encForceKey"), past + 1);
+    expect("an oversized force key is refused",
+           session_args_build(forced, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::ForceKey);
+    QVariantMap profile = usb_system();
+    profile.insert(QStringLiteral("decryptionForce"), past + 1);
+    args = session_args_build(profile, SessionArgPrefs(), &error);
+    expect("an oversized profile force adds no option", error == SessionArgsError::None
+                                                            && !args.contains(QStringLiteral("-4"))
+                                                            && !args.contains(QStringLiteral("--no-force-key"))
+                                                            && !args.contains(QStringLiteral("--dmr-force-algid")));
+
+    QString scanError;
+    QVariantMap list{
+        {QStringLiteral("sourceType"), QStringLiteral("rtltcp")},
+        {QStringLiteral("host"), QStringLiteral("192.168.1.10")},
+        {QStringLiteral("port"), past + 1234},
+    };
+    expect("an oversized scan list port is refused",
+           dsd_qt::session_args_scan_build(list, "851.375", "scan.csv", SessionArgPrefs(), &scanError).isEmpty()
+               && !scanError.isEmpty());
+    list = {{QStringLiteral("sourceType"), QStringLiteral("usb")}, {QStringLiteral("defaultDwellMs"), past + 500}};
+    args = dsd_qt::session_args_scan_build(list, "851.375", "scan.csv", SessionArgPrefs(), &scanError);
+    expect("an oversized scan dwell is left to the default",
+           scanError.isEmpty() && !args.isEmpty() && !args.contains(QStringLiteral("--trunk-scan-dwell-ms")));
+}
+
 void
 test_network_and_file_sources(void) {
     SessionArgsError error = SessionArgsError::None;
@@ -1417,6 +1470,7 @@ main(int argc, char** argv) {
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();
+    test_past_int_range();
     test_explore_system();
     test_radio_settings_args();
     test_grouped_hex_keys();

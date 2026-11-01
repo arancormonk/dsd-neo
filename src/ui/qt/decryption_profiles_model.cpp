@@ -18,6 +18,7 @@
 #include "scan_list_targets.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "stored_int.h"
 
 #include <QDir>
 #include <QFile>
@@ -582,8 +583,8 @@ managedKindAllowed(const QString& kind, const QString& protocol) {
 /* How a key reads in a message: "Dispatch" (ID 1A), "Dispatch" (destination 1234), or ID 1A with no label. */
 QString
 keyDescription(const QVariantMap& key) {
-    bool ok = false;
-    const quint32 id = key.value("keyId").toUInt(&ok);
+    quint32 id = 0;
+    const bool ok = stored_uint32(key.value("keyId"), &id);
     const bool destination = key.value("lookup").toString() == "destination";
     const QString label = key.value("label").toString().trimmed();
     if (!ok) {
@@ -752,8 +753,8 @@ reserveManagedKey(ManagedCollection& collection, const QVariantMap& key, quint32
    import rows on success. keyEntryError() runs the same helpers in the same order. */
 bool
 appendManagedKey(ManagedCollection& collection, const QVariantMap& key, const QString& protocol, QString* error) {
-    bool ok = false;
-    const quint32 id = key.value("keyId").toUInt(&ok);
+    quint32 id = 0;
+    bool ok = stored_uint32(key.value("keyId"), &id);
     ManagedSlot slot;
     QString problem = managedSlotError(key, ok, id, protocol, &slot);
     QStringList words;
@@ -861,13 +862,16 @@ struct ProfileCompiler {
     quint32
     mappingKeyId(const QVariantMap& mapping, bool* ok) const {
         const QString ref = mapping.value("keyRef").toString();
+        quint32 id = 0;
         if (ref.isEmpty()) {
-            return mapping.value("keyId").toUInt(ok);
+            *ok = stored_uint32(mapping.value("keyId"), &id);
+            return id;
         }
         for (const auto& value : row.value("keys").toList()) {
             const auto key = value.toMap();
             if (key.value("uid").toString() == ref) {
-                return key.value("keyId").toUInt(ok);
+                *ok = stored_uint32(key.value("keyId"), &id);
+                return id;
             }
         }
         *ok = false;
@@ -883,8 +887,9 @@ struct ProfileCompiler {
         QSet<quint32> groups;
         for (const auto& value : mappingRows) {
             const auto mapping = value.toMap();
-            bool tgOk = false, kidOk = false;
-            const auto tg = mapping.value("talkgroup").toUInt(&tgOk);
+            quint32 tg = 0;
+            bool kidOk = false;
+            const bool tgOk = stored_uint32(mapping.value("talkgroup"), &tg);
             const auto kid = mappingKeyId(mapping, &kidOk);
             if (!tgOk || !kidOk || !tg || tg > 0xFFFFFFU || kid > 255U || groups.contains(tg)) {
                 return fail(QObject::tr("Overrides need unique talkgroup IDs and a key ID from 00 to FF."));
@@ -936,12 +941,13 @@ DecryptionProfilesModel::compile(QVariantMap& row, QString* error, QStringList* 
     ProfileCompiler builder(row, error, staged);
     const auto& protocol = builder.protocol;
     const auto& mode = builder.mode;
-    const int force = row.value("force", 0).toInt();
+    int force = 0;
+    const bool forceRead = stored_int(row.value("force", 0), &force);
     if (!QStringList{"p25", "dmr", "nxdn", "dpmr", "m17", "mixed", "dstar", "ysf"}.contains(protocol)) {
         *error = tr("Choose a supported profile protocol.");
         return false;
     }
-    if (!validProfileForce(force)) {
+    if (!forceRead || !validProfileForce(force)) {
         *error = tr("Invalid force selection.");
         return false;
     }
@@ -1173,7 +1179,7 @@ entryKeyId(const QVariant& raw, bool destination, bool* parsed, quint32* id) {
         return QObject::tr("Enter a key ID.");
     }
     if (raw.typeId() != QMetaType::QString) {
-        *id = raw.toUInt(parsed);
+        *parsed = stored_uint32(raw, id);
         return {};
     }
     const QString text = raw.toString();
@@ -1239,8 +1245,8 @@ otherDraftKeys(const QVariantList& draftKeys, int index, const QString& protocol
             continue;
         }
         const auto other = draftKeys[i].toMap();
-        bool ok = false;
-        const quint32 otherId = other.value("keyId").toUInt(&ok);
+        quint32 otherId = 0;
+        const bool ok = stored_uint32(other.value("keyId"), &otherId);
         ManagedSlot otherSlot;
         const ManagedKind* otherKind = managedKind(keyKindOf(other));
         if (otherKind && managedSlotError(other, ok, otherId, protocol, &otherSlot).isEmpty()) {

@@ -9894,6 +9894,12 @@ Qt Quick frontend (`src/ui/qt`):
     every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
     category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
     TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
+    profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
+    large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
+    `toUInt()` keep the low 32 bits of either and report success. A value past the field's type reads as the field's
+    default where nothing checks the field, as an absent key does. Where a check exists, it fails that check: the
+    force key, a scan list's port, key IDs, talkgroup overrides and a profile's force.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
     `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,

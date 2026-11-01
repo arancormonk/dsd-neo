@@ -11,6 +11,7 @@
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
+#include "stored_int.h"
 
 #include <algorithm>
 #include <cmath>
@@ -177,7 +178,7 @@ bias_tee_effective(const QVariant& stored, bool prefDefault) {
     if (stored.typeId() == QMetaType::Bool) {
         return stored.toBool() || prefDefault;
     }
-    const int mode = stored.isValid() ? stored.toInt() : -1;
+    const int mode = stored_int_or(stored, -1);
     if (mode == 0) {
         return false;
     }
@@ -258,7 +259,7 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
         // "10.0.2.2 " resolves to nothing and the start fails opaquely.
         QString spec = QStringLiteral("rtltcp:%1:%2")
                            .arg(system.value(QStringLiteral("host")).toString().trimmed())
-                           .arg(system.value(QStringLiteral("port")).toInt())
+                           .arg(stored_int_or(system.value(QStringLiteral("port")), 0))
                        + tail;
         if (bias) {
             spec += QLatin1String(":bias");
@@ -266,12 +267,12 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
         args << QStringLiteral("-i") << spec;
     } else if (sourceType == QLatin1String("udp")) {
         args << QStringLiteral("-i")
-             << QStringLiteral("udp:0.0.0.0:%1").arg(system.value(QStringLiteral("port")).toInt());
+             << QStringLiteral("udp:0.0.0.0:%1").arg(stored_int_or(system.value(QStringLiteral("port")), 0));
     } else if (sourceType == QLatin1String("tcp")) {
         args << QStringLiteral("-i")
              << QStringLiteral("tcp:%1:%2")
                     .arg(system.value(QStringLiteral("host")).toString().trimmed())
-                    .arg(system.value(QStringLiteral("port")).toInt());
+                    .arg(stored_int_or(system.value(QStringLiteral("port")), 0));
     } else {
         args << QStringLiteral("-i") << system.value(QStringLiteral("filePath")).toString();
     }
@@ -393,8 +394,8 @@ validate_key_args(const QVariantMap& system, const QString& keyType, const QStri
                                             SessionArgsError::KeyM17Scrambler, SessionArgsError::KeyM17Aes};
         return keyIndex < 0 ? SessionArgsError::KeyType : reasons[keyIndex];
     }
-    bool forceOk = false;
-    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt(&forceOk);
+    int force = 0;
+    const bool forceOk = stored_int(system.value(QStringLiteral("encForceKey"), 0), &force);
     if (!forceOk || force < 0 || force > 2) {
         return SessionArgsError::ForceKey;
     }
@@ -457,7 +458,7 @@ static QString
 validateScanEndpoint(const QVariantMap& list) {
     if (list.value("sourceType") == "rtltcp") {
         const QString host = list.value("host").toString().trimmed();
-        const int port = list.value("port").toInt();
+        const int port = stored_int_or(list.value("port"), 0);
         if (host.isEmpty() || host.contains(QRegularExpression(QStringLiteral("[:\\s]"))) || port < 1 || port > 65535) {
             return QStringLiteral("Enter an RTL-TCP host and port from 1 to 65535.");
         }
@@ -492,10 +493,10 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csv
                  << list.value(field).toString();
         }
     }
-    if (list.value("defaultDwellMs").toInt()) {
+    if (stored_int_or(list.value("defaultDwellMs"), 0) != 0) {
         args << QStringLiteral("--trunk-scan-dwell-ms") << list.value("defaultDwellMs").toString();
     }
-    if (list.value("defaultHoldMs").toInt()) {
+    if (stored_int_or(list.value("defaultHoldMs"), 0) != 0) {
         args << QStringLiteral("--trunk-scan-activity-hold-ms") << list.value("defaultHoldMs").toString();
     }
     if (list.value("voiceOnly").toBool()) {
@@ -799,8 +800,8 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     if (system.value("decryptionClearKeys").toBool()) {
         args << QStringLiteral("--no-decryption-keys");
     }
-    if (system.contains("decryptionForce")) {
-        const int profileForce = system.value("decryptionForce").toInt();
+    int profileForce = 0;
+    if (stored_int(system.value("decryptionForce"), &profileForce)) {
         if (profileForce == 0) {
             args << QStringLiteral("--no-force-key");
         } else if (profileForce == 1) {
@@ -828,7 +829,7 @@ is_radio_source(const QString& source) {
    at a multiple of 18 kHz (as -fT takes it on the command line), else the app-wide default. */
 static int
 session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& prefs) {
-    const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
+    const int bwOverride = stored_int_or(system.value(QStringLiteral("bandwidthKhz")), -1);
     if (bwOverride > 0) {
         return bwOverride;
     }
@@ -943,9 +944,9 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     if (keyError != SessionArgsError::None) {
         return fail(keyError);
     }
-    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt();
+    const int force = stored_int_or(system.value(QStringLiteral("encForceKey")), 0);
 
-    const int gainOverride = system.value(QStringLiteral("gainDb"), -1).toInt();
+    const int gainOverride = stored_int_or(system.value(QStringLiteral("gainDb")), -1);
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
     const bool bias = bias_tee_effective(system.value(QStringLiteral("biasTee")), prefs.biasTee);
     const QString tail = QStringLiteral(":%1M:%2:%3:%4:0:2").arg(freqMhz).arg(gain).arg(ppm).arg(bw);

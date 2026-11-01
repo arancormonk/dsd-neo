@@ -17,8 +17,8 @@
 #include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <iterator>
-#include <limits>
 #include "realtime_clock.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 
@@ -160,32 +160,6 @@ as_scalar(const QVariant& stored) {
  * getter hides it) and the corrective write that follows looks like a no-op and is
  * dropped, leaving the file permanently disagreeing with the app.
  */
-
-/**
- * @brief Whether @p raw holds an int, stored in @p value when it does.
- *
- * Read wide, then narrowed: a restored backup keeps a large JSON number as a
- * 64-bit integer, and the ini file hands one back as text, and QVariant::toInt()
- * takes either one's low 32 bits and reports success. A value past int's range is
- * not a number this preference can hold, so it reads as the default.
- */
-bool
-stored_int(const QVariant& raw, int* value) {
-    bool ok = false;
-    const qlonglong wide = raw.toLongLong(&ok);
-    if (!ok || wide < std::numeric_limits<int>::min() || wide > std::numeric_limits<int>::max()) {
-        return false;
-    }
-    *value = static_cast<int>(wide);
-    return true;
-}
-
-/** @brief The int @p raw holds, else @p fallback; text that is not a number included. */
-int
-stored_int_or(const QVariant& raw, int fallback) {
-    int value = fallback;
-    return stored_int(raw, &value) ? value : fallback;
-}
 
 /** @brief Finite seconds in the UI range, rounded to the displayed precision. */
 double
