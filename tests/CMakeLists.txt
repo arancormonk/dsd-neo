@@ -300,6 +300,7 @@ add_library(
     dsd-neo_test_call_state_support
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
@@ -1372,6 +1373,30 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_received_identity_cxx
   HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_CXX
   dsd-neo/core/received_identity.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity_site
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_SITE
+  dsd-neo/core/received_identity_site.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity_site_cxx
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_SITE_CXX
+  dsd-neo/core/received_identity_site.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_call_channel
+  HEADERS_PUBLIC_CORE_CALL_CHANNEL
+  dsd-neo/core/call_channel.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_call_channel_cxx
+  HEADERS_PUBLIC_CORE_CALL_CHANNEL_CXX
+  dsd-neo/core/call_channel.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -6131,6 +6156,21 @@ target_link_libraries(dsd-neo_test_core_received_identity PRIVATE dsd-neo_core)
 add_test(
     NAME CORE_RECEIVED_IDENTITY
     COMMAND dsd-neo_test_core_received_identity
+)
+
+# Site identities a call row keeps (compare, union, consistency): the module builds on its own, as the Qt tests use it
+add_executable(
+    dsd-neo_test_core_received_identity_site
+    core/test_core_received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+)
+target_include_directories(
+    dsd-neo_test_core_received_identity_site
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_RECEIVED_IDENTITY_SITE
+    COMMAND dsd-neo_test_core_received_identity_site
 )
 
 add_executable(
