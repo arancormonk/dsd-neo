@@ -678,7 +678,7 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
     {.id = "trunk.cycle_prev",
      .label = "Previous channel",
      .help = "Step back to the previous channel in the map, P25 control-channel candidate (-^), or trunk-scan "
-             "target. Needs a radio input or a rigctl peer.",
+             "target. A running scan carries on forward from there. Needs a radio input or a rigctl peer.",
      .hotkey = "J",
      .is_enabled = trunk_enabled,
      .on_select = act_channel_prev},
