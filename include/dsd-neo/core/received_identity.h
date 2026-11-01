@@ -24,14 +24,14 @@
  * location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one: the parts that bind
  * to it and the control-channel frequency. A DMR site is told apart by its raw network and site numbers, never by the
  * display text built from them. An IDAS carrier names its site twice, in the SCCH site ID and in a Type-D SRV_INFO:
- * when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a
- * location ID) and IDAS Type-D (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops
- * what the other sent and the control channel. A RAN is Type-C's (a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3,
- * NXDN TS 1-E 4.2.3, none of which carries one): a Type-D note drops a Type-C location and a RAN, and a RAN drops the
- * IDAS parts (a Type-C location keeps the RAN its own channel's check noted just before). So are the DMR trunking systems (Tier III, Capacity Plus,
- * Connect Plus, Hytera XPT): a note that names another one than the record's parts belong to (its brand, site text
- * prefix, rest LSN, system code or free LCN; dsd_rxid_dmr_trunk) drops those parts and the control channel; the colour
- * code is the carrier's and stays.
+ * when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a location ID) and IDAS Type-D
+ * (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops what the other sent and the
+ * control channel. A RAN is Type-C's (a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of
+ * which carries one): a Type-D note drops a Type-C location and a RAN, and a RAN drops the IDAS parts (a Type-C
+ * location keeps the RAN its own channel's check noted just before). So are the DMR trunking systems (Tier III,
+ * Capacity Plus, Connect Plus, Hytera XPT): a note that names another one than the record's parts belong to (its brand,
+ * the trunking system its site note names, rest LSN, system code or free LCN; dsd_rxid_dmr_trunk) drops those parts and
+ * the control channel; the colour code is the carrier's and stays.
  *
  * Another access code on the same carrier is another system sharing the channel (co-channel DMR or dPMR colour codes,
  * P25 NACs, NXDN RANs): a valid access code that changes drops every other part of the family with the
@@ -162,8 +162,8 @@ typedef struct dsd_received_identity {
     /** The raw network number (Tier III: the C_SYS_PARMS/C_ALOHA Net field; Connect Plus: the short LC network ID). The
      * site text shows Tier III's +1; this is the value as sent. */
     uint16_t dmr_net;
-    /** The raw site number (Tier III: the whole Site field before any -D sub-site split; Capacity Plus and Connect Plus:
-     * the site ID). Network and site, never the text, tell one DMR site from another. */
+    /** The raw site number (Tier III: the whole Site field before any -D sub-site split; Capacity Plus and Connect
+     * Plus: the site ID). Network and site, never the text, tell one DMR site from another. */
     uint16_t dmr_site;
     uint16_t edacs_site;
     uint16_t edacs_area;
