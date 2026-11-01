@@ -773,12 +773,20 @@ analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_sessi
     analog_rx_policy_log(session);
 }
 
+/* Publish where the core stands, with the boundaries the session has crossed: the core's publish clears the
+   publication first, so every publish carries them again (issue #756). */
+static void
+analog_rx_publish_core(const analog_rx_session* session, dsd_state* state) {
+    dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
+    state->analog_rx.boundaries = session->boundaries;
+}
+
 /* Publish where the core stands after a read of @p samples at @p rate_hz (0 for a read the tap passed over), and the
    tone policy's verdict on it. */
 static void
 analog_rx_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int samples,
                   int rate_hz) {
-    dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
+    analog_rx_publish_core(session, state);
     state->analog_rx.stale_after_ms = session->stale_after_ms;
     if (!session->detecting) {
         /* The AM monitor (issue #524): the carrier and the generation only. No tone, and no word on whether the rate
@@ -1052,7 +1060,7 @@ analog_rx_forget(dsd_state* state) {
     }
     dsd_analog_rx_core_reset(&session->core);
     session->stale_after_ms = 0;
-    dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
+    analog_rx_publish_core(session, state);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
        unusable rate the next read publishes UNAVAILABLE again. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
@@ -1446,17 +1454,22 @@ analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* ses
 }
 
 int
-dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || !state->analog_rx.carrier_open) {
+dsd_analog_rx_boundaries_current(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
         return 0;
     }
-    /* Nor while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
+    /* Not while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
        the scanner moved on, it delivers a channel other than the one the scanner shows. */
     if (dsd_trunk_tuning_pending_request() != 0U) {
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);
     return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    return opts && state && state->analog_rx.carrier_open && dsd_analog_rx_boundaries_current(opts, state);
 }
 
 int

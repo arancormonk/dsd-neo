@@ -25,6 +25,19 @@
 extern "C" {
 #endif
 
+/** What a processed conventional NFM monitor block is to the engine's call (issue #756), the analog_call_block hook's
+ * @c input. BREAK: the block cannot belong to a call at all -- it straddles a boundary or mixes two rates, trunking
+ * or digital sync owns the decoder, received-tone detection is not running, a retune is unresolved or a boundary the
+ * tap noted has moved since its last read (dsd_analog_rx_boundaries_current()), or the tone policy rejected the
+ * reception. RECEPTION: the block is the call's audio, as the per-call recording writes it. HOLDABLE: none of the
+ * BREAK reasons, but nothing to record either: the carrier has closed (after its hangover) or the tone policy is still
+ * checking it. 0 and 1 keep the meaning the hook's old accepted flag gave them. */
+enum {
+    DSD_ANALOG_CALL_BREAK = 0,
+    DSD_ANALOG_CALL_RECEPTION = 1,
+    DSD_ANALOG_CALL_HOLDABLE = 2,
+};
+
 typedef struct {
     void (*p25_sm_try_tick)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_release)(dsd_opts* opts, dsd_state* state);
@@ -35,7 +48,7 @@ typedef struct {
     int (*scan_visit_should_yield)(const dsd_opts* opts, dsd_state* state);
     int (*signal_search_should_yield)(const dsd_opts* opts, dsd_state* state);
     void (*analog_call_block)(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate,
-                              int accepted);
+                              int input);
     void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
@@ -44,9 +57,10 @@ typedef struct {
     void (*tick_guard_leave)(void);
 } dsd_frame_sync_hooks;
 
-/** The engine's conventional NFM lifecycle sees accepted processed blocks even with muted speakers. */
+/** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
+ * block is to the call (@p input, DSD_ANALOG_CALL_*). */
 void dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count,
-                                           int rate, int accepted);
+                                           int rate, int input);
 /** The effective receive policy has just changed (issue #637); @p filters_were_enabled says whether any filter was on
  * before. */
 void dsd_frame_sync_hook_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled);

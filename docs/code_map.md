@@ -3981,7 +3981,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
   `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_carrier_observed_now()` (the tap has judged the channel on air,
+  `dsd_analog_rx_carrier_open_now()` (the published carrier held to `dsd_analog_rx_boundaries_current()`: no retune
+  unresolved and the boundaries the tap noted at its last read still current, the hard-boundary test the NFM call's
+  block input uses, issue #756), `dsd_analog_rx_carrier_observed_now()` (the tap has judged the channel on air,
   so a closed carrier is a verdict rather than no read yet), `dsd_analog_rx_block_straddles_boundary()`, the monitor
   playback bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
   `dsd_analog_rx_input_wait_begin()` / `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing
@@ -4011,7 +4013,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
   `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
   `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before the audio chain
-  (`symbol_process_unsynced_audio()`), whose in-place voice band-pass takes every CTCSS tone 40 dB down. The
+  (`symbol_process_unsynced_audio()`), whose in-place voice band-pass takes every CTCSS tone 40 dB down. It then hands
+  the processed block to the engine's NFM call through the `analog_call_block` frame-sync hook with one of three inputs
+  (`DSD_ANALOG_CALL_*`, `runtime/frame_sync_hooks.h`, issue #756; `symbol_analog_call_input()`): RECEPTION, the block
+  the per-call recording writes (carrier open on the channel on air, tone policy passing); BREAK, a block no call can
+  span (dropped at a boundary or mixing two rates, trunking, digital sync, detection off, a retune unresolved or a
+  boundary not yet read past, a REJECTED tone); HOLDABLE, the rest (the carrier closed after its hangover, or the tone
+  still being checked). Which blocks are processed and recorded still follows RECEPTION alone. The
   block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
   publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
   only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
@@ -4061,7 +4069,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `process(band, wide, full, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
-    publication's generation on and starts a new reception, which logs its verdict again, the same tone included). The
+    publication's generation on and starts a new reception, which logs its verdict again, the same tone included).
+    The publication's `boundaries` epoch (issue #756) is the session's count of hard boundaries the tap crossed: an
+    announced reset (`dsd_analog_rx_reset()`, a TCP reconnect included, also at a block boundary with nothing
+    collected), a generation or receive-profile move, a detected stream pause, a rate move and an FM/AM switch. Every
+    publish copies it (the core's publish clears the publication) and each of those paths publishes before the next
+    block reaches the frame-sync hook, so a reader comparing it block to block sees a boundary even inside one block.
+    Unlike the generation, the carrier hangover running out never moves it. The
     glue judges the squelch for each read: on RTL from the receiver power the stream keeps current, on PCM from the
     read's own level (`dsd_input_level_metrics_from_pcm_f32_i16_scale()`, the measurement that sets `opts->rtl_pwr` for
     each whole block only once the block is complete). The carrier hangover counts samples, which only works while
@@ -11286,7 +11300,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored, and the runtime
   config's snapshot comparison includes `no_signal_handlers_*`.
 - `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
-  frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency. Speaker output is independent
+  frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each with its input
+  (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a RECEPTION block continues or
+  begins the call, and any other input ends it. Speaker output is independent
   of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
   `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
   An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;

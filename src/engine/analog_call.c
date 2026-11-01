@@ -15,6 +15,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -160,11 +161,13 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
 
 void
 dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
-                             int accepted) {
+                             int input) {
     if (!opts || !state) {
         return;
     }
-    if (!accepted || !samples || count == 0 || sample_rate <= 0 || opts->trunk_enable
+    /* Every input but RECEPTION ends the call: a HOLDABLE block (the carrier closed, its tone still checked) as a
+       BREAK does. */
+    if (input != DSD_ANALOG_CALL_RECEPTION || !samples || count == 0 || sample_rate <= 0 || opts->trunk_enable
         || !dsd_analog_tone_detection_active(opts)) {
         dsd_engine_analog_call_end(opts, state);
         return;

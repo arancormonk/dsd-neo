@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -2328,6 +2329,65 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* --- Issue #756: what the NFM call is handed for each block, recorded through the frame-sync hook --- */
+
+/* What the NFM call's hook was handed for one block: its input (DSD_ANALOG_CALL_*) and the publication as it stood. */
+typedef struct {
+    int input;
+    uint32_t boundaries;
+    uint32_t generation;
+    int carrier_open;
+    int gate;
+} call_block_seen;
+
+enum { CALL_CAPTURE_MAX = 128 };
+
+static call_block_seen g_call_seen[CALL_CAPTURE_MAX];
+static int g_call_blocks = 0;
+
+static void
+capture_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate, int input) {
+    (void)opts;
+    (void)samples;
+    (void)count;
+    (void)rate;
+    if (g_call_blocks < CALL_CAPTURE_MAX) {
+        call_block_seen* seen = &g_call_seen[g_call_blocks];
+        seen->input = input;
+        seen->boundaries = state->analog_rx.boundaries;
+        seen->generation = state->analog_rx.generation;
+        seen->carrier_open = state->analog_rx.carrier_open;
+        seen->gate = state->analog_rx.gate;
+    }
+    g_call_blocks++;
+}
+
+/* The engine's side of the hook, as DSP_SYMBOL_REPLAY links no engine: record each block. */
+static void
+start_call_capture(void) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.analog_call_block = capture_call_block;
+    dsd_frame_sync_hooks_set(&hooks);
+    g_call_blocks = 0;
+}
+
+static void
+stop_call_capture(void) {
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+static const call_block_seen*
+call_block_at(int index) {
+    assert(index >= 0 && index < g_call_blocks && index < CALL_CAPTURE_MAX);
+    return &g_call_seen[index];
+}
+
+static const call_block_seen*
+last_call_block(void) {
+    return call_block_at(g_call_blocks - 1);
+}
+
 /* The reconnect test's TCP audio source: the connection drops once, as the reconnect's backoff
    passes on the injected clock, and the new connection then carries a 131.8 Hz tone in real
    time. */
@@ -2395,11 +2455,15 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     g_fake_now_ms = 900000U;
     g_tone_phase = 0.0;
 
+    start_call_capture();
     for (int b = 0; b < 30; b++) {
         feed_stream_block(&opts, &state, 100.0);
     }
     assert(rx_tone_locked_on_100(&state));
     const uint32_t generation = state.analog_rx.generation;
+    /* The connection drops at a block boundary, nothing of the next block collected (issue #756). */
+    assert(state.analog_sample_counter == 0 && g_call_blocks == 30);
+    const uint32_t boundaries = state.analog_rx.boundaries;
 
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
@@ -2419,12 +2483,18 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     assert(opts.audio_in_type == AUDIO_IN_TCP && opts.tcp_sockfd == g_connect_socket);
     assert(state.analog_rx.generation != generation);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE && state.analog_rx.ctcss_tenths_hz == 0);
+    /* No block straddles the reconnect, but the boundaries epoch moved with it, and the first block after it carries
+       the move to the NFM call. */
+    assert(state.analog_rx.boundaries != boundaries);
     for (int n = 1; n < 48000; n++) {
         (void)getSymbol(&opts, &state, 0);
         assert(state.analog_rx.ctcss_tenths_hz != 1000);
     }
     assert(exitflag == 0 && g_tcp_opens == 1);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
+    assert(g_call_blocks > 31 && call_block_at(30)->boundaries != boundaries);
+    assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+    stop_call_capture();
 
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     (void)dsd_socket_close(opts.tcp_sockfd);
@@ -5190,6 +5260,343 @@ test_sink_allocation_failure_is_said_once_per_rate(void) {
     dsd_audio_activity_reset();
 }
 
+/* --- Issue #756: the NFM call's block input --- */
+
+/* One 960-sample block of a @p hz tone (digital silence for 0) through the partial-block collection the symbol reader
+   takes, sample by sample, the tap reading as the block fills. Returns what the NFM call was handed for it. */
+static const call_block_seen*
+push_call_block(dsd_opts* opts, dsd_state* state, double hz) {
+    float block[960];
+    if (hz > 0.0) {
+        fill_tone_block(block, 960U, hz, 3000.0);
+    } else {
+        DSD_MEMSET(block, 0, sizeof(block));
+    }
+    const int before = g_call_blocks;
+    assert(state->analog_sample_counter == 0);
+    for (unsigned int i = 0; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(opts, state, block[i]);
+    }
+    assert(g_call_blocks == before + 1);
+    return last_call_block();
+}
+
+/* The same with every sample carrying the auto squelch's @p flag. */
+static const call_block_seen*
+push_flagged_call_block(dsd_opts* opts, dsd_state* state, float value, uint8_t flag) {
+    const int before = g_call_blocks;
+    assert(state->analog_sample_counter == 0);
+    for (unsigned int i = 0; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample_flag(opts, state, value, flag);
+    }
+    assert(g_call_blocks == before + 1);
+    return last_call_block();
+}
+
+/* Blocks [@p first, g_call_blocks) after a carrier went: RECEPTION while the hangover still holds it, then HOLDABLE
+   once it has closed, and the hangover lasting its 200 ms to within a block. None crossed a hard boundary, though the
+   hangover's end moved the publication's generation. */
+static void
+expect_hangover_then_holdable(int first, uint32_t boundaries) {
+    int hangover = 0;
+    for (int i = first; i < g_call_blocks; i++) {
+        const call_block_seen* seen = call_block_at(i);
+        assert(seen->boundaries == boundaries);
+        if (seen->carrier_open) {
+            assert(seen->input == DSD_ANALOG_CALL_RECEPTION);
+            assert(hangover == i - first); /* the carrier never comes back */
+            hangover++;
+        } else {
+            assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
+        }
+    }
+    const int hangover_blocks = DSD_ANALOG_CARRIER_HANGOVER_MS / 20;
+    assert(hangover >= hangover_blocks - 1 && hangover <= hangover_blocks + 1);
+    assert(g_call_blocks - first - hangover >= 5);
+    assert(last_call_block()->generation != call_block_at(first)->generation);
+}
+
+enum { CALL_WAV_TONE_BLOCKS = 10, CALL_WAV_QUIET_BLOCKS = 25, CALL_WAV_SAMPLES = 960 * 35 };
+
+/* The level squelch, read from a 48 kHz WAV through getSymbol(): tone blocks are the call's reception, and so are the
+   hangover's blocks after the tone stops; once the carrier closes, every block is one the call may hold through. The
+   hangover's end is an ordinary reset of the core (the generation moves), never a hard boundary. */
+static void
+test_call_input_follows_the_level_squelch(void) {
+    static short samples[CALL_WAV_SAMPLES];
+    for (int n = 0; n < CALL_WAV_SAMPLES; n++) {
+        samples[n] = n < CALL_WAV_TONE_BLOCKS * 960 ? tone_100_sample(n, 48000) : 0;
+    }
+    char wav_path[DSD_TEST_PATH_MAX];
+    assert(write_mono_wav(wav_path, sizeof(wav_path), "dsdneo_call_input_level", 48000, samples, CALL_WAV_SAMPLES)
+           == 0);
+    static dsd_opts opts;
+    static dsd_state state;
+    open_monitor_wav(&opts, &state, wav_path, 48000);
+    start_call_capture();
+    for (int n = 0; n < CALL_WAV_SAMPLES; n++) {
+        (void)getSymbol(&opts, &state, 0);
+        assert(exitflag == 0);
+    }
+    assert(g_call_blocks == CALL_WAV_TONE_BLOCKS + CALL_WAV_QUIET_BLOCKS);
+    const uint32_t boundaries = call_block_at(0)->boundaries;
+    for (int i = 0; i < CALL_WAV_TONE_BLOCKS; i++) {
+        assert(call_block_at(i)->input == DSD_ANALOG_CALL_RECEPTION && call_block_at(i)->boundaries == boundaries);
+    }
+    expect_hangover_then_holdable(CALL_WAV_TONE_BLOCKS, boundaries);
+    stop_call_capture();
+    close_monitor_wav(&opts, &state, wav_path);
+}
+
+/* The auto squelch's per-sample flags on the RTL monitor: the same, the carrier following the flags rather than the
+   level, and an open carrier after the quiet is the call's reception again at once. */
+static void
+test_call_input_follows_the_flag_squelch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0; /* above rtl_pwr: the level squelch would close */
+    g_chain_removes_tone = 0;
+    dsd_trunk_tuning_requests_reset();
+    start_call_capture();
+    for (int b = 0; b < 5; b++) {
+        assert(push_flagged_call_block(&opts, &state, 1000.0f, 0U)->input == DSD_ANALOG_CALL_RECEPTION);
+    }
+    const int quiet = g_call_blocks;
+    const uint32_t boundaries = last_call_block()->boundaries;
+    for (int b = 0; b < 25; b++) {
+        (void)push_flagged_call_block(&opts, &state, 1000.0f, (uint8_t)DSD_SQUELCH_FLAG_CLOSED);
+    }
+    expect_hangover_then_holdable(quiet, boundaries);
+    const call_block_seen* seen = push_flagged_call_block(&opts, &state, 1000.0f, 0U);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == boundaries);
+    stop_call_capture();
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    g_chain_removes_tone = 1;
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is a block the call may hold
+   through, one the policy passed is its reception, and one it rejected breaks it. Returns how many blocks were
+   checked. */
+static int
+push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
+    int checked = 0;
+    for (int b = 0; b < blocks; b++) {
+        const call_block_seen* seen = push_call_block(opts, state, hz);
+        assert(seen->carrier_open == 1 || b == 0);
+        if (!seen->carrier_open) {
+            assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
+        } else if (seen->gate == DSD_ANALOG_TONE_GATE_PENDING) {
+            assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
+            checked++;
+        } else if (seen->gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+            assert(seen->input == DSD_ANALOG_CALL_RECEPTION);
+        } else {
+            assert(seen->gate == DSD_ANALOG_TONE_GATE_REJECTED && seen->input == DSD_ANALOG_CALL_BREAK);
+        }
+    }
+    return checked;
+}
+
+/* The real tone detector and policy: PENDING is holdable, ALLOWED is reception, REJECTED is a break, and a block list
+   that passes a carrier for carrying no tone at all makes it reception like any other pass. */
+static void
+test_call_input_follows_the_tone_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    start_call_capture();
+    assert(push_policy_call_blocks(&opts, &state, 40, 100.0) >= 1);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED
+           && last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+    dsd_state_ext_free_all(&state);
+
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    g_call_blocks = 0;
+    assert(push_policy_call_blocks(&opts, &state, 40, 100.0) >= 1);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && last_call_block()->input == DSD_ANALOG_CALL_BREAK);
+    dsd_state_ext_free_all(&state);
+
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "100.0");
+    g_call_blocks = 0;
+    assert(push_policy_call_blocks(&opts, &state, window_blocks + 10, 1000.0) >= window_blocks - 1);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && state.analog_rx.gate_no_tone == 1);
+    assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    stop_call_capture();
+    dsd_state_ext_free_all(&state);
+}
+
+/* Hard boundaries on 48 kHz PCM. A retune unresolved, or a rigctl passband change the tap has not read past yet, leaves
+   the receiver on a channel other than the one the tap judged: dsd_analog_rx_boundaries_current() says so at once, and
+   the block completing then breaks the call, the published carrier open or not. Each boundary the tap then reads
+   past, and an announced reset at a block boundary with nothing collected, moves the published boundaries epoch. */
+static void
+test_call_input_breaks_at_a_hard_boundary(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    dsd_trunk_tuning_requests_reset();
+    g_pcm_passband_hz = 25000;
+    dsd_rigctl_query_hooks hooks = {0};
+    hooks.get_passband_hz = fake_pcm_passband;
+    dsd_rigctl_query_hooks_set(hooks);
+    start_call_capture();
+    /* Before the tap has run there is nothing to compare. */
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 1);
+    assert(dsd_analog_rx_boundaries_current(NULL, &state) == 0 && dsd_analog_rx_boundaries_current(&opts, NULL) == 0);
+    for (int b = 0; b < 5; b++) {
+        (void)push_call_block(&opts, &state, 100.0);
+    }
+    assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 1);
+    uint32_t boundaries = state.analog_rx.boundaries;
+
+    /* A retune in flight: the carrier the tap published is still open, but it is the channel being left. */
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 0 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    const call_block_seen* seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_BREAK && seen->carrier_open == 1 && seen->boundaries == boundaries);
+    /* Landed: the block that straddles its completion breaks too, and the tap has read past the move. */
+    dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 0);
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_BREAK && seen->boundaries != boundaries);
+    boundaries = seen->boundaries;
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 1);
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == boundaries);
+
+    /* A width-only change on the rigctl peer (a scan row's width edited live, issue #628). */
+    g_pcm_passband_hz = 12500;
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 0 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_BREAK && seen->boundaries != boundaries);
+    boundaries = seen->boundaries;
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == boundaries);
+
+    /* An announced reset (a TCP reconnect, a scan row commit) at a block boundary, nothing collected: no block straddles
+       it, but the epoch moves with it, and the next block carries the move. */
+    assert(state.analog_sample_counter == 0);
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.boundaries != boundaries);
+    boundaries = state.analog_rx.boundaries;
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->boundaries == boundaries);
+
+    stop_call_capture();
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dsd_state_ext_free_all(&state);
+}
+
+/* An analog profile the RTL stream applied (a width-only change) is a hard boundary as well. */
+static void
+test_call_input_breaks_at_an_rtl_profile_change(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_fake_rtl_analog_width_hz = 12500;
+    dsd_trunk_tuning_requests_reset();
+    start_call_capture();
+    for (int b = 0; b < 5; b++) {
+        (void)push_call_block(&opts, &state, 100.0);
+    }
+    assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+    const uint32_t boundaries = state.analog_rx.boundaries;
+    g_fake_rtl_analog_width_hz = 8000;
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 0);
+    const call_block_seen* seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_BREAK && seen->boundaries != boundaries);
+    assert(dsd_analog_rx_boundaries_current(&opts, &state) == 1);
+    seen = push_call_block(&opts, &state, 100.0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == last_call_block()->boundaries);
+    stop_call_capture();
+    g_fake_rtl_analog_width_hz = 12500;
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Push live 8192 Hz samples of seeded noise (a carrier with no tone) until the monitor block in hand is complete. */
+static void
+complete_live_noise_block(dsd_opts* opts, dsd_state* state, uint32_t* rng) {
+    const int before = g_call_blocks;
+    do {
+        push_stream_sample(opts, state, noise_sample(rng));
+    } while (g_call_blocks == before);
+}
+
+/*
+ * A pause in a live stream moves the boundaries epoch, also where nothing else could show it (issue #756, B6). On
+ * 8192 Hz UDP one 960-sample block is about 117 ms, read by the tap about every 20 ms. The stream pauses for a second
+ * part-way through a block: the read the pause is seen on is dropped and resets the carrier, but a carrier arriving
+ * after the pause opens it again on the next read, and the block ends with the carrier open and no straddle marked.
+ * Today that block is RECEPTION -- the old reception's last samples and the new one's first in one block -- so only
+ * the epoch, which moved inside it, tells the engine the input crossed a boundary. A pause at a block boundary moves
+ * it the same way.
+ */
+static void
+test_call_input_epoch_moves_at_a_stream_pause(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.wav_sample_rate = MID_PAUSE_RATE;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_stream_base_ms = 500000U;
+    g_stream_samples = 0U;
+    start_call_capture();
+
+    int n = 0;
+    for (; n < 9 * RESET_WAV_BLOCK; n++) {
+        push_stream_sample(&opts, &state, tone_100_sample(n, MID_PAUSE_RATE));
+    }
+    assert(g_call_blocks == 9 && last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
+    const uint32_t boundaries = last_call_block()->boundaries;
+    /* Part of a block arrives (one read's worth and a little more), then the producer goes quiet for a second. */
+    for (int i = 0; i < 200; i++, n++) {
+        push_stream_sample(&opts, &state, tone_100_sample(n, MID_PAUSE_RATE));
+    }
+    assert(state.analog_rx.boundaries == boundaries && state.analog_rx.carrier_open == 1);
+    g_stream_base_ms += 1000U;
+    uint32_t rng = 0x756U;
+    complete_live_noise_block(&opts, &state, &rng);
+    const call_block_seen* seen = last_call_block();
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->carrier_open == 1);
+    assert(seen->boundaries != boundaries);
+    const uint32_t after_pause = seen->boundaries;
+    complete_live_noise_block(&opts, &state, &rng);
+    assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION && last_call_block()->boundaries == after_pause);
+
+    /* A pause at a block boundary. */
+    assert(state.analog_sample_counter == 0);
+    g_stream_base_ms += 1000U;
+    complete_live_noise_block(&opts, &state, &rng);
+    assert(last_call_block()->boundaries != after_pause);
+
+    stop_call_capture();
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 #ifdef USE_RADIO
 /* With the demod resampler overridden (DSD_NEO_RESAMP), the RTL monitor runs at the demod rate: 24 kHz blocks of 480
    go out as 960 samples at 48 kHz, not as 480. */
@@ -5347,6 +5754,12 @@ main(void) {
     test_provisional_rate_keeps_the_block();
     test_unconvertible_rate_stays_silent();
     test_sink_allocation_failure_is_said_once_per_rate();
+    test_call_input_follows_the_level_squelch();
+    test_call_input_follows_the_flag_squelch();
+    test_call_input_follows_the_tone_policy();
+    test_call_input_breaks_at_a_hard_boundary();
+    test_call_input_breaks_at_an_rtl_profile_change();
+    test_call_input_epoch_moves_at_a_stream_pause();
 #ifdef USE_RADIO
     test_rtl_monitor_rate_override_is_converted();
     test_rtl_rate_round_trip_block_is_mixed();

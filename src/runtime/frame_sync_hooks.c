@@ -108,9 +108,9 @@ dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* 
 
 void
 dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate,
-                                      int accepted) {
+                                      int input) {
     if (g_frame_sync_hooks.analog_call_block) {
-        g_frame_sync_hooks.analog_call_block(opts, state, samples, count, rate, accepted);
+        g_frame_sync_hooks.analog_call_block(opts, state, samples, count, rate, input);
     }
 }
 

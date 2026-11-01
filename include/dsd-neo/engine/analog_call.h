@@ -8,9 +8,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/** Accepted, processed conventional NFM samples, independent of the speaker sink. */
+/** A processed conventional NFM monitor block, independent of the speaker sink, and what it is to the call (@p input,
+ * DSD_ANALOG_CALL_* in <dsd-neo/runtime/frame_sync_hooks.h>): a RECEPTION block is the call's audio; any other input
+ * ends the call. */
 void dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
-                                  int accepted);
+                                  int input);
 void dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state);
 /** Close and publish the conventional NFM call's recording now, as its end would (issue #708), keeping the call and its
  * lifecycle epoch: per-call recording was switched off mid-call. */
