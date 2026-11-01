@@ -31,7 +31,10 @@
 
 /* At most one wheel step per 150 ms: a touchpad flick sends dozens of notches, and the command queue drops its
    oldest entry when full. Notches inside the gap are dropped, not queued. */
-#define UI_WHEEL_STEP_GAP_NS (150ULL * 1000ULL * 1000ULL)
+#define UI_WHEEL_STEP_GAP_NS    (150ULL * 1000ULL * 1000ULL)
+/* At most this many reads after a wheel report in one input pass (ui_read_past_wheel_burst()); the bound only keeps a
+   stream that never runs dry from holding the pass. */
+#define UI_WHEEL_BURST_READ_MAX 256
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
@@ -151,6 +154,23 @@ ui_handle_wheel(int ch, int eligible) {
     (void)dsd_app_command_action(ch == UI_KEY_WHEEL_UP ? DSD_APP_CMD_CHANNEL_CYCLE_PREV : DSD_APP_CMD_CHANNEL_CYCLE);
 }
 
+/*
+ * The reports already queued behind a wheel report arrived with it: one gesture, which steps once at most. Read one a
+ * frame, a flick's dozens would outlast the throttle and go on stepping after the wheel stopped, so they are read now,
+ * without waiting for more. The first key that is not a wheel report ends the run and is returned, to be handled in
+ * this pass in the order it was typed; ERR when the input ran dry. A click reads as ERR too and ends the run early.
+ */
+static int
+ui_read_past_wheel_burst(const dsd_opts* osnap) {
+    for (int i = 0; i < UI_WHEEL_BURST_READ_MAX; i++) {
+        const int ch = ui_read_key_nonblocking(osnap);
+        if (!ui_key_is_wheel(ch)) {
+            return ch;
+        }
+    }
+    return ERR;
+}
+
 static void
 ui_wheel_forget(void) {
     g_ui_wheel_stepped = 0;
@@ -166,7 +186,7 @@ ui_process_input_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
     if (ui_key_is_wheel(ch)) {
         // Handled here: dsd_terminal_handle_input() and the menu never see a wheel code.
         ui_handle_wheel(ch, wheel_wanted && ui_mouse_capture_is_on());
-        ch = ERR;
+        ch = ui_read_past_wheel_burst(osnap);
     }
     if (ui_menu_is_open()) {
         ui_handle_menu_input(ch);

@@ -12,7 +12,9 @@
  * frame loop (ui_async.c) with the real capture (ui_mouse.c) and key read (ui_read_key.c) runs here on an
  * xterm-256color screen whose input is a pty: the wheel steps while a -Y scan runs, and after the menu opens, the
  * setting goes off and the scan stops, a queued click (press and release) and a lone press are each read and dropped
- * in one frame with no key typed after them. A frame that blocked would hang; SIGALRM fails the test instead.
+ * in one frame with no key typed after them. A frame that blocked would hang; SIGALRM fails the test instead. A burst
+ * of wheel reports typed at once (a flick) steps once, however many frames follow, and a key typed after it is still
+ * handled; notches typed apart each step.
  *
  * Exit 77 (skipped) when the host has no pty, no xterm-256color terminfo, or an ncurses without button 5.
  */
@@ -319,9 +321,63 @@ capture_on_and_step(int slave, const char* tag) {
     return rc;
 }
 
+/* A flick of the wheel: @p count notch-down reports and then a plain key, typed at once. The frames that follow run
+   for longer than the throttle's gap many times over. */
+static int
+wheel_burst_steps_once(int slave, const char* tag, int count) {
+    static char burst[2048];
+    static const char kNotch[] = "\033[<65;10;5M";
+    size_t len = 0U;
+    for (int i = 0; i < count && len + sizeof kNotch < sizeof burst - 1U; i++) {
+        DSD_MEMCPY(burst + len, kNotch, sizeof kNotch - 1U);
+        len += sizeof kNotch - 1U;
+    }
+    burst[len++] = 'x';
+    burst[len] = '\0';
+    const int posted = g_posted_count;
+    const int handled = g_handled_keys;
+    dsd_sleep_ms(160);
+    if (queue_input(slave, burst) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    for (int i = 0; i < 40; i++) {
+        rc |= frame(tag);
+        dsd_sleep_ms(20);
+    }
+    if (g_posted_count != posted + 1) {
+        DSD_FPRINTF(stderr, "%s: %d steps (want 1)\n", tag, g_posted_count - posted);
+        rc = 1;
+    }
+    rc |= expect(tag, g_posted_count > posted && g_posted[posted] == DSD_APP_CMD_CHANNEL_CYCLE);
+    rc |= expect(tag, g_handled_keys == handled + 1);
+    rc |= expect(tag, !input_pending(slave));
+    return rc;
+}
+
+/* Notches made apart from one another, each past the throttle's gap, each step. */
+static int
+spread_notches_each_step(int slave, const char* tag) {
+    const int posted = g_posted_count;
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        dsd_sleep_ms(200);
+        if (queue_input(slave, "\033[<65;10;5M") != 0) {
+            return 1;
+        }
+        rc |= frame(tag);
+    }
+    rc |= expect(tag, g_posted_count == posted + 3);
+    return rc;
+}
+
 static int
 run_transitions(int slave) {
     int rc = capture_on_and_step(slave, "first capture");
+    rc |= wheel_burst_steps_once(slave, "wheel burst", 60);
+    rc |= spread_notches_each_step(slave, "spread notches");
+    /* The burst's plain key reached the handler; the cases below count from none. */
+    g_handled_keys = 0;
     rc |= expect("tracking turned on", screen_wrote("\033[?1006;1000h"));
 
     g_screen_out_len = 0;
