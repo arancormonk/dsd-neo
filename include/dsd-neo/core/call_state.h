@@ -321,9 +321,11 @@ typedef struct {
      * that moved later (another system named, a reset, a sync of another protocol family wiping it) leaves it as it
      * was, so a call heard again under an empty record reopens and one heard under another identity does not. A
      * reacquired epoch starts with the ending one's and keeps it while the live record names no site, so a second
-     * fade still compares with the site the call was heard on. Refreshed only at an observation and at the end:
-     * identity learned after the last observation of a call whose end captured nothing compares as compatible (a
-     * decided limit). Empty while nothing was received.
+     * fade still compares with the site the call was heard on. After such a heal a live record that names only part
+     * of the earlier site replaces the retained copy, so the missing parts drop out of later comparisons until they
+     * are noted again (a decided limit). Refreshed only at an observation and at the end: identity learned after the
+     * last observation of a call whose end captured nothing compares as compatible (a decided limit). Empty while
+     * nothing was received.
      */
     dsd_received_identity reacquire_rx_id;
     /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
