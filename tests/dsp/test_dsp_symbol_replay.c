@@ -5500,6 +5500,7 @@ test_call_input_breaks_at_a_hard_boundary(void) {
     assert(seen->boundaries == boundaries);
 
     stop_call_capture();
+    g_pcm_passband_hz = 25000;
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     dsd_trunk_tuning_requests_reset();
     dsd_state_ext_free_all(&state);
@@ -5525,9 +5526,10 @@ test_call_input_breaks_at_an_rtl_profile_change(void) {
     assert(dsd_analog_rx_boundaries_current(&opts, &state) == 0);
     const call_block_seen* seen = push_call_block(&opts, &state, 100.0);
     assert(seen->input == DSD_ANALOG_CALL_BREAK && seen->boundaries != boundaries);
+    const uint32_t moved = seen->boundaries;
     assert(dsd_analog_rx_boundaries_current(&opts, &state) == 1);
     seen = push_call_block(&opts, &state, 100.0);
-    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == last_call_block()->boundaries);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == moved);
     stop_call_capture();
     g_fake_rtl_analog_width_hz = 12500;
     install_fake_rtl_hooks(0);

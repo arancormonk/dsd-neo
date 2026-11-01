@@ -1081,18 +1081,27 @@ hold_burst_frames(hold_rig* r, int blocks) {
 
 /* A block rate other than 48 kHz (staged PCM rates, RTL output): the gap is counted at 48 kHz with the block rate's
    remainder carried, and the owed silence lands between the converter's outputs for the two bursts. @p joined held
-   blocks are joined and one more ends the call. */
+   blocks are joined, as one row from the first reception to the last, and one more ends the call at its last
+   reception, a row of its own. */
 static void
 hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_rate", max_gap_ms);
     r.rate = rate;
+    const double block_s = (double)HOLD_BLOCK / (double)rate;
     const long burst = hold_burst_frames(&r, 3);
-    hold_receive(&r, 3, 2000);
+    const uint64_t commits = r.history[0].push_seq;
+    hold_receive(&r, 1, 2000);
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 2, 2000);
     hold_closed(&r, joined);
     assert(dsd_engine_analog_call_active(r.state));
     hold_receive(&r, 3, 2000);
+    double last_m = hold_now_m(&r);
     dsd_engine_analog_call_end(r.opts, r.state);
+    assert(r.history[0].push_seq == commits + 1U);
+    hold_expect_span(&r, first_m, last_m);
+    assert(fabs((last_m - first_m) - (double)(5 + joined) * block_s) < 1e-6);
     hold_files found;
     hold_take(&r, &found, 1);
     assert(found.frames[0] == 2 * burst + owed);
@@ -1101,10 +1110,14 @@ hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     hold_release(&found);
 
     hold_receive(&r, 3, 2000);
+    last_m = hold_now_m(&r);
     hold_closed(&r, joined + 1);
     assert(!dsd_engine_analog_call_active(r.state));
+    assert(r.history[0].push_seq == commits + 2U);
+    hold_expect_span(&r, last_m - 2.0 * block_s, last_m);
     hold_receive(&r, 3, 2000);
     dsd_engine_analog_call_end(r.opts, r.state);
+    assert(r.history[0].push_seq == commits + 3U);
     hold_take(&r, &found, 2);
     assert(found.frames[0] == burst && found.frames[1] == burst);
     hold_release(&found);

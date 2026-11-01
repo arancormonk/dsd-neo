@@ -3910,7 +3910,7 @@ load_config_text(const char* ini, dsdneoUserConfig* cfg) {
 static int
 test_recording_analog_max_gap_roundtrip(void) {
     int rc = 0;
-    dsdneoUserConfig cfg;
+    dsdneoUserConfig cfg{};
     if (load_config_text("[recording]\nanalog_max_gap_ms = 2000\n", &cfg) != 0 || !cfg.has_recording
         || cfg.analog_max_gap_ms != 2000) {
         DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms did not load (%d)\n", cfg.analog_max_gap_ms);
@@ -3931,7 +3931,7 @@ test_recording_analog_max_gap_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains_quiet("analog_max_gap_ms saved", rendered, "analog_max_gap_ms = 2000\n");
-    dsdneoUserConfig reloaded;
+    dsdneoUserConfig reloaded{};
     if (load_config_text(rendered, &reloaded) != 0 || reloaded.analog_max_gap_ms != 2000) {
         DSD_FPRINTF(stderr, "FAIL: the saved config did not load analog_max_gap_ms back\n");
         rc |= 1;
