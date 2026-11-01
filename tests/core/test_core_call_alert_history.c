@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -1799,7 +1801,7 @@ test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     int rc = 0;
     rc |= expect_has_substr("dmr event date/time prefix", item->event_string, "2026-04-30 00:00:00");
     rc |= expect_has_substr("dmr event voice prefix", item->event_string,
-                            "TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: ABC;");
+                            "TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: 0ABC;");
     rc |= expect_has_substr("dmr event call class", item->event_string, "Group;");
     return rc;
 }
@@ -3246,7 +3248,7 @@ test_trunk_scan_row_carries_target_id(void) {
     const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
     int rc = expect_str_eq("trunk scan row keeps the target id", item->channel_label, "SiteA");
     rc |= expect_has_substr("trunk scan row renders the target id", item->event_string,
-                            "2026-04-30 00:00:00 [SiteA] TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: ABC;");
+                            "2026-04-30 00:00:00 [SiteA] TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: 0ABC;");
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -3948,7 +3950,7 @@ test_unknown_access_codes_render_as_dashes(void) {
     dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_MS_VOICE);
     rc |= expect_str_eq("unknown DMR CC sysid with system code", item->sysid_string, "DMR_ABC_CC_--");
-    rc |= expect_has_substr("unknown DMR CC event with system code", item->event_string, "CC: --; SYS: ABC;");
+    rc |= expect_has_substr("unknown DMR CC event with system code", item->event_string, "CC: --; SYS: 0ABC;");
 
     reset_fixture(&opts, &state, event_history);
     state.dmr_color_code = 0U;
@@ -4454,6 +4456,596 @@ test_system_identity_takes_dependent_invalidations(void) {
     return rc;
 }
 
+// Issue #799: each row keeps the site identity its call was heard on -- the site parts of the record its sys ids come
+// from, under the same rule -- and the DMR call's channel with the numbering it was named in.
+static const char k_t3_site_text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 28 \xC2\xB7 SYS 0A3F";
+
+// One active group call with its channel, the channel's kind and frequency, rendered into the staged row.
+static const Event_History*
+render_channel_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol, uint32_t channel,
+                   uint8_t channel_kind, dsd_call_boundary boundary) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 201U,
+        .channel = channel,
+        .channel_kind = channel_kind,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &observation, boundary) >= 0);
+    watchdog_event_current(opts, state, 0);
+    return &event_history[0].Event_History_Items[0];
+}
+
+// The row's site identity is the site snapshot of @p record, byte for byte.
+static int
+expect_row_site(const char* label, const Event_History* row, const dsd_received_identity* record) {
+    dsd_received_identity want;
+    dsd_rxid_site_snapshot(record, &want);
+    return expect_int(label, memcmp(&row->site_id, &want, sizeof want) == 0, 1);
+}
+
+// The row holds no site identity: every byte zero (family NONE).
+static int
+expect_row_site_empty(const char* label, const Event_History* row) {
+    dsd_received_identity none;
+    DSD_MEMSET(&none, 0, sizeof none);
+    return expect_int(label, memcmp(&row->site_id, &none, sizeof none) == 0, 1);
+}
+
+static void
+note_t3_site(dsd_state* state) {
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 0U, k_t3_site_text);
+}
+
+// The row takes the site of the record its call began under while that record is the call's, and keeps it once the
+// record names another system.
+static int
+test_row_site_taken_from_call_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    note_p25_site(&state);
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    int rc = expect_row_site("the call's record", item, &state.rx_id);
+    rc |= expect_int("its parts",
+                     item->site_id.family == (uint8_t)DSD_RXID_FAMILY_P25
+                         && item->site_id.valid == (DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE)
+                         && item->site_id.p25_wacn == 0x45564U && item->site_id.p25_rfss == 10U,
+                     1);
+    rc |= expect_int("a P25 row names no DMR channel kind", item->call_channel_kind, DSD_CALL_CHANNEL_NONE);
+    const dsd_received_identity heard = state.rx_id;
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U); /* another system: another record epoch */
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_row_site("another system's record is not the row's", item, &heard);
+    /* A record of another family names no site of this one. */
+    reset_fixture(&opts, &state, event_history);
+    note_t3_site(&state);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_row_site_empty("another family's record", item);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// What changes with the moment or the carrier -- the access code, the Capacity Plus rest LSN, the XPT free LCN, RAS,
+// the vendor, the control channel and the EDACS control-channel LCN -- is never part of a row's site, nor the epoch
+// and fresh bits; the IDAS area, which tells co-channel sites apart, is.
+static int
+test_row_site_moment_parts_cleared(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+    dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
+    dsd_rxid_note_dmr_vendor(&state, 0x10U);
+    dsd_rxid_note_dmr_ras(&state);
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_DMR, 451000000U);
+    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+    const dsd_received_identity* site = &item->site_id;
+    int rc = expect_int("Cap+ site parts",
+                        site->valid == (DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_SITE)
+                            && site->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS && site->dmr_site == 2U,
+                        1);
+    rc |= expect_int("no moment parts",
+                     site->access == 0U && site->access_kind == 0U && site->dmr_rest_lsn == 0U && site->dmr_vendor == 0U
+                         && site->cc_freq_hz == 0U && site->epoch == 0U && site->fresh == 0U,
+                     1);
+
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_dmr_brand(&state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(&state, 4U);
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_int("XPT keeps its brand, not the free LCN",
+                     item->site_id.valid == DSD_RXID_DMR_BRAND && item->site_id.dmr_xpt_free_lcn == 0U, 1);
+
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_edacs_site(&state, 12U);
+    dsd_rxid_note_edacs_cc_lcn(&state, 5U);
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+    rc |= expect_int("EDACS keeps the site, not the control channel's LCN",
+                     item->site_id.valid == DSD_RXID_EDACS_SITE && item->site_id.edacs_cc_lcn == 0U, 1);
+
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 23U;
+    dsd_rxid_note_nxdn_idas_area(&state, 1U);
+    dsd_rxid_note_nxdn_idas_site(&state, 1U, 5U);
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_NXDN, 451000000U);
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_int("IDAS keeps the area and the site, not the control channel",
+                     item->site_id.valid == (DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE)
+                         && item->site_id.nxdn_idas_area == 1U && item->site_id.cc_freq_hz == 0U,
+                     1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A carrier change mid-call: a trunk tune to the voice channel and the return to the control channel keep the record's
+// epoch (they drop only the access code), so the row keeps the control channel's site; a trunk-scan departure ends the
+// call, then forgets the record, and the committed row never takes the next carrier's.
+static int
+test_row_site_survives_trunk_tune_and_departure(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    note_p25_site(&state);
+    dsd_received_identity heard;
+    dsd_rxid_site_snapshot(&state.rx_id, &heard);
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    int rc = expect_row_site("on the control channel", item, &heard);
+    dsd_rxid_trunk_tune(&state);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_row_site("after the tune to the voice channel", item, &heard);
+    dsd_rxid_trunk_tune(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_row_site("back on the control channel", item, &heard);
+
+    /* The departure: the calls end, their rows commit, then the record is reset for the next target. */
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE01U, 0x2B4U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("the departed call committed", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_row_site("the committed row keeps its site", &event_history[0].Event_History_Items[1], &heard);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 401U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_row_site("the next carrier's call takes its own", &event_history[0].Event_History_Items[0],
+                          &state.rx_id);
+    rc |= expect_row_site("and the committed row is untouched", &event_history[0].Event_History_Items[1], &heard);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// An ended row keeps the site of the record at its end: a later carrier never refreshes it, whether the row was
+// rendered before the end or first rendered after it.
+static int
+test_row_site_ended_row_frozen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int rendered_before = 0; rendered_before < 2; rendered_before++) {
+        reset_fixture(&opts, &state, event_history);
+        state.dmr_color_code = 1U;
+        note_t3_site(&state);
+        dsd_received_identity heard;
+        dsd_rxid_site_snapshot(&state.rx_id, &heard);
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        if (rendered_before) {
+            dsd_event_sync_slot(&opts, &state, 0U);
+        }
+        assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+        dsd_rxid_reset(&state);
+        dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 77U, 3U, 0U,
+                               "Con+ \xC2\xB7 Net 77 \xC2\xB7 Site 3");
+        dsd_event_sync_slot(&opts, &state, 0U);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        const Event_History* row = &event_history[0].Event_History_Items[1];
+        rc |= expect_int("ended call commits one row", committed_history_rows(&event_history[0]), 1);
+        rc |= expect_row_site(rendered_before ? "rendered before the end: frozen" : "first rendered after the end", row,
+                              &heard);
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Playing back files (--playfiles), the decoder state describes no carrier: a row takes no site. An I/Q replay runs
+// the live receive chain over a capture, so its rows take the site the capture's carrier sent.
+static int
+test_row_site_playfiles_none_iq_replay_kept(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.playfiles = 1;
+    state.nac = 0x293;
+    note_p25_site(&state);
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    int rc = expect_row_site_empty("--playfiles takes none", item);
+    rc |= expect_no_substr("--playfiles event", item->event_string, "NET_STS");
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_row_site_empty("--playfiles ended row takes none", &event_history[0].Event_History_Items[1]);
+
+    reset_fixture(&opts, &state, event_history);
+    opts.iq_replay_requested = 1U;
+    opts.iq_replay_active = 1U;
+    state.nac = 0x293;
+    note_p25_site(&state);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_row_site("an I/Q replay row keeps its site", item, &state.rx_id);
+    rc |= expect_has_substr("I/Q replay event", item->event_string, "NET_STS: 45564:006:10.10; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// M17 and dPMR send no system or site, and a TETRA direct mode carrier belongs to no network: their rows hold none.
+static int
+test_row_site_m17_dpmr_none(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 3U);
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_M17_LSF_POS, 0x13U, 1U);
+    int rc = expect_row_site_empty("M17", item);
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = 9;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DPMR, DSD_ACCESS_CODE_COLOR_CODE, 9U);
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_row_site_empty("dPMR", item);
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_tetra_cell(&state, 262U, 1001U, 25U);
+    state.tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_TETRA_NDB_POS);
+    rc |= expect_row_site_empty("TETRA direct mode", item);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// One transmission in two segments: the first heard under @p first, the second reacquiring it after a sync loss with
+// @p between applied to the record before the reopen and @p second after it.
+typedef void (*site_note_fn)(dsd_state* state);
+
+static int
+run_p25_reacquired_segments(dsd_opts* opts, dsd_state* state, site_note_fn first, site_note_fn between,
+                            site_note_fn second) {
+    state->nac = 0x293;
+    first(state);
+    assert(observe_test_call(state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    if (between != NULL) {
+        between(state);
+    }
+    assert(observe_test_call(state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    const int reopened = call.transmission_epoch != call.epoch;
+    second(state);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    return reopened;
+}
+
+static void
+note_p25_rfss_only(dsd_state* state) {
+    dsd_rxid_note_p25_site(state, 0x006U, 10U, 11U);
+}
+
+static void
+note_p25_network_only(dsd_state* state) {
+    dsd_rxid_note_p25_network(state, 0x45564U, 0x006U);
+}
+
+static void
+note_other_p25_system(dsd_state* state) {
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+}
+
+// A reacquired segment that learned more of the same site completes the row: the union of both segments' parts.
+static int
+test_reacq_merge_unions_site(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    const int reopened = run_p25_reacquired_segments(&opts, &state, note_p25_rfss_only, NULL, note_p25_network_only);
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("the segment reopened the call", reopened, 1);
+    rc |= expect_int("one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("the union of both segments' parts",
+                     merged->site_id.valid == (DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE)
+                         && merged->site_id.p25_wacn == 0x45564U && merged->site_id.p25_site == 11U,
+                     1);
+    rc |= expect_has_substr("the merged line names the network", merged->event_string,
+                            "NAC: 293; NET_STS: 45564:006:10.11; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Two segments on the same talkgroup heard under two sites (a radio roaming between them inside the reacquire window,
+// the record reset between them so the call state reopens the call) are two rows, each with its own site: a merge
+// never pairs one site's WACN with another's system.
+static int
+test_reacq_merge_refuses_conflict(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    const int reopened =
+        run_p25_reacquired_segments(&opts, &state, note_p25_site, dsd_rxid_reset, note_other_p25_system);
+    int rc = expect_int("the call state reopened the call", reopened, 1);
+    rc |= expect_int("two rows", committed_history_rows(&event_history[0]), 2);
+    const Event_History* first = &event_history[0].Event_History_Items[2];
+    const Event_History* second = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("the first keeps its site", first->site_id.p25_wacn == 0x45564U && first->site_id.p25_site == 10U,
+                     1);
+    rc |= expect_int("the second has its own",
+                     second->site_id.p25_wacn == 0xBEE00U && second->site_id.p25_sysid == 0x348U
+                         && second->site_id.p25_site == 21U,
+                     1);
+    rc |= expect_has_substr("the first line", first->event_string, "NET_STS: 45564:006:10.10; ");
+    rc |= expect_has_substr("the second line", second->event_string, "NET_STS: BEE00:348:3.21; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The row's DMR channel takes its kind with it, both fill-only: a channel the first segment did not know is filled
+// with its kind by the reacquired one, and the event line names it by its kind.
+static int
+test_row_channel_fill_only_with_kind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    note_t3_site(&state);
+    const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 0U,
+                                                   DSD_CALL_CHANNEL_NONE, DSD_CALL_BOUNDARY_BEGIN);
+    int rc = expect_int("no channel yet", item->channel == 0U && item->call_channel_kind == DSD_CALL_CHANNEL_NONE, 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    (void)render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U, DSD_CALL_CHANNEL_LPCN,
+                             DSD_CALL_BOUNDARY_CONTINUE);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("the merge fills the channel with its kind",
+                     merged->channel == 12U && merged->call_channel_kind == DSD_CALL_CHANNEL_LPCN, 1);
+    rc |= expect_has_substr("the merged line names it", merged->event_string, "LPCN: 12; ");
+
+    /* A known channel stays: a later segment naming none leaves it. */
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    note_t3_site(&state);
+    (void)render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U, DSD_CALL_CHANNEL_LPCN,
+                             DSD_CALL_BOUNDARY_BEGIN);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    (void)render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 0U, DSD_CALL_CHANNEL_NONE,
+                             DSD_CALL_BOUNDARY_CONTINUE);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("the channel stays", merged->channel == 12U && merged->call_channel_kind == DSD_CALL_CHANNEL_LPCN,
+                     1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The DMR event line names the call's own channel by its kind (decimal) and the site by the site text's network and
+// site parts, in ASCII; the Tier III system code is four hex digits.
+static int
+test_event_line_dmr_site_tokens(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    note_t3_site(&state);
+    const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U,
+                                                   DSD_CALL_CHANNEL_LPCN, DSD_CALL_BOUNDARY_BEGIN);
+    int rc = expect_str_eq("Tier III", item->event_string,
+                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 0A3F; "
+                           "SITE: Net 13 Site 28; LPCN: 12; Group; ");
+    rc |= expect_int("the row's channel kind", item->call_channel_kind, DSD_CALL_CHANNEL_LPCN);
+
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
+    item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 5U, DSD_CALL_CHANNEL_LSN,
+                              DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_str_eq("Capacity Plus", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SITE: Site 2; LSN: 5; Group; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 1234U, 5U, 0U,
+                           "Con+ \xC2\xB7 Net 1234 \xC2\xB7 Site 5");
+    item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 3U, DSD_CALL_CHANNEL_LCN,
+                              DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_str_eq("Connect Plus", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SITE: Net 1234 Site 5; "
+                        "LCN: 3; Group; ");
+    rc |= expect_no_substr("never the separator", item->event_string, "\xC2\xB7");
+
+    /* A channel of no DMR numbering prints nothing, as before. */
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 7U, DSD_CALL_CHANNEL_NONE,
+                              DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_str_eq("no kind", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; Group; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// P25 without a WACN names its system and site on their own; with a WACN and no RFSS status the network status leaves
+// the site out rather than print "0.0".
+static int
+test_event_line_p25_site_tokens(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    dsd_rxid_note_p25_site(&state, 0x1A3U, 3U, 21U);
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    int rc = expect_str_eq("no WACN", item->event_string,
+                           "2026-04-30 00:00:00 TEST TGT: 00051002; SRC: 00041001; NAC: 293; SYS: 1A3; SITE: 3.21; "
+                           "Group; ");
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_str_eq("WACN, no site", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00051002; SRC: 00041001; NAC: 293; NET_STS: BEE00:1A3; "
+                        "Group; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// NXDN IDAS names its site, and the Type-D system beside it, without a 0 placeholder for a part not received.
+static int
+test_event_line_nxdn_site_tokens(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 23U;
+    dsd_rxid_note_nxdn_idas_site(&state, 1U, 5U);
+    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    int rc = expect_str_eq("IDAS site", item->event_string,
+                           "2026-04-30 00:00:00 TEST TGT: 00051002; SRC: 00041001; RAN: 23; SITE: 5; Group; ");
+    dsd_rxid_note_nxdn_typed_system(&state, 12345U, 5U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("IDAS site and system", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00051002; SRC: 00041001; RAN: 23; SITE: 5; SYS: 12345; "
+                        "Group; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// TETRA names the carrier number with no frequency known too, and the network and location area after it.
+static int
+test_event_line_tetra_site_tokens(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    dsd_rxid_note_tetra_cell(&state, 901U, 9999U, 25U);
+    dsd_rxid_note_tetra_la(&state, 12U);
+    const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_TETRA_NDB_POS, 120U,
+                                                   DSD_CALL_CHANNEL_NONE, DSD_CALL_BOUNDARY_BEGIN);
+    int rc = expect_str_eq("TETRA", item->event_string,
+                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 25; CARRIER: 120; MCC: 901; "
+                           "MNC: 9999; LA: 12; Group; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// EDACS prints each site part from its valid bit, in the addressing mode it was read under: a part never received is
+// left out, never printed as 0, and a received 0 is printed.
+static int
+test_event_line_edacs_site_parts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int ea = 0; ea < 2; ea++) {
+        reset_fixture(&opts, &state, event_history);
+        state.ea_mode = ea;
+        const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+        rc |= expect_no_substr(ea ? "EA absent" : "standard absent", item->event_string, ea ? "SITE:" : "Site:");
+        rc |= expect_no_substr(ea ? "EA absent system" : "standard absent system", item->event_string, "SYS:");
+
+        reset_fixture(&opts, &state, event_history);
+        state.ea_mode = ea;
+        dsd_rxid_note_edacs_site(&state, 0U);
+        dsd_rxid_note_edacs_area(&state, 0U);
+        item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+        rc |= expect_has_substr(ea ? "EA valid zero" : "standard valid zero", item->event_string,
+                                ea ? "; SITE: 0:0; " : "; Site: 0; ");
+    }
+    reset_fixture(&opts, &state, event_history);
+    state.ea_mode = 1;
+    dsd_rxid_note_edacs_system(&state, 0x1234U);
+    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+    rc |= expect_has_substr("EA system only", item->event_string, "; SYS: 1234; ");
+    rc |= expect_no_substr("EA system only has no site", item->event_string, "SITE:");
+    dsd_rxid_note_edacs_site(&state, 7U);
+    dsd_rxid_note_edacs_area(&state, 2U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_has_substr("EA all parts", item->event_string, "; SITE: 7:2.1234; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Identical renders of a row with a site leave the slot's revision alone (the frozen copy is byte-normalised), and the
+// event-state snapshot copy carries the row's site and channel kind.
+static int
+test_row_site_identical_renders_keep_revision(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static Event_History_I copied_history[2];
+    reset_fixture(&opts, &state, event_history);
+    dsd_decode_clock_use_test(1000000000000000000ULL);
+    state.dmr_color_code = 1U;
+    note_t3_site(&state);
+    const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U,
+                                                   DSD_CALL_CHANNEL_LPCN, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t revision = event_history[0].revision;
+    note_t3_site(&state); /* the same site noted again */
+    watchdog_event_current(&opts, &state, 0);
+    watchdog_event_current(&opts, &state, 0);
+    int rc = expect_u64("identical renders keep the revision", event_history[0].revision, revision);
+
+    DSD_MEMSET(copied_history, 0, sizeof copied_history);
+    static dsd_state copy;
+    DSD_MEMSET(&copy, 0, sizeof copy);
+    rc |= expect_int("snapshot copies", dsd_event_state_copy_snapshot(&copy, &state, copied_history), 1);
+    const Event_History* copied = &copied_history[0].Event_History_Items[0];
+    rc |= expect_int("the copy carries the site",
+                     memcmp(&copied->site_id, &item->site_id, sizeof item->site_id) == 0 && copied->site_id.valid != 0U,
+                     1);
+    rc |= expect_int("the copy carries the channel kind", copied->call_channel_kind, DSD_CALL_CHANNEL_LPCN);
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&copy);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The P25 NAC and the M17 CAN in the system identity string and the event line follow the row's access code, as the
 // other protocols' codes do: a Phase 1 call takes nac only, so a p2_cc an earlier Phase 2 carrier left is no code of
 // its, and an M17 call names a CAN only once its service options were observed. An unknown NAC prints "---", three
@@ -4681,7 +5273,7 @@ test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id(void) {
     rc |= expect_int("DMR merge keeps the colour code", (int)merged->sys_id2, 3);
     rc |= expect_int("DMR merge takes the system code", (int)merged->sys_id1, 0xABC);
     rc |= expect_str_eq("merged DMR sysid names both", merged->sysid_string, "DMR_ABC_CC_3");
-    rc |= expect_has_substr("merged DMR event names both", merged->event_string, "CC: 03; SYS: ABC;");
+    rc |= expect_has_substr("merged DMR event names both", merged->event_string, "CC: 03; SYS: 0ABC;");
 
     reset_fixture(&opts, &state, event_history);
     const code_segment nxdn_first = {.code = 5};
@@ -8586,6 +9178,21 @@ main(void) {
     rc |= test_system_identity_fills_while_live();
     rc |= test_system_identity_freezes_at_the_end();
     rc |= test_system_identity_takes_dependent_invalidations();
+    rc |= test_row_site_taken_from_call_epoch();
+    rc |= test_row_site_moment_parts_cleared();
+    rc |= test_row_site_survives_trunk_tune_and_departure();
+    rc |= test_row_site_ended_row_frozen();
+    rc |= test_row_site_playfiles_none_iq_replay_kept();
+    rc |= test_row_site_m17_dpmr_none();
+    rc |= test_reacq_merge_unions_site();
+    rc |= test_reacq_merge_refuses_conflict();
+    rc |= test_row_channel_fill_only_with_kind();
+    rc |= test_event_line_dmr_site_tokens();
+    rc |= test_event_line_p25_site_tokens();
+    rc |= test_event_line_nxdn_site_tokens();
+    rc |= test_event_line_tetra_site_tokens();
+    rc |= test_event_line_edacs_site_parts();
+    rc |= test_row_site_identical_renders_keep_revision();
     rc |= test_reacquisition_merge_names_a_p25_or_m17_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();

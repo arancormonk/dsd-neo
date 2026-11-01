@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -84,6 +86,9 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].sys_id3 = 0;
         event_struct->Event_History_Items[i].sys_id4 = 0;
         event_struct->Event_History_Items[i].sys_id5 = 0;
+        /* No site received: zero bytes, family NONE. */
+        DSD_MEMSET(&event_struct->Event_History_Items[i].site_id, 0,
+                   sizeof(event_struct->Event_History_Items[i].site_id));
         event_struct->Event_History_Items[i].gi = 0;
         event_struct->Event_History_Items[i].emergency = 0;
         event_struct->Event_History_Items[i].priority = 0;
@@ -113,6 +118,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
         event_struct->Event_History_Items[i].channel = 0;
+        event_struct->Event_History_Items[i].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
         event_struct->Event_History_Items[i].access_code = 0;
@@ -159,6 +165,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].sys_id3 = event_struct->Event_History_Items[i - 1].sys_id3;
         event_struct->Event_History_Items[i].sys_id4 = event_struct->Event_History_Items[i - 1].sys_id4;
         event_struct->Event_History_Items[i].sys_id5 = event_struct->Event_History_Items[i - 1].sys_id5;
+        DSD_MEMCPY(&event_struct->Event_History_Items[i].site_id, &event_struct->Event_History_Items[i - 1].site_id,
+                   sizeof(event_struct->Event_History_Items[i].site_id));
         event_struct->Event_History_Items[i].gi = event_struct->Event_History_Items[i - 1].gi;
         event_struct->Event_History_Items[i].emergency = event_struct->Event_History_Items[i - 1].emergency;
         event_struct->Event_History_Items[i].priority = event_struct->Event_History_Items[i - 1].priority;
@@ -192,6 +200,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
         event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
+        event_struct->Event_History_Items[i].call_channel_kind =
+            event_struct->Event_History_Items[i - 1].call_channel_kind;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
             event_struct->Event_History_Items[i - 1].access_code_kind;
@@ -1023,7 +1033,8 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
         retained->target_id = staged->target_id;
     }
     if (retained->channel == 0U && staged->channel != 0U) {
-        retained->channel = staged->channel;
+        retained->channel = staged->channel; /* with its numbering: a known channel never changes */
+        retained->call_channel_kind = staged->call_channel_kind;
     }
     watchdog_event_merge_tuning(retained, staged);
     if (retained->gi < 0 && staged->gi >= 0) {
@@ -1040,6 +1051,32 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
     watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
     watchdog_event_merge_channel_label(retained, staged);
+}
+
+// The channel kind a row's site check reads: a row's kind means something only beside its channel.
+static uint8_t
+watchdog_event_row_channel_kind(const Event_History* row) {
+    return row->channel != 0U ? row->call_channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+}
+
+// Whether two rows can be one call heard on one site: their site identities agree on every part both know, and their
+// channel kinds agree with each other and with a known DMR trunking system (dsd_call_site_compatible()). A row with no
+// site is compatible with any.
+static int
+watchdog_event_rows_same_site(const Event_History* retained, const Event_History* staged) {
+    return dsd_call_site_compatible(&retained->site_id, watchdog_event_row_channel_kind(retained), &staged->site_id,
+                                    watchdog_event_row_channel_kind(staged));
+}
+
+// The merged row's site: the union of both segments' parts. Only rows that passed watchdog_event_rows_same_site() merge;
+// should two conflicting ones ever reach here, the row keeps its own site and the segment's is discarded whole, never
+// a part-wise mix of two sites.
+static void
+watchdog_event_merge_site(Event_History* retained, const Event_History* staged) {
+    if (!dsd_rxid_site_compatible(&retained->site_id, &staged->site_id)) {
+        return;
+    }
+    dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
 // Fold the staged row into the row already in history: this is the same transmission, and
@@ -1061,6 +1098,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     }
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
+    watchdog_event_merge_site(retained, staged);
     /* A segment that confirmed the service the interrupted one never did names the row; one that confirmed nothing
        only fills a name the row lacks (issue #637). The access code and the over-the-air slot are proven apart (the
        single-slot DMR decoder can confirm the code first), so each is folded in on its own; a slot name only fills a
@@ -1110,8 +1148,10 @@ watchdog_event_log_merge_continuation(const dsd_opts* opts, uint8_t slot, uint8_
 
 // True when the staged row may be folded into the row already committed for this slot: the
 // canonical layer flagged this epoch as one sync-loss-interrupted transmission being
-// reacquired, that row is the one the interrupted epoch itself committed, and both rows are
-// voice. A data staged row never merges into a voice row.
+// reacquired, that row is the one the interrupted epoch itself committed, both rows are
+// voice, and both were heard on one site (watchdog_event_rows_same_site(): a radio that roamed
+// to another site inside the reacquire window is two calls). A data staged row never merges
+// into a voice row.
 static int
 watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_call_event_lifecycle* lifecycle,
                                  const Event_History* staged, uint8_t retained_index) {
@@ -1135,9 +1175,10 @@ watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_
     if (retained_index == 0U || staged->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    return event_struct->Event_History_Items[retained_index].category == DSD_EVENT_CATEGORY_VOICE
-           && !dsd_receive_identity_changed(&event_struct->Event_History_Items[retained_index].receive_identity,
-                                            &staged->receive_identity);
+    const Event_History* retained = &event_struct->Event_History_Items[retained_index];
+    return retained->category == DSD_EVENT_CATEGORY_VOICE
+           && !dsd_receive_identity_changed(&retained->receive_identity, &staged->receive_identity)
+           && watchdog_event_rows_same_site(retained, staged);
 }
 
 // Rebuild the merged row's user-legible string from its now-complete fields. Returns non-zero
@@ -1412,7 +1453,11 @@ typedef struct {
     uint32_t sys_id3;
     uint32_t sys_id4;
     uint32_t sys_id5;
+    /* The row's site identity (Event_History::site_id), loaded with the sys ids; the builders print from its valid
+     * bits. */
+    dsd_received_identity site_id;
     uint32_t channel;
+    uint8_t channel_kind; /* dsd_call_channel_kind of channel; NONE without one */
     uint32_t policy_target_id;
     /* The frequency the call was heard on and its access code, as the row records them; see
      * watchdog_event_current_load_tuning() for the rules. */
@@ -1557,6 +1602,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->key_id = call->kid;
     ctx->mi = call->mi;
     ctx->channel = call->channel;
+    ctx->channel_kind = call->channel != 0U ? call->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
     if (call->started_m > 0.0) {
         const double ref_m = (call->phase == DSD_CALL_PHASE_ENDED) ? call->ended_m : call->updated_m;
         if (ref_m >= call->started_m) {
@@ -1591,6 +1637,9 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // call began: a boundary, a trunk-scan switch, another protocol in between), or no capture, leaves the row what it took
 // last: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or a trunk-scan switch, when the
 // record already describes the next carrier.
+//
+// The row's site identity (Event_History::site_id: the site parts of the same record, which the event line prints
+// from) is taken, frozen and left alone by exactly the same rule, beside the sys ids.
 static void
 watchdog_event_system_take_p25(const dsd_received_identity* id, uint32_t sys[5]) {
     const uint32_t valid = id->valid;
@@ -1650,22 +1699,55 @@ watchdog_event_system_take(const dsd_received_identity* id, dsd_rxid_family fami
     }
 }
 
+/* The site identity (Event_History::site_id) beside the sys ids, by the same rule: the site parts of @p id
+   (dsd_rxid_site_snapshot(), which leaves out what changes with the moment or the carrier and normalises the bytes, so
+   identical renders leave identical rows) when it is a record of @p family. */
+static void
+watchdog_event_site_take(const dsd_received_identity* id, dsd_rxid_family family, dsd_received_identity* site) {
+    if (id->family == (uint8_t)family) {
+        dsd_rxid_site_snapshot(id, site);
+    }
+}
+
+/* A direct mode carrier belongs to no network: no system parts, no site, the direct mode mark. */
+static void
+watchdog_event_system_direct_mode(uint32_t sys[5], dsd_received_identity* site) {
+    sys[0] = 0U;
+    sys[1] = 0U;
+    sys[2] = 1U;
+    DSD_MEMSET(site, 0, sizeof(*site));
+}
+
 static void
 watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapshot* call, dsd_rxid_family family,
-                                  uint32_t sys[5]) {
+                                  uint32_t sys[5], dsd_received_identity* site) {
     if (DSD_SYNC_IS_TETRA(call->protocol)) {
         const uint8_t mode = state->tetra_pub.mode;
         if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
-            sys[0] = 0U;
-            sys[1] = 0U;
-            sys[2] = 1U; /* a direct mode carrier belongs to no network */
+            watchdog_event_system_direct_mode(sys, site);
             return;
         }
         sys[2] = 0U;
     }
     if (state->rx_id.epoch == call->rx_id_epoch) {
         watchdog_event_system_take(&state->rx_id, family, sys);
+        watchdog_event_site_take(&state->rx_id, family, site);
     }
+}
+
+/* What a row this epoch staged already took, as a render starts from it. */
+static void
+watchdog_event_system_from_staged(const Event_History* staged, int staged_is_own, dsd_rxid_family family,
+                                  uint32_t sys[5], dsd_received_identity* site) {
+    if (!staged_is_own || staged == NULL || dsd_rxid_family_for_sync((int)staged->systype) != family) {
+        return;
+    }
+    sys[0] = staged->sys_id1;
+    sys[1] = staged->sys_id2;
+    sys[2] = staged->sys_id3;
+    sys[3] = staged->sys_id4;
+    sys[4] = staged->sys_id5;
+    DSD_MEMCPY(site, &staged->site_id, sizeof(*site));
 }
 
 static void
@@ -1680,22 +1762,17 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
         return; /* no system or site beyond the access code */
     }
     uint32_t sys[5] = {0U, 0U, 0U, 0U, 0U};
-    if (staged_is_own && staged != NULL && dsd_rxid_family_for_sync((int)staged->systype) == family) {
-        sys[0] = staged->sys_id1;
-        sys[1] = staged->sys_id2;
-        sys[2] = staged->sys_id3;
-        sys[3] = staged->sys_id4;
-        sys[4] = staged->sys_id5;
-    }
+    dsd_received_identity* const site = &ctx->site_id; /* zeroed with the ctx */
+    watchdog_event_system_from_staged(staged, staged_is_own, family, sys, site);
     if (call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0) {
-        watchdog_event_system_from_record(state, call, family, sys);
+        watchdog_event_system_from_record(state, call, family, sys, site);
     } else if (call->phase == DSD_CALL_PHASE_ENDED && opts->playfiles == 0) {
         if (call->ended_tetra_direct != 0U) {
-            sys[0] = 0U;
-            sys[1] = 0U;
-            sys[2] = 1U; /* direct mode leaves the record empty: the mark is the call's own */
+            /* direct mode leaves the record empty: the mark is the call's own */
+            watchdog_event_system_direct_mode(sys, site);
         } else {
             watchdog_event_system_take(&call->ended_rx_id, family, sys); /* the record when it ended */
+            watchdog_event_site_take(&call->ended_rx_id, family, site);
         }
     }
     ctx->sys_id1 = sys[0];
@@ -1989,6 +2066,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->sys_id3 = ctx->sys_id3;
     item->sys_id4 = ctx->sys_id4;
     item->sys_id5 = ctx->sys_id5;
+    DSD_MEMCPY(&item->site_id, &ctx->site_id, sizeof(item->site_id));
     item->enc = ctx->enc;
     item->emergency = ctx->emergency;
     item->priority = ctx->priority;
@@ -2001,6 +2079,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->policy_target_id = ctx->policy_target_id;
     item->stream_blocked = ctx->stream_blocked;
     item->channel = ctx->channel;
+    item->call_channel_kind = ctx->channel_kind;
     item->freq_hz = ctx->freq_hz;
     item->access_code_kind = ctx->access_code_kind;
     item->access_code = ctx->access_code;
@@ -2080,6 +2159,40 @@ watchdog_event_current_build_event_dpmr(const watchdog_event_current_ctx* ctx, c
     }
 }
 
+// Whether the row's site identity holds @p part (a DSD_RXID_* bit; the site keeps only its own family's).
+static int
+watchdog_event_site_has(const watchdog_event_current_ctx* ctx, uint32_t part) {
+    return (ctx->site_id.valid & part) != 0U;
+}
+
+// The EDACS site parts of the row, each from its valid bit, in @p ea (extended addressing) form: "SITE: s[:a][.SYS]; "
+// with the site, else "[AREA: a; ][SYS: SYS; ]"; standard: "Site: s; ". A part not received is left out.
+static void
+watchdog_event_edacs_site_text(const watchdog_event_current_ctx* ctx, int ea, char* out, size_t out_size) {
+    const dsd_received_identity* id = &ctx->site_id;
+    char area[16] = "";
+    char sys[16] = "";
+    out[0] = '\0';
+    if (!ea) {
+        if (watchdog_event_site_has(ctx, DSD_RXID_EDACS_SITE)) {
+            DSD_SNPRINTF(out, out_size, "Site: %u; ", (unsigned)id->edacs_site);
+        }
+        return;
+    }
+    const int site = watchdog_event_site_has(ctx, DSD_RXID_EDACS_SITE);
+    if (watchdog_event_site_has(ctx, DSD_RXID_EDACS_AREA)) {
+        DSD_SNPRINTF(area, sizeof area, site ? ":%u" : "AREA: %u; ", (unsigned)id->edacs_area);
+    }
+    if (watchdog_event_site_has(ctx, DSD_RXID_EDACS_SYSTEM)) {
+        DSD_SNPRINTF(sys, sizeof sys, site ? ".%04X" : "SYS: %04X; ", (unsigned)id->edacs_system);
+    }
+    if (site) {
+        DSD_SNPRINTF(out, out_size, "SITE: %u%s%s; ", (unsigned)id->edacs_site, area, sys);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s%s", area, sys);
+    }
+}
+
 static void
 watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, const char* datestr,
                                          const char* timestr, const char* sys_string, char* event_string,
@@ -2087,10 +2200,16 @@ watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, 
     char sup_str[200];
     watchdog_event_build_edacs_sup_str(ctx->svc_opts, 0, sup_str, sizeof(sup_str));
 
-    if (ctx->env.ea_mode == 1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s;",
-                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, ctx->channel, ctx->sys_id1,
-                     ctx->sys_id2, ctx->sys_id3, sup_str);
+    /* The addressing mode the site parts were read under, else the decoder's (the record drops its parts when it
+       changes). */
+    const int ea = watchdog_event_site_has(ctx, DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM)
+                       ? ctx->site_id.edacs_ea_mode == 1
+                       : ctx->env.ea_mode == 1;
+    char site_str[64];
+    watchdog_event_edacs_site_text(ctx, ea, site_str, sizeof(site_str));
+    if (ea) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; %s%s;", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ctx->channel, site_str, sup_str);
         return;
     }
 
@@ -2109,8 +2228,8 @@ watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, 
         DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: __UNK;");
     }
 
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s AFS: %s (%04d); %s LCN: %02d; Site: %d; %s; ", datestr, timestr,
-                 sys_string, afs_str, afs, lid_str, ctx->channel, ctx->sys_id1, sup_str);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s AFS: %s (%04d); %s LCN: %02d; %s%s; ", datestr, timestr,
+                 sys_string, afs_str, afs, lid_str, ctx->channel, site_str, sup_str);
 }
 
 // The Group/Private annotation, shared by every builder that renders one. Kept in one place so a
@@ -2125,6 +2244,78 @@ watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* eve
     }
 }
 
+// Whether a part of a DMR site text (one between its " · " separators, trimmed) is its network or its site.
+static int
+watchdog_event_dmr_site_part_wanted(const char* part, size_t len) {
+    return (len > 4U && strncmp(part, "Net ", 4U) == 0) || (len > 5U && strncmp(part, "Site ", 5U) == 0);
+}
+
+// Appends text[from, to) to out (holding *used bytes), printable ASCII only, after a space when out is not empty.
+static void
+watchdog_event_append_ascii(char* out, size_t out_size, size_t* used, const char* text, size_t from, size_t to) {
+    if (*used != 0U && *used + 1U < out_size) {
+        out[(*used)++] = ' ';
+    }
+    for (size_t i = from; i < to && *used + 1U < out_size; i++) {
+        if (text[i] >= 0x20 && text[i] < 0x7F) {
+            out[(*used)++] = text[i];
+        }
+    }
+    out[*used] = '\0';
+}
+
+// The network and site parts of a DMR site text (dsd_received_identity::dmr_site_text, its parts joined by " · "),
+// joined by a space, e.g. "Net 13 Site 28" from "TIII Small · Net 13 · Site 28 · SYS 0A3F": what the text shows,
+// Tier III's one-based numbers and -D split included. ASCII only, so the separator never reaches the line.
+static void
+watchdog_event_dmr_site_parts(const char* text, size_t text_size, char* out, size_t out_size) {
+    const size_t len = strnlen(text, text_size);
+    size_t used = 0U;
+    out[0] = '\0';
+    for (size_t start = 0U; start < len;) {
+        size_t stop = start;
+        while (stop < len && (unsigned char)text[stop] != 0xC2U) { /* the separator's first byte */
+            stop++;
+        }
+        size_t from = start;
+        size_t to = stop;
+        while (from < to && text[from] == ' ') {
+            from++;
+        }
+        while (to > from && text[to - 1U] == ' ') {
+            to--;
+        }
+        if (watchdog_event_dmr_site_part_wanted(text + from, to - from)) {
+            watchdog_event_append_ascii(out, out_size, &used, text, from, to);
+        }
+        start = stop + 2U; /* past U+00B7 */
+    }
+}
+
+// The DMR row's Tier III system code, its site and the call's own channel by the numbering it was named in (decimal).
+static void
+watchdog_event_append_dmr_site(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    char token[96];
+    if (watchdog_event_site_has(ctx, DSD_RXID_DMR_T3_SYSCODE)) {
+        DSD_SNPRINTF(token, sizeof token, "SYS: %04X; ", (unsigned)ctx->site_id.dmr_t3_syscode);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+    if (watchdog_event_site_has(ctx, DSD_RXID_DMR_SITE_TEXT)) {
+        char parts[64];
+        watchdog_event_dmr_site_parts(ctx->site_id.dmr_site_text, sizeof(ctx->site_id.dmr_site_text), parts,
+                                      sizeof parts);
+        if (parts[0] != '\0') {
+            DSD_SNPRINTF(token, sizeof token, "SITE: %s; ", parts);
+            watchdog_event_str_append(event_string, event_size, token);
+        }
+    }
+    const char* kind = dsd_call_channel_kind_label(ctx->channel_kind);
+    if (ctx->channel != 0U && kind[0] != '\0') {
+        DSD_SNPRINTF(token, sizeof token, "%s: %u; ", kind, (unsigned)ctx->channel);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+}
+
 static void
 watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
@@ -2132,13 +2323,9 @@ watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, co
     char cc_buf[12];
     const char* cc = watchdog_event_code_text(
         cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; SYS: %X; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, cc, ctx->sys_id1);
-    } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; ", datestr, timestr, sys_string,
-                     ctx->target_id, ctx->source_id, cc);
-    }
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; ", datestr, timestr, sys_string,
+                 ctx->target_id, ctx->source_id, cc);
+    watchdog_event_append_dmr_site(ctx, event_string, event_size);
 
     if (ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "ENC; ");
@@ -2186,19 +2373,41 @@ watchdog_event_append_ess_crypto(const watchdog_event_current_ctx* ctx, char* ev
     }
 }
 
+// The P25 row's system and site, each part from its valid bit: with a WACN, "NET_STS: WACN:SYS[:RFSS.SITE]; ";
+// without one, "[SYS: SYS; ][SITE: RFSS.SITE; ]". A part not received is left out, never printed as 0.
+static void
+watchdog_event_append_p25_site(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    const dsd_received_identity* id = &ctx->site_id;
+    const int site = watchdog_event_site_has(ctx, DSD_RXID_P25_SITE);
+    char site_str[16] = "";
+    char token[64];
+    if (site) {
+        DSD_SNPRINTF(site_str, sizeof site_str, "%u.%u", (unsigned)id->p25_rfss, (unsigned)id->p25_site);
+    }
+    if (watchdog_event_site_has(ctx, DSD_RXID_P25_WACN)) {
+        DSD_SNPRINTF(token, sizeof token, "NET_STS: %05X:%03X%s%s; ", (unsigned)id->p25_wacn, (unsigned)id->p25_sysid,
+                     site ? ":" : "", site_str);
+        watchdog_event_str_append(event_string, event_size, token);
+        return;
+    }
+    if (watchdog_event_site_has(ctx, DSD_RXID_P25_SYSID)) {
+        DSD_SNPRINTF(token, sizeof token, "SYS: %03X; ", (unsigned)id->p25_sysid);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+    if (site) {
+        DSD_SNPRINTF(token, sizeof token, "SITE: %s; ", site_str);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+}
+
 static void
 watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
     char nac_buf[8];
     const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, ctx->access_code_kind, ctx->access_code);
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; NET_STS: %05X:%03X:%d.%d; ",
-                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, nac, ctx->sys_id1, ctx->sys_id2,
-                     ctx->sys_id4, ctx->sys_id5);
-    } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
-                     ctx->target_id, ctx->source_id, nac);
-    }
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
+                 ctx->target_id, ctx->source_id, nac);
+    watchdog_event_append_p25_site(ctx, event_string, event_size);
 
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
     if (ctx->svc_opts & 0x80) {
@@ -2223,6 +2432,30 @@ watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx,
     watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
+// The NXDN row's system and site, each part from its valid bit: a Type-C location "SYS: sys.site; "; IDAS its site
+// code (the SCCH site ID's, else the Type-D system ID's) "SITE: n; " and the Type-D system "SYS: n; ".
+static void
+watchdog_event_append_nxdn_site(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    const dsd_received_identity* id = &ctx->site_id;
+    char token[48];
+    if (watchdog_event_site_has(ctx, DSD_RXID_NXDN_LOCATION)) {
+        DSD_SNPRINTF(token, sizeof token, "SYS: %u.%u; ", (unsigned)id->nxdn_sys, (unsigned)id->nxdn_site);
+        watchdog_event_str_append(event_string, event_size, token);
+        return;
+    }
+    const int typed = watchdog_event_site_has(ctx, DSD_RXID_NXDN_TYPED_SYSTEM);
+    if (watchdog_event_site_has(ctx, DSD_RXID_NXDN_IDAS_SITE) || typed) {
+        const unsigned site =
+            watchdog_event_site_has(ctx, DSD_RXID_NXDN_IDAS_SITE) ? id->nxdn_idas_site_code : id->nxdn_typed_site;
+        DSD_SNPRINTF(token, sizeof token, "SITE: %u; ", site);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+    if (typed) {
+        DSD_SNPRINTF(token, sizeof token, "SYS: %u; ", (unsigned)id->nxdn_typed_sys);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+}
+
 static void
 watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
@@ -2230,13 +2463,9 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     char ran_buf[12];
     const char* ran = watchdog_event_code_text(
         ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; SYS: %d.%d; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ran, ctx->sys_id2, ctx->sys_id1);
-    } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; ", datestr, timestr, sys_string,
-                     ctx->target_id, ctx->source_id, ran);
-    }
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; ", datestr, timestr, sys_string,
+                 ctx->target_id, ctx->source_id, ran);
+    watchdog_event_append_nxdn_site(ctx, event_string, event_size);
 
     // The call's own channel and the row's own frequency, never the last grant decoded: that is
     // global, and a duplicate assignment for another call decoded while tuned, or a -Y control-channel
@@ -2268,9 +2497,25 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
+// The TETRA row's network "MCC: n; MNC: n; " and location area "LA: n; ", each from its valid bit.
+static void
+watchdog_event_append_tetra_site(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    char token[48];
+    if (watchdog_event_site_has(ctx, DSD_RXID_TETRA_NET)) {
+        DSD_SNPRINTF(token, sizeof token, "MCC: %u; MNC: %u; ", (unsigned)ctx->site_id.tetra_mcc,
+                     (unsigned)ctx->site_id.tetra_mnc);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+    if (watchdog_event_site_has(ctx, DSD_RXID_TETRA_LA)) {
+        DSD_SNPRINTF(token, sizeof token, "LA: %u; ", (unsigned)ctx->site_id.tetra_la);
+        watchdog_event_str_append(event_string, event_size, token);
+    }
+}
+
 // TETRA: the called party (GSSI or ISSI) and the talker, the colour code (trunked mode), the carrier number and
-// frequency of the traffic channel, and whether the call is encrypted or carries circuit mode data (the basic service
-// information of EN 300 392-2 table 14.35 in the service options).
+// frequency of the traffic channel, the network and location area the call was heard on, and whether the call is
+// encrypted or carries circuit mode data (the basic service information of EN 300 392-2 table 14.35 in the service
+// options).
 static void
 watchdog_event_current_build_event_tetra(const watchdog_event_current_ctx* ctx, const char* datestr,
                                          const char* timestr, const char* sys_string, char* event_string,
@@ -2290,12 +2535,15 @@ watchdog_event_current_build_event_tetra(const watchdog_event_current_ctx* ctx, 
     if (ctx->channel != 0U && ctx->freq_hz > 0) {
         DSD_SNPRINTF(ch_str, sizeof(ch_str), "CARRIER: %u; FREQ: %.6lf MHz; ", ctx->channel,
                      (double)ctx->freq_hz / 1000000.0);
+    } else if (ctx->channel != 0U) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CARRIER: %u; ", ctx->channel);
     } else if (ctx->freq_hz > 0) {
         DSD_SNPRINTF(ch_str, sizeof(ch_str), "FREQ: %.6lf MHz; ", (double)ctx->freq_hz / 1000000.0);
     }
     if (ch_str[0] != '\0') {
         watchdog_event_str_append(event_string, event_size, ch_str);
     }
+    watchdog_event_append_tetra_site(ctx, event_string, event_size);
     if (ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "ENC; ");
     }
@@ -2479,6 +2727,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->key_id = item->enc_key;
     ctx->mi = item->mi;
     ctx->channel = item->channel;
+    ctx->channel_kind = item->call_channel_kind;
     ctx->freq_hz = item->freq_hz;
     ctx->access_code_kind = item->access_code_kind;
     ctx->access_code = item->access_code;
@@ -2487,6 +2736,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->sys_id3 = item->sys_id3;
     ctx->sys_id4 = item->sys_id4;
     ctx->sys_id5 = item->sys_id5;
+    DSD_MEMCPY(&ctx->site_id, &item->site_id, sizeof(ctx->site_id));
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", item->sysid_string);
     DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", item->src_str);
     DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", item->tgt_str);

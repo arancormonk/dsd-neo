@@ -345,6 +345,9 @@ Windows console runs:
   FDMA rows carry no slot tag. An analog (NFM) line names the tuned frequency as digital lines do,
   `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
   `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). The control API's `event` text is the same row.
+  A call line names the system and site the call was heard on, and a DMR trunked call's own channel by its numbering
+  (`LSN:`, `LPCN:`, `LCN:`), from the parts the carrier sent: see [Event History Rows](ui-terminal.md#event-history-rows)
+  for the tokens per protocol. A part never received is left out, never printed as 0.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
   as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and

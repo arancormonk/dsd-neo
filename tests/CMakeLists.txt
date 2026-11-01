@@ -16709,15 +16709,16 @@ if(DSD_HAS_RADIO)
     # noise added to the cu8 samples.
     # The fixture is tuned to carrier 1068 (426.7 MHz), where the call's allocation
     # sends it, so its speech is call 113's: the replay publishes the group call to
-    # its event history (-J). A "." stands for each ";" of the event line, which an
-    # add_test argument would split at.
+    # its event history (-J), with the network and location area the cell sent. A
+    # "." stands for each ";" of the event line, which an add_test argument would
+    # split at.
     add_test(
         NAME DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
         COMMAND
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_real_air_72k.iq.json"
             "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
-            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. MCC: 228. MNC: 8889. LA: 1. Group."
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
@@ -16854,7 +16855,7 @@ if(DSD_HAS_RADIO)
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
             "-DFIXTURE=${_dsd_iq_wav_dir}/call_known_centre/tetra_call.wav"
             "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
-            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. MCC: 228. MNC: 8889. LA: 1. Group."
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_WAV_CALL_EVENT"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
