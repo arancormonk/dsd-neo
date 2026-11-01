@@ -887,6 +887,9 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     }
     ctx->cc_window_lost = 0;
     ctx->cc_retry_after_m = now_m + 2.0;
+    const int hunt_index = ctx->cc_hunt_index;
+    dsd_trunk_cc_candidates_cursor candidates;
+    dsd_trunk_cc_candidates_checkpoint(state, &candidates);
     const long freq = dmr_cc_next_candidate(ctx, opts, state);
     if (freq <= 0) {
         return;
@@ -907,6 +910,12 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
      * probes retain their return destination until a control message proves it. */
     state->trunk_cc_freq = anchor;
     if (!dsd_trunk_tune_result_is_ok(result)) {
+        if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+            /* No retune was scheduled, so the next probe retries this pick (trunk_tuning_hooks.h, issue #666); a
+               refusal keeps it passed. */
+            ctx->cc_hunt_index = hunt_index;
+            dsd_trunk_cc_candidates_restore(state, &candidates);
+        }
         sm_recovery_log(opts, "cc-probe-deferred-or-failed");
         return;
     }

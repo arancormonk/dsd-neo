@@ -206,6 +206,84 @@ test_cooldown_ignores_zero_and_missing_frequencies(void) {
     free(st);
 }
 
+/* Issue #666 (B6): a search that finds nothing leaves the walk where it was. From index 0 a full pass used to end at
+   count, which reads as "the last candidate was handed out" to anything stepping backward from the walk. */
+static void
+test_fruitless_search_keeps_the_walk(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+    assert(dsd_trunk_cc_candidates_add(st, 100, 0, 0) == 1);
+    assert(dsd_trunk_cc_candidates_add(st, 200, 0, 0) == 1);
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_get(st);
+    assert(cc != NULL);
+
+    long out = 0;
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, &out) == 0);
+    assert(out == 0);
+    assert(cc->idx == 0);
+    assert(cc->used == 0);
+
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1);
+    assert(out == 100);
+    assert(cc->idx == 1);
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, &out) == 0);
+    assert(cc->idx == 1);
+    assert(cc->used == 1);
+
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
+/* Issue #666 (B5): a checkpoint taken before a pick puts the walk back, so a deferred tune retries the same
+   candidate and is not counted as a use. */
+static void
+test_checkpoint_restore(void) {
+    dsd_trunk_cc_candidates_cursor cursor = {.present = 1, .idx = 7, .used = 7U};
+    dsd_trunk_cc_candidates_checkpoint(NULL, &cursor);
+    assert(cursor.present == 0);
+    dsd_trunk_cc_candidates_checkpoint(NULL, NULL);
+    dsd_trunk_cc_candidates_restore(NULL, &cursor);
+
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+    cursor.present = 1;
+    dsd_trunk_cc_candidates_checkpoint(st, &cursor);
+    assert(cursor.present == 0);
+    dsd_trunk_cc_candidates_restore(st, &cursor);
+    dsd_trunk_cc_candidates_restore(st, NULL);
+    assert(dsd_trunk_cc_candidates_peek(st) == NULL); /* neither allocates a list */
+
+    assert(dsd_trunk_cc_candidates_add(st, 100, 0, 0) == 1);
+    assert(dsd_trunk_cc_candidates_add(st, 200, 0, 0) == 1);
+    assert(dsd_trunk_cc_candidates_add(st, 300, 0, 0) == 1);
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_get(st);
+    assert(cc != NULL);
+    long out = 0;
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 100);
+
+    dsd_trunk_cc_candidates_checkpoint(st, &cursor);
+    assert(cursor.present == 1 && cursor.idx == 1 && cursor.used == 1U);
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 200);
+    assert(cc->idx == 2 && cc->used == 2U);
+    dsd_trunk_cc_candidates_restore(st, &cursor);
+    assert(cc->idx == 1 && cc->used == 1U);
+    out = 0;
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 200);
+
+    /* The last candidate handed out wraps; putting it back hands it out again. */
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 300);
+    dsd_trunk_cc_candidates_checkpoint(st, &cursor);
+    assert(cursor.idx == 3);
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 100);
+    dsd_trunk_cc_candidates_restore(st, &cursor);
+    assert(cc->idx == 3 && cc->used == 3U);
+    out = 0;
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 100);
+
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     test_public_guards();
@@ -214,5 +292,7 @@ main(void) {
     test_filtered_iteration();
     test_next_and_cooldown();
     test_cooldown_ignores_zero_and_missing_frequencies();
+    test_fruitless_search_keeps_the_walk();
+    test_checkpoint_restore();
     return 0;
 }

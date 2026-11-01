@@ -2241,6 +2241,16 @@ suite runs under this compiler.
     between refusals is pinned by the test. `dsd_freq_hz_mhz_text()` is the one MHz spelling (`%u.%06u`, exact and
     locale-free; the caller picks the placeholder for 0): the terminal `FRQ:` field and `Frequency...` label, every tune
     toast, the `-Y` avoid toast and the analog event row. Tests: `RUNTIME_FREQ_PARSE`, fuzz `runtime_freq_parse`.
+  - Control-channel candidates (`include/dsd-neo/runtime/trunk_cc_candidates.h`, a `dsd_state` extension), walked by
+    the P25 and DMR hunts and the manual `L` candidate leg.
+    - `dsd_trunk_cc_candidates_next()` hands out the next eligible entry and counts it in `used`. Finding none leaves
+      `idx` where it was, so `idx` 0 still means nothing was handed out (issue #666).
+    - A pick comes before its tune. Each caller takes `dsd_trunk_cc_candidates_checkpoint()` first and hands it to
+      `dsd_trunk_cc_candidates_restore()` when the tune is DEFERRED (no retune scheduled: "retry without advancing
+      state"), so the next try picks the same entry; a refused or timed-out tune keeps it passed. The P25 hunt
+      (`try_next_cc()` through `p25_hunt_reject_outcome()`) puts its user-list cursor `lcn_freq_roll` back the same
+      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`; neither writes the row heard. Tests:
+      `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
       `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),

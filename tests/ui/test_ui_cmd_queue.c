@@ -5019,6 +5019,96 @@ test_channel_cycle_with_nothing_to_land_on(void) {
     return rc;
 }
 
+/* The candidate walk's index and use counter, as one value to compare. */
+static int
+expect_candidate_walk(const char* label, const dsd_state* state, int idx, unsigned int used) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    if (!cc || cc->idx != idx || cc->used != used) {
+        DSD_FPRINTF(stderr, "%s: walk at idx %d, used %u (want idx %d, used %u)\n", label, cc ? cc->idx : -1,
+                    cc ? cc->used : 0U, idx, used);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Issue #666 (B5): Next on a control-channel candidate list picked the next candidate before it tuned, so a deferred
+ * tune (no retune scheduled, to be retried) passed the candidate and counted it as used. A deferral now leaves the
+ * walk where it was, and the next press picks the same candidate; a refusal still passes it.
+ */
+static int
+test_channel_cycle_retries_a_deferred_candidate(void) {
+    static const long kCands[] = {381012500L, 382012500L, 383012500L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.p25_prefer_candidates = 1;
+    for (int i = 0; i < 3; i++) {
+        (void)dsd_trunk_cc_candidates_add(&state, kCands[i], 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    }
+    arm_manual_leg();
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: cycle to A");
+    rc |= expect_true("candidate: A tuned", g_manual_leg_hz == 381012500U);
+    rc |= expect_candidate_walk("candidate: A handed out", &state, 1, 1U);
+
+    manual_leg_script(382012500U, RTL_STREAM_TUNE_DEFERRED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: B deferred");
+    rc |= expect_true("candidate: deferred B tried", g_manual_leg_hz == 382012500U);
+    rc |= expect_candidate_walk("candidate: a deferral keeps the walk", &state, 1, 1U);
+
+    manual_leg_script(382012500U, RTL_STREAM_TUNE_OK);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: retry");
+    if (g_manual_leg_hz != 382012500U) {
+        DSD_FPRINTF(stderr, "candidate: the retry tuned %u Hz (want 382012500 Hz)\n", g_manual_leg_hz);
+    }
+    rc |= expect_true("candidate: the next press retries B", g_manual_leg_hz == 382012500U);
+    rc |= expect_candidate_walk("candidate: B handed out once", &state, 2, 2U);
+
+    manual_leg_script(383012500U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: C refused");
+    rc |= expect_int("candidate: the refusal fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("candidate: refused C tried", g_manual_leg_hz == 383012500U);
+    rc |= expect_candidate_walk("candidate: a refusal passes C", &state, 3, 3U);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: after the refusal");
+    rc |= expect_true("candidate: the next press wraps to A", g_manual_leg_hz == 381012500U);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Issue #666 (B5): the same through the control-channel tune a live P25 session uses, whose deferral the tuning hook
+   reports itself. */
+static int
+test_channel_cycle_retries_a_cc_deferred_candidate(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.p25_prefer_candidates = 1;
+    opts.frame_p25p1 = 1;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_cc_is_tdma = 0;
+    (void)dsd_trunk_cc_candidates_add(&state, 384012500L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&state, 385012500L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "cc candidate: A deferred");
+    rc |= expect_true("cc candidate: A tried", g_cc_tune_calls == 1 && g_cc_tune_freq == 384012500L);
+    rc |= expect_candidate_walk("cc candidate: a deferral keeps the walk", &state, 0, 0U);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "cc candidate: retry");
+    rc |= expect_true("cc candidate: the next press retries A", g_cc_tune_calls == 2 && g_cc_tune_freq == 384012500L);
+    rc |= expect_candidate_walk("cc candidate: still nothing handed out", &state, 0, 0U);
+    rc |= expect_int("cc candidate: nothing went to the raw tuner", g_io_control_tune_calls, 0);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* The scan control stub and the test below observe tunes through the io_control_set_freq() wrap. */
 static int g_scan_control_calls = 0;
@@ -24001,8 +24091,10 @@ main(void) {
     rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_with_nothing_to_land_on();
+    rc |= test_channel_cycle_retries_a_deferred_candidate();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
+    rc |= test_channel_cycle_retries_a_cc_deferred_candidate();
     rc |= test_lockout_hands_p25_sm_back_to_cc(1);
     rc |= test_lockout_hands_p25_sm_back_to_cc(0);
     rc |= test_skip_hands_p25_sm_back_to_cc();

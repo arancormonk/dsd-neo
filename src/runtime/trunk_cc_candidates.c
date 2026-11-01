@@ -154,6 +154,7 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t r
 
     const long skip_cc_freq = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
 
+    const int start = cc->idx;
     for (int tries = 0; tries < cc->count; tries++) {
         if (cc->idx >= cc->count) {
             cc->idx = 0;
@@ -164,7 +165,45 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t r
             return 1;
         }
     }
+    /* A pass from 0 would end at count, which reads as "the last candidate was handed out" (issue #666). */
+    cc->idx = start;
     return 0;
+}
+
+void
+dsd_trunk_cc_candidates_checkpoint(const dsd_state* state, dsd_trunk_cc_candidates_cursor* out) {
+    if (!out) {
+        return;
+    }
+    out->present = 0;
+    out->idx = 0;
+    out->used = 0;
+    if (!state) {
+        return;
+    }
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    if (!cc) {
+        return;
+    }
+    out->present = 1;
+    out->idx = cc->idx;
+    out->used = cc->used;
+}
+
+void
+dsd_trunk_cc_candidates_restore(const dsd_state* state, const dsd_trunk_cc_candidates_cursor* cursor) {
+    if (!state || !cursor || !cursor->present) {
+        return;
+    }
+
+    dsd_trunk_cc_candidates* cc =
+        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    if (!cc) {
+        return;
+    }
+    cc->idx = cursor->idx;
+    cc->used = cursor->used;
 }
 
 void

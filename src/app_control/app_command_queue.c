@@ -3616,6 +3616,8 @@ cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
 static int
 try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     long cand = 0;
+    dsd_trunk_cc_candidates_cursor cursor;
+    dsd_trunk_cc_candidates_checkpoint(state, &cursor);
     if (opts->p25_prefer_candidates != 1 || !p25_cc_next_candidate(state, &cand)) {
         return UI_CMD_APPLY_UNHANDLED;
     }
@@ -3623,6 +3625,11 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id)) {
+        if (tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+            /* Nothing was tuned, so nothing was tried: the next press picks the same candidate (issue #666). A
+               refusal keeps it passed, as before. */
+            dsd_trunk_cc_candidates_restore(state, &cursor);
+        }
         return UI_CMD_APPLY_FAILED;
     }
 

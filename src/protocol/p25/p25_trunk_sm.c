@@ -5706,6 +5706,39 @@ p25_sm_hunt_tune_to_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long
     return result;
 }
 
+/* Where try_next_cc() picked a probe from, so that a deferred tune can put the pick back: the candidate walk, or the
+   user list's cursor (lcn_freq_roll) for a user-lcn pick. */
+typedef struct {
+    int from_candidates;
+    dsd_trunk_cc_candidates_cursor candidates;
+    int lcn_roll;
+} p25_hunt_pick;
+
+/* A hunt probe's tune of @p cand from @p source that did not land. A deferral schedules no retune and asks to be retried
+   without advancing state (trunk_tuning_hooks.h), so the pick goes back and the next hunt retries the same entry
+   (issue #666); a refusal or timeout keeps it passed. The hunt never writes the row heard, so restoring the cursor
+   leaves it alone. */
+static void
+p25_hunt_reject_outcome(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* source, long cand,
+                        dsd_trunk_tune_result tune_result, const p25_hunt_pick* pick) {
+    const int deferred = tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
+                 p25_tune_result_name(tune_result));
+    if (pick->from_candidates) {
+        sm_log(opts, state, deferred ? "hunt-cand-deferred" : "hunt-cand-failed");
+    } else {
+        sm_log(opts, state, deferred ? "hunt-lcn-deferred" : "hunt-lcn-failed");
+    }
+    if (!deferred) {
+        return;
+    }
+    if (pick->from_candidates) {
+        dsd_trunk_cc_candidates_restore(state, &pick->candidates);
+    } else {
+        state->lcn_freq_roll = pick->lcn_roll;
+    }
+}
+
 // Try tuning to next CC candidate or LCN freq
 static void
 try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
@@ -5716,6 +5749,8 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     int sps = cc_ted_sps(opts, state);
 
     const int has_user_lcn_list = p25_has_user_lcn_list(opts, state);
+    p25_hunt_pick pick = {.from_candidates = 1, .lcn_roll = state->lcn_freq_roll};
+    dsd_trunk_cc_candidates_checkpoint(state, &pick.candidates);
 
     // In no-import operation, only explicit current-site candidates are eligible
     // before falling back to the known primary CC.
@@ -5728,10 +5763,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         uint64_t tune_request_id = 0U;
         dsd_trunk_tune_result tune_result = p25_sm_hunt_tune_to_cc(ctx, opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
-                         p25_tune_result_name(tune_result));
-            sm_log(opts, state,
-                   tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "hunt-cand-deferred" : "hunt-cand-failed");
+            p25_hunt_reject_outcome(ctx, opts, state, "current-site-candidate", cand, tune_result, &pick);
             return;
         }
         p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
@@ -5746,6 +5778,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     }
 
     // Fall back only to an explicit user channel map; otherwise return to the known primary CC.
+    pick.from_candidates = 0;
     if ((has_user_lcn_list ? next_lcn_freq(state, &cand) : next_primary_cc_freq(state, &cand))) {
         const char* source = has_user_lcn_list ? "user-lcn" : "primary-cc";
         p25_sm_diagf(opts, state, ctx, "hunt_tune_attempt",
@@ -5755,10 +5788,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         uint64_t tune_request_id = 0U;
         dsd_trunk_tune_result tune_result = p25_sm_hunt_tune_to_cc(ctx, opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
-                         p25_tune_result_name(tune_result));
-            sm_log(opts, state,
-                   tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "hunt-lcn-deferred" : "hunt-lcn-failed");
+            p25_hunt_reject_outcome(ctx, opts, state, source, cand, tune_result, &pick);
             return;
         }
         p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,

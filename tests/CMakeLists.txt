@@ -12816,6 +12816,21 @@ target_link_libraries(
 )
 add_test(NAME P25_SM_CAND_COOLDOWN COMMAND dsd-neo_test_p25_sm_cand_cooldown)
 
+# P25 SM hunt: a deferred probe retries its candidate or channel-list row (issue #666)
+add_executable(
+    dsd-neo_test_p25_sm_hunt_deferred
+    protocol/p25/test_p25_sm_hunt_deferred.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_hunt_deferred
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_hunt_deferred
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_SM_HUNT_DEFERRED COMMAND dsd-neo_test_p25_sm_hunt_deferred)
+
 # P25 SM tag ring buffer semantics
 add_executable(
     dsd-neo_test_p25_sm_tags_ring
