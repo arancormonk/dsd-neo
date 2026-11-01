@@ -86,6 +86,11 @@ static int
 id_pattern_matches_width(const char* text, size_t len, size_t width) {
     uint8_t reach[ID_PATTERN_CANON_MAX + 1][2];
     uint8_t next[ID_PATTERN_CANON_MAX + 1][2];
+    /* The state sets hold one entry per canonical character and the end. id_pattern_normalize() caps the text, but
+       the cap must hold here too: under LTO the compiler loses it across the call and sees writes past the sets. */
+    if (len > ID_PATTERN_CANON_MAX) {
+        return 0;
+    }
     DSD_MEMSET(reach, 0, sizeof(reach));
     reach[0][width == ID_DIGITS_MAX ? 1 : 0] = 1U;
     id_pattern_close_stars(text, len, reach);
