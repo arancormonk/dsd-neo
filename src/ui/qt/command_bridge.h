@@ -192,6 +192,11 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool avoidCurrentChannel() const;
     /** @brief Put every avoided channel/target back into the rotation. */
     Q_INVOKABLE bool clearScanAvoids() const;
+    /**
+     * @brief Step back one channel in the same list Next walks (the previous trunk-scan target under --trunk-scan).
+     * The rotation carries on forward from there.
+     */
+    Q_INVOKABLE bool previousChannel() const;
     /** @brief Step to the next channel now (next trunk-scan target under --trunk-scan). */
     Q_INVOKABLE bool nextChannel() const;
     /**

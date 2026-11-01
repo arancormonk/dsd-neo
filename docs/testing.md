@@ -2697,8 +2697,8 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   the decode quality group, the received tone, the tone filter and its Edit button). G moves the readings 40 times at a
   100 ms period: the strip renames at most once a period and once more, and catches up. H holds the closed sheets and
   the screens hidden under the monitor to no event at all over time, at a 30 ms period with readings moving and hops.
-- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses Hold scan through the accessible press
-  action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
+- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses the scan's Hold through the accessible
+  press action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
   when it never does (back to the engine's state after 2 s). `tst_a11y_focus_return.qml` makes the window give up its
   focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
   (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus

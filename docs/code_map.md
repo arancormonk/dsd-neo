@@ -9385,9 +9385,9 @@ Qt Quick frontend (`src/ui/qt`):
     `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that pauses a running scan); taps, drags and steps keep
     `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet says Tune pauses the scan while one runs, and closes
     with the reason when `goToAllowed` falls (a replay keeps its own). `CommandBridge::resumeScan()` (`SCAN_RESUME`)
-    backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of Hold/Avoid/Next
-    while paused; the header reads `SCAN PAUSED · n targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main
-    names the session from the decoder, never from a queued command: `syncOperatorHold()` (on the lifecycle's Running
+    backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of
+    Hold/Avoid/Prev/Next while paused, one row across the grid's columns; the header reads
+    `SCAN PAUSED · n targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a queued command: `syncOperatorHold()` (on the lifecycle's Running
     with options known) swaps `sessionSystem` for an "Exploring" map while `operatorTuned` holds, keeping the session's
     map and row in `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
     resume; a scan list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its
@@ -9609,7 +9609,7 @@ Qt Quick frontend (`src/ui/qt`):
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
   (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as checked
   (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does the
-  scan controls' Hold scan. Mute, Hold TG and Hold scan read back a command the decoder applies later, so they set
+  scan controls' Hold. Mute, Hold TG and the scan's Hold read back a command the decoder applies later, so they set
   `commandToggle` (issue #782): from the press they show and report the state asked for (`shownChecked`) until `checked`
   changes or 2 s pass. Qt's Android bridge sends the click event TalkBack reads out as the press returns, with the
   node's state then, before the engine's state reaches `checked` (`tst_a11y_monitor_controls.qml`). Four columns where a
@@ -9618,6 +9618,18 @@ Qt Quick frontend (`src/ui/qt`):
   line count and one height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces
   (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's border is never lost to the list's clip in tier 5.
   Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`, `test_toggles_show_checked`), `tst_monitor_compact.qml`.
+- Monitor scan controls (`scanControlsRow` in `qml/MonitorScreen.qml`, issue #666): Hold · Avoid · Prev · Next while
+  `scanRotationActive`, on the call actions' grid rule above over the labels Hold, Avoid, Prev, Next, one word each so
+  the four keep one 48 px row from a 320 dp phone up at 1.0 (and `test_phone_portrait_guarantees` holds at 360x690);
+  two rows of two (Prev and Next under Hold and Avoid) once "Avoid" outgrows a quarter cell, from 1.3 at 360 dp. The
+  cells are sized from `screen.width` less its padding, not from the strip's host, since their height is part of the
+  budget that picks the host. Each button's accessible name says it acts on the scan, not the call ("Hold the scan
+  here", "Avoid this scan channel", "Previous scan channel", "Next scan channel"); Hold is a `commandToggle`. Prev and
+  Next send `CommandBridge::previousChannel()`/`nextChannel()` (`CHANNEL_CYCLE_PREV`/`CHANNEL_CYCLE`), and their
+  refusals (replay, Signal search, a paused scan, no tuner) arrive as `uiMessage`. While `scanPaused` the four hide
+  and `scanResumeButton` spans the columns in one row. No wheel handler: the row scrolls with the list from tier 3.
+  Tests: `tst_monitor_recent_calls.qml` (`test_03c` to `test_03f`), `tst_a11y_monitor_controls.qml`
+  (`test_scan_controls_are_named_for_the_scan`), `UI_QT_CONTROLLER` (`test_scan_step_bridge`).
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
@@ -10863,7 +10875,7 @@ Each run gives its setup, then what must hold:
   title is reached and read as a heading, and each "(none announced)" right after its section's heading.
 - **Focus after a dialog.** With TalkBack on Connect RTL-SDR, raise the USB permission dialog and dismiss it with Back;
   then swipe: focus moves on from Connect at once, with no touch needed (`ScreenReaderFocusRelease`).
-- **Hold scan.** With TalkBack on Hold scan during a scan, activate it six times: each time TalkBack says the new
+- **Hold scan.** With TalkBack on the scan's Hold during a scan, activate it six times: each time TalkBack says the new
   state ("on" when it holds), matching the header's HOLD.
 - **Scan header.** With TalkBack on the scan header during a 300 ms dwell scan, it is read at most every 5 s, and at
   once when the scan is held or released.

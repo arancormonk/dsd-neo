@@ -902,6 +902,12 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    previousChannel() {
+        m_previous_channel_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     nextChannel() {
         m_next_channel_calls++;
         return true;
@@ -1111,6 +1117,7 @@ class CommandRecorder : public QObject {
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
+        m_previous_channel_calls = 0;
         m_next_channel_calls = 0;
         m_resume_scan_calls = 0;
         m_tune_hz_calls = 0;
@@ -1140,6 +1147,11 @@ class CommandRecorder : public QObject {
     int
     scanAvoidClearCalls() const {
         return m_scan_avoid_clear_calls;
+    }
+
+    int
+    previousChannelCalls() const {
+        return m_previous_channel_calls;
     }
 
     int
@@ -1391,6 +1403,7 @@ class CommandRecorder : public QObject {
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
     int m_scan_avoid_clear_calls = 0;
+    int m_previous_channel_calls = 0;
     int m_next_channel_calls = 0;
     int m_resume_scan_calls = 0;
     int m_tune_hz_calls = 0;
@@ -3644,6 +3657,12 @@ class Setup : public QObject {
     Q_INVOKABLE int
     scanAvoidClearCalls() const {
         return (m_commands != nullptr) ? m_commands->scanAvoidClearCalls() : -1;
+    }
+
+    /** @brief How many times the screens asked to step back one scan channel (issue #666). */
+    Q_INVOKABLE int
+    previousChannelCalls() const {
+        return (m_commands != nullptr) ? m_commands->previousChannelCalls() : -1;
     }
 
     Q_INVOKABLE int

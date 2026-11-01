@@ -452,6 +452,12 @@ CommandBridge::clearScanAvoids() const {
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::previousChannel() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE_PREV));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::nextChannel() const {
     return accepted(dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE));
 }
