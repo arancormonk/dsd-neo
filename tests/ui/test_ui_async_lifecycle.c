@@ -807,6 +807,17 @@ test_wheel_capture_follows_the_snapshots(void) {
     osnap.audio_in_type = 0;
     wheel_frame(&osnap);
     rc |= expect_int("back on: capture on", ui_mouse_capture_is_on(), 1);
+
+    /* A running -Y list under an I/Q replay: the replay refuses every retune, so it captures nothing. */
+    osnap.trunk_scan_enabled = 0;
+    osnap.scanner_mode = 1;
+    osnap.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "iqreplay:capture.json");
+    wheel_frame(&osnap);
+    rc |= expect_int("I/Q replay: capture off", ui_mouse_capture_is_on(), 0);
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "rtl:0");
+    wheel_frame(&osnap);
+    rc |= expect_int("live radio: capture on", ui_mouse_capture_is_on(), 1);
     rc |= expect_int("mouseinterval still once", g_mouseinterval_calls, 1);
 #if !defined(DSD_USE_PDCURSES)
     rc |= expect_int("ncurses mask still set once", g_mousemask_calls, 1);

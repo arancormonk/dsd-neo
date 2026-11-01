@@ -8628,8 +8628,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     read while ineligible is dropped. Capture rule (`ui_mouse.{h,c}`, UI thread only): each frame wants the capture when
     `frontend_terminal_display.mouse_wheel` is on, `dsd_app_scan_state_view_get()` on the frame's opts and state
     snapshots (fetched once per frame; the draw renders the same state snapshot) reports `running` (a paused scan does
-    not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt counts), the input is not STDIN,
-    and `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate); `ui_mouse_capture_set()` acts on a
+    not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt counts), the input is not STDIN
+    nor an I/Q replay (`dsd_opts_input_is_iq_replay()`: it refuses every retune, so a notch could only toast), and
+    `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate); `ui_mouse_capture_set()` acts on a
     change only. ncurses: the first capture calls `mouseinterval(0)` and `mousemask()` with buttons 1-3 press and
     release plus the 4 and 5 presses; that parse mask is never cleared at runtime, because a report outside the mask
     makes `wgetch()` loop into a blocking read (a click after `mousemask(0)` froze the UI thread until the next key). On

@@ -753,15 +753,16 @@ trunking on stops the scan.
 under `[output]` in the config file (Save config keeps the menu setting). While a `-Y` or `--trunk-scan` list runs,
 wheel up steps to the previous channel (as `J`) and wheel down to the next (as `L`), at most one step every 150 ms, so
 a fast flick or a touchpad swipe moves one channel. It acts on the main screen only: while the menu, a prompt or the
-`=` frequency entry is open, or the scan is paused or stopped, dsd-neo stops reading the mouse and the wheel does what
-the terminal does without it (many terminals move through the menu with it). While dsd-neo reads the mouse, hold Shift
-to select and copy text, and a notch with Shift, Ctrl or Alt held does not step; Windows reports no modifiers with the
-wheel, so there every notch steps. In the classic Windows console (conhost), reading the mouse turns QuickEdit's
-drag-select off until the wheel stops acting (Shift-drag selects meanwhile); Windows Terminal selects with Shift. The
-row is not offered on the Linux text console, where ncurses reads the mouse through GPM, when `NCURSES_GPM_TERMS` is
-set, on a terminal whose terminfo has no xterm mouse key (`kmous`), or in a build against an ncurses without a fifth
-mouse button (mouse version 1, such as the macOS SDK's ncurses 5.7). A terminal that answers in another mouse encoding
-than its `TERM` promises can leak the reports as text: set the right `TERM`.
+`=` frequency entry is open, the scan is paused or stopped, or an I/Q replay is playing (a replay cannot change
+channel), dsd-neo stops reading the mouse and the wheel does what the terminal does without it (many terminals move
+through the menu with it). While dsd-neo reads the mouse, hold Shift to select and copy text, and a notch with Shift,
+Ctrl or Alt held does not step; Windows reports no modifiers with the wheel, so there every notch steps. In the classic
+Windows console (conhost), reading the mouse turns QuickEdit's drag-select off until the wheel stops acting (Shift-drag
+selects meanwhile); Windows Terminal selects with Shift. The row is not offered on the Linux text console, where ncurses
+reads the mouse through GPM, when `NCURSES_GPM_TERMS` is set, on a terminal whose terminfo has no xterm mouse key
+(`kmous`), or in a build against an ncurses without a fifth mouse button (mouse version 1, such as the macOS SDK's
+ncurses 5.7). A terminal that answers in another mouse encoding than its `TERM` promises can leak the reports as text:
+set the right `TERM`.
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them
