@@ -1394,6 +1394,20 @@ channel_scan_resume_row(const dsd_opts* opts, const dsd_state* state) {
     return -1;
 }
 
+/* An untyped resume's row (N2): entered as the timed step enters one, published at once when it lands. Returns 1 when
+   its tune was refused or deferred, with @p why saying which, so a deferral reads as the typed list's does (issue
+   #666); 0 when it landed or is pending. */
+static int
+channel_scan_resume_untyped_row(dsd_opts* opts, dsd_state* state, int row, int* why) {
+    const int result = dsd_engine_scan_untyped_enter_row(opts, state, row, dsd_decode_time());
+    if (result == DSD_UNTYPED_STEP_OK) {
+        dsd_engine_channel_scan_resume_landed(opts, state);
+        return 0;
+    }
+    *why = result == DSD_UNTYPED_STEP_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
+    return result != DSD_UNTYPED_STEP_PENDING;
+}
+
 int
 dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1439,11 +1453,7 @@ dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
             why = DSD_SCAN_RESUME_FAILED_SETUP;
         }
     } else {
-        const int result = dsd_engine_scan_untyped_enter_row(opts, state, row, dsd_decode_time());
-        refused = result == DSD_UNTYPED_STEP_FAILED || result == DSD_UNTYPED_STEP_FAILED_MOVED;
-        if (result == DSD_UNTYPED_STEP_OK) {
-            dsd_engine_channel_scan_resume_landed(opts, state);
-        }
+        refused = channel_scan_resume_untyped_row(opts, state, row, &why);
     }
     if (!state->lcn_scan_resume_pending) {
         return DSD_SCAN_RESUME_LANDED;

@@ -1913,8 +1913,9 @@ step_into_a_timed_out_tune(dsd_opts* opts, dsd_state* state) {
 /* Issue #671 (B22): the untyped step treated an RTL tune that timed out as a failure, though the controller can land
    it later, which left the receiver on the new row while the cursor, the label and the keys stayed on the old one. The
    row now waits for its tune: nothing commits while it is pending, and the landing commits it after the carrier
-   boundary. A late failure abandons it as a failure in the wait does: the cursor stays for a retry, the cached centre
-   goes back where the receiver stayed, unannounced. */
+   boundary. A late failure abandons it as a failure in the wait does: the cached centre goes back where the receiver
+   stayed, unannounced, and the cursor moves past the row the front end refused (issue #666: a retry of a row the
+   tuner never takes held the scan on it for good), while the row heard and its keys stay. */
 static int
 test_legacy_step_commits_a_timed_out_row_when_it_lands(void) {
     dsd_opts* opts = NULL;
@@ -1970,20 +1971,22 @@ test_legacy_step_commits_a_timed_out_row_when_it_lands(void) {
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
     const int failed = dsd_engine_scan_untyped_poll(opts, state);
     rc |= expect_true("b22-late-failure-polls-failed", failed == DSD_MANUAL_TUNE_FAILED);
-    rc |= expect_true("b22-late-failure-keeps-candidate", state->lcn_freq_roll == 1);
+    rc |= expect_true("b22-late-failure-passes-the-row", state->lcn_freq_roll == 2);
+    rc |= expect_true("b22-late-failure-keeps-the-row-heard", dsd_state_lcn_heard_row(state) == 0);
     rc |= expect_true("b22-late-failure-keeps-keys", state->rkey_array[9] == 999ULL);
     rc |= expect_true("b22-late-failure-reverts-the-centre", opts->rtlsdr_center_freq == 985012500U);
     rc |= expect_true("b22-late-failure-reopens-the-windows", state->last_cc_sync_time > pending_deadline);
     rc |= expect_true("b22-late-failure-no-toast", state->ui_msg[0] == '\0');
     opts->scan_max_visit_ms = 0;
 
-    /* The cursor stayed, so the next step retries row 1, and lands it. */
+    /* The cursor moved past row 1, so the next step goes on to row 0 (the wrap) rather than retry row 1. */
     state->last_cc_sync_time = time(NULL) - 11;
     const int calls = g_rtl_tune_calls;
     noCarrier(opts, state);
-    rc |= expect_true("b22-retry-after-late-failure",
-                      g_rtl_tune_calls == calls + 1 && g_rtl_tune_freq == 986012500U && state->lcn_freq_roll == 2);
-    rc |= expect_true("b22-retry-leaves-the-keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_true("b22-next-step-passes-the-refused-row",
+                      g_rtl_tune_calls == calls + 1 && g_rtl_tune_freq == 985012500U && state->lcn_freq_roll == 1);
+    rc |= expect_true("b22-next-step-lands-row-0", dsd_state_lcn_heard_row(state) == 0 && state->rkey_array[9] == 999ULL
+                                                       && state->scan_keys_active_set == 1);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -2059,7 +2062,7 @@ test_legacy_step_failure_reconciles_the_cached_centre(void) {
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
     rc |= expect_true("step-failure-attempts", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 989012500U);
-    rc |= expect_true("step-failure-keeps-candidate", state->lcn_freq_roll == 0);
+    rc |= expect_true("step-failure-passes-the-row", state->lcn_freq_roll == 1);
     if (opts->rtlsdr_center_freq != 980012500U) {
         DSD_FPRINTF(stderr, "step failure: cached centre %u Hz (want 980012500 Hz)\n", opts->rtlsdr_center_freq);
     }
@@ -2394,8 +2397,9 @@ test_untyped_step_names_the_outgoing_call_after_the_row_heard(void) {
 }
 
 /* Issue #666 (N1): a step that has not landed -- its tune refused, or still pending -- leaves the receiver on the row
-   heard, though it moved the cursor to the row it selected (past an avoided one). Calls heard meanwhile are named after
-   the row heard, and Avoid targets it; the landing then makes the new row the one heard. */
+   heard, though it moved the cursor to the row it selected (past an avoided one), or past that row once its front end
+   refused it (B1). Calls heard meanwhile are named after the row heard, and Avoid targets it; the landing then makes
+   the new row the one heard. */
 static int
 test_untyped_unlanded_step_keeps_the_row_heard(void) {
     int rc = 0;
@@ -2420,7 +2424,8 @@ test_untyped_unlanded_step_keeps_the_row_heard(void) {
             g_rtl_tune_result = RTL_STREAM_TUNE_OK;
         }
         rc |= expect_case(what, "the step tried row 2", g_rtl_tune_freq == 963012500U);
-        rc |= expect_case(what, "the cursor is on the row it selected", state->lcn_freq_roll == 2);
+        rc |= expect_case(what, pending ? "the cursor is on the row it selected" : "the cursor passed the refused row",
+                          state->lcn_freq_roll == (pending ? 2 : 3));
         rc |= expect_case(what, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
         rc |= expect_case(what, "and the row on air", dsd_engine_channel_scan_on_air_row(state) == 0);
         rc |= expect_live_label(what, opts, state, "ALPHA");
@@ -2471,6 +2476,83 @@ test_untyped_park_keeps_the_row_heard(void) {
     untyped_step_now(opts, state);
     rc |= expect_true("park-then-row-2-heard", g_rtl_tune_freq == 963012500U && state->lcn_freq_roll == 3
                                                    && dsd_state_lcn_heard_row(state) == 2);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #666 (B1): a row its front end refuses (here the RTL tune; a rigctl peer answering RPRT -1 for a frequency out
+   of its band is the field case) held the timed untyped step for good. The step left the cursor on it, so every later
+   step retried it and the rows after it were never visited. The cursor now moves past a refused row, and only the
+   cursor: the row heard, its name and its keys stay with the row the receiver is still on. A deferred tune is no
+   refusal, so its row is tried again. */
+static int
+test_untyped_step_passes_a_refused_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_named_list(opts, state, 3, -1) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    untyped_step_now(opts, state);
+    rc |= expect_true("refused-row-a-lands", state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    untyped_step_now(opts, state);
+    rc |= expect_true("refused-row-deferred-tries-x", g_rtl_tune_freq == 962012500U);
+    rc |= expect_true("refused-row-deferred-keeps-the-cursor", state->lcn_freq_roll == 1);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    untyped_step_now(opts, state);
+    rc |= expect_true("refused-row-x-tried-again", g_rtl_tune_freq == 962012500U);
+    rc |= expect_true("refused-row-x-passed", state->lcn_freq_roll == 2);
+    rc |=
+        expect_true("refused-row-a-still-heard", dsd_state_lcn_heard_row(state) == 0 && state->rkey_array[9] == 999ULL);
+    rc |= expect_live_label("refused-row-a-still-named", opts, state, "ALPHA");
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    untyped_step_now(opts, state);
+    if (g_rtl_tune_freq != 963012500U) {
+        DSD_FPRINTF(stderr, "refused row: the next step tuned %u Hz (want 963012500 Hz)\n", g_rtl_tune_freq);
+    }
+    rc |= expect_true("refused-row-b-reached", g_rtl_tune_freq == 963012500U && state->lcn_freq_roll == 3
+                                                   && dsd_state_lcn_heard_row(state) == 2);
+    rc |= expect_live_label("refused-row-b-named", opts, state, "CHARLIE");
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #666 (N2): an untyped resume whose row tune the controller deferred behind another owner's said the tune
+   failed. It says the tune was deferred, as a typed list's resume does, and the scan stays paused on its cursor. */
+static int
+test_untyped_resume_says_a_deferral(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_named_list(opts, state, 3, -1) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    untyped_step_now(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    rc |= expect_true("deferred-resume-paused", state->lcn_scan_paused == 1 && state->lcn_freq_roll == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    state->ui_msg[0] = '\0';
+    const int resumed = dsd_engine_channel_scan_resume(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |=
+        expect_true("deferred-resume-tried-row-1", resumed == DSD_SCAN_RESUME_REFUSED && g_rtl_tune_freq == 962012500U);
+    rc |= expect_true("deferred-resume-stays-paused", opts->scanner_mode == 0 && state->lcn_scan_paused == 1
+                                                          && state->lcn_scan_resume_pending == 0
+                                                          && state->lcn_freq_roll == 1);
+    rc |= expect_label("deferred-resume-says-so", state->ui_msg,
+                       "Scan stays paused: tune to 962.012500 MHz deferred; retry");
     free_test_runtime(opts, state);
     return rc;
 }
@@ -2947,7 +3029,9 @@ test_visit_cap_scanner_hops(void) {
             g_rtl_tune_result = failed_tunes[i];
             g_rtl_tune_calls = 0;
             noCarrier(opts, state);
-            rc |= expect_true("abandoned-scan-attempted", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 0);
+            /* A refused row is passed (issue #666); a deferred or timed-out tune keeps the cursor on it. */
+            const int want_roll = failed_tunes[i] == RTL_STREAM_TUNE_FAILED ? 1 : 0;
+            rc |= expect_true("abandoned-scan-attempted", g_rtl_tune_calls == 1 && state->lcn_freq_roll == want_roll);
             rc |= expect_true("abandoned-scan-cap-rearmed",
                               !dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s()));
             rc |= expect_true("abandoned-scan-gate-rearmed",
@@ -2962,7 +3046,8 @@ test_visit_cap_scanner_hops(void) {
     seed_visit_anchor(state, dsd_decode_now_mono_s() - 2.0);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     noCarrier(opts, state);
-    rc |= expect_true("abandoned-scan-recovers", g_rtl_tune_calls == 2 && state->lcn_freq_roll == 1);
+    rc |= expect_true("abandoned-scan-recovers",
+                      g_rtl_tune_calls == 2 && g_rtl_tune_freq == 956012500U && state->lcn_freq_roll == 2);
 
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
@@ -4502,8 +4587,9 @@ test_rx_tone_rigctl_scan_step(void) {
     g_rigctl_setfreq_ok = 0;
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
+    /* The refused row is passed (issue #666): only the cursor moves. */
     rc |= expect_true("rigctl-step-refused-keeps-rx-tone",
-                      state->lcn_freq_roll == 0 && state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                      state->lcn_freq_roll == 1 && state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
                           && state->analog_rx.ctcss_tenths_hz == 1318 && state->analog_rx.generation == generation);
 
     g_rigctl_setfreq_ok = 1;
@@ -4511,7 +4597,7 @@ test_rx_tone_rigctl_scan_step(void) {
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
     rc |= expect_true("rigctl-step-moved",
-                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 951012500 && state->lcn_freq_roll == 1);
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 952012500 && state->lcn_freq_roll == 2);
     rc |= expect_true("rigctl-step-clears-rx-tone", rx_tone_publication_cleared(state, generation));
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
@@ -4568,8 +4654,9 @@ test_rigctl_reconnect_forgets_the_legacy_tune_cache(void) {
 }
 
 /* One legacy -Y step by rigctl on PCM input: the counters are cleared, -t has run out, and the step lands unless the
-   peer refuses. Returns whether the peer was asked for the next row's frequency (the rows alternate, so each step that
-   gets that far sends one). */
+   peer refuses. Returns whether the peer was asked for the next row's frequency (each step that gets that far tunes
+   another row than the last one sent, so it sends one: a list of two alternates, and a refused step passes its row
+   (issue #666), so a list that has refusals needs three). */
 static int
 legacy_rigctl_step(dsd_opts* opts, dsd_state* state) {
     g_rigctl_setfreq_calls = 0;
@@ -4611,7 +4698,8 @@ test_legacy_rigctl_step_asks_the_configured_nfm_width(void) {
     // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
     state->trunk_lcn_freq[0] = 957012500;
     state->trunk_lcn_freq[1] = 958012500;
-    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[2] = 958512500;
+    state->lcn_freq_count = 3;
     state->lcn_freq_roll = 0;
     g_rigctl_setfreq_ok = 1;
     g_rigctl_rowmod_refuse = 0;
@@ -4637,7 +4725,8 @@ test_legacy_rigctl_step_asks_the_configured_nfm_width(void) {
     /* A refused width fails the step before the frequency moves. */
     g_rigctl_rowmod_refuse = 1;
     rc |= expect_true("legacy-refused-width-fails-the-step",
-                      !legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_setfreq_calls == 0);
+                      !legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_setfreq_calls == 0
+                          && state->lcn_freq_roll == 3);
     g_rigctl_rowmod_refuse = 0;
 
     /* Cleared: -B stands in, through the capturing call; a refusal fails the step as -B always did here. */
@@ -7355,7 +7444,8 @@ main(void) {
     state->trunk_lcn_freq[0] = 942012500;
     state->trunk_lcn_freq[1] = 943012500;
     state->lcn_freq_count = 2;
-    state->lcn_freq_roll = 0;
+    state->lcn_freq_roll = 2; /* row 1 landed last: the step wraps to row 0 */
+    dsd_state_lcn_on_air_note(state, 1);
     state->last_cc_sync_time = time(NULL) - 11;
     const time_t partial_hop_scan_time = state->last_cc_sync_time;
     g_rigctl_setfreq_ok = 1;
@@ -7381,9 +7471,11 @@ main(void) {
     dsd_call_snapshot partial_hop_snapshot;
     rc |= expect_true("partial-hop-moved-rigctl", g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 942012500);
     rc |= expect_true("partial-hop-rtl-failed", g_rtl_tune_calls > 0);
-    // The step itself is still abandoned: the candidate and the deadline are untouched so the next
-    // pass retries this entry rather than skipping it.
-    rc |= expect_true("partial-hop-keeps-candidate", state->lcn_freq_roll == 0);
+    // The step itself is still abandoned: the deadline is untouched and the row the receiver was on stays the
+    // row heard. The RTL front end refused the row, so the cursor moves past it (issue #666), as for a step
+    // that moved nothing: a retry of a row the tuner never takes held the scan on it for good.
+    rc |= expect_true("partial-hop-passes-the-row", state->lcn_freq_roll == 1);
+    rc |= expect_true("partial-hop-keeps-the-row-heard", dsd_state_lcn_heard_row(state) == 1);
     rc |= expect_true("partial-hop-keeps-deadline", state->last_cc_sync_time == partial_hop_scan_time);
     rc |= expect_true("partial-hop-retains-snapshot", dsd_call_state_get(state, 0U, &partial_hop_snapshot) == 1);
     rc |= expect_true("partial-hop-ends-call", partial_hop_snapshot.phase == DSD_CALL_PHASE_ENDED);
@@ -7429,7 +7521,8 @@ main(void) {
 
     noCarrier(opts, state);
 
-    rc |= expect_true("rigctl-scanner-failure-keeps-candidate", state->lcn_freq_roll == 0);
+    /* Refused: passed (issue #666). The only row comes round again at the next step. */
+    rc |= expect_true("rigctl-scanner-failure-passes-the-row", state->lcn_freq_roll == 1);
     rc |= expect_true("rigctl-scanner-failure-keeps-deadline", state->last_cc_sync_time == failed_rigctl_scan_time);
 
     free_test_runtime(opts, state);
@@ -7689,7 +7782,7 @@ main(void) {
     noCarrier(opts, state);
 
     rc |= expect_true("rtl-scanner-failure-retries-uncached", g_rtl_tune_calls == 2 && g_rtl_tune_freq == 773456250U);
-    rc |= expect_true("rtl-scanner-failure-keeps-candidate", state->lcn_freq_roll == 0);
+    rc |= expect_true("rtl-scanner-failure-passes-the-row", state->lcn_freq_roll == 1);
     rc |= expect_true("rtl-scanner-failure-keeps-deadline", state->last_cc_sync_time == deferred_scan_time);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
@@ -8361,12 +8454,13 @@ main(void) {
     rc |= expect_true("rowkey-zero-row-keeps-set",
                       state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1 && state->lcn_freq_roll == 3);
 
-    // A failed tune leg leaves the receiver (and the installed set) where it was.
+    // A failed tune leg leaves the receiver (and the installed set) where it was; only the cursor
+    // moves past the refused row (issue #666).
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL) - 11;
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     noCarrier(opts, state);
-    rc |= expect_true("rowkey-failed-tune-keeps-roll", state->lcn_freq_roll == 1);
+    rc |= expect_true("rowkey-failed-tune-passes-the-row", state->lcn_freq_roll == 2);
     rc |=
         expect_true("rowkey-failed-tune-keeps-set", state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -8432,6 +8526,8 @@ main(void) {
     rc |= test_untyped_step_names_the_outgoing_call_after_the_row_heard();
     rc |= test_untyped_unlanded_step_keeps_the_row_heard();
     rc |= test_untyped_park_keeps_the_row_heard();
+    rc |= test_untyped_step_passes_a_refused_row();
+    rc |= test_untyped_resume_says_a_deferral();
     rc |= test_entry_late_failure_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();

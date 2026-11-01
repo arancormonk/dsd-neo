@@ -3320,6 +3320,31 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int sym_rate) {
     state->sps_hunt_counter = 0;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* A test's stand-in for the manual retunes' io_control leg (dsd_app_command_test_set_manual_tune_leg()), the sibling of
+   the frequency entry's: portable, where a link-time wrap of the io/control tune is not. */
+static int (*g_test_manual_tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz);
+
+void
+dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz)) {
+    g_test_manual_tune_leg = tune_leg;
+}
+#endif
+
+/* The io_control leg of request_manual_tune(): an RTL_STREAM_TUNE_* result, or -1 refused. */
+static int
+manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_test_manual_tune_leg) {
+        return g_test_manual_tune_leg(opts, state, hz);
+    }
+#endif
+    return io_control_set_freq(opts, state, hz);
+}
+
+/* @p out_result is the CC hook's result on the CC leg. On the io_control leg it is OK for an accepted tune (a timeout
+   included), DEFERRED for a deferred one and FAILED otherwise, so a caller can tell a front end's refusal from a tune
+   to retry (issue #666). */
 static int
 request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action,
                     dsd_trunk_tune_result* out_result, uint64_t* out_request_id) {
@@ -3339,10 +3364,12 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
 #if LONG_MAX > UINT32_MAX
         carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
 #endif
-        result = carried ? io_control_set_freq(opts, state, (uint32_t)freq) : -1;
+        result = carried ? manual_tune_io_leg(opts, state, (uint32_t)freq) : -1;
         if (result != RTL_STREAM_TUNE_DEFERRED) {
             /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
             dsd_engine_manual_tune_supersede(state);
+        } else {
+            tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
         }
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
@@ -3618,45 +3645,56 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The row an untyped walk lands on (issue #666): from @p start, which is examined first, one row at a time in direction
+   @p dir (1 forward, -1 back), wrapping, the first with a frequency that is not avoided and that begins its run of
+   equal frequencies (row 0 always begins one). A run is one channel, so an avoided first row skips its run. One pass
+   over the list at most; -1 for none. */
 static int
-apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
-    int count = state->lcn_freq_count;
-    if (count <= 0) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-
-    int next = state->lcn_freq_roll;
-    if (next < 0 || next >= count) {
-        next = 0;
-    }
-    const int start = next;
-    long freq = 0;
+lcn_cycle_pick(const dsd_state* state, int start, int dir) {
+    const int count = state->lcn_freq_count;
+    int row = start;
     for (int examined = 0; examined < count; examined++) {
-        freq = *dsd_state_trunk_lcn_slot(state, next);
-        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)next)
-            && (next == 0 || *dsd_state_trunk_lcn_slot(state, next - 1) != freq)) {
-            break;
+        const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
+            && (row == 0 || *dsd_state_trunk_lcn_slot_const(state, row - 1) != freq)) {
+            return row;
         }
-        next++;
-        if (next >= count) {
-            next = 0;
-        }
-        freq = 0;
+        row = (row + dir + count) % count;
     }
+    return -1;
+}
 
-    if (freq == 0) {
-        state->lcn_freq_roll = start + 1;
-        if (state->lcn_freq_roll >= count) {
-            state->lcn_freq_roll = 0;
-        }
-        return UI_CMD_APPLY_COMPLETED;
+/* The cursor, the row heard and the retry after a walk in direction @p dir tuned @p row and the tune ended in
+   @p result (issue #666). Landed (either way): the cursor past the row, which becomes the row heard. Deferred: nothing,
+   so the next press tries the same row. Refused: going back, the row is the one to retry; going forward, the cursor
+   moves past it, so a row the tuner never takes cannot hold `L` on it, and the row heard stays. The scan's visit
+   timers read any cursor move as a retune, which a refusal is not, so they are told the new cursor and keep their
+   windows. */
+static void
+lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_result result) {
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        state->lcn_freq_roll = row + 1;
+        dsd_state_lcn_on_air_note(state, row);
+        return;
     }
-    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
-    uint64_t request_id = 0U;
-    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", &tune_result, &request_id)) {
-        return UI_CMD_APPLY_FAILED;
+    if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+        return;
     }
+    if (dir < 0) {
+        dsd_state_lcn_back_retry_note(state, row);
+        return;
+    }
+    state->lcn_freq_roll = row + 1;
+    state->scan_voice_gate_roll_seen = state->lcn_freq_roll;
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+}
 
+/* A walk's accepted tune of @p row (@p tune_result, @p request_id from request_manual_tune()), whichever way it went:
+   the calls end and what was received goes, the cursor and the row heard follow (lcn_cycle_on_tune_outcome()), the
+   row's keys apply, and a P25 SM that owns the trunk is handed back its control channel. */
+static void
+lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_trunk_tune_result tune_result,
+                 uint64_t request_id) {
     reset_call_tracking(opts, state, 0);
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
@@ -3667,14 +3705,38 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
-    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
-    state->lcn_freq_roll = next + 1;
-    dsd_state_lcn_on_air_note(state, next);
-    dsd_scan_row_keys_apply(state, next);
+    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)*dsd_state_trunk_lcn_slot(state, row) / 1000000);
+    lcn_cycle_on_tune_outcome(state, row, 1, DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_scan_row_keys_apply(state, row);
     mark_cc_sync(state, 1);
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
     }
+}
+
+static int
+apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    const int count = state->lcn_freq_count;
+    if (count <= 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    /* Forward navigation starts from the cursor, whatever a refused Previous left to retry (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
+    const int start = (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= count) ? 0 : state->lcn_freq_roll;
+    const int row = lcn_cycle_pick(state, start, 1);
+    if (row < 0) {
+        /* Nowhere to land: the cursor steps on, and the row heard, the keys and the calls stay. */
+        state->lcn_freq_roll = start + 1 >= count ? 0 : start + 1;
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    if (!request_manual_tune(opts, state, *dsd_state_trunk_lcn_slot(state, row), 0, "Channel cycle", &tune_result,
+                             &request_id)) {
+        lcn_cycle_on_tune_outcome(state, row, 1, tune_result);
+        return UI_CMD_APPLY_FAILED;
+    }
+    lcn_cycle_finish(opts, state, row, p25_live, tune_result, request_id);
     return UI_CMD_APPLY_COMPLETED;
 }
 

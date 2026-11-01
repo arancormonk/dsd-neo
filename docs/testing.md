@@ -1381,6 +1381,10 @@ only where that seam exists: GCC or Clang builds off macOS, and for `APP_COMMAND
 also need a radio build. All of these bounds come from synthetic signals. `--wrap` replaces only calls that reach the
 symbol from another object file, so a call made inside the object that defines it is not wrapped: the input switch lives
 in `dsd_audio_input_switch.c`, apart from `dsd_audio.c`, so the `openAudioInput()` wrap reaches its Pulse open.
+The untyped manual walk's cases (issue #666: a refused row, the visit windows, a walk with nothing to land on) need no
+`--wrap`: they answer the manual retunes' io_control leg through the queue's portable seam,
+`dsd_app_command_test_set_manual_tune_leg()` (a sibling of the frequency entry's `dsd_app_command_test_set_tune_leg()`),
+with a result scripted per frequency, so they run on every toolchain.
 
 The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
 cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's

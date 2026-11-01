@@ -19,6 +19,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -44,6 +45,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -4774,6 +4776,206 @@ drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
     int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
     state->ui_msg[0] = '\0';
     rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* Issue #666: the manual retunes' io_control leg through the queue's portable seam
+   (dsd_app_command_test_set_manual_tune_leg()), so the untyped walk's cases run on every toolchain. Each frequency
+   answers as g_manual_leg_rows scripts it (an accepted tune for one not listed), and an accepted tune caches what it
+   asked for, as io_control_set_freq() does. */
+typedef struct {
+    uint32_t hz;
+    int result;
+} manual_leg_answer;
+
+static manual_leg_answer g_manual_leg_rows[4];
+static int g_manual_leg_row_count;
+static int g_manual_leg_calls;
+static uint32_t g_manual_leg_hz;
+
+static int
+manual_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+    (void)state;
+    g_manual_leg_calls++;
+    g_manual_leg_hz = hz;
+    int result = RTL_STREAM_TUNE_OK;
+    for (int i = 0; i < g_manual_leg_row_count; i++) {
+        if (g_manual_leg_rows[i].hz == hz) {
+            result = g_manual_leg_rows[i].result;
+        }
+    }
+    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
+        opts->rtlsdr_center_freq = hz;
+    }
+    return result;
+}
+
+static void
+arm_manual_leg(void) {
+    g_manual_leg_row_count = 0;
+    g_manual_leg_calls = 0;
+    g_manual_leg_hz = 0U;
+    dsd_app_command_test_set_manual_tune_leg(manual_leg);
+}
+
+/* Script @p hz to answer @p result from now on. */
+static void
+manual_leg_script(uint32_t hz, int result) {
+    for (int i = 0; i < g_manual_leg_row_count; i++) {
+        if (g_manual_leg_rows[i].hz == hz) {
+            g_manual_leg_rows[i].result = result;
+            return;
+        }
+    }
+    if (g_manual_leg_row_count < (int)(sizeof g_manual_leg_rows / sizeof g_manual_leg_rows[0])) {
+        g_manual_leg_rows[g_manual_leg_row_count].hz = hz;
+        g_manual_leg_rows[g_manual_leg_row_count].result = result;
+        g_manual_leg_row_count++;
+    }
+}
+
+/* An untyped -Y list of @p count rows from @p rows on a tuner the seam answers for, the cursor at row 0. */
+static void
+init_manual_walk_context(dsd_opts* opts, dsd_state* state, const long* rows, int count) {
+    init_test_context(opts, state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->lcn_freq_count = count;
+    for (int i = 0; i < count; i++) {
+        state->trunk_lcn_freq[i] = rows[i];
+    }
+    state->lcn_freq_roll = 0;
+    arm_manual_leg();
+}
+
+/*
+ * Issue #666 (B1): a row the tuner refuses (a rigctl peer answering RPRT -1 for a frequency out of its band) trapped
+ * Next on an untyped list: the walk returned before it moved the cursor, so every press retried the same row and the
+ * rows after it were never reached. A refused row is now passed on the next press; only the cursor moves, so the row
+ * heard, its keys and the calls stay with the row the receiver is still on. A deferred tune is no refusal, so the next
+ * press tries the same row again.
+ */
+static int
+test_channel_cycle_passes_a_refused_row(void) {
+    static const long kRows[] = {861000000L, 862000000L, 863000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    rc |= expect_int("dead row: name A", dsd_state_trunk_lcn_name_set(&state, 0U, "ALPHA"), 0);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "dead row: cycle to A");
+    rc |= expect_true("dead row: A tuned", g_manual_leg_hz == 861000000U && state.lcn_freq_roll == 1);
+
+    manual_leg_script(862000000U, RTL_STREAM_TUNE_DEFERRED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "dead row: X deferred");
+    rc |= expect_true("dead row: deferred X tried", g_manual_leg_hz == 862000000U);
+    rc |= expect_int("dead row: a deferral keeps the cursor", state.lcn_freq_roll, 1);
+
+    manual_leg_script(862000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "dead row: X refused");
+    rc |= expect_int("dead row: the refusal fails the press", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("dead row: refused X tried", g_manual_leg_hz == 862000000U);
+    rc |= expect_int("dead row: the cursor passed X", state.lcn_freq_roll, 2);
+    rc |= expect_int("dead row: A is still the row heard", dsd_state_lcn_heard_row(&state), 0);
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    (void)dsd_channel_label_current(&opts, &state, label, sizeof label);
+    rc |= expect_str("dead row: A still names the calls", label, "ALPHA");
+
+    const int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "dead row: next press");
+    if (g_manual_leg_hz != 863000000U) {
+        DSD_FPRINTF(stderr, "dead row: the next press tuned %u Hz (want 863000000 Hz)\n", g_manual_leg_hz);
+    }
+    rc |= expect_true("dead row: the next press reaches B",
+                      g_manual_leg_calls == calls + 1 && g_manual_leg_hz == 863000000U && state.lcn_freq_roll == 3);
+    rc |= expect_int("dead row: B is the row heard", dsd_state_lcn_heard_row(&state), 2);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/* Tick the -Y visit cap and voice gate now, as the decoder loop does between frames. */
+static void
+tick_scan_visit(const dsd_opts* opts, dsd_state* state) {
+    const double now_m = dsd_decode_now_mono_s();
+    dsd_engine_scan_visit_tick(opts, state, now_m);
+    dsd_scan_voice_gate_tick(opts, state, 0, now_m);
+}
+
+/* The row's visit began @p age_s seconds before it did: its cap anchor and its gate arrival. */
+static void
+age_scan_visit(dsd_state* state, double age_s) {
+    state->scan_visit_since_m -= age_s;
+    state->scan_voice_gate_arrive_m -= age_s;
+}
+
+/*
+ * Issue #666 (H1): the scan's visit timers read any move of the cursor as a retune and start the row's windows over.
+ * Next passing a refused row moves only the cursor, with the receiver still on the row heard, so the visit cap's
+ * anchor (and so its deadline) and the voice gate's arrival stay; a press that lands starts them over.
+ */
+static int
+test_channel_cycle_refusal_keeps_the_visit_windows(void) {
+    static const long kRows[] = {864000000L, 865000000L, 866000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    opts.scan_max_visit_ms = 2000;
+    opts.scan_voice_only = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "windows: cycle to A");
+    tick_scan_visit(&opts, &state);
+    age_scan_visit(&state, 1.0);
+    const double since = state.scan_visit_since_m;
+    const double arrive = state.scan_voice_gate_arrive_m;
+    const double deadline = dsd_engine_scan_visit_deadline_m(&opts, &state);
+    rc |= expect_true("windows: A's visit has a deadline", fabs(deadline - (since + 2.0)) < 1e-9);
+
+    manual_leg_script(865000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "windows: X refused");
+    rc |= expect_int("windows: the cursor passed X", state.lcn_freq_roll, 2);
+    rc |= expect_true("windows: the deadline holds before a tick",
+                      fabs(dsd_engine_scan_visit_deadline_m(&opts, &state) - deadline) < 1e-9);
+    tick_scan_visit(&opts, &state);
+    rc |= expect_true("windows: the refusal keeps the visit's anchor", fabs(state.scan_visit_since_m - since) < 1e-9);
+    rc |= expect_true("windows: and its deadline",
+                      fabs(dsd_engine_scan_visit_deadline_m(&opts, &state) - deadline) < 1e-9);
+    rc |= expect_true("windows: the refusal keeps the gate's arrival",
+                      fabs(state.scan_voice_gate_arrive_m - arrive) < 1e-9);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "windows: cycle to B");
+    rc |= expect_true("windows: B tuned", g_manual_leg_hz == 866000000U && state.lcn_freq_roll == 3);
+    tick_scan_visit(&opts, &state);
+    rc |= expect_true("windows: B's visit starts over", state.scan_visit_since_m > since + 0.5);
+    rc |= expect_true("windows: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 0.5);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #666 (H5): with nothing to land on -- here [A, A, B, B] with rows 0 and 2 avoided, so each run's first row is
+ * avoided and its later row is the same channel -- Next tunes nothing: the cursor steps on as it always has, and the
+ * row heard stays.
+ */
+static int
+test_channel_cycle_with_nothing_to_land_on(void) {
+    static const long kRows[] = {867000000L, 867000000L, 868000000L, 868000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 4);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "fruitless: cycle to A");
+    rc |= expect_true("fruitless: A tuned", g_manual_leg_hz == 867000000U && state.lcn_freq_roll == 1);
+    rc |= expect_int("fruitless: avoid row 0", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
+    rc |= expect_int("fruitless: avoid row 2", dsd_state_trunk_lcn_avoid_set(&state, 2U, 1), 0);
+    const int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "fruitless: cycle");
+    rc |= expect_int("fruitless: nothing tuned", g_manual_leg_calls, calls);
+    rc |= expect_int("fruitless: the cursor steps on", state.lcn_freq_roll, 2);
+    rc |= expect_int("fruitless: A is still the row heard", dsd_state_lcn_heard_row(&state), 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
     return rc;
 }
 
@@ -23755,6 +23957,9 @@ main(void) {
 #endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
+    rc |= test_channel_cycle_passes_a_refused_row();
+    rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
+    rc |= test_channel_cycle_with_nothing_to_land_on();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_lockout_hands_p25_sm_back_to_cc(1);

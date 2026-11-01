@@ -173,6 +173,17 @@ Generated (do not edit/commit):
     the four fields ride the UI snapshot's `p25_p2_active_slot..dstar_gps` range (a static assert pins them) and each
     trunk-scan target's snapshot with its cursor (tests: `CORE_STATE_LCN_NAV`, `CORE_CHANNEL_LABEL`,
     `ENGINE_NO_CARRIER_RESET`, `ENGINE_CHANNEL_SCAN`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`).
+  - A row a front end refuses on an untyped list moves only the cursor past it (issue #666), so a row the tuner never
+    takes (a rigctl peer answering `RPRT -1` out of its band) cannot hold `L` or the timed `-Y` step on it. The timed
+    step (`no_carrier_step_scanner_mode_if_needed()`, a refusal by any leg, a partial move included) and a late failure
+    of its pending tune (`dsd_engine_scan_untyped_poll()`) set `roll = row + 1`; the boundary, the tone reset and the
+    deadline behave as for any abandoned step, and a step with no front end keeps the cursor. The manual walk
+    (`apply_manual_lcn_cycle_untyped_locked()` in `app_command_queue.c`, through `lcn_cycle_pick()`,
+    `lcn_cycle_on_tune_outcome()` and `lcn_cycle_finish()`) does the same and also sets the voice gate's and visit cap's
+    `*_roll_seen` to the new cursor, since both read any cursor move as a retune and the receiver did not move. A
+    deferred tune is no refusal and keeps the cursor for a retry: `DSD_UNTYPED_STEP_DEFERRED` in the step and the
+    resume (whose toast then says "deferred", as a typed resume's does), and `request_manual_tune()`'s io_control leg
+    reports `DSD_TRUNK_TUNE_RESULT_DEFERRED` apart from a failure.
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
@@ -2855,9 +2866,10 @@ never goes on decoding under an entry's frequency the receiver did not reach. Th
 row (boundary, then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no
 modes, the same session and map, the row still on the frequency tuned. Otherwise nothing commits and only the frequency
 stands; a landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only
-the carrier it left). A late failure, or a drop, abandons the row as a failure inside the wait does: the cursor stays
-for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the outgoing
-boundary and resets the received tone, but keeps the cursor and the deadline. `dsd_engine_scan_untyped_enter_row()` runs
+the carrier it left). A late failure abandons the row as a failure inside the wait does: the cursor moves past the
+row the front end refused (issue #666), the scan's windows reopen, no toast; a drop leaves the cursor and the windows
+as they are. A failure after the rigctl leg moved still runs the outgoing boundary and resets the received tone, moves
+the cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs
 the same pieces with the boundary inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency
 they last sent; a manual tune moves the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the
 `TUNE` carrier boundary and at every tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET`
