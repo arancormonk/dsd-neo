@@ -1898,6 +1898,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
@@ -1914,6 +1915,7 @@ add_executable(
     dsd-neo_test_dpmr_reference_vectors
     protocol/dpmr/test_dpmr_reference_vectors.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
@@ -2995,6 +2997,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
@@ -6927,6 +6930,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_engine_protocol_dispatch
@@ -7525,6 +7529,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
@@ -9330,6 +9335,7 @@ add_executable(
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -11469,6 +11475,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_dburst.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -11709,6 +11716,7 @@ add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
@@ -11866,6 +11874,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times

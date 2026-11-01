@@ -513,6 +513,56 @@ test_nxdn_subtypes_exclusive(void) {
     free(state);
 }
 
+/* A location ID the standard reserves (NXDN TS 1-A 6.5.2 Table 6.5-1: each category's all-zero and all-ones system and
+   site codes) names no site: the note keeps nothing and drops nothing, so the location, the control channel and the
+   epoch an earlier valid one gave stay, and an IDAS record is not dropped as if a Type-C site had been heard. The
+   bounds of each range are kept. */
+static void
+test_nxdn_location_reserved_refused(void) {
+    static const struct {
+        uint8_t category;
+        uint32_t sys_max;
+        uint16_t site_max;
+    } k_ranges[3] = {{0U, 1022U, 4094U}, {1U, 16382U, 254U}, {2U, 131070U, 30U}};
+
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    for (int i = 0; i < 3; ++i) {
+        const uint8_t c = k_ranges[i].category;
+        const uint32_t sys_ones = k_ranges[i].sys_max + 1U;
+        const uint16_t site_ones = (uint16_t)(k_ranges[i].site_max + 1U);
+        const uint32_t bad[4][2] = {{0U, 1U}, {sys_ones, 1U}, {1U, 0U}, {1U, site_ones}};
+
+        dsd_rxid_reset(state);
+        dsd_rxid_note_nxdn_location(state, c, 1U, 1U);
+        expect_u("lowest location kept", id->valid, DSD_RXID_NXDN_LOCATION);
+        dsd_rxid_note_nxdn_location(state, c, k_ranges[i].sys_max, k_ranges[i].site_max);
+        expect_u("highest location kept", id->valid, DSD_RXID_NXDN_LOCATION);
+        expect_u("highest location system", id->nxdn_sys, k_ranges[i].sys_max);
+        expect_u("highest location site", id->nxdn_site, k_ranges[i].site_max);
+        dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+        const uint32_t epoch = id->epoch;
+        for (int b = 0; b < 4; ++b) {
+            dsd_rxid_note_nxdn_location(state, c, bad[b][0], (uint16_t)bad[b][1]);
+            expect_u("reserved location keeps the earlier one", id->valid, DSD_RXID_NXDN_LOCATION | DSD_RXID_CC_FREQ);
+            expect_u("reserved location keeps the earlier system", id->nxdn_sys, k_ranges[i].sys_max);
+            expect_u("reserved location keeps the earlier site", id->nxdn_site, k_ranges[i].site_max);
+            expect_u("reserved location keeps the epoch", id->epoch, epoch);
+        }
+
+        dsd_rxid_reset(state);
+        dsd_rxid_note_nxdn_idas_area(state, 1U);
+        dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+        for (int b = 0; b < 4; ++b) {
+            dsd_rxid_note_nxdn_location(state, c, bad[b][0], (uint16_t)bad[b][1]);
+        }
+        expect_u("reserved location keeps an idas record", id->valid,
+                 DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE);
+    }
+    free(state);
+}
+
 /* Capacity Plus, Connect Plus, Hytera XPT and Tier III are different DMR trunking systems: checked content naming
    another one than the record's drops the old one's parts and its control channel; the colour code is the carrier's
    and stays. */
@@ -923,6 +973,7 @@ main(void) {
     test_nxdn_idas_site_reconcile();
     test_lost_frame_notes_nothing();
     test_nxdn_subtypes_exclusive();
+    test_nxdn_location_reserved_refused();
     test_dmr_trunking_types_exclusive();
     test_decoder_settings();
     test_invalidation_moves_the_epoch();

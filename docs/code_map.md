@@ -6790,8 +6790,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   The Type-C location ID (`nxdn_location_id_handler()`, NXDN TS 1-A 6.5.2: Global 10-bit system and 12-bit site,
   Regional 14/8, Local 17/5, category 3 reserved) is printed whenever it decodes but written to
   `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only once the
-  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category; a zero system or site
-  code leaves the stored one. A Type-D (IDAS) site's identity has fields of its own, `nxdn_idas_system_id` (19 bits,
+  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category or a system or site code
+  Table 6.5-1 reserves (all zeros, all ones: `dsd_nxdn_location_valid()`), which is printed and leaves the stored
+  location, its RAN and the received identity as they were. A Type-D (IDAS) site's identity has fields of its own, `nxdn_idas_system_id` (19 bits,
   TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received, reset and snapshotted with the
   location: a Type-D SRV_INFO (§6.4.3.1, spare 5 + System ID 19 + Site Code 8) writes both once confirmed, and the
   SCCH site ID message (§6.5.3.1 Fig 6.5-8: Site Type 2 bits, Site Code 8) the code once
@@ -7589,7 +7590,7 @@ Private per-protocol modules worth knowing about:
   C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
   `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
   `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites, the reserved
-  category and the Type-D site identity (`nxdn_idas_*`) are not notes (`NXDN_SEARCH_SITE_NOTES`).
+  category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes (`NXDN_SEARCH_SITE_NOTES`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the slot of a canonical call record it just published after its check, and the engine reads that
   record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and

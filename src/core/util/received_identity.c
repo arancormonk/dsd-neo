@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -485,8 +486,8 @@ rxid_nxdn(dsd_state* state, int type_d) {
 
 void
 dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site) {
-    if (category > 2U) {
-        return; /* 3 is reserved */
+    if (!dsd_nxdn_location_valid(category, sys, site)) {
+        return; /* a reserved category or code names no site, and drops nothing */
     }
     dsd_received_identity* const id = rxid_nxdn(state, 0);
     if (id == NULL) {
