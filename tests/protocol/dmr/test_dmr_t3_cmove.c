@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -382,6 +383,41 @@ test_matched_move_policy(dsd_opts* opts, dsd_state* state) {
     assert(state->dmrburstL == 16 && state->dmrburstR == 16);
 }
 
+/* ---- The call's channel (its LPCN): one resolved value for the machine, the slot record (the policy route) and the
+   call ---- */
+
+#define CH_F4 855000000L // 855 MHz: RX INT 855, RX STEP 0
+
+/* The slot's call, the followed context and the slot's record (what the policy route is built from) name @p channel of
+   @p kind. */
+static void
+expect_channel(const dsd_state* state, int slot, uint32_t channel, uint8_t kind) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.channel == channel && call.channel_kind == kind);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->vc_lpcn == (int)channel && ctx->vc_channel_kind == kind);
+    assert(ctx->slots[slot].channel == (int)channel && ctx->slots[slot].channel_kind == kind);
+}
+
+/* A logical grant names its LPCN, 1..4094 alike; LPCN 0 (CHNULL) names no channel, and nothing to tune. */
+static void
+test_t3_grant_lpcn_kind(dsd_opts* opts, dsd_state* state) {
+    static const uint16_t lpcns[] = {12U, 1U, 4094U};
+    for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
+        move_env(opts, state);
+        state->trunk_chan_map[lpcns[i]] = CH_F4;
+        csbk_grant_or_move(opts, state, 49U, lpcns[i], 0, 101, 1234);
+        assert(state->trunk_vc_freq[0] == CH_F4);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        expect_channel(state, 0, lpcns[i], DSD_CALL_CHANNEL_LPCN);
+    }
+    move_env(opts, state);
+    csbk_grant_or_move(opts, state, 49U, 0U, 0, 101, 1234);
+    assert(state->trunk_vc_freq[0] == 0 && dmr_sm_get_ctx()->state != DMR_SM_TUNED);
+}
+
 static void
 test_move_admission(dsd_opts* opts, dsd_state* state) {
     dsd_decode_clock_use_test(k_t0_ns);
@@ -391,6 +427,7 @@ test_move_admission(dsd_opts* opts, dsd_state* state) {
     test_move_in_place_vacates(opts, state);
     test_move_carries_lc_identity(opts, state);
     test_matched_move_policy(opts, state);
+    test_t3_grant_lpcn_kind(opts, state);
     dsd_decode_clock_use_system();
 }
 

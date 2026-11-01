@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -241,6 +242,59 @@ test_reacquisition_carries_media_timestamps(void) {
         dsd_state_ext_free_all(state);
         free(state);
     }
+}
+
+// A DMR call's channel is named once, by the grant or move that tuned its follow: a later observation naming another
+// channel or kind never replaces it, one naming none never clears it, and a kind applies only with a channel. A
+// reacquired epoch keeps both. Another protocol's channel (kind NONE) is replaced as it always was.
+static void
+test_channel_fill_only(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_snapshot snapshot;
+    dsd_call_observation dmr = group_call(0U, 500U, 600U, 1.0);
+    dmr.channel = 0U;
+    dmr.channel_kind = DSD_CALL_CHANNEL_LPCN;
+    assert(dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.channel == 0U && snapshot.channel_kind == DSD_CALL_CHANNEL_NONE);
+
+    dmr.channel = 12U;
+    dmr.observed_m = 1.1;
+    assert(dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.channel == 12U && snapshot.channel_kind == DSD_CALL_CHANNEL_LPCN);
+
+    dmr.channel = 37U;
+    dmr.channel_kind = DSD_CALL_CHANNEL_LSN;
+    dmr.observed_m = 1.2;
+    assert(dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dmr.channel = 0U;
+    dmr.channel_kind = DSD_CALL_CHANNEL_NONE;
+    dmr.observed_m = 1.3;
+    assert(dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.channel == 12U && snapshot.channel_kind == DSD_CALL_CHANNEL_LPCN);
+
+    // A sync loss and the same call's re-entry inside the window: the reopened epoch keeps the channel and its kind,
+    // whatever channel the re-entry names.
+    assert(dsd_call_state_end_ex(state, 0U, 1.4, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_call_observation reentry = group_call(0U, 500U, 600U, 1.6);
+    assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE && snapshot.ota_target_id == 500U);
+    assert(snapshot.channel == 12U && snapshot.channel_kind == DSD_CALL_CHANNEL_LPCN);
+
+    dsd_call_observation other = group_call(1U, 700U, 800U, 2.0);
+    assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    other.channel = 0x2000U;
+    other.observed_m = 2.1;
+    assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 1U, &snapshot) == 1);
+    assert(snapshot.channel == 0x2000U && snapshot.channel_kind == DSD_CALL_CHANNEL_NONE);
+
+    dsd_state_ext_free_all(state);
+    free(state);
 }
 
 // A decode instant far from any platform clock reading (1e9 s), so a decision that read the
@@ -866,6 +920,7 @@ main(void) {
     test_retained_crypto_update();
     test_media_timestamps();
     test_reacquisition_carries_media_timestamps();
+    test_channel_fill_only();
     test_reacquire_runs_on_the_decode_clock();
     test_may_reacquire_follows_the_heal_windows();
     test_recent_activity(state);

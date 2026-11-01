@@ -515,6 +515,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->kind = previous->kind;
     snapshot->protocol = previous->protocol;
     snapshot->channel = previous->channel;
+    snapshot->channel_kind = previous->channel_kind;
     snapshot->frequency_hz = previous->frequency_hz;
     snapshot->crypto = previous->crypto;
     snapshot->algid = previous->algid;
@@ -561,6 +562,18 @@ call_state_apply_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
     }
 }
 
+/* A channel and its kind arrive together and are fill-only once named in a kind (a DMR call's channel is the one the
+   grant or move that tuned its follow named): a later channel never replaces it, and none (0) never clears it. A
+   channel of no kind (another protocol's) is replaced as observed. */
+static void
+call_state_apply_channel(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
+    if (observation->channel == 0U || snapshot->channel_kind != (uint8_t)DSD_CALL_CHANNEL_NONE) {
+        return;
+    }
+    snapshot->channel = observation->channel;
+    snapshot->channel_kind = observation->channel_kind;
+}
+
 static void
 call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
     if (observation->protocol != DSD_SYNC_NONE) {
@@ -584,9 +597,7 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     call_state_apply_text(snapshot->target_text, observation->target_text);
     call_state_apply_text(snapshot->route_text[0], observation->route_text[0]);
     call_state_apply_text(snapshot->route_text[1], observation->route_text[1]);
-    if (observation->channel != 0U) {
-        snapshot->channel = observation->channel;
-    }
+    call_state_apply_channel(snapshot, observation);
     if (observation->frequency_hz != 0) {
         snapshot->frequency_hz = observation->frequency_hz;
     }

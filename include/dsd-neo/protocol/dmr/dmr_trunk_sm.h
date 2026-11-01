@@ -16,6 +16,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
@@ -73,7 +74,9 @@ typedef struct {
     dmr_sm_event_type_e type;
     int slot;     // 0 (left/TS1) or 1 (right/TS2), -1 if N/A
     long freq_hz; // Frequency in Hz (for GRANT, 0 to resolve from LPCN)
-    int lpcn;     // Logical Physical Channel Number (for GRANT)
+    int lpcn;     // The call's channel (for GRANT): a Tier III LPCN, a Connect Plus LCN, an XPT LSN; 0 for none
+    /* dsd_call_channel_kind of lpcn (NONE without a channel), as its submitter numbered it. */
+    uint8_t channel_kind;
     int tg;       // Talkgroup (for GRANT, 0 if individual)
     int src;      // Source RID
     int dst;      // Destination RID (for individual GRANT)
@@ -117,7 +120,9 @@ typedef struct {
     /* DSD_CRC_* bits of what named the identity (a RAS-accepted grant, status or LC under -F, a Cap+ status's every
        fragment, or a move's burst with the identity it moved): what a C_MOVE republishes carries them. */
     uint8_t crc_flags;
-    int channel;     // LPCN, or the Capacity Plus LSN, the call was announced on
+    int channel; // the channel the call was announced on (0: none)
+    /* dsd_call_channel_kind of channel: a Tier III LPCN, a Connect Plus LCN, a Cap+ or XPT LSN. */
+    uint8_t channel_kind;
     long carrier_hz; // the carrier the identity belongs to
     double follow_m; // decode clock
 
@@ -164,7 +169,8 @@ typedef struct {
 
     // Voice channel context (valid when state == DMR_SM_TUNED)
     long vc_freq_hz;
-    int vc_lpcn;
+    int vc_lpcn;             // the followed call's channel (0: none), named once by the grant or move that tuned it
+    uint8_t vc_channel_kind; // dsd_call_channel_kind of vc_lpcn
     int vc_tg;
     int vc_dst;
     int vc_src;

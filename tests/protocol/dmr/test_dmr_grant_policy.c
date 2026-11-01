@@ -10,6 +10,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
@@ -1799,6 +1800,63 @@ test_xpt_submit_channel_is_the_ranked_lsn(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* ---- The call's channel per system: the slot's LSN (XPT, Cap+), the repeater's LCN (Connect Plus) ---- */
+
+static int
+call_channel_is(const dsd_state* st, uint8_t slot, uint32_t channel, uint8_t kind) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.channel == channel
+           && call.channel_kind == kind;
+}
+
+static int
+slot_channel_is(int slot, int channel, uint8_t kind) {
+    const dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    return sm->slots[slot].channel == channel && sm->slots[slot].channel_kind == kind;
+}
+
+/* An XPT status follow names the followed call's LSN (the entry's slot of its repeater), kind LSN. */
+static int
+test_xpt_status_lsn_kind(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_chan_map[3] = 461287500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 77U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    int rc = expect_true("xpt follows LSN 3", st->trunk_vc_freq[0] == 461287500L);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    rc |= expect_true("xpt the followed call is on LSN 3", call_channel_is(st, 0U, 3U, DSD_CALL_CHANNEL_LSN));
+    rc |= expect_true("xpt the machine and the slot's record name LSN 3",
+                      dmr_sm_get_ctx()->vc_channel_kind == DSD_CALL_CHANNEL_LSN
+                          && slot_channel_is(0, 3, DSD_CALL_CHANNEL_LSN));
+    status_env_done(st);
+    return rc;
+}
+
+/* A Connect Plus grant names the repeater's LCN, which both of its slots share. */
+static int
+test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
+    con_plus_env(opts, st);
+    status_window_closed(st);
+    con_plus_voice(opts, st, 1, 100, 6, 1, 2);
+    int rc = expect_true("con+ follows LCN 6", st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_slot == 1);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 1);
+    rc |= expect_true("con+ the followed call is on LCN 6", call_channel_is(st, 1U, 6U, DSD_CALL_CHANNEL_LCN));
+    seed_voice_call(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 200U, 9U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 9U);
+    rc |= expect_true("con+ the companion slot's record is on the repeater's LCN",
+                      slot_channel_is(0, 6, DSD_CALL_CHANNEL_LCN) && slot_channel_is(1, 6, DSD_CALL_CHANNEL_LCN));
+    status_env_done(st);
+    return rc;
+}
+
 /* D5: a DMR voice grant naming a radio the radio list blocks is not tuned: a talkgroup grant by its source, a private
    grant by either party. One naming an unblocked radio is. */
 static int
@@ -2615,6 +2673,8 @@ main(void) {
     rc |= test_cap_plus_in_place_follow_keeps_resident_call(opts, st);
     rc |= test_cap_plus_status_names_expired_slot(opts, st);
     rc |= test_cap_plus_status_names_anonymous_private_slot(opts, st);
+    rc |= test_xpt_status_lsn_kind(opts, st);
+    rc |= test_conplus_grant_lcn_kind(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

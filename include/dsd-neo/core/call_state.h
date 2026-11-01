@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -127,6 +128,7 @@ typedef struct {
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
     uint32_t channel;
+    uint8_t channel_kind; /**< dsd_call_channel_kind of @ref channel; ignored without a channel. */
     int64_t frequency_hz;
     uint16_t service_options;
     uint8_t emergency;
@@ -253,6 +255,12 @@ typedef struct {
     int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     dsd_call_kind kind;
     uint32_t channel;
+    /**
+     * dsd_call_channel_kind of @ref channel (a DMR trunked call's LSN, LPCN or LCN), meaningful with a nonzero channel.
+     * Set with the channel it names and never replaced afterwards: once a call has a channel of a known kind, neither
+     * changes for the epoch (a reacquired epoch keeps them). NONE: another protocol's channel, replaced as observed.
+     */
+    uint8_t channel_kind;
     dsd_call_crypto_state crypto;
     uint16_t service_options;
     uint16_t kid;

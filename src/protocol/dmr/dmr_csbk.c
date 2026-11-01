@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -632,6 +633,8 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
         (void)dmr_policy_tune_allowed(opts, state, mv_target, mv_source, 1, 0, &policy_decision);
         dmr_sm_event_t ev = dmr_sm_ev_group_grant(move_freq, move_lpcn, (int)mv_target, (int)mv_source);
         ev.slot = tslot;
+        ev.channel_kind =
+            dmr_t3_lpcn_is_channel(move_lpcn) ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
         ev.origin = DMR_SM_ORIGIN_MOVE;
         ev.policy_valid = 1;
         ev.policy = policy_decision;
@@ -2471,6 +2474,7 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
     dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr)
                                  : dmr_sm_ev_indiv_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr);
     ev.slot = g->tslot;
+    ev.channel_kind = g->lcn != 0 ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
     ev.origin = DMR_SM_ORIGIN_GRANT;
     ev.caller_busy = window;
     ev.policy_valid = 1;
@@ -2815,6 +2819,7 @@ dmr_cspdu_xpt_submit(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry* e, i
         ev.identity_known = 0; // the 8-bit value is no radio ID: the voice LC names the call
     }
     ev.slot = best & 1;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
     ev.origin = DMR_SM_ORIGIN_STATUS;
     ev.caller_busy = caller_busy;
     ev.policy_valid = 1;

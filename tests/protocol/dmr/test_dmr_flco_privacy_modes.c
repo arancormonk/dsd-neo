@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -2189,6 +2190,39 @@ test_capacity_plus_status_names_calls_no_lc_named(void) {
     capplus_env_done(&state);
 }
 
+static void
+assert_call_channel(const dsd_state* state, uint8_t slot, uint32_t channel, uint8_t kind) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.channel == channel && call.channel_kind == kind);
+}
+
+// The row a slot's call stages carries the call's channel.
+static void
+assert_staged_row_channel(dsd_opts* opts, dsd_state* state, const Event_History_I history[2], uint8_t slot,
+                          uint32_t channel) {
+    dsd_event_sync_slot(opts, state, slot);
+    assert(history[slot].Event_History_Items[0].channel == channel);
+}
+
+// A Capacity Plus seed names each slot's call with its own LSN, of kind LSN, and the calls' rows carry it.
+static void
+test_capplus_seed_lsn_kind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+
+    capplus_follow_env(&opts, &state, history);
+    capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, CAPPLUS_LSN_SLOT1, CAPPLUS_TG_SLOT1);
+    capplus_voice_superframe(&opts, &state, 0U);
+    capplus_voice_superframe(&opts, &state, 1U);
+    assert_call_channel(&state, 0U, (uint32_t)CAPPLUS_LSN_SLOT0, DSD_CALL_CHANNEL_LSN);
+    assert_call_channel(&state, 1U, (uint32_t)CAPPLUS_LSN_SLOT1, DSD_CALL_CHANNEL_LSN);
+    assert_staged_row_channel(&opts, &state, history, 0U, (uint32_t)CAPPLUS_LSN_SLOT0);
+    assert_staged_row_channel(&opts, &state, history, 1U, (uint32_t)CAPPLUS_LSN_SLOT1);
+    capplus_env_done(&state);
+}
+
 // Parked on the rest channel, an anonymous resident call plays on its TS2 (LSN 2). A status naming that LSN's group is
 // followed in place (the receiver stays on the carrier, so the call goes on): its seed names the call already on the
 // air, which nothing named yet, in its own epoch.
@@ -3948,6 +3982,7 @@ main(void) {
     test_capacity_plus_release_takes_rest_only_from_a_checked_lc();
     test_capacity_plus_abandon_keeps_the_rest_channel();
     test_capacity_plus_status_names_calls_no_lc_named();
+    test_capplus_seed_lsn_kind();
     test_capacity_plus_status_seed_yields_to_lc_identity();
     test_capacity_plus_status_seed_names_adopted_resident_call();
     test_capacity_plus_status_seed_expires_with_its_carrier();

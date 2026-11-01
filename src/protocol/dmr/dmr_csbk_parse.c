@@ -14,6 +14,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dmr_call_channel.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -58,13 +59,16 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
     /* Only channel grants are routed through the Tier III trunk SM here. */
     if (res->opcode >= 48 && res->opcode <= 56) {
         long freq = res->freq_hz;
-        int lpcn = (int)res->lpcn;
+        // The call's channel is its LPCN when that names one (the caller resolved an absolute grant's from its MBC).
+        const int is_channel = dmr_t3_lpcn_is_channel(res->lpcn);
+        int lpcn = is_channel ? (int)res->lpcn : 0;
 
         /* Group vs individual is made on opcode (a data grant followed as a group was rewritten to 49); the data
            classification and the policy verdict travel with it. */
         dmr_sm_event_t ev = (res->opcode == 49) ? dmr_sm_ev_group_grant(freq, lpcn, (int)res->target, (int)res->source)
                                                 : dmr_sm_ev_indiv_grant(freq, lpcn, (int)res->target, (int)res->source);
         ev.slot = (int)(res->lcn & 1U);
+        ev.channel_kind = is_channel ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
         if (res->data_call) {
             ev.kind = DSD_CALL_KIND_DATA;
         }
