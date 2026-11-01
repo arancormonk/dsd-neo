@@ -17,7 +17,11 @@
  * fresh, and a full log or seen map gives up the oldest session first. Each call's
  * frequency and access code (issue #575) reach the roles, survive a save and reload,
  * fold across fragments by the fragment they came from, fill in place, and fill a
- * notice heard again. Saves are bounded by bytes written, not by calls: a large store
+ * notice heard again. Issue #799: each call's site identity and DMR call channel reach one role, survive a save, a
+ * reload and the spill, refuse a hand-edited part that no record could hold, fill in place, keep fragments heard on
+ * two sites (or under two channel numberings) apart across a relaunch, and an update of a fragment already folded
+ * into a row reaches that row while a conflicting identity it brings is discarded. Saves are bounded by bytes written,
+ * not by calls: a large store
  * waits longer between saves, and the moments the log must reach the disk (saveNow(),
  * the app leaving the screen) write it at once, even with a save already in flight.
  * Issue #708: every row has a stable uid that rowForUid() finds wherever the row moves, and
@@ -61,10 +65,12 @@
 #include <algorithm>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <memory>
@@ -219,6 +225,16 @@ struct RingFixture {
         item->freq_hz = freq_hz;
         item->access_code_kind = kind;
         item->access_code = code;
+        return item;
+    }
+
+    /** Give a row the site its call was heard on and the call's own channel, as the core freezes them (issue #799). */
+    static Event_History*
+    site(Event_History* item, const dsd_received_identity& id, uint8_t kind = DSD_CALL_CHANNEL_NONE,
+         uint32_t channel = 0U) {
+        item->site_id = id;
+        item->call_channel_kind = kind;
+        item->channel = channel;
         return item;
     }
 
@@ -2059,6 +2075,798 @@ test_repeated_notice_gains_carrier(void) {
     }
 }
 
+/* Issue #799: site identities as the core freezes them on a row (dsd_rxid_site_snapshot(): site parts only). */
+dsd_received_identity
+p25_site(uint16_t sysid, uint8_t rfss, uint8_t site, uint32_t wacn = 0U) {
+    dsd_received_identity id = {};
+    id.family = DSD_RXID_FAMILY_P25;
+    id.valid = DSD_RXID_P25_SYSID;
+    id.p25_sysid = sysid;
+    if (rfss != 0U || site != 0U) {
+        id.valid |= DSD_RXID_P25_SITE;
+        id.p25_rfss = rfss;
+        id.p25_site = site;
+    }
+    if (wacn != 0U) {
+        id.valid |= DSD_RXID_P25_WACN;
+        id.p25_wacn = wacn;
+    }
+    return id;
+}
+
+/* A DMR site of trunking system @p trunk: its raw numbers and the text the decoder built from them (Capacity Plus
+ * names no network). */
+dsd_received_identity
+dmr_site(uint8_t trunk, uint16_t net, uint16_t site, const char* text, const char* brand = "", uint8_t model = 0U) {
+    dsd_received_identity id = {};
+    id.family = DSD_RXID_FAMILY_DMR;
+    id.dmr_trunk = trunk;
+    id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT;
+    id.dmr_site = site;
+    id.dmr_t3_model = model;
+    if (trunk != DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) {
+        id.valid |= DSD_RXID_DMR_NET;
+        id.dmr_net = net;
+    }
+    DSD_SNPRINTF(id.dmr_site_text, sizeof(id.dmr_site_text), "%s", text);
+    if (brand[0] != '\0') {
+        id.valid |= DSD_RXID_DMR_BRAND;
+        DSD_SNPRINTF(id.dmr_brand, sizeof(id.dmr_brand), "%s", brand);
+    }
+    return id;
+}
+
+dsd_received_identity
+con_plus_site(uint16_t net, uint16_t site) {
+    char text[64];
+    DSD_SNPRINTF(text, sizeof(text), "Con+ \xC2\xB7 Net %u \xC2\xB7 Site %u", (unsigned)net, (unsigned)site);
+    return dmr_site(DSD_RXID_DMR_TRUNK_CONNECT_PLUS, net, site, text, "Connect Plus");
+}
+
+/* A Tier III site: raw network and site numbers, shown one-based in the text (or split by -D). */
+dsd_received_identity
+tier3_site(uint16_t net, uint16_t site, const char* text) {
+    return dmr_site(DSD_RXID_DMR_TRUNK_TIER3, net, site, text, "", 1U);
+}
+
+dsd_received_identity
+tetra_site(uint16_t mcc, uint16_t mnc, uint16_t la) {
+    dsd_received_identity id = {};
+    id.family = DSD_RXID_FAMILY_TETRA;
+    id.valid = DSD_RXID_TETRA_NET | DSD_RXID_TETRA_LA;
+    id.tetra_mcc = mcc;
+    id.tetra_mnc = mnc;
+    id.tetra_colour = 1U;
+    id.tetra_la = la;
+    return id;
+}
+
+QString
+u8(const char* text) {
+    return QString::fromUtf8(text);
+}
+
+QString
+site_text(const CallHistoryModel& model, int row) {
+    if (row < 0 || row >= model.rowCount()) {
+        return QStringLiteral("<no row>");
+    }
+    return model.data(model.index(row), CallHistoryModel::SiteTextRole).toString();
+}
+
+int
+rows_of_tg(const CallHistoryModel& model, qulonglong tg) {
+    int rows = 0;
+    for (int i = 0; i < model.rowCount(); i++) {
+        rows += model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == tg ? 1 : 0;
+    }
+    return rows;
+}
+
+/* The site texts of every row of talkgroup @p tg, sorted. */
+QStringList
+site_texts_of_tg(const CallHistoryModel& model, qulonglong tg) {
+    QStringList texts;
+    for (int i = 0; i < model.rowCount(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == tg) {
+            texts.append(site_text(model, i));
+        }
+    }
+    texts.sort();
+    return texts;
+}
+
+/* Issue #799: a row names the system and site its call was heard on, and the DMR call's own channel, in one line:
+ * the Monitor's words, from app-control, spelled when read. */
+void
+test_site_roles_and_text(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    expect("the site role is named siteText", model.roleNames().value(CallHistoryModel::SiteTextRole) == "siteText");
+    const time_t when = 1754520000;
+    RingFixture::site(ring.commit(0, 16001, 1001, when, when + 4), p25_site(0x1A3, 3, 21, 0xBEE00));
+    RingFixture::site(ring.commit(0, 16002, 1002, when + 30, when + 34), con_plus_site(3, 5), DSD_CALL_CHANNEL_LCN, 3U);
+    RingFixture::site(ring.commit(0, 16003, 1003, when + 60, when + 64), dsd_received_identity{}, DSD_CALL_CHANNEL_LPCN,
+                      12U);
+    RingFixture::site(ring.commit(0, 16004, 1004, when + 90, when + 94), tetra_site(901, 9999, 12));
+    // Another protocol's channel number is in no DMR numbering: there is nothing to name it by.
+    RingFixture::site(ring.commit(0, 16005, 1005, when + 120, when + 124), p25_site(0x1A3, 0, 0), DSD_CALL_CHANNEL_NONE,
+                      7U);
+    ring.commit(0, 16006, 1006, when + 150, when + 154);
+    RingFixture::site(ring.commitNotice(0, when + 180, "2025-08-06 12:00:00 SMS from 44"), p25_site(0x1A3, 3, 21));
+    model.refresh(ring.state);
+    expect("seven rows land", model.count() == 7);
+    expect("a P25 call names its system, site and network",
+           site_text(model, row_with_tg(model, 16001))
+               == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21 \xC2\xB7 WACN BEE00"));
+    expect("a Connect Plus call names its site and its LCN",
+           site_text(model, row_with_tg(model, 16002))
+               == u8("DMR \xC2\xB7 Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5 \xC2\xB7 Connect Plus \xC2\xB7 LCN 3"));
+    expect("a channel heard with no identity is a DMR one",
+           site_text(model, row_with_tg(model, 16003)) == u8("DMR \xC2\xB7 LPCN 12"));
+    expect("a TETRA call names its network and location area",
+           site_text(model, row_with_tg(model, 16004))
+               == u8("TETRA \xC2\xB7 MCC 901 \xC2\xB7 MNC 9999 \xC2\xB7 LA 12"));
+    expect("a channel with no numbering adds nothing",
+           site_text(model, row_with_tg(model, 16005)) == u8("P25 \xC2\xB7 SYS 1A3"));
+    expect("a call heard with neither shows nothing", site_text(model, row_with_tg(model, 16006)).isEmpty());
+    expect("a notice keeps no site",
+           model.data(model.index(0), CallHistoryModel::KindRole).toInt() == CallHistoryModel::KindNotice
+               && site_text(model, 0).isEmpty());
+}
+
+/* The raw parts and their bounded texts persist, the line itself never does; a row with no site writes no key. The
+ * seen store keeps what was read, so a reload reads nothing as an update. */
+void
+test_site_survives_save_and_reload(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754521000;
+    {
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 17001, 1701, when, when + 4), p25_site(0x1A3, 3, 21, 0xBEE00));
+        RingFixture::site(ring.commit(1, 17002, 1702, when + 30, when + 34), con_plus_site(3, 5), DSD_CALL_CHANNEL_LCN,
+                          3U);
+        RingFixture::site(ring.commit(0, 17003, 1703, when + 60, when + 64), dsd_received_identity{},
+                          DSD_CALL_CHANNEL_LPCN, 12U);
+        ring.commit(1, 17004, 1704, when + 90, when + 94);
+        model.refresh(ring.state);
+        expect("four calls land before the save", model.count() == 4);
+    } // destructor flushes the stores
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonObject p25 = stored_row_with_tg(rows, 17001).value(QLatin1String("site")).toObject();
+    expect("a site is stored by its parts", p25.value(QLatin1String("family")).toInt() == DSD_RXID_FAMILY_P25
+                                                && p25.value(QLatin1String("sysid")).toInt() == 0x1A3
+                                                && p25.value(QLatin1String("rfss")).toInt() == 3
+                                                && p25.value(QLatin1String("site")).toInt() == 21
+                                                && p25.value(QLatin1String("wacn")).toInt() == 0xBEE00);
+    const QJsonObject conPlusRow = stored_row_with_tg(rows, 17002);
+    const QJsonObject conPlus = conPlusRow.value(QLatin1String("site")).toObject();
+    expect("a DMR site keeps its raw numbers and its texts",
+           conPlus.value(QLatin1String("dmr_net")).toInt() == 3 && conPlus.value(QLatin1String("dmr_site")).toInt() == 5
+               && conPlus.value(QLatin1String("dmr_trunk")).toInt() == DSD_RXID_DMR_TRUNK_CONNECT_PLUS
+               && conPlus.value(QLatin1String("dmr_site_text")).toString() == u8("Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5")
+               && conPlus.value(QLatin1String("dmr_brand")).toString() == QLatin1String("Connect Plus"));
+    expect("the channel is stored with its kind and provenance",
+           conPlusRow.value(QLatin1String("cch")).toInt() == 3
+               && conPlusRow.value(QLatin1String("cchKind")).toInt() == DSD_CALL_CHANNEL_LCN
+               && conPlusRow.contains(QLatin1String("cchWhen")) && conPlusRow.contains(QLatin1String("cchSeq"))
+               && conPlusRow.contains(QLatin1String("cchSlot")));
+    expect("the site line is never stored", !conPlusRow.contains(QLatin1String("siteText")));
+    const QJsonObject none = stored_row_with_tg(rows, 17004);
+    expect("a row with neither writes no key",
+           !none.contains(QLatin1String("site")) && !none.contains(QLatin1String("cch"))
+               && !none.contains(QLatin1String("cchKind")) && !none.contains(QLatin1String("cchWhen")));
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    int seenWithSite = 0;
+    int seenWithChannel = 0;
+    int seenWithNeither = 0;
+    for (const auto& value : seen) {
+        const QJsonObject entry = value.toObject();
+        seenWithSite += entry.value(QLatin1String("sm")).toInteger()
+                                == static_cast<qint64>(DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_WACN)
+                            ? 1
+                            : 0;
+        seenWithChannel += entry.value(QLatin1String("cch")).toInt() == 12
+                                   && entry.value(QLatin1String("cchKind")).toInt() == DSD_CALL_CHANNEL_LPCN
+                               ? 1
+                               : 0;
+        seenWithNeither += !entry.contains(QLatin1String("sm")) && !entry.contains(QLatin1String("cch")) ? 1 : 0;
+    }
+    expect("the seen store records the parts read", seenWithSite == 1);
+    expect("and the channel read", seenWithChannel == 1);
+    expect("and omits what was not", seenWithNeither == 1);
+
+    CallHistoryModel restored;
+    expect("the log reloads", restored.count() == 4);
+    expect("a P25 site survives a reload",
+           site_text(restored, row_with_tg(restored, 17001))
+               == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21 \xC2\xB7 WACN BEE00"));
+    expect("a DMR site and channel survive a reload",
+           site_text(restored, row_with_tg(restored, 17002))
+               == u8("DMR \xC2\xB7 Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5 \xC2\xB7 Connect Plus \xC2\xB7 LCN 3"));
+    expect("a channel alone survives a reload",
+           site_text(restored, row_with_tg(restored, 17003)) == u8("DMR \xC2\xB7 LPCN 12"));
+    expect("neither stays neither", site_text(restored, row_with_tg(restored, 17004)).isEmpty());
+    QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    restored.refresh(ring.state);
+    expect("the reloaded log ingests nothing twice", restored.count() == 4);
+    expect("the reloaded seen store knows each row's site and channel, so nothing re-reads as an update",
+           changed.count() == 0);
+}
+
+/* A store an older build wrote has no site keys: its rows load with no site, and the ring rows the running service
+ * still holds fill them in place (the seen store knew no parts, so each reads as an update of its row). */
+void
+test_store_without_site_keys_loads_unknown(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754522000;
+    {
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 18001, 1801, when, when + 4), p25_site(0x1A3, 3, 21));
+        RingFixture::site(ring.commit(0, 18002, 1802, when + 100, when + 104), con_plus_site(3, 5),
+                          DSD_CALL_CHANNEL_LCN, 3U);
+        model.refresh(ring.state);
+        expect("two calls land", model.count() == 2);
+    } // destructor flushes the stores
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        for (const char* key : {"site", "cch", "cchKind", "cchWhen", "cchSeq", "cchSlot"}) {
+            row.remove(QLatin1String(key));
+        }
+        rows.replace(i, row);
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    for (int i = 0; i < seen.size(); i++) {
+        QJsonObject entry = seen.at(i).toObject();
+        for (const char* key : {"sm", "cch", "cchKind"}) {
+            entry.remove(QLatin1String(key));
+        }
+        seen.replace(i, entry);
+    }
+    expect("an older build's seen store saved", dsd_qt::json_store_save_array("call_history_seen.json", seen));
+
+    CallHistoryModel restored;
+    expect("the older store loads", restored.count() == 2);
+    expect("its rows name no site", site_text(restored, row_with_tg(restored, 18001)).isEmpty()
+                                        && site_text(restored, row_with_tg(restored, 18002)).isEmpty());
+    restored.refresh(ring.state);
+    expect("the ring the service still holds fills the rows in place", restored.count() == 2);
+    expect("with their sites",
+           site_text(restored, row_with_tg(restored, 18001))
+                   == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21")
+               && site_text(restored, row_with_tg(restored, 18002))
+                      == u8("DMR \xC2\xB7 Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5 \xC2\xB7 Connect Plus \xC2\xB7 LCN 3"));
+}
+
+/* A stored row for the hand-edited store below: talkgroup @p tg at @p when, with @p site (none when empty). */
+QJsonObject
+stored_site_row(qulonglong tg, qint64 when, const QJsonValue& site) {
+    QJsonObject row;
+    row.insert(QLatin1String("when"), when);
+    row.insert(QLatin1String("name"), QStringLiteral("Talkgroup %1").arg(tg));
+    row.insert(QLatin1String("tg"), static_cast<qint64>(tg));
+    row.insert(QLatin1String("src"), 0);
+    row.insert(QLatin1String("durationSecs"), 4);
+    row.insert(QLatin1String("kind"), CallHistoryModel::KindVoice);
+    row.insert(QLatin1String("slot"), 0);
+    row.insert(QLatin1String("seq"), static_cast<qint64>(tg));
+    row.insert(QLatin1String("session"), 1);
+    if (!site.isUndefined()) {
+        row.insert(QLatin1String("site"), site);
+    }
+    return row;
+}
+
+QJsonObject
+p25_site_json(qint64 sysid) {
+    QJsonObject site;
+    site.insert(QLatin1String("valid"), static_cast<qint64>(DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE));
+    site.insert(QLatin1String("family"), DSD_RXID_FAMILY_P25);
+    site.insert(QLatin1String("sysid"), sysid);
+    site.insert(QLatin1String("rfss"), 1);
+    site.insert(QLatin1String("site"), 2);
+    return site;
+}
+
+QJsonObject
+nxdn_site_json(uint32_t valid) {
+    QJsonObject site;
+    site.insert(QLatin1String("valid"), static_cast<qint64>(valid));
+    site.insert(QLatin1String("family"), DSD_RXID_FAMILY_NXDN);
+    return site;
+}
+
+QJsonObject
+con_plus_site_json(void) {
+    QJsonObject site;
+    site.insert(QLatin1String("valid"), static_cast<qint64>(DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
+                                                            | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND));
+    site.insert(QLatin1String("family"), DSD_RXID_FAMILY_DMR);
+    site.insert(QLatin1String("dmr_trunk"), DSD_RXID_DMR_TRUNK_CONNECT_PLUS);
+    site.insert(QLatin1String("dmr_net"), 3);
+    site.insert(QLatin1String("dmr_site"), 5);
+    site.insert(QLatin1String("dmr_t3_model"), 0);
+    site.insert(QLatin1String("dmr_site_text"), u8("Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5"));
+    site.insert(QLatin1String("dmr_brand"), QStringLiteral("Connect Plus"));
+    return site;
+}
+
+/* The hand-edited site rows below, each @p site under its own talkgroup, 100 s apart so none merge. */
+struct BadSite {
+    const char* what;
+    QJsonValue site;
+};
+
+QList<BadSite>
+bad_sites(void) {
+    QList<BadSite> bad;
+    QJsonObject site = p25_site_json(0x1000);
+    bad.append({"a SYSID wider than 12 bits", site});
+    bad.append({"SYSID 0", p25_site_json(0)});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("valid"),
+                static_cast<qint64>(DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_WACN));
+    site.insert(QLatin1String("wacn"), static_cast<qint64>(0x100000000LL));
+    bad.append({"a WACN wider than its field", site});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("valid"), static_cast<qint64>(DSD_RXID_P25_SYSID | DSD_RXID_ACCESS));
+    bad.append({"a part that is no site's", site});
+    site = p25_site_json(0x1A3);
+    site.remove(QLatin1String("rfss"));
+    bad.append({"a valid part with no value", site});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("sysid"), QStringLiteral("1A3"));
+    bad.append({"a value that is no number", site});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("rfss"), -1);
+    bad.append({"a negative value", site});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("sysid"), 419.5);
+    bad.append({"a value that is no integer", site});
+    site = p25_site_json(0x1A3);
+    site.insert(QLatin1String("family"), 9);
+    bad.append({"a family no record has", site});
+    site = nxdn_site_json(DSD_RXID_NXDN_LOCATION);
+    site.insert(QLatin1String("nxdn_category"), 0);
+    site.insert(QLatin1String("nxdn_sys"), 0);
+    site.insert(QLatin1String("nxdn_site"), 5);
+    bad.append({"an NXDN system code the standard reserves", site});
+    site.insert(QLatin1String("nxdn_category"), 2);
+    site.insert(QLatin1String("nxdn_sys"), 131071);
+    site.insert(QLatin1String("nxdn_site"), 31);
+    bad.append({"an all-ones NXDN location", site});
+    site = nxdn_site_json(DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM);
+    site.insert(QLatin1String("idas_site_type"), 1);
+    site.insert(QLatin1String("idas_site_code"), 7);
+    site.insert(QLatin1String("nxdn_typed_sys"), 100);
+    site.insert(QLatin1String("nxdn_typed_site"), 9);
+    bad.append({"an IDAS site ID another than its system ID's", site});
+    site = nxdn_site_json(DSD_RXID_NXDN_LOCATION | DSD_RXID_NXDN_IDAS_AREA);
+    site.insert(QLatin1String("nxdn_category"), 0);
+    site.insert(QLatin1String("nxdn_sys"), 12);
+    site.insert(QLatin1String("nxdn_site"), 5);
+    site.insert(QLatin1String("idas_area"), 1);
+    bad.append({"a Type-C location beside an IDAS part", site});
+    site = con_plus_site_json();
+    site.insert(QLatin1String("dmr_site_text"), QString(64, QLatin1Char('x')));
+    bad.append({"a DMR text longer than the record holds", site});
+    site = con_plus_site_json();
+    site.insert(QLatin1String("valid"), static_cast<qint64>(DSD_RXID_DMR_NET));
+    bad.append({"a DMR network without its site", site});
+    site = con_plus_site_json();
+    site.insert(QLatin1String("dmr_trunk"), 7);
+    bad.append({"a DMR trunking system no record has", site});
+    QJsonObject tetra;
+    tetra.insert(QLatin1String("valid"), static_cast<qint64>(DSD_RXID_TETRA_NET));
+    tetra.insert(QLatin1String("family"), DSD_RXID_FAMILY_TETRA);
+    tetra.insert(QLatin1String("tetra_mcc"), 1024);
+    tetra.insert(QLatin1String("tetra_mnc"), 9999);
+    tetra.insert(QLatin1String("tetra_colour"), 1);
+    bad.append({"a TETRA MCC wider than 10 bits", tetra});
+    bad.append({"a site that is no object", QJsonValue(5)});
+    return bad;
+}
+
+/* Review focus 3: a hand-edited or corrupt store loads every row, and a site part no record could hold (out of its
+ * range or its field, a cross part the record keeps apart, a reserved NXDN code) loads as no site, never as a made-up
+ * one; so does a channel with no numbering, and a channel whose numbering is not its site's trunking system's. */
+void
+test_site_store_rejects_bad_parts(void) {
+    resetStorage();
+    const qint64 when = 1754523000;
+    const QList<BadSite> bad = bad_sites();
+    QJsonArray rows;
+    rows.append(stored_site_row(19000, when, p25_site_json(0x1A3)));
+    for (int i = 0; i < bad.size(); i++) {
+        rows.append(stored_site_row(19001 + static_cast<qulonglong>(i), when + 100 * (i + 1), bad.at(i).site));
+    }
+    const qint64 channelsAt = when + 100 * (bad.size() + 1);
+    QJsonObject unknownKind = stored_site_row(19100, channelsAt, QJsonValue::Undefined);
+    unknownKind.insert(QLatin1String("cch"), 12);
+    unknownKind.insert(QLatin1String("cchKind"), 9);
+    QJsonObject zeroChannel = stored_site_row(19101, channelsAt + 100, QJsonValue::Undefined);
+    zeroChannel.insert(QLatin1String("cch"), 0);
+    zeroChannel.insert(QLatin1String("cchKind"), DSD_CALL_CHANNEL_LPCN);
+    QJsonObject wideChannel = stored_site_row(19102, channelsAt + 200, QJsonValue::Undefined);
+    wideChannel.insert(QLatin1String("cch"), static_cast<qint64>(0x100000000LL));
+    wideChannel.insert(QLatin1String("cchKind"), DSD_CALL_CHANNEL_LPCN);
+    QJsonObject otherNumbering = stored_site_row(19103, channelsAt + 300, con_plus_site_json());
+    otherNumbering.insert(QLatin1String("cch"), 12);
+    otherNumbering.insert(QLatin1String("cchKind"), DSD_CALL_CHANNEL_LPCN);
+    QJsonObject channelOnly = stored_site_row(19104, channelsAt + 400, QJsonValue::Undefined);
+    channelOnly.insert(QLatin1String("cch"), 12);
+    channelOnly.insert(QLatin1String("cchKind"), DSD_CALL_CHANNEL_LPCN);
+    for (const QJsonObject& row : {unknownKind, zeroChannel, wideChannel, otherNumbering, channelOnly}) {
+        rows.append(row);
+    }
+    expect("a hand-edited history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+
+    CallHistoryModel model;
+    expect("every stored row loads", model.count() == static_cast<int>(rows.size()));
+    expect("a good site still loads",
+           site_text(model, row_with_tg(model, 19000)) == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 2"));
+    for (int i = 0; i < bad.size(); i++) {
+        const QString text = site_text(model, row_with_tg(model, 19001 + static_cast<qulonglong>(i)));
+        if (!text.isEmpty()) {
+            DSD_FPRINTF(stderr, "FAIL: %s loads as \"%s\"\n", bad.at(i).what, text.toUtf8().constData());
+            g_failures++;
+        }
+    }
+    expect("a channel with no numbering loads as none", site_text(model, row_with_tg(model, 19100)).isEmpty());
+    expect("channel 0 loads as none", site_text(model, row_with_tg(model, 19101)).isEmpty());
+    expect("a channel wider than its field loads as none", site_text(model, row_with_tg(model, 19102)).isEmpty());
+    expect("a channel another trunking system numbers loads as none, the site kept",
+           site_text(model, row_with_tg(model, 19103))
+               == u8("DMR \xC2\xB7 Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5 \xC2\xB7 Connect Plus"));
+    expect("a channel alone still loads", site_text(model, row_with_tg(model, 19104)) == u8("DMR \xC2\xB7 LPCN 12"));
+}
+
+/* The core adds site parts to a committed row and fills its channel in place (a reacquisition merge). The row's key,
+ * end and source do not move, so only the seen ratchet can tell the row has advanced: a part gained, or any change of
+ * the channel, even with every stamp and field the same. */
+void
+test_site_filled_in_place_reingests(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754524000;
+    Event_History* item = ring.commit(0, 20001, 2001, when, when + 6);
+    model.refresh(ring.state);
+    expect("the call lands without a site", model.count() == 1 && site_text(model, 0).isEmpty());
+
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    const dsd_received_identity site = tier3_site(1, 3, "TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4");
+    RingFixture::site(item, site);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a site filled in place updates the row",
+           model.count() == 1 && site_text(model, 0) == u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4"));
+    expect("the update names the site role", data_changed_with(changed, {CallHistoryModel::SiteTextRole}));
+    expect("end and source stay", model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 6
+                                      && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 2001U);
+
+    changed.clear();
+    RingFixture::site(item, site, DSD_CALL_CHANNEL_LPCN, 12U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a channel filled in place updates the row",
+           site_text(model, 0) == u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4 \xC2\xB7 LPCN 12")
+               && data_changed_with(changed, {CallHistoryModel::SiteTextRole}));
+
+    changed.clear();
+    RingFixture::site(item, site, DSD_CALL_CHANNEL_LPCN, 14U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a channel changed with every stamp the same re-ingests",
+           site_text(model, 0) == u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4 \xC2\xB7 LPCN 14")
+               && data_changed_with(changed, {CallHistoryModel::SiteTextRole}));
+
+    changed.clear();
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("nothing new is no update", changed.count() == 0);
+}
+
+/* Review focus 5: a radio that roams calls the same talkgroup a few seconds later on another site. Those are two
+ * calls, two rows, in any order a refresh collects them. */
+void
+test_fragments_on_conflicting_sites_stay_apart(void) {
+    const time_t when = 1754525000;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 21001, 2101, when, when + 4), p25_site(0x1A3, 1, 1));
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        RingFixture::site(ring.commit(0, 21001, 2101, when + 6, when + 10), p25_site(0x1A3, 1, 2));
+        model.refresh(ring.state);
+        expect(incremental ? "calls on two sites stay two rows (incremental)"
+                           : "calls on two sites stay two rows (batched)",
+               model.count() == 2);
+        expect(incremental ? "each names its own site (incremental)" : "each names its own site (batched)",
+               site_texts_of_tg(model, 21001)
+                   == QStringList({u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 1"),
+                                   u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 2")}));
+    }
+}
+
+/* A fragment that knew less of the site (its system only, or nothing) is the same call as one that knew more: they
+ * merge, and the row keeps every part either knew, in any order. */
+void
+test_fragment_gains_compatible_site(void) {
+    const time_t when = 1754526000;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 22001, 2201, when, when + 4), p25_site(0x1A3, 0, 0));
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        RingFixture::site(ring.commit(0, 22001, 2201, when + 6, when + 10), p25_site(0x1A3, 1, 1, 0xBEE00));
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 22001, 2201, when + 12, when + 16);
+        model.refresh(ring.state);
+        expect(incremental ? "the fragments merge (incremental)" : "the fragments merge (batched)", model.count() == 1);
+        expect(incremental ? "the row keeps every part (incremental)" : "the row keeps every part (batched)",
+               site_text(model, 0) == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 1 \xC2\xB7 WACN BEE00"));
+    }
+}
+
+/* load() folds the stored rows again through the same merge: a split on two sites stays split after a relaunch. */
+void
+test_site_split_survives_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754527000;
+    {
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 23001, 2301, when, when + 4), p25_site(0x1A3, 1, 1));
+        RingFixture::site(ring.commit(0, 23001, 2301, when + 6, when + 10), p25_site(0x1A3, 1, 2));
+        model.refresh(ring.state);
+        expect("two sites, two rows", model.count() == 2);
+    } // destructor flushes the stores
+    CallHistoryModel restored;
+    expect("the split survives a relaunch", restored.count() == 2);
+    expect("each keeps its site", site_texts_of_tg(restored, 23001)
+                                      == QStringList({u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 1"),
+                                                      u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 2")}));
+}
+
+/* The background spill carries a row as the rows store writes it: a DMR row, its texts and its channel, spilled as
+ * the tap would (the stored row and seen entry) and folded by a relaunched model, shows what it showed, and its seen
+ * entry keeps the ring row from reading as an update. */
+void
+test_site_spill_round_trip(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754528000;
+    const QString text = u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 1.4 \xC2\xB7 LPCN 12");
+    {
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 24001, 2401, when, when + 4),
+                          tier3_site(12, 3, "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 1.4"), DSD_CALL_CHANNEL_LPCN,
+                          12U);
+        model.refresh(ring.state);
+        expect("the call lands with its site", model.count() == 1 && site_text(model, 0) == text);
+    } // destructor flushes the stores
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    expect("one row and one seen entry stored", rows.size() == 1 && seen.size() == 1);
+    QJsonObject seenEntry = seen.at(0).toObject();
+    QJsonObject line;
+    line.insert(QLatin1String("v"), 1);
+    line.insert(QLatin1String("key"), seenEntry.value(QLatin1String("key")));
+    seenEntry.remove(QLatin1String("key"));
+    line.insert(QLatin1String("seen"), seenEntry);
+    line.insert(QLatin1String("row"), rows.at(0));
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history.json")));
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history_seen.json")));
+    QFile spill(dsd_qt::json_store_path(QStringLiteral("call_history_spill.jsonl")));
+    const QByteArray bytes = QJsonDocument(line).toJson(QJsonDocument::Compact) + '\n';
+    expect("the spill is written", spill.open(QIODevice::WriteOnly) && spill.write(bytes) == bytes.size());
+    spill.close();
+
+    CallHistoryModel restored;
+    expect("the spilled row folds in with its site and channel",
+           restored.count() == 1 && site_text(restored, 0) == text);
+    QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    restored.refresh(ring.state);
+    expect("the spilled seen entry knows the site and channel, so the ring row is no update",
+           restored.count() == 1 && changed.count() == 0);
+}
+
+/* Hazard H1 and limit L8: the core fills a fragment in place after Qt folded it into a row, with a site the row's other
+ * fragment never shared. The update still reaches the row that holds the fragment (found by its fragment, not by
+ * merging again): the end and source it brings are applied, and its site, with its channel, is discarded whole. A
+ * compatible site an update brings is taken in. */
+void
+test_update_conflicting_after_fold_keeps_row_identity(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754529000;
+    const QString text = u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4 \xC2\xB7 LPCN 12");
+    RingFixture::site(ring.commit(0, 25001, 0, when, when + 4),
+                      tier3_site(1, 3, "TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4"), DSD_CALL_CHANNEL_LPCN, 12U);
+    Event_History* later = ring.commit(0, 25001, 0, when + 6, when + 10);
+    model.refresh(ring.state);
+    expect("the two fragments are one call",
+           model.count() == 1 && site_text(model, 0) == text
+               && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 10);
+
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    RingFixture::site(later, tier3_site(1, 4, "TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 5"), DSD_CALL_CHANNEL_LPCN, 20U);
+    later->event_time = when + 14;
+    later->source_id = 2501;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("the update reaches the row and logs no other", model.count() == 1);
+    expect("its end and source are applied",
+           model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 14
+               && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 2501U
+               && data_changed_with(changed, {CallHistoryModel::DurationSecsRole, CallHistoryModel::SrcRole}));
+    expect("its conflicting site and its channel are discarded", site_text(model, 0) == text);
+
+    RingFixture::site(ring.commit(0, 25002, 2502, when + 100, when + 104), p25_site(0x1A3, 0, 0));
+    Event_History* fill = ring.commit(0, 25002, 2502, when + 106, when + 110);
+    model.refresh(ring.state);
+    RingFixture::site(fill, p25_site(0x1A3, 1, 1, 0xBEE00));
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a compatible site an update brings is taken in",
+           rows_of_tg(model, 25002) == 1
+               && site_text(model, row_with_tg(model, 25002))
+                      == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 1 \xC2\xB7 WACN BEE00"));
+}
+
+/* A channel names its numbering: a channel-only Tier III fragment (LPCN) is not the same call as a Connect Plus
+ * fragment (LCN), nor as an LSN one, nor as a P25 site's. Two fragments in one numbering merge, and the row shows the
+ * newest fragment's channel. */
+void
+test_channel_kind_conflict_stays_apart(void) {
+    const time_t when = 1754530000;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        const dsd_received_identity none = {};
+        RingFixture::site(ring.commit(0, 26001, 2601, when, when + 4), none, DSD_CALL_CHANNEL_LPCN, 12U);
+        RingFixture::site(ring.commit(0, 26002, 2602, when + 100, when + 104), none, DSD_CALL_CHANNEL_LPCN, 12U);
+        RingFixture::site(ring.commit(0, 26003, 2603, when + 200, when + 204), p25_site(0x1A3, 1, 1));
+        RingFixture::site(ring.commit(0, 26004, 2604, when + 300, when + 304), none, DSD_CALL_CHANNEL_LPCN, 12U);
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        RingFixture::site(ring.commit(0, 26001, 2601, when + 6, when + 10), con_plus_site(3, 5), DSD_CALL_CHANNEL_LCN,
+                          3U);
+        RingFixture::site(ring.commit(0, 26002, 2602, when + 106, when + 110), none, DSD_CALL_CHANNEL_LSN, 5U);
+        RingFixture::site(ring.commit(0, 26003, 2603, when + 206, when + 210), none, DSD_CALL_CHANNEL_LSN, 5U);
+        RingFixture::site(ring.commit(0, 26004, 2604, when + 306, when + 310),
+                          tier3_site(1, 3, "TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4"), DSD_CALL_CHANNEL_LPCN, 14U);
+        model.refresh(ring.state);
+        expect(incremental ? "an LPCN fragment and a Connect Plus one stay apart (incremental)"
+                           : "an LPCN fragment and a Connect Plus one stay apart (batched)",
+               rows_of_tg(model, 26001) == 2);
+        expect(incremental ? "an LPCN fragment and an LSN one stay apart (incremental)"
+                           : "an LPCN fragment and an LSN one stay apart (batched)",
+               rows_of_tg(model, 26002) == 2);
+        expect(incremental ? "a P25 fragment and an LSN one stay apart (incremental)"
+                           : "a P25 fragment and an LSN one stay apart (batched)",
+               rows_of_tg(model, 26003) == 2);
+        expect(incremental ? "two LPCN fragments merge, the newest channel shown (incremental)"
+                           : "two LPCN fragments merge, the newest channel shown (batched)",
+               rows_of_tg(model, 26004) == 1
+                   && site_text(model, row_with_tg(model, 26004))
+                          == u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 2 \xC2\xB7 Site 4 \xC2\xB7 LPCN 14"));
+    }
+}
+
+/* The DMR site text follows -D, so one site can arrive under two texts with the same raw numbers. Those are one site:
+ * the fragments merge, and the row keeps one of the texts (the same one in any order), through a save and reload. */
+void
+test_dmr_text_differs_raw_equal_merges_and_keeps_text(void) {
+    const time_t when = 1754531000;
+    const QString text = u8("DMR \xC2\xB7 TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 1.4");
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            RingFixture::site(ring.commit(0, 27001, 2701, when, when + 4),
+                              tier3_site(12, 3, "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 4"));
+            if (incremental) {
+                model.refresh(ring.state);
+            }
+            RingFixture::site(ring.commit(0, 27001, 2701, when + 6, when + 10),
+                              tier3_site(12, 3, "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 1.4"));
+            model.refresh(ring.state);
+            expect(incremental ? "two texts of one site merge (incremental)" : "two texts of one site merge (batched)",
+                   model.count() == 1);
+            expect(incremental ? "the row keeps one text, whatever the order (incremental)"
+                               : "the row keeps one text, whatever the order (batched)",
+                   site_text(model, 0) == text);
+        } // destructor flushes the stores
+        CallHistoryModel restored;
+        expect(incremental ? "the text survives a reload (incremental)" : "the text survives a reload (batched)",
+               restored.count() == 1 && site_text(restored, 0) == text);
+    }
+}
+
+/* The detail sheet reads its row by uid: every detail the three entry points pass, by the same roles, and the site
+ * line; a uid no row has now reads an empty map. */
+void
+test_record_for_uid(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754532000;
+    Event_History* item = RingFixture::carrier(ring.commit(0, 28001, 2801, when, when + 7, "", "Fire Dispatch"),
+                                               851012500, DSD_ACCESS_CODE_NAC, 0x293U);
+    RingFixture::site(item, p25_site(0x1A3, 3, 21));
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Engine 5");
+    item->emergency = 1U;
+    model.refresh(ring.state);
+    expect("the call lands", model.count() == 1);
+    const QModelIndex idx = model.index(0);
+    const qint64 uid = model.data(idx, CallHistoryModel::UidRole).toLongLong();
+    const QVariantMap record = model.recordFor(QString::number(uid));
+
+    const struct {
+        const char* key;
+        int role;
+    } keys[] = {{"uid", CallHistoryModel::UidRole},
+                {"name", CallHistoryModel::NameRole},
+                {"when", CallHistoryModel::WhenRole},
+                {"systemName", CallHistoryModel::SystemNameRole},
+                {"systemUid", CallHistoryModel::SystemUidRole},
+                {"channel", CallHistoryModel::ChannelRole},
+                {"tg", CallHistoryModel::TgRole},
+                {"src", CallHistoryModel::SrcRole},
+                {"sourceName", CallHistoryModel::SourceNameRole},
+                {"emergency", CallHistoryModel::EmergencyRole},
+                {"enc", CallHistoryModel::EncRole},
+                {"durationSecs", CallHistoryModel::DurationSecsRole},
+                {"detail", CallHistoryModel::DetailRole},
+                {"freqHz", CallHistoryModel::FreqHzRole},
+                {"accessCode", CallHistoryModel::AccessCodeRole},
+                {"accessCodeText", CallHistoryModel::AccessCodeTextRole},
+                {"serviceName", CallHistoryModel::ServiceNameRole},
+                {"receivedTone", CallHistoryModel::ReceivedToneRole},
+                {"siteText", CallHistoryModel::SiteTextRole}};
+
+    expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
+    for (const auto& key : keys) {
+        if (!record.contains(QLatin1String(key.key))
+            || record.value(QLatin1String(key.key)) != model.data(idx, key.role)) {
+            DSD_FPRINTF(stderr, "FAIL: recordFor()'s %s is not the row's\n", key.key);
+            g_failures++;
+        }
+    }
+    expect("the map names the source and the site",
+           record.value(QStringLiteral("sourceName")).toString() == QLatin1String("Engine 5")
+               && record.value(QStringLiteral("siteText")).toString()
+                      == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21")
+               && record.value(QStringLiteral("durationSecs")).toInt() == 7
+               && record.value(QStringLiteral("emergency")).toBool());
+    expect("a uid no row has reads empty", model.recordFor(QString::number(uid + 1)).isEmpty());
+    expect("no uid reads empty", model.recordFor(QString()).isEmpty() && model.recordFor(QStringLiteral("0")).isEmpty()
+                                     && model.recordFor(QStringLiteral("x1")).isEmpty());
+}
+
 /* Co-channel services retain separate histories even when all numeric call IDs match. */
 void
 test_receive_service_identity(void) {
@@ -3005,6 +3813,19 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_site_roles_and_text();
+    test_site_survives_save_and_reload();
+    test_store_without_site_keys_loads_unknown();
+    test_site_store_rejects_bad_parts();
+    test_site_filled_in_place_reingests();
+    test_fragments_on_conflicting_sites_stay_apart();
+    test_fragment_gains_compatible_site();
+    test_site_split_survives_relaunch();
+    test_site_spill_round_trip();
+    test_update_conflicting_after_fold_keeps_row_identity();
+    test_channel_kind_conflict_stays_apart();
+    test_dmr_text_differs_raw_equal_merges_and_keeps_text();
+    test_record_for_uid();
     test_receive_service_identity();
     test_slot_proof_merges_independently_of_code();
     test_receive_only_updates_and_label_renames();

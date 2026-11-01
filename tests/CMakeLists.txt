@@ -4067,9 +4067,11 @@ add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 # And for the call-history merge/re-ingest policy (call_history_merge.h): the
 # window choices and the seen-row advance ratchet are what keep one conversation
 # one row without collapsing two distinct calls into it.
+# The site fold uses core's site compare/union (libc only), built as it is.
 add_executable(
     dsd-neo_test_ui_qt_call_history_merge
     ui/test_ui_qt_call_history_merge.cpp
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_history_merge
@@ -4310,6 +4312,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_talkgroup_list_model
@@ -4341,8 +4344,10 @@ if(DSD_ENABLE_QT_UI)
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path. The
-    # access-code text comes from app-control (issue #575). A QGuiApplication,
-    # so the app-state saves see the real applicationStateChanged signal.
+    # access-code text comes from app-control (issue #575), the site line from
+    # its record form and the site compare/union from core (issue #799), all
+    # built as they are. A QGuiApplication, so the app-state saves see the real
+    # applicationStateChanged signal.
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -4353,6 +4358,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_call_history_model

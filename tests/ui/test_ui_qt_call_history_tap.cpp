@@ -20,8 +20,9 @@
  * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
  * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. A read that fails
  * partway keeps the spill whole for the next fold. A session that changes while the tap runs hidden hands it off and
- * starts it again: the old session's calls keep its attribution, the new session's take theirs. The deliberate
- * failures' warnings are counted, not printed. */
+ * starts it again: the old session's calls keep its attribution, the new session's take theirs. A spilled row keeps
+ * its site and call channel (issue #799), within the spill's size per row. The deliberate failures' warnings are
+ * counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -48,9 +49,11 @@
 #include <atomic>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -191,6 +194,15 @@ struct Decoder {
             commit(slot, tg + static_cast<uint32_t>(i), 100U + static_cast<uint32_t>(i),
                    start + 30 * static_cast<time_t>(i));
         }
+    }
+
+    /** Give the newest committed row the site its call was heard on and the call's channel, as the core freezes them. */
+    void
+    siteNewest(int slot, const dsd_received_identity& site, uint8_t kind, uint32_t channel) {
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        item->site_id = site;
+        item->call_channel_kind = kind;
+        item->channel = channel;
     }
 
     /** Commit a data notice the way dsd_event_emit_data_notice() does. */
@@ -671,6 +683,52 @@ test_sustained_write_volume(void) {
            lines > 0 && qint64{10} * bytes / lines < qint64{16} * 1024);
 }
 
+/* Issue #799: the rows the tap spills carry their site and channel back into History, and a DMR site with the longest
+ * texts the record holds keeps a row's spill line within the size the write budget above assumes. */
+void
+test_spill_with_site_under_size_cap(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754845000;
+    dsd_received_identity site = {};
+    site.family = DSD_RXID_FAMILY_DMR;
+    site.dmr_trunk = DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    site.valid = DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND;
+    site.dmr_net = 4095U;
+    site.dmr_site = 255U;
+    DSD_MEMSET(site.dmr_site_text, 'N', sizeof(site.dmr_site_text) - 1U);
+    DSD_MEMSET(site.dmr_brand, 'B', sizeof(site.dmr_brand) - 1U);
+    CallHistoryModel model;
+    start_tap(model);
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    const int polls = 100;
+    for (int i = 0; i < polls; i++) {
+        decoder.commit(i % 2, 36001U + static_cast<uint32_t>(i), 600U + static_cast<uint32_t>(i),
+                       when + 30 * static_cast<time_t>(i));
+        decoder.siteNewest(i % 2, site, DSD_CALL_CHANNEL_LCN, 1000U + static_cast<uint32_t>(i));
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+    }
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    const qint64 bytes = spill_size();
+    const int lines = spill_lines();
+    expect("site: every call is in History", model.count() == polls && lines == polls);
+    int sited = 0;
+    for (int i = 0; i < model.count(); i++) {
+        const QModelIndex idx = model.index(i);
+        const qulonglong channel = 1000U + model.data(idx, CallHistoryModel::TgRole).toULongLong() - 36001U;
+        const QString text = model.data(idx, CallHistoryModel::SiteTextRole).toString();
+        sited += text.startsWith(QLatin1String("DMR ")) && text.contains(QString(63, QLatin1Char('N')))
+                         && text.endsWith(QStringLiteral("LCN %1").arg(channel))
+                     ? 1
+                     : 0;
+    }
+    expect("site: each spilled row keeps its site and channel", sited == polls);
+    expect("site: a row with the longest DMR texts stays within the spill's size", lines > 0 && bytes / lines <= 1536);
+}
+
 /* A spill line as the tap writes one (CallHistoryModel::spillLine()) for a row of @p kind first read on @p slot of
  * ring 0x708 at push stamp @p seq, 4 s long; with @p again, the tap judged it heard again. */
 QByteArray
@@ -1075,6 +1133,7 @@ main(int argc, char** argv) {
     test_stop_while_suspended();
     test_clear_while_suspended();
     test_sustained_write_volume();
+    test_spill_with_site_under_size_cap();
     test_clear_before_the_first_ingest_after_return();
     test_unwritable_spill_keeps_a_bounded_backlog();
     test_unwritable_spill_hands_off_what_it_holds();
