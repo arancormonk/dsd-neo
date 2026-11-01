@@ -3,6 +3,7 @@
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -28,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "test_support.h"
 #include "wav_segment_test_support.h"
 
@@ -1367,6 +1370,8 @@ test_hold_off_keeps_main_payloads(void) {
 static int g_hold_writes;
 static int g_hold_short_at = -1;
 static int g_hold_write_warnings;
+static int g_rdio_warnings;
+static int g_rdio_failed;
 
 static long long
 hold_seam_write(SNDFILE* file, const short* samples, long long count) {
@@ -1375,10 +1380,14 @@ hold_seam_write(SNDFILE* file, const short* samples, long long count) {
 }
 
 static void
-count_hold_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
+count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (level == LOG_LEVEL_WARN && text && strstr(text, "NFM call: wrote") != NULL) {
         g_hold_write_warnings++;
+    }
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "Rdio export") != NULL) {
+        g_rdio_warnings++;
+        g_rdio_failed += strstr(text, "Rdio export failed") != NULL;
     }
 }
 
@@ -1446,7 +1455,6 @@ test_hold_largest_silence_write(void) {
 
 static void
 test_analog_hold(void) {
-    dsd_neo_log_set_tap(count_hold_warnings, NULL);
     test_hold_row_ends_at_the_last_reception();
     test_hold_boundary_move_ends_the_call();
     test_hold_off_keeps_main_payloads();
@@ -1463,12 +1471,68 @@ test_analog_hold(void) {
     test_hold_largest_silence_write();
 }
 
+static int
+remove_recording(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0);
+    assert(remove(path) == 0);
+    return 0;
+}
+
+/* With --rdio-mode set, a conventional NFM recording has no talkgroup and is simply not exported: no "skipped" warning
+   and no "export failed" line. A digital row with no talkgroup keeps both (issue #756). */
+static void
+test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
+    char directory[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(directory, sizeof directory, "dsdneo_receive_rdio"));
+    DSD_MEMSET(opts->wav_out_dir, 0, sizeof opts->wav_out_dir);
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", directory);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->dmr_stereo_wav = 1;
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    float block[960];
+    for (int i = 0; i < 960; ++i) {
+        block[i] = 2000.0f;
+    }
+    g_rdio_warnings = 0;
+    dsd_wav_recording_session_reset();
+    dsd_analog_sink_block_begin(state);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+    assert(g_rdio_warnings == 0 && g_rdio_failed == 0);
+
+    /* The same close for a digital row with no talkgroup still warns, twice: the skip and the failure. */
+    char wav_path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(wav_path, sizeof wav_path, directory, "digital.wav") == 0);
+    SF_INFO info = {0};
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(wav_path, SFM_WRITE, &info);
+    assert(wav);
+    short pcm[160] = {0};
+    assert(sf_write_short(wav, pcm, 160) == 160);
+    static Event_History_I row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.Event_History_Items[0].systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    row.Event_History_Items[0].event_time = (time_t)1700000000;
+    const dsd_wav_owner owner = {DSD_WAV_OWNER_NONE, 0U, 0U, 0U};
+    assert(close_and_rename_wav_file_ex(wav, opts, wav_path, directory, &row, 0, 1, &owner) == NULL);
+    assert(g_rdio_warnings == 2 && g_rdio_failed == 1);
+    opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    assert(dsd_dir_list(directory, remove_recording, directory) == 0);
+    assert(dsd_test_rmdir(directory) == 0);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     Event_History_I* history = calloc(2, sizeof(*history));
     assert(opts && state && history);
+    dsd_neo_log_set_tap(count_log_warnings, NULL);
     state->event_history_s = history;
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
@@ -1499,6 +1563,12 @@ main(void) {
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog_event_frequency(opts, state);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->event_history_s = history;
+    init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
+    init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
+    test_analog_rdio_skip_is_quiet(opts, state);
     dsd_state_ext_free_all(state);
     test_analog_hold();
     free(history);

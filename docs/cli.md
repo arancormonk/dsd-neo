@@ -1611,8 +1611,8 @@ include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
 `<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
 while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
-named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
-[row options](csv-formats.md).
+named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
+[receive configuration](config-system.md) and [row options](csv-formats.md).
 
 ### Tone filter (CTCSS/DCS receive policy)
 
