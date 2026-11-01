@@ -371,16 +371,18 @@ int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
  * Walks every target except the active one (whose tables are live in @p state and are the
  * caller's to collect; a paused scan's active target is walked too, its tables saved at the
  * pause) and appends each parked snapshot's ready FDMA/TDMA entries through
- * dsd_p25_bandplan_append_tables(), which de-duplicates by identifier, table and WACN/SYS.
+ * dsd_p25_bandplan_append_tables(), which reconciles by identifier, table and WACN/SYS.
  * Serves the band-plan export; a session without a coordinator returns @p count unchanged.
  *
  * @param state Decoder state owning the scan coordinator.
  * @param rows  Row array of at least @p cap entries.
  * @param count Rows already in @p rows.
  * @param cap   Capacity of @p rows.
+ * @param skipped Accumulates entries with no room; may be NULL.
  * @return The new row count.
  */
-int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap);
+int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap,
+                                           int* skipped);
 
 /**
  * @brief Edit one field of a target's own settings for the rest of the session ("this channel", issue #518).

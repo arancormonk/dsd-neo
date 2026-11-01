@@ -622,16 +622,20 @@ can be loaded on the next.
 Required columns (positional):
 
 1. `iden` (`0..15`) - the band-plan identifier, the top hex digit of a P25 channel number
-2. `base_hz` (integer Hz, a multiple of 5)
+2. `base_hz` (integer Hz, a multiple of 5 in the range `5..2147483645`)
 3. `spacing_hz` (integer Hz, a multiple of 125, at most 127875)
 
 Optional columns (matched by header name; the first three keep their positional meaning when unnamed):
 
-4. `type` - the P25 channel type as `IDEN_UP` carries it: `1` FDMA (default), `3` two-slot TDMA, `4` four-slot TDMA;
-   types `0..2` are treated as FDMA, anything else as TDMA
+4. `type` - the P25 channel type as `IDEN_UP` carries it: `1` FDMA, `3` two-slot TDMA, `4` four-slot TDMA;
+   types `0..2` are treated as FDMA, anything else as TDMA. Empty: FDMA unless the site names that identifier TDMA.
+   Empty types retain that fallback meaning when exported and reimported
 5. `tx_offset_hz` (signed integer Hz, default `0`) - the mobile transmit offset; a multiple of `spacing_hz` on a row
    that gives a `bandwidth_hz` or has a TDMA `type` (the `IDEN_UP_VU`/`IDEN_UP_TDMA` encoding), a multiple of 250000
-   on a standard FDMA row (the `IDEN_UP` encoding). Informational: the decoder tunes the repeater output
+   on a standard FDMA row (the `IDEN_UP` encoding, at most ±255 steps). If a standard FDMA offset cannot fit that
+   encoding, a multiple of `spacing_hz` within ±8191 steps is accepted instead. VU/TDMA offsets must fit ±8191
+   spacing steps. Export and import preserve Hz and class; the raw encoding may differ. Informational: the decoder
+   tunes the repeater output
 6. `bandwidth_hz` - `6250` or `12500` for a VHF/UHF (`IDEN_UP_VU`) identifier, empty or `0` for the standard form
 7. `wacn` / `sysid` (hex, no prefix, as the UI prints them: `W:BEE00 S:3A1`) - both or neither. A row that names a
    system applies only while the receiver is on that WACN/SYS; a row without applies everywhere
@@ -641,7 +645,19 @@ Notes:
 - Rows seed the identifier table at trust `prov` (unconfirmed). A real `IDEN_UP` from the site replaces the row the
   moment it arrives, and the table is re-seeded from the file whenever the receiver moves to another system (rows
   for the new system and rows without a system). When a file has both a row that names the current system and a
-  row without one for the same identifier, the system's row wins.
+  row without one for the same identifier, the system's row wins, whether or not either row gives a `type`, and a
+  row without a system never displaces it. On that system the row without one does not apply at all, even while the
+  system's row waits for a TDMA definition (an empty `type` beside a TDMA identifier). A typed row can replace an untyped fallback, including one learned
+  from an LCW; a typed OTA entry is never displaced by a seed. Untyped
+  rows remain stored while TDMA applies, so they can still supply the fallback on another system.
+- Filling an empty identifier slot from a band plan or a peer preserves `-C` channel-map entries. Replacing a
+  populated definition or dropping an untyped/foreign entry clears that identifier's map range, including user
+  entries, just as an OTA identifier update does. Computed and user map entries share the same storage.
+- Export prefers typed definitions over untyped definitions of the same identifier, class and WACN/SYS, and omits
+  untyped FDMA when TDMA of that exact scope is present. Global and system-scoped rows remain separate. If the
+  64-row limit prevents additional entries being written, it warns
+  `WARNING: P25 band plan export: 64-row limit reached; N more entries not written`. Each omitted entry seen on
+  another parked target counts again; stronger replacements and suppressed fallbacks do not count.
 - A row with a bad value is skipped with a warning naming the row; a duplicate identifier (same `iden`, FDMA/TDMA
   class and system) replaces the earlier row; a file with no usable row is refused and leaves the previous plan in
   place. At most 64 rows are kept.

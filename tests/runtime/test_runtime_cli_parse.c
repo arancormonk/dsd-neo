@@ -7188,7 +7188,7 @@ test_f_manual_selectors_leave_analog_monitor(void) {
         free(state);
     }
 
-    /* An -f selector no branch handles still changes nothing at all. */
+    /* An -f selector no branch handles is refused (issue #794) and changes nothing at all. */
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -7205,7 +7205,12 @@ test_f_manual_selectors_leave_analog_monitor(void) {
     char* argv[] = {arg0, arg1, arg2, NULL};
     int argc_effective = 0;
     int exit_rc = -1;
-    (void)dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    char err[1024];
+    const int parsed = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || !strstr(err, "-fQ is not a decode mode")) {
+        DSD_FPRINTF(stderr, "-fA -fQ: rc=%d exit_rc=%d\n%s\n", parsed, exit_rc, err);
+        test_rc = 1;
+    }
     if (opts->analog_only != 1 || opts->monitor_input_audio != 1) {
         DSD_FPRINTF(stderr, "an unrecognized -f selector half-left analog monitor (analog_only=%d monitor=%d)\n",
                     opts->analog_only, opts->monitor_input_audio);
@@ -7388,6 +7393,49 @@ test_f_tetra_needs_iq_or_symbols(void) {
         test_rc = 1;
     }
     am_cli_free(&run);
+    return test_rc;
+}
+
+/* Issue #794: `-f3` is no decode mode. It used to leave the session in Auto without a word; it now stops with the
+ * reason, on a radio input and on the default one alike. Every documented -f letter still parses (an I/Q input, which
+ * -fM and -fT need). */
+static int
+test_f_unknown_selector_refused(void) {
+    static const char* const refused[] = {"-f3", "-fq", "-fQ", "-f0"};
+    static const char* const accepted[] = {"-fa", "-fA", "-fM", "-fd", "-fx", "-ft", "-f1", "-f2", "-fs",
+                                           "-fr", "-fi", "-fn", "-fy", "-fm", "-fz", "-fT", "-fp", "-fh",
+                                           "-fH", "-fe", "-fE", "-fZ", "-fB", "-fP", "-fU"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        for (int with_input = 0; with_input < 2; with_input++) {
+            const char* const radio[] = {"dsd-neo", refused[i], "-i", "rtl:0:851.375M", NULL};
+            const char* const plain[] = {"dsd-neo", refused[i], NULL};
+            am_cli_run run;
+            if (am_cli_parse(with_input ? radio : plain, 0, &run) != 0) {
+                return 1;
+            }
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "%s is not a decode mode", refused[i]);
+            if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1 || !strstr(run.err, want)) {
+                DSD_FPRINTF(stderr, "%s (input %d): rc=%d exit_rc=%d\n%s\n", refused[i], with_input, run.rc,
+                            run.exit_rc, run.err);
+                test_rc = 1;
+            }
+            am_cli_free(&run);
+        }
+    }
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        const char* const args[] = {"dsd-neo", accepted[i], "-i", "rtl:0:851.375M", NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc == DSD_PARSE_ERROR || strstr(run.err, "is not a decode mode")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\n%s\n", accepted[i], run.rc, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
     return test_rc;
 }
 
@@ -8699,6 +8747,39 @@ test_src_csv_allowed_with_trunk_scan(void) {
         free(state);
     }
     return test_rc;
+}
+
+static int
+test_p25_bandplan_manual_identity(void) {
+    const char* contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                           "4,769006250,12500,1,0,0,,\n"
+                           "4,850000000,6250,1,0,0,00001,001\n"
+                           "4,860000000,12500,1,0,0,00002,002\n";
+    char path[1024];
+    if (test_create_temp_csv_with_contents(contents, path, sizeof path) != 0) {
+        return 1;
+    }
+    int failed = 0;
+    for (int repeated = 0; repeated < 2; repeated++) {
+        const char* const single[] = {"dsd-neo", "--p25-bandplan", path, "-X", "00001001001", NULL};
+        const char* const twice[] = {"dsd-neo", "--p25-bandplan", path, "-X", "00001001001", "-X", "00002002002", NULL};
+        am_cli_run run;
+        if (am_cli_parse(repeated ? twice : single, 0, &run) != 0) {
+            (void)remove(path);
+            return 1;
+        }
+        const p25_iden_entry_t* e = &run.state->p25_iden_fdma[4];
+        const long want = repeated ? 860000000L : 850000000L;
+        if (run.rc != DSD_PARSE_CONTINUE || e->wacn != (unsigned)(repeated + 1) || e->sysid != (unsigned)(repeated + 1)
+            || e->base_freq * 5 != want) {
+            DSD_FPRINTF(stderr, "FAIL X%d scoped seed: WACN=%llX SYS=%llX frequency=%ld want=%ld\n", repeated + 1,
+                        e->wacn, e->sysid, e->base_freq * 5, want);
+            failed = 1;
+        }
+        am_cli_free(&run);
+    }
+    (void)remove(path);
+    return failed;
 }
 
 static int
@@ -11163,6 +11244,7 @@ main(void) {
     rc |= test_src_csv_missing_file_returns_error();
     rc |= test_src_csv_missing_value_returns_error();
     rc |= test_src_csv_allowed_with_trunk_scan();
+    rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();
     rc |= test_p25_bandplan_missing_file_returns_error();
     rc |= test_p25_bandplan_missing_value_returns_error();
@@ -11230,6 +11312,7 @@ main(void) {
     rc |= test_f_am_preset_on_iq_inputs();
     rc |= test_f_am_refused_on_pcm_input();
     rc |= test_f_tetra_needs_iq_or_symbols();
+    rc |= test_f_unknown_selector_refused();
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();

@@ -657,11 +657,16 @@ typedef struct {
     uint8_t bw_vu;            // 4-bit VHF/UHF bandwidth (0=standard/not VHF-UHF, nonzero=VHF/UHF BW)
     uint8_t trust;            // 0=unknown, 1=unconfirmed, 2=confirmed on matching CC
     uint8_t populated;        // 0=empty, 1=has valid complete data from LCW/TSBK/MAC/PDU
+    uint8_t flags;            // P25_IDEN_F_* provenance and offset encoding
     unsigned long long wacn;  // WACN provenance (system context when IDEN was learned)
     unsigned long long sysid; // SysID provenance
     unsigned long long rfss;  // RFSS ID provenance
     unsigned long long site;  // Site ID provenance
 } p25_iden_entry_t;
+
+#define P25_IDEN_F_UNTYPED        0x01U // no channel type was supplied; FDMA fallback
+#define P25_IDEN_F_OFF_SPACING    0x02U // trans_off counts channel spacings, otherwise 250 kHz
+#define P25_IDEN_F_SEEDED         0x04U // installed by the user band plan
 
 /** Capacity of the user-supplied P25 band plan: four systems' worth of 16 identifiers. */
 #define DSD_P25_BANDPLAN_MAX_ROWS 64
@@ -2818,26 +2823,37 @@ int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
 
+/** Usable encoded base/spacing within the portable trunk frequency range. */
+int dsd_p25_iden_params_usable(long base, int spacing);
+
+/** Whether a usable TDMA entry has zero provenance or names the current system. */
+int dsd_state_p25_iden_tdma_applies(const dsd_state* state, int iden);
+
+/** Drop an untyped FDMA fallback when TDMA applies; return 1 if dropped. No cache work. */
+int dsd_state_p25_iden_reconcile(dsd_state* state, int iden);
+
+/** Clear one identifier's channel-map range (including user channel-map rows). */
+void dsd_state_p25_invalidate_iden_chan_map(dsd_state* state, int iden);
+
 /**
- * Seed the live IDEN tables from the stored band plan (p25_bandplan_rows).
- *
- * Only empty slots are filled, never an over-the-air entry. Rows that name the
- * current WACN/SYS go first and may take over a slot a global row of the same
- * plan seeded earlier; rows that name another system are skipped, and rows that
- * name any system wait until the identity is known. Each seeded slot gets trust
- * 1, zero rfss/site, and its FDMA or TDMA bit in p25_chan_tdma_explicit[].
- * Returns the number of slots written.
+ * Seed TDMA, reconcile, then seed FDMA, scoped rows before global rows in each class.
+ * Typed rows may replace untyped entries; scoped rows may replace global seeds, never
+ * typed OTA entries. Untyped rows wait while TDMA applies. Fills preserve the channel
+ * map; replacements/drops invalidate once per identifier. Return the slots written.
  */
 int dsd_state_p25_bandplan_seed(dsd_state* state);
 
+/** Internal lifecycle variant: return writes and report replacements/drops without invalidating. */
+int dsd_state_p25_bandplan_seed_mask(dsd_state* state, uint16_t* changed_idens);
+
 /**
- * Append every ready entry (populated, base and spacing set) of two IDEN tables
- * to `rows` as band-plan rows, skipping an identifier/table/system already in
- * the list, so several targets' tables can be merged into one export. Either
- * table may be NULL. Returns the new row count (never above `cap`).
+ * Collect usable entries, preferring typed rows over untyped rows of the same key.
+ * TDMA suppresses untyped FDMA only within the exact same system scope. All candidates
+ * are considered even at capacity. Add entries with no room to skipped (may be NULL).
+ * Either table may be NULL. Return the new row count, never above cap.
  */
 int dsd_p25_bandplan_append_tables(p25_bandplan_row_t* rows, int count, int cap, const p25_iden_entry_t* fdma,
-                                   const p25_iden_entry_t* tdma);
+                                   const p25_iden_entry_t* tdma, int* skipped);
 
 /**
  * Ensure name-store indices 0..count-1 are addressable: grows by doubling and

@@ -12,15 +12,23 @@
  * FDMA IDEN entries rather than base-only provisional entries.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/file_compat.h"
+#include "p25_iden_test_vectors.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -80,6 +88,35 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
+}
+
+// Alias decode helper stubs referenced by VPDU handler
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)len;
+    (void)input;
 }
 
 static int
@@ -348,10 +385,309 @@ test_iden_cache_invalidation_covers_last_channel(void) {
     return rc;
 }
 
+#if LONG_MAX > 2147483647L
+_Static_assert(sizeof(p25_iden_entry_t) == 56, "IDEN flags must fit existing LP64 padding");
+#endif
+
+static void
+iden_local_system(dsd_state* state) {
+    state->p2_wacn = 0x1490E;
+    state->p2_sysid = 0xCFF;
+    state->synctype = 0;
+    state->p25_cc_is_tdma = 0;
+}
+
+static int
+iden_expect_tdma(const char* tag, const dsd_opts* opts, dsd_state* state) {
+    p25_freq_trace_t trace;
+    int rc = expect_eq_long(tag, process_channel_to_freq_trace(opts, state, 0x4119, &trace), 770756250L);
+    rc |= expect_eq_int(tag, state->p25_chan_tdma_explicit[4], 2);
+    rc |= expect_eq_int(tag, state->p25_iden_fdma[4].populated, 0);
+    rc |= expect_eq_int(tag, trace.denom, 2);
+    rc |= expect_eq_int(tag, strcmp(trace.source, "iden-tdma"), 0);
+    char suffix[64];
+    p25_format_chan_suffix(state, 0x4119, -1, suffix, sizeof suffix);
+    rc |= expect_eq_int(tag, strstr(suffix, "FDMA 008C S2") != NULL, 1);
+    return rc;
+}
+
+static int
+test_iden_arrival_orders(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    int rc = 0;
+    const int opcodes[] = {0x73, 0xF3};
+    for (int format = 0x58; format <= 0x59; format++) {
+        for (int op = 0; op < 2; op++) {
+            for (int lcw_first = 0; lcw_first < 2; lcw_first++) {
+                DSD_MEMSET(state, 0, sizeof *state);
+                iden_local_system(state);
+                if (lcw_first) {
+                    iden_test_lcw(opts, state, format, 769006250 / 5, 100);
+                    p25_freq_trace_t trace;
+                    rc |= expect_eq_long("T2 before", process_channel_to_freq_trace(opts, state, 0x4119, &trace),
+                                         772518750L);
+                    rc |= expect_eq_int("T2 before trace", strcmp(trace.source, "iden-fdma"), 0);
+                }
+                iden_test_mac(opts, state, opcodes[op], 4, 3, 769006250 / 5, 100, 0x1490E, 0xCFF, 1);
+                if (!lcw_first) {
+                    iden_test_lcw(opts, state, format, 769006250 / 5, 100);
+                }
+                rc |= iden_expect_tdma(lcw_first ? "T2 LCW first" : "T1 TDMA first", opts, state);
+            }
+        }
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_typed_fdma_preserved(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    int rc = 0;
+    for (int type = 0; type < 3; type++) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        iden_local_system(state);
+        iden_test_mac(opts, state, type == 1 ? 0x7D : 0x73, 4, type, 769006250 / 5, 100, 0, 0, 1);
+        iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+        rc |= expect_eq_int("T4 typed FDMA type", state->p25_iden_fdma[4].chan_type, type);
+        rc |= expect_eq_int("T4 typed FDMA flags", state->p25_iden_fdma[4].flags, 0);
+        iden_test_mac(opts, state, 0x73, 4, 3, 769006250 / 5, 100, 0, 0, 1);
+        rc |= expect_eq_int("T3 two typed entries", state->p25_chan_tdma_explicit[4], 3);
+        p25_freq_trace_t trace;
+        rc |= expect_eq_long("T3 Phase 1 context", process_channel_to_freq_trace(opts, state, 0x4119, &trace),
+                             772518750L);
+        state->p25_cc_is_tdma = 1;
+        rc |= expect_eq_long("T3 Phase 2 context", process_channel_to_freq_trace(opts, state, 0x4119, &trace),
+                             770756250L);
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_lcw_keeps_tdma_numbers(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    iden_local_system(state);
+    iden_test_mac(opts, state, 0x73, 4, 3, 769006250 / 5, 100, 0, 0, 1);
+    const p25_iden_entry_t before = state->p25_iden_tdma[4];
+    state->trunk_chan_map[0x4001] = 12345;
+    iden_test_lcw(opts, state, 0x58, 850000000 / 5, 50);
+    int rc = iden_expect_tdma("T6 differing LCW", opts, state);
+    rc |= expect_eq_long("T6 cache unchanged", state->trunk_chan_map[0x4001], 12345);
+    rc |= expect_eq_int("T6 TDMA unchanged", memcmp(&before, &state->p25_iden_tdma[4], sizeof before), 0);
+    for (int format = 0x58; format <= 0x59; format++) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        iden_test_lcw(opts, state, format, 769006250 / 5, 100);
+        rc |= expect_eq_long("T7 LCW only", process_channel_to_freq(opts, state, 0x4119), 772518750L);
+        const int flags = P25_IDEN_F_UNTYPED | (format == 0x59 ? P25_IDEN_F_OFF_SPACING : 0);
+        rc |= expect_eq_int("T7 flags", state->p25_iden_fdma[4].flags, flags);
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_iden_unusable_case(int opcode, uint32_t base, int spacing, int lcw_first) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    if (lcw_first) {
+        iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+    }
+    state->trunk_chan_map[0x4119] = 12345;
+    if (opcode < 0x60) {
+        iden_test_lcw(opts, state, opcode, base, spacing);
+    } else {
+        iden_test_mac(opts, state, opcode, 4, 3, base, spacing, 0, 0, 1);
+    }
+    int rc = expect_eq_long("T5 unusable preserves map", state->trunk_chan_map[0x4119], 12345);
+    rc |= expect_eq_int("T5 unusable preserves hint", state->p25_chan_tdma_explicit[4], lcw_first);
+    if (!lcw_first) {
+        iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+    }
+    rc |= expect_eq_int("T5 no unusable TDMA", state->p25_iden_tdma[4].populated, 0);
+    rc |= expect_eq_long("T5 usable LCW remains", state->p25_iden_fdma[4].base_freq, 769006250 / 5);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_unusable_keeps_typed_entry(int opcode) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    iden_test_mac(opts, state, opcode, 4, 3, 769006250 / 5, 100, 0, 0, 1);
+    const p25_iden_entry_t f = state->p25_iden_fdma[4], t = state->p25_iden_tdma[4];
+    const uint8_t hint = state->p25_chan_tdma_explicit[4];
+    const uint32_t bases[] = {0, 769006250 / 5, DSD_TRUNK_FREQ_MAX_HZ / 5 + 1U, 0xFFFFFFFFU};
+    int rc = 0;
+    for (int value = 0; value < 4; value++) {
+        state->trunk_chan_map[0x4119] = 12345;
+        iden_test_mac(opts, state, opcode, 4, 3, bases[value], value == 1 ? 0 : 100, 0, 0, 1);
+        rc |= expect_eq_int("T5 earlier typed FDMA kept", memcmp(&f, &state->p25_iden_fdma[4], sizeof f), 0);
+        rc |= expect_eq_int("T5 earlier typed TDMA kept", memcmp(&t, &state->p25_iden_tdma[4], sizeof t), 0);
+        rc |= expect_eq_int("T5 earlier typed hint kept", state->p25_chan_tdma_explicit[4], hint);
+        rc |= expect_eq_long("T5 earlier typed cache kept", state->trunk_chan_map[0x4119], 12345);
+    }
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_iden_bounds_and_crc(void) {
+    const int opcodes[] = {0x73, 0x74, 0x7D, 0xF3, 0x58, 0x59};
+    const uint32_t bases[] = {0, 769006250 / 5, DSD_TRUNK_FREQ_MAX_HZ / 5 + 1U, 0xFFFFFFFFU};
+    int rc = 0;
+    for (unsigned op = 0; op < sizeof opcodes / sizeof opcodes[0]; op++) {
+        for (int value = 0; value < 4; value++) {
+            for (int order = 0; order < 2; order++) {
+                rc |= test_iden_unusable_case(opcodes[op], bases[value], value == 1 ? 0 : 100, order);
+            }
+        }
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+        dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+        assert(opts && state);
+        if (opcodes[op] < 0x60) {
+            iden_test_lcw(opts, state, opcodes[op], DSD_TRUNK_FREQ_MAX_HZ / 5, 100);
+        } else {
+            iden_test_mac(opts, state, opcodes[op], 4, 3, DSD_TRUNK_FREQ_MAX_HZ / 5, 100, 0, 0, 1);
+        }
+        p25_iden_entry_t fdma = state->p25_iden_fdma[4], tdma = state->p25_iden_tdma[4];
+        rc |= expect_eq_int("T5 maximum usable base", fdma.populated + tdma.populated, 1);
+        if (opcodes[op] >= 0x60) {
+            rc |= test_unusable_keeps_typed_entry(opcodes[op]);
+            state->trunk_chan_map[0x4119] = 12345;
+            const uint8_t hint = state->p25_chan_tdma_explicit[4];
+            iden_test_mac(opts, state, opcodes[op], 4, 1, 769006250 / 5, 50, 1, 1, 0);
+            rc |= expect_eq_int("T10 CRC FDMA unchanged", memcmp(&fdma, &state->p25_iden_fdma[4], sizeof fdma), 0);
+            rc |= expect_eq_int("T10 CRC TDMA unchanged", memcmp(&tdma, &state->p25_iden_tdma[4], sizeof tdma), 0);
+            rc |= expect_eq_int("T10 CRC hint unchanged", state->p25_chan_tdma_explicit[4], hint);
+            rc |= expect_eq_long("T10 CRC cache unchanged", state->trunk_chan_map[0x4119], 12345);
+        }
+        free(opts);
+        free(state);
+    }
+    return rc;
+}
+
+static int
+test_foreign_and_identity(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    int rc = 0;
+    for (int same_wacn = 0; same_wacn < 2; same_wacn++) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        iden_local_system(state);
+        iden_test_mac(opts, state, 0x73, 4, 3, 769006250 / 5, 100, 0, 0, 1);
+        state->trunk_chan_map[0x4119] = 12345;
+        iden_test_mac(opts, state, 0xF3, 4, 3, 850000000 / 5, 50, same_wacn ? 0x1490E : 1, 1, 1);
+        rc |= expect_eq_long("T8 foreign cache intact", state->trunk_chan_map[0x4119], 12345);
+        rc |= expect_eq_long("T8 local TDMA kept", state->p25_iden_tdma[4].base_freq, 769006250 / 5);
+    }
+    DSD_MEMSET(state, 0, sizeof *state);
+    iden_test_mac(opts, state, 0xF3, 4, 3, 850000000 / 5, 50, 1, 1, 1);
+    iden_test_mac(opts, state, 0xF3, 5, 3, 769006250 / 5, 100, 0x1490E, 0xCFF, 1);
+    rc |= expect_eq_int("T8 unknown stores extended", state->p25_iden_tdma[4].populated, 1);
+    state->trunk_chan_map[0x4119] = 12345;
+    (void)p25_update_system_identity(state, 0x1490E, 0xCFF);
+    rc |= expect_eq_int("T8 first learn drops foreign", state->p25_iden_tdma[4].populated, 0);
+    rc |= expect_eq_long("T8 first learn purges cache", state->trunk_chan_map[0x4119], 0);
+    rc |= expect_eq_int("T8 matching entry kept", state->p25_iden_tdma[5].populated, 1);
+    DSD_MEMSET(state, 0, sizeof *state);
+    iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+    iden_test_mac(opts, state, 0xF3, 4, 3, 769006250 / 5, 100, 0x1490E, 0xCFF, 1);
+    rc |= expect_eq_int("T9 not applicable yet", state->p25_iden_fdma[4].populated, 1);
+    (void)p25_update_system_identity(state, 0x1490E, 0xCFF);
+    rc |= iden_expect_tdma("T9 first learn reconciles", opts, state);
+    (void)p25_update_system_identity(state, 2, 2);
+    rc |= expect_eq_int("T9 known change resets", state->p25_chan_tdma_explicit[4], 0);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+iden_offset_csv_roundtrip(const dsd_state* state) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "p25wireoffset");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    p25_bandplan_row_t rows[16];
+    const int count = dsd_p25_bandplan_append_tables(rows, 0, 16, state->p25_iden_fdma, NULL, NULL);
+    int rc = expect_eq_int("T14 wire CSV export", csvP25BandplanExportRows(path, rows, count), 0);
+    FILE* fp = dsd_fopen_private(path, "r");
+    assert(fp);
+    char text[512] = {0};
+    const size_t text_len = fread(text, 1, sizeof text - 1, fp);
+    fclose(fp);
+    rc |= expect_eq_int("T14 wire CSV read", text_len > 0U, 1);
+    rc |= expect_eq_int("T14 wire exported 1 MHz", strstr(text, "4,769006250,12500,1,1000000,0,,") != NULL, 1);
+    dsd_state* back = (dsd_state*)calloc(1, sizeof *back);
+    assert(back);
+    rc |= expect_eq_int("T14 wire CSV import", csvP25BandplanImportPath(path, back), 0);
+    const p25_iden_entry_t* e = &back->p25_iden_fdma[4];
+    const long unit = (e->flags & P25_IDEN_F_OFF_SPACING) ? 12500 : 250000;
+    rc |= expect_eq_long("T14 wire roundtrip Hz", e->trans_off * unit, 1000000);
+    rc |= expect_eq_int("T14 wire roundtrip FDMA", e->populated, 1);
+    (void)remove(path);
+    free(back);
+    return rc;
+}
+
+static int
+test_foreign_fdma_lcw_and_metadata(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    int rc = 0;
+    for (int cleared = 0; cleared < 2; cleared++) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        if (cleared) {
+            (void)p25_update_system_identity(state, 1, 1);
+        }
+        iden_test_mac(opts, state, 0xF3, 4, 1, 850000000 / 5, 100, 1, 1, 1);
+        state->p2_wacn = state->p2_sysid = 0;
+        iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+        (void)p25_update_system_identity(state, 0x1490E, 0xCFF);
+        iden_test_mac(opts, state, 0x73, 4, 3, 769006250 / 5, 100, 0, 0, 1);
+        rc |= iden_expect_tdma("T4 foreign typedness discarded", opts, state);
+    }
+    for (int opcode = 0x73; opcode <= 0xF3; opcode += 0x80) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        iden_test_mac(opts, state, 0x74, 4, 5, 450000000 / 5, 100, 0, 0, 1);
+        iden_test_mac(opts, state, opcode, 4, 1, 769006250 / 5, 100, 0, 0, 1);
+        rc |= expect_eq_int("T14 VU bandwidth cleared", state->p25_iden_fdma[4].bw_vu, 0);
+        rc |= expect_eq_int("T14 spacing offset flag", state->p25_iden_fdma[4].flags, P25_IDEN_F_OFF_SPACING);
+        rc |= expect_eq_long("T14 offset Hz", state->p25_iden_fdma[4].trans_off * 12500L, 1000000);
+        rc |= iden_offset_csv_roundtrip(state);
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
 
+    rc |= test_iden_arrival_orders();
+    rc |= test_typed_fdma_preserved();
+    rc |= test_lcw_keeps_tdma_numbers();
+    rc |= test_iden_bounds_and_crc();
+    rc |= test_foreign_and_identity();
+    rc |= test_foreign_fdma_lcw_and_metadata();
     rc |= test_lcw_standard_populates_fdma();
     rc |= test_lcw_vuhf_populates_fdma();
     rc |= test_lcw_control_channel_provenance_promotes_trust();

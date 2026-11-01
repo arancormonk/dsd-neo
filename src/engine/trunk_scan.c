@@ -2767,24 +2767,28 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
 /*
  * Peer IDEN sharing (#402). Two scan targets that are sites of one P25 system (same WACN/SYS)
  * announce the same IDEN_UP tables, so an identifier one target has already learned is a valid
- * seed for the other. Copy only into empty live slots, only from a parked peer's snapshot entry
+ * seed for the other. Fill empty slots or replace untyped FDMA with typed FDMA, from a parked peer's entry
  * that carries this system's identity, and only at trust 1: the over-the-air announcement on
  * this site confirms it, and an entry from a different system (or with no provenance at all)
  * never crosses. Everything else in the snapshots stays isolated per target.
  */
 static int
 trunk_scan_share_peer_iden_slot(const dsd_trunk_scan_coord* coord, size_t self, unsigned long long wacn,
-                                unsigned long long sysid, int iden, int is_tdma, p25_iden_entry_t* live) {
+                                unsigned long long sysid, int iden, int is_tdma, int skip_untyped,
+                                p25_iden_entry_t* live) {
     for (size_t j = 0; j < coord->count; j++) {
         if (j == self) {
             continue;
         }
         const dsd_trunk_scan_snapshot* peer = &coord->targets[j].snapshot;
         const p25_iden_entry_t* src = is_tdma ? &peer->p25_iden_tdma[iden] : &peer->p25_iden_fdma[iden];
-        if (!src->populated || src->base_freq == 0 || src->chan_spac == 0) {
+        if (!src->populated || !dsd_p25_iden_params_usable(src->base_freq, src->chan_spac)) {
             continue;
         }
         if ((src->wacn == 0ULL && src->sysid == 0ULL) || src->wacn != wacn || src->sysid != sysid) {
+            continue;
+        }
+        if (skip_untyped && (src->flags & P25_IDEN_F_UNTYPED)) {
             continue;
         }
         *live = *src;
@@ -2793,6 +2797,24 @@ trunk_scan_share_peer_iden_slot(const dsd_trunk_scan_coord* coord, size_t self, 
         return 1;
     }
     return 0;
+}
+
+static int
+trunk_scan_share_peer_fdma(const dsd_trunk_scan_coord* coord, size_t self, dsd_state* state, int iden) {
+    p25_iden_entry_t* fdma = &state->p25_iden_fdma[iden];
+    const int occupied = fdma->populated;
+    if (occupied && !(fdma->flags & P25_IDEN_F_UNTYPED)) {
+        return 0;
+    }
+    /* A typed peer first, from any peer; an untyped fallback only into an empty slot, only while no TDMA entry
+       applies, and only when no peer has a typed one. */
+    if (!trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0, 1, fdma)
+        && (occupied || dsd_state_p25_iden_tdma_applies(state, iden)
+            || !trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0, 0, fdma))) {
+        return 0;
+    }
+    state->p25_chan_tdma_explicit[iden] |= 0x01;
+    return occupied ? 2 : 1; // replacement or fill
 }
 
 static void
@@ -2809,17 +2831,18 @@ trunk_scan_share_peer_idens(const dsd_trunk_scan_coord* coord, dsd_state* state,
     const size_t self = (size_t)(rt - coord->targets);
     int shared = 0;
     for (int iden = 0; iden < 16; iden++) {
-        if (!state->p25_iden_fdma[iden].populated
-            && trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0,
-                                               &state->p25_iden_fdma[iden])) {
-            state->p25_chan_tdma_explicit[iden] |= 0x01;
-            shared++;
-        }
         if (!state->p25_iden_tdma[iden].populated
-            && trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 1,
+            && trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 1, 0,
                                                &state->p25_iden_tdma[iden])) {
             state->p25_chan_tdma_explicit[iden] |= 0x02;
             shared++;
+        }
+        int invalidate = dsd_state_p25_iden_reconcile(state, iden);
+        const int fdma_shared = trunk_scan_share_peer_fdma(coord, self, state, iden);
+        invalidate |= fdma_shared == 2;
+        shared += fdma_shared != 0;
+        if (invalidate) {
+            dsd_state_p25_invalidate_iden_chan_map(state, iden);
         }
     }
     if (shared > 0) {
@@ -4973,7 +4996,8 @@ dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap) {
+dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap,
+                                       int* skipped) {
     const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
     if (!coord || !rows) {
         return count;
@@ -4983,7 +5007,8 @@ dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandpl
             continue; /* live in state: the caller collects those; a paused target's are in its snapshot */
         }
         const dsd_trunk_scan_snapshot* snapshot = &coord->targets[i].snapshot;
-        count = dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->p25_iden_fdma, snapshot->p25_iden_tdma);
+        count =
+            dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->p25_iden_fdma, snapshot->p25_iden_tdma, skipped);
     }
     return count;
 }

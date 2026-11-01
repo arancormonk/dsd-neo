@@ -555,6 +555,10 @@ Notes
 
 ## Modes & Decoders (`-f`)
 
+`-f` takes one of the letters below. Any other letter (`-f3`, say) stops startup with
+`-f3 is not a decode mode; see dsd-neo -h for the -f letters` instead of leaving the session in Auto; a Qt or
+Android session whose saved extra arguments carry one refuses to start the same way.
+
 - Auto (the default): `-fa`, or no `-f` at all. Every digital mode except TETRA (NXDN48 and NXDN96 included; see
   the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
@@ -1916,7 +1920,10 @@ is delayed.
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.
 - Export the learned P25 band plan at clean shutdown: `--p25-bandplan-export <file>` — writes the identifier
   tables learned this run (every target's under `--trunk-scan`, tagged with their WACN/SYS) in the same format, so
-  the next run can load them with `--p25-bandplan`. The terminal menu has the same action live.
+  the next run can load them with `--p25-bandplan`. The terminal menu has the same action live. LCW-only entries
+  export with an empty type and yield to a TDMA definition when reimported; typed definitions take precedence
+  within the same system scope. Export warns when the 64-row limit omits entries. See `docs/csv-formats.md` for
+  the offset encoding and channel-map invalidation rules.
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns; exact IDs,
   ranges and digit patterns such as `12xx` or `*`): `-G <file>`; pattern starter in `examples/group_patterns.csv`
 - Source ID list CSV (radio ID names; with a `mode` header column also block, mute, recording and export rules by

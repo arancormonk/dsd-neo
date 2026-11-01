@@ -28,9 +28,13 @@ dsd_engine_p25_bandplan_export(const dsd_opts* opts, const dsd_state* state, con
     DSD_MEMSET(rows, 0, sizeof rows);
     /* The live tables first: under trunk scan they belong to the active target, whose parked
      * snapshot may be stale, so the coordinator walks only the other targets. */
-    int count =
-        dsd_p25_bandplan_append_tables(rows, 0, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma, state->p25_iden_tdma);
-    count = dsd_engine_trunk_scan_append_p25_idens(state, rows, count, DSD_P25_BANDPLAN_MAX_ROWS);
+    int skipped = 0;
+    int count = dsd_p25_bandplan_append_tables(rows, 0, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma,
+                                               state->p25_iden_tdma, &skipped);
+    count = dsd_engine_trunk_scan_append_p25_idens(state, rows, count, DSD_P25_BANDPLAN_MAX_ROWS, &skipped);
+    if (skipped > 0) {
+        LOG_WARN("WARNING: P25 band plan export: 64-row limit reached; %d more entries not written\n", skipped);
+    }
     if (count <= 0) {
         LOG_WARN("WARNING: P25 band plan export: no identifier has been learned yet; nothing written to '%s'.\n", path);
         return -1;

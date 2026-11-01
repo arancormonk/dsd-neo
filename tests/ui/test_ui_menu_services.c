@@ -1,7 +1,3 @@
-#include <dsd-neo/core/airspy_config.h>
-#include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/receive_types.h>
-#include <dsd-neo/runtime/receive_policy.h>
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -11,8 +7,10 @@
  * Deterministic contracts for terminal UI menu service helpers.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_input_switch.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -23,6 +21,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -48,6 +47,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
@@ -3082,6 +3082,40 @@ test_describe_monitor_return_refusal(void) {
 }
 #endif
 
+static int
+test_p2_identity_lifecycle(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    if (!state) {
+        return 1;
+    }
+    p25_iden_entry_t* fdma = &state->p25_iden_fdma[4];
+    fdma->populated = 1;
+    fdma->base_freq = 769006250 / 5;
+    fdma->chan_spac = 100;
+    fdma->chan_type = 1;
+    fdma->flags = P25_IDEN_F_UNTYPED;
+    state->p25_iden_tdma[4] = *fdma;
+    state->p25_iden_tdma[4].flags = P25_IDEN_F_OFF_SPACING;
+    state->p25_iden_tdma[4].chan_type = 3;
+    state->p25_iden_tdma[4].wacn = 0x1490E;
+    state->p25_iden_tdma[4].sysid = 0xCFF;
+    state->p25_chan_tdma_explicit[4] = 3;
+    state->p2_cc_verified = 1;
+    svc_set_p2_params(state, 0x1490E, 0xCFF, 0xCF1);
+    int rc = expect_int("T18 first learn reconciles", fdma->populated, 0);
+    rc |= expect_int("T18 hint TDMA", state->p25_chan_tdma_explicit[4], 2);
+    rc |= expect_int("T18 hardset", state->p2_hardset, 1);
+    rc |= expect_int("T18 hand-set not verified", state->p2_cc_verified, 0);
+    svc_set_p2_params(state, 0, 0, 0);
+    rc |= expect_int("T18 clear keeps tables", state->p25_iden_tdma[4].populated, 1);
+    rc |= expect_int("T18 clear hardset", state->p2_hardset, 0);
+    svc_set_p2_params(state, 0x1490E, 0xCFF, 0xCF1);
+    svc_set_p2_params(state, 2, 2, 2);
+    rc |= expect_int("T18 known change resets", state->p25_iden_tdma[4].populated, 0);
+    free(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3119,6 +3153,7 @@ main(void) {
     rc |= test_key_import_arms_keyloader();
     rc |= test_clear_services_unload_what_the_importers_loaded();
     rc |= test_p25_bandplan_import_and_export_services();
+    rc |= test_p2_identity_lifecycle();
     return rc ? 1 : 0;
 }
 

@@ -378,8 +378,8 @@ control-channel state from one system is never reused on another. That is also w
 channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
 `p25_bandplan_csv` straight from the path, so neither touches the live options.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
-snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator copies it into an empty slot at
-trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()` in
+snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
+untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in
 `src/engine/p25_bandplan_export.c` merges every target's tables into one band-plan CSV. The keyring is not snapshotted: each target instead carries a static
 `dsd_key_set` (key-file or direct-key columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
@@ -1437,8 +1437,8 @@ suite runs under this compiler.
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
   IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV
   (`csvP25BandplanImportPath()`/`csvP25BandplanExportRows()`, dry run `dsd_csv_validate_p25_bandplan_file()`);
-  `src/core/util/dsd_state_p25_bandplan.c` holds the seeding rule (`dsd_state_p25_bandplan_seed()`: only empty
-  slots, rows naming the current WACN/SYS before rows naming none, an over-the-air entry is never displaced) that
+  `src/core/util/dsd_state_p25_bandplan.c` holds the seeding rule (`dsd_state_p25_bandplan_seed()`: TDMA first,
+  reconcile untyped fallbacks, then FDMA; scoped before global in each class; typed OTA entries stay) that
   the importer and `p25_update_system_identity()` both apply, and `dsd_p25_bandplan_append_tables()`, the reverse
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
@@ -6460,6 +6460,33 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
     `dsd-neo_proto_ysf`, `dsd-neo_proto_tetra`
 
 Notes:
+
+- P25 identifier tables (issue #794): `p25_iden_entry_t::flags` carries `P25_IDEN_F_UNTYPED` (LCW 0x58/0x59 or
+  CSV empty type), `P25_IDEN_F_OFF_SPACING` (offset in channel spacings, otherwise 250 kHz), and
+  `P25_IDEN_F_SEEDED` (user band plan). Whole-entry snapshot/share copies preserve these flags; OTA writers assign
+  them afresh. The core `dsd_p25_iden_params_usable()` requires positive spacing and a base in
+  `1..DSD_TRUNK_FREQ_MAX_HZ/5` encoded units, before any ingestion changes tables, hints or cache. MAC CRC gates
+  run first. A known system rejects foreign extended 0xF3 updates; unknown identity retains their provenance.
+  `dsd_state_p25_iden_tdma_applies()` requires a populated usable TDMA entry with zero or current-system provenance.
+  An LCW leaves such a TDMA entry untouched, including its numbers; otherwise it supplies an untyped FDMA fallback,
+  preserving an existing FDMA type only when that entry's provenance applies. Two typed entries retain the existing
+  context rule. Grant resolution and `process_channel_to_freq()` do no new work.
+  `dsd_state_p25_iden_reconcile()` drops untyped FDMA when TDMA applies: after TDMA writes, between TDMA and FDMA
+  seed/share passes, and on identity learn. Untyped seed rows are suppressed before writing while TDMA applies,
+  but remain in the stored plan for another system. Typed rows/peers may replace untyped entries. Scoped rows replace
+  global seeds by the SEEDED flag, never by matching numbers, typed or not, and a global row never displaces a
+  system's seed (`bandplan_can_replace()`) nor applies on a system with its own row for that identifier and class,
+  even one that waits (`bandplan_global_shadowed()`, so arrival order does not matter). Fills preserve the user's `-C` map; replacements and
+  drops purge the identifier once through `dsd_state_p25_invalidate_iden_chan_map()`, also the implementation of
+  the protocol wrapper. `dsd_state_p25_bandplan_seed_mask()` reports changes without purging so first identity learn
+  can coalesce foreign-entry drops and seed/reconcile changes. Known-system changes retain the full reset.
+  `svc_set_p2_params()` uses that lifecycle for a nonzero identity; clearing 0/0 leaves tables. CLI `-X` seeds only
+  after successful short-option parsing, using the final identity. Export collection replaces untyped same-key rows
+  with typed rows and suppresses untyped FDMA only in the exact same scope as TDMA; global and scoped rows coexist.
+  It examines all candidates at capacity and accumulates omitted entries for the export warning. CSV exports offsets
+  from OFF_SPACING and empty types for untyped entries; import can encode FDMA offsets in spacing units when needed.
+  Tests: `P25_IDEN_LCW_FULL`, `P25_P1_TSBK_VPDU`, `CORE_P25_BANDPLAN_SEED`, `CORE_CSV_IMPORT`,
+  `ENGINE_TRUNK_SCAN`, `UI_MENU_SERVICES`, `RUNTIME_CLI_PARSE`.
 
 - P25 Phase 1 list trellis decoding (`p25_12.c`) merges four sorted predecessor lists for each destination state.
   Equal metrics retain predecessor-state order, then survivor rank, matching stable insertion; traceback and final

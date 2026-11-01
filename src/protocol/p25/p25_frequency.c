@@ -37,20 +37,7 @@ p25_channel_type_is_tdma(int chan_type) {
 
 void
 p25_invalidate_chan_map_for_iden(dsd_state* state, int iden) {
-    if (!state || iden < 0 || iden >= 16) {
-        return;
-    }
-
-    int start = iden << 12;
-    int end = (iden + 1) << 12;
-    int map_count = (int)(sizeof(state->trunk_chan_map) / sizeof(state->trunk_chan_map[0]));
-    if (end > map_count) {
-        end = map_count;
-    }
-
-    for (int ch = start; ch < end; ch++) {
-        dsd_state_set_trunk_chan_freq(state, (uint32_t)ch, 0);
-    }
+    dsd_state_p25_invalidate_iden_chan_map(state, iden);
 }
 
 static void
@@ -462,25 +449,58 @@ p25_reset_system_metadata(dsd_state* state) {
     state->p25_site_network_active = 0;
 }
 
+static int
+p25_drop_foreign_iden(p25_iden_entry_t* entry, const dsd_state* state) {
+    if (!entry->populated || (entry->wacn == 0ULL && entry->sysid == 0ULL)
+        || (entry->wacn == state->p2_wacn && entry->sysid == state->p2_sysid)) {
+        return 0;
+    }
+    DSD_MEMSET(entry, 0, sizeof *entry);
+    return 1;
+}
+
+static uint16_t
+p25_drop_foreign_idens(dsd_state* state) {
+    uint16_t mask = 0;
+    for (int iden = 0; iden < 16; iden++) {
+        if (p25_drop_foreign_iden(&state->p25_iden_fdma[iden], state)) {
+            state->p25_chan_tdma_explicit[iden] &= 0xFEU; // clear the FDMA bit
+            mask |= (uint16_t)(1U << iden);
+        }
+        if (p25_drop_foreign_iden(&state->p25_iden_tdma[iden], state)) {
+            state->p25_chan_tdma_explicit[iden] &= 0xFDU; // clear the TDMA bit
+            mask |= (uint16_t)(1U << iden);
+        }
+    }
+    return mask;
+}
+
 int
 p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
     if (!state || (wacn == 0 && sysid == 0)) {
         return 0;
     }
-
-    const int changed = (state->p2_wacn != wacn || state->p2_sysid != sysid);
-    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && changed) {
+    if (state->p2_wacn == wacn && state->p2_sysid == sysid) {
+        return 1;
+    }
+    const int was_known = state->p2_wacn != 0 || state->p2_sysid != 0;
+    if (was_known) {
         p25_reset_iden_tables(state);
         p25_reset_system_metadata(state);
         p25_invalidate_chan_map(state);
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
-    // The user band plan outlives the wipe: re-seed the empty slots with the rows that apply
-    // to the system just identified (also on the first learn, which resets nothing but is
-    // when rows that name a WACN/SYS become applicable).
-    if (changed) {
-        (void)dsd_state_p25_bandplan_seed(state);
+    uint16_t mask = was_known ? 0 : p25_drop_foreign_idens(state);
+    uint16_t seed_mask = 0;
+    (void)dsd_state_p25_bandplan_seed_mask(state, &seed_mask);
+    mask |= seed_mask;
+    // The seed reconciles even with no rows. Coalesce first-learn drops and replacements;
+    // a known-system change already cleared the whole map.
+    for (int iden = 0; iden < 16; iden++) {
+        if (!was_known && (mask & (1U << iden))) {
+            p25_invalidate_chan_map_for_iden(state, iden);
+        }
     }
     return 1;
 }

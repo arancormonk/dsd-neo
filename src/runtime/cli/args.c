@@ -3467,6 +3467,11 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Decoding M17 UDP/IP Frames.\n");                                                     \
                 cli_decode_timing_seen = 0;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            } else {                                                                                                   \
+                /* Refused, not ignored (issue #794): `-f3` used to leave the session in Auto silently. */             \
+                LOG_ERROR("-f%s is not a decode mode; see dsd-neo -h for the -f letters\n", optarg);                  \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             break;                                                                                                     \
         }                                                                                                              \
@@ -3636,6 +3641,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     || !cli_parse_ulong_option("-X NAC", nb, 16, &na, out_exit_rc)) {                                  \
                     return DSD_PARSE_ERROR;                                                                            \
                 }                                                                                                      \
+                cli_p2_identity_seen = 1;                                                                             \
                 state->p2_wacn = w & 0xFFFFF;                                                                          \
                 state->p2_sysid = sy & 0xFFF;                                                                          \
                 state->p2_cc = na & 0xFFF;                                                                             \
@@ -3714,6 +3720,14 @@ dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+static void
+cli_seed_manual_p25_identity(dsd_state* state, int seen) {
+    // No OTA tables exist during parsing. Seed only the final -X identity after all options succeed.
+    if (seen && (state->p2_wacn != 0ULL || state->p2_sysid != 0ULL)) {
+        (void)dsd_state_p25_bandplan_seed(state);
+    }
+}
+
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
                      int* out_chan_csv_cli_seen, unsigned int* out_force_choices) {
@@ -3736,6 +3750,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
     int cli_source_monitor_seen = 0;
+    int cli_p2_identity_seen = 0;
     enum cli_wav_mode cli_wav_mode = CLI_WAV_MODE_NONE;
     while ((c = getopt(argc, argv, dsd_cli_short_options())) != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
@@ -3766,6 +3781,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
         != 0) {
         return DSD_PARSE_ERROR;
     }
+    cli_seed_manual_p25_identity(state, cli_p2_identity_seen);
     dsd_warn_ineffective_short_opts(opts, state);
     // Set after getopt completes so -r file ordering is independent of later options.
     if (opts->playfiles == 1) {

@@ -5,15 +5,19 @@
 
 /*
  * Seeding rules for the user-supplied P25 band plan (dsd_state_p25_bandplan_seed):
- * only empty slots are filled, an over-the-air entry is never touched, a row that
- * names a WACN/SYS waits for that identity and then beats a global row, and the
- * explicit FDMA/TDMA bit follows the table the row landed in.
+ * typed entries replace untyped fallbacks, scoped seeds replace global seeds,
+ * and typed over-the-air entries survive. TDMA suppresses untyped FDMA before
+ * any fill, while the stored row remains available for another system.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -155,8 +159,213 @@ test_seed_with_empty_plan_is_noop(void) {
     return failed;
 }
 
+static int
+check_value(const char* tag, long got, long want) {
+    if (got == want) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
+    return 1;
+}
+
+static int
+test_typed_seed_replaces_untyped(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(state);
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        for (int scoped_fdma = 0; scoped_fdma < 2; scoped_fdma++) {
+            for (int seeded = 0; seeded < 2; seeded++) {
+                DSD_MEMSET(state, 0, sizeof *state);
+                state->p2_wacn = 1;
+                state->p2_sysid = 1;
+                add_row(state, 4, 0, 100, 100, 1, 0, 0);
+                state->p25_iden_fdma[4] = state->p25_bandplan_rows[0].entry;
+                state->p25_iden_fdma[4].flags = P25_IDEN_F_UNTYPED | (seeded ? P25_IDEN_F_SEEDED : 0);
+                state->p25_bandplan_row_count = 0;
+                for (int row = 0; row < 2; row++) {
+                    const int tdma = row == order;
+                    const int scoped = tdma ? !scoped_fdma : scoped_fdma;
+                    add_row(state, 4, tdma, tdma ? 300 : 200, 100, tdma ? 3 : 1, scoped, scoped);
+                }
+                state->trunk_chan_map[0x4119] = 999;
+                (void)dsd_state_p25_bandplan_seed(state);
+                rc |= check_value("T11 typed row replaces fallback", state->p25_iden_fdma[4].base_freq, 200);
+                rc |= check_value("T11 both typed", state->p25_chan_tdma_explicit[4], 3);
+                rc |= check_value("T11 replacement purges map", state->trunk_chan_map[0x4119], 0);
+            }
+        }
+    }
+    DSD_MEMSET(state->p25_iden_tdma, 0, sizeof state->p25_iden_tdma);
+    // A global untyped fallback (the loop left a system's seed, which a global row must not displace).
+    state->p25_iden_fdma[4].flags |= P25_IDEN_F_UNTYPED;
+    state->p25_iden_fdma[4].wacn = 0ULL;
+    state->p25_iden_fdma[4].sysid = 0ULL;
+    state->p25_bandplan_row_count = 0;
+    add_row(state, 4, 0, 400, 100, 1, 0, 0);
+    (void)dsd_state_p25_bandplan_seed(state);
+    rc |= check_value("T11 typed row alone replaces fallback", state->p25_iden_fdma[4].base_freq, 400);
+    state->p25_iden_fdma[4].flags |= P25_IDEN_F_UNTYPED;
+    state->p25_bandplan_row_count = 0;
+    add_row(state, 4, 1, 300, 100, 3, 0, 0);
+    (void)dsd_state_p25_bandplan_seed(state);
+    rc |= check_value("T11 TDMA alone drops fallback", state->p25_iden_fdma[4].populated, 0);
+    free(state);
+    return rc;
+}
+
+static int
+test_untyped_rows_wait_for_tdma(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(state);
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        for (int scoped_fdma = 0; scoped_fdma < 2; scoped_fdma++) {
+            DSD_MEMSET(state, 0, sizeof *state);
+            state->p2_wacn = state->p2_sysid = 1;
+            for (int row = 0; row < 2; row++) {
+                const int tdma = row == order;
+                const int scoped = tdma ? !scoped_fdma : scoped_fdma;
+                add_row(state, 4, tdma, 100, 100, tdma ? 3 : 1, scoped, scoped);
+                if (!tdma) {
+                    state->p25_bandplan_rows[row].entry.flags = P25_IDEN_F_UNTYPED;
+                }
+            }
+            state->trunk_chan_map[0x4119] = 12345;
+            (void)dsd_state_p25_bandplan_seed(state);
+            rc |= check_value("T11 r5 untyped row suppressed", state->p25_iden_fdma[4].populated, 0);
+            rc |= check_value("T11 r5 fill keeps user map", state->trunk_chan_map[0x4119], 12345);
+            rc |= check_value("T11 r5 stored rows survive", state->p25_bandplan_row_count, 2);
+            if (!scoped_fdma) {
+                (void)p25_update_system_identity(state, 2, 2);
+                rc |= check_value("T11 r5 other system fallback", state->p25_iden_fdma[4].populated, 1);
+            }
+        }
+    }
+    free(state);
+    return rc;
+}
+
+static int
+test_seed_cache_and_origin(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    assert(state && opts);
+    int rc = 0;
+    for (int iden = 4; iden <= 15; iden += 11) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        add_row(state, iden, 0, 769006250 / 5, 100, 1, 0, 0);
+        add_row(state, iden, 0, 850000000 / 5, 50, 1, 1, 1);
+        const int ch = (iden << 12) | 281;
+        state->trunk_chan_map[ch] = 111;
+        (void)dsd_state_p25_bandplan_seed(state);
+        rc |= check_value("T12 seed fill keeps user map", state->trunk_chan_map[ch], 111);
+        state->trunk_chan_map[ch] = 0;
+        rc |= check_value("T12 global frequency", process_channel_to_freq(opts, state, ch), 772518750L);
+        state->trunk_chan_map[0x3001] = 222;
+        state->trunk_chan_map[0xFFFE] = 333;
+        (void)p25_update_system_identity(state, 1, 1);
+        rc |= check_value("T12 scoped frequency", process_channel_to_freq(opts, state, ch), 851756250L);
+        rc |= check_value("T12 unrelated cache", state->trunk_chan_map[0x3001], 222);
+        rc |= check_value("T12 last channel clamp", state->trunk_chan_map[0xFFFE], iden == 15 ? 0 : 333);
+    }
+    for (int offset_units = 0; offset_units < 2; offset_units++) {
+        DSD_MEMSET(state, 0, sizeof *state);
+        add_row(state, 4, 0, 769006250 / 5, 100, 1, 0, 0);
+        add_row(state, 4, 0, 850000000 / 5, 50, 1, 1, 1);
+        state->p25_bandplan_rows[0].entry.trans_off = 80;
+        state->p25_iden_fdma[4] = state->p25_bandplan_rows[0].entry;
+        state->p25_iden_fdma[4].flags = offset_units ? P25_IDEN_F_OFF_SPACING : 0;
+        (void)p25_update_system_identity(state, 1, 1);
+        rc |= check_value("T13 OTA matching global numbers stays", state->p25_iden_fdma[4].base_freq, 769006250 / 5);
+        rc |= check_value("T13 offset units preserved", state->p25_iden_fdma[4].flags,
+                          offset_units ? P25_IDEN_F_OFF_SPACING : 0);
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/*
+ * Among seeded rows, scope alone decides, whether or not a row gives a type: a row with an empty `type` cell that
+ * names this system takes over the slot a typed global row seeded, and a typed global row never displaces it.
+ */
+static int
+test_seed_scope_beats_typedness(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    add_row(state, 2, 0, 170201250L, 50, 1, 0ULL, 0ULL);
+    add_row(state, 2, 0, 170401250L, 50, 1, 0xBEE00ULL, 0x3A1ULL);
+    state->p25_bandplan_rows[1].entry.flags = P25_IDEN_F_UNTYPED;
+    (void)dsd_state_p25_bandplan_seed(state);
+    int rc = check_value("scope global seed first", state->p25_iden_fdma[2].base_freq, 170201250L);
+    state->p2_wacn = 0xBEE00ULL;
+    state->p2_sysid = 0x3A1ULL;
+    (void)dsd_state_p25_bandplan_seed(state);
+    rc |= check_value("scope untyped system row wins", state->p25_iden_fdma[2].base_freq, 170401250L);
+    rc |=
+        check_value("scope seed stays untyped", state->p25_iden_fdma[2].flags & P25_IDEN_F_UNTYPED, P25_IDEN_F_UNTYPED);
+
+    // Identity known from the start: the system's untyped row seeds first, and the typed global row leaves it.
+    DSD_MEMSET(state->p25_iden_fdma, 0, sizeof state->p25_iden_fdma);
+    DSD_MEMSET(state->p25_chan_tdma_explicit, 0, sizeof state->p25_chan_tdma_explicit);
+    (void)dsd_state_p25_bandplan_seed(state);
+    rc |= check_value("scope typed global does not displace", state->p25_iden_fdma[2].base_freq, 170401250L);
+    free(state);
+    return rc;
+}
+
+/*
+ * A typed global FDMA row and a system's empty-type row for one identifier, and a TDMA definition for it from the
+ * air: whether the TDMA definition or the system identity comes first, the identifier ends up TDMA only on that
+ * system (the system's row shadows the global one even while it waits beside the TDMA entry).
+ */
+static int
+test_shadowed_global_seed_either_order(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int rc = 0;
+    for (int tdma_first = 0; tdma_first < 2; tdma_first++) {
+        DSD_MEMSET(state, 0, sizeof(*state));
+        add_row(state, 4, 0, 153801250L, 100, 1, 0ULL, 0ULL);
+        add_row(state, 4, 0, 153801250L, 100, 1, 0xBEE00ULL, 0x3A1ULL);
+        state->p25_bandplan_rows[1].entry.flags = P25_IDEN_F_UNTYPED;
+        (void)dsd_state_p25_bandplan_seed(state);
+        for (int step = 0; step < 2; step++) {
+            if ((step == 0) == (tdma_first != 0)) {
+                p25_iden_entry_t* t = &state->p25_iden_tdma[4];
+                t->populated = 1;
+                t->base_freq = 153801250L;
+                t->chan_spac = 100;
+                t->chan_type = 3;
+                t->flags = P25_IDEN_F_OFF_SPACING;
+                t->trust = 2;
+                state->p25_chan_tdma_explicit[4] |= 0x02;
+                (void)dsd_state_p25_iden_reconcile(state, 4);
+            } else {
+                (void)p25_update_system_identity(state, 0xBEE00ULL, 0x3A1ULL);
+            }
+        }
+        rc |= check_value(tdma_first ? "shadowed: TDMA first, fdma empty" : "shadowed: identity first, fdma empty",
+                          state->p25_iden_fdma[4].populated, 0);
+        rc |= check_value(tdma_first ? "shadowed: TDMA first, hint" : "shadowed: identity first, hint",
+                          state->p25_chan_tdma_explicit[4], 0x02);
+    }
+    free(state);
+    return rc;
+}
+
 int
 main(void) {
+    int rc = test_typed_seed_replaces_untyped();
+    rc |= test_shadowed_global_seed_either_order();
+    rc |= test_untyped_rows_wait_for_tdma();
+    rc |= test_seed_cache_and_origin();
+    rc |= test_seed_scope_beats_typedness();
     if (test_seed_fills_only_empty_slots() != 0) {
         return 1;
     }
@@ -166,5 +375,5 @@ main(void) {
     if (test_seed_with_empty_plan_is_noop() != 0) {
         return 1;
     }
-    return 0;
+    return rc;
 }

@@ -2320,6 +2320,7 @@ test_p25_bandplan_export_round_trip(void) {
     f0->chan_type = 1;
     f0->trans_off = -7200;
     f0->bw_vu = 5;
+    f0->flags = P25_IDEN_F_OFF_SPACING;
     f0->trust = 2;
     f0->populated = 1;
     f0->wacn = 0xBEE00ULL;
@@ -2331,6 +2332,7 @@ test_p25_bandplan_export_round_trip(void) {
     t2->chan_spac = 50;
     t2->chan_type = 3;
     t2->trans_off = -4800;
+    t2->flags = P25_IDEN_F_OFF_SPACING;
     t2->trust = 2;
     t2->populated = 1;
     t2->wacn = 0xBEE00ULL;
@@ -2339,15 +2341,15 @@ test_p25_bandplan_export_round_trip(void) {
     state->p25_iden_fdma[5].base_freq = 170201250L;
 
     p25_bandplan_row_t rows[DSD_P25_BANDPLAN_MAX_ROWS];
-    int count =
-        dsd_p25_bandplan_append_tables(rows, 0, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma, state->p25_iden_tdma);
+    int count = dsd_p25_bandplan_append_tables(rows, 0, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma,
+                                               state->p25_iden_tdma, NULL);
     if (count != 2) {
         DSD_FPRINTF(stderr, "bandplan export: collected %d rows want 2\n", count);
         failed = 1;
     }
     // Appending the same tables again must not duplicate rows with the same iden/table/system.
     count = dsd_p25_bandplan_append_tables(rows, count, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma,
-                                           state->p25_iden_tdma);
+                                           state->p25_iden_tdma, NULL);
     if (count != 2) {
         DSD_FPRINTF(stderr, "bandplan export: duplicate append gave %d rows want 2\n", count);
         failed = 1;
@@ -2360,12 +2362,12 @@ test_p25_bandplan_export_round_trip(void) {
         DSD_FPRINTF(stderr, "bandplan export: re-import failed (count=%d)\n", back->p25_bandplan_row_count);
         failed = 1;
     } else {
-        if (!bandplan_row_matches(&back->p25_bandplan_rows[0], 0, 0, 170201250L, 50, 1, -7200, 5, 0xBEE00ULL,
+        if (!bandplan_row_matches(&back->p25_bandplan_rows[1], 0, 0, 170201250L, 50, 1, -7200, 5, 0xBEE00ULL,
                                   0x3A1ULL)) {
             DSD_FPRINTF(stderr, "bandplan export: fdma row did not round-trip\n");
             failed = 1;
         }
-        if (!bandplan_row_matches(&back->p25_bandplan_rows[1], 2, 1, 152401250L, 50, 3, -4800, 0, 0xBEE00ULL,
+        if (!bandplan_row_matches(&back->p25_bandplan_rows[0], 2, 1, 152401250L, 50, 3, -4800, 0, 0xBEE00ULL,
                                   0x3A1ULL)) {
             DSD_FPRINTF(stderr, "bandplan export: tdma row did not round-trip\n");
             failed = 1;
@@ -2380,6 +2382,92 @@ test_p25_bandplan_export_round_trip(void) {
     free_test_state(state);
     free_test_state(back);
     return failed;
+}
+
+static int
+test_bandplan_offset_roundtrip_case(long offset_hz, int untyped) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "p25offset");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(state);
+    p25_bandplan_row_t row = {0};
+    row.iden = 4;
+    row.entry.populated = 1;
+    row.entry.base_freq = 769006250 / 5;
+    row.entry.chan_spac = 100;
+    row.entry.chan_type = 1;
+    row.entry.flags = P25_IDEN_F_OFF_SPACING | (untyped ? P25_IDEN_F_UNTYPED : 0);
+    row.entry.trans_off = (int)(offset_hz / 12500);
+    int rc = fixture_check(csvP25BandplanExportRows(path, &row, 1) == 0, "T14 export offset");
+    FILE* fp = dsd_fopen_private(path, "r");
+    assert(fp);
+    char text[512] = {0};
+    const size_t text_len = fread(text, 1, sizeof text - 1, fp);
+    fclose(fp);
+    rc |= fixture_check(text_len > 0U, "T14 export read");
+    char want[128];
+    DSD_SNPRINTF(want, sizeof want, "4,769006250,12500,%s,%ld,0,,", untyped ? "" : "1", offset_hz);
+    rc |= fixture_check(strstr(text, want) != NULL, "T14 exported Hz and empty type");
+    rc |= fixture_check(csvP25BandplanImportPath(path, state) == 0, "T14 reimport offset");
+    const p25_iden_entry_t* e = &state->p25_iden_fdma[4];
+    const long unit = (e->flags & P25_IDEN_F_OFF_SPACING) ? 12500 : 250000;
+    rc |= fixture_check(e->populated && e->trans_off * unit == offset_hz, "T14 roundtrip Hz");
+    rc |= fixture_check(!!(e->flags & P25_IDEN_F_UNTYPED) == untyped, "T14 roundtrip untyped");
+    free_test_state(state);
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_bandplan_offset_boundaries(void) {
+    const long offsets[] = {1000000, 75000000, 255L * 250000, 8191L * 12500};
+    int rc = 0;
+    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            rc |= test_bandplan_offset_roundtrip_case(offsets[i] * sign, i == 0);
+        }
+    }
+    return rc;
+}
+
+static int
+test_bandplan_usable_import_and_suppression(void) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "p25usable");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(state);
+    const char* content = "iden,base_hz,spacing_hz,type,tx_offset_hz\n"
+                          "0,0,12500,1,0\n"
+                          "1,769006250,0,1,0\n"
+                          "2,2147483650,12500,1,0\n"
+                          "3,21474836475,12500,1,0\n"
+                          "4,2147483645,12500,1,0\n"
+                          "5,769006250,12500,1,102400000\n"
+                          "6,769006250,12500,1,-102400000\n"
+                          "7,769006250,12500,1,123\n";
+    assert(write_text_file(path, content) == 0);
+    int rc = fixture_check(csvP25BandplanImportPath(path, state) == 0, "T14 usable CSV imports");
+    rc |= fixture_check(state->p25_bandplan_row_count == 1 && state->p25_bandplan_rows[0].iden == 4,
+                        "T14 only maximum usable base accepted");
+    DSD_MEMSET(state, 0, sizeof *state);
+    state->p25_iden_tdma[4].populated = 1;
+    state->p25_iden_tdma[4].base_freq = 769006250 / 5;
+    state->p25_iden_tdma[4].chan_spac = 100;
+    state->p25_iden_tdma[4].chan_type = 3;
+    state->p25_chan_tdma_explicit[4] = 2;
+    state->trunk_chan_map[0x4119] = 12345;
+    assert(write_text_file(path, "iden,base_hz,spacing_hz,type\n4,769006250,12500,\n") == 0);
+    rc |= fixture_check(csvP25BandplanImportPath(path, state) == 0, "T11 r5 import untyped row");
+    rc |= fixture_check(!state->p25_iden_fdma[4].populated && state->p25_chan_tdma_explicit[4] == 2,
+                        "T11 r5 OTA TDMA suppresses imported fallback");
+    rc |= fixture_check(state->trunk_chan_map[0x4119] == 12345, "T11 r5 suppressed import keeps map");
+    free_test_state(state);
+    (void)remove(path);
+    return rc;
 }
 
 /* Writes the first source-alias file: rows the import takes, rows it skips, a 1005-byte row it skips as overlong, and a
@@ -3040,6 +3128,12 @@ test_nfm_channel_map_tone_lists(void) {
 
 int
 main(void) {
+    if (test_bandplan_offset_boundaries() != 0) {
+        return 1;
+    }
+    if (test_bandplan_usable_import_and_suppression() != 0) {
+        return 1;
+    }
     if (test_csv_physical_lines() != 0) {
         return 1;
     }

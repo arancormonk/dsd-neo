@@ -40,6 +40,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -561,8 +562,14 @@ svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long long 
     if (!state) {
         return;
     }
-    state->p2_wacn = (wacn > 0xFFFFF) ? 0xFFFFF : wacn;
-    state->p2_sysid = (sysid > 0xFFF) ? 0xFFF : sysid;
+    wacn = (wacn > 0xFFFFF) ? 0xFFFFF : wacn;
+    sysid = (sysid > 0xFFF) ? 0xFFF : sysid;
+    if (wacn != 0ULL || sysid != 0ULL) {
+        (void)p25_update_system_identity(state, wacn, sysid);
+    } else {
+        state->p2_wacn = 0ULL;
+        state->p2_sysid = 0ULL;
+    }
     state->p2_cc = (cc > 0xFFF) ? 0xFFF : cc;
     state->p2_cc_verified = 0U; // a seed set by hand proves nothing until a burst decodes with it (issue #575)
     state->p2_hardset = (state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0) ? 1 : 0;
