@@ -184,7 +184,10 @@ Generated (do not edit/commit):
     deadline behave as for any abandoned step, and a step with no front end keeps the cursor. The manual walk
     (`apply_manual_lcn_cycle_untyped_dir_locked()` in `app_command_queue.c`, through `lcn_cycle_pick()`,
     `lcn_cycle_on_tune_outcome()` and `lcn_cycle_finish()`) does the same and also sets the voice gate's and visit cap's
-    `*_roll_seen` to the new cursor, since both read any cursor move as a retune and the receiver did not move. A
+    `*_roll_seen` to the new cursor, since both read any cursor move as a retune and the receiver did not move. So a
+    later accepted step can land with the cursor unchanged (Next refused on B, then Previous lands B): under `-Y`,
+    `lcn_cycle_finish()` restarts both windows itself (`dsd_scan_voice_gate_note_retune()`) rather than leave it to
+    a cursor move, as the timed step's `untyped_install_row()` and the typed `channel_scan_commit()` already do. A
     deferred tune is no refusal and keeps the cursor for a retry: `DSD_UNTYPED_STEP_DEFERRED` in the step and the
     resume (whose toast then says "deferred", as a typed resume's does), and `request_manual_tune()`'s io_control leg
     reports `DSD_TRUNK_TUNE_RESULT_DEFERRED` apart from a failure.

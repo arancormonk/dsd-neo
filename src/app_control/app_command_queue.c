@@ -3726,6 +3726,12 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_tr
     lcn_cycle_on_tune_outcome(state, row, 1, DSD_TRUNK_TUNE_RESULT_OK);
     dsd_scan_row_keys_apply(state, row);
     mark_cc_sync(state, 1);
+    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) {
+        /* A -Y row's visit starts over here, not at the cursor move the timers read as a retune: a landing can leave
+           the cursor where an earlier refusal put it (Next refused on B, then Previous lands B), and B must not
+           inherit the voice gate and visit cap windows of the row before it. */
+        dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    }
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
     }

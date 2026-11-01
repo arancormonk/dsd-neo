@@ -5683,6 +5683,44 @@ test_channel_cycle_first_refusal_names_no_row(void) {
 }
 
 /*
+ * Issue #666 (review gate G2): a landing restarts the row's visit even when it leaves the cursor where it was. On
+ * [A, B], Next refused on B moves the cursor to 2 and tells both visit timers so (the receiver stayed on A); Previous
+ * then lands B, which writes the same cursor, so no timer saw a move and B inherited A's aged visit cap and voice gate
+ * windows: an expired cap left B at once.
+ */
+static int
+test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit(void) {
+    static const long kRows[] = {875000000L, 876000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    opts.scan_max_visit_ms = 2000;
+    opts.scan_voice_only = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "same cursor: cycle to A");
+    tick_scan_visit(&opts, &state);
+    age_scan_visit(&state, 3.0);
+    const double since = state.scan_visit_since_m;
+    const double arrive = state.scan_voice_gate_arrive_m;
+    rc |= expect_true("same cursor: A's cap expired",
+                      dsd_engine_scan_visit_expired(&opts, &state, dsd_decode_now_mono_s()) == 1);
+
+    manual_leg_script(876000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "same cursor: B refused");
+    rc |= expect_int("same cursor: the cursor passed B", state.lcn_freq_roll, 2);
+    manual_leg_script(876000000U, RTL_STREAM_TUNE_OK);
+    rc |= prev_lands(&opts, &state, 876000000U, 2, 1, "same cursor: previous lands B");
+    tick_scan_visit(&opts, &state);
+    rc |= expect_true("same cursor: B's visit starts over", state.scan_visit_since_m > since + 2.5);
+    rc |= expect_true("same cursor: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 2.5);
+    rc |= expect_int("same cursor: B's cap has not expired",
+                     dsd_engine_scan_visit_expired(&opts, &state, dsd_decode_now_mono_s()), 0);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #666: Previous on an untyped -Y list. With no row heard yet it starts at the last row; then each press goes
  * back from the row heard, past placeholders and avoided rows, wrapping. Every landing moves the cursor past the row,
  * so Next goes on forward from where Previous landed. A hold stays on: Previous moves the scan, as Next does.
@@ -24585,6 +24623,7 @@ main(void) {
     rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_first_refusal_names_no_row();
+    rc |= test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit();
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
