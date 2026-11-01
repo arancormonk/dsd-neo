@@ -11343,9 +11343,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short
     write's latch stops the rest), only into a file written before the pause (`spans_pause`; a file opened after a stop
     or folder change starts at the resumed block). The CALL_WAV lane starts over at the resumed block on its own, as no
-    held block was written to it. The tick ends a call, held or not, on detection off, a REJECTED tone or a boundary not
-    current; with the hold off also on a closed carrier or a tone check; and on the stale deadline. With the hold on a
-    closed carrier waits for the next block. `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()`
+    held block was written to it. The tick ends a call, held or not, first on a moved epoch (B6 below), then on
+    detection off, a REJECTED tone or a boundary not current; with the hold off also on a closed carrier or a tone
+    check; and on the stale deadline. With the hold on a closed carrier waits for the next block.
+    `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()`
     (every scan leave, retune, input switch, mode change, Stop, finalize) ends a held call at once without the pause;
     `dsd_engine_analog_call_stop_recording()` closes the segment only. A held call then ends at its next block or tick
     if recording stays off; a folder change (stop and start inside one recording transition) keeps it held, and the next
@@ -11356,10 +11357,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   - Boundaries (B6): a call compares the published `state->analog_rx.boundaries` with the epoch it began under. A move
     ends the call at `last_m`; the block that carries it straddles the boundary, so it is not written either, and the
     next RECEPTION block begins a new call. This catches a stream pause or reconnect inside a long PCM block, which no
-    straddle marks. With no call running, a RECEPTION block whose epoch moved begins a call as on main, so a call may
-    start with up to one block of pre-boundary, squelched audio. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and
-    44100 Hz, tone checks, identity, ends, tick order, live changes, the hold off without per-call recording, the
-    default's payloads, the write latch, teardown, B1, B6), `CORE_WAV_JOURNAL` (one publish and link),
+    straddle marks. The tick compares the epoch too: a reset with no block after it (a TCP reconnect that yields to a
+    queued command, then a stream with no whole block) leaves the boundaries current, so only the epoch shows it. With
+    no call running, a RECEPTION block whose epoch moved begins a call as on main, so a call may start with up to one
+    block of pre-boundary, squelched audio. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and 44100 Hz, tone
+    checks, identity, ends, tick order, live changes, the hold off without per-call recording, the default's payloads,
+    the write latch, teardown, B1, B6 on a block and on the tick), `CORE_WAV_JOURNAL` (one publish and link),
     `APP_CONTROL_RECORDING` (a stop while held ends the call, a folder change keeps it; no hold without per-call
     recording; the max gap command's states, refusals, and raising, lowering and turning it off while held),
     `APP_COMMAND_QUEUE` (the command waits while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`,

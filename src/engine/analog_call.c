@@ -157,7 +157,17 @@ analog_call_reconcile(dsd_opts* opts, dsd_state* state, analog_call* call) {
 void
 dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
     analog_call* call = (opts && state) ? analog_call_get(state) : NULL;
-    if (!call || !call->active || analog_call_reconcile(opts, state, call)) {
+    if (!call || !call->active) {
+        return;
+    }
+    /* B6 between blocks: a reset with no block after it (a TCP reconnect that yields to a queued command) moves the
+       epoch while the boundaries stay current, and the stream may bring no whole block to see it. The call, held or
+       not, ends at its last reception as the next block would end it. */
+    if (state->analog_rx.boundaries != call->boundaries_seen) {
+        analog_call_finish(opts, state, call);
+        return;
+    }
+    if (analog_call_reconcile(opts, state, call)) {
         return;
     }
     const int gate = dsd_analog_tone_gate_in_force(opts, state);

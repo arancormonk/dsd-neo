@@ -1350,6 +1350,43 @@ test_hold_tick_precedence(void) {
     hold_close(&r);
 }
 
+/* The receiver reset between blocks as dsd_analog_rx_reset() does it: the epoch moved, the carrier closed, and no
+   stale deadline until the input delivers again. */
+static void
+hold_reset_receiver(hold_rig* r) {
+    r->state->analog_rx.boundaries++;
+    r->state->analog_rx.carrier_open = 0;
+    r->state->analog_rx.stale_after_ms = 0U;
+}
+
+/* B6 on the tick: a reset with no block after it (a TCP reconnect that yields to a queued command, then a stream that
+   delivers no whole block) ends the call, active or held, at its last reception, publishes its recording with no
+   silence, and leaves no TEMP_ file or open row behind. Before, only a block saw the move, so with the hold on the
+   call stayed open as long as no block came. The hold off ends it too. */
+static void
+test_hold_tick_ends_a_moved_epoch(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_hold_tick_b6", 1000);
+    for (int held = 0; held < 2; held++) {
+        hold_receive(&r, 2, 1000);
+        const double last_m = hold_now_m(&r);
+        if (held) {
+            hold_closed(&r, 3);
+        }
+        hold_reset_receiver(&r);
+        hold_advance_ms(&r, 5000);
+        hold_expect_tick_ends(&r, last_m);
+        dsd_engine_analog_call_tick(r.opts, r.state);
+        assert(!dsd_engine_analog_call_active(r.state));
+    }
+    r.opts->analog_record_max_gap_ms = 0;
+    hold_receive(&r, 2, 1000);
+    const double last_m = hold_now_m(&r);
+    hold_reset_receiver(&r);
+    hold_expect_tick_ends(&r, last_m);
+    hold_close(&r);
+}
+
 /* D10, ending: every value at or under the hangover is off (a closed carrier ends an active call at once, as on main);
    turning the hold off, or lowering it below the gap so far, ends a held call at the next block, which a reception
    then begins anew; the first held block may already be past it (200 ms hangover + 20 ms). */
@@ -1557,6 +1594,7 @@ test_analog_hold(void) {
     test_hold_identity_on_resume();
     test_hold_ends_without_the_pause();
     test_hold_tick_precedence();
+    test_hold_tick_ends_a_moved_epoch();
     test_hold_live_changes_end();
     test_hold_live_changes_extend();
     test_hold_silence_write_failure_latches();
