@@ -310,17 +310,22 @@ typedef struct {
      * while the record was still the one of the carrier the call began on (rx_id_epoch); otherwise, and while the
      * call is active, empty (family DSD_RXID_FAMILY_NONE). Call history freezes an ended call's system and site at it,
      * so identity received after the last render and before the end counts, and identity received after the end, or
-     * on another carrier, does not.
+     * on another carrier, does not. Reacquisition compares reacquire_rx_id instead, which outlives a record that moved
+     * before the end.
      */
     dsd_received_identity ended_rx_id;
     /**
-     * 1 when ended_rx_id is empty because the record had moved to another identity (dsd_received_identity::epoch, a
-     * reset or another system named) while the call was on the air, so the system and site it was heard on are lost;
-     * 0 while active, and when the record was still the call's (nothing received leaves ended_rx_id empty with 0). A
-     * lost end is never reacquired (dsd_call_snapshot_may_reacquire()): nothing tells the same call from another
-     * system's.
+     * The record a reopen of this call is compared with (dsd_call_record_site_compatible(), whole, so the trunking
+     * system a Capacity Plus rest LSN or an XPT free LCN names stays): dsd_state::rx_id as of the epoch's last
+     * observation, or its end, made while the record was still the call's (its epoch equal to rx_id_epoch). A record
+     * that moved later (another system named, a reset, a sync of another protocol family wiping it) leaves it as it
+     * was, so a call heard again under an empty record reopens and one heard under another identity does not. A
+     * reacquired epoch starts with the ending one's and keeps it while the live record names no site, so a second
+     * fade still compares with the site the call was heard on. Refreshed only at an observation and at the end:
+     * identity learned after the last observation of a call whose end captured nothing compares as compatible (a
+     * decided limit). Empty while nothing was received.
      */
-    uint8_t ended_rx_id_lost;
+    dsd_received_identity reacquire_rx_id;
     /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
      * call history marks the ended row direct mode from it. */
     uint8_t ended_tetra_direct;

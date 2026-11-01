@@ -775,6 +775,7 @@ test_call_record_trunk_from_moment_parts(void) {
     expect_u("rest lsn vs itself", (unsigned long)dsd_call_record_site_compatible(&rest, none, &rest, none), 1U);
     /* What the snapshot-level check refuses stays refused. */
     expect_u("lpcn vs lsn", (unsigned long)dsd_call_record_site_compatible(&empty, lpcn, &empty, lsn), 0U);
+    /* A kind fits an empty (here NULL) record: nothing names a trunking system it could disagree with. */
     expect_u("null records", (unsigned long)dsd_call_record_site_compatible(NULL, lsn, NULL, none), 1U);
     /* A trunk value left beside no trunking part names nothing. */
     dsd_received_identity stale = rest;

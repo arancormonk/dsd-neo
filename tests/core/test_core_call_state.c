@@ -1006,8 +1006,9 @@ test_reacquire_kept_on_compatible_site(void) {
     free(state);
 }
 
-// The record named another system while the call was on the air, so its end captured none: the site it was heard on is
-// lost, and a reopen could join it to any system's call. Nothing received at all is no such loss.
+// The record named another system while the call was on the air, so its end captured none for history; the call still
+// keeps the record it was heard under (dsd_call_snapshot::reacquire_rx_id), so the end may be reacquired, but not by a
+// reentry under the other system. Nothing received at all compares as compatible.
 static void
 test_reacquire_refused_when_site_changed_before_end(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
@@ -1019,8 +1020,9 @@ test_reacquire_refused_when_site_changed_before_end(void) {
     assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_call_snapshot s;
     assert(dsd_call_state_get(state, 0U, &s) == 1);
-    assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE && s.ended_rx_id_lost == 1U);
-    assert(dsd_call_snapshot_may_reacquire(&s, 10.3) == 0);
+    assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE);
+    assert(s.reacquire_rx_id.family == DSD_RXID_FAMILY_P25 && s.reacquire_rx_id.p25_wacn == 0xBEE00U);
+    assert(dsd_call_snapshot_may_reacquire(&s, 10.3) == 1);
     const dsd_call_observation reentry = reentry_of(&call);
     assert(reentry_reacquires(state, &reentry, first, 0U, 0U, 0) == 0);
     dsd_state_ext_free_all(state);
@@ -1031,12 +1033,61 @@ test_reacquire_refused_when_site_changed_before_end(void) {
     const uint64_t quiet = open_crypto_call(state, &call);
     assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
     assert(dsd_call_state_get(state, 0U, &s) == 1);
-    assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE && s.ended_rx_id_lost == 0U);
+    assert(s.ended_rx_id.family == DSD_RXID_FAMILY_NONE && s.reacquire_rx_id.family == DSD_RXID_FAMILY_NONE);
     assert(dsd_call_snapshot_may_reacquire(&s, 10.3) == 1);
     assert(reentry_reacquires(state, &reentry, quiet, call.channel, DSD_CALL_CHANNEL_NONE, call.frequency_hz) == 1);
-    // The reopened epoch ends on the record it reopened under.
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+// A sync of another protocol family (noise passing its sync word during the fade) wipes the record mid-call. The call
+// keeps the record it was heard under: a reentry under the empty record, or under the same network named again,
+// reopens it as before.
+static void
+test_reacquire_kept_after_cross_family_wipe(void) {
+    for (int renote = 0; renote <= 1; renote++) {
+        dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+        assert(state != NULL);
+        dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+        const dsd_call_observation call = group_call(0U, 500U, 600U, 10.0);
+        const uint64_t first = open_crypto_call(state, &call);
+        const uint32_t heard_epoch = state->rx_id.epoch;
+        dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_VOICE_POS);
+        assert(state->rx_id.epoch != heard_epoch && state->rx_id.family == DSD_RXID_FAMILY_NONE);
+        assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
+        if (renote) {
+            dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+        }
+        const dsd_call_observation reentry = reentry_of(&call);
+        assert(reentry_reacquires(state, &reentry, first, call.channel, DSD_CALL_CHANNEL_NONE, call.frequency_hz) == 1);
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+}
+
+// Wiped, healed under the empty record, faded again: the reopened epoch kept the site the call was heard on, so a
+// reentry under another identity is still another system's call.
+static void
+test_reacquire_two_fades_keep_the_heard_site(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    const dsd_call_observation call = group_call(0U, 500U, 600U, 10.0);
+    const uint64_t first = open_crypto_call(state, &call);
+    dsd_rxid_reset(state);
+    assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_call_observation reentry = reentry_of(&call);
+    assert(reentry_reacquires(state, &reentry, first, call.channel, DSD_CALL_CHANNEL_NONE, call.frequency_hz) == 1);
+    dsd_call_snapshot s;
+    assert(dsd_call_state_get(state, 0U, &s) == 1);
+    assert(s.reacquire_rx_id.family == DSD_RXID_FAMILY_P25 && s.reacquire_rx_id.p25_wacn == 0xBEE00U);
+
     assert(dsd_call_state_end_ex(state, 0U, 10.4, DSD_CALL_END_SYNC_LOSS) == 1);
-    assert(dsd_call_state_get(state, 0U, &s) == 1 && s.ended_rx_id_lost == 0U);
+    assert(dsd_call_state_get(state, 0U, &s) == 1);
+    assert(s.reacquire_rx_id.family == DSD_RXID_FAMILY_P25 && s.reacquire_rx_id.p25_wacn == 0xBEE00U);
+    dsd_rxid_note_p25_network(state, 0xBEE01U, 0x1A3U);
+    reentry.observed_m = 10.5;
+    assert(reentry_reacquires(state, &reentry, first, 0U, 0U, 0) == 0);
     dsd_state_ext_free_all(state);
     free(state);
 }
@@ -1150,6 +1201,8 @@ main(void) {
     test_reacquire_refused_on_conflicting_site();
     test_reacquire_kept_on_compatible_site();
     test_reacquire_refused_when_site_changed_before_end();
+    test_reacquire_kept_after_cross_family_wipe();
+    test_reacquire_two_fades_keep_the_heard_site();
     test_reacquire_identity_less_kept();
     test_reacquire_channel_only_t3_then_conplus_refused();
     dsd_state_ext_free_all(state);
