@@ -214,10 +214,12 @@ Generated (do not edit/commit):
       `channel_scan_row_refused()`: forward moves the cursor past the row, back keeps the cursor and notes the retry. A
       restage the tuner defers leaves nothing outstanding and the position on the row before, so the next Previous
       reselects the row. While a row is outstanding a press services it, either way.
-    - The retry is dropped by any position write and at the start of every forward step: Next on either list, the timed
-      untyped step (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`)
-      and Avoid's step, and the P25 hunt's `-T` channel-map pick (`next_lcn_freq()`), so a refused Previous, a refused
-      Next (or hunt probe), then Previous starts from the row heard again.
+    - The retry is dropped by any position write and at the start of every forward step: Next on either list or leg
+      (`apply_manual_channel_cycle_dir_locked()` clears it before the leg is chosen, so a `-^` candidate Next drops
+      it too; the list walk keeps its own clear for Avoid's step), the timed untyped step
+      (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`), Avoid's
+      step, and the P25 hunt's `-T` channel-map pick (`next_lcn_freq()`), so a refused Previous, a refused Next (or hunt
+      probe), then Previous starts from the row heard again.
     - `-^` candidates: `p25_cc_prev_candidate()` (`dsd_trunk_cc_candidates_prev()`), with the same checkpoint and
       restore on a deferral as Next.
     - Tests: `APP_COMMAND_QUEUE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_NO_CARRIER_RESET`, `RUNTIME_TRUNK_CC_CANDIDATES`,

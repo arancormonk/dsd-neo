@@ -5752,6 +5752,44 @@ test_channel_cycle_prev_walks_back(void) {
     return rc;
 }
 
+/*
+ * Issue #666 (review gate, fix 4): Next drops the row a refused Previous left to retry on either leg. A Next that the
+ * candidate leg took (Prefer CC candidates) returned before the list walk's clear, so on [A, B, C, D] on C, Previous
+ * refused on B, then a candidate Next refused, then Previous with candidates off went back from B to A instead of from
+ * C to B.
+ */
+static int
+test_channel_cycle_candidate_next_drops_the_retry(void) {
+    static const long kRows[] = {891000000L, 892000000L, 893000000L, 894000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 4);
+    state.lcn_freq_roll = 2;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "cand retry: next to C");
+    rc |= expect_true("cand retry: C landed", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+
+    manual_leg_script(892000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "cand retry: B refused");
+    rc |= expect_int("cand retry: B is the row to go on from", dsd_state_lcn_back_retry_row(&state), 1);
+
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("cand retry: candidate X seeded", p25_cc_add_candidate(&state, 899000000L, 1), 1);
+    manual_leg_script(899000000U, RTL_STREAM_TUNE_FAILED);
+    int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "cand retry: next refused on X");
+    rc |= expect_prev_tuned("cand retry: the candidate leg took Next", 899000000U, calls);
+    rc |= expect_int("cand retry: Next drops the retry", dsd_state_lcn_back_retry_row(&state), -1);
+    rc |= expect_int("cand retry: C is still the row heard", dsd_state_lcn_heard_row(&state), 2);
+
+    opts.p25_prefer_candidates = 0;
+    manual_leg_script(892000000U, RTL_STREAM_TUNE_OK);
+    rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "cand retry: previous goes back from C to B");
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
 /* The P25 hunt's control-channel tune off the wrap toolchains (on them __wrap_dsd_trunk_tuning_hook_tune_to_cc answers
    with g_cc_tune_result first): g_hunt_cc_result. */
 static dsd_trunk_tune_result g_hunt_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -24769,6 +24807,7 @@ main(void) {
     rc |= test_channel_cycle_prev_after_p25_hunt();
     rc |= test_channel_cycle_prev_after_refused_p25_hunt();
     rc |= test_channel_cycle_p25_hunt_drops_the_retry();
+    rc |= test_channel_cycle_candidate_next_drops_the_retry();
     rc |= test_channel_cycle_prev_duplicate_runs();
     rc |= test_channel_cycle_prev_refused_row();
     rc |= test_channel_cycle_prev_after_avoid_and_reload();

@@ -3813,9 +3813,14 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
 /* #506: both legs retune through the tuning hooks, past p25_sm_release(), exactly
  * like the lockout and the return-to-CC do. Without the handoff the SM stays TUNED on
  * the assignment it was following and refuses every later grant as a preemption of it.
- * @p dir is the cycle's direction: 1 Next, -1 Previous (issue #666). */
+ * @p dir is the cycle's direction: 1 Next, -1 Previous (issue #666). Next is a forward start whichever leg takes it, so
+ * it drops the row a refused Previous left to retry before the leg is chosen: a candidate Next, which never reaches the
+ * list walk's own clear, would otherwise leave that row for the next Previous on the list. */
 static int
 apply_manual_channel_cycle_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
+    if (dir > 0) {
+        dsd_state_lcn_back_retry_clear(state);
+    }
     if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
         return apply_manual_lcn_cycle_dir_locked(opts, state, p25_live, dir);
     }
