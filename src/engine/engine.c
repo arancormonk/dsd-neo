@@ -1449,14 +1449,16 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* 
     return untyped_tune_row_rtl(opts, state, row, freq, *moved);
 }
 
-/* Commit @p row of the untyped list as the row on air: the cursor past it, its keys, the received tone cleared (the
- * untyped step never runs the acquisition reset the typed rows do, so a new channel must not inherit the old one's,
- * issue #522), and fresh scan clocks. A placeholder (0 Hz) row parks where the receiver is: only the cursor and the
- * clocks. Runs after the carrier boundary has ended the calls of the row left, under its keys. */
+/* Commit @p row of the untyped list as the row on air: the cursor past it, the row recorded as the one heard (issue
+ * #666), its keys, the received tone cleared (the untyped step never runs the acquisition reset the typed rows do, so a
+ * new channel must not inherit the old one's, issue #522), and fresh scan clocks. A placeholder (0 Hz) row parks where
+ * the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still on. Runs after
+ * the carrier boundary has ended the calls of the row left, under its keys and its name. */
 static void
 untyped_install_row(dsd_state* state, int row, time_t now) {
     state->lcn_freq_roll = row + 1;
     if (*dsd_state_trunk_lcn_slot(state, row) != 0) {
+        dsd_state_lcn_on_air_note(state, row);
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
     }

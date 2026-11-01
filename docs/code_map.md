@@ -152,6 +152,27 @@ Generated (do not edit/commit):
     `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
     `include/dsd-neo/engine/manual_tune.h`, and the untyped step's shared pieces in `src/engine/scan_step_untyped.h`
     (see "A manual tune stays out of that ledger" under the trunk-tuning hooks below)
+  - The -Y list's cursor and its position (issue #666): `dsd_state::lcn_freq_roll` is only the cursor, the row the next
+    step starts from. A step may move it before its row lands (the timed untyped step's pre-tune `roll = row`, a skip
+    past avoided rows, a wrap), past a row whose tune failed, or past a 0 Hz placeholder it parks on, so `roll - 1` is
+    not the row heard. The position is `lcn_on_air_row` with the row's frequency (`lcn_on_air_freq`), helpers in
+    `src/core/util/dsd_state_lcn_nav.c` declared in `<dsd-neo/core/state.h>`. It is written by exactly the events that
+    move the cursor past a row the receiver was put on: `untyped_install_row()` (`engine.c`) for a non-zero row (the
+    timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
+    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), and the manual untyped
+    `L` where it writes `roll = next + 1`. Never at a placeholder park, a deferral, a pending or failed step, a pause,
+    a late failure or a resume rollback. So after every accepted step `dsd_state_lcn_heard_row()` equals `roll - 1`; it
+    differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
+    another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
+    none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. `lcn_back_retry_row`/`_freq`
+    (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
+    heard is what the channel label (`channel_label.c`), the terminal Scan Mode line and the untyped branch of
+    `dsd_engine_channel_scan_on_air_row()` read; Avoid (`apply_manual_scan_avoid()`) flags that row, which on a typed
+    list is the landed row (`tuned_row`). `dsd_state_lcn_nav_reset()` runs wherever the list or its session is
+    replaced (`initState()`, `chan_map_adopt()`, `svc_clear_channel_map()`, the P25 CC selection's automatic anchor);
+    the four fields ride the UI snapshot's `p25_p2_active_slot..dstar_gps` range (a static assert pins them) and each
+    trunk-scan target's snapshot with its cursor (tests: `CORE_STATE_LCN_NAV`, `CORE_CHANNEL_LABEL`,
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_CHANNEL_SCAN`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`).
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
@@ -185,9 +206,9 @@ Generated (do not edit/commit):
     `dsd_channel_mode_hears_tones()`) -- not avoided, and not an analog row skipped at every visit
     (`dsd_engine_scan_analog_width_skipped()`: the width of the demodulator its class runs, AM or NFM, its own or the
     configured one of that kind, refused at the DSP rate, or an am row on audio input with no rigctl peer); the row on
-    air is the typed scanner's last landed tune, which a failed start does not move, else the one before
-    `lcn_freq_roll`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so the same
-    traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
+    air is the typed scanner's last landed tune, which a failed start does not move, else the row heard,
+    `dsd_state_lcn_heard_row()`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so
+    the same traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
     `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
     another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
@@ -1013,8 +1034,9 @@ suite runs under this compiler.
   input gain.
 - API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
   should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
-  scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
-  frontend words it as a target or a channel and never names both at once. The Qt app writes each entry's uid as the
+  scan-list row heard (`dsd_state_lcn_heard_row()`, issue #666: not the row before the cursor);
+  `dsd_channel_label_current_source()` says which of the two it is, so a frontend words it as a target or a channel
+  and never names both at once. The Qt app writes each entry's uid as the
   target id, so its History and monitor show the entry's name for it (`CallHistoryModel::setChannelNames()`,
   `MetricsModel::setChannelNames()`, from Main's scan list, issue #671): History maps it only for display, and a row
   keeps the id it was heard on, which tells two targets of one name apart and outlives a rename. History's names add

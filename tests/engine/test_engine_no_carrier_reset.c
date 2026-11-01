@@ -2283,6 +2283,198 @@ test_untyped_resume_waits_for_its_row(void) {
     return rc;
 }
 
+/* Issue #666: an untyped list of @p count rows (up to 3, from 961.0125 MHz in 1 MHz steps) named ALPHA, BRAVO, CHARLIE,
+   row 0 keyed as setup_untyped_keyed_list() keys it, and row @p avoided (-1: none) avoided. */
+static int
+setup_untyped_named_list(dsd_opts* opts, dsd_state* state, int count, int avoided) {
+    static const char* const k_names[] = {"ALPHA", "BRAVO", "CHARLIE"};
+    if (setup_untyped_keyed_list(opts, state, 961012500, 962012500) != 0) {
+        return -1;
+    }
+    state->trunk_lcn_freq[2] = 963012500;
+    state->lcn_freq_count = count;
+    for (int row = 0; row < count; row++) {
+        if (dsd_state_trunk_lcn_name_set(state, (size_t)row, k_names[row]) != 0) {
+            return -1;
+        }
+    }
+    return avoided >= 0 ? dsd_state_trunk_lcn_avoid_set(state, (size_t)avoided, 1) : 0;
+}
+
+/* The timed untyped step, due now. */
+static void
+untyped_step_now(dsd_opts* opts, dsd_state* state) {
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+}
+
+/* A group call on slot 0 for talkgroup @p tg, never rendered: its label is resolved when it ends. */
+static int
+open_unrendered_call(dsd_state* state, uint32_t tg) {
+    dsd_call_observation call = {0};
+    call.protocol = DSD_SYNC_NXDN_POS;
+    call.slot = 0U;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = tg;
+    call.policy_target_id = tg;
+    call.ota_source_id = 4242U;
+    call.observed_m = dsd_decode_now_mono_s();
+    return dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1 ? 0 : 1;
+}
+
+/* The label the history row of talkgroup @p tg's call carries ("?" with no row). */
+static const char*
+history_label_of(const dsd_state* state, uint32_t tg) {
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == tg && row->channel_label_resolved) {
+            return row->channel_label;
+        }
+    }
+    return "?";
+}
+
+static int
+expect_label(const char* tag, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: label \"%s\" (want \"%s\")\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_live_label(const char* tag, const dsd_opts* opts, const dsd_state* state, const char* want) {
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    (void)dsd_channel_label_current(opts, state, label, sizeof label);
+    return expect_label(tag, label, want);
+}
+
+/* One step's outgoing call (issue #666, N1): the list of @p count rows with @p avoided avoided steps @p before times,
+   a call opens, never rendered, and the next step lands on another row. The carrier boundary ends the call, which takes
+   the label of the row it was heard on: @p want. */
+static int
+untyped_outgoing_call_case(const char* what, int count, int avoided, int before, const char* want) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_named_list(opts, state, count, avoided) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    for (int i = 0; i < before; i++) {
+        untyped_step_now(opts, state);
+    }
+    const int heard = state->lcn_freq_roll - 1;
+    rc |= expect_case(what, "the call opens", open_unrendered_call(state, 5101U) == 0);
+    untyped_step_now(opts, state);
+    rc |= expect_case(what, "the step landed on another row", state->lcn_freq_roll - 1 != heard);
+    dsd_call_snapshot ended;
+    rc |= expect_case(what, "the call ended",
+                      dsd_call_state_get(state, 0U, &ended) > 0 && ended.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_label(what, history_label_of(state, 5101U), want);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #666 (N1, B12's residual): the timed untyped step moved the cursor to the row it selected before its tune, and
+   the outgoing call ends at the carrier boundary after that, so a call never rendered took the label of the row before
+   the new cursor: a row the step skipped over (an avoided row), or none after a wrap. It takes the row heard. The
+   adjacent step was already right (issue #671 commits the row after the boundary) and stays so. */
+static int
+test_untyped_step_names_the_outgoing_call_after_the_row_heard(void) {
+    int rc = 0;
+    rc |= untyped_outgoing_call_case("outgoing call past an avoided row", 3, 1, 1, "ALPHA");
+    rc |= untyped_outgoing_call_case("outgoing call across the wrap", 2, -1, 2, "BRAVO");
+    rc |= untyped_outgoing_call_case("outgoing call to the adjacent row", 2, -1, 1, "ALPHA");
+    return rc;
+}
+
+/* Issue #666 (N1): a step that has not landed -- its tune refused, or still pending -- leaves the receiver on the row
+   heard, though it moved the cursor to the row it selected (past an avoided one). Calls heard meanwhile are named after
+   the row heard, and Avoid targets it; the landing then makes the new row the one heard. */
+static int
+test_untyped_unlanded_step_keeps_the_row_heard(void) {
+    int rc = 0;
+    for (int pending = 0; pending <= 1; pending++) {
+        const char* what = pending ? "pending step" : "refused step";
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (setup_untyped_named_list(opts, state, 3, 1) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        untyped_step_now(opts, state);
+        rc |= expect_case(what, "row 0 heard", dsd_state_lcn_heard_row(state) == 0 && state->lcn_freq_roll == 1);
+        if (pending) {
+            (void)step_into_a_timed_out_tune(opts, state);
+        } else {
+            g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+            untyped_step_now(opts, state);
+            g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        }
+        rc |= expect_case(what, "the step tried row 2", g_rtl_tune_freq == 963012500U);
+        rc |= expect_case(what, "the cursor is on the row it selected", state->lcn_freq_roll == 2);
+        rc |= expect_case(what, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+        rc |= expect_case(what, "and the row on air", dsd_engine_channel_scan_on_air_row(state) == 0);
+        rc |= expect_live_label(what, opts, state, "ALPHA");
+        if (pending) {
+            land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+            rc |= expect_case(what, "the landing polls",
+                              dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+            rc |= expect_case(what, "the landing makes row 2 the row heard",
+                              dsd_state_lcn_heard_row(state) == 2 && state->lcn_freq_roll == 3);
+            rc |= expect_live_label(what, opts, state, "CHARLIE");
+        }
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Issue #666 (B3, B12): the timed untyped step records the row heard when a row with a frequency lands, never at a
+   placeholder park, which leaves the receiver where it was. A list with nowhere else to go but the row heard (the
+   other row a placeholder) is no other row to take rejected traffic to, though the cursor stands past the placeholder:
+   it named the placeholder as the row on air, which made the row heard "another row". */
+static int
+test_untyped_park_keeps_the_row_heard(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_named_list(opts, state, 3, -1) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    state->trunk_lcn_freq[1] = 0;
+    rc |= expect_true("park-nothing-heard-yet", dsd_state_lcn_heard_row(state) == -1);
+    untyped_step_now(opts, state);
+    rc |= expect_true("park-row-0-heard", state->lcn_on_air_row == 0 && dsd_state_lcn_heard_row(state) == 0);
+    const int tunes = g_rtl_tune_calls;
+    untyped_step_now(opts, state);
+    rc |= expect_true("park-parks-without-a-tune", g_rtl_tune_calls == tunes && state->lcn_freq_roll == 2);
+    rc |= expect_true("park-keeps-row-0-heard",
+                      dsd_state_lcn_heard_row(state) == 0 && dsd_engine_channel_scan_on_air_row(state) == 0);
+    rc |= expect_live_label("park-keeps-the-label", opts, state, "ALPHA");
+    /* Row 2 out of reach (avoided): only the row heard and the placeholder are left. */
+    rc |= expect_true("park-avoid-row-2", dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    rc |= expect_true("park-no-other-row", dsd_engine_channel_scan_has_other_row(opts, state) == 0);
+    rc |= expect_true("park-unavoid-row-2", dsd_state_trunk_lcn_avoid_set(state, 2U, 0) == 0);
+    rc |= expect_true("park-row-2-is-another-row", dsd_engine_channel_scan_has_other_row(opts, state) == 1);
+    untyped_step_now(opts, state);
+    rc |= expect_true("park-then-row-2-heard", g_rtl_tune_freq == 963012500U && state->lcn_freq_roll == 3
+                                                   && dsd_state_lcn_heard_row(state) == 2);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Final review, Important 2 (B4 through the live loop): a frequency entry whose RTL wait timed out names the frequency
    asked for while the receiver is still on the old carrier. When that carrier keeps sync (a control channel), the
    synced-frames pass never handed back to the outer loop, so a late failure stayed unreconciled: every frame went on
@@ -8237,6 +8429,9 @@ main(void) {
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_untyped_resume_waits_for_its_row();
+    rc |= test_untyped_step_names_the_outgoing_call_after_the_row_heard();
+    rc |= test_untyped_unlanded_step_keeps_the_row_heard();
+    rc |= test_untyped_park_keeps_the_row_heard();
     rc |= test_entry_late_failure_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();

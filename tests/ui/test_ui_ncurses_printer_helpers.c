@@ -397,9 +397,10 @@ dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(m
 }
 
 /* Mirrors the real resolver's contract over the name stub above, so the Call Info
- * line is checkable without linking core: the trunk-scan target wins, only an idle
- * trunk scan lets the -Y row on air have a say, and a row whose frequency is 0 was
- * parked over rather than tuned, so it never names anything. */
+ * line is checkable without linking core's name store: the trunk-scan target wins,
+ * only an idle trunk scan lets the -Y row on air have a say, and that row is the real
+ * core rule's row heard (dsd_state_lcn_heard_row(), linked from its own source),
+ * which never names a placeholder the scan parked over. */
 static const char*
 stub_channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
     *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
@@ -410,9 +411,9 @@ stub_channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channe
         *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
         return state->trunk_scan_active_id;
     }
-    if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
-        && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
-        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+    const int heard = opts->scanner_mode == 1 ? dsd_state_lcn_heard_row(state) : -1;
+    if (heard >= 0) {
+        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)heard);
         if (name[0] != '\0') {
             *source = DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST;
         }
@@ -2177,13 +2178,30 @@ test_scanner_status_row_rendering(void) {
     assert_capture_equals("| Scan Mode: Frequency:  462.037500 MHz      Hangtime: 2.00 sec Channel: Delaware\n");
 
     /* A row the importer kept for its numbering but could not use: the scanner parks on the
-       frequency it is already on rather than tuning this one, so its name would credit the wrong
-       channel for a whole hangtime. The frequency field keeps printing the slot as it always has. */
+       frequency it is already on rather than tuning this one, so neither its name nor its 0 Hz
+       names the channel heard (issue #666: the frequency field printed "0.000000 MHz"). With no
+       row recorded as heard, nothing prints. */
     state.trunk_lcn_freq[1] = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode: Frequency:    0.000000 MHz      Hangtime: 2.00 sec\n");
+    assert_capture_equals("| Scan Mode:                                 Hangtime: 2.00 sec\n");
+
+    /* Parked on it after row 0 was heard: the row heard, its frequency and its name, stay (B4). */
+    dsd_state_lcn_on_air_note(&state, 0);
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion\n");
     state.trunk_lcn_freq[1] = 462037500;
+
+    /* A step to row 1 that failed or still waits on its tune moved the cursor, not the row heard. */
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion\n");
+    dsd_state_lcn_on_air_note(&state, 1);
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.037500 MHz      Hangtime: 2.00 sec Channel: Delaware\n");
+    dsd_state_lcn_nav_reset(&state);
 
     /* Before the first tune there is no row on air, so neither field prints. */
     state.lcn_freq_roll = 0;

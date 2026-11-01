@@ -765,6 +765,7 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     src->trunk_lcn_keys_capacity = 0;
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
+    dsd_state_lcn_nav_reset(dst);
     // Session avoids and the scan hold index rows that no longer exist.
     dsd_state_trunk_lcn_avoid_free(dst);
     dst->lcn_avoid_count = 0;
@@ -948,6 +949,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
+    dsd_state_lcn_nav_reset(state);
     state->lcn_avoid_count = 0;
     state->lcn_scan_hold = 0;
     // Nothing left to visit, so the per-visit cap has nothing to measure from.

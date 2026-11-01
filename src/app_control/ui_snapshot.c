@@ -128,6 +128,13 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_freq_ext_capacity) <= offsetof(ds
 _Static_assert(offsetof(dsd_state, lcn_freq_count) >= offsetof(dsd_state, p25_p2_active_slot)
                    && UI_SNAPSHOT_FIELD_END(lcn_freq_roll) <= UI_SNAPSHOT_FIELD_END(dstar_gps),
                "lcn_freq_count/roll must ride the range copied before the scan-list tail");
+/* The scan-list position records (issue #666) name rows of that same list, so frontends read them beside it; a list the
+ * clamp shortens makes a record past its end read as none (dsd_state_lcn_heard_row()). */
+_Static_assert(offsetof(dsd_state, lcn_on_air_row) >= offsetof(dsd_state, p25_p2_active_slot)
+                   && offsetof(dsd_state, lcn_on_air_row) < offsetof(dsd_state, lcn_back_retry_row)
+                   && UI_SNAPSHOT_FIELD_END(lcn_back_retry_row) <= UI_SNAPSHOT_FIELD_END(dstar_gps),
+               "the scan-list position records (lcn_on_air_row..lcn_back_retry_row) must ride the range that carries "
+               "the list");
 /* The per-row name store is a second heap allocation with the same hazard, and it sits
  * beside the tail so one pair of bounds covers both. */
 _Static_assert(offsetof(dsd_state, trunk_lcn_name) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),

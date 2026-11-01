@@ -331,6 +331,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
         return -1;
     }
     state->lcn_freq_roll = scan->row + 1;
+    dsd_state_lcn_on_air_note(state, scan->row);
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));
@@ -861,8 +862,8 @@ channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, in
 }
 
 /* The row the receiver is on: the one whose tune last landed on this map (typed lists); else, for an untyped list or
- * before the first landing, the one before lcn_freq_roll, since a step lands on the row after the one it last tuned;
- * -1 before the first step. */
+ * before the first landing, the row heard (dsd_state_lcn_heard_row(), issue #666), which a placeholder the scan parks
+ * on does not move; -1 before the first step. */
 static int
 channel_scan_on_air_row(const dsd_state* state) {
     const channel_scan* scan = channel_scan_get(state);
@@ -870,8 +871,12 @@ channel_scan_on_air_row(const dsd_state* state) {
         && scan->tuned_row < state->lcn_freq_count) {
         return scan->tuned_row;
     }
-    const int roll = state->lcn_freq_roll;
-    return (roll > 0 && roll <= state->lcn_freq_count) ? roll - 1 : -1;
+    return dsd_state_lcn_heard_row(state);
+}
+
+int
+dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
+    return state ? channel_scan_on_air_row(state) : -1;
 }
 
 /* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row

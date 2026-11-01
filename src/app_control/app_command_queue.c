@@ -3669,6 +3669,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     cycle_rearms_cold_start_window(opts, state, p25_live);
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
+    dsd_state_lcn_on_air_note(state, next);
     dsd_scan_row_keys_apply(state, next);
     mark_cc_sync(state, 1);
     if (p25_live) {
@@ -7315,11 +7316,13 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
+/* Avoids the row the receiver is on (issue #666), not the one before the cursor: a placeholder the scan parked on, or a
+   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. */
 static void
 apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
-    const int count = state->lcn_freq_count;
-    const int roll = state->lcn_freq_roll;
-    if (count <= 0 || roll < 1 || roll > count) {
+    const int row = dsd_engine_channel_scan_on_air_row(state);
+    const long freq = row >= 0 ? *dsd_state_trunk_lcn_slot(state, row) : 0L;
+    if (freq == 0) {
         ui_set_toast(state, 3, "No scan channel on air to avoid");
         return;
     }
@@ -7327,8 +7330,6 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Cannot avoid the last usable scan channel");
         return;
     }
-    const int row = roll - 1;
-    const long freq = *dsd_state_trunk_lcn_slot(state, row);
     if (dsd_state_trunk_lcn_avoid_set(state, (size_t)row, 1) != 0) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;

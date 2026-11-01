@@ -116,6 +116,8 @@ typedef struct {
     long int* trunk_lcn_freq_ext;
     size_t trunk_lcn_freq_ext_count;
     size_t trunk_lcn_freq_ext_capacity;
+    long int lcn_on_air_freq;
+    long int lcn_back_retry_freq;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
     p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
@@ -166,6 +168,10 @@ typedef struct {
     int dmr_rest_channel;
     int lcn_freq_count;
     int lcn_freq_roll;
+    /* The target's scan-list position records (issue #666), kept with its cursor; their frequencies sit with the list's
+       tail above. */
+    int lcn_on_air_row;
+    int lcn_back_retry_row;
     int is_con_plus;
     int has_cc_candidates;
     unsigned int dmr_fid;
@@ -1563,6 +1569,8 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->dmr_confidence_color_code = 16;
     snapshot->dmr_confidence_candidate_cc = 16;
     snapshot->dmr_rest_channel = -1;
+    snapshot->lcn_on_air_row = -1;
+    snapshot->lcn_back_retry_row = -1;
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
@@ -1907,6 +1915,24 @@ trunk_scan_restore_p25_eval_snapshot(dsd_state* state, const dsd_trunk_scan_snap
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
 }
 
+/* The position records go with the cursor, under the same clamp: a list cut back to its embedded slots makes a record
+   past them read as none (dsd_state_lcn_heard_row()). */
+static void
+trunk_scan_save_lcn_nav_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->lcn_on_air_row = state->lcn_on_air_row;
+    snapshot->lcn_on_air_freq = state->lcn_on_air_freq;
+    snapshot->lcn_back_retry_row = state->lcn_back_retry_row;
+    snapshot->lcn_back_retry_freq = state->lcn_back_retry_freq;
+}
+
+static void
+trunk_scan_restore_lcn_nav_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    state->lcn_on_air_row = snapshot->lcn_on_air_row;
+    state->lcn_on_air_freq = snapshot->lcn_on_air_freq;
+    state->lcn_back_retry_row = snapshot->lcn_back_retry_row;
+    state->lcn_back_retry_freq = snapshot->lcn_back_retry_freq;
+}
+
 static void
 trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->dmr_mfid = state->dmr_mfid;
@@ -1923,6 +1949,7 @@ trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* sn
     snapshot->dmr_rest_channel = state->dmr_rest_channel;
     snapshot->lcn_freq_count = state->lcn_freq_count;
     snapshot->lcn_freq_roll = state->lcn_freq_roll;
+    trunk_scan_save_lcn_nav_snapshot(state, snapshot);
     /* Compare against the tail actually captured rather than testing it for 0: the clamp then
      * holds whatever order the per-protocol savers run in, instead of depending on
      * trunk_scan_save_p25_identity_snapshot() having refreshed ext_count first. */
@@ -1949,6 +1976,7 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
     DSD_MEMCPY(state->dmr_site_parms, snapshot->dmr_site_parms, sizeof(state->dmr_site_parms));
     state->dmr_rest_channel = snapshot->dmr_rest_channel;
     state->lcn_freq_roll = snapshot->lcn_freq_roll;
+    trunk_scan_restore_lcn_nav_snapshot(state, snapshot);
     state->lcn_freq_count = snapshot->lcn_freq_count;
     if (state->lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED) {
         /* The tail the snapshot actually captured is authoritative, not lcn_freq_count:

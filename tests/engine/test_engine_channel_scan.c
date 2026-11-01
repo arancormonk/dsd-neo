@@ -3093,6 +3093,57 @@ test_resume_pending_waits_for_its_row(void) {
     typed_pause_fixture_free(opts, state);
 }
 
+/* The name a call heard now would carry ("" for none). */
+static const char*
+row_named(const dsd_opts* opts, const dsd_state* state) {
+    static char label[64];
+    if (dsd_channel_label_current(opts, state, label, sizeof(label)) == 0) {
+        label[0] = '\0';
+    }
+    return label;
+}
+
+/* Issue #666: a typed step to a row whose tune was refused, at once or after it was pending, moves the cursor past that
+   row (so the next step does not retry it) while the receiver stays on the row that last landed. The calls heard
+   from then on are named after that row, and it is the row on air Avoid flags; the commit of a row that lands makes
+   it the row heard. */
+static void
+test_typed_unlanded_step_keeps_the_row_heard(void) {
+    for (int late = 0; late <= 1; late++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_pause_fixture(opts, state);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        assert(dsd_state_lcn_heard_row(state) == 0 && strcmp(row_named(opts, state), "Mall") == 0);
+        if (late) {
+            tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            assert(dsd_engine_channel_scan_step(opts, state) == 0);
+            assert(state->lcn_freq_roll == 1 && strcmp(row_named(opts, state), "Mall") == 0);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        } else {
+            tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+            assert(dsd_engine_channel_scan_step(opts, state) == -1);
+        }
+        /* Row 1 is avoided, so the step tried row 2 ("Depot") and moved the cursor past it. */
+        assert(state->lcn_freq_roll == 3);
+        assert(dsd_state_lcn_heard_row(state) == 0 && dsd_engine_channel_scan_on_air_row(state) == 0);
+        assert(strcmp(row_named(opts, state), "Mall") == 0);
+
+        /* The next step lands row 0 again (wrapping), and the one after it row 2: each landing is the row heard. */
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        assert(state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        assert(state->lcn_freq_roll == 3 && dsd_state_lcn_heard_row(state) == 2);
+        assert(strcmp(row_named(opts, state), "Depot") == 0);
+        typed_pause_fixture_free(opts, state);
+    }
+}
+
 /* An untyped list resumes through the untyped step's entry (ENGINE_NO_CARRIER_RESET drives the real one): the first
    row from the kept cursor with a frequency, after the manual call ends; landed, pending or refused as it answers. */
 static void
@@ -3294,6 +3345,7 @@ main(void) {
     test_pause_in_place_forgets_the_carrier();
     test_resume_without_a_landing_stays_paused();
     test_resume_pending_waits_for_its_row();
+    test_typed_unlanded_step_keeps_the_row_heard();
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
     test_resume_skips_a_row_every_visit_skips();

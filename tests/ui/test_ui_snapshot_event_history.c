@@ -130,6 +130,10 @@ assert_render_fields(const dsd_state* snap) {
     assert(dsd_state_trunk_lcn_avoid_get(snap, 0U) == 0);
     assert(snap->lcn_scan_hold == 1U);
     assert(snap->lcn_avoid_count == 1U);
+    /* The scan list's position records (issue #666) ride the range that carries the list, beside its cursor. */
+    assert(snap->lcn_freq_roll == 2);
+    assert(snap->lcn_on_air_row == 0 && snap->lcn_on_air_freq == 851012500L);
+    assert(snap->lcn_back_retry_row == 1 && snap->lcn_back_retry_freq == 851025000L);
     assert(snap->trunk_scan_hold == 1U);
     assert(snap->trunk_scan_active_avoided == 1U);
     assert(snap->trunk_scan_avoided_count == 3U);
@@ -287,6 +291,13 @@ main(void) {
     state->p25_site_network_active = 1U;
     state->rkey_array[7] = 0x12345678ULL;
     state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 851012500L;
+    state->trunk_lcn_freq[1] = 851025000L;
+    state->lcn_freq_roll = 2;
+    state->lcn_on_air_row = 0;
+    state->lcn_on_air_freq = 851012500L;
+    state->lcn_back_retry_row = 1;
+    state->lcn_back_retry_freq = 851025000L;
     assert(dsd_state_trunk_lcn_name_set(state, 0U, "Dispatch") == 0);
     assert(dsd_state_trunk_lcn_name_set(state, 1U, "Fireground") == 0);
     DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s", "county-p25");
@@ -385,6 +396,10 @@ main(void) {
     cc->added = 99U;
     assert(dsd_state_trunk_lcn_name_set(state, 0U, "MUTATED") == 0);
     assert(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
+    state->lcn_on_air_row = 1;
+    state->lcn_on_air_freq = 999L;
+    state->lcn_back_retry_row = -1;
+    state->lcn_back_retry_freq = 0L;
 
     const dsd_state* snap = dsd_app_get_latest_snapshot();
     assert(snap->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && snap->tetra_pub.net_known == 1U);

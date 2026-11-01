@@ -10719,6 +10719,92 @@ test_nxdn_state_survives_failed_switch_rollback(void) {
     return test_rc;
 }
 
+/* A target's scan list of three rows on 851.0, 851.0125 and 851.025 MHz -- the same rows for every target -- with the
+   cursor at @p roll, row @p heard heard and row @p retry the backward-retry row. */
+static void
+seed_target_scan_position(dsd_state* state, int roll, int heard, int retry) {
+    state->lcn_freq_count = 3;
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = 851000000L + 12500L * (long)i;
+    }
+    state->lcn_freq_roll = roll;
+    dsd_state_lcn_nav_reset(state);
+    dsd_state_lcn_on_air_note(state, heard);
+    dsd_state_lcn_back_retry_note(state, retry);
+}
+
+static int
+expect_scan_position(const dsd_state* state, const char* stage, int roll, int heard, int retry) {
+    const int got_heard = dsd_state_lcn_on_air_row(state);
+    const int got_retry = dsd_state_lcn_back_retry_row(state);
+    if (state->lcn_freq_roll != roll || got_heard != heard || got_retry != retry) {
+        DSD_FPRINTF(stderr, "scan position after %s: roll %d, heard %d, retry %d (want %d, %d, %d)\n", stage,
+                    state->lcn_freq_roll, got_heard, got_retry, roll, heard, retry);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #666: each target keeps its own scan-list position records with its cursor, across a switch away and back, a
+ * failed switch's rollback, and a pause and resume (whose manual session has none). Two targets whose lists hold the
+ * same frequencies never read each other's: the records validate by frequency alone, so only the per-target snapshot
+ * keeps them apart. */
+static int
+test_each_target_keeps_its_scan_position(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "position init", 0U);
+    seed_target_scan_position(&state, 3, 1, 2);
+    test_rc |= expect_control_rc("position: switch to b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "position: switch to b", 1U);
+    test_rc |= expect_scan_position(&state, "the switch to b", 0, -1, -1);
+    /* b's list holds a's rows: a's records, had they stayed, would read as b's. */
+    state.lcn_freq_count = 3;
+    for (int i = 0; i < 3; i++) {
+        state.trunk_lcn_freq[i] = 851000000L + 12500L * (long)i;
+    }
+    test_rc |= expect_scan_position(&state, "b's list on a's frequencies", 0, -1, -1);
+    seed_target_scan_position(&state, 1, 0, -1);
+    test_rc |= expect_control_rc("position: switch back to a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "position: switch back to a", 0U);
+    test_rc |= expect_scan_position(&state, "the switch back to a", 3, 1, 2);
+
+    test_rc |= expect_control_rc("position: pause",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE), 0);
+    test_rc |= expect_scan_position(&state, "the pause", 0, -1, -1);
+    test_rc |= expect_control_rc("position: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    test_rc |= expect_active_target(&state, "position: resume", 0U);
+    test_rc |= expect_scan_position(&state, "the resume", 3, 1, 2);
+
+    test_rc |= expect_control_rc("position: switch to b again",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_scan_position(&state, "the switch to b again", 1, 0, -1);
+    test_rc |= expect_control_rc("position: and back to a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_scan_position(&state, "the switch back to a again", 3, 1, 2);
+
+    g_counting_tune_to_cc_failures_remaining = 1;
+    test_rc |= expect_control_rc("position: failed switch and rollback",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
+    test_rc |= expect_active_target(&state, "position: failed switch and rollback", 0U);
+    test_rc |= expect_scan_position(&state, "the rollback", 3, 1, 2);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /*
  * The load-bearing case for requirement 8: the cap fires while a P25 call is being followed.
  * The carrier is released before the outgoing snapshot is saved, so the receiver leaves with
@@ -15441,6 +15527,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
+    rc |= run_with_default_tune_hook(test_each_target_keeps_its_scan_position);
     rc |= run_with_default_tune_hook(test_p25p1_mod_verdict_isolated_per_target);
     rc |= run_with_default_tune_hook(test_p25p1_watchdog_notice_stays_with_its_target);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);

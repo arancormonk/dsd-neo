@@ -2660,6 +2660,7 @@ add_executable(
     # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail and the
     # per-row name store beside it.
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     # Adopt/clear move and release the per-row key store; the swap consults the lockout epoch.
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -3317,6 +3318,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+            ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -6148,6 +6150,21 @@ add_test(
     COMMAND dsd-neo_test_core_state_trunk_lcn_avoid
 )
 
+# Issue #666: the scan list's position records (the row heard, the backward-retry row)
+add_executable(
+    dsd-neo_test_core_state_lcn_nav
+    test_support/scan_group_stubs.c
+    core/test_core_state_lcn_nav.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
+)
+target_include_directories(
+    dsd-neo_test_core_state_lcn_nav
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_state_lcn_nav PRIVATE dsd-neo_runtime)
+add_test(NAME CORE_STATE_LCN_NAV COMMAND dsd-neo_test_core_state_lcn_nav)
+
 add_executable(
     dsd-neo_test_core_trunk_cold_start
     test_support/scan_group_stubs.c
@@ -7520,6 +7537,7 @@ add_executable(
     # A refused resume leaves a manual rigctl request the session's (issue #671).
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
 )
@@ -7592,6 +7610,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
     ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c

@@ -195,6 +195,7 @@ static int g_rigctl_fake_last_bw = -1;
 /* Armed apart from the passband fake: a frequency the peer takes (issue #671), and the last one sent. */
 static int g_rigctl_fake_freq_armed = 0;
 static long int g_rigctl_fake_freq = 0;
+static int g_rigctl_fake_freq_refuse = 0; /* the peer answers RPRT -1 to every frequency (issue #666) */
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -489,6 +490,9 @@ bool
 __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     if (!g_rigctl_fake_freq_armed) {
         return __real_SetFreq(sockfd, freq);
+    }
+    if (g_rigctl_fake_freq_refuse) {
+        return false;
     }
     g_rigctl_fake_freq = freq;
     return true;
@@ -4764,6 +4768,15 @@ test_trunk_set(void) {
     return rc;
 }
 
+/* Post the action @p id and drain it. */
+static int
+drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
+    int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* The scan control stub and the test below observe tunes through the io_control_set_freq() wrap. */
 static int g_scan_control_calls = 0;
@@ -4855,8 +4868,15 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("held cycle keeps hold", state.lcn_scan_hold, 1);
     state.lcn_scan_hold = 0;
 
-    /* Avoid: flags the row on air and steps to the next usable one in the same command. */
-    state.lcn_freq_roll = 2;
+    /* Avoid: flags the row on air and steps to the next usable one in the same command. Row 1 goes on air first: `L`
+       from the end of the list wraps past the placeholder at row 0 (the row heard is what a step selected, so a cursor
+       set by hand would name nothing; issue #666). */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("cycle to row 1 queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cycle to row 1 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("cycle to row 1 tunes it", g_io_control_tune_freq == 769768750L);
+    rc |= expect_int("cycle to row 1 roll", state.lcn_freq_roll, 2);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |=
         expect_int("scan avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID), DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -4896,8 +4916,9 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("scan avoid clear zeroes count", (int)state.lcn_avoid_count, 0);
     rc |= expect_contains("scan avoid clear toast", state.ui_msg, "1 scan avoid");
 
-    /* Nothing on air yet (roll 0): refused. */
+    /* Nothing on air yet (roll 0, no row heard, as a list just loaded leaves it): refused. */
     state.lcn_freq_roll = 0;
+    dsd_state_lcn_nav_reset(&state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |= expect_int("no-row avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -5001,6 +5022,77 @@ test_scan_hold_avoid_commands(void) {
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
+/*
+ * Issue #666 (B2): Avoid flags the row the receiver is on, not the one before the cursor. An untyped list's timed step
+ * parks on a placeholder row by moving the cursor past it with no retune, so the row heard is still the one before it,
+ * and Avoid flagged the placeholder ("Avoiding 0.000000 MHz"). A typed list's step to a row its tune refuses moves the
+ * cursor past that row while the receiver stays on the row that last landed, and Avoid flagged the refused row.
+ */
+static int
+test_scan_avoid_targets_the_row_heard(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Untyped: [A, B, 0 Hz, C], B heard, then the timed step parks on the placeholder. */
+    init_test_context(&opts, &state);
+    opts.scanner_mode = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.lcn_freq_count = 4;
+    state.trunk_lcn_freq[0] = 851000000L;
+    state.trunk_lcn_freq[1] = 852000000L;
+    state.trunk_lcn_freq[2] = 0L;
+    state.trunk_lcn_freq[3] = 854000000L;
+    state.lcn_freq_roll = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "park: cycle to A");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "park: cycle to B");
+    rc |= expect_true("park: B tuned", g_io_control_tune_freq == 852000000L && state.lcn_freq_roll == 2);
+    rc |=
+        expect_int("park: the placeholder parks",
+                   dsd_engine_scan_untyped_enter_row(&opts, &state, 2, (double)dsd_decode_time()), DSD_UNTYPED_STEP_OK);
+    rc |= expect_int("park: the cursor moved past it", state.lcn_freq_roll, 3);
+    rc |= expect_int("park: B is still the row heard", dsd_engine_channel_scan_on_air_row(&state), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "park: avoid");
+    rc |= expect_int("park: avoid flags B", dsd_state_trunk_lcn_avoid_get(&state, 1U), 1);
+    rc |= expect_int("park: avoid leaves the placeholder", dsd_state_trunk_lcn_avoid_get(&state, 2U), 0);
+    rc |= expect_str("park: avoid names B", state.ui_msg, "Avoiding 852.000000 MHz (1 avoided)");
+    rc |= expect_true("park: avoid steps on to C", g_io_control_tune_freq == 854000000L && state.lcn_freq_roll == 4);
+    freeState(&state);
+
+    /* Typed: [A, B], A landed, then the step to B is refused by the rigctl peer. */
+    init_decode_mode_context(&opts, &state);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    g_rigctl_fake_freq_armed = 1;
+    g_rigctl_fake_freq_refuse = 0;
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 2;
+    state.trunk_lcn_freq[0] = 851375000L;
+    state.trunk_lcn_freq[1] = 852375000L;
+    state.lcn_freq_roll = 0;
+    rc |= expect_int("typed: row A metadata", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed: row B metadata", dsd_channel_mode_set(&state, 1, DSD_SCAN_MODE_DMR), 0);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "typed: cycle to A");
+    rc |= expect_true("typed: A landed", g_rigctl_fake_freq == 851375000L && state.lcn_freq_roll == 1);
+    g_rigctl_fake_freq_refuse = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "typed: cycle to B");
+    rc |= expect_int("typed: the refused row moved the cursor", state.lcn_freq_roll, 2);
+    rc |= expect_int("typed: A is still the row on air", dsd_engine_channel_scan_on_air_row(&state), 0);
+    g_rigctl_fake_freq_refuse = 0;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "typed: avoid");
+    rc |= expect_int("typed: avoid flags A", dsd_state_trunk_lcn_avoid_get(&state, 0U), 1);
+    rc |= expect_int("typed: avoid leaves B", dsd_state_trunk_lcn_avoid_get(&state, 1U), 0);
+    rc |= expect_str("typed: avoid names A", state.ui_msg, "Avoiding 851.375000 MHz (1 avoided)");
+    rc |= expect_true("typed: avoid steps on to B", g_rigctl_fake_freq == 852375000L && state.lcn_freq_roll == 2);
+    (void)svc_leave_channel_scan(&opts, &state);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    opts.scanner_mode = 0;
+    freeState(&state);
     return rc;
 }
 
@@ -21829,15 +21921,6 @@ test_channel_scan_pause_services(void) {
     return rc;
 }
 
-/* Post the action @p id and drain it. */
-static int
-drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
-    int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    state->ui_msg[0] = '\0';
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
 /* An untyped -Y list of three rows on audio input, scanning from row 2 with an operator hold. */
 static void
 seed_running_list(dsd_opts* opts, dsd_state* state) {
@@ -23689,6 +23772,7 @@ main(void) {
     rc |= test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause();
     rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
+    rc |= test_scan_avoid_targets_the_row_heard();
     rc |= test_replay_refuses_channel_cycle_and_return_cc();
     rc |= test_accepted_retunes_forget_the_carrier_codes();
 #ifdef USE_RADIO
