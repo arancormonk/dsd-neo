@@ -476,6 +476,44 @@ Item {
             verify(detail.detailLines.indexOf("Color code 1") >= 0, "no code line: " + detail.detailLines);
             verify(detail.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + detail.detailLines);
         }
+        // Issue #799: Home's details carry what the log's do, the received tone
+        // (#740) and the site line among them.
+        function openHomeRecent(name) {
+            app.width = 1104;
+            app.height = 900;
+            var home = item("homeScreen");
+            verify(waitForPolish(app.contentItem));
+            tryCompare(home, "width", 1000);
+            verify(home.supportingPane);
+            var recent = visualChild(home, function (entry) {
+                return entry.model === callHistory && typeof entry.itemAt === "function";
+            });
+            verify(recent !== null);
+            var row = null;
+            tryVerify(function () { row = recent.itemAtIndex(0); return row !== null && row.name === name; });
+            tap(row);
+            var detail = item("homeRecentDetailSheet", home);
+            tryCompare(detail, "visible", true);
+            return detail;
+        }
+        function test_home_details_show_received_tone() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 151820000, "", "");
+            verify(callHistory.updateRow(callHistory.newestUid(), {receivedTone: "100.0 Hz", serviceName: "Fire"}));
+            var detail = openHomeRecent(name);
+            compare(detail.record.receivedTone, "100.0 Hz");
+            compare(detail.record.serviceName, "Fire");
+            verify(detail.detailLines.indexOf("Received tone 100.0 Hz") >= 0, "no tone line: " + detail.detailLines);
+            detail.visible = false;
+        }
+        function test_home_details_show_site_line() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1");
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "NXDN · RAN 5 · SYS 12 · SITE 3001 · Global"}));
+            var detail = openHomeRecent(name);
+            compare(detail.detailLines[6], "Radio ID 7001");
+            compare(detail.detailLines[8], "Frequency 851.0125 MHz");
+            compare(detail.detailLines[9], "NXDN · RAN 5 · SYS 12 · SITE 3001 · Global");
+            detail.visible = false;
+        }
         function test_scan_remove_confirms_exact_uid_data() {
             return [{tag: "confirm", change: "none"}, {tag: "row shifted", change: "shift"},
                 {tag: "already removed", change: "removed"}, {tag: "cancel", change: "cancel"}];

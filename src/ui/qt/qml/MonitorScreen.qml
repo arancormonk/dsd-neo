@@ -1363,26 +1363,7 @@ Item {
 
         delegate: CallRow {
             interactive: true
-            onActivated: historyDetail.open({
-                uid: model.uid,
-                name: model.name,
-                when: model.when,
-                systemName: model.systemName,
-                systemUid: model.systemUid,
-                channel: model.channel,
-                tg: model.tg,
-                src: model.src,
-                sourceName: model.srcName,
-                emergency: model.emergency,
-                enc: model.enc,
-                durationSecs: model.durationSecs,
-                detail: model.detail,
-                freqHz: model.freqHz,
-                accessCode: model.accessCode,
-                accessCodeText: model.accessCodeText,
-                serviceName: model.serviceName || "",
-                receivedTone: model.receivedTone || ""
-            })
+            onActivated: historyDetail.open(callHistory.recordFor(model.uid))
             // Inset by the card's border, so a row's divider never paints over it.
             x: 1
             width: ListView.view.width - 2

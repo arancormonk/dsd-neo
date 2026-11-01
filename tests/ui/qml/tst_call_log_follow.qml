@@ -33,6 +33,10 @@ Item {
         text: "851.0125 MHz"
     }
 
+    TextMetrics {
+        id: partWidth
+    }
+
     TestCase {
         id: tc
 
@@ -373,6 +377,97 @@ Item {
             verify(field.input.Accessible.description.indexOf(field.hint) >= 0,
                    "the rule is not in the accessible description: " + field.input.Accessible.description)
         }
+
+        // Issue #799: the details open on the call's site and channel, in the
+        // Monitor site row's words, as one line after the frequency, so the
+        // pinned lines (talkgroup 4, radio ID 6, its code and frequency after
+        // it) stay where they are.
+        function openDetails(name) {
+            var row = tc.rowNamed(name)
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "historyDetailSheet")
+            verify(sheet !== null, "the details sheet is missing")
+            tryCompare(sheet, "visible", true)
+            return sheet
+        }
+
+        function test_06j_details_show_site_line() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(),
+                                         {siteText: "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00"}))
+            var sheet = tc.openDetails(name)
+            compare(sheet.record.siteText, "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00")
+            compare(sheet.detailLines[4], "Talkgroup 4001")
+            compare(sheet.detailLines[6], "Radio ID 7001")
+            compare(sheet.detailLines[7], "Color code 1")
+            compare(sheet.detailLines[8], "Frequency 851.0125 MHz")
+            compare(sheet.detailLines[9], "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00")
+        }
+
+        // A call whose site was never heard, only its channel, names the channel.
+        function test_06k_channel_only_line() {
+            var name = callHistory.pushTuned(4001, 7001, "", 0, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 12"}))
+            var sheet = tc.openDetails(name)
+            compare(sheet.detailLines[6], "Radio ID 7001")
+            compare(sheet.detailLines[7], "Color code 1")
+            compare(sheet.detailLines[8], "")
+            compare(sheet.detailLines[9], "DMR · LPCN 12")
+            // A call with neither adds no line.
+            sheet.visible = false
+            var plain = callHistory.pushTuned(4002, 7002, "", 0, "", "")
+            sheet = tc.openDetails(plain)
+            compare(sheet.detailLines[9], "")
+        }
+
+        // Review focus: a long DMR line on a 360 px phone wraps between its
+        // parts, never inside one ("Net | 3", "Conn|ect"), nothing is clipped,
+        // and a screen reader reads the line whole.
+        function test_06o_site_line_wraps_and_reads() {
+            var width = root.width
+            try {
+                root.width = 360
+                var line = "DMR · TIII Large · Net 12 · Site 3.1 · SYS 1170 · Motorola Capacity Max · LCN 1234"
+                var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+                verify(callHistory.updateRow(callHistory.newestUid(), {siteText: line}))
+                var sheet = tc.openDetails(name)
+                var text = findChild(sheet, "historyDetailSite")
+                verify(text !== null, "the site line is missing")
+                verify(text.visible)
+                waitForRendering(text)
+                compare(text.wrapMode, Text.Wrap)
+                compare(text.Accessible.name, line)
+                verify(text.lineCount >= 2, "a long line does not wrap at 360 px: " + text.lineCount)
+                verify(text.width <= sheet.width, "the line is wider than the sheet")
+                verify(text.contentWidth <= text.width + 0.5, "the line is clipped: " + text.contentWidth)
+                // Laid out part by part, the lines hold exactly the parts that
+                // fit, each but the last ending on its separator's dot.
+                var parts = line.split(" · ")
+                partWidth.font = text.font
+                var lines = 1
+                var current = ""
+                for (var i = 0; i < parts.length; ++i) {
+                    var tail = i + 1 < parts.length ? " ·" : ""
+                    partWidth.text = parts[i] + tail
+                    verify(partWidth.advanceWidth <= text.width, parts[i] + " alone is wider than the line")
+                    var candidate = current.length > 0 ? current + " · " + parts[i] : parts[i]
+                    partWidth.text = candidate + tail
+                    if (current.length > 0 && partWidth.advanceWidth > text.width) {
+                        lines++
+                        current = parts[i]
+                    } else {
+                        current = candidate
+                    }
+                }
+                compare(text.lineCount, lines, "the line breaks inside a part")
+                var image = grabImage(sheet)
+                verify(image !== null)
+            } finally {
+                root.width = width
+            }
+        }
+
 
         // A row a frequency search found leads with that frequency, on voice and
         // notice rows alike, and names it to a screen reader. A row the same text
