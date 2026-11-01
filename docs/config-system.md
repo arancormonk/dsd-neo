@@ -468,7 +468,7 @@ and static WAVs and MBE capture skip it, and a held talkgroup still records. Lea
 and radio ID list (`--src-csv`) rows do not count as rows. Tuning and playback are
 unchanged. Applying a config in a running session changes it at once.
 `analog_max_gap_ms` outside 0 to 10000, or not a whole number, is refused with a warning, and the value already loaded
-stays (the default, 200, for a base file); `--validate-config` warns about a value out of range. A config applied in a
+stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a
 running session changes it from the next block of audio: a lower value, or off, ends an NFM call already paused
 longer than that. How pauses are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable

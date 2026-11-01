@@ -1561,9 +1561,9 @@ test_scan_max_visit_ms_validation(void) {
     return rc;
 }
 
-/* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is the schema walk's out-of-range WARNING (the loader
- * refuses it and keeps the value it had); a value that is not a whole number is an ERROR. Both ends of the range, and
- * the 200 ms default, are silent. @p level is DSDCFG_DIAG_WARNING, DSDCFG_DIAG_ERROR or -1 for no diagnostic. */
+/* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
+ * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
+ * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
 static int
 run_analog_max_gap_case(const char* value, int level, const char* text) {
     char ini[128];
@@ -1606,8 +1606,9 @@ test_analog_max_gap_validation(void) {
     rc |= run_analog_max_gap_case("0", -1, NULL);
     rc |= run_analog_max_gap_case("200", -1, NULL);
     rc |= run_analog_max_gap_case("10000", -1, NULL);
-    rc |= run_analog_max_gap_case("-1", DSDCFG_DIAG_WARNING, "Value -1 is out of range [0, 10000]");
-    rc |= run_analog_max_gap_case("10001", DSDCFG_DIAG_WARNING, "Value 10001 is out of range [0, 10000]");
+    rc |= run_analog_max_gap_case("-1", DSDCFG_DIAG_ERROR, "Value -1 is out of range [0, 10000] and is refused");
+    rc |= run_analog_max_gap_case("10001", DSDCFG_DIAG_ERROR, "Value 10001 is out of range [0, 10000] and is refused");
+    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value '99999999999'");
     rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
     return rc;
 }

@@ -650,7 +650,7 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
 }
 
 /* Issue #756: the NFM max gap is refused, never clamped: a value outside 0..10000, or not a whole number, is reported
-   and the one already loaded (the default, for a base file) stays. --validate-config reports it from the schema. */
+   and the one already loaded (the default, for a base file) stays. --validate-config reports it as an error. */
 static void
 apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     int ms = 0;
