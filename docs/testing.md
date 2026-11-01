@@ -2543,12 +2543,14 @@ keyed with 2 ms ramps and carrying 700 and 1300 Hz at up to 3 kHz deviation, swe
 For each run the checker requires the expected number of recordings in the folder and no `TEMP_` file. The journal must
 have one `publish` line per recording: NFM, pending its row, not failed, naming a file in the folder. Each one needs a
 `link` line, and there may be no `unlink` or `error` line. The host must print one `ANALOG CALL ROW` per recording.
+Each `publish` line's `duration_ms`, in publication order, must be within one 20 ms block of the case's expected length
+(`DURATIONS_MS`), so the recordings keep time.
 
 | Case | What it pins |
 | --- | --- |
-| `DECODE_PCM_ANALOG_RECORD_GAP_200`, `_500`, `_1000`, `_2000`, `_3500` | The discriminator tap as audio input under `--squelch noise+6`, every build: `--analog-record-max-gap-ms` 200 (off) gives 5 recordings, 500 gives 4, 1000 gives 3, 2000 gives 2 and 3500 gives 1. Measured lengths in the journal: 680 to 700 ms a burst alone (the burst and the 200 ms hangover, at block precision); joined, 1500 ms (500), 2600 (1000), 4580 (2000) and 8100 (3500). |
+| `DECODE_PCM_ANALOG_RECORD_GAP_200`, `_500`, `_1000`, `_2000`, `_3500` | The discriminator tap as audio input under `--squelch noise+6`, every build: `--analog-record-max-gap-ms` 200 (off) gives 5 recordings, 500 gives 4, 1000 gives 3, 2000 gives 2 and 3500 gives 1. Expected lengths in the journal, each held to within 20 ms: 700 ms a burst alone (the 0.5 s burst and the 200 ms hangover); joined, 1500 ms (500), 2600 (1000), 4600 (2000) and 8100 (3500). Measured: 680 or 700 ms alone, and 4580 at 2000. |
 | the `_1000`, `_2000` and `_3500` cases | The input ends 740 ms after the last audible audio (`total_ms - last_audible_ms`, held under the max gap by `HELD_AT_END_MS`), so the last call is still held then: the engine's normal teardown publishes it, and its row commits and links it. With `dsd_engine_analog_call_end()` skipping a held call, these three cases and `_PACED` fail and the other two pass. |
-| `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. |
+| `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. The lengths are held as at 1000 above (2580, 680 and 680 ms measured). |
 
 The largest silence one resume writes (a 10 s hold that is all tone check, 480000 samples) is timed by `CORE_RECEIVE`,
 which prints `a 10 s pause written as silence in N ms`. That is about 0.5 ms in `dev-debug` with the temporary

@@ -11,7 +11,11 @@
 #     "link" line for each of them; no "unlink" and no "error" line;
 #   - the host printed FILES "ANALOG CALL ROW:" lines: one history row a file.
 #
-# Expected -D inputs: HOST_BIN, MODE, WORK_DIR, FILES. Optional:
+#   - each published recording's journal duration_ms, in publication order, is
+#     within one 20 ms block of its DURATIONS_MS entry.
+#
+# Expected -D inputs: HOST_BIN, MODE, WORK_DIR, FILES, DURATIONS_MS (a
+# comma-separated list of FILES expected lengths in ms). Optional:
 #   RATES         a comma-separated list of at least two --iq-replay-rate
 #                 values, one leg each (one leg without the option when
 #                 unset). Every leg after the first
@@ -25,13 +29,28 @@
 #                 audible audio (the host's total_ms and last_audible_ms), so
 #                 the run's last call was still held through a pause when the
 #                 input ended and the engine's normal teardown closed it.
-foreach(_var HOST_BIN MODE WORK_DIR FILES)
+foreach(
+    _var
+    HOST_BIN
+    MODE
+    WORK_DIR
+    FILES
+    DURATIONS_MS
+)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "analog_recording_check: missing -D${_var}")
     endif()
 endforeach()
 if(NOT "${FILES}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "analog_recording_check: FILES must be a count")
+endif()
+string(REPLACE "," ";" _expected_durations "${DURATIONS_MS}")
+list(LENGTH _expected_durations _expected_duration_count)
+if(NOT _expected_duration_count EQUAL FILES)
+    message(
+        FATAL_ERROR
+        "analog_recording_check: DURATIONS_MS names ${_expected_duration_count} lengths for ${FILES} recordings"
+    )
 endif()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
@@ -111,12 +130,15 @@ function(_analog_recording_leg leg rate out_files out_summary)
 
     set(_lines "")
     if(EXISTS "${_journal}")
+        # One list item a line: file(STRINGS) also splits on ';' and treats '[' ']' as list syntax, which neither the
+        # sanitized NFM file names nor the journal fields checked here hold.
         file(STRINGS "${_journal}" _lines)
     endif()
     set(_published "")
     set(_linked "")
     set(_ordered "")
     set(_summary "")
+    set(_durations "")
     foreach(_line IN LISTS _lines)
         if(_line MATCHES "\"type\":\"(unlink|error)\"")
             message(
@@ -155,7 +177,8 @@ function(_analog_recording_leg leg rate out_files out_summary)
             endif()
             list(APPEND _ordered "${_calls}/${_name}")
             string(REGEX MATCH "\"start\":[0-9]+" _start "${_line}")
-            string(REGEX MATCH "\"duration_ms\":[0-9]+" _duration "${_line}")
+            string(REGEX MATCH "\"duration_ms\":([0-9]+)" _duration "${_line}")
+            list(APPEND _durations "${CMAKE_MATCH_1}")
             string(REGEX MATCH "\"epoch\":[0-9]+" _epoch "${_line}")
             list(APPEND _summary "publish ${_start} ${_duration} ${_epoch}")
         elseif(_line MATCHES "\"type\":\"link\"")
@@ -182,6 +205,18 @@ function(_analog_recording_leg leg rate out_files out_summary)
             "analog_recording_check: ${leg}: ${_publish_count} publish lines, expected ${FILES}\n${_lines}"
         )
     endif()
+    # The journal keeps time: a burst alone is the burst and the hangover, and a joined call adds its pauses, each at
+    # block precision (20 ms).
+    foreach(_got _want IN ZIP_LISTS _durations _expected_durations)
+        math(EXPR _off "${_got} - ${_want}")
+        if(_off GREATER 20 OR _off LESS -20)
+            string(REPLACE ";" "," _got_text "${_durations}")
+            message(
+                FATAL_ERROR
+                "analog_recording_check: ${leg}: journal durations ${_got_text} ms, expected ${DURATIONS_MS} (+/-20 ms each)"
+            )
+        endif()
+    endforeach()
     foreach(_id IN LISTS _published)
         list(FIND _linked "${_id}" _at)
         list(REMOVE_ITEM _linked "${_id}")
