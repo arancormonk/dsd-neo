@@ -69,6 +69,18 @@ int dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added, 
  */
 int dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz);
 
+/**
+ * @brief Hand out the eligible candidate before the last one handed out, wrapping (issue #666).
+ *
+ * The walk backward from dsd_trunk_cc_candidates_next()'s: the entries before the last one handed out are examined
+ * nearest first, wrapping, and that entry itself last; with none handed out yet (index 0), from the last entry down.
+ * The one found becomes the last handed out, so the next walk either way goes on from it, and its use is counted.
+ * Finding none leaves the walk where it was.
+ *
+ * @return 1 with @p out_freq_hz set; 0 when no candidate is eligible.
+ */
+int dsd_trunk_cc_candidates_prev(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz);
+
 /** @brief Record where the candidate walk of @p state stands in @p out (see dsd_trunk_cc_candidates_cursor). */
 void dsd_trunk_cc_candidates_checkpoint(const dsd_state* state, dsd_trunk_cc_candidates_cursor* out);
 

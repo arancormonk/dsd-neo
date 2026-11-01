@@ -170,6 +170,37 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t r
     return 0;
 }
 
+int
+dsd_trunk_cc_candidates_prev(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
+    if (!state || !out_freq_hz) {
+        return 0;
+    }
+
+    dsd_trunk_cc_candidates* cc =
+        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    if (!cc) {
+        return 0;
+    }
+
+    if (!dsd_trunk_cc_candidates_has_valid_count(cc)) {
+        return 0;
+    }
+
+    const long skip_cc_freq = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+    const int count = cc->count;
+    /* The last entry handed out, or past the end when none was, so the walk starts at the last entry. */
+    const int anchor = (cc->idx > 0 && cc->idx <= count) ? cc->idx - 1 : count;
+    for (int tries = 0; tries < count; tries++) {
+        const int idx = (anchor - 1 - tries + 2 * count) % count;
+        if (dsd_trunk_cc_candidate_is_allowed(cc, idx, skip_cc_freq, now_monotonic_s, required_flags, out_freq_hz)) {
+            cc->idx = idx + 1;
+            cc->used++;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void
 dsd_trunk_cc_candidates_checkpoint(const dsd_state* state, dsd_trunk_cc_candidates_cursor* out) {
     if (!out) {

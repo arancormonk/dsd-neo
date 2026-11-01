@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "dsd-neo/core/state_ext.h"
@@ -284,6 +285,76 @@ test_checkpoint_restore(void) {
     free(st);
 }
 
+/* Issue #666 (D7): the walk backward. With nothing handed out it starts at the last candidate; otherwise at the one
+   before the last handed out, wrapping, and that one itself last. What it hands out is the last handed out, so the
+   next walk either way goes on from it, and each pick counts a use. It skips what the forward walk skips (the control
+   channel, a cooling candidate, a missing flag), finds the only eligible one even when it is the last handed out, and
+   finding none leaves the walk where it was. An eviction of the oldest keeps naming the same candidate. */
+static void
+test_prev_walks_back(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+    long out = 1234;
+    assert(dsd_trunk_cc_candidates_prev(NULL, 0.0, 0, &out) == 0 && out == 1234);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, NULL) == 0);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 0 && out == 1234);
+    assert(dsd_trunk_cc_candidates_peek(st) == NULL);
+
+    for (long f = 100; f <= 400; f += 100) {
+        assert(dsd_trunk_cc_candidates_add(st, f, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
+    }
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_get(st);
+    assert(cc != NULL);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 400);
+    assert(cc->idx == 4 && cc->used == 1U);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 300);
+    assert(cc->idx == 3 && cc->used == 2U);
+    /* Forward goes on from there, and back again. */
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, 0, &out) == 1 && out == 400);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 300);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 200);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 100);
+    assert(cc->idx == 1);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 400); /* wrapping */
+    assert(cc->idx == 4 && cc->used == 7U);
+
+    /* Skips: the control channel, a cooling candidate. */
+    st->trunk_cc_freq = 300;
+    dsd_trunk_cc_candidates_set_cooldown(st, 200, 10.0);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 100);
+    assert(cc->idx == 1);
+    assert(dsd_trunk_cc_candidates_prev(st, 11.0, 0, &out) == 1 && out == 400);
+    assert(dsd_trunk_cc_candidates_prev(st, 11.0, 0, &out) == 1 && out == 200);
+    st->trunk_cc_freq = 0;
+
+    /* The only eligible candidate is the one last handed out: found again, last. */
+    dsd_trunk_cc_candidates_set_cooldown(st, 100, 50.0);
+    dsd_trunk_cc_candidates_set_cooldown(st, 300, 50.0);
+    dsd_trunk_cc_candidates_set_cooldown(st, 400, 50.0);
+    const unsigned int used = cc->used;
+    assert(dsd_trunk_cc_candidates_prev(st, 20.0, 0, &out) == 1 && out == 200);
+    assert(cc->idx == 2 && cc->used == used + 1U);
+    /* None eligible: nothing moves. */
+    out = 1234;
+    assert(dsd_trunk_cc_candidates_prev(st, 20.0, (uint8_t)(DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE << 1), &out) == 0);
+    assert(out == 1234 && cc->idx == 2 && cc->used == used + 1U);
+
+    /* An eviction moves the index with the list, so it still names 200; back from it now wraps to the newest. */
+    for (int k = 0; k < DSD_TRUNK_CC_CANDIDATES_MAX; k++) {
+        cc->cool_until[k] = 0.0;
+    }
+    for (long f = 500; f < 500 + 100 * (DSD_TRUNK_CC_CANDIDATES_MAX - 4); f += 100) {
+        assert(dsd_trunk_cc_candidates_add(st, f, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
+    }
+    assert(cc->count == DSD_TRUNK_CC_CANDIDATES_MAX && cc->idx == 2);
+    assert(dsd_trunk_cc_candidates_add(st, 9900, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1); /* 100 goes */
+    assert(cc->idx == 1 && cc->candidates[0] == 200);
+    assert(dsd_trunk_cc_candidates_prev(st, 0.0, 0, &out) == 1 && out == 9900); /* before 200, wrapping */
+
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     test_public_guards();
@@ -294,5 +365,6 @@ main(void) {
     test_cooldown_ignores_zero_and_missing_frequencies();
     test_fruitless_search_keeps_the_walk();
     test_checkpoint_restore();
+    test_prev_walks_back();
     return 0;
 }
