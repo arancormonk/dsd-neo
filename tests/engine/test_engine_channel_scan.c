@@ -3151,6 +3151,39 @@ test_typed_unlanded_step_keeps_the_row_heard(void) {
     }
 }
 
+/* Issue #666 (review gate G1): the first typed step, refused at once or after it was pending, on a list no row has
+   landed on. The refusal moved the cursor past row 0, and with no row recorded the row heard fell back to the row
+   before the cursor: row 0, never tuned, which named the calls. There is no row heard until a row lands. */
+static void
+test_typed_first_refusal_names_no_row(void) {
+    for (int late = 0; late <= 1; late++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_pause_fixture(opts, state);
+        dsd_state_lcn_nav_reset(state);
+        if (late) {
+            tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            assert(dsd_engine_channel_scan_step(opts, state) == 0);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        } else {
+            tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+            assert(dsd_engine_channel_scan_step(opts, state) == -1);
+        }
+        assert(state->lcn_freq_roll == 1);
+        assert(dsd_state_lcn_heard_row(state) == -1 && dsd_engine_channel_scan_on_air_row(state) == -1);
+        assert(strcmp(row_named(opts, state), "") == 0);
+
+        /* Row 1 is avoided: the next step lands row 2, the row heard from then on. */
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        assert(state->lcn_freq_roll == 3 && dsd_state_lcn_heard_row(state) == 2);
+        assert(strcmp(row_named(opts, state), "Depot") == 0);
+        typed_pause_fixture_free(opts, state);
+    }
+}
+
 /* Issue #666: a typed -Y list laid out on distinct frequencies, so each step shows the row it picked: North 151 MHz,
    East 152 MHz, a placeholder, West 154 MHz and, on West's frequency, "West P25", a row of another mode (rows that
    share a frequency are kept: each may run another mode, options or keys). No row has landed yet. */
@@ -3527,6 +3560,7 @@ main(void) {
     test_resume_without_a_landing_stays_paused();
     test_resume_pending_waits_for_its_row();
     test_typed_unlanded_step_keeps_the_row_heard();
+    test_typed_first_refusal_names_no_row();
     test_typed_previous_walks_back();
     test_typed_previous_refusal_keeps_the_cursor();
     test_typed_previous_restaged();

@@ -416,13 +416,15 @@ channel_scan_commit_owned(dsd_opts* opts, dsd_state* state, channel_scan* scan) 
 
 /* The staged row's tune ended in @p result without landing. A refusal (FAILED) of a forward step moves the cursor past
    the row, so a bad row does not keep a later one from recovering the receiver and retiring the failed tune's frame
-   gate; a Previous's (issue #666) keeps the cursor and leaves the row for the next Previous to retry. A deferral or a
-   timeout changes neither: the same row is tried again. */
+   gate; a Previous's (issue #666) keeps the cursor and leaves the row for the next Previous to retry. Before any row
+   landed, either leaves no row heard rather than the row before the cursor. A deferral or a timeout changes neither:
+   the same row is tried again. */
 static void
 channel_scan_row_refused(dsd_state* state, const channel_scan* scan, dsd_trunk_tune_result result) {
     if (result != DSD_TRUNK_TUNE_RESULT_FAILED) {
         return;
     }
+    dsd_state_lcn_on_air_note_refused(state);
     if (scan->step_dir < 0) {
         dsd_state_lcn_back_retry_note(state, scan->row);
         return;

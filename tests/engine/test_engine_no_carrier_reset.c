@@ -2442,6 +2442,48 @@ test_untyped_unlanded_step_keeps_the_row_heard(void) {
     return rc;
 }
 
+/* Issue #666 (review gate G1): the first timed step on a list no step has landed on, its row refused at once or after
+   it was pending. The refusal moved the cursor past row 0, and with no row recorded the row heard fell back to the row
+   before the cursor: row 0, never tuned, which then named the calls and stood as the row on air for Avoid. There is
+   no row heard until a step lands one. */
+static int
+test_untyped_first_refusal_names_no_row(void) {
+    int rc = 0;
+    for (int late = 0; late <= 1; late++) {
+        const char* what = late ? "late refusal" : "refusal";
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (setup_untyped_named_list(opts, state, 3, -1) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        if (late) {
+            (void)step_into_a_timed_out_tune(opts, state);
+            land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+            rc |= expect_case(what, "the late failure polls",
+                              dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+        } else {
+            g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+            untyped_step_now(opts, state);
+            g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        }
+        rc |= expect_case(what, "the step tried row 0", g_rtl_tune_freq == 961012500U);
+        rc |= expect_case(what, "the cursor passed row 0", state->lcn_freq_roll == 1);
+        rc |= expect_case(what, "no row heard", dsd_state_lcn_heard_row(state) == -1);
+        rc |= expect_case(what, "none on air", dsd_engine_channel_scan_on_air_row(state) == -1);
+        rc |= expect_live_label(what, opts, state, "");
+        untyped_step_now(opts, state);
+        rc |= expect_case(what, "the next step lands row 1",
+                          g_rtl_tune_freq == 962012500U && dsd_state_lcn_heard_row(state) == 1);
+        rc |= expect_live_label(what, opts, state, "BRAVO");
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Issue #666 (B3, B12): the timed untyped step records the row heard when a row with a frequency lands, never at a
    placeholder park, which leaves the receiver where it was. A list with nowhere else to go but the row heard (the
    other row a placeholder) is no other row to take rejected traffic to, though the cursor stands past the placeholder:
@@ -8554,6 +8596,7 @@ main(void) {
     rc |= test_untyped_resume_waits_for_its_row();
     rc |= test_untyped_step_names_the_outgoing_call_after_the_row_heard();
     rc |= test_untyped_unlanded_step_keeps_the_row_heard();
+    rc |= test_untyped_first_refusal_names_no_row();
     rc |= test_untyped_park_keeps_the_row_heard();
     rc |= test_untyped_step_passes_a_refused_row();
     rc |= test_untyped_step_drops_a_previous_retry();

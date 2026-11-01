@@ -15,6 +15,10 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
+/* lcn_on_air_row after a refused step left no row recorded: none, with no fallback to the row before the cursor, which
+   the refusal moved past the row it never tuned. Any row note or a reset replaces it. */
+#define LCN_NAV_ROW_REFUSED (-2)
+
 /* Whether scan-list row @p row is in the list and carries a frequency (not a 0 Hz placeholder), which @p freq gets. */
 static int
 lcn_nav_row_freq(const dsd_state* state, int row, long int* freq) {
@@ -46,6 +50,15 @@ dsd_state_lcn_on_air_note(dsd_state* state, int row) {
 }
 
 void
+dsd_state_lcn_on_air_note_refused(dsd_state* state) {
+    if (!state || dsd_state_lcn_on_air_row(state) >= 0) {
+        return;
+    }
+    state->lcn_on_air_row = LCN_NAV_ROW_REFUSED;
+    state->lcn_on_air_freq = 0;
+}
+
+void
 dsd_state_lcn_on_air_clear(dsd_state* state) {
     if (!state) {
         return;
@@ -65,11 +78,12 @@ dsd_state_lcn_on_air_row(const dsd_state* state) {
 int
 dsd_state_lcn_heard_row(const dsd_state* state) {
     const int recorded = dsd_state_lcn_on_air_row(state);
-    if (recorded >= 0 || !state) {
+    if (recorded >= 0 || !state || state->lcn_on_air_row == LCN_NAV_ROW_REFUSED) {
         return recorded;
     }
     /* No step recorded one yet (a list just loaded, a state restored from before the record existed): the row before
-       the cursor, as every reader took it before the split, but never a placeholder, which is parked over. */
+       the cursor, as every reader took it before the split, but never a placeholder, which is parked over. Not after a
+       refused step, whose cursor stands past a row never tuned. */
     const int roll = state->lcn_freq_roll;
     if (roll > 0 && roll <= state->lcn_freq_count && *dsd_state_trunk_lcn_slot_const(state, roll - 1) != 0) {
         return roll - 1;

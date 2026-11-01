@@ -5637,6 +5637,52 @@ prev_lands(dsd_opts* opts, dsd_state* state, uint32_t hz, int roll, int heard, c
 }
 
 /*
+ * Issue #666 (review gate G1): before any step recorded a row heard, the row heard is the row before the cursor. A
+ * refused Next moved the cursor past the row it never tuned, so that fallback named the refused row: it labelled the
+ * calls and took the Avoid. A refused Previous, on a cursor no step recorded (a state from before the record existed),
+ * left the fallback naming a row it may have moved off. A refusal now leaves no row heard until a step lands one, and
+ * Previous still steps from there, starting at the last row.
+ */
+static int
+test_channel_cycle_first_refusal_names_no_row(void) {
+    static const long kRows[] = {872000000L, 873000000L, 874000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    rc |= expect_int("first refusal: name A", dsd_state_trunk_lcn_name_set(&state, 0U, "ALPHA"), 0);
+    manual_leg_script(872000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "first refusal: A refused");
+    rc |= expect_true("first refusal: A tried", g_manual_leg_hz == 872000000U);
+    rc |= expect_int("first refusal: the cursor passed A", state.lcn_freq_roll, 1);
+    rc |= expect_int("first refusal: no row heard", dsd_state_lcn_heard_row(&state), -1);
+    rc |= expect_int("first refusal: none on air", dsd_engine_channel_scan_on_air_row(&state), -1);
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    label[0] = '\0';
+    (void)dsd_channel_label_current(&opts, &state, label, sizeof label);
+    rc |= expect_str("first refusal: A names no call", label, "");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "first refusal: avoid");
+    rc |= expect_int("first refusal: A is not avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U), 0);
+    rc |= expect_contains("first refusal: nothing on air to avoid", state.ui_msg, "No scan channel on air");
+
+    /* Previous still steps: from the last row, as with no row heard. */
+    rc |= prev_lands(&opts, &state, 874000000U, 3, 2, "first refusal: previous starts at the end");
+
+    /* A cursor no step recorded (row 1 before it) and a refused Previous: the row heard goes, the retry stays. */
+    dsd_state_lcn_nav_reset(&state);
+    state.lcn_freq_roll = 2;
+    rc |= expect_int("legacy cursor: B before it", dsd_state_lcn_heard_row(&state), 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "legacy cursor: A refused");
+    rc |= expect_true("legacy cursor: A tried, the cursor kept",
+                      g_manual_leg_hz == 872000000U && state.lcn_freq_roll == 2);
+    rc |= expect_int("legacy cursor: no row heard", dsd_state_lcn_heard_row(&state), -1);
+    rc |= prev_lands(&opts, &state, 874000000U, 3, 2, "legacy cursor: the next previous goes on past A");
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #666: Previous on an untyped -Y list. With no row heard yet it starts at the last row; then each press goes
  * back from the row heard, past placeholders and avoided rows, wrapping. Every landing moves the cursor past the row,
  * so Next goes on forward from where Previous landed. A hold stays on: Previous moves the scan, as Next does.
@@ -24538,6 +24584,7 @@ main(void) {
     rc |= test_channel_cycle_passes_a_refused_row();
     rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
+    rc |= test_channel_cycle_first_refusal_names_no_row();
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();

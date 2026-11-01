@@ -6,8 +6,8 @@
 /*
  * Issue #666: the scan list's position records, apart from its cursor (lcn_freq_roll). The row heard is the last
  * non-zero row an accepted step selected, while that row still holds the frequency it was recorded with; before any
- * step recorded one, the row before the cursor unless it is a placeholder. The backward-retry row follows the same
- * validity rule, and a new row heard drops it.
+ * step recorded one, the row before the cursor unless it is a placeholder, and none after a hard-failed step. The
+ * backward-retry row follows the same validity rule, and a new row heard drops it.
  */
 
 #include <assert.h>
@@ -174,6 +174,42 @@ test_back_retry_row(void) {
     free_state(st);
 }
 
+/* A hard-failed step with no row recorded makes the row heard none, not the row before a cursor the failure moved past
+   a row it never tuned; it stays none as the cursor moves, until a row is recorded or the records are reset, when the
+   cursor rule applies again. A record that still describes the list is left alone, and one that stopped describing it
+   counts as none. */
+static void
+test_refused_step_leaves_no_row_heard(void) {
+    dsd_state* st = make_state();
+    seed_rows(st, 3);
+    st->lcn_freq_roll = 1;
+    assert(dsd_state_lcn_heard_row(st) == 0);
+    dsd_state_lcn_on_air_note_refused(st);
+    assert(dsd_state_lcn_heard_row(st) == -1 && dsd_state_lcn_on_air_row(st) == -1);
+    for (int roll = 0; roll <= 3; roll++) {
+        st->lcn_freq_roll = roll;
+        assert(dsd_state_lcn_heard_row(st) == -1);
+    }
+    dsd_state_lcn_on_air_note(st, 1);
+    assert(dsd_state_lcn_heard_row(st) == 1);
+    dsd_state_lcn_on_air_note_refused(st);
+    assert(dsd_state_lcn_heard_row(st) == 1 && dsd_state_lcn_on_air_row(st) == 1);
+
+    *dsd_state_trunk_lcn_slot(st, 1) = 862000000L;
+    st->lcn_freq_roll = 3;
+    assert(dsd_state_lcn_heard_row(st) == 2);
+    dsd_state_lcn_on_air_note_refused(st);
+    assert(dsd_state_lcn_heard_row(st) == -1);
+    /* Put back as it was, the old record does not come back: the refusal replaced it. */
+    *dsd_state_trunk_lcn_slot(st, 1) = 851012500L;
+    assert(dsd_state_lcn_heard_row(st) == -1);
+
+    dsd_state_lcn_nav_reset(st);
+    assert(dsd_state_lcn_heard_row(st) == 2);
+    dsd_state_lcn_on_air_note_refused(NULL);
+    free_state(st);
+}
+
 int
 main(void) {
     test_zeroed_state_records_nothing();
@@ -182,5 +218,6 @@ main(void) {
     test_recorded_row_validates_against_the_list();
     test_recorded_row_in_the_heap_tail();
     test_back_retry_row();
+    test_refused_step_leaves_no_row_heard();
     return 0;
 }

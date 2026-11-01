@@ -164,7 +164,11 @@ Generated (do not edit/commit):
     park, a deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
     step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
     another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
-    none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. `lcn_back_retry_row`/`_freq`
+    none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. A hard-failed step (either
+    direction, manual or timed, typed or untyped, late failures included) that finds no valid record calls
+    `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the
+    `roll - 1` the failure moved past, until a step records a row or `dsd_state_lcn_nav_reset()` runs; a valid record
+    is left alone. The value rides both snapshots with the record. `lcn_back_retry_row`/`_freq`
     (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
     heard is what the channel label (`channel_label.c`), the terminal Scan Mode line and the untyped branch of
     `dsd_engine_channel_scan_on_air_row()` read; Avoid (`apply_manual_scan_avoid()`) flags that row, which on a typed

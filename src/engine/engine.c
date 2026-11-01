@@ -1639,6 +1639,7 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     } else if (polled == DSD_MANUAL_TUNE_FAILED) {
         /* The front end refused the row late: the cursor moves past it, as at a refusal in the step (issue #666). */
         state->lcn_freq_roll = settled.row + 1;
+        dsd_state_lcn_on_air_note_refused(state);
         no_carrier_rearm_abandoned_scan(opts, state, now);
     }
     /* A step dropped while the scan runs (a newer tune, a stream reopen) failed nothing: what replaced it decides the
@@ -1696,7 +1697,8 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // reacquirable by whatever decodes next -- on a different frequency. A tune that timed out commits
     // its row only once it lands (issue #671): until then the cursor, the keys and the clocks stay. A row a
     // front end refused is passed (issue #666): the cursor moves past it, and only the cursor, so the row heard,
-    // its keys and the deadline stay. A deferred tune keeps the cursor for a retry.
+    // its keys and the deadline stay; with no row heard recorded yet, none, not the refused row before the cursor.
+    // A deferred tune keeps the cursor for a retry.
     int moved = 0;
     const int result = untyped_tune_row(opts, state, row, freq, &moved);
     if (result == DSD_UNTYPED_STEP_OK) {
@@ -1705,6 +1707,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     }
     if (untyped_step_refused_row(opts, result)) {
         state->lcn_freq_roll = row + 1;
+        dsd_state_lcn_on_air_note_refused(state);
     }
     untyped_note_unlanded(opts, state, moved, now);
     return moved;

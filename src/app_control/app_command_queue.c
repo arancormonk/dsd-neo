@@ -3676,7 +3676,8 @@ lcn_cycle_pick(const dsd_state* state, int start, int dir) {
 /* The cursor, the row heard and the retry after a walk in direction @p dir tuned @p row and the tune ended in
    @p result (issue #666). Landed (either way): the cursor past the row, which becomes the row heard. Deferred: nothing,
    so the next press tries the same row. Refused: going back, the row is the one to retry; going forward, the cursor
-   moves past it, so a row the tuner never takes cannot hold `L` on it, and the row heard stays. The scan's visit
+   moves past it, so a row the tuner never takes cannot hold `L` on it. Either way a recorded row heard stays, and with
+   none the row heard is none rather than the row before the cursor, which names no row tuned. The scan's visit
    timers read any cursor move as a retune, which a refusal is not, so each one that had seen the cursor is told the
    new one and keeps its windows. One that had not seen it is left alone: the move it has yet to see (a landing, say)
    still restarts its windows. */
@@ -3690,6 +3691,7 @@ lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_res
     if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
         return;
     }
+    dsd_state_lcn_on_air_note_refused(state);
     if (dir < 0) {
         dsd_state_lcn_back_retry_note(state, row);
         return;
