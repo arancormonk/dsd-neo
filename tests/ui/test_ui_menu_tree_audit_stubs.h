@@ -18,6 +18,7 @@
 
 #define AUDIT_ACTIONS(X)                                                                                               \
     X(act_allow_toggle)                                                                                                \
+    X(act_analog_record_max_gap)                                                                                       \
     X(act_anytone_bp)                                                                                                  \
     X(act_auto_ppm_freeze)                                                                                             \
     X(act_auto_ppm_pwr_prompt)                                                                                         \
@@ -219,6 +220,7 @@
 
 #define AUDIT_LABELS(X)                                                                                                \
     X(lbl_allow)                                                                                                       \
+    X(lbl_analog_record_max_gap)                                                                                       \
     X(lbl_audio_lpf)                                                                                                   \
     X(lbl_auto_ppm_freeze)                                                                                             \
     X(lbl_auto_ppm_pwr)                                                                                                \

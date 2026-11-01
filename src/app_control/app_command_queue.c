@@ -4474,6 +4474,7 @@ static const int k_ui_cmd_action_ids[] = {
 static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
     DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
+    DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET,
     /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
     DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
@@ -4726,6 +4727,7 @@ struct ui_cmd_payload_min_size_rule {
 static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules[] = {
     {DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, sizeof(int32_t)},
     {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, sizeof(uint64_t)},
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
@@ -7561,6 +7563,28 @@ ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const st
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The NFM max gap (issue #756): the analog call reconciles a held call with the value on its next block or tick, so a
+   change applies there (lowered below the pause so far, or turned off, it ends the call at its last audio). A value out
+   of range is refused as typed, never clamped, as the CLI and INI refuse it. */
+static int
+ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t ms = 0;
+    if (!ui_cmd_parse_i32_payload(c, &ms)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (ms < 0 || ms > 10000) {
+        ui_set_toast(state, 5, "Refused: NFM pause hold must be 0..10000 ms, not %ld", (long)ms);
+        return UI_CMD_APPLY_FAILED;
+    }
+    opts->analog_record_max_gap_ms = (int)ms;
+    if (ms > DSD_ANALOG_CARRIER_HANGOVER_MS) {
+        ui_set_toast(state, 3, "Applied: NFM pause hold -> %d ms", (int)ms);
+    } else {
+        ui_set_toast(state, 3, "Applied: NFM pause hold -> Off");
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 /* Stop replay: a playback (a WAV or raw file, a symbol file) ends with a switch to the configured Pulse input (issue
    #634). The terminal reads its keys from stdin, so there is no switch to stdin. A Pulse input that does not open
    leaves the playback running, as any failed switch leaves the input it had. */
@@ -7595,6 +7619,7 @@ apply_cmd_capture_playback(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle},
         {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback},
         {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, ui_cmd_handle_record_unknown_only_set},
+        {DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ui_cmd_handle_analog_record_max_gap_set},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -9708,6 +9733,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_WAV_STATIC_OPEN,
     DSD_APP_CMD_WAV_RAW_OPEN,
     DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
+    DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET,
     DSD_APP_CMD_DSP_OUT_SET,
     DSD_APP_CMD_SYMCAP_SAVE,
     DSD_APP_CMD_SYMCAP_STOP,

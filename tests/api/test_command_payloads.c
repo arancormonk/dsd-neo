@@ -261,6 +261,15 @@ test_scalars(void) {
     refused("{\"cmd\":\"decode_mode_set\",\"params\":{\"value\":18}}");
     refused("{\"cmd\":\"decode_mode_set\",\"params\":{\"value\":0}}");
     refused("{\"cmd\":\"trunk_set\",\"params\":{\"value\":-1}}");
+    /* The NFM max gap (issue #756) takes 0..10000 ms; a value outside is refused, never clamped. */
+    assert(ok("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":10000}}"));
+    DSD_MEMCPY(&i32, g_last, sizeof i32);
+    assert(g_last_id == DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET && g_last_n == sizeof(int32_t) && i32 == 10000);
+    assert(ok("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":0}}"));
+    DSD_MEMCPY(&i32, g_last, sizeof i32);
+    assert(i32 == 0);
+    refused("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":10001}}");
+    refused("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":-1}}");
 
     assert(ok("{\"cmd\":\"key_rc4des_set\",\"params\":{\"value\":\"0xFFEEDDCCBBAA9988\"}}"));
     uint64_t u64 = 0U;

@@ -7994,6 +7994,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "eye diagram", DSD_APP_CMD_EYE_TOGGLE, 0},
         {&value, sizeof value, "per-call WAV start", DSD_APP_CMD_WAV_START, 0},
         {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
+        {&value, sizeof value, "NFM max gap", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

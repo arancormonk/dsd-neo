@@ -51,7 +51,7 @@ int
 dsd_app_recording_command_tracked(int cmd_id) {
     return cmd_id == DSD_APP_CMD_WAV_START || cmd_id == DSD_APP_CMD_WAV_STOP || cmd_id == DSD_APP_CMD_WAV_TOGGLE
            || cmd_id == DSD_APP_CMD_WAV_STATIC_OPEN || cmd_id == DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET
-           || cmd_id == DSD_APP_CMD_CONFIG_APPLY;
+           || cmd_id == DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET || cmd_id == DSD_APP_CMD_CONFIG_APPLY;
 }
 
 void
@@ -112,6 +112,7 @@ dsd_app_recording_view_publish(const dsd_opts* opts) {
         view.slot_files = (uint8_t)((opts->wav_out_f != NULL ? 1U : 0U) | (opts->wav_out_fR != NULL ? 2U : 0U));
     }
     view.unknown_only = opts->record_unknown_only ? 1U : 0U;
+    view.analog_max_gap_ms = opts->analog_record_max_gap_ms;
     view.journal_named = opts->wav_journal_file[0] != '\0' ? 1U : 0U;
     switch (dsd_wav_journal_state_get()) {
         case DSD_WAV_JOURNAL_ON: view.journal_state = DSD_APP_RECORDING_JOURNAL_ON; break;
