@@ -17,13 +17,14 @@
  * fresh, and a full log or seen map gives up the oldest session first. Each call's
  * frequency and access code (issue #575) reach the roles, survive a save and reload,
  * fold across fragments by the fragment they came from, fill in place, and fill a
- * notice heard again. Issue #799: each call's site identity and DMR call channel reach one role, survive a save, a
- * reload and the spill, refuse a hand-edited part that no record could hold, fill in place, keep fragments heard on
- * two sites (or under two channel numberings) apart across a relaunch, and an update of a fragment already folded
- * into a row reaches that row while a conflicting identity it brings is discarded. Saves are bounded by bytes written,
- * not by calls: a large store
- * waits longer between saves, and the moments the log must reach the disk (saveNow(),
- * the app leaving the screen) write it at once, even with a save already in flight.
+ * notice heard again. Issue #799: each call's site identity and DMR call channel reach
+ * one role, survive a save, a reload and the spill, refuse a hand-edited part that no
+ * record could hold, fill in place, keep fragments heard on two sites (or under two
+ * channel numberings) apart across a relaunch, and an update of a fragment already
+ * folded into a row reaches that row while a conflicting identity it brings is
+ * discarded. Saves are bounded by bytes written, not by calls: a large store waits
+ * longer between saves, and the moments the log must reach the disk (saveNow(), the
+ * app leaving the screen) write it at once, even with a save already in flight.
  * Issue #708: every row has a stable uid that rowForUid() finds wherever the row moves, and
  * carries the ring fragments it absorbed through merges, load folding and reloads; the
  * recording roles come from the recording provider by those fragments and follow its change
@@ -2644,6 +2645,78 @@ test_site_split_survives_relaunch(void) {
                                                       u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 SITE 2")}));
 }
 
+/* The decoder bounds a DMR site text and brand to their fields, so a text can be cut inside a character. The store
+ * writes the whole characters only: a cut one would load as U+FFFD, three bytes, and the text would no longer fit its
+ * field, losing the whole site on reload. */
+void
+test_site_text_cut_mid_character_survives_reload(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754529000;
+    /* 62 whole bytes and the first byte of a middle dot: 63 bytes, the most the 64-byte field holds. */
+    QByteArray text("Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5 \xC2\xB7 ");
+    text.append(QByteArray(62 - text.size(), 'x'));
+    text.append('\xC2');
+    /* 30 whole bytes and the first byte of one: 31 bytes, the most the 32-byte brand holds. */
+    QByteArray brand(30, 'b');
+    brand.append('\xC2');
+    dsd_received_identity id = con_plus_site(3, 5);
+    expect("the cut text fills its field", static_cast<size_t>(text.size()) + 1U == sizeof(id.dmr_site_text));
+    expect("the cut brand fills its field", static_cast<size_t>(brand.size()) + 1U == sizeof(id.dmr_brand));
+    DSD_SNPRINTF(id.dmr_site_text, sizeof(id.dmr_site_text), "%s", text.constData());
+    DSD_SNPRINTF(id.dmr_brand, sizeof(id.dmr_brand), "%s", brand.constData());
+    {
+        CallHistoryModel model;
+        RingFixture::site(ring.commit(0, 21501, 2151, when, when + 4), id, DSD_CALL_CHANNEL_LCN, 3U);
+        model.refresh(ring.state);
+        expect("the call lands", model.count() == 1);
+    } // destructor flushes the stores
+    const QJsonObject site = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), 21501)
+                                 .value(QLatin1String("site"))
+                                 .toObject();
+    expect("the stored text keeps its whole characters",
+           site.value(QLatin1String("dmr_site_text")).toString().toUtf8() == text.left(62));
+    expect("the stored brand keeps its whole characters",
+           site.value(QLatin1String("dmr_brand")).toString().toUtf8() == brand.left(30));
+
+    CallHistoryModel restored;
+    expect("the log reloads", restored.count() == 1);
+    const QString line = site_text(restored, row_with_tg(restored, 21501));
+    expect("the site survives the reload", line.startsWith(u8("DMR \xC2\xB7 Con+ \xC2\xB7 Net 3")));
+    expect("and reads no replacement character", !line.contains(QChar(0xFFFD)));
+    expect("the channel survives with it", line.endsWith(u8("\xC2\xB7 LCN 3")));
+}
+
+/* A seen entry whose channel names no DMR numbering (a hand-edited or corrupt store) is a channel never read, as the
+ * row store's is: a ring row heard with none does not read as an update. */
+void
+test_seen_store_rejects_unknown_channel_kind(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754529500;
+    {
+        CallHistoryModel model;
+        ring.commit(0, 21601, 2161, when, when + 4);
+        model.refresh(ring.state);
+        expect("the call lands", model.count() == 1);
+    } // destructor flushes the stores
+    QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    expect("one seen entry", seen.size() == 1);
+    QJsonObject entry = seen.at(0).toObject();
+    entry.insert(QLatin1String("cch"), 12);
+    entry.insert(QLatin1String("cchKind"), 9);
+    seen.replace(0, entry);
+    expect("a hand-edited seen store saved", dsd_qt::json_store_save_array("call_history_seen.json", seen));
+
+    CallHistoryModel restored;
+    expect("the log reloads", restored.count() == 1);
+    QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    restored.refresh(ring.state);
+    expect("the reloaded log ingests nothing twice", restored.count() == 1);
+    expect("a channel of no numbering in the seen store is none, so the row does not re-read", changed.count() == 0);
+}
+
 /* The background spill carries a row as the rows store writes it: a DMR row, its texts and its channel, spilled as
  * the tap would (the stored row and seen entry) and folded by a relaunched model, shows what it showed, and its seen
  * entry keeps the ring row from reading as an update. */
@@ -3822,6 +3895,8 @@ main(int argc, char** argv) {
     test_fragment_gains_compatible_site();
     test_site_split_survives_relaunch();
     test_site_spill_round_trip();
+    test_site_text_cut_mid_character_survives_reload();
+    test_seen_store_rejects_unknown_channel_kind();
     test_update_conflicting_after_fold_keeps_row_identity();
     test_channel_kind_conflict_stays_apart();
     test_dmr_text_differs_raw_equal_merges_and_keeps_text();

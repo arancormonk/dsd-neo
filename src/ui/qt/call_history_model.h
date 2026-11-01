@@ -627,7 +627,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief The voice row holding one of @p row's fragments (m_fragmentIndex), or -1. */
     int rowHoldingFragment(const Row& row) const;
 
-    /** @brief After a fold into row @p merged: name its channel, announce the change and keep the newest-first order. */
+    /** @brief After a fold into row @p merged: name its channel, announce the change, keep the newest-first order. */
     void settleMerged(int merged);
 
     /** @brief The logged notice @p row repeats field for field, not yet taken by another notice of the ring, or -1. */
@@ -646,9 +646,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *
      * An update (a seen ring row that advanced) may only refine an existing row: the one
      * holding its fragment (m_fragmentIndex), else one it merges with anywhere in the log; if
-     * its row cannot be found it is dropped, never inserted as a duplicate. A row heard @p again merges into the call it repeats wherever
-     * that call sits in the log, and that call joins the running session. A first sighting
-     * merges only within the newest rows.
+     * its row cannot be found it is dropped, never inserted as a duplicate. A row heard
+     * @p again merges into the call it repeats wherever that call sits in the log, and that
+     * call joins the running session. A first sighting merges only within the newest rows.
      *
      * @return true when a new row was inserted (the count changed).
      */

@@ -1228,10 +1228,7 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     if (existing.kind != CallHistoryModel::KindVoice) {
         return false;
     }
-    // Two sites, or two channel numberings, are two calls (issue #799): a radio that roams calls again on another site.
-    if (!receive_services_compatible(existing, row)
-        || dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind)
-               == 0) {
+    if (!receive_services_compatible(existing, row)) {
         return false;
     }
     // A zero source id is "not yet learned", not a distinct unit: late-entry
@@ -1240,6 +1237,10 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
     if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName
         || existing.systemUid != row.systemUid || existing.channel != row.channel) {
+        return false;
+    }
+    // Two sites, or two channel numberings, are two calls (issue #799): a radio that roams calls again on another site.
+    if (dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) == 0) {
         return false;
     }
     if (!target_less_rows_same_destination(existing, row)) {
@@ -1955,9 +1956,36 @@ json_text_fits(const QJsonObject& obj, const char* key, char* out, size_t capaci
     return true;
 }
 
+/**
+ * @brief The length of the first @p len bytes of @p text without a UTF-8 character its field cut short.
+ *
+ * The decoder bounds a text to its field, which can cut a character. Decoded, the cut bytes read as U+FFFD, three
+ * bytes, so the stored text could no longer fit its field and the whole site would be refused on reload.
+ */
+size_t
+utf8_whole_length(const char* text, size_t len) {
+    size_t start = len;
+    while (start > 0U && len - start < 3U && (static_cast<unsigned char>(text[start - 1U]) & 0xC0U) == 0x80U) {
+        start--;
+    }
+    if (start == 0U) {
+        return len;
+    }
+    const unsigned char lead = static_cast<unsigned char>(text[start - 1U]);
+    size_t need = 1U;
+    if ((lead & 0xE0U) == 0xC0U) {
+        need = 2U;
+    } else if ((lead & 0xF0U) == 0xE0U) {
+        need = 3U;
+    } else if ((lead & 0xF8U) == 0xF0U) {
+        need = 4U;
+    }
+    return len - (start - 1U) < need ? start - 1U : len;
+}
+
 QString
 site_text_value(const char* text, size_t capacity) {
-    return QString::fromUtf8(text, static_cast<qsizetype>(qstrnlen(text, capacity)));
+    return QString::fromUtf8(text, static_cast<qsizetype>(utf8_whole_length(text, qstrnlen(text, capacity))));
 }
 
 QJsonObject
@@ -2278,7 +2306,8 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     state.service = obj.value(QLatin1String("svc")).toString();
     // Absent when nothing was read, and in stores older builds wrote; a value that does not fit reads as nothing.
     (void)json_field_fits(obj, "sm", &state.siteMask);
-    if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)) {
+    if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
+        || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
         state.callChannel = 0U;
         state.callChannelKind = DSD_CALL_CHANNEL_NONE;
     }
