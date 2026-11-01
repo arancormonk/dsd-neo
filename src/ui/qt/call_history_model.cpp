@@ -318,7 +318,7 @@ access_code_fits(qint64 kind, qint64 code) {
 /** @brief The row's site line (issue #799): its site in the Monitor's words, then the call's channel. */
 QString
 row_site_text(const CallHistoryModel::Row& row) {
-    char text[DSD_APP_SITE_IDENTITY_MAX_TOKENS * sizeof(dsd_app_site_identity_token::text)];
+    char text[DSD_APP_SITE_HISTORY_TEXT_SIZE];
     (void)dsd_app_site_history_text(&row.siteId, row.callChannelKind, row.callChannel, text, sizeof(text));
     return QString::fromUtf8(text);
 }

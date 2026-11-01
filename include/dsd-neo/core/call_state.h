@@ -11,7 +11,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 
-#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>

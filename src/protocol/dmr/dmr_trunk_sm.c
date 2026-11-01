@@ -5,6 +5,7 @@
  * DMR Tier III trunking state machine - event-driven, tick-based.
  */
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>

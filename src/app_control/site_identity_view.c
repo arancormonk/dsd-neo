@@ -9,8 +9,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 
-#include <stdint.h>
-
 /* The record form (site_identity_record.c) plus what only the running decoder knows: the EDACS ESK setting, a live
    setting the record never holds, and whether frame sync is on the record's protocol. */
 void

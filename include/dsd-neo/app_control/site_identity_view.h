@@ -34,10 +34,14 @@ extern "C" {
 #endif
 
 #define DSD_APP_SITE_IDENTITY_MAX_TOKENS 12
+/** @brief Capacity of one token's text, terminator included. */
+#define DSD_APP_SITE_IDENTITY_TOKEN_SIZE 72
+/** @brief A buffer for a history row's site line (dsd_app_site_history_text()), as every frontend sizes it. */
+#define DSD_APP_SITE_HISTORY_TEXT_SIZE   (DSD_APP_SITE_IDENTITY_MAX_TOKENS * DSD_APP_SITE_IDENTITY_TOKEN_SIZE)
 
 /** @brief One part of the identity. UTF-8, always terminated. */
 typedef struct {
-    char text[72];
+    char text[DSD_APP_SITE_IDENTITY_TOKEN_SIZE];
     uint8_t compact; /**< 1 = shown on the compact line too; 0 = full form only. */
 } dsd_app_site_identity_token;
 

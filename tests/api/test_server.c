@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -669,6 +671,33 @@ test_feed(void) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
         assert(await_line(c, "event", "\"channel_kind\":\"lcn\"", 3000U));
         assert(strstr(g_line, "\"update\":true") != NULL);
+
+        /* The longest DMR line the record can hold: every text field full and every part set. The API sends it
+           whole, as the frontends spell it into a DSD_APP_SITE_HISTORY_TEXT_SIZE buffer. */
+        DSD_MEMSET(&site_row->site_id, 0, sizeof site_row->site_id);
+        site_row->site_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+        site_row->site_id.valid = DSD_RXID_ACCESS | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND
+                                  | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_RAS;
+        site_row->site_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+        site_row->site_id.access_kind = (uint8_t)DSD_ACCESS_CODE_COLOR_CODE;
+        site_row->site_id.access = 15U;
+        site_row->site_id.dmr_rest_lsn = 255U;
+        site_row->site_id.dmr_xpt_free_lcn = 15U;
+        DSD_MEMSET(site_row->site_id.dmr_site_text, 'S', sizeof site_row->site_id.dmr_site_text - 1U);
+        DSD_MEMSET(site_row->site_id.dmr_brand, 'B', sizeof site_row->site_id.dmr_brand - 1U);
+        site_row->channel = UINT32_MAX;
+        site_row->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
+        char want[DSD_APP_SITE_HISTORY_TEXT_SIZE];
+        const size_t want_len = dsd_app_site_history_text(&site_row->site_id, site_row->call_channel_kind,
+                                                          site_row->channel, want, sizeof want);
+        assert(want_len > 0U && want_len + 1U < sizeof want);
+        char want_json[DSD_APP_SITE_HISTORY_TEXT_SIZE + 16];
+        DSD_SNPRINTF(want_json, sizeof want_json, "\"site_text\":\"%s\"", want);
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"channel_kind\":\"lpcn\"", 3000U));
+        assert(strstr(g_line, want_json) != NULL);
+        assert(strstr(want, "LPCN 4294967295") != NULL);
 
         DSD_MEMSET(&site_row->site_id, 0, sizeof site_row->site_id);
         site_row->channel = 0U;

@@ -10,7 +10,6 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
 #include <string.h>
 #include "dmr_tiii_site.h"
 

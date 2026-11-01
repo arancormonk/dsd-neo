@@ -33,6 +33,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -289,7 +290,7 @@ encode_event_site(dsd_json_writer* w, const Event_History* e) {
     encode_site_nxdn(w, id);
     encode_site_edacs_tetra(w, id);
     (void)dsd_json_obj_end(w);
-    char text[256];
+    char text[DSD_APP_SITE_HISTORY_TEXT_SIZE];
     text[0] = '\0';
     (void)dsd_app_site_history_text(id, e->call_channel_kind, e->channel, text, sizeof text);
     (void)dsd_json_kv_str(w, "site_text", text);

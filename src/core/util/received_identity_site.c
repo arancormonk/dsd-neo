@@ -15,7 +15,6 @@
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
 
-#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
