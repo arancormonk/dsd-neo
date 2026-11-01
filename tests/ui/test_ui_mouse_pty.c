@@ -166,8 +166,9 @@ dsd_realtime_mono_ns(void) {
 
 /* ---- The pty ---- */
 
-/* The UI thread's frame: it draws at most every 66 ms (ui_async.c). */
-static const uint64_t kFrameBudgetNs = 66ULL * 1000ULL * 1000ULL;
+/* A frame that blocks waits for a key that never comes, so it hangs until alarm() fires. The bound only has to sit
+   past any scheduler stall on a loaded runner, far above the UI's 66 ms frame (ui_async.c) and far below the hang. */
+static const uint64_t kFrameBudgetNs = 1000ULL * 1000ULL * 1000ULL;
 
 static int g_master = -1;
 static char g_screen_out[65536];
@@ -235,7 +236,7 @@ input_pending(int slave) {
     return fd_readable(slave, 0);
 }
 
-/* One UI frame: input (with the capture switch), then the draw's doupdate(). Fails when it took over a frame. */
+/* One UI frame: input (with the capture switch), then the draw's doupdate(). Fails when it took over the budget. */
 static int
 frame(const char* tag) {
     const uint64_t t0 = dsd_time_monotonic_ns();

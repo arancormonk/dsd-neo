@@ -2875,8 +2875,9 @@ polls the slave until they are queued, then runs frames. It covers a class that 
 loops into a blocking read when a queued report does not match the parse mask, so a capture switched off with
 `mousemask(0)` froze the UI thread on the next click until another key arrived. After the menu opens, the setting goes
 off and the `-Y` scan stops, a click, a lone press and a wheel notch are each queued with no key typed after them, and
-every frame must return within one UI frame (66 ms), leave the input empty, step nothing and hand no key to a handler.
-A frame that blocks would hang, so `alarm()` fails the test after 20 s. It also checks the tracking strings reach the
+every frame must return within 1 s, leave the input empty, step nothing and hand no key to a handler. The bound is
+loose on purpose: a frame that blocks waits for a key that never comes, so 1 s only has to clear a scheduler stall on a
+loaded runner. A frame that blocks would hang, so `alarm()` fails the test after 20 s. It also checks the tracking strings reach the
 terminal (`ESC [?1006;1000h` / `l`) and that wheel notches step with the capture on. The admission reads `TERM` and
 `NCURSES_GPM_TERMS` through session overrides, so the host's environment does not matter. It exits 77 (skipped) with
 no pty, no `xterm-256color` terminfo, or an ncurses without button 5.
