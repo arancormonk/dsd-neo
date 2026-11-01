@@ -18748,6 +18748,88 @@ dsd_neo_add_analog_replay_test(
     "Scan row applied: 1 am; width 6 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
 )
 
+# Per-call NFM recordings through pauses (issue #756). The host makes a capture of
+# five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them
+# (--analog-synth-pauses; no fixture is committed) and runs it with -P -7 and
+# --wav-journal; analog_recording_check.cmake counts the recordings, their journal
+# publish and link lines and the call history rows, and finds no TEMP_ file. As
+# audio input (the discriminator tap, so every build) under the noise squelch, each
+# max gap joins the pauses up to it: 200 (off) gives 5 recordings, 500 gives 4,
+# 1000 gives 3, 2000 gives 2 and 3500 gives 1. The input ends 0.8 s after the last
+# burst, so at 1000 ms and above the last call is still held when it ends, and the
+# engine's teardown publishes and links it (HELD_AT_END_MS checks the input ended
+# that soon after the last audio).
+# dsd_neo_add_analog_recording_test(name mode files [rates [held_at_end_ms]])
+function(dsd_neo_add_analog_recording_test test_name mode files)
+    set(_extra_args)
+    if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
+        list(APPEND _extra_args "-DRATES=${ARGV3}" "-DMIN_REALTIME_S=8")
+    endif()
+    if(ARGC GREATER 4)
+        list(APPEND _extra_args "-DHELD_AT_END_MS=${ARGV4}")
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=${mode}" "-DFILES=${files}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/${test_name}"
+            ${_extra_args} -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+    )
+    set_tests_properties(
+        ${test_name}
+        PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+    )
+endfunction()
+
+set(_pcm_record_gap_mode
+    "--analog-synth-pauses 756 --analog-pcm-tap 48000 -fA --squelch noise+6"
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_200
+    "${_pcm_record_gap_mode} --analog-record-max-gap-ms 200"
+    5
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_500
+    "${_pcm_record_gap_mode} --analog-record-max-gap-ms 500"
+    4
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_1000
+    "${_pcm_record_gap_mode} --analog-record-max-gap-ms 1000"
+    3
+    ""
+    1000
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_2000
+    "${_pcm_record_gap_mode} --analog-record-max-gap-ms 2000"
+    2
+    ""
+    2000
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_3500
+    "${_pcm_record_gap_mode} --analog-record-max-gap-ms 3500"
+    1
+    ""
+    3500
+)
+# The same capture replayed as I/Q, fast and paced: the hold decides on samples, never a
+# clock, so both legs record the same WAV payloads with the same journal and row times.
+if(DSD_HAS_RADIO)
+    dsd_neo_add_analog_recording_test(
+        DECODE_IQ_ANALOG_RECORD_GAP_PACED
+        "--analog-synth-pauses 756 -fA --squelch noise+6 --analog-record-max-gap-ms 1000"
+        3
+        "fast,realtime"
+        1000
+    )
+endif()
+
 if(DSD_HAS_RADIO)
     # Under -fA the front end must stay on the monitor path; the host warns when it
     # delivers CQPSK symbols instead (the modulation auto-switch did this before the

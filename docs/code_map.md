@@ -11358,7 +11358,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     publish and link), `APP_CONTROL_RECORDING` (stop, start and folder changes while held; the max gap command's
     states, refusals, and raising, lowering and turning it off while held), `APP_COMMAND_QUEUE` (the command waits
     while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`,
-    `UI_MENU_CALLBACKS`.
+    `UI_MENU_CALLBACKS`; end to end through the real engine, `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and
+    rows per max gap; a call still held when the input ends is published and linked by the teardown) and
+    `DECODE_IQ_ANALOG_RECORD_GAP_PACED` (fast and paced replay record the same), see `docs/testing.md`.
   Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
   `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
   An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;
