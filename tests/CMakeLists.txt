@@ -5824,6 +5824,10 @@ target_link_libraries(
     dsd-neo_test_core_receive
     PRIVATE dsd-neo_core dsd-neo_dsp dsd-neo_test_support
 )
+target_include_directories(
+    dsd-neo_test_core_receive
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file
+)
 add_test(NAME CORE_RECEIVE COMMAND dsd-neo_test_core_receive)
 
 add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)

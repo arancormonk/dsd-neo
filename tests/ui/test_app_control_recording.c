@@ -28,6 +28,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1314,6 +1315,116 @@ test_stop_publishes_the_nfm_recording_in_its_folder(void) {
     return rc;
 }
 
+/* Issue #756: @p blocks blocks after the NFM carrier's hangover, which hold the call (the max gap is on). */
+static void
+nfm_hold(rig* r, int blocks) {
+    static const float closed[960];
+    r->state->analog_rx.carrier_open = 0;
+    for (int i = 0; i < blocks; i++) {
+        dsd_engine_analog_call_block(r->opts, r->state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+    }
+    r->state->analog_rx.carrier_open = 1;
+}
+
+static uint64_t
+nfm_epoch(const rig* r) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE ? call.epoch : 0U;
+}
+
+/* The one NFM recording published in @p dir: its frames, then removed. -1 when there is not exactly one. */
+static long long
+take_nfm_frames(const char* dir) {
+    const dir_count c = count_dir(dir);
+    if (c.published != 1 || strstr(c.published_name, "_NFM") == NULL) {
+        return -1;
+    }
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, dir, c.published_name) != 0) {
+        return -1;
+    }
+    const long long frames = wav_frames(path);
+    return remove(path) == 0 ? frames : -1;
+}
+
+/* Recording commands while an NFM call is held (issue #756) change its recording, never the hold. A stop publishes
+   what was recorded, and the call stays held; a later start opens a new recording at the resumed block, with no
+   silence for a pause it did not span. */
+static int
+test_stop_and_start_while_nfm_held(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_held");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_max_gap_ms = 1000;
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = nfm_epoch(&r);
+    nfm_hold(&r, 5);
+    submit(DSD_APP_CMD_WAV_STOP);
+    (void)drain(&r);
+    rc |= expect_int("held: the stop publishes the first burst", take_nfm_frames(r.dir), 960);
+    rc |= expect_true("held: the stop keeps the call", epoch != 0U && nfm_epoch(&r) == epoch);
+    nfm_hold(&r, 3);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_hold(&r, 2);
+    nfm_block(r.opts, r.state);
+    rc |= expect_true("held: the call goes on after the start", nfm_epoch(&r) == epoch);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_int("held: the new recording has no leading silence", take_nfm_frames(r.dir), 960);
+    rig_close(&r);
+    return rc;
+}
+
+/* A folder change while an NFM call is held publishes the recording in its own folder, and the resumed block opens the
+   next one in the new folder without the pause; a folder change that fails keeps the file, and the pause is written
+   into it. Either way the call goes on. */
+static int
+test_folder_change_while_nfm_held(void) {
+    int rc = 0;
+    for (int fail = 0; fail < 2; fail++) {
+        rig r;
+        char other[DSD_TEST_PATH_MAX];
+        char tag[96];
+        rc |= rig_open(&r, "dsdneo_rec_nfm_held_dir");
+        rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_nfm_held_b") != NULL);
+        setup_nfm(r.opts, r.state);
+        r.opts->analog_record_max_gap_ms = 1000;
+        submit(DSD_APP_CMD_WAV_START);
+        (void)drain(&r);
+        nfm_block(r.opts, r.state);
+        const uint64_t epoch = nfm_epoch(&r);
+        nfm_hold(&r, 5);
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_recording = 1;
+        cfg.per_call_wav = 1;
+        DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", other);
+        dsd_wav_test_fail_opens_after(fail ? 0 : -1);
+        (void)dsd_app_command_apply_config(&cfg);
+        (void)drain(&r);
+        dsd_wav_test_fail_opens_after(-1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the folder", fail ? "failed" : "moved");
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, fail ? r.dir : other) == 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the old folder", fail ? "failed" : "moved");
+        rc |= expect_int(tag, count_dir(r.dir).published, fail ? 0 : 1);
+        nfm_hold(&r, 2);
+        nfm_block(r.opts, r.state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the call goes on", fail ? "failed" : "moved");
+        rc |= expect_true(tag, epoch != 0U && nfm_epoch(&r) == epoch);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the kept recording holds the pause", fail ? "failed" : "moved");
+        rc |= expect_int(tag, take_nfm_frames(r.dir), fail ? 960 + 7 * 960 + 960 : 960);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the new folder's recording", fail ? "failed" : "moved");
+        rc |= expect_int(tag, fail ? count_dir(other).published : take_nfm_frames(other), fail ? 0 : 960);
+        rig_close(&r);
+        remove_folder(other);
+    }
+    return rc;
+}
+
 /* A config whose [recording] turns per-call recording off closes the slot files with their publication. Main changed
    the mode alone: the files stayed open and rotating, and the next start overwrote their handles. */
 static int
@@ -1599,6 +1710,8 @@ main(void) {
     rc |= test_config_changing_only_the_raw_wav_leaves_a_waiting_slot();
     rc |= test_config_delete_after_upload_keeps_its_value_under_a_journal();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
+    rc |= test_stop_and_start_while_nfm_held();
+    rc |= test_folder_change_while_nfm_held();
     rc |= test_full_segment_table_is_reported_once_per_run();
     rc |= test_recording_transition_table();
     rc |= test_config_per_call_failures_change_nothing();

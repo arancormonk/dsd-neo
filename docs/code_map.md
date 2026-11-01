@@ -1299,6 +1299,9 @@ suite runs under this compiler.
     too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
     reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
     clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
+  - One NFM recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held call is one row
+    and one recording, published once and linked once. Its `start` is the first burst's, and its `duration_ms`
+    includes the silence written for the pause.
   - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
     escaped (quotes, backslashes, control characters, U+2028/U+2029; a byte that starts no UTF-8 character becomes
     U+FFFD). A reader skips a line that does not parse (a torn tail) and a record whose `v` it does not know. Every
@@ -11302,8 +11305,38 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
 - `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
   frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each with its input
   (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a RECEPTION block continues or
-  begins the call, and any other input ends it. Speaker output is independent
-  of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
+  begins the call, and a BREAK ends it. The state splits the logical call (`active`, `held`, the gap counters,
+  `last_m`, `boundaries_seen`, the identity) from its recording segment (`analog_call_recording`: file, folder, open
+  stamp, `spans_pause`), which a stop or folder change closes while the call goes on.
+  - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
+    With the hold off a HOLDABLE block ends the call, as every non-reception block did. With it on, a HOLDABLE block
+    holds the call: the call and its row stay active, and nothing is committed. The gap (`age48`) is counted in 48 kHz
+    samples from the blocks' spans at their block rate, the remainder carried (`rem48`), plus the 200 ms hangover when
+    the hold began with the carrier closed (`credited`; a hold that begins with a tone check under a continuing carrier
+    gets none). Tone-check blocks age the gap too. The owed silence (`owed48`) is the held blocks' spans alone. The
+    hold reads no clock: replay, files and live input are decided on the same samples. Reconciliation runs first on
+    every block and tick, and again right after a hold begins: a held call ends when the hold is off or its gap is
+    over the max gap (equal still joins), so a live change applies at the next block or tick and never reopens an
+    ended call. A RECEPTION block resumes a held call unless its identity is confirmed different (known against
+    known, `dsd_receive_identity_changed()`), which ends it and begins a new call with the block. A resumed call writes
+    the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short
+    write's latch stops the rest), only into a file written before the pause (`spans_pause`; a file opened after a
+    stop or folder change starts at the resumed block). The CALL_WAV lane starts over at the resumed block on its
+    own, as no held block was written to it. The tick ends a call, held or not, on detection off, a REJECTED tone or
+    a boundary not current; with the hold off also on a closed carrier or a tone check; and on the stale deadline.
+    With the hold on a closed carrier waits for the next block. `dsd_engine_analog_call_due()` is unchanged.
+    `dsd_engine_analog_call_end()` (every scan leave, retune, input switch, mode change, Stop, finalize) ends a held
+    call at once without the pause; `dsd_engine_analog_call_stop_recording()` closes the segment and leaves the hold.
+  - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
+    `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input (stdin and TCP block in the
+    read, so their call ends only when data returns). With the hold off a row ends one block earlier than "now" did.
+  - Boundaries (B6): a call compares the published `state->analog_rx.boundaries` with the epoch it began under. A move
+    ends the call at `last_m`; the block that carries it straddles the boundary, so it is not written either, and the
+    next RECEPTION block begins a new call. This catches a stream pause or reconnect inside a long PCM block, which no
+    straddle marks. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and 44100 Hz, tone checks, identity, ends,
+    tick order, live changes, the default's payloads, the write latch, teardown, B1, B6), `CORE_WAV_JOURNAL` (one
+    publish and link), `APP_CONTROL_RECORDING` (stop, start and folder changes while held).
+  Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
   `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
   An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;
   `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer has the row publishes
@@ -11311,7 +11344,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   is never left under its temp name nor given the digital shape.
   A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption,
   and the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing
-  received-tone freshness deadline closes stalled calls and WAVs on the decoder thread. Replay reads keep their
+  received-tone freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP
+  only when data returns), each ended at its last reception. Replay reads keep their
   sample-driven behavior. `IO_RTL_RETUNE_PREPARE`, `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
 - App-control receive commands validate complete edits before application. Row commands retain scanner session and
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.

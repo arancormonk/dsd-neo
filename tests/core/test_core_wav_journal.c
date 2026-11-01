@@ -32,8 +32,10 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <sndfile.h>
@@ -771,6 +773,56 @@ expect_pending_then_linked(const char* what, const char* id, uint64_t epoch, con
     rc |= expect_int(tag, link ? field_ll(link, "row") : -9, (long long)row);
     DSD_SNPRINTF(tag, sizeof tag, "%s: in this ring, slot 1", what);
     rc |= expect_true(tag, link && strcmp(field_s(link, "instance"), hex) == 0 && field_ll(link, "slot") == 0);
+    return rc;
+}
+
+/* Issue #756: an NFM call held through a pause is one recording. It is published once, pending on the call's epoch and
+   linked by its one commit, named as the NFM call with its service; it starts at the first burst and lasts both bursts
+   and the silence written between them. */
+static int
+test_held_nfm_call_is_one_recording(void) {
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_nfm_hold");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_max_gap_ms = 1000;
+    rc |= expect_int("tone named",
+                     dsd_receive_names_parse("--tone-name '141.3=Dispatch'", &r.opts->receive.names, NULL, 0), 0);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    clock_at(k_t0 + 10);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = call_epoch(&r);
+    static const float closed[960];
+    r.state->analog_rx.carrier_open = 0;
+    for (int i = 0; i < 10; i++) {
+        dsd_engine_analog_call_block(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+    }
+    r.state->analog_rx.carrier_open = 1;
+    clock_at(k_t0 + 11);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    rc |= expect_int("one call through the pause", (long long)call_epoch(&r), (long long)epoch);
+    clock_at(k_t0 + 12);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    int published = 0;
+    char id[64] = {0};
+    const char* pub = NULL;
+    for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(pub, "rate") == 48000) {
+            published++;
+            DSD_SNPRINTF(id, sizeof id, "%s", field_s(pub, "id"));
+            rc |= expect_int("held nfm: both bursts and the pause", field_ll(pub, "duration_ms"), 40 + 200 + 40);
+            rc |= expect_int("held nfm: starts at the first burst", field_ll(pub, "start"), (long long)k_t0 + 10);
+            rc |= expect_true("held nfm: the NFM name with its service",
+                              strstr(field_s(pub, "file"), "_NFM_SVC_Dispatch.wav") != NULL);
+        }
+    }
+    rc |= expect_int("held nfm: published once", published, 1);
+    rc |= expect_pending_then_linked("held nfm", id, epoch, &r.state->event_history_s[0],
+                                     r.state->event_history_s[0].push_seq);
+    rig_close(&r);
     return rc;
 }
 
@@ -1530,6 +1582,7 @@ main(void) {
     rc |= test_b3_name_and_raw_identity();
     rc |= test_non_utf8_identity_names_the_file_published();
     rc |= test_pending_closers_are_linked_at_the_commit();
+    rc |= test_held_nfm_call_is_one_recording();
     rc |= test_epoch_moving_on_unlinks();
     rc |= test_full_reset_unlinks_pending();
     rc |= test_trunk_scan_hop_and_revisit();

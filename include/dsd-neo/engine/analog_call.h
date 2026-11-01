@@ -9,8 +9,10 @@
 extern "C" {
 #endif
 /** A processed conventional NFM monitor block, independent of the speaker sink, and what it is to the call (@p input,
- * DSD_ANALOG_CALL_* in <dsd-neo/runtime/frame_sync_hooks.h>): a RECEPTION block is the call's audio; any other input
- * ends the call. */
+ * DSD_ANALOG_CALL_* in <dsd-neo/runtime/frame_sync_hooks.h>): a RECEPTION block is the call's audio; a HOLDABLE block
+ * holds the call through a pause up to opts->analog_record_max_gap_ms (issue #756), or ends it with that hold off; a
+ * BREAK, or a block after the receiver's boundaries epoch moved, ends it. Every end is stamped at the last RECEPTION
+ * block. */
 void dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
                                   int input);
 void dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state);
