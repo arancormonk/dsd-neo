@@ -477,7 +477,7 @@ Item {
             verify(detail.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + detail.detailLines);
         }
         // Issue #799: Home's details carry what the log's do, the received tone
-        // (#740) and the site line among them.
+        // (#740) and the site line among them, and follow their row.
         function openHomeRecent(name) {
             app.width = 1104;
             app.height = 900;
@@ -512,6 +512,16 @@ Item {
             compare(detail.detailLines[6], "Radio ID 7001");
             compare(detail.detailLines[8], "Frequency 851.0125 MHz");
             compare(detail.detailLines[9], "NXDN · RAN 5 · SYS 12 · SITE 3001 · Global");
+            detail.visible = false;
+        }
+        function test_home_details_follow_row_update() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1");
+            var uid = callHistory.newestUid();
+            var detail = openHomeRecent(name);
+            verify(callHistory.updateRow(uid, {siteText: "DMR · LPCN 12", srcName: "Engine 5"}));
+            tryVerify(function () { return detail.detailLines[9] === "DMR · LPCN 12"; }, 5000,
+                      "the details did not follow the row: " + detail.detailLines);
+            compare(detail.detailLines[5], "Engine 5");
             detail.visible = false;
         }
         function test_scan_remove_confirms_exact_uid_data() {

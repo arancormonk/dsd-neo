@@ -191,15 +191,29 @@ Item {
             compare(item("siteDmrSyscode").text, "0A3F");
 
             testContext.setMetric("siteProtocol", "EDACS");
-            testContext.setMetric("siteLine", "EDACS · SYS 3 · Area 0 · CC LCN 12");
+            testContext.setMetric("siteLine", "EDACS · SYS 0003 · Area 0 · CC LCN 12");
             testContext.setMetric("edacsSystem", 3);
             testContext.setMetric("edacsArea", 0);
             testContext.setMetric("edacsCcLcn", 12);
             tryCompare(item("siteEdacsSystem"), "visible", true);
             verify(!item("siteEdacs").visible);
-            compare(item("siteEdacsSystem").text, "3");
+            compare(item("siteEdacsSystem").text, "0003");
             compare(item("siteEdacsArea").text, "0");
             compare(item("siteEdacsCcLcn").text, "12");
+            item("siteSheet").visible = false;
+        }
+        // The EDACS system reads in hex, four digits, as the site line, the decoder log and -J print it.
+        function test_edacs_system_hex() {
+            testContext.setMetric("siteProtocol", "EDACS");
+            testContext.setMetric("siteLine", "EDACS · SYS 02A3");
+            testContext.setMetric("edacsSystem", 0x2A3);
+            item("siteSheet").visible = true;
+            tryCompare(item("siteEdacsSystem"), "visible", true);
+            compare(item("siteEdacsSystem").text, "02A3");
+            testContext.setMetric("edacsSystem", 0);
+            tryCompare(item("siteEdacsSystem"), "text", "0000");
+            testContext.setMetric("edacsSystem", -1);
+            tryCompare(item("siteEdacsSystem"), "visible", false);
             item("siteSheet").visible = false;
         }
         // DMR RAS (Restricted Access to System): the field and its hint read the app-control RAS view, in the

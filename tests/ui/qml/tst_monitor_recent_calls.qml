@@ -176,7 +176,8 @@ Item {
         }
 
         // Issue #799: the details name the call's site and channel in the site
-        // row's own words, one line after the frequency.
+        // row's own words, one line after the frequency, and follow the row when
+        // a fragment folds into it after they opened.
         function openNewest(name) {
             tc.list.positionViewAtBeginning()
             var row = null
@@ -198,6 +199,17 @@ Item {
             compare(sheet.detailLines[7], "Color code 1")
             compare(sheet.detailLines[8], "Frequency 851.0125 MHz")
             compare(sheet.detailLines[9], "TETRA · MCC 901 · MNC 9999 · LA 12")
+            sheet.visible = false
+        }
+
+        function test_03k_details_follow_row_update() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var uid = callHistory.newestUid()
+            var sheet = tc.openNewest(name)
+            verify(callHistory.updateRow(uid, {durationSecs: 9, siteText: "DMR · LPCN 12"}))
+            tryVerify(function () { return sheet.detailLines[9] === "DMR · LPCN 12" }, 5000,
+                      "the details did not follow the row: " + sheet.detailLines)
+            verify(sheet.detailLines.indexOf("Duration: 9 seconds") >= 0, sheet.detailLines)
             sheet.visible = false
         }
 

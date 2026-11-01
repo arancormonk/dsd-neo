@@ -269,8 +269,9 @@ Item {
             enc: model.enc
             emergency: model.emergency
             hasRecording: model.hasRecording
-            // The frequency is named only when it is why the row is listed.
-            accessibleName: model.name + ", " + model.timeText + (callRow.freqMatched ? ", " + Util.fmtMhz(model.freqHz) : "")
+            // The frequency a search found is not added: the meta line, read as
+            // the row's description, already leads with it.
+            accessibleName: model.name + ", " + model.timeText
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }

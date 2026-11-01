@@ -663,14 +663,15 @@ function restorePartWayText() {
 }
 
 // The monitor's "Signal & site" summary (issue #718) names the site in one
-// token: the "SITE n" part of the site line where it has one, else the protocol
-// and its first identity ("DMR · CC 1").
+// token: the "SITE n" part of the site line (P25, NXDN, EDACS) or the DMR
+// "Site n" one where it has one, else the protocol and its first identity
+// ("DMR · CC 1").
 function siteShortForm(line) {
     if (!line)
         return ""
     var parts = String(line).split(" · ")
     for (var i = 0; i < parts.length; ++i) {
-        if (parts[i].indexOf("SITE ") === 0)
+        if (parts[i].indexOf("SITE ") === 0 || parts[i].indexOf("Site ") === 0)
             return parts[i]
     }
     return parts.slice(0, 2).join(" · ")

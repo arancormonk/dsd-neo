@@ -34,6 +34,16 @@ ModalSheet {
         recordingsRevision++;
         visible = true;
     }
+    // Issue #799: the record follows its row by uid while the sheet is open, so
+    // a fragment folded in after it opened (a longer duration, a newer frequency,
+    // the site) shows. A row that has left the log keeps the last copy read.
+    function reread() {
+        if (typeof callHistory.recordFor !== "function")
+            return;
+        var fresh = callHistory.recordFor(rowUidKey);
+        if (fresh.uid !== undefined && JSON.stringify(fresh) !== JSON.stringify(record))
+            record = fresh;
+    }
     onVisibleChanged: {
         if (!visible)
             recordingPlayer.stopOwnPlayback();
@@ -42,14 +52,19 @@ ModalSheet {
         target: callHistory
         enabled: sheet.visible && sheet.rowUidKey > 0
         ignoreUnknownSignals: true
-        function onDataChanged() {
+        function onDataChanged(topLeft, bottomRight) {
             sheet.recordingsRevision++;
+            var row = callHistory.rowForUid(sheet.rowUidKey);
+            if (row >= topLeft.row && row <= bottomRight.row)
+                sheet.reread();
         }
         function onRowPositionsChanged() {
             sheet.recordingsRevision++;
+            sheet.reread();
         }
         function onModelReset() {
             sheet.recordingsRevision++;
+            sheet.reread();
         }
     }
     Repeater {

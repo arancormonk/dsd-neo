@@ -421,6 +421,55 @@ Item {
             compare(sheet.detailLines[9], "")
         }
 
+        // A fragment folded into the row after the details opened (a retune a
+        // few seconds on) shows there: the sheet reads its row again by uid.
+        function test_06l_details_follow_row_update() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var uid = callHistory.newestUid()
+            var sheet = tc.openDetails(name)
+            compare(sheet.detailLines[9], "")
+            verify(callHistory.updateRow(uid, {durationSecs: 9, freqHz: 851025000, srcName: "Engine 5",
+                                               siteText: "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3"}))
+            tryVerify(function () {
+                return sheet.detailLines[9] === "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3"
+            }, 5000, "the details did not follow the row: " + sheet.detailLines)
+            compare(sheet.detailLines[5], "Engine 5")
+            compare(sheet.detailLines[8], "Frequency 851.0250 MHz")
+            verify(sheet.detailLines.indexOf("Duration: 9 seconds") >= 0, sheet.detailLines)
+            // Another row changing leaves this one as it is.
+            callHistory.push("TODAY")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 1"}))
+            compare(sheet.record.uid, uid)
+            compare(sheet.detailLines[9], "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3")
+        }
+
+        // A row that leaves the log (cleared, aged out) leaves the details as
+        // they last read, not empty.
+        function test_06m_details_keep_last_record_when_row_leaves() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 12"}))
+            var sheet = tc.openDetails(name)
+            var before = sheet.detailLines.slice()
+            callHistory.clearAll()
+            tc.waitForRendering(sheet)
+            verify(sheet.visible)
+            compare(sheet.record.name, name)
+            compare(sheet.detailLines, before)
+        }
+
+        // A row a frequency search found leads its meta line, which a screen
+        // reader hears as the row's description, with the frequency: the name
+        // does not say it again.
+        function test_06n_frequency_match_read_once() {
+            var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            historyView.filterText = "851.0125"
+            tryCompare(tc.list, "count", 1)
+            var row = tc.rowNamed(voice)
+            var spoken = row.Accessible.name + ", " + row.Accessible.description
+            compare(spoken.split("851.0125 MHz").length - 1, 1, spoken)
+            verify(tc.startsWith(row.Accessible.description, "851.0125 MHz · "), row.Accessible.description)
+        }
+
         // Review focus: a long DMR line on a 360 px phone wraps between its
         // parts, never inside one ("Net | 3", "Conn|ect"), nothing is clipped,
         // and a screen reader reads the line whole.
@@ -470,7 +519,7 @@ Item {
 
 
         // A row a frequency search found leads with that frequency, on voice and
-        // notice rows alike, and names it to a screen reader. A row the same text
+        // notice rows alike (its name never adds it: test_06n). A row the same text
         // found by its channel keeps its order, and clearing the search restores it.
         function test_06g_a_frequency_search_leads_with_the_frequency() {
             var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
@@ -484,8 +533,6 @@ Item {
             compare(tc.rowNamed(notice).metaText,
                     "851.0125 MHz · TG 4001 · SRC 7001 · NAC 293 · GPS 40.1 -75.2 · Fire Dispatch")
             compare(tc.rowNamed(byText).metaText, "TG 4002 · SRC 7002 · 0:04 · 851.0125 backup · 460.0000 MHz")
-            verify(tc.rowNamed(voice).accessibleName.indexOf("851.0125 MHz") >= 0,
-                   "a row found by its frequency does not name it: " + tc.rowNamed(voice).accessibleName)
             verify(tc.rowNamed(byText).accessibleName.indexOf("MHz") < 0,
                    "a row found by its channel names its frequency: " + tc.rowNamed(byText).accessibleName)
 
