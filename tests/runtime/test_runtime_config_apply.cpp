@@ -2358,8 +2358,9 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     rc |= expect_int_eq("DMR rest channel reset", state->dmr_rest_channel, -1);
     rc |= expect_int_eq("DMR MFID reset", state->dmr_mfid, -1);
     rc |= expect_true("DMR branding reset", state->dmr_branding[0] == '\0');
-    rc |= expect_int_eq("DMR LA state reset", opts->dmr_dmrla_is_set, 0);
-    rc |= expect_int_eq("DMR LA count reset", opts->dmr_dmrla_n, 0);
+    /* -D is the user's setting, not decoded state: a DMR reset keeps it. */
+    rc |= expect_int_eq("DMR LA state kept", opts->dmr_dmrla_is_set, 1);
+    rc |= expect_int_eq("DMR LA count kept", opts->dmr_dmrla_n, 9);
     rc |= expect_true("NXDN category reset", strcmp(state->nxdn_location_category, " ") == 0);
     rc |= expect_int_eq("NXDN last RAN reset", state->nxdn_last_ran, -1);
     rc |= expect_int_eq("NXDN RAN reset", state->nxdn_ran, 0);

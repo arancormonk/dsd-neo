@@ -2162,8 +2162,8 @@ suite runs under this compiler.
   channel included (the decoder leaves the call as at its end); every other user retune (a frequency entry on another
   protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that
   forget or reinterpret a site forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops
-  the DMR trunking parts (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN
-  (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and once a switch
+  the DMR trunking parts (keeping the colour code the reset keeps, and the user's `-D`) and the NXDN location, IDAS
+  parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and once a switch
   onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the
   session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a
   RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
