@@ -2448,6 +2448,34 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_cli_frontend PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CLI_FRONTEND COMMAND dsd-neo_test_runtime_cli_frontend)
 
+# The terminal frontend's SIGTSTP block on the session thread (POSIX; Windows has no SIGTSTP).
+if(DSD_ENABLE_TERMINAL_UI AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        runtime/test_runtime_cli_frontend_terminal.c
+        ${PROJECT_SOURCE_DIR}/apps/dsd-cli/frontend.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE DSD_CLI_HAS_TERMINAL_UI=1
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE dsd-neo_runtime dsd-neo_platform
+    )
+    add_test(
+        NAME RUNTIME_CLI_FRONTEND_TERMINAL
+        COMMAND dsd-neo_test_runtime_cli_frontend_terminal
+    )
+endif()
+
 add_executable(
     dsd-neo_test_runtime_cli_frontend_api
     runtime/test_runtime_cli_frontend_api.c
@@ -14741,6 +14769,27 @@ target_link_libraries(
 add_test(NAME PLATFORM_THREAD_YIELD COMMAND dsd-neo_test_platform_thread_yield)
 # A yield that blocks shows up as a hang, not a failed assert.
 set_tests_properties(PLATFORM_THREAD_YIELD PROPERTIES TIMEOUT 60)
+
+# SIGTSTP and pthread_sigmask() are POSIX; a Windows thread takes no terminal stop.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_platform_thread_stop_signal
+        platform/test_platform_thread_stop_signal.c
+        platform/test_platform_thread_stop_signal_cpp.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_platform_thread_stop_signal
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_thread_stop_signal
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME PLATFORM_THREAD_STOP_SIGNAL
+        COMMAND dsd-neo_test_platform_thread_stop_signal
+    )
+endif()
 
 set(_sndfile_fwd_contract_src
     "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c"

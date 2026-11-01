@@ -297,6 +297,13 @@ static DSD_THREAD_RETURN_TYPE
 
     const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
+    /* Ctrl+Z is this thread's: curses' SIGTSTP handler ends the screen, stops, and redraws it at the resume, while this
+       thread draws it every frame. Run on another thread, the handler's redraw overlapped this thread's, and the two
+       curses updates, each of which ignores SIGTSTP for its length and then restores the action it saved, could leave
+       the signal ignored for good. Every other thread starts with it blocked (dsd_thread_create(), and the session
+       thread the CLI blocks before the run), so the kernel hands a Ctrl+Z only to this one. */
+    (void)dsd_thread_block_stop_signal(0);
+
     // Initialize ncurses lifecycle in UI thread
     int curses_opened = ui_open_curses_if_needed();
 

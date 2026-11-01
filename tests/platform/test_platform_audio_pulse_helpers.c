@@ -74,6 +74,15 @@ dsd_time_monotonic_ns(void) {
     return g_now_ns;
 }
 
+/* dsd_thread_create()'s SIGTSTP halves (threading_posix.c): no assertion here reads a thread's signal mask. */
+void
+dsd_thread_create_stop_hold(void) {}
+
+int
+dsd_thread_create_stop_release(int rc) {
+    return rc;
+}
+
 int
 dsd_mutex_init(dsd_mutex_t* mutex) {
     (void)mutex;

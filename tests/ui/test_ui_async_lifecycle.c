@@ -99,9 +99,18 @@ static char g_xm[48];
 static int g_xm_num = -1;
 static bool g_isendwin;
 
+/* The UI thread's entry as ui_start() passed it; with g_run_entry_on_join the join runs it, as the thread would have. */
+static dsd_thread_fn g_created_func;
+static void* g_created_arg;
+static int g_run_entry_on_join;
+
+/* dsd_thread_block_stop_signal() calls, and how many times curses had opened at the last one. */
+static int g_stop_signal_calls;
+static int g_last_stop_signal_blocked = -1;
+static int g_open_calls_at_stop_signal = -1;
+
 int
 dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
-    (void)arg;
     g_create_calls++;
     if (g_fail_create) {
         return EAGAIN;
@@ -109,6 +118,8 @@ dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
     if (!thread || !func) {
         return EINVAL;
     }
+    g_created_func = func;
+    g_created_arg = arg;
     *thread = (dsd_thread_t)0x1234U;
     return 0;
 }
@@ -117,6 +128,17 @@ int
 dsd_thread_join(dsd_thread_t thread) {
     (void)thread;
     g_join_calls++;
+    if (g_run_entry_on_join && g_created_func) {
+        (void)g_created_func(g_created_arg);
+    }
+    return 0;
+}
+
+int
+dsd_thread_block_stop_signal(int blocked) {
+    g_stop_signal_calls++;
+    g_last_stop_signal_blocked = blocked;
+    g_open_calls_at_stop_signal = g_ncurses_open_calls;
     return 0;
 }
 
@@ -554,6 +576,40 @@ test_ui_curses_close_uses_opened_state(void) {
     rc |= expect_int("curses-not-opened-after-disable", curses_opened, 0);
     rc |= expect_int("curses-no-open-after-disable", g_ncurses_open_calls, 0);
     rc |= expect_int("curses-no-close-after-disable", g_ncurses_close_calls, 0);
+    return rc;
+}
+
+/* Ctrl+Z is the UI thread's (every other thread starts with SIGTSTP blocked): its entry unblocks the signal for itself
+   before curses opens, as initscr() installs curses' handler, and ui_start() leaves the starting thread's mask alone. */
+static int
+test_ui_thread_takes_the_stop_signal(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+
+    g_create_calls = 0;
+    g_join_calls = 0;
+    g_fail_create = 0;
+    g_created_func = NULL;
+    g_ncurses_open_calls = 0;
+    g_ncurses_close_calls = 0;
+    g_stop_signal_calls = 0;
+    g_last_stop_signal_blocked = -1;
+    g_open_calls_at_stop_signal = -1;
+
+    int rc = expect_int("stop-signal-start-return", ui_start(&opts, &state), 0);
+    rc |= expect_int("stop-signal-start-leaves-caller", g_stop_signal_calls, 0);
+
+    /* The stop is already requested when the entry runs: it opens curses, runs no frame and closes. */
+    g_run_entry_on_join = 1;
+    ui_stop();
+    g_run_entry_on_join = 0;
+    rc |= expect_int("stop-signal-entry-ran", g_ncurses_open_calls, 1);
+    rc |= expect_int("stop-signal-calls", g_stop_signal_calls, 1);
+    rc |= expect_int("stop-signal-unblocked", g_last_stop_signal_blocked, 0);
+    rc |= expect_int("stop-signal-before-curses-opens", g_open_calls_at_stop_signal, 0);
     return rc;
 }
 
@@ -1050,6 +1106,7 @@ main(void) {
     rc |= test_ui_start_failure_resets_state();
     rc |= test_ui_start_stop_idempotency_and_control_pump();
     rc |= test_ui_curses_close_uses_opened_state();
+    rc |= test_ui_thread_takes_the_stop_signal();
     rc |= test_ui_single_frame_snapshot_input_and_draw_helpers();
 #if UI_KEY_HAVE_WHEEL
     rc |= test_wheel_capture_follows_the_snapshots();

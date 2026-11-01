@@ -34,6 +34,8 @@
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
+#include <signal.h>
+
 int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
 
 static void
@@ -49,12 +51,45 @@ timespec_from_ns(uint64_t ns, struct timespec* ts) {
  * Thread Functions
  *============================================================================*/
 
+/* Whether the dsd_thread_create() in progress on this thread blocked SIGTSTP for the new thread, so its release
+   unblocks it again. A create never nests on one thread. */
+static _Thread_local int s_create_stop_held;
+
+static int
+stop_signal_mask(int how, sigset_t* old_mask) {
+    sigset_t stop_set;
+    (void)sigemptyset(&stop_set);
+    (void)sigaddset(&stop_set, SIGTSTP);
+    return pthread_sigmask(how, &stop_set, old_mask);
+}
+
+void
+dsd_thread_create_stop_hold(void) {
+    sigset_t old_mask;
+    s_create_stop_held = stop_signal_mask(SIG_BLOCK, &old_mask) == 0 && sigismember(&old_mask, SIGTSTP) == 0;
+}
+
+int
+dsd_thread_create_stop_release(int rc) {
+    if (s_create_stop_held) {
+        s_create_stop_held = 0;
+        (void)stop_signal_mask(SIG_UNBLOCK, NULL);
+    }
+    return rc;
+}
+
+int
+dsd_thread_block_stop_signal(int blocked) {
+    return stop_signal_mask(blocked ? SIG_BLOCK : SIG_UNBLOCK, NULL);
+}
+
 int
 dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
     if (!thread || !func) {
         return EINVAL;
     }
-    return pthread_create(thread, NULL, func, arg);
+    dsd_thread_create_stop_hold();
+    return dsd_thread_create_stop_release(pthread_create(thread, NULL, func, arg));
 }
 
 int

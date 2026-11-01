@@ -70,24 +70,41 @@ typedef void* (*dsd_thread_fn)(void* arg);
  * The C++ form uses a lambda to keep the null checks without triggering
  * -Waddress when passing named thread entry functions.
  *
+ * On POSIX the new thread starts with SIGTSTP (the terminal's Ctrl+Z) blocked, whatever the creator's mask, and the
+ * creator's own mask is left as it was: a stop is taken by the thread that owns the terminal (the main thread, or the
+ * terminal UI thread, which unblocks it for itself; see dsd_thread_block_stop_signal()), never by a worker. Threads a
+ * library starts from a worker inherit the block.
+ *
  * @param thread    Pointer to thread handle (output).
  * @param func      Thread entry function.
  * @param arg       Argument passed to thread function.
  * @return 0 on success, non-zero error code on failure.
  */
+#if !DSD_PLATFORM_WIN_NATIVE
+/* dsd_thread_create()'s own halves, called around its pthread_create(): the hold blocks SIGTSTP in the calling thread,
+ * so the new thread inherits the block, and the release puts back the caller's mask and returns rc. */
+void dsd_thread_create_stop_hold(void);
+int dsd_thread_create_stop_release(int rc);
+#endif
 #if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE) && defined(__cplusplus)
 #define dsd_thread_create(thread, func, arg)                                                                           \
     ([&]() -> int {                                                                                                    \
         dsd_thread_t* const dsd_thread_handle__ = (thread);                                                            \
         dsd_thread_fn const dsd_thread_func__ = (func);                                                                \
         void* const dsd_thread_arg__ = (arg);                                                                          \
-        return (!dsd_thread_handle__ || !dsd_thread_func__)                                                            \
-                   ? EINVAL                                                                                            \
-                   : pthread_create(dsd_thread_handle__, NULL, dsd_thread_func__, dsd_thread_arg__);                   \
+        if (!dsd_thread_handle__ || !dsd_thread_func__) {                                                              \
+            return EINVAL;                                                                                             \
+        }                                                                                                              \
+        dsd_thread_create_stop_hold();                                                                                 \
+        return dsd_thread_create_stop_release(                                                                         \
+            pthread_create(dsd_thread_handle__, NULL, dsd_thread_func__, dsd_thread_arg__));                           \
     }())
 #elif !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
 #define dsd_thread_create(thread, func, arg)                                                                           \
-    (((thread) == NULL || (func) == NULL) ? EINVAL : pthread_create((thread), NULL, (func), (arg)))
+    (((thread) == NULL || (func) == NULL)                                                                              \
+         ? EINVAL                                                                                                      \
+         : (dsd_thread_create_stop_hold(),                                                                             \
+            dsd_thread_create_stop_release(pthread_create((thread), NULL, (func), (arg)))))
 #else
 int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
 #define dsd_thread_create(thread, func, arg) dsd_thread_create_impl((thread), (arg), (func))
@@ -123,6 +140,19 @@ int dsd_thread_join(dsd_thread_t thread);
 #else
 dsd_thread_t dsd_thread_self(void);
 #endif
+
+/**
+ * @brief Block or unblock SIGTSTP (the terminal's Ctrl+Z) in the calling thread.
+ *
+ * The kernel hands a process-directed signal to any thread that does not block it. The terminal UI's curses library
+ * suspends and resumes the screen in its SIGTSTP handler, which must run on the UI thread: the session thread blocks
+ * the signal before it starts anything (so every thread it starts inherits the block) and the UI thread unblocks it.
+ * Windows has no SIGTSTP: there it does nothing.
+ *
+ * @param blocked   Non-zero blocks the signal, zero unblocks it.
+ * @return 0 on success, non-zero error code on failure.
+ */
+int dsd_thread_block_stop_signal(int blocked);
 
 /*============================================================================
  * Mutex Functions

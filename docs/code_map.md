@@ -33,6 +33,8 @@ Generated (do not edit/commit):
     terminal it opens the app-control frontend runtime itself; at stop the API goes before the runtime it submits to.
     It hands the parsed API token to the server and wipes it from `dsd_opts`, and publishes telemetry once right after
     starting it, before the decoder runs: the API feed's first look, from which every event row reaches subscribers.
+    With the terminal frontend it blocks SIGTSTP on the session thread before the run, so only the terminal UI thread
+    takes Ctrl+Z (see UI, Ctrl+Z / `fg`).
 - Build files: `apps/dsd-cli/CMakeLists.txt` (`DSD_CLI_HAS_API` when `DSD_ENABLE_API` builds `dsd-neo_api`)
 
 ## Engine
@@ -903,6 +905,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     a fake `pa_simple` and a fake clock; `PLATFORM_AUDIO_PORTAUDIO_RECOVERY` runs the PortAudio pump thread and locks
     over a fake PortAudio (built wherever `portaudio.h` is found) and checks that every open and close runs on the
     opening thread and that no two overlap
+  - Thread stop signal: on POSIX `dsd_thread_create()` (the inline macro in C and C++, and `dsd_thread_create_impl()`)
+    blocks SIGTSTP in the creator around its `pthread_create()` and puts the creator's mask back, so every thread starts
+    with Ctrl+Z blocked and the creator keeps its own; `dsd_thread_block_stop_signal()` sets it on the calling thread
+    (Windows: no-op). The terminal UI thread is the one that unblocks it (see UI, Ctrl+Z / `fg`). Test:
+    `PLATFORM_THREAD_STOP_SIGNAL`
   - Whole-frame descriptor writes (issue #659): `dsd_write_frames()` in `file_compat.h` finishes interrupted and short
     writes, returns `DSD_WRITE_FRAMES_WOULD_BLOCK` at once when a non-blocking descriptor is full at a frame boundary,
     waits (`poll()`, POSIX only, at most 250 ms in all, an interrupted wait going on only for what is left of it) only to
@@ -8595,6 +8602,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     eleven places (` FRQ: %11s MHz;`, `-` in the same room at 0), so a SoapySDR row's `Args:` after it holds its column
     across retunes; that row leads with `| Soapy;` so `FRQ:` fits ahead of the 80-column cut (issue #670). Tests:
     `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
+  - Ctrl+Z / `fg` belongs to the UI thread (`ui_async.c`): ncurses' SIGTSTP handler calls `endwin()`, stops, and at the
+    resume calls `doupdate()`, and every `doupdate()` sets SIGTSTP to `SIG_IGN` for its length and then restores the
+    action it saved in one static. The kernel hands the signal to any thread that does not block it, so a handler run
+    on a decoder or I/O thread overlapped the UI thread's own redraws (the open menu redraws every frame), the two saves
+    crossed, and SIGTSTP stayed ignored for the rest of the session. So exactly one thread leaves it unblocked:
+    `dsd_cli_frontend_run()` blocks it on the session thread before the run opens anything when the terminal frontend
+    runs (every thread that thread or a library starts from it inherits the block; it stays blocked past `ui_stop()`,
+    so the run's tail takes no stop), `dsd_thread_create()` starts every thread with it blocked (a thread the UI thread
+    starts, the RadioReference client's worker, too), and `ui_thread_main()` unblocks it for itself before
+    `initscr()`. Without the terminal frontend the main thread keeps it. POSIX only. Tests:
+    `PLATFORM_THREAD_STOP_SIGNAL`, `RUNTIME_CLI_FRONTEND_TERMINAL`, `UI_ASYNC_LIFECYCLE`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
@@ -8666,8 +8684,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     Because the ncurses mask stays set, ncurses' resume after Ctrl+Z / `fg` (its SIGTSTP handler: `endwin()`, the
     stop, then `doupdate()`, which calls `_nc_mouse_resume()`) turns tracking on whatever the capture is. The first
     capture installs a SIGCONT handler (only over the default action, with `SA_RESTART`) that sets a `sig_atomic_t`
-    flag; the next `ui_mouse_capture_set()` that finds it while `isendwin()` is false (the resume has run, on whichever
-    thread took the signal) sends the capture's state once more. Steady frames read the flag and write nothing.
+    flag; the next `ui_mouse_capture_set()` that finds it while `isendwin()` is false (the resume has run, on the UI
+    thread, the one thread that takes SIGTSTP) sends the capture's state once more. Steady frames read the flag and write nothing.
     `ui_mouse_capture_close()` before `dsd_terminal_close()` turns the capture off, on ncurses with `mousemask(0)`,
     which releases the mask so `endwin()` and a reopened terminal's first refresh (a second `initscr()` keeps the
     screen, so it resumes) leave tracking off, and forgets the terminal. Each accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or

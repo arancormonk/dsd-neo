@@ -147,8 +147,8 @@ ui_mouse_watch_resume(void) {
     (void)sigaction(SIGCONT, &act, NULL);
 }
 
-/* 1 once per resume, after ncurses' resume ran: while isendwin() holds, the doupdate() that resumes (the handler's,
-   on whichever thread took the signal, or this thread's next refresh) is still to come. */
+/* 1 once per resume, after ncurses' resume ran: while isendwin() holds, the doupdate() that resumes (the handler's, on
+   this thread, the one thread that takes SIGTSTP, or this thread's next refresh) is still to come. */
 static int
 ui_mouse_take_resume(void) {
     if (!g_resumed || isendwin()) {
