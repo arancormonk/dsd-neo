@@ -68,6 +68,10 @@ int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, 
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,
                                  uint32_t* out_generation_after);
+
+/* A retune's drain wait on an output ring holding @p queued_samples that no reader takes: how long it waited before it
+   cleared them, and what the ring held after. Returns 0 when the wait ran. */
+int rtl_stream_test_retune_drain_wait(size_t queued_samples, uint64_t* out_waited_ms, size_t* out_used_after);
 int rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
                                            int* out_consumed_reset, int* out_have_prev_after_consume);
 

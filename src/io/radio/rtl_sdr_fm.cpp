@@ -2240,10 +2240,11 @@ drain_output_on_retune(void) {
         dsd_rtl_stream_clear_output();
         return;
     }
-    int waited_ms = 0;
-    while (!retune_output_drained(outp) && waited_ms < drain_ms) {
+    /* Real time, not a count of sleeps: one dsd_sleep_ms(1) can last a whole timer tick (about 15.6 ms on
+       Windows), which would stretch the 50 ms default to most of a second on every retune. */
+    const uint64_t drain_until_ms = dsd_realtime_mono_ms() + (uint64_t)drain_ms;
+    while (!retune_output_drained(outp) && dsd_realtime_mono_ms() < drain_until_ms) {
         dsd_sleep_ms(1);
-        waited_ms++;
     }
     if (!retune_output_drained(outp)) {
         /* Timed out; clear remainder to avoid stale backlog */
@@ -13488,6 +13489,34 @@ rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* 
     return 0;
 }
 
+/* A retune's drain wait on an output ring that holds @p queued_samples no reader takes: it waits the drain bound
+   (retune_drain_ms, 50 ms by default), clears what is left and reports how long it waited. */
+extern "C" int
+rtl_stream_test_retune_drain_wait(size_t queued_samples, uint64_t* out_waited_ms, size_t* out_used_after) {
+    if (!out_waited_ms || !out_used_after) {
+        return -1;
+    }
+    int initialized_output = 0;
+    const int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+    RtlSdrInternals* const saved_stream = g_stream;
+    test_stream_set(NULL);
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+    const uint64_t started_ms = dsd_realtime_mono_ms();
+    drain_output_on_retune();
+    *out_waited_ms = dsd_realtime_mono_ms() - started_ms;
+    *out_used_after = ring_used(&output);
+    test_stream_set(saved_stream);
+    ring_clear(&output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
 extern "C" int
 rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear, int* out_consumed_reset,
                                        int* out_have_prev_after_consume) {
@@ -15846,7 +15875,8 @@ static void
 read_race_pause(void* arg) {
     ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
     ctx->paused.store(1, std::memory_order_release);
-    for (int waited_ms = 0; waited_ms < 5000 && !ctx->release.load(std::memory_order_acquire); waited_ms++) {
+    const uint64_t until_ms = dsd_realtime_mono_ms() + 5000U;
+    while (!ctx->release.load(std::memory_order_acquire) && dsd_realtime_mono_ms() < until_ms) {
         dsd_sleep_ms(1);
     }
 }
@@ -15872,7 +15902,8 @@ read_race_switcher(void* arg) {
 
 static int
 read_race_wait_for(const std::atomic<int>* flag, int max_ms) {
-    for (int waited_ms = 0; waited_ms < max_ms && !flag->load(std::memory_order_acquire); waited_ms++) {
+    const uint64_t until_ms = dsd_realtime_mono_ms() + (uint64_t)(max_ms > 0 ? max_ms : 0);
+    while (!flag->load(std::memory_order_acquire) && dsd_realtime_mono_ms() < until_ms) {
         dsd_sleep_ms(1);
     }
     return flag->load(std::memory_order_acquire);
@@ -16016,16 +16047,19 @@ struct SearchReadFeeder {
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 search_read_feeder(void* arg) {
     SearchReadFeeder* feeder = static_cast<SearchReadFeeder*>(arg);
-    for (int waited_ms = 0; waited_ms < feeder->delay_ms && !feeder->read_done.load(std::memory_order_acquire);
-         waited_ms++) {
+    /* The delay is real time: counting dsd_sleep_ms(1) calls stretched it by the timer tick (about 15.6 ms on
+       Windows), so a 150 ms event landed after 2 s and a read's bound measured the feeder, not the read. */
+    const uint64_t event_at_ms = dsd_realtime_mono_ms() + (uint64_t)(feeder->delay_ms > 0 ? feeder->delay_ms : 0);
+    while (!feeder->read_done.load(std::memory_order_acquire) && dsd_realtime_mono_ms() < event_at_ms) {
         dsd_sleep_ms(1);
     }
     if (!feeder->read_done.load(std::memory_order_acquire)) {
         if (feeder->event) {
             feeder->event(feeder->event_ctx);
         }
-        for (int waited_ms = 0; !feeder->feed && waited_ms < 5000 && !feeder->read_done.load(std::memory_order_acquire);
-             waited_ms++) {
+        const uint64_t give_up_ms = dsd_realtime_mono_ms() + 5000U;
+        while (!feeder->feed && !feeder->read_done.load(std::memory_order_acquire)
+               && dsd_realtime_mono_ms() < give_up_ms) {
             dsd_sleep_ms(1);
         }
         if (!feeder->read_done.load(std::memory_order_acquire)) {
@@ -18020,7 +18054,8 @@ external_landing_race_in_gate(void* arg) {
     if (!r->pause_in_gate.load(std::memory_order_acquire)) {
         return;
     }
-    for (int waited_ms = 0; waited_ms < 5000 && !r->release.load(std::memory_order_acquire); waited_ms++) {
+    const uint64_t until_ms = dsd_realtime_mono_ms() + 5000U;
+    while (!r->release.load(std::memory_order_acquire) && dsd_realtime_mono_ms() < until_ms) {
         dsd_sleep_ms(1);
     }
     r->gate_held_after_pause.store(controller.retune_in_progress.load(std::memory_order_acquire),
