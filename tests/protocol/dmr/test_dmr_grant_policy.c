@@ -25,6 +25,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -1839,6 +1840,57 @@ test_xpt_status_lsn_kind(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Two group calls on one XPT repeater (LSN 1 on TS1, LSN 2 on TS2, one frequency): each slot's record carries its own
+   entry's LSN, the companion's voice LC (which names no channel) does not inherit the followed slot's, and the
+   companion's call takes its LSN from the record the status proved, whether the status came before its LC or after. */
+static int
+test_xpt_companion_slot_lsn(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+    for (int status_first = 1; status_first >= 0; status_first--) {
+        status_env(opts, st);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 461250000U;
+        st->trunk_chan_map[1] = 461262500L;
+        st->trunk_chan_map[2] = 461262500L;
+        status_window_closed(st);
+        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 3U, 0U, 0U, 0U, 0U},
+                              (const uint8_t[6]){77U, 88U, 0U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        rc |= expect_true("xpt follows LSN 1", st->trunk_vc_freq[0] == 461262500L && dmr_sm_get_ctx()->vc_slot == 0);
+        status_clock_at(0.5);
+        accepted_voice_now(opts, st, 0);
+        rc |= expect_true("xpt the followed call is on LSN 1", call_channel_is(st, 0U, 1U, DSD_CALL_CHANNEL_LSN));
+        if (status_first) {
+            status_window_closed(st);
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            rc |= expect_true("xpt the status names the companion slot on its own LSN",
+                              slot_channel_is(1, 2, DSD_CALL_CHANNEL_LSN));
+        }
+        status_clock_at(1.0);
+        seed_voice_call(st, 1U, DSD_CALL_KIND_GROUP_VOICE, 88U, 9U);
+        dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 88U, 9U);
+        if (!status_first) {
+            rc |= expect_true("xpt the companion's LC does not take the followed slot's LSN",
+                              slot_channel_is(1, 0, DSD_CALL_CHANNEL_NONE));
+            status_window_closed(st);
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        }
+        rc |= expect_true("xpt the companion's record keeps the LC and its own LSN",
+                          dmr_sm_get_ctx()->slots[1].prov == (uint8_t)DMR_SM_ID_LC
+                              && slot_channel_is(1, 2, DSD_CALL_CHANNEL_LSN));
+        status_clock_at(1.5);
+        accepted_voice_now(opts, st, 1);
+        rc |= expect_true("xpt the companion's call is on LSN 2", call_channel_is(st, 1U, 2U, DSD_CALL_CHANNEL_LSN));
+        rc |=
+            expect_true("xpt the followed slot keeps LSN 1", slot_channel_is(0, 1, DSD_CALL_CHANNEL_LSN)
+                                                                 && call_channel_is(st, 0U, 1U, DSD_CALL_CHANNEL_LSN));
+        status_env_done(st);
+    }
+    return rc;
+}
+
 /* A Connect Plus grant names the repeater's LCN, which both of its slots share. */
 static int
 test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
@@ -1854,6 +1906,41 @@ test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
     rc |= expect_true("con+ the companion slot's record is on the repeater's LCN",
                       slot_channel_is(0, 6, DSD_CALL_CHANNEL_LCN) && slot_channel_is(1, 6, DSD_CALL_CHANNEL_LCN));
     status_env_done(st);
+    return rc;
+}
+
+/* The XPT site status's free value is a repeater (LCN): its hint is that repeater's first slot, LSN 2n - 1, in the
+   LSN-keyed map; 0 names none. */
+static int
+test_xpt_csbk_hint_converts(dsd_opts* opts, dsd_state* st) {
+    static const struct {
+        uint8_t free_lcn;
+        int lsn;
+    } cases[] = {{0U, 0}, {1U, 1}, {8U, 15}, {9U, 17}, {15U, 29}};
+
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        init_env(opts, st);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 461000000U;
+        for (int n = 0; n < 32; n++) {
+            st->trunk_chan_map[n] = 462000000L + (long)n * 12500L;
+        }
+        build_xpt_site_status(bits, bytes, 0U, cases[i].free_lcn, (const uint8_t[6]){0U, 0U, 0U, 0U, 0U, 0U},
+                              (const uint8_t[6]){0U, 0U, 0U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        const dsd_trunk_cc_candidates* cands = dsd_trunk_cc_candidates_peek(st);
+        const int count = cands ? cands->count : 0;
+        if (cases[i].lsn == 0) {
+            rc |= expect_true("xpt free LCN 0 names no hint", count == 0);
+        } else {
+            rc |= expect_true("xpt free LCN hints its repeater's first LSN",
+                              count == 1 && cands->candidates[0] == st->trunk_chan_map[cases[i].lsn]);
+        }
+        dsd_state_ext_free_all(st);
+    }
     return rc;
 }
 
@@ -2674,7 +2761,9 @@ main(void) {
     rc |= test_cap_plus_status_names_expired_slot(opts, st);
     rc |= test_cap_plus_status_names_anonymous_private_slot(opts, st);
     rc |= test_xpt_status_lsn_kind(opts, st);
+    rc |= test_xpt_companion_slot_lsn(opts, st);
     rc |= test_conplus_grant_lcn_kind(opts, st);
+    rc |= test_xpt_csbk_hint_converts(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

@@ -7353,6 +7353,25 @@ Private per-protocol modules worth knowing about:
     nothing (no fallback, no publication). A new call never inherits an identity, and LC precedence over seeds, grants
     and statuses holds only while the LC's call lasts (a Cap+ status may name a gap record's LSN, or a slot whose
     identity expired).
+  - Call channel (issue #799). A followed call's channel is one resolved value with its numbering
+    (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
+    `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
+    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's or C_MOVE's absolute escape 0xFFF names its MBC's
+    CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
+    LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
+    and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
+    accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
+    of a known kind is named), so a same-carrier move or a repeated in-place grant keeps the first (decided limit L9).
+    An LC's record keeps its record's channel on that carrier, else the followed call's when that is the carrier's
+    (LPCN, LCN: both slots share it) or the slot is the followed one (an LSN is one slot's). An XPT status gives each
+    slot record its own entry's LSN (and fills it into an LC's record that names none), and voice sync gives a record's
+    LSN to the call the record is bound to while that call names no channel (`dmr_sm_publish_slot_channel()`, with the
+    record's provenance), so a companion slot's call is on its own LSN, not the followed slot's. The XPT free value is a
+    repeater (LCN): its hint is LSN 2n - 1 (`dmr_xpt_lcn_to_lsn()`), 0 none. Calls without a channel (decided limit L5):
+    trunking off, Cap+ and XPT private calls, an absolute grant whose MBC names no channel or failed, a grant adopted in
+    place under an already-named call, and a Tier III or Connect Plus companion slot's call (its LC names none, and no
+    status proves it). Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`,
+    `DMR_CSBK_HELPERS`, `CORE_CALL_STATE`, `CORE_TALKGROUP_POLICY`.
   - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
     takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it

@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
 #include "dmr_tiii_site.h"
@@ -2072,20 +2073,6 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     }
 }
 
-static uint8_t
-dmr_slco_xpt_lcn_to_lsn(uint8_t lcn) {
-    switch (lcn) {
-        case 2: return 3;
-        case 3: return 5;
-        case 4: return 7;
-        case 5: return 9;
-        case 6: return 11;
-        case 7: return 13;
-        case 8: return 15;
-        default: return lcn;
-    }
-}
-
 static void
 dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Hytera XPT - Free LCN %d - PRI LCN %d - PRI HASH: %02X", data->xpt_free, data->xpt_pri,
@@ -2099,8 +2086,8 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && state->dmrburstL == 16 && state->dmrburstR == 16
         && dmr_slco_tg_hold_not_on_slot(state)) {
         // Only a free channel the map names is a destination: the old alias is not the free channel.
-        uint8_t xpt_lsn = dmr_slco_xpt_lcn_to_lsn(data->xpt_free);
-        if (state->trunk_chan_map[xpt_lsn] != 0) {
+        uint8_t xpt_lsn = dmr_xpt_lcn_to_lsn(data->xpt_free);
+        if (xpt_lsn != 0 && state->trunk_chan_map[xpt_lsn] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[xpt_lsn];
             dmr_slco_tune_and_reset(opts, state);
         }

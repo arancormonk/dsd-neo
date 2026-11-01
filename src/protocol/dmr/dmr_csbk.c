@@ -2856,7 +2856,7 @@ dmr_cspdu_xpt_reconcile_followed(const dsd_state* state, const dmr_xpt_entry ent
         const dmr_xpt_entry* e = &entries[slot_idx];
         const int group = e->kind == DMR_XPT_KIND_GROUP && e->id8 != 0U;
         if (group || e->kind == DMR_XPT_KIND_PRIVATE) {
-            dmr_sm_status_slot_reconcile(sm, state, slot_idx & 1, state->trunk_chan_map[slot_idx + 1],
+            dmr_sm_status_slot_reconcile(sm, state, slot_idx & 1, slot_idx + 1, state->trunk_chan_map[slot_idx + 1],
                                          group ? e->id8 : 0U, 1);
         }
     }
@@ -2944,8 +2944,10 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
 
     DSD_FPRINTF(stderr, " Hytera XPT Site Status - Free LCN: %d SN: %d", xpt_free, xpt_seq);
-    if (xpt_free != 0) {
-        long f = state->trunk_chan_map[xpt_free];
+    // The free value is a repeater (LCN); the map is keyed by LSN: its first slot.
+    const uint8_t xpt_free_lsn = dmr_xpt_lcn_to_lsn(xpt_free);
+    if (xpt_free_lsn != 0) {
+        long f = state->trunk_chan_map[xpt_free_lsn];
         if (f != 0) {
             const long candx[1] = {f};
             dmr_sm_on_neighbor_update(opts, state, candx, 1);
