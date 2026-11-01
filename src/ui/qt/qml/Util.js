@@ -772,9 +772,23 @@ function playbackLengthText(ms) {
 // "1.25 seconds". A value Settings does not offer reads as itself.
 function pauseHoldText(ms) {
     var value = Number(ms) || 0
-    if (value <= 200)
+    if (!pauseHoldOn(value))
         return qsTr("Off")
     return value === 1000 ? qsTr("1 second") : qsTr("%1 seconds").arg(value / 1000)
+}
+
+// Whether a pause hold of `ms` is on: 200 or less is off, the decoder's rule.
+function pauseHoldOn(ms) {
+    return (Number(ms) || 0) > 200
+}
+
+// Whether Extra decoder arguments set the pause hold themselves: the parser
+// takes a long option out wherever it stands, and the last one wins, so one
+// there decides every session whatever Settings holds.
+function extraArgsSetPauseHold(text) {
+    return String(text || "").split(/\s+/).some(function (token) {
+        return token === "--analog-record-max-gap-ms" || token.indexOf("--analog-record-max-gap-ms=") === 0
+    })
 }
 
 // Issue #708: the store notices Settings and the Call recordings screen share.

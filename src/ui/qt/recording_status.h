@@ -51,7 +51,6 @@ class RecordingStatus : public QObject {
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
     Q_PROPERTY(QString refusal READ refusal NOTIFY changed)
     Q_PROPERTY(int refusalCount READ refusalCount NOTIFY changed)
-    Q_PROPERTY(bool runUp READ runUp NOTIFY changed)
 
   public:
     explicit RecordingStatus(QObject* parent = nullptr);
@@ -77,8 +76,7 @@ class RecordingStatus : public QObject {
     void setSessionActive(bool active);
     bool sessionActive() const;
     /** @brief Whether the session's run is up: its decoder takes commands and its recording view is its own (until
-     * then the view is the last run's). Off until the host says otherwise; recording_status_follow_host() sets it.
-     * A change emits changed(), so QML can tell when the readings are this session's. */
+     * then the view is the last run's). Off until the host says otherwise; recording_status_follow_host() sets it. */
     void setRunUp(bool up);
     bool runUp() const;
 

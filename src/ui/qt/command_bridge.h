@@ -139,8 +139,8 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     /**
      * @brief Start or stop recording each call in the running session (issue #708, D8), into the folder the session
-     * was started with. On sends @p analogMaxGapMs (the NFM pause hold, issue #756), @p unknownOnly and then WAV start;
-     * off sends WAV stop and then unknown-only off (unknown-only travels with Record calls: an off switch filters no
+     * was started with. On sends @p analogMaxGapMs (the NFM pause hold, issue #756; negative: none, the session keeps
+     * its own), @p unknownOnly and then WAV start; off sends WAV stop and then unknown-only off (unknown-only travels with Record calls: an off switch filters no
      * recording of the user's own options).
      *
      * Refused without sending anything, and said in RecordingStatus::refusal(), when no session is on ("no-session"),

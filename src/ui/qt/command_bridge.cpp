@@ -369,9 +369,11 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) con
     // last. Off: the stop first, so a refused second submit never leaves the session recording more than it did
     // (unknown-only cleared, the stop refused). The stop is the switch: once it is in, unknown-only follows best
     // effort, as it applies only while calls record and a later start sends it first, and the status keeps describing
-    // the stop. The hold is left as it is: it changes nothing while no call records.
+    // the stop. The hold is left as it is: it changes nothing while no call records. A negative hold is none to send:
+    // the session's own stands (one its extra options set).
     if (on) {
-        const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, analogMaxGapMs))
+        const bool sent = (analogMaxGapMs < 0
+                           || accepted(dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, analogMaxGapMs)))
                           && accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
                           && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0));
         if (sent) {

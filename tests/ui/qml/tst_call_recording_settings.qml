@@ -54,6 +54,7 @@ Item {
             prefs.recordUnknownOnly = false;
             prefs.recordingLimitMb = 1000;
             prefs.analogMaxGapMs = 200;
+            prefs.extraArgs = "";
             commands.setRecordingAccepted(true);
         }
         function cleanup() {
@@ -62,6 +63,7 @@ Item {
             prefs.recordUnknownOnly = false;
             prefs.recordingLimitMb = 1000;
             prefs.analogMaxGapMs = 200;
+            prefs.extraArgs = "";
             testContext.setLifecyclePhase(0);
             testContext.useLifecycleHost(false);
             testContext.resetCommands();
@@ -376,7 +378,6 @@ Item {
         }
         function test_analog_max_gap_custom_value(data) {
             prefs.analogMaxGapMs = data.ms;
-            compare(prefs.analogMaxGapMs, data.ms, "kept as it is");
             openScreen();
             compare(item("analogMaxGapRow").subtitle, data.text);
         }
@@ -400,9 +401,10 @@ Item {
             compare(lastRequest().kind, "analogMaxGap");
             compare(lastRequest().ms, 10000);
             compare(prefs.analogMaxGapMs, 10000);
-            // Its outcome reads under the switches, as theirs does.
+            // Its outcome reads under the switches, as theirs does; the row shows the choice at once, as they do.
             testContext.setRecordingStatus("commandState", "pending");
             compare(notices(), ["Applying…"]);
+            compare(row.subtitle, "10 seconds · Pauses up to this long stay in one recording");
             verify(item("recordingNotices").visible);
             verify(!row.showDivider, "the lines close the row");
             testContext.setRecordingStatus("commandState", "applied");
@@ -415,27 +417,54 @@ Item {
             compare(notices(), ["Couldn't change the running session. Applies at the next start."]);
         }
 
-        // While the session records each call the row shows the session's own hold, a custom one from Extra decoder
-        // arguments included; otherwise the preference.
-        function test_analog_max_gap_session_value() {
+        // The row shows the preference, as the switches do, whatever hold the running session has.
+        function test_analog_max_gap_shows_the_preference() {
             prefs.recordCalls = true;
             prefs.analogMaxGapMs = 2000;
+            testContext.setRecordingStatus("perCall", true);
             testContext.setRecordingStatus("analogMaxGapMs", 1500);
             testContext.setLifecyclePhase(2);
             openScreen();
-            var row = item("analogMaxGapRow");
-            compare(row.subtitle, "2 seconds · Pauses up to this long stay in one recording", "the session records no call yet");
-            testContext.setRecordingStatus("perCall", true);
-            compare(row.subtitle, "1.5 seconds · Pauses up to this long stay in one recording");
-            testContext.setRecordingStatus("analogMaxGapMs", 200);
-            compare(row.subtitle, "Off · Each pause over 0.2 seconds starts a new recording");
-            testContext.setRecordingStatus("analogMaxGapMs", 1500);
-            testContext.setRecordingStatus("runUp", false);
-            compare(row.subtitle, "2 seconds · Pauses up to this long stay in one recording", "a run not up yet reads the last run's view");
-            testContext.setRecordingStatus("runUp", true);
-            compare(row.subtitle, "1.5 seconds · Pauses up to this long stay in one recording");
+            compare(item("analogMaxGapRow").subtitle, "2 seconds · Pauses up to this long stay in one recording");
             testContext.setLifecyclePhase(0);
-            compare(row.subtitle, "2 seconds · Pauses up to this long stay in one recording", "with no session, the preference");
+            compare(item("analogMaxGapRow").subtitle, "2 seconds · Pauses up to this long stay in one recording");
+        }
+
+        // A hold in Extra decoder arguments wins at every start: the row is shut and says so, and Record calls on
+        // sends no hold (-1), so the session keeps the one its extra options set.
+        function test_analog_max_gap_in_extra_arguments_data() {
+            return [
+                {tag: "spaced", extra: "-Z --analog-record-max-gap-ms 7500", set: true},
+                {tag: "equals", extra: "--analog-record-max-gap-ms=7500", set: true},
+                {tag: "other option", extra: "--analog-record-max-gap-msx 1", set: false},
+                {tag: "none", extra: "-Z", set: false}
+            ];
+        }
+        function test_analog_max_gap_in_extra_arguments(data) {
+            prefs.recordCalls = true;
+            prefs.analogMaxGapMs = 2000;
+            prefs.extraArgs = data.extra;
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            var row = item("analogMaxGapRow");
+            var note = item("analogMaxGapExtrasNote");
+            compare(row.subtitle, "2 seconds · Pauses up to this long stay in one recording", "the preference still shows");
+            compare(row.enabled, !data.set);
+            compare(note.visible, data.set);
+            if (data.set) {
+                compare(note.notices.map(function (n) { return n.text; }), ["Extra decoder arguments set the pause hold (--analog-record-max-gap-ms) for every session, so this setting is not used."]);
+                verify(!row.showDivider, "the note closes the row");
+                row.activate();
+                verify(!item("screenChoices").visible, "a shut row opens nothing");
+            }
+            item("recordCallsToggle").activate();
+            item("recordCallsToggle").activate();
+            compare(lastRequest().kind, "recordCalls");
+            compare(lastRequest().on, true);
+            compare(lastRequest().analogMaxGapMs, data.set ? -1 : 2000);
+            prefs.extraArgs = "";
+            verify(row.enabled);
+            verify(!note.visible);
         }
 
         function test_manage_row_opens_the_screen() {

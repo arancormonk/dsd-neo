@@ -279,8 +279,9 @@ time, and it is disabled while Record calls is off. Digital calls are not affect
   and counts as part of the pause, so allow for it: 0.5 seconds rarely joins anything there.
 - A feed that stops sending between transmissions (a UDP or TCP audio stream with nothing in the pauses) is not a pause
   in the signal, and still ends the call. Keep the stream running while the channel is quiet.
-- `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start, and Settings shows the
-  session's own value while it records. The details are in
+- `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows
+  the row disabled, with a line that says so, and turning Record calls on leaves the session's own hold alone. A saved
+  system's own Extra decoder arguments win the same way, but Settings cannot see them. The details are in
   [Pauses in an NFM recording](../docs/cli.md#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 
 ### Where the files are

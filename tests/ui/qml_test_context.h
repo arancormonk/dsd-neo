@@ -4388,7 +4388,6 @@ class Setup : public QObject {
         recording[QStringLiteral("lastError")] = QString();
         recording[QStringLiteral("refusal")] = QString();
         recording[QStringLiteral("refusalCount")] = 0;
-        recording[QStringLiteral("runUp")] = true;
         m_recording_status = recording;
         m_recording_readings = new ReadingMap(engine);
         for (auto it = recording.cbegin(); it != recording.cend(); ++it) {

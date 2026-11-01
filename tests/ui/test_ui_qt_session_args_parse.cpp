@@ -404,6 +404,29 @@ test_live_unknown_only_first(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
 }
 
+/* Issue #756: with the NFM pause hold in the extra options, Settings sends no hold with Record calls on (a negative
+ * one), so the session keeps the hold its extra options set. */
+void
+test_live_record_on_keeps_extra_hold(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    prefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms 4000"));
+    prefs.setAnalogMaxGapMs(2000);
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    const dsd_opts* opts = live.decoder.opts.get();
+    expect("a session with an extra hold starts", started && opts->analog_record_max_gap_ms == 4000);
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
+    status.setRunUp(true);
+    expect("Record calls on with no hold is queued", bridge.setRecordCalls(true, false, -1));
+    expect("only unknown-only and the start apply", live.drain() == 2);
+    expect("the session records with the extra hold",
+           opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 4000);
+    prefs.setExtraArgs(QString());
+    prefs.setAnalogMaxGapMs(200);
+}
+
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
 /* Record calls off where one of its two submissions is refused: the session never records more than it did. A refused
  * stop sends nothing (unknown-only stays on); a refused unknown-only after the stop leaves the session stopped. */
@@ -747,11 +770,6 @@ test_status_readings(void) {
     view.analog_max_gap_ms = 2000;
     status.apply(view);
     expect("the pause hold moving is a change", changes == 5 && status.analogMaxGapMs() == 2000);
-    // And the run going down or up, which says whether the readings are this session's.
-    status.setRunUp(false);
-    status.setRunUp(false);
-    status.setRunUp(true);
-    expect("the run going down and up is a change each", changes == 7 && status.runUp());
 }
 
 enum class Applied { Journal, DeleteAfterUpload, Folder, StaticWav, PerCall };
@@ -905,6 +923,7 @@ main(int argc, char** argv) {
         test_status_readings();
         test_live_commands(prefs, sessions);
         test_live_unknown_only_first(prefs, sessions);
+        test_live_record_on_keeps_extra_hold(prefs, sessions);
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
         test_live_record_off_half_sent(prefs, sessions);
         test_live_record_on_half_sent(prefs, sessions);

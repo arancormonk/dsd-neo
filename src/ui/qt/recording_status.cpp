@@ -119,11 +119,7 @@ RecordingStatus::sessionActive() const {
 
 void
 RecordingStatus::setRunUp(bool up) {
-    if (up == m_runUp) {
-        return;
-    }
     m_runUp = up;
-    Q_EMIT changed();
 }
 
 bool

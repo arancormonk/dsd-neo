@@ -196,7 +196,7 @@ Item {
     function setRecordCalls(on) {
         prefs.recordCalls = on;
         if (recordingLive)
-            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly, prefs.analogMaxGapMs); });
+            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly, analogMaxGapInExtras ? -1 : prefs.analogMaxGapMs); });
     }
     // Unknown-only travels with Record calls: it applies only while calls record.
     function setRecordUnknownOnly(on) {
@@ -205,10 +205,10 @@ Item {
             sendRecordingSwitch(function () { return commands.setRecordUnknownOnly(on); });
     }
     // Issue #756: the NFM pause hold travels with Record calls, as unknown-only
-    // does. The row shows the session's own value while it records each call (one
-    // from Extra decoder arguments included), else the preference.
-    readonly property bool recordingSessionRecords: recordingLive && recordingStatus.runUp === true && recordingStatus.perCall === true
-    readonly property int analogMaxGapShownMs: recordingSessionRecords ? recordingStatus.analogMaxGapMs : prefs.analogMaxGapMs
+    // does, and the row shows the preference, as the switches do. A hold in Extra
+    // decoder arguments wins at every start, so the row then changes nothing and
+    // says why, and Record calls on leaves the session's own hold alone.
+    readonly property bool analogMaxGapInExtras: Util.extraArgsSetPauseHold(prefs.extraArgs)
     function setAnalogMaxGap(ms) {
         prefs.analogMaxGapMs = ms;
         if (recordingLive && prefs.recordCalls)
@@ -716,10 +716,10 @@ Item {
                     DisclosureRow {
                         objectName: "analogMaxGapRow"
                         title: qsTr("NFM pause hold")
-                        subtitle: screen.analogMaxGapShownMs > 200 ? qsTr("%1 · Pauses up to this long stay in one recording").arg(Util.pauseHoldText(screen.analogMaxGapShownMs)) : qsTr("Off · Each pause over 0.2 seconds starts a new recording")
-                        enabled: prefs.recordCalls
+                        subtitle: Util.pauseHoldOn(prefs.analogMaxGapMs) ? qsTr("%1 · Pauses up to this long stay in one recording").arg(Util.pauseHoldText(prefs.analogMaxGapMs)) : qsTr("Off · Each pause over 0.2 seconds starts a new recording")
+                        enabled: prefs.recordCalls && !screen.analogMaxGapInExtras
                         showCaret: enabled
-                        showDivider: !sessionNoticeList.visible
+                        showDivider: !analogMaxGapExtrasNote.visible && !sessionNoticeList.visible
                         onTapped: {
                             var holds = prefs.analogMaxGapChoices;
                             screenChoices.open(title, holds.map(function (ms) {
@@ -728,6 +728,12 @@ Item {
                                 screen.setAnalogMaxGap(holds[index]);
                             });
                         }
+                    }
+
+                    NoticeList {
+                        id: analogMaxGapExtrasNote
+                        objectName: "analogMaxGapExtrasNote"
+                        notices: screen.analogMaxGapInExtras ? [{text: qsTr("Extra decoder arguments set the pause hold (--analog-record-max-gap-ms) for every session, so this setting is not used."), problem: false}] : []
                     }
 
                     NoticeList {
