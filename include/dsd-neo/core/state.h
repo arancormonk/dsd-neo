@@ -2960,8 +2960,8 @@ int dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from);
 /**
  * Record scan-list row @p row as the one the last accepted step selected (issue #666), with its frequency, and drop
  * any backward-retry row. Written by exactly the events that move lcn_freq_roll past a row the receiver was put on: a
- * typed row's commit, an untyped row's install, a manual untyped step that tuned. A row outside the list or a 0 Hz
- * placeholder (a park, not a tune) records nothing.
+ * typed row's commit, an untyped row's install, a manual untyped step that tuned, a P25 hunt probe of a -T channel map
+ * row whose tune was accepted. A row outside the list or a 0 Hz placeholder (a park, not a tune) records nothing.
  */
 void dsd_state_lcn_on_air_note(dsd_state* state, int row);
 

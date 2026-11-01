@@ -12891,7 +12891,8 @@ target_link_libraries(
 )
 add_test(NAME P25_SM_CAND_COOLDOWN COMMAND dsd-neo_test_p25_sm_cand_cooldown)
 
-# P25 SM hunt: a deferred probe retries its candidate or channel-list row (issue #666)
+# P25 SM hunt: a deferred probe retries its candidate or channel-list row, and an accepted row is the row heard
+# (issue #666)
 add_executable(
     dsd-neo_test_p25_sm_hunt_deferred
     protocol/p25/test_p25_sm_hunt_deferred.c

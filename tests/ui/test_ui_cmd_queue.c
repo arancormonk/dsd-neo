@@ -5752,6 +5752,70 @@ test_channel_cycle_prev_walks_back(void) {
     return rc;
 }
 
+/* The P25 hunt's control-channel tune off the wrap toolchains (on them __wrap_dsd_trunk_tuning_hook_tune_to_cc answers
+   with g_cc_tune_result first): accepted. */
+static dsd_trunk_tune_result
+hunt_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)freq;
+    (void)ted_sps;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/*
+ * Issue #666 (review gate G4): under -T with a channel map the P25 hunt walks the same cursor as Next and Previous. It
+ * moved the cursor past the row it tuned but never recorded that row, so Previous went back from the last row a manual
+ * step had landed: on [A, B, C], Next to A, then a hunt to B, made Previous tune C (back from A) instead of A (back
+ * from B). An accepted hunt pick is now the row heard, as a manual step's is.
+ */
+static int
+test_channel_cycle_prev_after_p25_hunt(void) {
+    static const long kRows[] = {871000000L, 872000000L, 873000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    opts.scanner_mode = 0;
+    opts.trunk_enable = 1;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "site.csv");
+    state.p25_cc_freq = 871000000L;
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25; // a P25 site is on air
+    rc |= expect_true("hunt: P25 owns the trunk", dsd_trunk_p25_recovery_allowed(&opts, &state) == 1);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = hunt_tune_to_cc_ok});
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+
+    const int calls = g_manual_leg_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "hunt: next to A");
+    rc |= expect_prev_tuned("hunt: next tunes A", 871000000U, calls);
+    rc |= expect_true("hunt: A is the row heard", state.lcn_freq_roll == 1 && dsd_state_lcn_heard_row(&state) == 0);
+
+    /* The control channel is lost: the hunt's next probe is the row at the cursor, B. */
+    p25_sm_tick_guard_enter();
+    sm->state = P25_SM_HUNTING;
+    sm->t_hunt_try_m = 0.0;
+    state.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
+    p25_sm_tick_ctx(sm, &opts, &state);
+    p25_sm_tick_guard_leave();
+    rc |= expect_int("hunt: the probe was accepted", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("hunt: the cursor passed B", state.lcn_freq_roll, 2);
+    rc |= expect_int("hunt: B is the row heard", dsd_state_lcn_heard_row(&state), 1);
+
+    rc |= prev_lands(&opts, &state, 871000000U, 1, 0, "hunt: previous goes back from B to A");
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #666: rows on one frequency in a row are one channel, from either side: Previous lands on a run's first row,
  * goes back from the first row of the run heard (here a timed step had landed its second row), and skips a run whose
@@ -24628,6 +24692,7 @@ main(void) {
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
     rc |= test_channel_cycle_prev_walks_back();
+    rc |= test_channel_cycle_prev_after_p25_hunt();
     rc |= test_channel_cycle_prev_duplicate_runs();
     rc |= test_channel_cycle_prev_refused_row();
     rc |= test_channel_cycle_prev_after_avoid_and_reload();

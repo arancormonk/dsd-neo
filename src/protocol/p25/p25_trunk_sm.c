@@ -5486,12 +5486,14 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 // Default hunting interval: try a new candidate every 5 seconds (aligned with op25 CC_HUNT_TIME)
 #define CC_HUNT_INTERVAL_S 5.0
 
-// Get next LCN frequency from user-provided list
+/* Get next LCN frequency from user-provided list. @p out_row gets the row picked, or -1 when the pick is the known
+   control channel instead (no list, or a 0 Hz row). */
 static int
-next_lcn_freq(dsd_state* state, long* out_freq) {
-    if (!state || !out_freq) {
+next_lcn_freq(dsd_state* state, long* out_freq, int* out_row) {
+    if (!state || !out_freq || !out_row) {
         return 0;
     }
+    *out_row = -1;
     if (state->lcn_freq_count <= 0) {
         long cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
         if (cc > 0) {
@@ -5514,11 +5516,12 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
             }
         }
     }
-    long f =
-        (state->lcn_freq_roll < state->lcn_freq_count) ? *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll) : 0;
+    const int row = state->lcn_freq_roll;
+    long f = (row < state->lcn_freq_count) ? *dsd_state_trunk_lcn_slot(state, row) : 0;
     state->lcn_freq_roll++;
     if (f != 0) {
         *out_freq = f;
+        *out_row = row;
         return 1;
     }
     {
@@ -5716,8 +5719,8 @@ typedef struct {
 
 /* A hunt probe's tune of @p cand from @p source that did not land. A deferral schedules no retune and asks to be retried
    without advancing state (trunk_tuning_hooks.h), so the pick goes back and the next hunt retries the same entry
-   (issue #666); a refusal or timeout keeps it passed. The hunt never writes the row heard, so restoring the cursor
-   leaves it alone. */
+   (issue #666); a refusal or timeout keeps it passed. Only an accepted pick writes the row heard (try_next_cc()), so
+   restoring the cursor leaves it alone. */
 static void
 p25_hunt_reject_outcome(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* source, long cand,
                         dsd_trunk_tune_result tune_result, const p25_hunt_pick* pick) {
@@ -5779,7 +5782,8 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // Fall back only to an explicit user channel map; otherwise return to the known primary CC.
     pick.from_candidates = 0;
-    if ((has_user_lcn_list ? next_lcn_freq(state, &cand) : next_primary_cc_freq(state, &cand))) {
+    int row = -1;
+    if ((has_user_lcn_list ? next_lcn_freq(state, &cand, &row) : next_primary_cc_freq(state, &cand))) {
         const char* source = has_user_lcn_list ? "user-lcn" : "primary-cc";
         p25_sm_diagf(opts, state, ctx, "hunt_tune_attempt",
                      "source=%s freq=%ld sps=%d in_cand=%d in_lcn=%d in_neighbor=%d", source, cand, sps,
@@ -5795,6 +5799,9 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      p25_tune_result_name(tune_result));
         p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, now_m, "hunt-lcn",
                                                P25_SM_CC_ACQUISITION_HUNT_PROBE);
+        /* An accepted pick is the row heard, as a manual step's is, so Previous goes back from it (issue #666); a
+           primary-CC pick (-1) records nothing. */
+        dsd_state_lcn_on_air_note(state, row);
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");
         return;

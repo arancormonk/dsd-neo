@@ -159,9 +159,11 @@ Generated (do not edit/commit):
     `src/core/util/dsd_state_lcn_nav.c` declared in `<dsd-neo/core/state.h>`. It is written by exactly the events that
     move the cursor past a row the receiver was put on: `untyped_install_row()` (`engine.c`) for a non-zero row (the
     timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
-    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), and a manual untyped
-    step (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`. Never at a placeholder
-    park, a deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
+    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), a manual untyped
+    step (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`, and a P25 hunt probe
+    on a `-T` channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it picked past
+    a duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a placeholder park, a
+    deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
     step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
     another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
     none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. A hard-failed step (either
@@ -2288,7 +2290,9 @@ suite runs under this compiler.
       `dsd_trunk_cc_candidates_restore()` when the tune is DEFERRED (no retune scheduled: "retry without advancing
       state"), so the next try picks the same entry; a refused or timed-out tune keeps it passed. The P25 hunt
       (`try_next_cc()` through `p25_hunt_reject_outcome()`) puts its user-list cursor `lcn_freq_roll` back the same
-      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`; neither writes the row heard. Tests:
+      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`. Only an accepted P25 user-list probe writes the row
+      heard (`dsd_state_lcn_on_air_note()`, as an accepted `L` does), so `J` goes back from the row the hunt tuned; a
+      deferred or failed probe writes nothing, and the DMR hunt, which walks no list position, never does. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and

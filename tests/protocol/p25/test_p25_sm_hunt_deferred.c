@@ -126,10 +126,64 @@ test_deferred_channel_row_is_retried(void) {
     assert(s.lcn_freq_roll == 3);
 }
 
+/* One hunt probe now whose tune is accepted: the SM moves on to the control channel it tuned. */
+static void
+hunt_accepted(dsd_opts* o, dsd_state* s) {
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    ctx->state = P25_SM_HUNTING;
+    ctx->t_hunt_try_m = 0.0;
+    s->last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
+    const int tunes = g_tunes;
+    p25_sm_tick_ctx(ctx, o, s);
+    assert(g_tunes == tunes + 1);
+    assert(ctx->state == P25_SM_ON_CC);
+}
+
+/* Review gate G4: an accepted channel-list probe is the row heard, as a manual step's landing is, so Previous goes back
+   from the row the hunt tuned, not from the last row a manual step landed. The row is the one tuned, past a duplicate
+   and across the wrap; a 0 Hz row hands the probe to the control channel, which records no row. */
+static void
+test_accepted_channel_row_is_the_row_heard(void) {
+    static dsd_opts o;
+    static dsd_state s;
+    init_hunt(&o, &s);
+    DSD_SNPRINTF(o.chan_in_file, sizeof(o.chan_in_file), "%s", "site.csv");
+    s.trunk_lcn_freq[0] = 852000000;
+    s.trunk_lcn_freq[1] = 853000000;
+    s.trunk_lcn_freq[2] = 853000000;
+    s.trunk_lcn_freq[3] = 0;
+    s.lcn_freq_count = 4;
+    s.lcn_freq_roll = 1;
+    dsd_state_lcn_nav_reset(&s);
+    dsd_state_lcn_on_air_note(&s, 0); // Next landed row 0
+    dsd_state_lcn_back_retry_note(&s, 0);
+    assert(dsd_state_lcn_heard_row(&s) == 0);
+
+    hunt_accepted(&o, &s);
+    assert(g_tuned[0] == 853000000);
+    assert(s.lcn_freq_roll == 2);
+    assert(dsd_state_lcn_heard_row(&s) == 1);
+    assert(dsd_state_lcn_back_retry_row(&s) == -1); // a forward start drops a refused Previous's retry
+
+    // Row 2 repeats row 1 and row 3 is a placeholder: the control channel is tuned and row 1 stays the row heard.
+    hunt_accepted(&o, &s);
+    assert(g_tuned[1] == 851000000);
+    assert(s.lcn_freq_roll == 4);
+    assert(dsd_state_lcn_heard_row(&s) == 1);
+
+    // Past the end the walk wraps to row 0.
+    hunt_accepted(&o, &s);
+    assert(g_tuned[2] == 852000000);
+    assert(s.lcn_freq_roll == 1);
+    assert(dsd_state_lcn_heard_row(&s) == 0);
+}
+
 int
 main(void) {
     test_deferred_candidate_is_retried();
     test_deferred_channel_row_is_retried();
+    test_accepted_channel_row_is_the_row_heard();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
     return 0;
