@@ -38,7 +38,6 @@
 #include <limits.h>
 #include <math.h>
 #include <sndfile.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7712,15 +7711,37 @@ test_help_describes_recording_options(void) {
     return 0;
 }
 
-/* Issue #756 (B4): a value-taking option given last, its value forgotten, is refused with exit code 1. It used to be
- * dropped without a word, so `-P --wav-journal` recorded with no journal and exited 0. */
+/* Issue #756 (B4): a value-taking option given last, its value forgotten, is refused with exit code 1. These used to
+ * drop it without a word, so `-P --wav-journal` recorded with no journal and exited 0. */
 static int
 test_value_options_refuse_a_missing_value(void) {
     static const char* const options[] = {
-        "--wav-journal",         "--rdio-mode",           "--rdio-system-id",
-        "--rdio-api-url",        "--rdio-api-key",        "--rdio-upload-timeout-ms",
-        "--rdio-upload-retries", "--frame-log",           "--p25-sm-log",
-        "--input-volume",        "--input-level-warn-db",
+        "--wav-journal",
+        "--rdio-mode",
+        "--rdio-system-id",
+        "--rdio-api-url",
+        "--rdio-api-key",
+        "--rdio-upload-timeout-ms",
+        "--rdio-upload-retries",
+        "--frame-log",
+        "--p25-sm-log",
+        "--input-volume",
+        "--input-level-warn-db",
+        "--p25-vc-grace",
+        "--p25-min-follow-dwell",
+        "--p25-grant-voice-timeout",
+        "--p25-mac-hold",
+        "--p25-cc-grace",
+        "--p25-force-release-extra",
+        "--p25-force-release-margin",
+        "--p25-p1-err-hold-pct",
+        "--p25-p1-err-hold-sec",
+        "--calc-lcn",
+        "--calc-step",
+        "--calc-cc-freq",
+        "--calc-cc-lcn",
+        "--calc-start-lcn",
+        "--auto-ppm-snr",
     };
     int test_rc = 0;
     for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
@@ -7741,6 +7762,42 @@ test_value_options_refuse_a_missing_value(void) {
     return test_rc;
 }
 
+/* What each option of test_wide_values_clamp_before_narrowing() sets. */
+static int
+wide_input_volume(const dsd_opts* opts) {
+    return opts->input_volume_multiplier;
+}
+
+static int
+wide_rdio_system_id(const dsd_opts* opts) {
+    return opts->rdio_system_id;
+}
+
+static int
+wide_rdio_timeout(const dsd_opts* opts) {
+    return opts->rdio_upload_timeout_ms;
+}
+
+static int
+wide_rdio_retries(const dsd_opts* opts) {
+    return opts->rdio_upload_retries;
+}
+
+static int
+wide_slot_preference(const dsd_opts* opts) {
+    return opts->slot_preference;
+}
+
+static int
+wide_voice_slots(const dsd_opts* opts) {
+    return (opts->slot1_on ? 1 : 0) | (opts->slot2_on ? 2 : 0);
+}
+
+static int
+wide_sample_rate(const dsd_opts* opts) {
+    return opts->wav_sample_rate;
+}
+
 /* Issue #756 (B5): these options clamp to their range in the parsed width before the value becomes an int, so a value
  * past int's range clamps to the nearer bound instead of wrapping to an unrelated accepted value (each case wraps to
  * one on a 64-bit long). Where long is 32 bits (Windows), the values are past long's range too and refused as invalid,
@@ -7750,17 +7807,23 @@ test_wide_values_clamp_before_narrowing(void) {
     static const struct {
         const char* option;
         const char* value;
-        size_t field;
+        int (*get)(const dsd_opts*);
         int want;
     } cases[] = {
-        {"--input-volume", "4294967300", offsetof(dsd_opts, input_volume_multiplier), 16},
-        {"--input-volume", "-4294967292", offsetof(dsd_opts, input_volume_multiplier), 1},
-        {"--rdio-system-id", "4294967301", offsetof(dsd_opts, rdio_system_id), 65535},
-        {"--rdio-system-id", "-4294967291", offsetof(dsd_opts, rdio_system_id), 0},
-        {"--rdio-upload-timeout-ms", "4294967796", offsetof(dsd_opts, rdio_upload_timeout_ms), 120000},
-        {"--rdio-upload-timeout-ms", "-4294966796", offsetof(dsd_opts, rdio_upload_timeout_ms), 100},
-        {"--rdio-upload-retries", "4294967299", offsetof(dsd_opts, rdio_upload_retries), 10},
-        {"--rdio-upload-retries", "-4294967293", offsetof(dsd_opts, rdio_upload_retries), 0},
+        {"--input-volume", "4294967300", wide_input_volume, 16},
+        {"--input-volume", "-4294967292", wide_input_volume, 1},
+        {"--rdio-system-id", "4294967301", wide_rdio_system_id, 65535},
+        {"--rdio-system-id", "-4294967291", wide_rdio_system_id, 0},
+        {"--rdio-upload-timeout-ms", "4294967796", wide_rdio_timeout, 120000},
+        {"--rdio-upload-timeout-ms", "-4294966796", wide_rdio_timeout, 100},
+        {"--rdio-upload-retries", "4294967299", wide_rdio_retries, 10},
+        {"--rdio-upload-retries", "-4294967293", wide_rdio_retries, 0},
+        {"-z", "4294967297", wide_slot_preference, 2},
+        {"-z", "-4294967295", wide_slot_preference, 0},
+        {"-V", "4294967297", wide_voice_slots, 3},
+        {"-V", "-4294967295", wide_voice_slots, 0},
+        {"-s", "4294975296", wide_sample_rate, 192000},
+        {"-s", "-4294919296", wide_sample_rate, 8000},
     };
 
     const int long_is_wide = LONG_MAX > INT_MAX;
@@ -7771,8 +7834,7 @@ test_wide_values_clamp_before_narrowing(void) {
         if (am_cli_parse(args, 0, &run) != 0) {
             return 1;
         }
-        int got = 0;
-        DSD_MEMCPY(&got, (const char*)run.opts + cases[i].field, sizeof got);
+        const int got = cases[i].get(run.opts);
         const int ok = long_is_wide ? (run.rc == DSD_PARSE_CONTINUE && got == cases[i].want)
                                     : (run.rc == DSD_PARSE_ERROR && run.exit_rc == 1);
         if (!ok) {

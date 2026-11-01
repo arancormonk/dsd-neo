@@ -2237,11 +2237,11 @@ suite runs under this compiler.
     (compaction keeps that `--` and everything after it), then getopt over what is left, where a `--` that is a short
     option's value ends nothing and only one that is no value ends the options. The parse itself is no validator: it
     creates folders (`-Q`, `-d`), imports CSVs and key files, reads token files, prints usage and leaves getopt's
-    globals behind. The recording, rdio, log and input-level long options given last, without their value, are
-    refused (`<option> requires a value`, exit code 1) rather than dropped (issue #756, `cli_has_value()`), as the
-    newer options already were; `--input-volume` and the numeric rdio options clamp while still the parsed `long` and
-    only then narrow (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of
-    wrapping
+    globals behind. A pre-scan long option that takes the next argument, given last without it, is refused (exit code
+    1), never dropped: the options that used to drop it say `<option> requires a value` (issue #756,
+    `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
+    numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
+    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits

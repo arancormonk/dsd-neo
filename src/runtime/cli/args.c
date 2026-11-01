@@ -1461,7 +1461,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             iq_info_cli = argv[i] + 10;                                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-vc-grace") == 0) {                                                                  \
+            if (!cli_has_value("--p25-vc-grace", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-vc-grace", DSD_PARSE_ARGS_NEXT_ARG(), opts->p25_vc_grace_s);         \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
@@ -1469,7 +1472,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);                             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {                                          \
+        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0) {                                                          \
+            if (!cli_has_value("--p25-min-follow-dwell", i, argc, out_exit_rc)) {                                      \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-min-follow-dwell", DSD_PARSE_ARGS_NEXT_ARG(),                        \
                                            opts->p25_min_follow_dwell_s);                                              \
             char buf[32];                                                                                              \
@@ -1478,7 +1484,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {                                       \
+        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0) {                                                       \
+            if (!cli_has_value("--p25-grant-voice-timeout", i, argc, out_exit_rc)) {                                   \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-grant-voice-timeout", DSD_PARSE_ARGS_NEXT_ARG(),                     \
                                            opts->p25_grant_voice_to_s);                                                \
             char buf[32];                                                                                              \
@@ -1487,7 +1496,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);           \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-mac-hold") == 0) {                                                                  \
+            if (!cli_has_value("--p25-mac-hold", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-mac-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             char buf[32];                                                                                              \
@@ -1496,7 +1508,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: MAC hold set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-cc-grace") == 0) {                                                                  \
+            if (!cli_has_value("--p25-cc-grace", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-cc-grace", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             if (v < 0) {                                                                                               \
@@ -1511,7 +1526,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: CC grace set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {                                       \
+        if (strcmp(argv[i], "--p25-force-release-extra") == 0) {                                                       \
+            if (!cli_has_value("--p25-force-release-extra", i, argc, out_exit_rc)) {                                   \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-extra", DSD_PARSE_ARGS_NEXT_ARG(),                     \
                                            opts->p25_force_release_extra_s);                                           \
             char buf[32];                                                                                              \
@@ -1520,7 +1538,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);       \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {                                      \
+        if (strcmp(argv[i], "--p25-force-release-margin") == 0) {                                                      \
+            if (!cli_has_value("--p25-force-release-margin", i, argc, out_exit_rc)) {                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-margin", DSD_PARSE_ARGS_NEXT_ARG(),                    \
                                            opts->p25_force_release_margin_s);                                          \
             char buf[32];                                                                                              \
@@ -1529,7 +1550,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);     \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0) {                                                           \
+            if (!cli_has_value("--p25-p1-err-hold-pct", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-pct", DSD_PARSE_ARGS_NEXT_ARG(),                         \
                                            opts->p25_p1_err_hold_pct);                                                 \
             char buf[32];                                                                                              \
@@ -1538,7 +1562,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);         \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0) {                                                           \
+            if (!cli_has_value("--p25-p1-err-hold-sec", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-sec", DSD_PARSE_ARGS_NEXT_ARG(),                         \
                                            opts->p25_p1_err_hold_s);                                                   \
             char buf[32];                                                                                              \
@@ -1547,23 +1574,38 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {                                                      \
+        if (strcmp(argv[i], "--calc-lcn") == 0) {                                                                      \
+            if (!cli_has_value("--calc-lcn", i, argc, out_exit_rc)) {                                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--calc-step") == 0) {                                                                     \
+            if (!cli_has_value("--calc-step", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_step_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--calc-cc-freq") == 0) {                                                                  \
+            if (!cli_has_value("--calc-cc-freq", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_ccf_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {                                                   \
+        if (strcmp(argv[i], "--calc-cc-lcn") == 0) {                                                                   \
+            if (!cli_has_value("--calc-cc-lcn", i, argc, out_exit_rc)) {                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_ccl_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {                                                \
+        if (strcmp(argv[i], "--calc-start-lcn") == 0) {                                                                \
+            if (!cli_has_value("--calc-start-lcn", i, argc, out_exit_rc)) {                                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -2069,7 +2111,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             m17_signature_public_key_cli = argv[i] + 27;                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--auto-ppm-snr") == 0) {                                                                  \
+            if (!cli_has_value("--auto-ppm-snr", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
                 DSD_CLI_PARSE_DOUBLE_OR_RETURN("--auto-ppm-snr", sv, opts->rtl_auto_ppm_snr_db);                       \
@@ -2933,13 +2978,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-z", optarg, 10, &parsed_pref, out_exit_rc)) {                                 \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int pref = (int)parsed_pref;                                                                               \
-            if (pref < 0) {                                                                                            \
-                pref = 0;                                                                                              \
-            }                                                                                                          \
-            if (pref > 2) {                                                                                            \
-                pref = 2;                                                                                              \
-            }                                                                                                          \
+            const int pref = cli_clamp_long_to_int(parsed_pref, 0, 2);                                                 \
             opts->slot_preference = pref;                                                                              \
             LOG_INFO("NOTICE: Slot preference set: %s\n", (pref == 0 ? "Slot 1" : (pref == 1 ? "Slot 2" : "Auto")));   \
             break;                                                                                                     \
@@ -2959,13 +2998,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-V", optarg, 10, &parsed_v, out_exit_rc)) {                                    \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int v = (int)parsed_v;                                                                                     \
-            if (v < 0) {                                                                                               \
-                v = 0;                                                                                                 \
-            }                                                                                                          \
-            if (v > 3) {                                                                                               \
-                v = 3;                                                                                                 \
-            }                                                                                                          \
+            const int v = cli_clamp_long_to_int(parsed_v, 0, 3);                                                       \
             opts->slot1_on = (v & 1) ? 1 : 0;                                                                          \
             opts->slot2_on = (v & 2) ? 1 : 0;                                                                          \
             if (v == 0) {                                                                                              \
@@ -3611,14 +3644,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-s", optarg, 10, &parsed_sr, out_exit_rc)) {                                   \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int sr = (int)parsed_sr;                                                                                   \
+            const int sr = cli_clamp_long_to_int(parsed_sr, 8000, 192000);                                             \
             int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
-            if (sr < 8000) {                                                                                           \
-                sr = 8000;                                                                                             \
-            }                                                                                                          \
-            if (sr > 192000) {                                                                                         \
-                sr = 192000;                                                                                           \
-            }                                                                                                          \
             dsd_opts_clear_staged_file_sample_rate(opts);                                                              \
             dsd_opts_apply_input_sample_rate(opts, sr);                                                                \
             dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));           \
