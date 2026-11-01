@@ -292,14 +292,11 @@ analog_call_hold(dsd_opts* opts, dsd_state* state, analog_call* call, size_t cou
     (void)analog_call_reconcile(opts, state, call);
 }
 
-/* A RECEPTION block: the call's audio. A confirmed new identity ends the call (held or not) and begins another with
-   this block (D4); a held call otherwise goes on, its pause written first. */
+/* A RECEPTION block, stamped @p now_m: the call's audio. A confirmed new identity ends the call (held or not) and
+   begins another with this block (D4); a held call otherwise goes on, its pause written first. */
 static void
 analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const float* samples, size_t count,
-                    int sample_rate) {
-    /* One decode-clock read, before the block's file work: the block's media stamp is where the call ends, whenever
-       that is decided, and the time a slow disk takes to write a pause or close a recording is not the call's. */
-    const double now_m = dsd_decode_now_mono_s();
+                    int sample_rate, double now_m) {
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, DSD_SYNC_ANALOG, 0, &identity);
     if (call->active && dsd_receive_identity_changed(&call->identity, &identity)) {
@@ -358,6 +355,11 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samp
     if (!opts || !state) {
         return;
     }
+    /* A RECEPTION block's one decode-clock read, before any of its file work on any path: the reconciliation's end, a
+       new identity's end and a resumed call's pause all close or write a recording before the block begins or goes on
+       with a call, and the time a slow disk takes for that is not the call's. The stamp is where the call starts or
+       goes on, and where it ends, whenever that is decided. A held block reads none: the hold runs on sample time. */
+    const double now_m = input == DSD_ANALOG_CALL_RECEPTION ? dsd_decode_now_mono_s() : 0.0;
     analog_call* call = analog_call_get(state);
     if (call && call->active) {
         (void)analog_call_reconcile(opts, state, call);
@@ -374,6 +376,6 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samp
     }
     call = analog_call_ensure(state);
     if (call) {
-        analog_call_receive(opts, state, call, samples, count, sample_rate);
+        analog_call_receive(opts, state, call, samples, count, sample_rate, now_m);
     }
 }

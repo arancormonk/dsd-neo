@@ -1316,6 +1316,69 @@ test_hold_new_identity_starts_at_the_block_stamp(void) {
     hold_close(&r);
 }
 
+/* What ends a held call before the next reception begins one, in test_hold_ends_before_a_begin_keep_its_stamp(). */
+enum {
+    HOLD_END_LOWERED,    /* the max gap lowered below the gap so far: the block's reconciliation ends the call */
+    HOLD_END_OFF,        /* the hold turned off: the same */
+    HOLD_END_UNRECORDED, /* per-call recording off with its file still open: the reconciliation closes it */
+    HOLD_END_STOPPED,    /* per-call recording stopped first, as -P off does: the file closes at the stop */
+    HOLD_END_EPOCH,      /* the epoch moved: the block that carries it ends the call and is not written */
+    HOLD_END_EXPIRED,    /* the pause ran past the max gap: a held block ends the call */
+    HOLD_END_CASES,
+};
+
+static void
+hold_end_before_a_reception(hold_rig* r, int end) {
+    switch (end) {
+        case HOLD_END_LOWERED: r->opts->analog_record_max_gap_ms = 399; break;
+        case HOLD_END_OFF: r->opts->analog_record_max_gap_ms = 0; break;
+        case HOLD_END_UNRECORDED: r->opts->dmr_stereo_wav = 0; break;
+        case HOLD_END_STOPPED:
+            r->opts->dmr_stereo_wav = 0;
+            dsd_engine_analog_call_stop_recording(r->opts, r->state);
+            break;
+        case HOLD_END_EPOCH:
+            r->state->analog_rx.boundaries++;
+            hold_receive(r, 1, 2000);
+            assert(!dsd_engine_analog_call_active(r->state));
+            break;
+        default:
+            hold_closed(r, 31); /* 1020 ms */
+            assert(!dsd_engine_analog_call_active(r->state));
+            break;
+    }
+}
+
+/* On a slow disk, every end of a held call that closes its recording before the next reception begins a call (in that
+   block or before it) leaves the new call's stamps the block's: the close's time is not the call's. The block's stamp
+   was read after the reconciliation that opens the block closed the old recording. */
+static void
+test_hold_ends_before_a_begin_keep_its_stamp(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_hold_end_stamp", 1000);
+    dsd_wav_test_set_io(hold_slow_write, hold_slow_close);
+    for (int end = 0; end < HOLD_END_CASES; end++) {
+        r.opts->dmr_stereo_wav = 1;
+        r.opts->analog_record_max_gap_ms = 1000;
+        hold_receive(&r, 2, 1000);
+        hold_closed(&r, 10); /* 400 ms */
+        hold_end_before_a_reception(&r, end);
+        hold_receive(&r, 1, 3000);
+        const double block_m = hold_now_m(&r);
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, block_m, block_m);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, block_m, block_m);
+        const int recorded = end != HOLD_END_UNRECORDED && end != HOLD_END_STOPPED;
+        hold_files found;
+        hold_take(&r, &found, recorded ? 2 : 1);
+        assert(found.frames[hold_file_starting(&found, 1000)] == 2L * HOLD_BLOCK);
+        assert(!recorded || found.frames[hold_file_starting(&found, 3000)] == HOLD_BLOCK);
+        hold_release(&found);
+    }
+    dsd_wav_test_set_io(NULL, NULL);
+    hold_close(&r);
+}
+
 /* Every end but the hold's resume writes no silence: an explicit end (a scan leave, a retune, Stop: they all end the
    call through dsd_engine_analog_call_end()) and a BREAK (a REJECTED tone) end a held call at its last reception.
    With no call, an end commits nothing. */
@@ -1652,6 +1715,7 @@ test_analog_hold(void) {
     test_hold_tone_checks_age_the_gap();
     test_hold_identity_on_resume();
     test_hold_new_identity_starts_at_the_block_stamp();
+    test_hold_ends_before_a_begin_keep_its_stamp();
     test_hold_ends_without_the_pause();
     test_hold_tick_precedence();
     test_hold_tick_ends_a_moved_epoch();
