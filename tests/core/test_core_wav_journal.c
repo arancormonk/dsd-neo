@@ -793,7 +793,7 @@ test_held_nfm_call_is_one_recording(void) {
     nfm_block(r.opts, r.state);
     nfm_block(r.opts, r.state);
     const uint64_t epoch = call_epoch(&r);
-    static const float closed[960];
+    static const float closed[960] = {0};
     r.state->analog_rx.carrier_open = 0;
     for (int i = 0; i < 10; i++) {
         dsd_engine_analog_call_block(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);

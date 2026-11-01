@@ -253,7 +253,7 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
    precision. A short write latches the segment (dsd_wav_segment_write()), and nothing more reaches it. */
 static void
 analog_call_write_pause(const dsd_opts* opts, analog_call* call) {
-    static const short silence[DSD_ANALOG_SINK_CHUNK];
+    static const short silence[DSD_ANALOG_SINK_CHUNK] = {0};
     const analog_call_recording* rec = &call->rec;
     if (!rec->wav || !rec->spans_pause || !opts->dmr_stereo_wav) {
         return;

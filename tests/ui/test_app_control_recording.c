@@ -1361,7 +1361,7 @@ test_stop_publishes_the_nfm_recording_in_its_folder(void) {
 /* Issue #756: @p blocks blocks after the NFM carrier's hangover, which hold the call (the max gap is on). */
 static void
 nfm_hold(rig* r, int blocks) {
-    static const float closed[960];
+    static const float closed[960] = {0};
     r->state->analog_rx.carrier_open = 0;
     for (int i = 0; i < blocks; i++) {
         dsd_engine_analog_call_block(r->opts, r->state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
