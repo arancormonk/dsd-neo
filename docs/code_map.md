@@ -2061,7 +2061,11 @@ suite runs under this compiler.
   another carrier left), so every frontend shows the same identity and none of another carrier's. Protocol code fills it
   through `dsd_rxid_note_*()` only where a message passed its own check, with that message's own values (Protocols,
   "Received identity note points"); content accepted only because `-F` or RAS relaxed a check keeps decoding and
-  following but is never noted. Each part has a valid and a fresh bit. Threading: the decoder thread owns the record
+  following but is never noted. Each part has a valid and a fresh bit. A DMR site keeps its raw network and site
+  numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
+  text by `dsd_rxid_note_dmr_site()`), and only they tell one site from another: the site text is presentation (it
+  follows `-D`), compared only for a site noted without numbers (`dsd_rxid_note_dmr_site_text()`). Text copies zero
+  their whole field, so equal notes leave equal bytes. Threading: the decoder thread owns the record
   and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because

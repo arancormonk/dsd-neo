@@ -24,6 +24,9 @@
 /* Pinned: the Qt model and the history store compare these. */
 _Static_assert(DSD_RXID_FAMILY_NONE == 0, "family NONE is pinned");
 _Static_assert(DSD_RXID_FAMILY_EDACS == 7, "family EDACS is pinned");
+/* No padding: a whole-record compare (a history row's frozen copy, memcmp) sees only values, and a struct copy leaves no
+   indeterminate bytes. A field added to the record keeps it so, or moves this pin with a reason. */
+_Static_assert(sizeof(dsd_received_identity) == 168U, "dsd_received_identity carries no padding");
 
 static int g_fail;
 
@@ -720,6 +723,197 @@ test_dmr_ras_part(void) {
     free(state);
 }
 
+/* The raw DMR network and site numbers (issue #799): Tier III network 12, site 27, model 1 (Small), with the text the
+   decoder built from them. The numbers are kept as received, the model with them, the text as given. */
+static void
+test_dmr_site_raw_parts_noted(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    static const char text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 4.4 \xC2\xB7 SYS 0A3F";
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, text);
+    expect_u("raw parts", id->valid,
+             DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE);
+    expect_u("raw parts fresh", id->fresh & (DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE),
+             DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE);
+    expect_u("raw net", id->dmr_net, 12U);
+    expect_u("raw site", id->dmr_site, 27U);
+    expect_u("raw model", id->dmr_t3_model, 1U);
+    expect_u("raw trunk", id->dmr_trunk, DSD_RXID_DMR_TRUNK_TIER3);
+    expect_s("raw text", id->dmr_site_text, text);
+
+    /* A note naming no trunking system, or an unknown one, notes nothing. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_NONE, 1, 1U, 2U, 0U, "TIII Small");
+    dsd_rxid_note_dmr_site(state, 9U, 1, 1U, 2U, 0U, "TIII Small");
+    expect_u("no trunking system", id->valid, 0U);
+    dsd_rxid_note_dmr_site(NULL, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 2U, 0U, "TIII Small");
+    free(state);
+}
+
+/* The text is presentation (it follows -D's split): the same raw numbers with another text are the same site. The
+   epoch stays, the text is replaced and what the site named stays. */
+static void
+test_dmr_site_text_change_same_raw_is_same_site(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U,
+                           "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 4.4");
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    const uint32_t epoch = id->epoch;
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U,
+                           "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 27");
+    expect_u("same raw keeps the epoch", id->epoch, epoch);
+    expect_s("same raw replaces the text", id->dmr_site_text, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 27");
+    expect_u("same raw keeps the cc", id->valid & DSD_RXID_CC_FREQ, DSD_RXID_CC_FREQ);
+    /* No text: the raw parts stay, a text built for them before is dropped rather than kept beside them. */
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "");
+    expect_u("no text keeps the epoch", id->epoch, epoch);
+    expect_u("no text drops the text", id->valid, DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_CC_FREQ);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, NULL);
+    expect_u("null text", id->valid, DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_CC_FREQ);
+    free(state);
+}
+
+/* Another raw part than a valid one (site, network, network presence, Tier III model) is another site: the epoch moves
+   and what the old site named (its rest LSN, free channel and control channel) goes with it. A text-only note of
+   another text drops the raw parts with the text. */
+static void
+test_dmr_site_raw_change_invalidates(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 1U, 0U, "Cap+ \xC2\xB7 Site 1");
+    dsd_rxid_note_dmr_rest_lsn(state, 5U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    uint32_t epoch = id->epoch;
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
+    expect_u("another site moves the epoch", id->epoch, epoch + 1U);
+    expect_u("another site drops the rest lsn and cc", id->valid,
+             DSD_RXID_ACCESS | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT);
+    expect_u("another site value", id->dmr_site, 2U);
+    expect_s("another site text", id->dmr_site_text, "Cap+ \xC2\xB7 Site 2");
+
+    /* Tier III: the network, the model and the network's presence each name another site. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "TIII Small");
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    epoch = id->epoch;
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 13U, 27U, 1U, "TIII Small");
+    expect_u("another net moves the epoch", id->epoch, epoch + 1U);
+    expect_u("another net drops the cc", id->valid & DSD_RXID_CC_FREQ, 0U);
+    expect_u("another net value", id->dmr_net, 13U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 13U, 27U, 2U, "TIII Small");
+    expect_u("another model moves the epoch", id->epoch, epoch + 2U);
+    expect_u("another model drops the cc", id->valid & DSD_RXID_CC_FREQ, 0U);
+    expect_u("another model value", id->dmr_t3_model, 2U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 0, 0U, 27U, 2U, "TIII Small");
+    expect_u("a net gone moves the epoch", id->epoch, epoch + 3U);
+    expect_u("a net gone", id->valid, DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 27U, 2U, "TIII Small");
+    expect_u("a net appearing moves the epoch", id->epoch, epoch + 4U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 27U, 2U, "TIII Small");
+    expect_u("a repeat keeps the epoch", id->epoch, epoch + 4U);
+
+    /* A text-only note naming another site: the raw parts were the old site's. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 3U, 5U, 0U,
+                           "Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5");
+    dsd_rxid_note_dmr_site_text(state, "Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5");
+    expect_u("same text keeps the raw parts", id->valid, DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT);
+    epoch = id->epoch;
+    dsd_rxid_note_dmr_site_text(state, "Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 6");
+    expect_u("other text drops the raw parts", id->valid, DSD_RXID_DMR_SITE_TEXT);
+    expect_u("other text moves the epoch", id->epoch, epoch + 1U);
+    free(state);
+}
+
+/* Every lifecycle step that drops a DMR site drops its raw numbers with the text: another colour code on the carrier,
+   the DMR reset command, another trunking subtype, another Tier III system code. */
+static void
+test_dmr_raw_parts_drop_on_access_change_forget_and_subtype(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    const uint32_t raw = DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "TIII Small");
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("access change drops raw parts", id->valid & raw, 0U);
+    expect_u("access change keeps the code", id->valid, DSD_RXID_ACCESS);
+
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "TIII Small");
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+    expect_u("forget drops raw parts", id->valid, DSD_RXID_ACCESS);
+
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "TIII Small");
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    expect_u("subtype switch drops raw parts", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_BRAND);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 3U, 5U, 0U, "Con+");
+    expect_u("raw note of another subtype drops the brand", id->valid, DSD_RXID_ACCESS | raw | DSD_RXID_DMR_SITE_TEXT);
+    expect_u("raw note of another subtype", id->dmr_trunk, DSD_RXID_DMR_TRUNK_CONNECT_PLUS);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, "TIII Small");
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A40U);
+    expect_u("syscode change drops raw parts", id->valid, DSD_RXID_DMR_T3_SYSCODE);
+    free(state);
+}
+
+/* Capacity Plus names a site and no network: only the site part is set, and a model only Tier III has stays 0. */
+static void
+test_capplus_site_has_no_net(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 7U, 9U, 3U, "Cap+ \xC2\xB7 Site 9");
+    expect_u("cap+ site only", id->valid, DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT);
+    expect_u("cap+ site", id->dmr_site, 9U);
+    expect_u("cap+ no net value", id->dmr_net, 0U);
+    expect_u("cap+ no model", id->dmr_t3_model, 0U);
+    expect_u("cap+ trunk", id->dmr_trunk, DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+    free(state);
+}
+
+/* Leaves the bytes below the caller's frame set to @p value, where the next call's locals will sit. */
+static void
+dirty_stack(unsigned char value) {
+    volatile unsigned char junk[512];
+    for (size_t i = 0U; i < sizeof(junk); i++) {
+        junk[i] = value;
+    }
+}
+
+static void
+note_texts(dsd_state* state, unsigned char junk) {
+    DSD_MEMSET(state->rx_id.dmr_site_text, junk, sizeof(state->rx_id.dmr_site_text));
+    DSD_MEMSET(state->rx_id.dmr_brand, junk, sizeof(state->rx_id.dmr_brand));
+    dirty_stack(junk);
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 2");
+    dirty_stack(junk);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dirty_stack(junk);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
+}
+
+/* Equal notes leave equal bytes (F11): a text copy fills its whole field, past the NUL, so whatever the field or the
+   stack held before, a whole-record compare (a history row's frozen copy) sees no change. */
+static void
+test_text_notes_leave_identical_bytes(void) {
+    dsd_state* a = new_state();
+    dsd_state* b = new_state();
+    note_texts(a, 0xAAU);
+    note_texts(b, 0x55U);
+    expect_u("identical notes, identical bytes", (unsigned long)(memcmp(&a->rx_id, &b->rx_id, sizeof(a->rx_id)) == 0),
+             1U);
+    expect_s("site text", a->rx_id.dmr_site_text, "Cap+ \xC2\xB7 Site 2");
+    expect_s("brand", b->rx_id.dmr_brand, "Capacity Plus");
+    free(a);
+    free(b);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -737,6 +931,12 @@ main(void) {
     test_decoder_settings();
     test_invalidation_moves_the_epoch();
     test_dmr_ras_part();
+    test_dmr_site_raw_parts_noted();
+    test_dmr_site_text_change_same_raw_is_same_site();
+    test_dmr_site_raw_change_invalidates();
+    test_dmr_raw_parts_drop_on_access_change_forget_and_subtype();
+    test_capplus_site_has_no_net();
+    test_text_notes_leave_identical_bytes();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {
