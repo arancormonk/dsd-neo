@@ -737,7 +737,12 @@ field, and the decoder refuses the rest when it applies the command.
   Airspy, on a SoapySDR device whose rate is no TETRA rate, or in a
   `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
   running I/Q replay that cannot run the mode; and a CSV that cannot be read.
-  On an I/Q replay the import never tunes, even with a rigctl radio connected.
+  What fails after that is reported as a partial apply naming what did take
+  (`Failed: RR import -> channel map not loaded; mode and talkgroups applied`),
+  and a mode change that fails keeps its own message. On an I/Q replay the
+  import never tunes, even with a rigctl radio connected. Success reads
+  `Applied: RR import (<mode>)`, with what the mode change had to say (a
+  replay's new rate) in place of the reminder to save.
 * **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
   terminal's frequency entry does. It is refused during an I/Q replay and for
   `0`. With single-system P25 trunking on and no scan it selects that control

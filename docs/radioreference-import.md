@@ -271,6 +271,10 @@ Two more limits worth knowing:
   mode, and each CSV file. A refused import changes nothing (the call, a running `-Y` scan, the mode and the
   files all stay, and Config -> Save writes what it would have before), and the status message gives the
   reason, for example `Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`.
+  Something that still fails after that point (a CSV deleted in the meantime, a replay that does not reopen)
+  is reported as a partial apply that names what did take, for example
+  `Failed: RR import -> channel map not loaded; mode and talkgroups applied`. A mode change that fails keeps
+  its own message.
 - An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
   frequency.
 

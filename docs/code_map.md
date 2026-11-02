@@ -3312,8 +3312,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - Invariant: `apply_rr_import()` has one commit point. `rr_apply_preflight()` runs every deterministic check
     before the carrier boundary and the `-Y` leave (mode bound, verdict, next start, the receive profile the mode
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
-    refusal changes nothing. After it, an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer
-    or not
+    refusal changes nothing. After it, a failure is a partial apply (`rr_apply_outcome`, "X not loaded; mode
+    applied"), a failed mode change keeps its own toast, and an I/Q replay never tunes or crosses a receiver-move
+    boundary, rigctl peer or not
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,

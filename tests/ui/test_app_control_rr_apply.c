@@ -1051,6 +1051,48 @@ test_apply_tune_forgets_the_carrier_codes(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_RR_APPLY_WRAP
+/* Main-failing regression (spec §3.3): a channel map that does not load after the commit point is a partial apply that
+   says what took, never "Applied" and never the bare "CSV import" main reported. */
+static int
+test_apply_partial_files(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* chan_csv = "rr_apply_partial_chan.csv";
+    const char* group_csv = "rr_apply_partial_group.csv";
+    rc |= write_text(chan_csv, "ChannelNumber(dec),frequency(Hz),note\n1,851012500,cc\n");
+    rc |= write_text(group_csv, "id,mode,name\n101,A,Dispatch\n");
+    dsd_app_rr_apply_payload p;
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    p.trunking = 1U;
+    payload_files(&p, chan_csv, group_csv);
+
+    g_chan_import_fails = 1;
+    rc |= expect_int("partial queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("partial drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("partial toast", state.ui_msg,
+                     "Failed: RR import -> channel map not loaded; mode and talkgroups applied");
+    rc |= expect_int("partial mode applied", opts.frame_dmr, 1);
+    rc |= expect_str("partial group list applied", opts.group_in_file, group_csv);
+
+    p.has_group = 0U;
+    p.group_path[0] = '\0';
+    rc |= expect_int("partial no group queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("partial no group drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_str("partial no group toast", state.ui_msg, "Failed: RR import -> channel map not loaded; mode applied");
+    g_chan_import_fails = 0;
+
+    (void)remove(chan_csv);
+    (void)remove(group_csv);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* Main-failing regression (spec §10): an import on an I/Q replay never tunes, rigctl peer or not. The capture decides
    the frequency; on main the import crossed a receiver-move boundary (the carrier's codes went) and asked the tuner,
@@ -1152,6 +1194,77 @@ test_apply_replay_replan_refused_before_commit(void) {
     return rc;
 }
 
+/* Main-failing regression (T3): a mode change that fails after the commit point keeps its own toast (the replay
+   reopen's reason, or the rollback's), which main overwrote with "Failed: RR import -> decode mode"; a reopen that
+   left no stream runs the recovery restart once. */
+static int
+test_apply_mode_change_failure_keeps_its_reason(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
+    p.trunking = 1U;
+
+    replay_session(&opts, &state);
+    g_replan_check_verdict = RTL_STREAM_REPLAN_DIFFERS;
+    g_replan_result = SVC_REPLAY_REPLAN_REFUSED;
+    const int mode_before = dsd_infer_decode_mode_preset(&opts);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("reopen refused queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reopen refused drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("reopen tried", g_replan_calls, 1);
+    rc |= expect_str("reopen refused keeps its reason", state.ui_msg,
+                     "Failed: P25 Phase 1 -> the replay did not start at the new rate (see log)");
+    rc |= expect_int("reopen refused keeps the mode", dsd_infer_decode_mode_preset(&opts), mode_before);
+    rc |= expect_int("reopen refused: trunking not applied", opts.trunk_enable, 0);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    replay_session(&opts, &state);
+    g_replan_check_verdict = RTL_STREAM_REPLAN_DIFFERS;
+    g_replan_result = SVC_REPLAY_REPLAN_FAILED;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("reopen failed queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reopen failed drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("recovery restart ran once", g_recovery_calls, 1);
+    rc |= expect_contains("reopen failed keeps the rollback toast", state.ui_msg, "Failed: ");
+    rc |= expect_int("reopen failed is not the bare decode-mode text",
+                     strcmp(state.ui_msg, "Failed: RR import -> decode mode") != 0, 1);
+    rc |= expect_int("reopen failed keeps the mode", dsd_infer_decode_mode_preset(&opts), mode_before);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    reset_replay_script();
+    return rc;
+}
+
+/* Main-failing regression (T3): what the mode change had to say on success (here, the rate the replay was reopened
+   and resampled at) is carried by the import's own toast, which on main replaced it with the reminder to save. */
+static int
+test_apply_success_keeps_the_mode_note(void) {
+    int rc = write_text(k_tetra_group_csv, "id,mode,name\n1001,A,Ops\n");
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    tetra_payload(&p);
+    p.tune_hz = 0U;
+    replay_session(&opts, &state);
+    g_replan_check_verdict = RTL_STREAM_REPLAN_DIFFERS;
+    g_replan_result = SVC_REPLAY_REPLAN_REOPENED;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("reopened queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reopened drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_str("reopened toast", state.ui_msg, "Applied: RR import (TETRA) +trunking; replay resampled to 72 kHz");
+    rc |= expect_int("reopened mode", dsd_infer_decode_mode_preset(&opts), DSDCFG_MODE_TETRA);
+    state.rtl_ctx = NULL;
+    reset_replay_script();
+    freeState(&state);
+    (void)remove(k_tetra_group_csv);
+    return rc;
+}
+
 /* New behaviour (D3): the decoder thread checks a SoapySDR device at the rate the running stream committed, which a
    frontend cannot see. */
 static int
@@ -1238,8 +1351,11 @@ main(void) {
     rc |= test_apply_replay_never_tunes();
 #endif
 #ifdef DSD_NEO_TEST_RR_APPLY_WRAP
+    rc |= test_apply_partial_files();
 #ifdef USE_RADIO
     rc |= test_apply_replay_replan_refused_before_commit();
+    rc |= test_apply_mode_change_failure_keeps_its_reason();
+    rc |= test_apply_success_keeps_the_mode_note();
     rc |= test_apply_tetra_soapy_rate();
 #endif
 #endif
