@@ -674,8 +674,8 @@ Android session whose saved extra arguments carry one refuses to start the same 
   stream, or a rigctl peer (`-U`) behind an audio input; an I/Q replay or a symbol capture stays where it is. A replay
   whose recorded centre is within 8 kHz of the main carrier (the receive chain's tracking range) shows the control
   channel there; one further off, or on another carrier, shows the trunk state as idle, though it still decodes what
-  the capture holds. It waits
-  while a manual tune is still pending or a scan owns the tuner. A move the radio refuses or fails is tried again after
+  the capture holds. The
+  move waits while a manual tune is still pending or a scan owns the tuner. A move the radio refuses or fails is tried again after
   5 seconds, then 15, then every 60; one it defers after 2 seconds. A rigctl peer is taken to be on the frequency
   DSD-neo last sent it, so one already on the main carrier is not moved. Each main carrier is moved to once, so a cell
   whose carriers name each other is not followed back and forth (it logs `[TETRA SM] main carrier Y Hz was moved to once
