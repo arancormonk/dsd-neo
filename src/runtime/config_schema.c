@@ -170,9 +170,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {
         "recording",
         "analog_preroll_ms",
-        "Audio in ms from just before an NFM call that each new recording starts with, only what the tone filter "
-        "allows; "
-        "0 is off",
+        "Audio in ms from just before an NFM call that each new recording starts with, "
+        "only what the tone filter allows; 0 is off",
         DSDCFG_SCHEMA_STR(DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS),
         NULL,
         DSDCFG_TYPE_INT,

@@ -24,7 +24,8 @@ typedef struct {
     size_t head; /* where the next sample goes */
     size_t len;  /* samples held, at most cap */
     /* The setting the ring was last sized for (0: none). A size that could not be allocated is kept too, so it is not
-       tried again, nor logged again, until the setting changes. */
+       tried again, nor logged again, until the pre-roll the options ask for changes: the setting, per-call recording,
+       or a mode in which no NFM call can be (leaving the FM monitor and coming back tries again). */
     int ms;
     /* The CALL_WAV lane's continuity generation the held samples were converted under: they are continuous with the
        lane's next write while it still reads the same. */

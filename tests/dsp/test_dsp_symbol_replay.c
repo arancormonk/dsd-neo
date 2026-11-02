@@ -6095,10 +6095,11 @@ test_level_path_ramp_runs_on_into_the_next_block(void) {
 }
 
 /* Final review M4: the NFM call is handed `heard` only where a block can be its reception, -P and a pre-roll on all the
-   same: the FM monitor without trunking, not the AM monitor nor with trunking on. */
+   same: the FM monitor without trunking, not the AM monitor, a digital mode's source monitor (-8) nor with trunking
+   on. */
 static void
 test_call_heard_only_where_a_call_can_be(void) {
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < 4; c++) {
         static dsd_opts opts;
         static dsd_state state;
         start_b6_case(&opts, &state);
@@ -6106,6 +6107,7 @@ test_call_heard_only_where_a_call_can_be(void) {
         opts.analog_record_preroll_ms = 200;
         opts.analog_demod = c == 1 ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
         opts.trunk_enable = c == 2;
+        opts.analog_only = c == 3 ? 0 : 1;
         const call_block_seen* seen = push_gated_block(&opts, &state, DSD_ANALOG_TONE_GATE_OFF, 3000.0, 0);
         if (seen->has_heard != (c == 0)) {
             DSD_FPRINTF(stderr, "FAIL: heard handed in case %d: %d\n", c, seen->has_heard);
@@ -6113,6 +6115,7 @@ test_call_heard_only_where_a_call_can_be(void) {
         }
         opts.trunk_enable = 0;
         opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts.analog_only = 1;
         finish_b6_case(&opts, &state);
     }
 }

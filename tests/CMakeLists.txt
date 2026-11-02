@@ -19318,6 +19318,14 @@ dsd_neo_add_analog_record_start_test(
     "--analog-scene level-ctcss-short --analog-pcm-tap 8192 -fA --squelch -40 --tone-allow 100.0 --analog-record-min-start-ms 275 --analog-record-min-audio-ms 275"
     1
 )
+# The same without the pre-roll: the burst's recording still starts at the verdict, its
+# first block's silenced head trimmed (B6 at pre-roll 0; before, it started 100 ms
+# early with that head silent, at 185).
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_TONE_SHORT_8K_NO_PREROLL
+    "--analog-scene level-ctcss-short --analog-pcm-tap 8192 -fA --squelch -40 --tone-allow 100.0 --analog-record-preroll-ms 0 --analog-record-min-start-ms 275 --analog-record-max-start-ms 295 --analog-record-min-audio-ms 275"
+    1
+)
 # A 40 ms burst inside a 117 ms block at 8192 Hz opens the level squelch in one tap
 # read while the block's level stays under it: the monitor plays nothing, and the call
 # begins with the burst in its recording.
