@@ -2408,6 +2408,7 @@ test_manual_scan_steps_clear_received_tone(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         init_test_context(&opts, &state);
         opts.scanner_mode = 1;
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
         opts.use_rigctl = 1;
         opts.audio_in_type = AUDIO_IN_PULSE;
         state.lcn_freq_count = 3;
@@ -5402,6 +5403,7 @@ test_scan_avoid_targets_the_row_heard(void) {
     /* Untyped: [A, B, 0 Hz, C], B heard, then the timed step parks on the placeholder. */
     init_test_context(&opts, &state);
     opts.scanner_mode = 1;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
     opts.audio_in_type = AUDIO_IN_RTL;
     state.lcn_freq_count = 4;
     state.trunk_lcn_freq[0] = 851000000L;
@@ -5432,6 +5434,7 @@ test_scan_avoid_targets_the_row_heard(void) {
     g_rigctl_fake_freq_armed = 1;
     g_rigctl_fake_freq_refuse = 0;
     opts.scanner_mode = 1;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
     state.lcn_freq_count = 2;
     state.trunk_lcn_freq[0] = 851375000L;
     state.trunk_lcn_freq[1] = 852375000L;
@@ -5750,6 +5753,11 @@ test_clear_channel_map_leaves_learned_channels_unscanned(void) {
     rc |= expect_true("learned: the visit cap never expires", !dsd_engine_scan_visit_expired(&opts, &state, now_m));
     rc |= expect_true("learned: the voice gate never steps", !dsd_scan_voice_gate_should_step(&opts, &state, now_m));
     rc |= expect_true("learned: no channel is somewhere to go", !dsd_engine_channel_scan_has_other_row(&opts, &state));
+    /* Nor is one to avoid: `b` says why instead of avoiding a channel the scan never visits. */
+    state.lcn_freq_roll = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "learned: avoid");
+    rc |= expect_int("learned: the channel is not avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U), 0);
+    rc |= expect_contains("learned: avoid refused", state.ui_msg, "No channel map: nothing to avoid");
     dsd_app_command_test_set_manual_tune_leg(NULL);
     freeState(&state);
     return rc;

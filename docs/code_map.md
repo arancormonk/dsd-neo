@@ -297,11 +297,12 @@ Generated (do not edit/commit):
     width at the published DSP rate), the -Y side of the trunk-scan candidate filter: a busy row beside rows that are
     all width-skipped keeps its call, and a row whose width fits again, or a list imported later, starts a fresh limit.
     The walk stops at the second reachable row and runs only while the cap is on. The `b` avoid counts the same rows
-    (`dsd_engine_channel_scan_reachable_rows()`) when it refuses to avoid the last one. With no user list the -Y timing
-    tick publishes `DSD_SCAN_STAY_NO_LIST` ("No channel map") with no window, so no frontend counts down to a step that
-    never comes. `-T` hunts are unchanged. Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu()` included),
-    `ENGINE_DMR_CC_RECOVERY` (the frame-sync yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid),
-    `ENGINE_SCAN_VOICE_GATE`, `APP_CONTROL_SCAN_TIMING_VIEW`, `UI_NCURSES_PRINTER_HELPERS`.
+    (`dsd_engine_channel_scan_reachable_rows()`) when it refuses to avoid the last one, and with no user list it avoids
+    nothing ("No channel map: nothing to avoid"). With no user list the -Y timing tick publishes `DSD_SCAN_STAY_NO_LIST`
+    ("No channel map") with no window, so no frontend counts down to a step that never comes. `-T` hunts are unchanged.
+    Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu()` included), `ENGINE_DMR_CC_RECOVERY` (the frame-sync
+    yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid), `ENGINE_SCAN_VOICE_GATE`,
+    `APP_CONTROL_SCAN_TIMING_VIEW`, `UI_NCURSES_PRINTER_HELPERS`.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code

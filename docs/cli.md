@@ -2007,12 +2007,12 @@ is delayed.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
-  later of `-T`/`-Y` wins. For NXDN the hold is refreshed
-  only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
-  `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or an import during the session). With none, at
-  start or after Clear channel map, it stays on its frequency until one is imported: channels a DMR site announces
-  over the air are recorded, but `-Y` never steps to them, and neither the voice gate nor `--scan-max-visit-ms` ends a
-  reception on their account. The Scan Timing row reads `No channel map` meanwhile, with no countdown.
+  later of `-T`/`-Y` wins. For NXDN the hold is refreshed only by frames whose content passed a CRC, so an open squelch
+  on an empty channel no longer parks the scan. `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or
+  an import during the session). With none, at start or after Clear channel map, it stays on its frequency until one is
+  imported: channels a DMR site announces over the air are recorded, but `-Y` never steps to them, and neither the voice
+  gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan Timing row reads `No channel map`
+  meanwhile, with no countdown.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
@@ -2061,11 +2061,12 @@ is delayed.
   or the configured NFM width (16 kHz by default; on audio input with a rigctl peer, `-B` stands in for an unset one),
   and an `am` row the AM monitor at its own `--am-bandwidth-hz` width or the configured AM width (6 kHz by default),
   switching the receiver between the FM monitor, the AM monitor and the digital decoder at each row without reopening
-  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o
-  null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to
-  an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take
-  effect at the first scheduled row entry, including manual `L` and `J` steps. Existing dwell and voice-hold defaults
-  remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may change.
+  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played:
+  `-o null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies
+  to an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes
+  take effect at the first scheduled row entry, including manual `L` and `J` steps. Existing dwell and voice-hold
+  defaults remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may
+  change.
   Global mode and modulation commands update the saved configuration, and exiting scanning restores it. Blank-mode rows
   retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning releases the row's
   decoder and keys. Manual `L` and `J` skip zero-frequency placeholders, while automatic scanning continues to park on

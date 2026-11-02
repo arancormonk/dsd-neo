@@ -7858,6 +7858,11 @@ scan_avoid_lcn_total(const dsd_opts* opts, const dsd_state* state) {
    failed tune can leave the receiver on one) is left as it is, with no step (issue #672 B4). */
 static void
 apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
+    /* Channels learned over the air are never scanned (issue #697), so with no channel map there is nothing to avoid. */
+    if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        ui_set_toast(state, 3, "No channel map: nothing to avoid");
+        return;
+    }
     const int row = dsd_engine_channel_scan_on_air_row(state);
     const long freq = row >= 0 ? *dsd_state_trunk_lcn_slot(state, row) : 0L;
     if (freq == 0) {

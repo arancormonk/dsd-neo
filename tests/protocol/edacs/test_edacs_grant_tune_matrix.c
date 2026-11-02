@@ -92,6 +92,7 @@ static int g_skip_dibit_count = 0;
 static long g_last_vc_freq = 0;
 static long g_last_cc_freq = 0;
 static long g_rigctl_current_freq = 0;
+static int g_rigctl_freq_queries = 0;
 static int g_tcp_read_count = 0;
 static int g_tcp_close_count = 0;
 static int g_tcp_fail_at = -1;
@@ -347,6 +348,7 @@ edacs_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_s
 static long int
 edacs_hook_get_current_freq_hz(const dsd_opts* opts) {
     (void)opts;
+    g_rigctl_freq_queries++;
     return g_rigctl_current_freq;
 }
 
@@ -836,6 +838,7 @@ edacs_setup_fixture(const edacs_grant_case* test_case) {
     g_last_vc_freq = 0;
     g_last_cc_freq = 0;
     g_rigctl_current_freq = 0;
+    g_rigctl_freq_queries = 0;
 }
 
 static void
@@ -862,6 +865,7 @@ edacs_setup_state_fixture(int ea_mode) {
     g_last_vc_freq = 0;
     g_last_cc_freq = 0;
     g_rigctl_current_freq = 0;
+    g_rigctl_freq_queries = 0;
     edacs_install_hooks();
 }
 
@@ -1299,6 +1303,37 @@ edacs_run_standard_state_cases(void) {
     eot_cc(&g_opts, &g_state);
     rc |= edacs_expect(g_cc_tune_count == 1 && g_last_cc_freq == 856012500L, "standard-site-id-user-list-trunked",
                        "state", "end of call returns to the learned control channel");
+
+    /* The same during an I/Q replay whose capture recorded a retune: the control channel is the centre being decoded,
+       not the capture's opening one. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    g_opts.iq_replay_center_freq = 857012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.trunk_cc_freq == 857012500L && g_state.trunk_lcn_freq[12] == 0,
+                       "standard-site-id-user-list-replay", "state", "control channel is the replay's tuned centre");
+
+    /* A rigctl peer and no radio input: the control channel's frequency is a query on the decoder thread, asked once
+       for that control channel, not at every site message on the same carrier. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.use_rigctl = 1;
+    g_rigctl_current_freq = 855262500L;
+    for (int message = 0; message < 3; message++) {
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(12, 1, 0x12, 0), 0);
+    }
+    rc |= edacs_expect(g_state.trunk_cc_freq == 855262500L && g_state.trunk_lcn_freq[11] == 0,
+                       "standard-site-id-user-list-rigctl", "state", "control channel learned from the rigctl peer");
+    rc |= edacs_expect(g_rigctl_freq_queries == 1, "standard-site-id-user-list-rigctl", "state",
+                       "one frequency query for the control channel");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, 1010),
