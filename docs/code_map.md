@@ -4079,16 +4079,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   is `dsd_app_scan_avoid_remove_payload`: LCN `(instance, list_rev, row, frequency_hz)`, trunk scan
   `(session, target_id)`. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
-  `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the
-  user config file's reads and writes the terminal's Config menu asks for, so menu callbacks and actions do no file
-  I/O: `dsd_app_config_load_submit()` reads a file and submits it as a loaded file's apply (autosave on, to that
-  file), `dsd_app_config_load_profile_submit()` reads the base config with `[profile.NAME]` on top (autosave off),
-  `dsd_app_config_list_profiles()` lists the profiles, and `dsd_app_config_save()` writes the config a snapshot pair
-  holds (`dsd_snapshot_opts_to_user_config()`, atomic save) and, when asked, makes the written file the autosave
-  (`DSD_APP_CMD_CONFIG_METADATA_SET`). They run on the caller's (UI) thread; the menu keeps the prompts, the default
-  path and every status message. Tests: `APP_CONTROL_CONFIG_FILES` (real files), `UI_MENU_CALLBACKS`,
-  `UI_MENU_ACTIONS` (neither defines a `dsd_user_config_*` reader or writer, so a menu file access would not link),
-  `HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
+  config file's reads and writes the terminal's Config menu asks for, so menu callbacks and actions do no file I/O:
+  `dsd_app_config_load_submit()` reads a file and submits it as a loaded file's apply (autosave on, to that file),
+  `dsd_app_config_load_profile_submit()` reads the base config with `[profile.NAME]` on top (autosave off),
+  `dsd_app_config_list_profiles()` lists the profiles, `dsd_app_config_save()` writes the config a snapshot pair holds
+  (`dsd_snapshot_opts_to_user_config()`, atomic save) and, when asked, makes the written file the autosave
+  (`DSD_APP_CMD_CONFIG_METADATA_SET`), and `dsd_app_config_default_missing()` answers the menu-open hint (a default path
+  with no file there). A load the queue refuses returns -1, so the menu says it failed. They run on the caller's (UI)
+  thread; the menu keeps the prompts, the default path and every status message. Tests: `APP_CONTROL_CONFIG_FILES` (real
+  files), `UI_MENU_CALLBACKS`, `UI_MENU_ACTIONS` (neither defines a `dsd_user_config_*` reader or writer, so a menu file
+  access would not link), `HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
   scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`
@@ -9130,9 +9131,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `dsd_app_get_latest_opts_snapshot()` and `dsd_app_get_latest_snapshot()` once at the start of each frame
     (`ui_run_frame()`), and that pair goes to `dsd_terminal_handle_input()`, `ui_menu_handle_key()`, `ui_menu_tick()`
     and the draw; both accessors refresh the single consumer's buffers in place, so nothing else under
-    `src/ui/terminal/` acquires (labels, predicates, actions, callbacks, the receive editor, the RadioReference panel
-    and wizard read the `UiCtx` pair or a pair handed to them; `UI_TERMINAL_SNAPSHOT_AUDIT`,
-    `cmake/terminal_snapshot_audit.cmake`, allows each accessor once, in that helper). `UiCtx`, the `ui_menu_*` entry
+    `src/ui/terminal/` acquires: labels, predicates, actions, callbacks, the receive editor, the RadioReference panel
+    and wizard read the `UiCtx` pair or a pair handed to them, and the receiver's metrics are read with
+    `dsd_app_frontend_get_metrics_for_snapshot()` and that pair on the key and render paths alike (menu rows, the
+    spectrum keys, the printer, visualizers, P25 and DSP panels, the SNR readout), never with
+    `dsd_app_frontend_get_metrics()` or `_with_snr_fallbacks()`, which acquire on their own.
+    `UI_TERMINAL_SNAPSHOT_AUDIT` (`cmake/terminal_snapshot_audit.cmake`) allows each accessor once, in that helper, and
+    refuses the two self-acquiring metrics readers anywhere under `src/ui/terminal/`. `UiCtx`, the `ui_menu_*` entry
     points, `dsd_terminal_handle_input()` and `rr_panel_open_import/library/tick()` take const pointers, so no write
     through them compiles. `menu_core.c`'s one `UiCtx` is updated at every entry point, so a prompt or chooser answered
     frames later reads the frame it runs in, and contexts that outlive a frame hold owned copies (`ProfileSelCtx` keeps
@@ -9142,12 +9147,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. Before the
     first publication (runtime start publishes before the UI thread exists, so practically never) the frame's state is
     NULL: only Quit is handled, neither the menu nor the `=` overlay opens, nothing is drawn, and the frame's options
-    fall back to those `ui_start()` was handed, read in `ui_async.c` only to tell whether curses runs and keys are read.
-    Tests: `UI_ASYNC_LIFECYCLE` (the pair each entry point gets; a publication inside the key handling changes nothing
-    the frame's tick and draw read), `UI_HOTKEYS_REGRESSION` (Quit alone without a state), `UI_MENU_NAVIGATION` (no open
-    before a publication; a deferred callback across a publication and a restart), `UI_MENU_RECEIVE`, `UI_MENU_LABELS`,
-    `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_RR_WIZARD`, `UI_RR_PANEL_KEYS` (none of these test targets defines a
-    snapshot accessor), `UI_TERMINAL_SNAPSHOT_AUDIT`.
+    are a UI-owned copy of the start-time fields `ui_start()` took (frontend kind, input type, wheel setting), so the UI
+    thread never reads the decoder's live structs. Opening the menu asks `dsd_app_config_default_missing()` whether to
+    hint at saving a default config; the menu itself does no file I/O. Tests: `UI_ASYNC_LIFECYCLE` (the pair each entry
+    point gets, the start-time copy, one acquisition of each per frame, a publication inside the key handling changes
+    nothing the frame's tick and draw read), `UI_MENU_LABELS_RADIO` (a metrics predicate and label across a mid-frame
+    publication: no acquisition, the frame's pair), `UI_HOTKEYS_REGRESSION` (Quit alone without a state; the spectrum
+    keys' metrics pair), `UI_MENU_NAVIGATION` (no open before a publication; a deferred callback across a publication
+    and a restart; the default-config hint), `UI_MENU_RECEIVE`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`,
+    `UI_MENU_CALLBACKS`, `UI_RR_WIZARD`, `UI_RR_PANEL_KEYS` (none of these test targets defines a snapshot accessor),
+    `UI_SNR_READOUT`, `UI_TERMINAL_SNAPSHOT_AUDIT`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity

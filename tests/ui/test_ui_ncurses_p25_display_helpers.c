@@ -120,7 +120,11 @@ assert_capture_lines_fit(int max_cols) {
 }
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     *out = g_frontend_metrics;
     return 0;
 }
@@ -912,7 +916,7 @@ static void
 run_radio_health_cases(void) {
     DSD_MEMSET(&g_frontend_metrics, 0, sizeof(g_frontend_metrics));
     reset_printw_capture();
-    assert(ui_print_p25_radio_health(1, 0) == 0);
+    assert(ui_print_p25_radio_health(NULL, NULL, 1, 0) == 0);
     assert(g_printw_capture_len == 0U);
 
     /* The radio stream keeps these counters for every SDR backend, not only RTL-SDR. */
@@ -925,11 +929,11 @@ run_radio_health_cases(void) {
     g_frontend_metrics.decode_health.p25p2_sacch_err = 3U;
     g_frontend_metrics.decode_health.p25p2_voice_err = 6U;
     reset_printw_capture();
-    assert(ui_print_p25_radio_health(1, 0) == 1);
+    assert(ui_print_p25_radio_health(NULL, NULL, 1, 0) == 1);
     assert_capture_contains("| Radio Health: P1 FEC 7/2 P2 FACCH 5/1 SACCH 4/3 VERR 6\n");
 
     reset_printw_capture();
-    assert(ui_print_p25_radio_health(0, 0) == 0);
+    assert(ui_print_p25_radio_health(NULL, NULL, 0, 0) == 0);
     assert(g_printw_capture_len == 0U);
     DSD_MEMSET(&g_frontend_metrics, 0, sizeof(g_frontend_metrics));
 }

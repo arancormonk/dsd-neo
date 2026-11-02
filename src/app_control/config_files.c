@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -40,9 +41,9 @@ dsd_app_config_load_submit(const char* path) {
         return -1;
     }
     /* The decoder says whether it loaded: "Config loaded from ..." or "Config not applied: ...". */
-    (void)dsd_app_command_load_config(load);
+    const int submitted = dsd_app_command_load_config(load);
     free(load);
-    return 0;
+    return submitted > 0 ? 0 : -1;
 }
 
 int
@@ -59,9 +60,9 @@ dsd_app_config_load_profile_submit(const char* path, const char* profile) {
         return -1;
     }
     /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
-    (void)dsd_app_command_load_config(load);
+    const int submitted = dsd_app_command_load_config(load);
     free(load);
-    return 0;
+    return submitted > 0 ? 0 : -1;
 }
 
 int
@@ -71,6 +72,28 @@ dsd_app_config_list_profiles(const char* path, const char** names, char* names_b
         return -1;
     }
     return dsd_user_config_list_profiles(path, names, names_buf, names_buf_size, max_names);
+}
+
+int
+dsd_app_config_default_missing(char* path, size_t path_size) {
+    if (!path || path_size == 0U) {
+        return 0;
+    }
+    path[0] = '\0';
+    const char* def = dsd_user_config_default_path();
+    if (!def || !*def) {
+        return 0;
+    }
+    dsd_stat_t st;
+    if (dsd_stat_path(def, &st) == 0) {
+        return 0;
+    }
+    const int n = DSD_SNPRINTF(path, path_size, "%s", def);
+    if (n < 0 || (size_t)n >= path_size) {
+        path[0] = '\0';
+        return 0;
+    }
+    return 1;
 }
 
 int

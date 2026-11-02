@@ -193,7 +193,7 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(&metrics);
+        (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
         /* RTL direct symbol paths feed one decoded symbol per sample; report the configured profile rate. */
         if ((metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK
              || metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR)
@@ -369,7 +369,7 @@ ui_row_analog_channel_field(ui_row* row, const dsd_opts* opts, const dsd_state* 
     dsd_frontend_metrics metrics;
     const dsd_frontend_metrics* running = NULL;
     if (dsd_opts_input_is_radio(opts)) {
-        (void)dsd_app_frontend_get_metrics(&metrics);
+        (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
         running = &metrics;
     }
     dsd_app_analog_width_view view;
@@ -525,14 +525,15 @@ ui_row_gain_value_field(ui_row* row, int is_auto, int db) {
 }
 
 static void
-ui_row_rtl_gain_field(ui_row* row, const dsd_opts* opts) {
+ui_row_rtl_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
 #ifndef USE_RADIO
+    (void)state;
     ui_row_gain_value_field(row, opts->rtl_gain_value == 0, opts->rtl_gain_value);
 #else
     /* Show applied tuner gain when available (actual driver value),
        otherwise fall back to requested value. */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     if (metrics.tuner_gain_valid) {
         ui_row_gain_value_field(row, metrics.tuner_gain_is_auto, ui_tenth_db_to_db(metrics.tuner_gain_tenth_db));
     } else {
@@ -542,9 +543,9 @@ ui_row_rtl_gain_field(ui_row* row, const dsd_opts* opts) {
 }
 
 static void
-ui_row_rtl_ppm_field(ui_row* row) {
+ui_row_rtl_ppm_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     char ppm[16];
     ui_row_field(row, " PPM: %s;", ui_num(ppm, sizeof ppm, (double)metrics.requested_ppm, 4, 0, 0));
 }
@@ -573,13 +574,15 @@ ui_print_rtl_auto_ppm_status_values(int enabled, int locked, int locked_ppm, dou
 }
 
 static void
-ui_print_rtl_auto_ppm_status(void) {
+ui_print_rtl_auto_ppm_status(const dsd_opts* opts, const dsd_state* state) {
 #ifndef USE_RADIO
+    (void)opts;
+    (void)state;
     ui_print_rtl_auto_ppm_status_values(0, 0, 0, -100.0, 0.0, 0);
 #else
     /* Show carrier/error-based auto PPM status snapshot */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     ui_print_rtl_auto_ppm_status_values(metrics.auto_ppm_enabled, metrics.auto_ppm_locked, metrics.auto_ppm_locked_ppm,
                                         metrics.auto_ppm_snr_db, metrics.auto_ppm_df_hz, metrics.auto_ppm_step_dir);
 #endif
@@ -606,8 +609,8 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         } else {
             ui_row_field(&row, "| RTL: %d;", opts->rtl_dev_index);
         }
-        ui_row_rtl_gain_field(&row, opts);
-        ui_row_rtl_ppm_field(&row);
+        ui_row_rtl_gain_field(&row, opts, state);
+        ui_row_rtl_ppm_field(&row, opts, state);
         ui_row_field(&row, " Mon: %dX;", opts->rtl_volume_multiplier);
         ui_row_field(&row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
         /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in MHz to the Hz in the
@@ -624,7 +627,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         }
         ui_row_end(&row);
         ui_render_channel_row(opts, state);
-        ui_print_rtl_auto_ppm_status();
+        ui_print_rtl_auto_ppm_status(opts, state);
         if (!soapy_input && opts->rtl_udp_port != 0) {
             printw("| External RTL Tuning on UDP: %s:%i\n", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
         }
@@ -1480,7 +1483,7 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
         }
         ui_print_header(title);
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(&metrics);
+        (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
         ui_print_rtl_visual_aids_controls(opts, metrics.spectrum_size);
         ui_render_rtl_visual_aid_panels(opts, state);
     }
@@ -1570,7 +1573,7 @@ ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
     /* Demod SNR (per modulation) */
 #ifdef USE_RADIO
     {
-        ui_snr_readout snr = ui_snr_readout_for_mod(state->rf_mod);
+        ui_snr_readout snr = ui_snr_readout_for_mod(opts, state, state->rf_mod);
         const char* m = snr.mod_label;
         if (snr.valid) {
             /* Show current SNR as a compact, colorized meter */

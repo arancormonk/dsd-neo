@@ -826,7 +826,7 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
     }
     /* Audio input takes a level or noise (issue #628): an auto setting, or noise on an am row, does not run there, so
        the prompt offers what does run: off. */
-    const UiCtx* c = (const UiCtx*)u;
+    const UiCtx* c = ui_ctx_from_action(u);
     if (dsd_squelch_input_kind(c ? c->opts : NULL) == DSD_SQUELCH_INPUT_AUDIO) {
         if (strncmp(text, "auto", 4) == 0) {
             DSD_SNPRINTF(text, sizeof text, "%s", "off");
@@ -961,7 +961,7 @@ scope_capture(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*open_default)(void*)) {
-    const UiCtx* c = (const UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     const dsd_opts* opts = c->opts;
     const dsd_state* state = c->state;
     dsd_app_scan_row_view view;
@@ -1033,7 +1033,8 @@ is_analog_width_editable(const void* v, int kind) {
         return false;
     }
     dsd_frontend_metrics metrics;
-    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
+    const dsd_frontend_metrics* running =
+        dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U) == 0 ? &metrics : NULL;
     dsd_app_analog_width_view view;
     if (dsd_app_analog_width_view_get(c->opts, c->state, running, &view) != 0) {
         return false;
@@ -1075,8 +1076,8 @@ cb_am_bw(void* u, int ok, int hz) {
 /* The scope chooser's title for the width of @p kind: its passband on audio input with a rigctl peer (issue #621), from
    the frame's snapshot pair (@p v, the menu's context) the chooser captures, as its this-channel prompt reads it. */
 static const char*
-width_scope_title(const void* v, int kind) {
-    const UiCtx* c = (const UiCtx*)v;
+width_scope_title(void* v, int kind) {
+    const UiCtx* c = ui_ctx_from_action(v);
     dsd_app_analog_width_view view;
     (void)dsd_app_analog_width_view_get(c ? c->opts : NULL, c ? c->state : NULL, NULL, &view);
     return width_titles_of(kind, view.peer_passband)->chooser;
@@ -2024,7 +2025,7 @@ void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     ui_prompt_open_int_async("PPM error (-200..200)", metrics.requested_ppm, cb_rtl_ppm, c);
 }
 
@@ -2320,7 +2321,7 @@ act_decode_mode(void* v) {
    operator never typed. */
 static void
 cb_iq_dc_k(void* u, int ok, int k) {
-    UNUSED(u);
+    const UiCtx* c = ui_ctx_from_action(u);
     if (!ok) {
         return;
     }
@@ -2330,8 +2331,9 @@ cb_iq_dc_k(void* u, int ok, int k) {
     if (k > 15) {
         k = 15;
     }
+    /* The frame this answer arrives in (the menu's context). */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     const int delta = k - metrics.iq_dc_shift_k;
     if (delta == 0) {
         return;
@@ -2342,10 +2344,10 @@ cb_iq_dc_k(void* u, int ok, int k) {
 
 void
 act_iq_dc_k_prompt(void* v) {
-    UNUSED(v);
+    const UiCtx* c = ui_ctx_from_action(v);
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
-    ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, NULL);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
+    ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, v);
 }
 
 /* 10, not 1: DSD_APP_DSP_OP_TED_GAIN_SET clamps there, so a lower bound of 1 in
@@ -2368,9 +2370,9 @@ cb_ted_gain(void* u, int ok, int milli) {
 
 void
 act_ted_gain_prompt(void* v) {
-    UNUSED(v);
+    const UiCtx* c = ui_ctx_from_action(v);
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     const int milli = (int)(metrics.ted_gain * 1000.0f + 0.5f);
     ui_prompt_open_int_async("CQPSK timing gain (x0.001, 10..500)", milli, cb_ted_gain, NULL);
 }

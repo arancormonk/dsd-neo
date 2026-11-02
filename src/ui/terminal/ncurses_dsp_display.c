@@ -113,9 +113,9 @@ dsp_status_mod_label(int mod) {
 }
 
 static void
-dsp_status_capture(dsp_status_snapshot* snap, const dsd_state* state) {
+dsp_status_capture(dsp_status_snapshot* snap, const dsd_opts* opts, const dsd_state* state) {
     DSD_MEMSET(snap, 0, sizeof(*snap));
-    (void)dsd_app_frontend_get_metrics(&snap->metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &snap->metrics, 0U);
     snap->cq = snap->metrics.cqpsk_enable;
     snap->cq_timing = snap->metrics.cqpsk_timing_active;
     snap->iqb = snap->metrics.iq_balance;
@@ -204,7 +204,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
 
     dsp_status_snapshot snap;
-    dsp_status_capture(&snap, state);
+    dsp_status_capture(&snap, opts, state);
 
     ui_print_header("DSP");
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */

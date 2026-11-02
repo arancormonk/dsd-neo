@@ -1509,9 +1509,8 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
  * Reads the frame's published snapshot (RrWizardHooks.session_opts), never the
  * live struct: the decoder thread rewrites opts->chan_in_file / group_in_file
  * under no lock and the terminal UI runs on its own thread. The snapshot may be
- * NULL and may lag one publish
- * behind, so a file imported moments ago may not be visible yet - the refresh
- * still succeeds, it just does not push.
+ * NULL and may lag one publish behind, so a file imported moments ago may not
+ * be visible yet - the refresh still succeeds, it just does not push.
  *
  * @return 1 when the command was posted, 0 otherwise.
  */

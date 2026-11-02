@@ -25,7 +25,7 @@ extern "C" {
  * @brief Start the async UI subsystem (spawns UI thread).
  * @return 0 on success or when already running; negative on failure.
  */
-int ui_start(dsd_opts* opts, const dsd_state* state);
+int ui_start(const dsd_opts* opts, const dsd_state* state);
 
 /** @brief Stop the async UI subsystem and join the UI thread. */
 void ui_stop(void);
@@ -39,7 +39,7 @@ void ui_stop(void);
 int ui_is_thread_context(void);
 
 #ifdef DSD_NEO_TEST_HOOKS
-void dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state);
+void dsd_neo_ui_async_test_set_context(const dsd_opts* opts, const dsd_state* state);
 const dsd_opts* dsd_neo_ui_async_test_opts_snapshot_or_default(void);
 int dsd_neo_ui_async_test_curses_is_active(const dsd_opts* opts);
 int dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts);

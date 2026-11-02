@@ -661,13 +661,13 @@ ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p
 }
 
 static int
-ui_print_p25_radio_health(int is_p25p1, int is_p25p2) {
+ui_print_p25_radio_health(const dsd_opts* opts, const dsd_state* state, int is_p25p1, int is_p25p2) {
 #ifdef USE_RADIO
     if (!is_p25p1 && !is_p25p2) {
         return 0;
     }
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     const dsd_frontend_decode_health* health = &metrics.decode_health;
     if (!health->valid) {
         return 0;
@@ -677,6 +677,8 @@ ui_print_p25_radio_health(int is_p25p1, int is_p25p2) {
            health->p25p2_sacch_err, health->p25p2_voice_err);
     return 1;
 #else
+    UNUSED(opts);
+    UNUSED(state);
     UNUSED(is_p25p1);
     UNUSED(is_p25p2);
     return 0;
@@ -1110,7 +1112,7 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     lines += ui_print_p25_core_metrics(state, is_p25p1, is_p25p2);
     lines += ui_print_p25p2_metrics(opts, state, is_p25p1, is_p25p2);
-    lines += ui_print_p25_radio_health(is_p25p1, is_p25p2);
+    lines += ui_print_p25_radio_health(opts, state, is_p25p1, is_p25p2);
     lines += ui_print_p25_trunk_metrics(opts, state);
     lines += ui_print_p25p2_slot_metrics(opts, state, is_p25p2);
     lines += ui_print_p25p1_sm_metrics(opts, state, is_p25p1);

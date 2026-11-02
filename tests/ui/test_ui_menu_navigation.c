@@ -14,8 +14,11 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -262,14 +265,30 @@ assert_last_action(const char* want) {
     assert(strcmp(g_last_action, want) == 0);
 }
 
+static char g_status[160];
+
+void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
+
 void
 ui_statusf(const char* fmt, ...) {
-    (void)fmt;
+    va_list ap;
+    va_start(ap, fmt);
+    (void)DSD_VSNPRINTF(g_status, sizeof g_status, fmt, ap);
+    va_end(ap);
 }
 
-const char*
-dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
-    return "";
+/* The config service's look at the default file (issue #672): the menu asks it and does no I/O itself. */
+static const char* g_default_missing_path = NULL;
+static int g_default_missing_calls = 0;
+
+int
+dsd_app_config_default_missing(char* path, size_t path_size) { // NOLINT(misc-use-internal-linkage)
+    g_default_missing_calls++;
+    if (!g_default_missing_path || path_size == 0U) {
+        return 0;
+    }
+    DSD_SNPRINTF(path, path_size, "%s", g_default_missing_path);
+    return 1;
 }
 
 void
@@ -862,6 +881,26 @@ main(void) {
     ui_menu_tick(opts, state);
     assert(g_draw_menu_calls == 1);
     g_prompt_closes_on_key = 0;
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* Issue #672: opening the menu asks the config service whether the default config is still to be written and
+       says so; with one on disk (or no default path) it says nothing. */
+    ui_menu_handle_key(27, opts, state);
+    g_fixture = 0;
+    g_status[0] = '\0';
+    g_default_missing_calls = 0;
+    g_default_missing_path = "/home/u/.config/dsd-neo/config.ini";
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(g_default_missing_calls == 1);
+    assert(strcmp(g_status, "No default config; use Config menu to save to /home/u/.config/dsd-neo/config.ini") == 0);
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    g_status[0] = '\0';
+    g_default_missing_path = NULL;
+    ui_menu_open_async(opts, state);
+    assert(g_default_missing_calls == 2);
+    assert(g_status[0] == '\0');
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
 

@@ -6,7 +6,11 @@
 # accessors refresh the single consumer's buffers in place, so any other call
 # under src/ui/terminal/ (a label, an action, a callback, the RadioReference
 # panel) would change what the rest of that frame reads. This audit allows each
-# accessor exactly once, inside that helper.
+# accessor exactly once, inside that helper. The frontend metrics readers that
+# acquire on their own (dsd_app_frontend_get_metrics() and
+# dsd_app_frontend_get_metrics_with_snr_fallbacks()) are refused everywhere:
+# the terminal reads metrics with dsd_app_frontend_get_metrics_for_snapshot()
+# and the frame's pair.
 
 get_filename_component(_DSD_NEO_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
@@ -18,6 +22,9 @@ file(
 )
 
 set(_DSD_NEO_ACCESSOR_RE "dsd_app_get_latest_(opts_)?snapshot[ \t]*\\(")
+set(_DSD_NEO_INDIRECT_RE
+    "dsd_app_frontend_get_metrics(_with_snr_fallbacks)?[ \t]*\\("
+)
 set(_DSD_NEO_FRAME_FILE "src/ui/terminal/ui_async.c")
 set(_DSD_NEO_HELPER_START_RE "^ui_frame_acquire\\(void\\) \\{$")
 
@@ -35,6 +42,13 @@ foreach(_DSD_NEO_FILE IN LISTS _DSD_NEO_TERMINAL_FILES)
             elseif(_DSD_NEO_IN_HELPER AND _DSD_NEO_LINE MATCHES "^\\}")
                 set(_DSD_NEO_IN_HELPER FALSE)
             endif()
+        endif()
+        if(_DSD_NEO_LINE MATCHES "${_DSD_NEO_INDIRECT_RE}")
+            string(STRIP "${_DSD_NEO_LINE}" _DSD_NEO_INDIRECT)
+            string(
+                APPEND _DSD_NEO_AUDIT_FAILURES
+                "\n  ${_DSD_NEO_REL}: ${_DSD_NEO_INDIRECT}"
+            )
         endif()
         if(NOT _DSD_NEO_LINE MATCHES "${_DSD_NEO_ACCESSOR_RE}")
             continue()

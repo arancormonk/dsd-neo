@@ -128,8 +128,16 @@ dsd_app_command_set_float(int cmd_id, float value) { // NOLINT(misc-use-internal
     return capture_command(cmd_id, &value, sizeof value);
 }
 
+/* The spectrum keys read the receiver's metrics from the frame's pair (issue #672, B9); no snapshot is acquired. */
+static const dsd_opts* g_metrics_opts;
+static const dsd_state* g_metrics_state;
+
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
+    g_metrics_opts = opts;
+    g_metrics_state = state;
+    (void)snr_fallbacks;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->spectrum_size = 256;
     return 0;
@@ -264,8 +272,8 @@ main(void) {
     assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_MUTE_LOWER) == 1);
     assert(g_cap.calls == 0);
 
-    /* Issue #672 (B9): before the first publication (no state snapshot) the keys read no decoder struct, and Quit is the
-       one key that still works: Enter opens no menu, '=' no frequency entry, the TG hold keys hold nothing. */
+    /* Issue #672 (B9): before the first publication (no state snapshot) the keys read no decoder struct, and Quit is
+       the one key that still works: Enter opens no menu, '=' no frequency entry, the TG hold keys hold nothing. */
     cap_reset();
     g_menu_open = 0;
     g_menu_open_async_calls = 0;
@@ -576,10 +584,13 @@ main(void) {
 
     /* The spectrum FFT size keys halve and double the running size on every radio backend. */
     cap_reset();
+    g_metrics_opts = NULL;
+    g_metrics_state = NULL;
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SPEC_DEC) == 1);
     assert(g_cap.calls == 1);
     assert(g_cap.id == DSD_APP_CMD_SPEC_SIZE_DELTA);
     assert(cap_i32() == -128);
+    assert(g_metrics_opts == opts && g_metrics_state == state);
 
     cap_reset();
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SPEC_INC) == 1);

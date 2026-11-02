@@ -203,9 +203,10 @@ rr_key_prompt_offered_and_feature(const void* ctx) {
 #ifdef USE_RADIO
 static dsd_frontend_metrics
 menu_frontend_metrics(const void* v) {
-    (void)v;
+    /* The frame's pair, never a fresh acquisition mid-frame (issue #672, B9). */
+    const UiCtx* c = (const UiCtx*)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c ? c->opts : NULL, c ? c->state : NULL, &metrics, 0U);
     return metrics;
 }
 
@@ -1088,8 +1089,9 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
 /* The CTCSS/DCS receive policy (issue #527), read as the Call Info line and the Qt monitor read it (the shared
    received-tone view): "off", or the mode and its list, and while a scan row's own policy is on air that policy with
    the configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the frame's
-   snapshot pair, which its picker (act_tone_filter()) opens on. The value keeps the view's lowercase spelling, as Call Info prints it
-   and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles' grammar. The
+   snapshot pair, which its picker (act_tone_filter()) opens on. The value keeps the view's lowercase spelling, as Call
+   Info prints it and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles'
+   grammar. The
    view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "..."
    (dsd_tone_display_to_ascii()). */
 const char*

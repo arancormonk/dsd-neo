@@ -82,7 +82,11 @@ dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
 static int g_metrics_reads;
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     g_metrics_reads++;
     DSD_MEMSET(out, 0, sizeof(*out));
     return 0;

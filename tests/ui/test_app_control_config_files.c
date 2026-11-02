@@ -21,7 +21,10 @@
 #include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 #include "test_support.h"
+
+static int g_submit_result = DSD_APP_COMMAND_SUBMIT_QUEUED;
 
 static struct {
     int load_calls;
@@ -36,7 +39,7 @@ dsd_app_command_load_config(const dsd_app_config_load_payload* payload) {
     if (payload) {
         DSD_MEMCPY(&g_sent.load, payload, sizeof g_sent.load);
     }
-    return DSD_APP_COMMAND_SUBMIT_QUEUED;
+    return g_submit_result;
 }
 
 int
@@ -121,6 +124,13 @@ test_load_submits_the_file_and_its_autosave(const char* path) {
     rc |= expect_int("load: missing submits nothing", g_sent.load_calls, 0);
     rc |= expect_int("load: no path", dsd_app_config_load_submit(""), -1);
     rc |= expect_int("load: no path submits nothing", g_sent.load_calls, 0);
+
+    /* A queue that refuses the apply (no session) is a failed load, for the menu to say so. */
+    reset_sent();
+    g_submit_result = DSD_APP_COMMAND_SUBMIT_REJECTED;
+    rc |= expect_int("load: refused by the queue", dsd_app_config_load_submit(path), -1);
+    rc |= expect_int("load: refused after one try", g_sent.load_calls, 1);
+    g_submit_result = DSD_APP_COMMAND_SUBMIT_QUEUED;
     return rc;
 }
 
@@ -142,6 +152,11 @@ test_profile_load_overlays_and_leaves_autosave_off(const char* path) {
     reset_sent();
     rc |= expect_int("profile: unknown", dsd_app_config_load_profile_submit(path, "nosuch"), -1);
     rc |= expect_int("profile: unknown submits nothing", g_sent.load_calls, 0);
+
+    reset_sent();
+    g_submit_result = DSD_APP_COMMAND_SUBMIT_REJECTED;
+    rc |= expect_int("profile: refused by the queue", dsd_app_config_load_profile_submit(path, "fire"), -1);
+    g_submit_result = DSD_APP_COMMAND_SUBMIT_QUEUED;
     return rc;
 }
 
@@ -206,6 +221,57 @@ test_save_writes_the_snapshot_and_adopts_on_request(void) {
     return rc;
 }
 
+/* The menu-open hint's question (issue #672): the default file is missing until something writes it. The default path
+   is resolved once per process, from XDG_CONFIG_HOME (APPDATA on Windows), here a scratch directory. */
+static int
+test_default_missing_until_written(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_config_default") == NULL) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_test_setenv("XDG_CONFIG_HOME", dir, 1);
+    (void)dsd_test_setenv("APPDATA", dir, 1);
+    const char* def = dsd_user_config_default_path();
+    if (def == NULL || strncmp(def, dir, strlen(dir)) != 0) {
+        DSD_FPRINTF(stderr, "default path not under the scratch directory: %s\n", def ? def : "(none)");
+        return 1;
+    }
+    char def_path[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(def_path, sizeof def_path, "%s", def);
+
+    char got[DSD_TEST_PATH_MAX];
+    rc |= expect_int("default: missing before a save", dsd_app_config_default_missing(got, sizeof got), 1);
+    rc |= expect_str("default: names the path", got, def_path);
+    char tiny[4];
+    rc |= expect_int("default: a path too long for the buffer says nothing",
+                     dsd_app_config_default_missing(tiny, sizeof tiny), 0);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    reset_sent();
+    rc |= expect_int("default: written", dsd_app_config_save(def_path, &opts, &state, 0), 0);
+    rc |= expect_int("default: present after a save", dsd_app_config_default_missing(got, sizeof got), 0);
+
+    (void)remove(def_path);
+    char sub_dir[DSD_TEST_PATH_MAX + 16];
+    DSD_SNPRINTF(sub_dir, sizeof sub_dir, "%s", def_path);
+    char* sep = strrchr(sub_dir, '/');
+    char* bsep = strrchr(sub_dir, '\\');
+    if (bsep != NULL && (sep == NULL || bsep > sep)) {
+        sep = bsep;
+    }
+    if (sep != NULL) {
+        *sep = '\0';
+        (void)dsd_test_rmdir(sub_dir);
+    }
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
 int
 main(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -216,6 +282,7 @@ main(void) {
     rc |= test_profile_load_overlays_and_leaves_autosave_off(path);
     rc |= test_profiles_are_listed(path);
     rc |= test_save_writes_the_snapshot_and_adopts_on_request();
+    rc |= test_default_missing_until_written();
     (void)remove(path);
     if (rc == 0) {
         printf("APP_CONTROL_CONFIG_FILES: OK\n");

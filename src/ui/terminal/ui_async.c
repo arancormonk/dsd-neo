@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -40,7 +41,11 @@
 static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
-static dsd_opts* g_ui_opts = NULL;
+/* The few start-time options the frame needs before the decoder's first publication (whether curses runs, whether
+   keys are read), copied by ui_start() so the UI thread never reads the decoder's live options. The rest stays zero.
+   Static: a dsd_opts is too large for a stack. */
+static dsd_opts g_ui_start_opts;
+static const dsd_opts* g_ui_opts = NULL;
 static int g_ui_curses_cfg_done = 0;
 static atomic_int g_ui_in_context = 0;
 // UI thread only: when the last wheel notch stepped the channel.
@@ -58,14 +63,28 @@ ui_is_thread_context(void) {
  * choosers answered in this frame) and to the draw. Both accessors refresh their single consumer's buffers in place, so
  * a second acquisition mid-frame would change what the rest of the frame reads; nothing else acquires. Before the first
  * publication (runtime start publishes before this thread exists, so practically never) the state is NULL, which the
- * key path honours as Quit only and the draw as nothing to draw, and the options fall back to those ui_start() was
- * handed, read here only to tell whether curses runs and keys are read; the menu, its callbacks and the printer never
- * see the decoder's live structs.
+ * key path honours as Quit only and the draw as nothing to draw, and the options fall back to the start-time copy
+ * ui_start() made (g_ui_start_opts), read only to tell whether curses runs and keys are read. The decoder's live
+ * structs are never read on this thread.
  */
 typedef struct {
     const dsd_opts* opts;
     const dsd_state* state;
 } UiFrame;
+
+/* Keep the start-time fields the frame reads before the first publication. Before the UI thread exists. */
+static void
+ui_keep_start_opts(const dsd_opts* opts) {
+    DSD_MEMSET(&g_ui_start_opts, 0, sizeof g_ui_start_opts);
+    if (opts == NULL) {
+        g_ui_opts = NULL;
+        return;
+    }
+    g_ui_start_opts.frontend_kind = opts->frontend_kind;
+    g_ui_start_opts.audio_in_type = opts->audio_in_type;
+    g_ui_start_opts.frontend_terminal_display.mouse_wheel = opts->frontend_terminal_display.mouse_wheel;
+    g_ui_opts = &g_ui_start_opts;
+}
 
 static UiFrame
 ui_frame_acquire(void) {
@@ -262,9 +281,9 @@ ui_run_frame(uint64_t* last_draw_ns, uint64_t frame_ns) {
 
 #ifdef DSD_NEO_TEST_HOOKS
 void
-dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
+dsd_neo_ui_async_test_set_context(const dsd_opts* opts, const dsd_state* state) {
     (void)state; /* the frame reads only the published state */
-    g_ui_opts = opts;
+    ui_keep_start_opts(opts);
     g_ui_curses_cfg_done = 0;
     (void)dsd_app_frontend_redraw_consume();
     atomic_store(&g_ui_in_context, 0);
@@ -355,13 +374,13 @@ static DSD_THREAD_RETURN_TYPE
 }
 
 int
-ui_start(dsd_opts* opts, const dsd_state* state) {
+ui_start(const dsd_opts* opts, const dsd_state* state) {
     if (atomic_load(&g_ui_running)) {
         return 0; // already running
     }
 
     dsd_app_frontend_runtime_start(opts, state);
-    g_ui_opts = opts;
+    ui_keep_start_opts(opts);
     dsd_app_frontend_history_set_mode(opts ? opts->frontend_terminal_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 

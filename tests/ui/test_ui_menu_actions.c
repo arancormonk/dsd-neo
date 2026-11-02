@@ -276,7 +276,11 @@ dsd_squelch_format(double mean_power, const char* unit, char* out,
 static int g_metrics_demod_rate_hz;
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     if (!out) {
         return -1;
     }
@@ -1239,20 +1243,15 @@ test_config_profile_and_env_actions(void) {
     rc |= expect_str("profile label zero", g_chooser.labels[0], "base");
     free_profile_ctx((ProfileSelCtx*)g_chooser.user);
 
-    /* Issue #672 (B10): the re-parse is handed to the decoder (env_reparse_runtime_cfg() submits it), and the two
-       options fields the runtime config carries are left to the decoder (the menu's context is read-only). */
+    /* Issue #672 (B10): the re-parse is handed to the decoder (env_reparse_runtime_cfg() submits it; UI_MENU_ENV pins
+       that). That the menu writes no options is a compile-time fact: the re-parse takes none and the context is
+       read-only. */
     reset_capture();
     g_cfg.deemph_mode = DSD_NEO_DEEMPH_OFF;
-    opts.dmr_t3_heuristic_fill = 2;
-    opts.p25_afc_status_gate_enable = 3;
     act_deemph_cycle(&ctx);
     rc |= expect_str("deemph env", g_env_name, "DSD_NEO_DEEMPH");
     rc |= expect_str("deemph value", g_env_value, "50");
     rc |= expect_int("deemph reparse", g_reparse_calls, 1);
-    rc |= expect_int("deemph leaves the DMR T3 fill", opts.dmr_t3_heuristic_fill, 2);
-    rc |= expect_int("deemph leaves the P25 AFC gate", opts.p25_afc_status_gate_enable, 3);
-    opts.dmr_t3_heuristic_fill = 0;
-    opts.p25_afc_status_gate_enable = 0;
 
     reset_capture();
     opts.audio_in_type = AUDIO_IN_RTL;

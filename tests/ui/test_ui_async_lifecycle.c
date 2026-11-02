@@ -95,6 +95,8 @@ static unsigned g_pub_seq;
 static unsigned g_consume_seq;
 static dsd_state* g_publish_into;
 static uint32_t g_publish_in_menu_key;
+static int g_opts_acquisitions;
+static int g_state_acquisitions;
 static int g_redraw_requested;
 static uint64_t g_time_ns;
 
@@ -234,6 +236,7 @@ ui_commit_frame(void) {
 
 const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
+    g_opts_acquisitions++;
     if (g_consumer_buffers && g_latest_opts) {
         DSD_MEMCPY(&g_consume_opts, g_latest_opts, sizeof g_consume_opts);
         return &g_consume_opts;
@@ -243,6 +246,7 @@ dsd_app_get_latest_opts_snapshot(void) {
 
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
+    g_state_acquisitions++;
     if (g_consumer_buffers && g_latest_state) {
         if (g_consume_seq != g_pub_seq) {
             DSD_MEMCPY(&g_consume_state, g_latest_state, sizeof g_consume_state);
@@ -726,7 +730,12 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     stdscr = NULL;
 
     int rc = 0;
-    rc |= expect_ptr("opts snapshot fallback", dsd_neo_ui_async_test_opts_snapshot_or_default(), &opts);
+    /* Issue #672 (B9): before a publication the frame reads a UI-owned copy of the start-time fields, never the
+       decoder's live options. */
+    const dsd_opts* fallback = dsd_neo_ui_async_test_opts_snapshot_or_default();
+    rc |= expect_int("opts snapshot fallback is not the live options", fallback != NULL && fallback != &opts, 1);
+    rc |= expect_int("opts snapshot fallback keeps the frontend",
+                     fallback != NULL && fallback->frontend_kind == DSD_FRONTEND_TERMINAL, 1);
     g_latest_opts = &latest_opts;
     rc |= expect_ptr("opts snapshot preferred", dsd_neo_ui_async_test_opts_snapshot_or_default(), &latest_opts);
     rc |= expect_int("curses inactive without stdscr", dsd_neo_ui_async_test_curses_is_active(&opts), 0);
@@ -797,9 +806,9 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     return rc;
 }
 
-/* Issue #672 (B9): the hotkeys, the menu's key handling, its tick and the draw all get the frame's published pair, never
-   the decoder's live structs; before the first publication the hotkeys get no state (they honour Quit alone, pinned by
-   UI_HOTKEYS_REGRESSION) and the draw has nothing to draw. */
+/* Issue #672 (B9): the hotkeys, the menu's key handling, its tick and the draw all get the frame's published pair,
+   never the decoder's live structs; before the first publication the hotkeys get no state (they honour Quit alone,
+   pinned by UI_HOTKEYS_REGRESSION) and the draw has nothing to draw. */
 static int
 test_ui_key_path_reads_the_published_pair(void) {
     static dsd_opts live_opts;
@@ -824,6 +833,7 @@ test_ui_key_path_reads_the_published_pair(void) {
     rc |= expect_int("unpublished: key delivered", g_ncurses_input_calls, 1);
     rc |= expect_int("unpublished: the key", g_last_ncurses_key, 'q');
     rc |= expect_ptr("unpublished: no state", g_input_state, NULL);
+    rc |= expect_int("unpublished: not the live options", g_input_opts != NULL && g_input_opts != &live_opts, 1);
     rc |= expect_int("unpublished: drawn", g_printer_calls, 1);
     rc |= expect_ptr("unpublished: draw has no state", g_printer_state, NULL);
 
@@ -880,7 +890,11 @@ test_ui_frame_reads_one_publication(void) {
     uint64_t last_draw_ns = 0U;
     int rc = 0;
 
+    g_opts_acquisitions = 0;
+    g_state_acquisitions = 0;
     dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_int("one frame: one options acquisition", g_opts_acquisitions, 1);
+    rc |= expect_int("one frame: one state acquisition", g_state_acquisitions, 1);
     rc |= expect_int("one frame: key read the frame's publication", (int)g_menu_key_tg, 100);
     rc |= expect_int("one frame: tick read the same", (int)g_menu_tick_tg, 100);
     rc |= expect_int("one frame: draw read the same", (int)g_printer_tg, 100);

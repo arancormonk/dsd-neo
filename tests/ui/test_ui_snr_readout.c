@@ -11,7 +11,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static double g_snr_c4fm = -100.0;
 static double g_snr_c4fm_eye = -100.0;
@@ -20,8 +22,17 @@ static double g_snr_gfsk = -100.0;
 static double g_snr_gfsk_eye = -100.0;
 static double g_snr_qpsk_const = -100.0;
 
+/* The readout reads the frame's pair it is handed (issue #672, B9): no acquisition of its own. */
+static const dsd_opts* g_metrics_opts;
+static const dsd_state* g_metrics_state;
+static unsigned int g_metrics_fallbacks;
+
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    g_metrics_opts = opts;
+    g_metrics_state = state;
+    g_metrics_fallbacks = snr_fallbacks;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_c4fm_db = g_snr_c4fm;
     out->snr_c4fm_eye_db = g_snr_c4fm_eye;
@@ -32,11 +43,11 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     return 0;
 }
 
-int
-dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
-    (void)snr_fallbacks;
-    return dsd_app_frontend_get_metrics(out);
-}
+/* Stand-ins for the frame's pair: only their addresses are compared. */
+static unsigned char g_frame_opts_token;
+static unsigned char g_frame_state_token;
+#define FRAME_OPTS  ((const dsd_opts*)&g_frame_opts_token)
+#define FRAME_STATE ((const dsd_state*)&g_frame_state_token)
 
 static void
 reset_fakes(void) {
@@ -50,7 +61,9 @@ reset_fakes(void) {
 
 static void
 expect_readout(const char* name, int rf_mod, double expected_snr, const char* expected_label) {
-    ui_snr_readout got = ui_snr_readout_for_mod(rf_mod);
+    ui_snr_readout got = ui_snr_readout_for_mod(FRAME_OPTS, FRAME_STATE, rf_mod);
+    assert(g_metrics_opts == FRAME_OPTS && g_metrics_state == FRAME_STATE);
+    assert(g_metrics_fallbacks == DSD_FRONTEND_SNR_FALLBACK_ALL);
     const char* actual_label = got.mod_label ? got.mod_label : "";
     if (!got.valid || fabs(got.snr_db - expected_snr) > 1e-6 || strcmp(actual_label, expected_label) != 0) {
         (void)DSD_FPRINTF(stderr, "%s: valid=%d snr=%.6f label=%s\n", name, got.valid, got.snr_db,
@@ -63,7 +76,9 @@ expect_readout(const char* name, int rf_mod, double expected_snr, const char* ex
 
 static void
 expect_invalid_readout(const char* name, int rf_mod, double expected_snr, const char* expected_label) {
-    ui_snr_readout got = ui_snr_readout_for_mod(rf_mod);
+    ui_snr_readout got = ui_snr_readout_for_mod(FRAME_OPTS, FRAME_STATE, rf_mod);
+    assert(g_metrics_opts == FRAME_OPTS && g_metrics_state == FRAME_STATE);
+    assert(g_metrics_fallbacks == DSD_FRONTEND_SNR_FALLBACK_ALL);
     const char* actual_label = got.mod_label ? got.mod_label : "";
     if (got.valid || fabs(got.snr_db - expected_snr) > 1e-6 || strcmp(actual_label, expected_label) != 0) {
         (void)DSD_FPRINTF(stderr, "%s: valid=%d snr=%.6f label=%s\n", name, got.valid, got.snr_db,

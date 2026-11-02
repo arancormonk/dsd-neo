@@ -19,9 +19,8 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -423,13 +422,11 @@ ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     // If no default config exists yet, provide a small hint so users starting
-    // from CLI arguments discover the Config menu for saving defaults.
-    const char* cfg_path = dsd_user_config_default_path();
-    if (cfg_path && *cfg_path) {
-        dsd_stat_t st;
-        if (dsd_stat_path(cfg_path, &st) != 0) {
-            ui_statusf("No default config; use Config menu to save to %s", cfg_path);
-        }
+    // from CLI arguments discover the Config menu for saving defaults. The
+    // config service looks at the file; the menu does no I/O (issue #672).
+    char cfg_path[1024];
+    if (dsd_app_config_default_missing(cfg_path, sizeof cfg_path)) {
+        ui_statusf("No default config; use Config menu to save to %s", cfg_path);
     }
     g_overlay_open = 1;
     g_depth = 1;

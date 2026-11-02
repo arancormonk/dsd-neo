@@ -28,15 +28,16 @@ extern "C" {
  * @brief Read the config file @p path and submit it as a loaded file's apply (DSD_APP_CMD_CONFIG_APPLY with
  * dsd_app_config_load_payload): the session autosaves to @p path once the config stays applied. The decoder's status
  * line says whether it loaded.
- * @return 0 when the file was read and submitted; -1 when it was not read (missing, unreadable, malformed, no memory),
- * and nothing was submitted.
+ * @return 0 when the file was read and the queue took it; -1 when it was not read (missing, unreadable, malformed, no
+ * memory: nothing submitted) or the queue refused it (no session).
  */
 int dsd_app_config_load_submit(const char* path);
 
 /**
  * @brief Read profile @p profile of the config file @p path (the base config with `[profile.NAME]` on top) and submit
  * it as a loaded file's apply, which leaves autosave off.
- * @return 0 when submitted; -1 when the profile was not read, and nothing was submitted.
+ * @return 0 when the profile was read and the queue took it; -1 when it was not read (nothing submitted) or the queue
+ * refused it.
  */
 int dsd_app_config_load_profile_submit(const char* path, const char* profile);
 
@@ -47,6 +48,14 @@ int dsd_app_config_load_profile_submit(const char* path, const char* profile);
  */
 int dsd_app_config_list_profiles(const char* path, const char** names, char* names_buf, size_t names_buf_size,
                                  int max_names);
+
+/**
+ * @brief Whether the default config file (dsd_user_config_default_path()) is still to be written: the menu's hint to
+ * save one. Looks at the file system.
+ * @return 1 with the default path in @p path when there is a default path and no file there; 0 when the file exists,
+ * there is no default path, or @p path cannot hold it.
+ */
+int dsd_app_config_default_missing(char* path, size_t path_size);
 
 /**
  * @brief Write the config @p opts and @p state hold (a frontend's published snapshot pair) to @p path, atomically.

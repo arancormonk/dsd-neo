@@ -367,8 +367,8 @@ enum dsd_app_command_id {
     DSD_APP_CMD_CONFIG_METADATA_SET = 711,   // payload: dsd_app_config_metadata_payload
     DSD_APP_CMD_SIGNAL_SEARCH_START = 712,   // payload: dsd_signal_search_config
     DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713, // payload: dsd_signal_search_control
-    // Internal (not in the control API): the terminal menu re-parsed the DSD_NEO_* environment on its own thread, and the
-    // decoder now applies the runtime config's options fields (dsd_apply_runtime_config_to_opts()) to its options.
+    // Internal (not in the control API): the terminal menu re-parsed the DSD_NEO_* environment on its own thread, and
+    // the decoder now applies the runtime config's options fields (dsd_apply_runtime_config_to_opts()) to its options.
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY = 714 // no payload
 };
 

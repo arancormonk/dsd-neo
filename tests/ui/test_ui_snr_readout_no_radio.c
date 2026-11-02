@@ -6,12 +6,13 @@
 #include "ui_snr_readout.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
 static void
 expect_no_radio_readout(int rf_mod, const char* expected_label) {
-    ui_snr_readout got = ui_snr_readout_for_mod(rf_mod);
+    ui_snr_readout got = ui_snr_readout_for_mod(NULL, NULL, rf_mod);
     const char* actual_label = got.mod_label ? got.mod_label : "";
 
     assert(got.valid == 0);

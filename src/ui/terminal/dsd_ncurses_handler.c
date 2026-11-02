@@ -151,7 +151,9 @@ ncurses_handle_escape_or_history(const dsd_opts* opts, const dsd_state* state, i
 }
 
 static int DSD_ATTR_USED
-ncurses_handle_delta_keys(int c) {
+ncurses_handle_delta_keys(const dsd_opts* opts, const dsd_state* state, int c) {
+    (void)opts;
+    (void)state;
     switch (c) {
         case DSD_KEY_GAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
         case DSD_KEY_GAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
@@ -164,13 +166,13 @@ ncurses_handle_delta_keys(int c) {
 #ifdef USE_RADIO
         case DSD_KEY_SPEC_DEC: {
             dsd_frontend_metrics metrics;
-            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
             (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(metrics.spectrum_size / 2));
             return 1;
         }
         case DSD_KEY_SPEC_INC: {
             dsd_frontend_metrics metrics;
-            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
             (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +metrics.spectrum_size);
             return 1;
         }
@@ -268,7 +270,7 @@ dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
     if (ncurses_handle_tg_hold_keys(opts, state, c)) {
         return 1;
     }
-    if (ncurses_handle_delta_keys(c)) {
+    if (ncurses_handle_delta_keys(opts, state, c)) {
         return 1;
     }
     if (ncurses_handle_tune_key(opts, state, c)) {

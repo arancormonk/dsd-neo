@@ -817,7 +817,11 @@ dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out
 }
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     g_metrics_calls++;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
@@ -868,7 +872,9 @@ print_snr_meter_blank(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 ui_snr_readout
-ui_snr_readout_for_mod(int rf_mod) { // NOLINT(misc-use-internal-linkage)
+ui_snr_readout_for_mod(const dsd_opts* opts, const dsd_state* state, int rf_mod) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
     (void)rf_mod;
     ui_snr_readout readout = {0};
     readout.mod_label = "C4FM";

@@ -82,6 +82,7 @@ main(void) {
     (void)&dsd_app_config_load_profile_submit;
     (void)&dsd_app_config_list_profiles;
     (void)&dsd_app_config_save;
+    (void)&dsd_app_config_default_missing;
     (void)&dsd_app_command_scan_avoid_remove;
     (void)sizeof(dsd_app_squelch_view);
     (void)&dsd_app_squelch_view_get;

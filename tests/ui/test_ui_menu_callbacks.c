@@ -1101,19 +1101,14 @@ test_gain_rtl_and_env_callbacks(void) {
     rc |= expect_str("input warn env name", g_env_double_name, "DSD_NEO_INPUT_WARN_DB");
     rc |= expect_int("input warn env value", g_env_double_value == 0.0, 1);
 
-    /* Issue #672 (B10): the re-parse hands the config to the decoder (env_reparse_runtime_cfg() submits it); the menu's
-       options stay as they were, and a cancel re-parses nothing. */
+    /* Issue #672 (B10): the re-parse hands the config to the decoder (env_reparse_runtime_cfg() submits it; UI_MENU_ENV
+       pins that), and a cancel re-parses nothing. That the callback writes no options is a compile-time fact: the
+       re-parse takes none and the context is read-only. */
     reset_capture();
-    opts.dmr_t3_heuristic_fill = 2;
-    opts.p25_afc_status_gate_enable = 3;
     cb_audio_lpf(&ctx, 1, 0);
     rc |= expect_str("audio lpf off env name", g_env_name, "DSD_NEO_AUDIO_LPF");
     rc |= expect_str("audio lpf off env value", g_env_value, "off");
     rc |= expect_int("audio lpf off reparse", g_reparse_calls, 1);
-    rc |= expect_int("audio lpf leaves the DMR T3 fill", opts.dmr_t3_heuristic_fill, 2);
-    rc |= expect_int("audio lpf leaves the P25 AFC gate", opts.p25_afc_status_gate_enable, 3);
-    opts.dmr_t3_heuristic_fill = 0;
-    opts.p25_afc_status_gate_enable = 0;
     reset_capture();
     cb_audio_lpf(&ctx, 0, 3000);
     rc |= expect_int("audio lpf cancel reparses nothing", g_reparse_calls, 0);

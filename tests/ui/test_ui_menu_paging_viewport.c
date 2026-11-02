@@ -49,9 +49,11 @@ ui_statusf(const char* fmt, ...) {
     (void)fmt;
 }
 
-const char*
-dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
-    return "";
+int
+dsd_app_config_default_missing(char* path, size_t path_size) { // NOLINT(misc-use-internal-linkage)
+    (void)path;
+    (void)path_size;
+    return 0;
 }
 
 void

@@ -8874,8 +8874,6 @@ test_radio_control_unavailable_toasts(void) {
 }
 #endif
 
-/* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
-   submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
 /* Issue #672 (B10): the terminal menu re-parses the DSD_NEO_* environment on its own thread and hands the result to the
    decoder, which applies the two options fields the runtime config carries (dsd_apply_runtime_config_to_opts()) to the
    options it owns. The command is applied as it is drained, in either direction, and not before. */
@@ -8928,6 +8926,8 @@ test_runtime_config_apply_sets_the_decoder_options(void) {
     return rc;
 }
 
+/* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
+   submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
 static int
 test_quit_takes_effect_at_submit(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
