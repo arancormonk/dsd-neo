@@ -819,24 +819,7 @@ Item {
                 emergency: model.emergency
                 hasRecording: model.hasRecording
                 interactive: true
-                onActivated: recentDetail.open({
-                    uid: model.uid,
-                    name: model.name,
-                    when: model.when,
-                    systemName: model.systemName,
-                    systemUid: model.systemUid,
-                    channel: model.channel,
-                    tg: model.tg,
-                    src: model.src,
-                    sourceName: model.srcName,
-                    enc: model.enc,
-                    emergency: model.emergency,
-                    detail: model.detail,
-                    durationSecs: model.durationSecs,
-                    freqHz: model.freqHz,
-                    accessCode: model.accessCode,
-                    accessCodeText: model.accessCodeText
-                })
+                onActivated: recentDetail.open(callHistory.recordFor(model.uid))
             }
             ReadableText {
                 objectName: "homeRecentEmpty"

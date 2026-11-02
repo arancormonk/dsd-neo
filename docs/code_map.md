@@ -1033,7 +1033,19 @@ suite runs under this compiler.
   says whether an ended epoch may still be healed (a recoverable end of a call that names one, within its reason's own
   window: `DSD_CALL_REACQUIRE_GAP_S` after a sync loss, `DSD_CALL_TERMINATOR_HEAL_GAP_S` after an unverified
   terminator), the rule the store's own reacquisition applies short of what the reopening observation must satisfy; a
-  binding renamed meanwhile keeps its transmission only while it says yes.
+  binding renamed meanwhile keeps its transmission only while it says yes. The reopening observation must also fit the
+  system and site the call was heard on (`dsd_call_record_site_compatible()`: the call's retained
+  `dsd_call_snapshot::reacquire_rx_id` with its channel's kind, against the live `dsd_state::rx_id` with the
+  observation's channel kind, DMR trunking system included), so another system's call on the same TG/SRC inside the
+  window is a fresh transmission that inherits no channel, frequency or crypto. The retained record is the whole
+  `dsd_state::rx_id` as of the call's last observation or its end made while the record's epoch was still the call's,
+  so a record that moved before the end (another system named, a reset, or another protocol family's sync wiping it)
+  leaves it standing: a reentry under an empty record reopens as before, one under another identity does not. A
+  reacquired epoch starts with the ending one's and keeps it while the live record names no site, so a second fade
+  still compares with the call's real site. After such a heal a live record that names only part of the earlier site
+  replaces the retained copy, so the missing parts drop out of later comparisons until they are noted again (a decided
+  limit). Identity learned after a call's last observation, when its end captured nothing, compares as compatible (a
+  decided limit). History's `ended_rx_id` is not involved.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
@@ -1174,20 +1186,20 @@ suite runs under this compiler.
   its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`, `RAN: --;`; `watchdog_event_code_text()`), and for
   an NXDN stand-in, which is never the row's access code (`dsd_access_code_current()`); the access code's numeric sys id
   (DMR `sys_id2`, P25 and NXDN `sys_id3`) holds the row's code or its "not decoded" value (DMR 16, P25 0, NXDN
-  `(unsigned)-1`), since 0 is a DMR and NXDN code, never a Phase 2 seed or a stand-in. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the
-  call's `channel`, which `dpmr_publish_call()` sets to 0 for an undecoded code. In
-  `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired segment that decoded
-  one fills it (0 included), and a decoded code is never replaced. The DMR, NXDN and dPMR strings are then rebuilt from
-  the merged row (`watchdog_event_rebuild_code_sysid()`), so a code one segment decoded and a system code or site only
-  the other decoded both appear. The DMR colour code, the NXDN RAN, the P25 NAC, the M17 CAN and dPMR's colour code in
-  the string and the event line are the row's access code, so a call whose last render runs after the receiver moved
-  names the code it was heard with (under `--playfiles`, which takes none, `DMR_CC_--` and `CC: --;` whatever the file
-  reader wrote into `dmr_color_code`), set after the tuning load on a live render
-  (`watchdog_event_current_apply_code_identity()`) and rebuilt by a merge from the merged code. An unknown NAC prints
-  `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps its field
-  positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own `channel`
-  and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The
-  rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
+  `(unsigned)-1`), since 0 is a DMR and NXDN code, never a Phase 2 seed or a stand-in. The dPMR event line's
+  `CC:` is the row's decoded colour code (its access code); the call's `channel` stays 0, as dPMR names no
+  trunk channel (`dpmr_publish_call()`). In `watchdog_event_merge_system_identity()` the sentinel, not 0, is
+  the missing code: a reacquired segment that decoded one fills it (0 included), and a decoded code is never replaced.
+  The DMR, NXDN and dPMR strings are then rebuilt from the merged row (`watchdog_event_rebuild_code_sysid()`), so a code
+  one segment decoded and a system code or site only the other decoded both appear. The DMR colour code, the NXDN RAN,
+  the P25 NAC, the M17 CAN and dPMR's colour code in the string and the event line are the row's access code, so a call
+  whose last render runs after the receiver moved names the code it was heard with (under `--playfiles`, which takes
+  none, `DMR_CC_--` and `CC: --;` whatever the file reader wrote into `dmr_color_code`), set after the tuning load on
+  a live render (`watchdog_event_current_apply_code_identity()`) and rebuilt by a merge from the merged code. An unknown
+  NAC prints `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps
+  its field positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own
+  `channel` and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env).
+  The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
   before. Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -1401,6 +1413,26 @@ suite runs under this compiler.
   that. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
   (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
   (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
+- History site and call channel (issue #799; `dsd_events.c`). Beside the `sys_id` slots a row keeps the whole site it
+  was heard on, `Event_History::site_id` (a `dsd_received_identity` holding only the site parts,
+  `dsd_rxid_site_snapshot()`: the system and site numbers, never the access code, rest or free channel, RAS, vendor ID
+  or control-channel frequency, so two rows of one site hold the same bytes), and for a DMR trunked call its own
+  channel with the numbering it was named in (`Event_History::channel`, `call_channel_kind`: LSN, LPCN or LCN, 0 and
+  NONE for every other protocol). `site_id` is taken under the capture rule of the `sys_id` slots above (the live
+  record while the call is ACTIVE, `ended_rx_id` once it has ENDED, the record of the carrier the call began on, so a
+  retune, a control-channel return or a trunk-scan departure never gives a row the next carrier's site), and is empty
+  for M17, dPMR, a TETRA direct mode call and `--playfiles`; an I/Q replay keeps the capture's site. The event line,
+  the `event` text, the `-J` log and the control API's `site`/`site_text` print from `site_id` and never from the live
+  record, so the row reads the same after the call. Reacquisition merges a segment into the held row only when the two
+  fit (`dsd_call_site_compatible()`: sites agree on every part both know, channel kinds agree with each other and with
+  a known DMR trunking system) and the merged row keeps the union of their parts (`watchdog_event_merge_site()`), so a
+  radio heard on two sites inside the reacquire window gives two rows. The core site module,
+  `<dsd-neo/core/received_identity_site.h>` (libc only, so Qt builds it as it is): `dsd_rxid_site_snapshot()`,
+  `dsd_rxid_site_compatible()` (no part both know differs; symmetric; DMR site text and brand are presentation and are
+  never compared), `dsd_rxid_site_union()` (order-free), `dsd_rxid_site_consistent()` (what a stored identity must
+  satisfy to be loaded), `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
+  `dsd_call_record_site_compatible()` the call-state reacquisition guard above uses. Tests:
+  `CORE_RECEIVED_IDENTITY_SITE`, `CORE_CALL_ALERT_HISTORY`, `CORE_CALL_STATE`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1638,10 +1670,13 @@ suite runs under this compiler.
   cooldown; nothing is stamped). A candidate is the held call itself, and never preempts it, only when it matches a
   record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
   describe matches): a talkgroup and a unit may share a number, so a candidate of the other class is another call that
-  displaces the record by priority. An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()`
-  after the preempting call is acquired, because the release cleared the displaced records. `note_active_call()`
-  stamps a cooldown only when it replaces a valid, different record. A list reload or clear carries the records and
-  the last cooldown into the new context; `install` (a scan target transition) restarts them.
+  displaces the record by priority. The channel matches by `tg_policy_route_same_channel()`: the same channel number
+  when both routes name one, else the same positive frequency (a route without a channel, such as an unresolved DMR
+  Tier III absolute grant, is known only by its carrier; two such routes on different carriers are different calls).
+  An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()` after the preempting
+  call is acquired, because the release cleared the displaced records. `note_active_call()` stamps a cooldown
+  only when it replaces a valid, different record. A list reload or clear carries the records and the last
+  cooldown into the new context; `install` (a scan target transition) restarts them.
 - Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
   `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
   `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
@@ -2061,8 +2096,12 @@ suite runs under this compiler.
   another carrier left), so every frontend shows the same identity and none of another carrier's. Protocol code fills it
   through `dsd_rxid_note_*()` only where a message passed its own check, with that message's own values (Protocols,
   "Received identity note points"); content accepted only because `-F` or RAS relaxed a check keeps decoding and
-  following but is never noted. Each part has a valid and a fresh bit. Threading: the decoder thread owns the record
-  and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
+  following but is never noted. Each part has a valid and a fresh bit. A DMR site keeps its raw network and site
+  numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
+  text by `dsd_rxid_note_dmr_site()`, the only way a DMR site is noted), and only they tell one site from another:
+  the site text is presentation (it follows `-D` and shows Tier III one-based) and is never compared. Text copies zero
+  their whole field, so equal notes leave equal bytes. Threading: the decoder thread owns the record and is
+  its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
   the watchdog's tick reads the record under that guard (the calls its release ends keep it as
@@ -2155,11 +2194,11 @@ suite runs under this compiler.
   channel included (the decoder leaves the call as at its end); every other user retune (a frequency entry on another
   protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that
   forget or reinterpret a site forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops
-  the DMR trunking parts (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN
-  (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and once a switch
-  onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the
-  session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a
-  RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
+  the DMR trunking parts (keeping the colour code the reset keeps, and the user's `-D`) and the NXDN location, IDAS
+  parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and
+  once a switch onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it
+  lands, the session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`,
+  a RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
   site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an
   EDACS record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as
   well). The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed,
@@ -3804,8 +3843,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   descrambler kept names none until a CRC-checked BSCH on this carrier, or a CRC-checked downlink block descrambled
   with it, proves it, and a checked direct mode burst drops it; the carrier number stays the publication's. Tests: `APP_CONTROL_TETRA_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_QT_METRICS_MODEL`.
-- Carrier system identity: `include/dsd-neo/app_control/site_identity_view.h` and
-  `src/app_control/site_identity_view.c`. `dsd_app_site_identity_view()` turns the received identity record
+- Carrier system identity: `include/dsd-neo/app_control/site_identity_view.h`, built from two files.
+  `src/app_control/site_identity_record.c` is the record form: tokens from a received identity record
+  alone (`dsd_app_site_identity_view_record()`, which leaves out the live-only ESK word and never sets
+  `live`), the joined text (`dsd_app_site_identity_format()`), a call history row's line (`dsd_app_site_history_text()`:
+  the record form, full and led by the protocol, then the call's channel token `LSN n`, `LPCN n` or `LCN n`;
+  a channel with no identity reads `DMR · LPCN 12`) and the channel token, with no decoder state, so
+  Qt's History links it without the decoder. `src/app_control/site_identity_view.c` is the live wrapper:
+  it adds the ESK word and `live`. `dsd_app_site_identity_view()` turns the received identity record
   (`dsd_state::rx_id`, `core/received_identity.h`) of a snapshot into the display-ready identity every frontend shows:
   the protocol label (`DMR`, `P25`, `NXDN`, `IDAS`, `dPMR`, `M17`, `TETRA`, `EDACS`; none for YSF, D-STAR, ProVoice,
   X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only (the DMR site text is one token
@@ -6783,11 +6828,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   The Type-C location ID (`nxdn_location_id_handler()`, NXDN TS 1-A 6.5.2: Global 10-bit system and 12-bit site,
   Regional 14/8, Local 17/5, category 3 reserved) is printed whenever it decodes but written to
   `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only once the
-  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category; a zero system or site
-  code leaves the stored one. A Type-D (IDAS) site's identity has fields of its own, `nxdn_idas_system_id` (19 bits,
-  TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received, reset and snapshotted with the
-  location: a Type-D SRV_INFO (§6.4.3.1, spare 5 + System ID 19 + Site Code 8) writes both once confirmed, and the
-  SCCH site ID message (§6.5.3.1 Fig 6.5-8: Site Type 2 bits, Site Code 8) the code once
+  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category or a system or site code
+  Table 6.5-1 reserves (all zeros, all ones: `dsd_nxdn_location_valid()`), which is printed and leaves the
+  stored location, its RAN and the received identity as they were. A Type-D (IDAS) site's identity has fields of
+  its own, `nxdn_idas_system_id` (19 bits, TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received,
+  reset and snapshotted with the location: a Type-D SRV_INFO (§6.4.3.1, spare 5 + System ID 19 + Site Code 8) writes
+  both once confirmed, and the SCCH site ID message (§6.5.3.1 Fig 6.5-8: Site Type 2 bits, Site Code 8) the code once
   `nxdn_confirm_scch_confirmed()`; neither writes a RAN or the Type-C fields. Which SRV_INFO layout applies, and
   whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
   `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
@@ -7116,15 +7162,24 @@ the message passed its own check, with that message's values, an unchanged repea
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
-  system code and site text at `dmr_tiii_note_search_site()` (C_ALOHA with a genuine CRC, C/P_SYS_PARMS short LCs),
-  which notes the record whether or not a search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site
-  text and brand from its control (0xA, with the control channel) and traffic (0x9) short LCs and the brand from its
-  CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, and site text, rest LSN
-  and brand from its short LC; the Hytera XPT brand from its CSBKs, LC and short LC (XPT sends no site number of its
-  own), and the site's free channel (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's
-  `Free LCN: n;`) from its site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts
-  joined by ` · ` ("TIII Small · Net 12 · Site 3.1 · SYS 0A3F", "Cap+ · Site 2", "Con+ · Net 3 · Site 5"). The colour
-  code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
+  system code and site (raw network, site and model, and the text) at `dmr_tiii_note_search_site()` (C_ALOHA with a
+  genuine CRC, Capacity Max's FID 0x10 one included, C/P_SYS_PARMS short LCs), which notes the record whether or not a
+  search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site (its 12-bit network, short LC bits
+  4..15, and 8-bit site) and brand from its control (0xA, with the control channel) and traffic (0x9) short LCs and the
+  brand from its CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, its site
+  (`dmr_cap_plus_note_site()`) and brand from the checked neighbour CSBK 0x3B (own site, bits 25..28), and rest LSN,
+  brand and, only while bits 20..21 are clear, site from its short LC (decided limit: the short LC site field's width
+  is disputed, 3 bits here and 5 in SDRTrunk, and the two readings agree only with those bits clear); the Hytera XPT
+  brand from its CSBKs, LC and short LC (XPT sends no site number of its own), and the site's free channel
+  (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's `Free LCN: n;`) from its
+  site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts joined by ` · ` ("TIII
+  Small · Net 13 · Site 4 · SYS 1183", "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"). Tier III numbers are
+  shown one-based on every path (issue #799 D1: the network, the site and, with a `-D` split, the area and the site
+  in it, each the raw value + 1; `dmr_tiii_site.h`), and `-D n` is the spec's DMRLA (TS 102 361-4 §6.3.2.2.3, Figure
+  6.19): the top n SITE bits are the area, clamped to the model's SITE width; no `-D` or `-D 0` shows the site whole.
+  The decoder never writes `-D` (`dsd_opts::dmr_dmrla_*`): a Capacity Max C_ALOHA reads as any Tier III one, keeping
+  only its "Capacity Max" label and Motorola branding. Capacity Plus and Connect Plus numbers are shown as sent. The
+  colour code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
   (`dmr_data_carrier_left()`, `dsd_state_frame_read_lost()` before the decode). A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
   under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
   `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8. Nor does the
@@ -7336,6 +7391,30 @@ Private per-protocol modules worth knowing about:
     nothing (no fallback, no publication). A new call never inherits an identity, and LC precedence over seeds, grants
     and statuses holds only while the LC's call lasts (a Cap+ status may name a gap record's LSN, or a slot whose
     identity expired).
+  - Call channel (issue #799). A followed call's channel is one resolved value with its numbering
+    (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
+    `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
+    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's or C_MOVE's absolute escape 0xFFF names its MBC's
+    CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
+    LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
+    and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
+    accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
+    of a known kind is named), so a same-carrier move or a repeated in-place grant keeps the first (decided limit L9).
+    An LC's record keeps its record's channel on that carrier, else the followed call's when that is the carrier's
+    (LPCN, LCN: both slots share it) or the slot is the followed one (an LSN is one slot's). A Cap+ or XPT status gives
+    each slot record its own LSN (and fills it into an LC's record that names none), and voice sync gives a record's
+    channel to the call the record is bound to while that call names no channel (`dmr_sm_publish_slot_channel()`): an
+    LSN, or the followed grant's LPCN or LCN, which the companion slot's call is on too (TS 102 361-4 §7.1.1.1.1.1.1:
+    the LPCN names the physical channel, both timeslots). The channel keeps its own provenance (`channel_crc_flags`:
+    the naming grant's, move's or status's scope), which an LC naming the record keeps and the publication carries, so
+    a RAS-accepted status or grant under `-F` marks the row it named a channel for. The XPT free value is a repeater
+    (LCN): its hint is LSN 2n - 1 (`dmr_xpt_lcn_to_lsn()`), 0 none. Calls without a channel (decided limit L5): trunking
+    off; an absolute grant whose CdefParms LPCN is not 1..4094 (its MBC failing, the grant is not followed at all); a
+    Cap+ or XPT call of unknown identity (a private call before its voice LC names it: then it takes the slot's LSN);
+    a Tier III or Connect Plus call adopted in place whose record an LC named while the receiver was parked there (that
+    LC names no channel and no status names their slots; Cap+ and XPT records take the LSN from the next status).
+    Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`, `DMR_CSBK_HELPERS`,
+    `CORE_CALL_STATE`, `CORE_TALKGROUP_POLICY`.
   - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
     takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
@@ -7548,7 +7627,8 @@ Private per-protocol modules worth knowing about:
   C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
   `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
   `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites, the reserved
-  category and the Type-D site identity (`nxdn_idas_*`) are not notes (`NXDN_SEARCH_SITE_NOTES`).
+  category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes
+  (`NXDN_SEARCH_SITE_NOTES`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the slot of a canonical call record it just published after its check, and the engine reads that
   record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and
@@ -9293,7 +9373,38 @@ Qt Quick frontend (`src/ui/qt`):
     #670, `UI_QT_SESSION_ARGS`).
     The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
     and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
-    indexes of the lines before it.
+    indexes of the lines before it. History, Home and the Monitor's recent calls build the record with
+    `CallHistoryModel::recordFor(uid)` (one key per role the sheet shows, by role name, the source label
+    as `sourceName`, plus `siteText`), and the details sheet (`HistoryDetailSheet`) reads it again whenever
+    its row changes (a `dataChanged` covering the row, `rowPositionsChanged`, a reset), so a fragment
+    folded in after it opened shows; a row that left the log keeps the last copy read. The line after
+    "Frequency" (`siteLineIndex` 9) is the site and channel the call was heard on in the Monitor's words (`DMR · Con+ ·
+    Net 3 · Site 5 · Connect Plus · LCN 3`); it wraps between its parts only (each part's spaces are non-breaking, as is
+    the one before a separator dot), so a phone-width sheet never breaks "Net 12", while TalkBack reads the line whole
+    (`historyDetailSite`; an empty line is hidden, so a row with neither site nor channel shows none).
+  - Call history site and channel (issue #799; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row keeps
+    the site it was heard on as the core's site identity (`Row::siteId`, a `dsd_received_identity`: the raw parts the
+    record's compare reads, with the DMR site text and brand as received, for display only) and a DMR call's own
+    channel with its numbering (`Row::callChannel`, `callChannelKind`, each with its own provenance `cchWhen`/`cchSeq`/
+    `cchSlot`, folded like the frequency). The `siteText` role (`SiteTextRole`) is spelled at read time by
+    `dsd_app_site_history_text()`, empty when the row has neither. A merge joins fragments only when
+    `dsd_call_site_compatible()` agrees and keeps the union of their site parts (`call_history_site_fold()`, order-free,
+    no provenance needed); the channel folds by provenance as the frequency does, so a roaming radio heard on two sites
+    within a few seconds gives two rows. The seen ratchet (`SeenState::siteMask`, `callChannel`, `callChannelKind`,
+    `call_history_seen_absorb_site()`) treats a part gained, or any change of the channel or its kind, as an advance, so
+    a row the core filled in place re-ingests as an update. H1: an update for a fragment is applied to the row that
+    holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges with, because
+    a fragment that no longer passes the merge test with the row it was folded into would otherwise be dropped. Decided
+    limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the system without the
+    site) joins whichever compatible row it meets first, so a live session (oldest first) and a backlog (newest first)
+    can group the same three fragments differently; L8, a fragment that later learns parts conflicting with the row it
+    already folded into has its identity discarded whole, with its channel, never picked part by part, and is not split
+    back out of the row. Persistence: the row's `site` object (one key per part; the DMR texts as strings) and
+    `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm` and `cch`/`cchKind`);
+    a row saved by an older build has none and loads with an unknown site and channel, and an object that
+    fails `dsd_rxid_site_consistent()` or has a value that does not fit its field loads as unknown, never
+    as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`,
+    `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -9375,8 +9486,9 @@ Qt Quick frontend (`src/ui/qt`):
   `siteConfirmed` (the view's `live`), the SiteSheet fields (P25 NAC/WACN/SYS/RFSS/SITE/LRA, DMR colour code/site
   text/rest LSN/XPT free LCN (`dmrXptFreeLcn`, -1 before one)/trunking brand (`dmrBrand`)/Tier III system code with no
   site text (`dmrT3Syscode`), NXDN RAN or IDAS area and location codes, EDACS site/system/area/CC LCN
-  (`edacsSystem`, `edacsArea`, `edacsCcLcn`), the dPMR colour code or M17 CAN (`siteAccessCode`), TETRA MCC, MNC,
-  colour code and LA (`tetraSiteMcc`, `tetraSiteMnc`, `siteAccessCode`, `tetraSiteLa`); each int is -1 until received),
+  (`edacsSystem`, `edacsArea`, `edacsCcLcn`; SiteSheet shows the system as four hex digits, as the event
+  line does), the dPMR colour code or M17 CAN (`siteAccessCode`), TETRA MCC, MNC, colour code and LA
+  (`tetraSiteMcc`, `tetraSiteMnc`, `siteAccessCode`, `tetraSiteLa`); each int is -1 until received),
   so every protocol whose site row opens the sheet has its rows there,
   each only once received, and `ccFreqHz` from the view's `cc_freq_hz` only. There is no Qt latch: the record keeps the
   last heard values on its carrier and is reset at every carrier boundary and trunk-scan target switch, so no visit
@@ -9473,13 +9585,14 @@ Qt Quick frontend (`src/ui/qt`):
   the line under the disclosure. The disclosure is closed by default and remembered in the device-local
   `AppPrefs::monitorDetailsExpanded` (`monitor/detailsExpanded`, kept out of backups and kept on restore); its summary
   is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
-  ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`),
-  one elided StyledText line; a fault never opens the rows. `tier` is chosen from measured geometry, never call
-  content: the first of 0 (stacked header, full hero, live strip fixed; on brokered hosts stacked only when the header
-  actions fit, see the width rule under Monitor receiver pill), 1 (header actions on the title line, Sites and
-  Spectrum left to the session menu, which carries both on the same conditions; at 500 dp and wider they stay), 2
-  (compact hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label)
-  whose `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
+  ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`:
+  the `SITE n` part of the line for P25, NXDN and EDACS, or the DMR `Site n` part), one elided StyledText
+  line; a fault never opens the rows. `tier` is chosen from measured geometry, never call content: the first
+  of 0 (stacked header, full hero, live strip fixed; on brokered hosts stacked only when the header actions
+  fit, see the width rule under Monitor receiver pill), 1 (header actions on the title line, Sites and Spectrum
+  left to the session menu, which carries both on the same conditions; at 500 dp and wider they stay), 2 (compact
+  hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label) whose
+  `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
   leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
   and actions move into slots at the top of the list header. Parts move by `parent` bindings between fixed hosts
   (`topHost`, `stripHost`, `actionsHost`) and those slots; slots and hosts size from the budget's own numbers

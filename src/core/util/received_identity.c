@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -116,8 +117,11 @@ rxid_has(const dsd_received_identity* id, uint32_t part) {
     return (id->valid & part) != 0U;
 }
 
+/* The whole field is written, zero past the NUL, so equal notes leave equal bytes whatever it held before (a history
+   row's frozen copy compares whole records). */
 static void
 rxid_copy_text(char* dst, size_t capacity, const char* text) {
+    DSD_MEMSET(dst, 0, capacity);
     DSD_SNPRINTF(dst, capacity, "%s", text);
 }
 
@@ -188,8 +192,9 @@ static uint32_t
 rxid_system_parts(uint8_t family) {
     switch (family) {
         case DSD_RXID_FAMILY_DMR:
-            return DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE
-                   | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_VENDOR | DSD_RXID_CC_FREQ;
+            return DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
+                   | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_VENDOR
+                   | DSD_RXID_CC_FREQ;
         case DSD_RXID_FAMILY_P25: return RXID_P25_SYSTEM;
         case DSD_RXID_FAMILY_NXDN:
             return DSD_RXID_NXDN_LOCATION | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
@@ -294,8 +299,13 @@ dsd_rxid_note_p25_lra(dsd_state* state, uint16_t sysid, uint8_t lra) {
 
 /* The parts one DMR trunking system sends, apart from the carrier's colour code. */
 #define RXID_DMR_TRUNK_PARTS                                                                                           \
-    (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE                     \
-     | DSD_RXID_DMR_XPT_FREE_LCN)
+    (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_BRAND        \
+     | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN)
+
+/* What one DMR site names: its numbers and text, the rest channel and free channel it names, its control channel. */
+#define RXID_DMR_SITE_PARTS                                                                                            \
+    (DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN \
+     | DSD_RXID_CC_FREQ)
 
 /* The DMR record a note of @p trunk (dsd_rxid_dmr_trunk) goes into: a note of another trunking system than the one
    the record's parts belong to drops them and the control channel first. A note of no known system (an unknown brand)
@@ -313,27 +323,20 @@ rxid_dmr(dsd_state* state, uint8_t trunk) {
     return id;
 }
 
-/* The trunking system a brand or a site text's first part names. */
+/* The trunking system a brand names. */
 static uint8_t
-rxid_dmr_trunk_named(const char* text, int site_text) {
+rxid_dmr_trunk_named(const char* brand) {
     static const struct {
         const char* brand;
-        const char* site_prefix;
         uint8_t trunk;
     } k_names[] = {
-        {"Capacity Plus", "Cap+", (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS},
-        {"Connect Plus", "Con+", (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS},
-        {"Hytera XPT", NULL, (uint8_t)DSD_RXID_DMR_TRUNK_XPT},
-        {NULL, "TIII", (uint8_t)DSD_RXID_DMR_TRUNK_TIER3},
+        {"Capacity Plus", (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS},
+        {"Connect Plus", (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS},
+        {"Hytera XPT", (uint8_t)DSD_RXID_DMR_TRUNK_XPT},
     };
 
     for (size_t i = 0U; i < sizeof(k_names) / sizeof(k_names[0]); i++) {
-        const char* const name = site_text ? k_names[i].site_prefix : k_names[i].brand;
-        if (name == NULL) {
-            continue;
-        }
-        const int match = site_text ? strncmp(text, name, strlen(name)) == 0 : strcmp(text, name) == 0;
-        if (match) {
+        if (strcmp(brand, k_names[i].brand) == 0) {
             return k_names[i].trunk;
         }
     }
@@ -350,23 +353,46 @@ dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn) {
     rxid_set(id, DSD_RXID_DMR_REST_LSN);
 }
 
+/* Whether a site note's raw parts name another site than the record's valid ones (the trunking system already is the
+   record's, rxid_dmr()). */
+static int
+rxid_dmr_other_site(const dsd_received_identity* id, int has_net, uint16_t net, uint16_t site, uint8_t model) {
+    if (!rxid_has(id, DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET)) {
+        return 0;
+    }
+    if (!rxid_has(id, DSD_RXID_DMR_SITE) || id->dmr_site != site || id->dmr_t3_model != model) {
+        return 1;
+    }
+    if (rxid_has(id, DSD_RXID_DMR_NET) != (has_net != 0)) {
+        return 1;
+    }
+    return has_net && id->dmr_net != net;
+}
+
 void
-dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text) {
-    if (text == NULL || text[0] == '\0') {
+dsd_rxid_note_dmr_site(dsd_state* state, uint8_t trunk, int has_net, uint16_t net, uint16_t site, uint8_t t3_model,
+                       const char* text) {
+    if (trunk == (uint8_t)DSD_RXID_DMR_TRUNK_NONE || trunk > (uint8_t)DSD_RXID_DMR_TRUNK_XPT) {
         return;
     }
-    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(text, 1));
+    dsd_received_identity* const id = rxid_dmr(state, trunk);
     if (id == NULL) {
         return;
     }
-    char next[sizeof(id->dmr_site_text)];
-    rxid_copy_text(next, sizeof(next), text);
-    if (rxid_has(id, DSD_RXID_DMR_SITE_TEXT) && strcmp(id->dmr_site_text, next) != 0) {
-        /* Another site: the rest channel and free channel it named and its control channel go with it. */
-        rxid_invalidate(id,
-                        DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ);
+    const uint8_t model = trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3 ? (uint8_t)(t3_model & 0x3U) : 0U;
+    if (rxid_dmr_other_site(id, has_net, net, site, model)) {
+        rxid_invalidate(id, RXID_DMR_SITE_PARTS); /* another site: the text is never compared */
     }
-    DSD_MEMCPY(id->dmr_site_text, next, sizeof(next));
+    id->dmr_net = has_net ? net : 0U;
+    id->dmr_site = site;
+    id->dmr_t3_model = model;
+    /* A valid net with none here was another site, dropped above. */
+    rxid_set(id, DSD_RXID_DMR_SITE | (has_net ? DSD_RXID_DMR_NET : 0U));
+    if (text == NULL || text[0] == '\0') {
+        rxid_drop(id, DSD_RXID_DMR_SITE_TEXT); /* no text for these numbers: none built for others stays beside them */
+        return;
+    }
+    rxid_copy_text(id->dmr_site_text, sizeof(id->dmr_site_text), text);
     rxid_set(id, DSD_RXID_DMR_SITE_TEXT);
 }
 
@@ -375,7 +401,7 @@ dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand) {
     if (brand == NULL || brand[0] == '\0') {
         return;
     }
-    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(brand, 0));
+    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(brand));
     if (id == NULL) {
         return;
     }
@@ -418,7 +444,9 @@ dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode) {
         return;
     }
     if (rxid_has(id, DSD_RXID_DMR_T3_SYSCODE) && id->dmr_t3_syscode != syscode) {
-        rxid_invalidate(id, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_CC_FREQ); /* another system */
+        /* another system: the old one's site goes with it */
+        rxid_invalidate(id, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
+                                | DSD_RXID_CC_FREQ);
     }
     id->dmr_t3_syscode = syscode;
     rxid_set(id, DSD_RXID_DMR_T3_SYSCODE);
@@ -458,8 +486,8 @@ rxid_nxdn(dsd_state* state, int type_d) {
 
 void
 dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site) {
-    if (category > 2U) {
-        return; /* 3 is reserved */
+    if (!dsd_nxdn_location_valid(category, sys, site)) {
+        return; /* a reserved category or code names no site, and drops nothing */
     }
     dsd_received_identity* const id = rxid_nxdn(state, 0);
     if (id == NULL) {

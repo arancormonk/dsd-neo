@@ -14,7 +14,10 @@ ModalSheet {
     readonly property bool singleSystemSession: metrics.scanKind === 0 && !metrics.operatorTuned
     readonly property bool canHold: decoderHost.running && metrics.optionsKnown && singleSystemSession && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
-    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.record.accessCodeText || "", sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || "", sheet.record.receivedTone ? qsTr("Received tone %1").arg(sheet.record.receivedTone) : ""]
+    // Issue #799: the line after "Frequency" names the site and channel the
+    // call was heard on, in the Monitor site row's words ("DMR · LPCN 12").
+    readonly property int siteLineIndex: 9
+    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.record.accessCodeText || "", sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.siteText || "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || "", sheet.record.receivedTone ? qsTr("Received tone %1").arg(sheet.record.receivedTone) : ""]
     // Issue #708: the row's call recordings, read again by its uid whenever the
     // log changes, so a part folded into the call or a recording deleted shows
     // while the sheet is open.
@@ -31,6 +34,16 @@ ModalSheet {
         recordingsRevision++;
         visible = true;
     }
+    // Issue #799: the record follows its row by uid while the sheet is open, so
+    // a fragment folded in after it opened (a longer duration, a newer frequency,
+    // the site) shows. A row that has left the log keeps the last copy read.
+    function reread() {
+        if (typeof callHistory.recordFor !== "function")
+            return;
+        var fresh = callHistory.recordFor(rowUidKey);
+        if (fresh.uid !== undefined && JSON.stringify(fresh) !== JSON.stringify(record))
+            record = fresh;
+    }
     onVisibleChanged: {
         if (!visible)
             recordingPlayer.stopOwnPlayback();
@@ -39,29 +52,42 @@ ModalSheet {
         target: callHistory
         enabled: sheet.visible && sheet.rowUidKey > 0
         ignoreUnknownSignals: true
-        function onDataChanged() {
+        function onDataChanged(topLeft, bottomRight) {
             sheet.recordingsRevision++;
+            var row = callHistory.rowForUid(sheet.rowUidKey);
+            if (row >= topLeft.row && row <= bottomRight.row)
+                sheet.reread();
         }
         function onRowPositionsChanged() {
             sheet.recordingsRevision++;
+            sheet.reread();
         }
         function onModelReset() {
             sheet.recordingsRevision++;
+            sheet.reread();
         }
     }
     Repeater {
         model: sheet.detailLines
         Text {
             required property string modelData
+            required property int index
+            readonly property bool siteLine: index === sheet.siteLineIndex
+            objectName: siteLine ? "historyDetailSite" : ""
             width: parent.width
             visible: modelData.length > 0
             Accessible.role: Accessible.StaticText
             Accessible.name: modelData
             readonly property bool navigationAllowed: Navigation.allows(sheet)
             Accessible.ignored: !navigationAllowed || !visible
-            text: modelData
+            // The site line wraps only between its parts: each part's spaces,
+            // and the one before a separator's dot, do not break, so "Net 12"
+            // stays whole and a wrapped line ends on its dot.
+            text: siteLine ? modelData.split(" · ").map(function (part) {
+                return part.replace(/ /g, "\u00a0");
+            }).join("\u00a0· ") : modelData
             textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
+            wrapMode: siteLine ? Text.Wrap : Text.WrapAnywhere
             color: Theme.textPrimary
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)

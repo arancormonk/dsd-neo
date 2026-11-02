@@ -33,6 +33,10 @@ Item {
         text: "851.0125 MHz"
     }
 
+    TextMetrics {
+        id: partWidth
+    }
+
     TestCase {
         id: tc
 
@@ -374,8 +378,152 @@ Item {
                    "the rule is not in the accessible description: " + field.input.Accessible.description)
         }
 
+        // Issue #799: the details open on the call's site and channel, in the
+        // Monitor site row's words, as one line after the frequency, so the
+        // pinned lines (talkgroup 4, radio ID 6, its code and frequency after
+        // it) stay where they are.
+        function openDetails(name) {
+            var row = tc.rowNamed(name)
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "historyDetailSheet")
+            verify(sheet !== null, "the details sheet is missing")
+            tryCompare(sheet, "visible", true)
+            return sheet
+        }
+
+        function test_06j_details_show_site_line() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(),
+                                         {siteText: "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00"}))
+            var sheet = tc.openDetails(name)
+            compare(sheet.record.siteText, "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00")
+            compare(sheet.detailLines[4], "Talkgroup 4001")
+            compare(sheet.detailLines[6], "Radio ID 7001")
+            compare(sheet.detailLines[7], "Color code 1")
+            compare(sheet.detailLines[8], "Frequency 851.0125 MHz")
+            compare(sheet.detailLines[9], "P25 · SYS 1A3 · RFSS 3 · SITE 21 · WACN BEE00")
+        }
+
+        // A call whose site was never heard, only its channel, names the channel.
+        function test_06k_channel_only_line() {
+            var name = callHistory.pushTuned(4001, 7001, "", 0, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 12"}))
+            var sheet = tc.openDetails(name)
+            compare(sheet.detailLines[6], "Radio ID 7001")
+            compare(sheet.detailLines[7], "Color code 1")
+            compare(sheet.detailLines[8], "")
+            compare(sheet.detailLines[9], "DMR · LPCN 12")
+            // A call with neither adds no line.
+            sheet.visible = false
+            var plain = callHistory.pushTuned(4002, 7002, "", 0, "", "")
+            sheet = tc.openDetails(plain)
+            compare(sheet.detailLines[9], "")
+        }
+
+        // A fragment folded into the row after the details opened (a retune a
+        // few seconds on) shows there: the sheet reads its row again by uid.
+        function test_06l_details_follow_row_update() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var uid = callHistory.newestUid()
+            var sheet = tc.openDetails(name)
+            compare(sheet.detailLines[9], "")
+            verify(callHistory.updateRow(uid, {durationSecs: 9, freqHz: 851025000, srcName: "Engine 5",
+                                               siteText: "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3"}))
+            tryVerify(function () {
+                return sheet.detailLines[9] === "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3"
+            }, 5000, "the details did not follow the row: " + sheet.detailLines)
+            compare(sheet.detailLines[5], "Engine 5")
+            compare(sheet.detailLines[8], "Frequency 851.0250 MHz")
+            verify(sheet.detailLines.indexOf("Duration: 9 seconds") >= 0, sheet.detailLines)
+            // Another row changing leaves this one as it is.
+            callHistory.push("TODAY")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 1"}))
+            compare(sheet.record.uid, uid)
+            compare(sheet.detailLines[9], "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3")
+        }
+
+        // A row that leaves the log (cleared, aged out) leaves the details as
+        // they last read, not empty.
+        function test_06m_details_keep_last_record_when_row_leaves() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "DMR · LPCN 12"}))
+            var sheet = tc.openDetails(name)
+            var before = sheet.detailLines.slice()
+            callHistory.clearAll()
+            tc.waitForRendering(sheet)
+            verify(sheet.visible)
+            compare(sheet.record.name, name)
+            compare(sheet.detailLines, before)
+        }
+
+        // A row a frequency search found leads its meta line, which a screen
+        // reader hears as the row's description, with the frequency: the name
+        // does not say it again.
+        function test_06n_frequency_match_read_once() {
+            var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            historyView.filterText = "851.0125"
+            tryCompare(tc.list, "count", 1)
+            var row = tc.rowNamed(voice)
+            var spoken = row.Accessible.name + ", " + row.Accessible.description
+            compare(spoken.split("851.0125 MHz").length - 1, 1, spoken)
+            verify(tc.startsWith(row.Accessible.description, "851.0125 MHz · "), row.Accessible.description)
+        }
+
+        // Review focus: a long DMR line on a 360 px phone wraps between its
+        // parts, never inside one ("Net | 3", "Conn|ect"), nothing is clipped,
+        // and a screen reader reads the line whole.
+        function test_06o_site_line_wraps_and_reads() {
+            var width = root.width
+            try {
+                root.width = 360
+                var line = "DMR · TIII Large · Net 12 · Site 3.1 · SYS 1170 · Motorola Capacity Max · LCN 1234"
+                var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+                verify(callHistory.updateRow(callHistory.newestUid(), {siteText: line}))
+                var sheet = tc.openDetails(name)
+                var text = findChild(sheet, "historyDetailSite")
+                verify(text !== null, "the site line is missing")
+                verify(text.visible)
+                waitForRendering(text)
+                compare(text.wrapMode, Text.Wrap)
+                compare(text.Accessible.name, line)
+                verify(text.lineCount >= 2, "a long line does not wrap at 360 px: " + text.lineCount)
+                verify(text.width <= sheet.width, "the line is wider than the sheet")
+                verify(text.contentWidth <= text.width + 0.5, "the line is clipped: " + text.contentWidth)
+                // Laid out part by part, the lines hold exactly the parts that
+                // fit, each but the last ending on its separator's dot. Each
+                // candidate is spelled as the delegate shows it: no-break spaces
+                // inside a part and before a dot.
+                var parts = line.split(" · ").map(function (part) {
+                    return part.replace(/ /g, "\u00a0")
+                })
+                partWidth.font = text.font
+                var lines = 1
+                var current = ""
+                for (var i = 0; i < parts.length; ++i) {
+                    var tail = i + 1 < parts.length ? "\u00a0·" : ""
+                    partWidth.text = parts[i] + tail
+                    verify(partWidth.advanceWidth <= text.width, parts[i] + " alone is wider than the line")
+                    var candidate = current.length > 0 ? current + "\u00a0· " + parts[i] : parts[i]
+                    partWidth.text = candidate + tail
+                    if (current.length > 0 && partWidth.advanceWidth > text.width) {
+                        lines++
+                        current = parts[i]
+                    } else {
+                        current = candidate
+                    }
+                }
+                compare(text.lineCount, lines, "the line breaks inside a part")
+                var image = grabImage(sheet)
+                verify(image !== null)
+            } finally {
+                root.width = width
+            }
+        }
+
+
         // A row a frequency search found leads with that frequency, on voice and
-        // notice rows alike, and names it to a screen reader. A row the same text
+        // notice rows alike (its name never adds it: test_06n). A row the same text
         // found by its channel keeps its order, and clearing the search restores it.
         function test_06g_a_frequency_search_leads_with_the_frequency() {
             var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
@@ -389,8 +537,6 @@ Item {
             compare(tc.rowNamed(notice).metaText,
                     "851.0125 MHz · TG 4001 · SRC 7001 · NAC 293 · GPS 40.1 -75.2 · Fire Dispatch")
             compare(tc.rowNamed(byText).metaText, "TG 4002 · SRC 7002 · 0:04 · 851.0125 backup · 460.0000 MHz")
-            verify(tc.rowNamed(voice).accessibleName.indexOf("851.0125 MHz") >= 0,
-                   "a row found by its frequency does not name it: " + tc.rowNamed(voice).accessibleName)
             verify(tc.rowNamed(byText).accessibleName.indexOf("MHz") < 0,
                    "a row found by its channel names its frequency: " + tc.rowNamed(byText).accessibleName)
 

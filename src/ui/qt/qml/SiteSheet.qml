@@ -305,7 +305,7 @@ ModalSheet {
                 label: qsTr("System"),
                 name: "siteEdacsSystem",
                 valid: metrics.edacsSystem >= 0,
-                value: metrics.edacsSystem
+                value: hex(metrics.edacsSystem, 4)
             },
             {
                 label: qsTr("Area"),

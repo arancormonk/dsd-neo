@@ -11,13 +11,18 @@
  * break the history — when two committed ring rows are one conversation, which
  * fragment's source label, frequency and access code a merged row shows, and
  * when an already-ingested row has learned enough to be worth re-reading — live
- * here as plain functions the host test suite can exercise.
+ * here as plain functions the host test suite can exercise. The site a call was
+ * heard on is compared and merged by the core's own rules
+ * (<dsd-neo/core/received_identity_site.h>, libc only).
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -190,6 +195,69 @@ call_history_seen_absorb_fill(int64_t* stored_freq_hz, int* stored_ac_kind, int*
         learned = true;
     }
     return learned;
+}
+
+/** @brief Whether a call channel is known: a DMR numbering (LSN, LPCN or LCN) and a channel number. */
+inline bool
+call_history_call_channel_known(uint8_t kind, uint32_t channel) {
+    return kind >= static_cast<uint8_t>(DSD_CALL_CHANNEL_LSN) && kind <= static_cast<uint8_t>(DSD_CALL_CHANNEL_LCN)
+           && channel != 0U;
+}
+
+/**
+ * @brief Fold a fragment's site into the row's, unless the two conflict.
+ *
+ * The rows a merge joins already agree (dsd_call_site_compatible(), which also holds the channel kinds to each other
+ * and to a DMR trunking system), and then the row keeps the union of their parts, which needs no provenance: no part
+ * both know differs, so any order gives the same identity. An update of a fragment the row already holds can bring
+ * parts that conflict with the row's (the core filled the fragment later, with a site the row's other fragments never
+ * shared): then the fragment's site is discarded whole, and the caller discards its channel with it, since a part-wise
+ * pick could pair one fragment's network with another's site. The fragment is not split back out of the row.
+ *
+ * A limit of folding by compatibility: with a split on conflicting parts, a fragment that knows fewer parts than its
+ * neighbours (none, or the system without the site) joins whichever compatible row it meets first, so a live session
+ * (oldest first) and a backlog (newest first) can group the same three fragments differently.
+ *
+ * @param site          The row's site, folded in place.
+ * @param kind          The row's channel kind (dsd_call_channel_kind; NONE when it has no channel).
+ * @param incoming      The fragment's site.
+ * @param incoming_kind The fragment's channel kind.
+ * @return true when the sites agree and @p site now holds their union; false when they conflict and @p site is as it
+ *         was.
+ */
+inline bool
+call_history_site_fold(dsd_received_identity* site, uint8_t kind, const dsd_received_identity* incoming,
+                       uint8_t incoming_kind) {
+    if (dsd_call_site_compatible(site, kind, incoming, incoming_kind) == 0) {
+        return false;
+    }
+    dsd_received_identity merged;
+    dsd_rxid_site_union(site, incoming, &merged);
+    *site = merged;
+    return true;
+}
+
+/**
+ * @brief Fold a fresh read of a seen ring row's site parts and call channel into what was last recorded.
+ *
+ * The core adds site parts to a committed row in place (a reacquisition merge's union) and fills its channel, without
+ * changing the row's key. A part gained is an advance; so is any change of the channel or its kind, which the core
+ * never makes to a known one, so the change is read rather than second-guessed. Parts are never forgotten.
+ *
+ * @return true when the row advanced and the stored values were updated.
+ */
+inline bool
+call_history_seen_absorb_site(uint32_t* stored_mask, uint32_t* stored_channel, uint8_t* stored_kind, uint32_t mask,
+                              uint32_t channel, uint8_t kind) {
+    const bool gained = (mask & ~*stored_mask) != 0U;
+    const bool moved = channel != *stored_channel || kind != *stored_kind;
+    if (!gained && !moved) {
+        return false;
+    }
+    *stored_mask |= mask;
+    *stored_channel = channel;
+    *stored_kind = kind;
+    return true;
 }
 
 /* Sanity bound on a row's start/end stamps: a span longer than this is a corrupt

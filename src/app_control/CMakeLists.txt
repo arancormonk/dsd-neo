@@ -11,6 +11,7 @@ target_sources(
         actions/actions_trunk.c
         access_code_view.c
         site_identity_view.c
+        site_identity_record.c
         analog_width_view.c
         app_command_queue.c
         key_commands.c

@@ -673,10 +673,20 @@ Item {
             return [{tag: "p25", line: "P25 · WACN 45564 · SYS 006 · NAC 006 · RFSS 10 · SITE 10 · LRA 0A", want: "SITE 10"},
                     {tag: "edacs", line: "EDACS · SITE 007 [07] · Standard/Networked · No ESK", want: "SITE 007 [07]"},
                     {tag: "dmr", line: "DMR · CC 1 · Rest LSN 2", want: "DMR · CC 1"},
+                    {tag: "dmr-tier3", line: "DMR · CC 1 · TIII Small · Net 12 · Site 3.1 · SYS 1170", want: "Site 3.1"},
+                    {tag: "dmr-capplus", line: "DMR · CC 1 · Cap+ · Site 2 · Rest LSN 3 · Capacity Plus", want: "Site 2"},
+                    {tag: "dmr-conplus", line: "DMR · Con+ · Net 3 · Site 5 · Connect Plus", want: "Site 5"},
                     {tag: "none", line: "", want: ""}];
         }
         function test_site_short_form(data) {
             compare(Util.siteShortForm(data.line), data.want);
+        }
+        // A DMR site (Tier III, Capacity Plus, Connect Plus) is named in the
+        // summary by its "Site n" part, as a P25 one is by its "SITE n".
+        function test_summary_names_dmr_site() {
+            var row = item("monitorDetailsRow");
+            m("siteLine", "DMR · CC 1 · TIII Small · Net 12 · Site 3.1 · SYS 1170");
+            tryCompare(row, "accessibleDescription", "SNR 31.9 dB · CC FEC 100% · Site 3.1");
         }
         function test_summary_markup_escapes() {
             var out = Util.summaryMarkup([{text: "A<b>&", color: ""}, {text: "ENC", color: "#ff00ff"}]);

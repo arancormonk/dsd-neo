@@ -175,6 +175,44 @@ Item {
             compare(sheet.detailLines[radio + 2], "")
         }
 
+        // Issue #799: the details name the call's site and channel in the site
+        // row's own words, one line after the frequency, and follow the row when
+        // a fragment folds into it after they opened.
+        function openNewest(name) {
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the row is not on top")
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            return sheet
+        }
+
+        function test_03j_details_show_site_line() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            verify(callHistory.updateRow(callHistory.newestUid(), {siteText: "TETRA · MCC 901 · MNC 9999 · LA 12"}))
+            var sheet = tc.openNewest(name)
+            compare(sheet.detailLines[4], "Talkgroup 4001")
+            compare(sheet.detailLines[6], "Radio ID 7001")
+            compare(sheet.detailLines[7], "Color code 1")
+            compare(sheet.detailLines[8], "Frequency 851.0125 MHz")
+            compare(sheet.detailLines[9], "TETRA · MCC 901 · MNC 9999 · LA 12")
+            sheet.visible = false
+        }
+
+        function test_03k_details_follow_row_update() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var uid = callHistory.newestUid()
+            var sheet = tc.openNewest(name)
+            verify(callHistory.updateRow(uid, {durationSecs: 9, siteText: "DMR · LPCN 12"}))
+            tryVerify(function () { return sheet.detailLines[9] === "DMR · LPCN 12" }, 5000,
+                      "the details did not follow the row: " + sheet.detailLines)
+            verify(sheet.detailLines.indexOf("Duration: 9 seconds") >= 0, sheet.detailLines)
+            sheet.visible = false
+        }
+
         // A notice row on the monitor names what every row names (issue #575): its payload,
         // or "data message" when it has none, then the access code it was heard with, the
         // scan channel (which its title drops), and the frequency last. One with none of them

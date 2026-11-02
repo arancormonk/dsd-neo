@@ -25,6 +25,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1271,22 +1272,23 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
                 site_code);
     /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC counts
        once the transmission is confirmed, as the SACCH's own RAN does (nxdn_handle_sacch()). Until then the location is
-       decoded and printed, not kept. A reserved category names no site and gives no RAN. */
+       decoded and printed, not kept. A reserved category, or a system or site code the standard reserves (all zeros or
+       all ones, Table 6.5-1), names no site and gives no RAN: it is printed, not kept. */
     if (category_bit == 3U || !nxdn_confirm_is_confirmed(state)) {
+        return;
+    }
+    /* The record's category: 0 Global, 1 Regional, 2 Local (the location ID's category bits are 00, 10 and 01). */
+    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
+    const uint8_t rxid_category = k_rxid_category[category_bit];
+    if (!dsd_nxdn_location_valid(rxid_category, sys_code, site_code)) {
         return;
     }
     state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
     state->nxdn_last_ran_stand_in = 0U;
-    if (site_code != 0) {
-        state->nxdn_location_site_code = site_code;
-    }
-    if (sys_code != 0) {
-        state->nxdn_location_sys_code = sys_code;
-    }
+    state->nxdn_location_site_code = site_code;
+    state->nxdn_location_sys_code = sys_code;
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
-    /* The record's category: 0 Global, 1 Regional, 2 Local (the location ID's category bits are 00, 10 and 01). */
-    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
-    dsd_rxid_note_nxdn_location(state, k_rxid_category[category_bit], sys_code, site_code);
+    dsd_rxid_note_nxdn_location(state, rxid_category, sys_code, site_code);
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_NXDN;

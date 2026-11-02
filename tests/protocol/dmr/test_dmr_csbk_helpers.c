@@ -6,6 +6,7 @@
 #include "dsd-neo/core/safe_api.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -227,6 +228,37 @@ test_handle_individual_and_ignored_paths(void) {
     assert(g_indiv_calls == 1);
 }
 
+/* A Tier III grant's channel is its LPCN, 1..4094 (0 is CHNULL and 4095 the absolute escape, neither a channel): the
+   state machine gets it with kind LPCN, or no channel (0, kind NONE). */
+static void
+test_handle_grant_channel_kind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        uint16_t lpcn;
+        int channel;
+        uint8_t kind;
+    } cases[] = {
+        {1U, 1, DSD_CALL_CHANNEL_LPCN}, {12U, 12, DSD_CALL_CHANNEL_LPCN},  {4094U, 4094, DSD_CALL_CHANNEL_LPCN},
+        {0U, 0, DSD_CALL_CHANNEL_NONE}, {4095U, 0, DSD_CALL_CHANNEL_NONE},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        struct dmr_csbk_result result = {0};
+        reset_grant_spy();
+        result.opcode = 49U;
+        result.freq_hz = 851025000L;
+        result.lpcn = cases[i].lpcn;
+        result.target = 1300U;
+        result.source = 2300U;
+        dmr_csbk_handle(&result, &opts, &state);
+        assert(g_group_calls == 1);
+        assert(g_last_event.lpcn == cases[i].channel);
+        assert(g_last_event.channel_kind == cases[i].kind);
+    }
+}
+
 static void
 test_opcode_names_cover_grant_table(void) {
     assert(strcmp(dmr_csbk_grant_opcode_name(48U), "Private Voice Channel Grant (PV_GRANT)") == 0);
@@ -248,6 +280,7 @@ main(void) {
     test_parse_and_handle_group_grant();
     test_handle_individual_and_ignored_paths();
     test_handle_data_grant_keeps_classification();
+    test_handle_grant_channel_kind();
     test_opcode_names_cover_grant_table();
     DSD_FPRINTF(stdout, "DMR_CSBK_HELPERS: OK\n");
     return 0;

@@ -269,28 +269,10 @@ Item {
             enc: model.enc
             emergency: model.emergency
             hasRecording: model.hasRecording
-            // The frequency is named only when it is why the row is listed.
-            accessibleName: model.name + ", " + model.timeText + (callRow.freqMatched ? ", " + Util.fmtMhz(model.freqHz) : "")
-            onActivated: detailSheet.open({
-                uid: model.uid,
-                name: model.name,
-                when: model.when,
-                systemName: model.systemName,
-                systemUid: model.systemUid,
-                channel: model.channel,
-                tg: model.tg,
-                src: model.src,
-                sourceName: model.srcName,
-                emergency: model.emergency,
-                enc: model.enc,
-                durationSecs: model.durationSecs,
-                detail: model.detail,
-                freqHz: model.freqHz,
-                accessCode: model.accessCode,
-                serviceName: model.serviceName,
-                receivedTone: model.receivedTone,
-                accessCodeText: model.accessCodeText
-            })
+            // The frequency a search found is not added: the meta line, read as
+            // the row's description, already leads with it.
+            accessibleName: model.name + ", " + model.timeText
+            onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }
 

@@ -926,6 +926,63 @@ test_preemption_same_call_by_class(void) {
     return rc;
 }
 
+/* A held call and a candidate are on the same channel when both name the same channel, or, when either names none (an
+   unresolved Tier III absolute grant), on the same carrier: two calls of the same target with no channel on different
+   carriers are different calls, so an otherwise eligible private-call preemption proceeds; on one carrier, or on one
+   named channel whatever carrier each reports, they are the same call. */
+static int
+test_route_equality_zero_channels_use_freq(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+
+    static const struct {
+        int held_channel;
+        int cand_channel;
+        long cand_freq;
+        int preempts;
+        const char* tag;
+    } cases[] = {
+        {0, 0, 852000000L, 1, "no channel, another carrier: another call"},
+        {0, 0, 851000000L, 0, "no channel, the same carrier: the held call"},
+        {16, 0, 852000000L, 1, "one side without a channel, another carrier: another call"},
+        {0, 16, 851000000L, 0, "one side without a channel, the same carrier: the held call"},
+        {16, 16, 852000000L, 0, "the same named channel: the held call"},
+        {16, 17, 851000000L, 1, "another named channel: another call"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int retune = 0; retune < 2; retune++) {
+            rc |= expect_true("clear before route case", dsd_tg_policy_clear_active_call(st, -1) == 0);
+            dsd_tg_policy_call_route held;
+            dsd_tg_policy_decision held_dec;
+            init_route(&held, 5001, 7, 851000000L, cases[i].held_channel, 0, 0);
+            init_decision(&held_dec, 5001, 7, 0, 0, 1);
+            held_dec.private_call = 1;
+            rc |= expect_true("note held private call", dsd_tg_policy_note_active_call(st, &held, &held_dec, 0.0) == 0);
+            dsd_tg_policy_call_route cand;
+            dsd_tg_policy_decision cand_dec;
+            init_route(&cand, 5001, 7, cases[i].cand_freq, cases[i].cand_channel, 0, retune);
+            init_decision(&cand_dec, 5001, 7, 100, 1, 1);
+            cand_dec.private_call = 1;
+            rc |= expect_true(cases[i].tag,
+                              dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == cases[i].preempts);
+        }
+    }
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
 static int
 test_preemption_helpers(void) {
     int rc = 0;
@@ -3511,6 +3568,7 @@ main(void) {
     rc |= test_append_after_unterminated_line();
     rc |= test_preemption_helpers();
     rc |= test_preemption_same_call_by_class();
+    rc |= test_route_equality_zero_channels_use_freq();
     rc |= test_live_active_priority();
     rc |= test_reload_group_file();
     rc |= test_followed_call_bookkeeping();

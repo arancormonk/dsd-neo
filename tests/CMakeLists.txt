@@ -300,6 +300,7 @@ add_library(
     dsd-neo_test_call_state_support
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
@@ -1375,6 +1376,30 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity_site
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_SITE
+  dsd-neo/core/received_identity_site.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity_site_cxx
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_SITE_CXX
+  dsd-neo/core/received_identity_site.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_call_channel
+  HEADERS_PUBLIC_CORE_CALL_CHANNEL
+  dsd-neo/core/call_channel.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_call_channel_cxx
+  HEADERS_PUBLIC_CORE_CALL_CHANNEL_CXX
+  dsd-neo/core/call_channel.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_crc_provenance
   HEADERS_PUBLIC_CORE_CRC_PROVENANCE
   dsd-neo/core/crc_provenance.h
@@ -1872,7 +1897,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
@@ -1889,6 +1916,7 @@ add_executable(
     dsd-neo_test_dpmr_reference_vectors
     protocol/dpmr/test_dpmr_reference_vectors.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
@@ -2969,7 +2997,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_ncurses_visualizers_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
@@ -3039,6 +3069,7 @@ add_executable(
     dsd-neo_test_app_control_site_identity_view
     ui/test_app_control_site_identity_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
 )
 target_include_directories(
@@ -3328,6 +3359,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
             ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
             ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -4035,9 +4067,11 @@ add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 # And for the call-history merge/re-ingest policy (call_history_merge.h): the
 # window choices and the seen-row advance ratchet are what keep one conversation
 # one row without collapsing two distinct calls into it.
+# The site fold uses core's site compare/union (libc only), built as it is.
 add_executable(
     dsd-neo_test_ui_qt_call_history_merge
     ui/test_ui_qt_call_history_merge.cpp
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_history_merge
@@ -4243,6 +4277,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
@@ -4277,6 +4312,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_talkgroup_list_model
@@ -4308,8 +4344,10 @@ if(DSD_ENABLE_QT_UI)
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path. The
-    # access-code text comes from app-control (issue #575). A QGuiApplication,
-    # so the app-state saves see the real applicationStateChanged signal.
+    # access-code text comes from app-control (issue #575), the site line from
+    # its record form and the site compare/union from core (issue #799), all
+    # built as they are. A QGuiApplication, so the app-state saves see the real
+    # applicationStateChanged signal.
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -4320,6 +4358,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_call_history_model
@@ -6133,6 +6173,21 @@ add_test(
     COMMAND dsd-neo_test_core_received_identity
 )
 
+# Site identities a call row keeps (compare, union, consistency): the module builds on its own, as the Qt tests use it
+add_executable(
+    dsd-neo_test_core_received_identity_site
+    core/test_core_received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+)
+target_include_directories(
+    dsd-neo_test_core_received_identity_site
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_RECEIVED_IDENTITY_SITE
+    COMMAND dsd-neo_test_core_received_identity_site
+)
+
 add_executable(
     dsd-neo_test_core_state_trunk_lcn_avoid
     test_support/scan_group_stubs.c
@@ -6887,6 +6942,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_engine_protocol_dispatch
@@ -7485,6 +7541,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
@@ -9290,6 +9347,7 @@ add_executable(
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -11429,6 +11487,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_dburst.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -11669,6 +11728,7 @@ add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
@@ -11826,6 +11886,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times
@@ -16473,12 +16534,13 @@ if(DSD_HAS_RADIO)
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
     # must bypass the RAS-masked CSBK CRC so the TIII site identity decodes.
     # The second case pins colour code 0, which must not be mistaken for the
-    # "unknown" sentinel.
+    # "unknown" sentinel. Tier III numbers show one-based: raw network 1, site 1
+    # read "Net ID: 2; Site ID: 2" (issue #799 D1).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC
         dmr_t3_ras_cc
         "-fs -F"
-        "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1"
+        "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC_COLOR_CODE
@@ -16658,15 +16720,16 @@ if(DSD_HAS_RADIO)
     # noise added to the cu8 samples.
     # The fixture is tuned to carrier 1068 (426.7 MHz), where the call's allocation
     # sends it, so its speech is call 113's: the replay publishes the group call to
-    # its event history (-J). A "." stands for each ";" of the event line, which an
-    # add_test argument would split at.
+    # its event history (-J), with the network and location area the cell sent. A
+    # "." stands for each ";" of the event line, which an add_test argument would
+    # split at.
     add_test(
         NAME DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
         COMMAND
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_real_air_72k.iq.json"
             "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
-            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. MCC: 228. MNC: 8889. LA: 1. Group."
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
@@ -16803,7 +16866,7 @@ if(DSD_HAS_RADIO)
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
             "-DFIXTURE=${_dsd_iq_wav_dir}/call_known_centre/tetra_call.wav"
             "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
-            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. MCC: 228. MNC: 8889. LA: 1. Group."
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_WAV_CALL_EVENT"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )

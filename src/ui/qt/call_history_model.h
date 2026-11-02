@@ -31,6 +31,8 @@
  * Each row also carries the frequency and access code its call was heard with (issue
  * #575). A merged row takes each from the newest fragment that knew it, field by field
  * (call_history_merge.h), and the access code's text is app-control's, spelled when read.
+ * Issue #799: and the system and site it was heard on, with the DMR call's own channel. Fragments
+ * heard on two sites stay two rows, and the site line is app-control's, spelled when read.
  *
  * Issue #708: each row has a stable uid, and the ring fragments it absorbed, which is how its
  * call recordings find it (call_recording_provider.h). While the app is in the background, where
@@ -55,10 +57,12 @@
 #include <QThreadPool>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <memory>
@@ -117,7 +121,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         AccessCodeTextRole, // "Color code 1", "Network access code 293", ..., else empty
         UidRole,            // the row's stable identity (qint64), for rowForUid()
         RecordingsRole,     // the row's call recordings (CallRecordingProvider), oldest first
-        HasRecordingRole    // whether the row has any
+        HasRecordingRole,   // whether the row has any
+        SiteTextRole        // "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3" (site_identity_view.h), else empty
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -225,6 +230,16 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * rowPositionsChanged(), so a fragment folded into the row, or a recording deleted, shows while it is open.
      */
     Q_INVOKABLE QVariantList recordingsForUid(qint64 uid) const;
+
+    /**
+     * @brief The details of the row that has @p uid (its UidRole as text; QML passes the number) now, or an empty map.
+     *
+     * One key per role the detail sheet shows, by the role names (uid, name, when, systemName, systemUid, channel, tg,
+     * src, emergency, enc, durationSecs, detail, freqHz, accessCode, accessCodeText, serviceName, receivedTone,
+     * siteText), except the source label, which is sourceName. A sheet that follows one row by its uid reads it again
+     * when the row changes, so a fragment folded in after it opened shows.
+     */
+    Q_INVOKABLE QVariantMap recordFor(const QString& uid) const;
 
     bool
     saveFailing() const {
@@ -455,6 +470,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 acWhen = 0;
         qulonglong acSeq = 0;
         int acSlot = 0;
+        /* Issue #799. The system and site the call was heard on (Event_History::site_id, site parts only), and the
+         * DMR call's own channel with the numbering it was named in (dsd_call_channel_kind; 0 and NONE when unknown,
+         * and for every other protocol). A merge joins fragments only when their sites and channel kinds agree
+         * (dsd_call_site_compatible()) and keeps the union of their parts; the channel folds by the fragment it came
+         * from, as the frequency does. The DMR site text and brand are kept as they were received, for display; no
+         * compare reads them. Persisted (`site`, `cch*`); older rows read empty. */
+        dsd_received_identity siteId = {};
+        uint32_t callChannel = 0;
+        uint8_t callChannelKind = 0;
+        qint64 cchWhen = 0;
+        qulonglong cchSeq = 0;
+        int cchSlot = 0;
         /* Issue #708. The row's identity for views that follow it, persisted (`uid`); assigned when the row is first
          * logged, never reused, and kept by the row a merge folds another into. 0 until assigned. */
         qint64 uid = 0;
@@ -495,6 +522,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool receiveKnown = false;
         int receiveSlot = 0;
         QString service;
+        /* The site parts (dsd_received_identity::valid) and the call channel last read (issue #799). The core adds
+         * site parts in place and fills the channel, so a part gained, or any change of the channel or its kind, is
+         * an advance (call_history_seen_absorb_site()). */
+        uint32_t siteMask = 0;
+        uint32_t callChannel = 0;
+        uint8_t callChannelKind = 0;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -568,6 +601,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static int noteSeen(SeenMap& seenMap, qint64 session, const QString& key, quint64 ring, const SeenState& read,
                         bool voice);
     static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
+    static bool absorbSeenSite(SeenState& seen, const SeenState& read);
 
     /**
      * @brief Walk one slot's ring for rows not seen before, or seen but advanced, appending them to @p fresh.
@@ -586,6 +620,16 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     int tryMerge(const Row& row, int scanRows);
 
+    /** @brief Fold fragment @p row into @p existing, the row it belongs to: the span, labels, carrier, site and
+     * fragments. A site that conflicts with the row's is not taken, nor is its channel (call_history_site_fold()). */
+    void foldRow(Row& existing, const Row& row);
+
+    /** @brief The voice row holding one of @p row's fragments (m_fragmentIndex), or -1. */
+    int rowHoldingFragment(const Row& row) const;
+
+    /** @brief After a fold into row @p merged: name its channel, announce the change, keep the newest-first order. */
+    void settleMerged(int merged);
+
     /** @brief The logged notice @p row repeats field for field, not yet taken by another notice of the ring, or -1. */
     int findRepeatedNotice(const Row& row) const;
 
@@ -600,11 +644,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.
      *
-     * An update (a seen ring row that advanced) may only refine an existing row, which it
-     * looks for through the whole log; if its row cannot be found it is dropped, never
-     * inserted as a duplicate. A row heard @p again merges into the call it repeats wherever
-     * that call sits in the log, and that call joins the running session. A first sighting
-     * merges only within the newest rows.
+     * An update (a seen ring row that advanced) may only refine an existing row: the one
+     * holding its fragment (m_fragmentIndex), else one it merges with anywhere in the log; if
+     * its row cannot be found it is dropped, never inserted as a duplicate. A row heard
+     * @p again merges into the call it repeats wherever that call sits in the log, and that
+     * call joins the running session. A first sighting merges only within the newest rows.
      *
      * @return true when a new row was inserted (the count changed).
      */

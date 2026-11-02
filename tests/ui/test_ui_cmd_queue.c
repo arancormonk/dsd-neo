@@ -10420,7 +10420,7 @@ test_identity_forgetting_commands_clear_the_record(void) {
     int rc = 0;
     init_decode_mode_context(&opts, &state);
     dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    dsd_rxid_note_dmr_site_text(&state, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_site(&state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+ \xC2\xB7 Site 2");
     dsd_rxid_note_dmr_rest_lsn(&state, 3U);
     dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
     dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_DMR, 451000000U);
