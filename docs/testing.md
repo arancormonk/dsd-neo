@@ -1862,6 +1862,10 @@ write or two).
 | `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 | `--analog-synth-pauses SEED` | Make the NFM recording cases' capture at run time (issue #756) and replay it: five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, 0.8 s of noise after the last; see [NFM recordings through pauses](#nfm-recordings-through-pauses-issue-756). The case names no `--iq-replay` of its own (the host refuses one). With `-P` the host also prints an `ANALOG CALL ROW: start=S end=E` line per NFM history row after the run. |
+| `--analog-scene NAME` | Make one of the host's scenes at run time and take it as the input (issue #668): bursts of voice-band noise that never repeats, so each recording can be found in it; see [Where an NFM recording starts](#where-an-nfm-recording-starts-issue-668). The `pcm` and `udp` scenes need `--analog-pcm-tap RATE` for their rate. With `-P` and `--wav-journal` the host reads every published recording after the run and prints `ANALOG RECORDING: n=N burst=B score=S start_ms=X audio_ms=Y ms=L`. |
+| `--analog-record-{min,max}-start-ms MS` | Bounds on `start_ms`, where each recording's first sample was against its burst's start (negative: before it). |
+| `--analog-record-{min,max}-audio-ms MS` | Bounds on `audio_ms`, where its first sample that is not 0 was. |
+| `--analog-keep-output` | Keep the session's own output settings instead of capturing the monitor (issue #668): with `-o null` the output stays muted. The host prints `ANALOG OUTPUT: audio_out=A type=T played=N` and fails unless the output is off and nothing reached it. |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
@@ -2550,15 +2554,64 @@ have one `publish` line per recording: NFM, pending its row, not failed, naming 
 Each `publish` line's `duration_ms`, in publication order, must be within one 20 ms block of the case's expected length
 (`DURATIONS_MS`), so the recordings keep time.
 
+These cases run at the default pre-roll of 200 ms (issue #668). It adds to each new recording once, up to the audio
+heard since the last call ended, and never to a burst that a held call resumes with: after the 0.3 s pause, or after a
+hold that ran out 100 ms before the next burst, only 100 ms are there to add. The `_NO_PREROLL` cases run the same
+captures with `--analog-record-preroll-ms 0` and keep the lengths measured before the pre-roll. Their recordings are the
+same, byte for byte, as main's before issue #668 (checked when the pre-roll was added, against the same host on main).
+
 | Case | What it pins |
 | --- | --- |
-| `DECODE_PCM_ANALOG_RECORD_GAP_200`, `_500`, `_1000`, `_2000`, `_3500` | The discriminator tap as audio input under `--squelch noise+6`, every build: `--analog-record-max-gap-ms` 200 (off) gives 5 recordings, 500 gives 4, 1000 gives 3, 2000 gives 2 and 3500 gives 1. Expected lengths in the journal are the values measured on a dev-debug build, each held to within 20 ms, so a build whose squelch decides one block earlier or later still passes: a burst alone is 700 or 680 ms (the 0.5 s burst and the 200 ms hangover); joined, 1500 ms (500), 2600 (1000), 4580 (2000) and 8100 (3500). |
+| `DECODE_PCM_ANALOG_RECORD_GAP_200`, `_500`, `_1000`, `_2000`, `_3500` | The discriminator tap as audio input under `--squelch noise+6`, every build: `--analog-record-max-gap-ms` 200 (off) gives 5 recordings, 500 gives 4, 1000 gives 3, 2000 gives 2 and 3500 gives 1. Expected lengths in the journal are the values measured on a dev-debug build, each held to within 20 ms, so a build whose squelch decides one block earlier or later still passes: a burst alone is 900 or 880 ms (the 200 ms pre-roll, the 0.5 s burst and the 200 ms hangover), 800 after a pause that left 100 ms to add; joined, 1700 ms (500), 2800 (1000), 4780 (2000) and 8300 (3500). |
+| the same five with `_NO_PREROLL` | No pre-roll: a burst alone is 700 or 680 ms; joined, 1500 ms (500), 2600 (1000), 4580 (2000) and 8100 (3500). |
 | the `_1000`, `_2000` and `_3500` cases | The input ends 740 ms after the last audible audio (`total_ms - last_audible_ms`, held under the max gap by `HELD_AT_END_MS`), so the last call is still held then: the engine's normal teardown publishes it, and its row commits and links it. With `dsd_engine_analog_call_end()` skipping a held call, these three cases and `_PACED` fail and the other two pass. |
-| `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. The lengths are held to 2580, 680 and 680 ms, as measured, within 20 ms. |
+| `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. The lengths are held to 2780, 880 and 880 ms, as measured, within 20 ms. |
+| `DECODE_IQ_ANALOG_RECORD_GAP_NO_PREROLL` | The I/Q capture once, without the pre-roll: 2580, 680 and 680 ms. |
 
 The largest silence one resume writes (a 10 s hold that is all tone check, 480000 samples) is timed by `CORE_RECEIVE`,
 which prints `a 10 s pause written as silence in N ms`. That is about 0.5 ms in `dev-debug` with the temporary
 directory on tmpfs, and about 1.6 ms on btrfs: well under one 20 ms block.
+
+#### Where an NFM recording starts (issue #668)
+
+These cases check where a per-call NFM recording starts against the transmission it holds, through the same checker
+and the real engine, with no fixture committed. The host makes a scene at run time (`--analog-scene`): bursts of
+Gaussian noise band-limited to 300-2500 Hz (four second-order sections), made from a fixed seed, so no stretch of it
+repeats. A burst's start is where its carrier comes on. The scenes:
+
+| Scene | What it is |
+| --- | --- |
+| `onsets`, `onsets-ctcss` | Four 1 s bursts 2 s apart, each starting at another point of a 20 ms block, as I/Q the way `--analog-synth-pauses` makes it (the carrier 16 dB over 3 LSB of noise, 3 kHz deviation), or its discriminator tap with `--analog-pcm-tap`. `-ctcss` adds a 100.0 Hz tone at 600 Hz deviation and takes the voice to 2.5 kHz. |
+| `ctcss-short` | The same with the tone: bursts of 0.26, 0.28 and 0.30 s, then one of 0.6 s. |
+| `level-onsets` | Three 1 s bursts as a radio that squelches itself sends them: the voice at -20 dBFS RMS, -60 dBFS of noise between bursts, at `--analog-pcm-tap`'s rate. |
+| `level-ctcss-short` | The same with the tone left in (-26 dBFS): bursts of 0.10 to 0.22 s in steps of 0.02 s, then one of 0.6 s. |
+| `level-blip` | One 40 ms burst from 45 ms into the tenth 960-sample block at 8192 Hz. |
+| `udp-pause` | Sent live to `-i udp` at 8192 Hz in 20 ms datagrams, paced in real time: nine 960-sample blocks of the floor, 200 samples of an old source's burst (part of the tenth block), then the sender stops for a second and a new source's 1 s burst follows. The old burst is no burst of its own to the checker: a recording that holds it starts before the new one. |
+
+After the run the host reads the journal and finds each published recording in the scene: 50 ms pieces of it (its
+loudest, then from its middle outwards) are compared with the scene's voice around every burst, by normalised
+correlation on every sixth sample and then sample by sample around the best, until one matches with a score of 0.7.
+A recording that matches nothing (score under 0.5) fails. The host prints `start_ms`, where the recording's first sample
+was against its burst's start, and `audio_ms`, where its first sample that is not 0 was, and holds them to the case's
+`--analog-record-*` bounds. The CTCSS tone is not in the voice it compares with, and the voice filters take it out of
+the recording.
+
+| Case | What it pins (measured on a dev-debug build, ms against the burst's start) |
+| --- | --- |
+| `DECODE_PCM_ANALOG_RECORD_START`, `DECODE_IQ_ANALOG_RECORD_START` | `onsets` under `--squelch noise+6`, as the 48 kHz tap (every build) and as I/Q (radio builds), at the default pre-roll: 4 recordings, each starting before its burst (-148 to -163 on the tap, -157 to -173 on I/Q; the bound is -120), with audio from its first sample. |
+| `_START_NULL` | The same with `--analog-keep-output` and `-o null`: the output stays muted, nothing plays, and the recordings start the same. |
+| `_START_NO_PREROLL` | `--analog-record-preroll-ms 0`: they start where the squelch decides, as before the pre-roll (37 to 52 on the tap, 27 to 43 on I/Q; bounds 20 to 70 and 15 to 70). |
+| `DECODE_IQ_ANALOG_RECORD_START_AUTO`, `_AUTO_NO_PREROLL` | `--squelch auto` on I/Q: -183 to -197 with the pre-roll (bound -150), 3 to 17 without (bounds 0 to 40). |
+| `DECODE_PCM_ANALOG_RECORD_START_8K`, `_8K_NO_PREROLL` | `level-onsets` at 8192 Hz, where a block lasts 117 ms and the noise squelch has no room, under `--squelch -40`: the level squelch takes the whole block a burst starts in (-32 to -112 without the pre-roll; bounds -120 to 0), and the pre-roll adds 200 ms before it (-232 to -312; bound -220). |
+| `DECODE_PCM_ANALOG_RECORD_START_TONE`, `DECODE_IQ_ANALOG_RECORD_START_TONE` | `onsets-ctcss` under `--tone-allow 100.0`: each recording starts at the tone's verdict, 312 to 332 ms into its burst, and holds nothing from before it; the pre-roll adds none of the audio still being checked (bound 280 for both values). |
+| `DECODE_IQ_ANALOG_RECORD_TONE_SHORT` | B1: `ctcss-short` under `noise+6` and `--tone-allow 100.0`. The 0.26 to 0.30 s carriers are passed only in the hangover, after they end, and leave no recording and no history row (main left a 180 ms silent recording and its row); the 0.6 s burst records from its verdict (323). |
+| `DECODE_PCM_ANALOG_RECORD_TONE_SHORT_8K` | B1 and B6 at 8192 Hz: `level-ctcss-short` under `--squelch -40` and `--tone-allow 100.0`. The short carriers leave nothing (main left two 117 ms silent recordings and rows), and the 0.6 s burst's recording starts at the verdict, 285 ms in, part-way through its block (bound 250; main recorded the whole block from 185 ms, audio still being checked included). |
+| `DECODE_PCM_ANALOG_RECORD_LEVEL_BLIP_8K` | `level-blip` under `--squelch -23`: the block's level stays under the squelch, so the monitor plays nothing (`--analog-max-audible-ms 0`), but one tap read of the burst opens it, and the call begins with the burst in its recording (it starts 246 ms before the burst with the pre-roll). |
+| `DECODE_UDP_ANALOG_RECORD_PAUSE_8K` | B7: `udp-pause` under `--squelch -40` with `-o null` kept. The block the pause cuts begins no call, so the one recording starts with the block after it, 92 ms into the new burst, and holds nothing of the old source or of the pre-roll from before the pause (bound 0; main started the recording with the old source, at -26). |
+| `DECODE_PCM_ANALOG_RECORD_RDIO_DIRWATCH` | `--rdio-mode dirwatch` on the 48 kHz tap of `--analog-synth-pauses 756`: every recording has a sidecar with talkgroup `4242` (`--rdio-analog-talkgroup`, as an audio input has no frequency), tag `NFM`, `freq` 0, system 7 (`--rdio-system-id`), `short_name` `NFM` and an empty `srcList` (the checker's `SIDECAR`). |
+| `DECODE_IQ_ANALOG_RECORD_RDIO_DIRWATCH` | The same on I/Q at 851.375 MHz: talkgroup `851375` (the frequency in kHz), tag `NFM 851.3750 MHz`, `freq` 851375000 and system 9 (`--rdio-analog-system-id` over `--rdio-system-id 7`). |
+
+The pre-roll's cost is measured by `dsd-neo_bench_analog_record` ([docs/dsp-benchmarking.md](dsp-benchmarking.md)).
 
 #### Tone and code labels
 

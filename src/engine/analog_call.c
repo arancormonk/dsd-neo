@@ -221,7 +221,9 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
        epoch while the boundaries stay current, and the stream may bring no whole block to see it. The call, held or
        not, ends at its last reception as the next block would end it, and with no call the pre-roll goes (issue #668).
        The epoch seen stays the last block's, so that next block, which may still hold audio from before the reset, is
-       dropped too. */
+       dropped too. It does whenever a tap read found a stream pause part-way through a block that spans several reads
+       (live input at 8192 Hz, where a block lasts 117 ms): the block's first samples arrived before the pause (B7,
+       issue #668). */
     const int moved = state->analog_rx.boundaries != call->boundaries_seen;
     if (!call->active) {
         if (moved) {

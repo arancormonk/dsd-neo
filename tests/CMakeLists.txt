@@ -5980,6 +5980,30 @@ target_include_directories(
 target_compile_definitions(dsd-neo_test_core_receive PRIVATE DSD_NEO_TEST_HOOKS)
 add_test(NAME CORE_RECEIVE COMMAND dsd-neo_test_core_receive)
 
+# Opt-in micro-benchmark of an NFM monitor block's way into its recording, -P off and on (issue #668); not a test.
+add_executable(
+    dsd-neo_bench_analog_record
+    EXCLUDE_FROM_ALL
+    engine/bench_analog_record.c
+    ../src/engine/analog_call.c
+    ../src/engine/analog_preroll.c
+    ../src/app_control/receive_view.c
+)
+target_include_directories(
+    dsd-neo_bench_analog_record
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
+)
+# initState() reaches the codecs ${LIBS} carries, after dsd-neo_core as for the other initState() users.
+target_link_libraries(
+    dsd-neo_bench_analog_record
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_core
+        dsd-neo_test_support
+        ${LIBS}
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+
 add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)
 target_include_directories(
     dsd-neo_test_core_state_ext
@@ -19054,7 +19078,11 @@ dsd_neo_add_analog_replay_test(
 # engine's teardown publishes and links it (HELD_AT_END_MS checks the input ended
 # that soon after the last audio). Each recording's journal duration_ms is pinned to
 # within one 20 ms block: 700 ms a burst alone (0.5 s and the 200 ms hangover), and
-# a joined call adds its pauses and bursts.
+# a joined call adds its pauses and bursts. These run at the default pre-roll (200 ms,
+# issue #668), which adds to each new recording once, up to the audio heard since
+# the last call ended (100 ms after a 0.3 s pause, or after a hold that expired 100 ms
+# before the next burst), and never to a burst a held call resumes with; the
+# _NO_PREROLL cases keep the lengths without it.
 # dsd_neo_add_analog_recording_test(name mode files durations_ms [rates [held_at_end_ms]])
 function(dsd_neo_add_analog_recording_test test_name mode files durations)
     set(_extra_args)
@@ -19088,19 +19116,19 @@ dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_200
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 200"
     5
-    "700,700,700,680,700"
+    "900,800,900,880,900"
 )
 dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_500
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 500"
     4
-    "1500,700,680,700"
+    "1700,800,880,900"
 )
 dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_1000
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 1000"
     3
-    "2600,680,700"
+    "2800,880,900"
     ""
     1000
 )
@@ -19108,13 +19136,52 @@ dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_2000
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 2000"
     2
-    "4580,700"
+    "4780,900"
     ""
     2000
 )
 dsd_neo_add_analog_recording_test(
     DECODE_PCM_ANALOG_RECORD_GAP_3500
     "${_pcm_record_gap_mode} --analog-record-max-gap-ms 3500"
+    1
+    "8300"
+    ""
+    3500
+)
+set(_pcm_record_gap_no_preroll_mode
+    "${_pcm_record_gap_mode} --analog-record-preroll-ms 0"
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_200_NO_PREROLL
+    "${_pcm_record_gap_no_preroll_mode} --analog-record-max-gap-ms 200"
+    5
+    "700,700,700,680,700"
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_500_NO_PREROLL
+    "${_pcm_record_gap_no_preroll_mode} --analog-record-max-gap-ms 500"
+    4
+    "1500,700,680,700"
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_1000_NO_PREROLL
+    "${_pcm_record_gap_no_preroll_mode} --analog-record-max-gap-ms 1000"
+    3
+    "2600,680,700"
+    ""
+    1000
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_2000_NO_PREROLL
+    "${_pcm_record_gap_no_preroll_mode} --analog-record-max-gap-ms 2000"
+    2
+    "4580,700"
+    ""
+    2000
+)
+dsd_neo_add_analog_recording_test(
+    DECODE_PCM_ANALOG_RECORD_GAP_3500_NO_PREROLL
+    "${_pcm_record_gap_no_preroll_mode} --analog-record-max-gap-ms 3500"
     1
     "8100"
     ""
@@ -19127,9 +19194,171 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_RECORD_GAP_PACED
         "--analog-synth-pauses 756 -fA --squelch noise+6 --analog-record-max-gap-ms 1000"
         3
-        "2580,680,680"
+        "2780,880,880"
         "fast,realtime"
         1000
+    )
+    dsd_neo_add_analog_recording_test(
+        DECODE_IQ_ANALOG_RECORD_GAP_NO_PREROLL
+        "--analog-synth-pauses 756 -fA --squelch noise+6 --analog-record-max-gap-ms 1000 --analog-record-preroll-ms 0"
+        3
+        "2580,680,680"
+        ""
+        1000
+    )
+endif()
+
+# Where an NFM recording starts (issue #668). The host makes a scene at run time
+# (--analog-scene; no fixture is committed): bursts of voice-band noise that never
+# repeats, so after the run it finds every recording in the scene and says where its
+# first sample, and its first sample that is not 0, fell against the start of its
+# burst (the carrier coming on). The bounds are in ms against that start: negative
+# is before it. Measured values and what each case pins are in docs/testing.md. The
+# default pre-roll (200 ms) keeps a burst's start: the noise squelch decides 25-55 ms
+# into a burst and the auto squelch 0-20 ms, and their recordings start 150-200 ms
+# before the burst instead. Without it they start where they did before the pre-roll.
+# dsd_neo_add_analog_record_start_test(name mode files [sidecar])
+function(dsd_neo_add_analog_record_start_test test_name mode files)
+    set(_extra_args)
+    if(ARGC GREATER 3)
+        list(APPEND _extra_args "-DSIDECAR=${ARGV3}")
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=${mode}" "-DFILES=${files}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/${test_name}"
+            ${_extra_args} -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+    )
+    set_tests_properties(
+        ${test_name}
+        PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+    )
+endfunction()
+
+set(_pcm_record_start_mode
+    "--analog-scene onsets --analog-pcm-tap 48000 -fA --squelch noise+6"
+)
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START
+    "${_pcm_record_start_mode} --analog-record-max-start-ms -120 --analog-record-max-audio-ms -120"
+    4
+)
+# The session's own output kept: -o null stays muted, and the recordings are the same.
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START_NULL
+    "${_pcm_record_start_mode} --analog-keep-output --analog-record-max-start-ms -120 --analog-record-max-audio-ms -120"
+    4
+)
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START_NO_PREROLL
+    "${_pcm_record_start_mode} --analog-record-preroll-ms 0 --analog-record-min-start-ms 20 --analog-record-max-start-ms 70"
+    4
+)
+# At 8192 Hz a monitor block lasts 117 ms. The noise squelch has no room there, so the
+# scene is a radio's own audio, silent between bursts, under the level squelch, which
+# takes the whole block a burst starts in; the pre-roll adds 200 ms before that.
+set(_pcm_record_start_8k_mode
+    "--analog-scene level-onsets --analog-pcm-tap 8192 -fA --squelch -40"
+)
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START_8K
+    "${_pcm_record_start_8k_mode} --analog-record-max-start-ms -220 --analog-record-max-audio-ms -220"
+    3
+)
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START_8K_NO_PREROLL
+    "${_pcm_record_start_8k_mode} --analog-record-preroll-ms 0 --analog-record-min-start-ms -120 --analog-record-max-start-ms 0"
+    3
+)
+# A tone filter: a recording starts at the verdict (about 0.3 s into the burst), with
+# no audio from before it, and the pre-roll adds none of the audio still being checked.
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_START_TONE
+    "--analog-scene onsets-ctcss --analog-pcm-tap 48000 -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+    4
+)
+# B1 at 8192 Hz: carriers of 0.10 to 0.22 s whose tone is passed only after they end,
+# in the 200 ms hangover, leave no recording and no row; the 0.6 s burst records from
+# the verdict, the block's earlier part left out (B6).
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_TONE_SHORT_8K
+    "--analog-scene level-ctcss-short --analog-pcm-tap 8192 -fA --squelch -40 --tone-allow 100.0 --analog-record-min-start-ms 250 --analog-record-min-audio-ms 250"
+    1
+)
+# A 40 ms burst inside a 117 ms block at 8192 Hz opens the level squelch in one tap
+# read while the block's level stays under it: the monitor plays nothing, and the call
+# begins with the burst in its recording.
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_LEVEL_BLIP_8K
+    "--analog-scene level-blip --analog-pcm-tap 8192 -fA --squelch -23 --analog-max-audible-ms 0 --analog-min-total-ms 2400 --analog-record-max-start-ms 0"
+    1
+)
+# B7: a UDP input at 8192 Hz stops for a second 200 samples into a block that holds the
+# end of one source, and another source fills the block: that block begins no call,
+# and no recording holds the old source (it starts after the new source began).
+dsd_neo_add_analog_record_start_test(
+    DECODE_UDP_ANALOG_RECORD_PAUSE_8K
+    "--analog-keep-output --analog-scene udp-pause --analog-pcm-tap 8192 -fA --squelch -40 --analog-record-min-start-ms 0"
+    1
+)
+# rdio-scanner DirWatch (issue #668): an audio input's calls have no frequency, so they
+# go under --rdio-analog-talkgroup, labelled NFM, in --rdio-system-id's system.
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_RDIO_DIRWATCH
+    "${_pcm_record_gap_mode} --rdio-mode dirwatch --rdio-system-id 7 --rdio-analog-talkgroup 4242"
+    5
+    "talkgroup=4242,talkgroup_tag=NFM,freq=0,system=7,short_name=NFM,srcList=[]"
+)
+if(DSD_HAS_RADIO)
+    set(_iq_record_start_mode "--analog-scene onsets -fA --squelch noise+6")
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START
+        "${_iq_record_start_mode} --analog-record-max-start-ms -120 --analog-record-max-audio-ms -120"
+        4
+    )
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START_NULL
+        "${_iq_record_start_mode} --analog-keep-output --analog-record-max-start-ms -120 --analog-record-max-audio-ms -120"
+        4
+    )
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START_NO_PREROLL
+        "${_iq_record_start_mode} --analog-record-preroll-ms 0 --analog-record-min-start-ms 15 --analog-record-max-start-ms 70"
+        4
+    )
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START_AUTO
+        "--analog-scene onsets -fA --squelch auto --analog-record-max-start-ms -150 --analog-record-max-audio-ms -150"
+        4
+    )
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START_AUTO_NO_PREROLL
+        "--analog-scene onsets -fA --squelch auto --analog-record-preroll-ms 0 --analog-record-min-start-ms 0 --analog-record-max-start-ms 40"
+        4
+    )
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_START_TONE
+        "--analog-scene onsets-ctcss -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+        4
+    )
+    # B1: CTCSS carriers of 0.26 to 0.30 s under the noise squelch, whose tone is passed
+    # only in the hangover, leave no recording and no row; the 0.6 s burst records.
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_TONE_SHORT
+        "--analog-scene ctcss-short -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+        1
+    )
+    # A replay knows its frequency: the talkgroup is it in kHz, the label names it,
+    # and --rdio-analog-system-id puts NFM calls in their own system.
+    dsd_neo_add_analog_record_start_test(
+        DECODE_IQ_ANALOG_RECORD_RDIO_DIRWATCH
+        "--analog-synth-pauses 756 -fA --squelch noise+6 --rdio-mode dirwatch --rdio-system-id 7 --rdio-analog-system-id 9"
+        5
+        "talkgroup=851375,talkgroup_tag=NFM 851.3750 MHz,freq=851375000,system=9,short_name=NFM,srcList=[]"
     )
 endif()
 

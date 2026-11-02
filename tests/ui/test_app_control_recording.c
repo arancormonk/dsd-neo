@@ -1447,6 +1447,8 @@ test_stop_and_start_while_nfm_held(void) {
     int rc = rig_open(&r, "dsdneo_rec_nfm_held");
     setup_nfm(r.opts, r.state);
     r.opts->analog_record_max_gap_ms = 1000;
+    /* The hold alone: a pre-roll (issue #668) would open the new recording with the held blocks heard before it. */
+    r.opts->analog_record_preroll_ms = 0;
     submit(DSD_APP_CMD_WAV_START);
     (void)drain(&r);
     nfm_block(r.opts, r.state);

@@ -97,8 +97,9 @@ typedef struct {
 #define DSD_ANALOG_RECORD_MAX_GAP_MAX_MS     10000
 
 /* The NFM recording pre-roll in ms (dsd_opts.analog_record_preroll_ms, issue #668): how much of the allowed audio just
-   before a reception a new per-call recording opens with. 0 is off. */
-#define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 0
+   before a reception a new per-call recording opens with. The default, and the largest value the CLI, the INI, the app
+   command and the API take; 0 is off. A value outside 0 to the largest is refused, never clamped. */
+#define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 200
 #define DSD_ANALOG_RECORD_PREROLL_MAX_MS     1000
 
 struct dsd_opts {

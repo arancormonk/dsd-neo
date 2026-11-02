@@ -81,6 +81,14 @@
  * recording on (-P), the stop hook, which runs after the engine committed the session's last calls, also prints one
  * "ANALOG CALL ROW: start=S end=E" line per NFM call history row, oldest first (decode time, whole seconds).
  * tests/analog_recording_check.cmake reads those lines with the recordings and the journal.
+ *
+ * --analog-scene NAME (issue #668) makes one of the scenes below at run time and takes it as the input instead:
+ * bursts of voice-band noise that never repeats, as I/Q, as audio input at --analog-pcm-tap's rate, or sent live over
+ * UDP. With -P and --wav-journal, once the engine has stopped, the host finds every published recording in the scene
+ * and prints one "ANALOG RECORDING:" line for it: where its first sample, and its first sample that is not 0, fell
+ * against its burst's start. --analog-record-{min,max}-{start,audio}-ms bound those. --analog-keep-output keeps the
+ * session's own output settings instead of capturing the monitor (-o null stays muted, as engine setup leaves it),
+ * prints one "ANALOG OUTPUT:" line and fails unless the output is off and nothing reached it.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -97,9 +105,14 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -112,6 +125,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 
 #include "../test_support/test_support.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
@@ -231,6 +249,16 @@ static analog_limit g_pcm_lowpass_hz;
 static analog_limit g_raw_wav_min_rms_dbfs;
 /* The seed of the capture with pauses the host makes and replays (--analog-synth-pauses); unset makes none. */
 static analog_limit g_synth_pauses;
+/* Where each recording of a scene starts against its burst (--analog-record-*-ms, issue #668); unset checks nothing. */
+static analog_limit g_record_min_start_ms;
+static analog_limit g_record_max_start_ms;
+static analog_limit g_record_min_audio_ms;
+static analog_limit g_record_max_audio_ms;
+/* The session's own output settings stay (--analog-keep-output, issue #668): -o null stays muted, nothing captured. */
+static int g_keep_output;
+/* The option that names a scene (--analog-scene, issue #668) and the one that takes no value. */
+static const char k_scene_arg[] = "--analog-scene";
+static const char k_keep_output_arg[] = "--analog-keep-output";
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -268,6 +296,10 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-pcm-lowpass-hz", &g_pcm_lowpass_hz, 1000.0, 20000.0},
     {"--analog-raw-wav-min-rms-dbfs", &g_raw_wav_min_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-synth-pauses", &g_synth_pauses, 1.0, 4294967295.0},
+    {"--analog-record-min-start-ms", &g_record_min_start_ms, -1e5, 1e5},
+    {"--analog-record-max-start-ms", &g_record_max_start_ms, -1e5, 1e5},
+    {"--analog-record-min-audio-ms", &g_record_min_audio_ms, -1e5, 1e5},
+    {"--analog-record-max-audio-ms", &g_record_max_audio_ms, -1e5, 1e5},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -312,6 +344,10 @@ analog_usage(void) {
                 "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
                 "  --analog-raw-wav-min-rms-dbfs DB  record the -6 raw WAV to a private file; RMS level of that WAV\n"
                 "  --analog-synth-pauses SEED        replay a made NFM capture of bursts with pauses between them\n"
+                "  --analog-scene NAME               replay a made scene of voice bursts, find each recording in it\n"
+                "  --analog-record-{min,max}-start-ms MS  where each recording starts against its burst\n"
+                "  --analog-record-{min,max}-audio-ms MS  where its first sample that is not 0 is\n"
+                "  --analog-keep-output              keep the session's own output (-o null stays muted)\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -391,8 +427,11 @@ analog_find_probe_limit(const char* name) {
 
 static int
 analog_is_host_option(const char* name) {
-    return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0;
+    return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0
+           || strcmp(name, k_scene_arg) == 0 || strcmp(name, k_keep_output_arg) == 0;
 }
+
+static int analog_apply_scene(const char* value);
 
 /* Applies one host option (name already known to be one); returns 0, or -1 on a bad value. */
 static int
@@ -401,6 +440,13 @@ analog_apply_option(const char* name, const char* value) {
     if (scalar != NULL) {
         scalar->target->set = 1;
         return analog_parse_double(name, value, scalar->min_value, scalar->max_value, &scalar->target->value);
+    }
+    if (strcmp(name, k_scene_arg) == 0) {
+        return analog_apply_scene(value);
+    }
+    if (strcmp(name, k_keep_output_arg) == 0) {
+        DSD_FPRINTF(stderr, "analog replay: %s takes no value\n", name);
+        return -1;
     }
     int which = analog_find_probe_limit(name);
     if (which >= 0) {
@@ -446,6 +492,10 @@ analog_split_args(int argc, char** argv, char** out, int* out_count) {
         const char* eq = NULL;
         if (is_program || !analog_host_option_name(arg, name, sizeof(name), &eq)) {
             out[kept++] = arg;
+            continue;
+        }
+        if (strcmp(name, k_keep_output_arg) == 0 && eq == NULL) {
+            g_keep_output = 1;
             continue;
         }
         const char* value = NULL;
@@ -1281,6 +1331,450 @@ analog_replay_synth(char** args, int* count) {
     return rc;
 }
 
+/* ---- scenes for where a recording starts (--analog-scene, issue #668) ------------------------------------------ */
+
+/* Issue #668: where a per-call NFM recording starts against the transmission it holds. A scene is a few bursts of
+ * voice-band noise (300-2500 Hz, made from a fixed seed, so no stretch of it repeats): any piece of a recording matches
+ * one place in the scene and nowhere else, and the host finds each published recording there after the run (see the
+ * recording oracle below). The kinds:
+ *  - iq: the carrier 16 dB over complex noise at 3 LSB a component, as --analog-synth-pauses makes it, at up to 3 kHz
+ *    deviation (2.5 kHz and a 600 Hz CTCSS tone when the scene has one), replayed as I/Q, or with --analog-pcm-tap as
+ *    its discriminator tap. A receiver with its squelch open: noise between bursts.
+ *  - pcm: the audio of a radio that squelches itself, at --analog-pcm-tap's rate: the voice at -20 dBFS RMS (the CTCSS
+ *    tone left in at -26 dBFS), -60 dBFS of noise between bursts. What the level squelch is for.
+ *  - udp: the pcm kind sent live to `-i udp` at --analog-pcm-tap's rate in 20 ms datagrams, paced in real time, with
+ *    the sender stopping for a second before the sample pause_s names: a stream pause part-way through a monitor block.
+ * Every burst is keyed with 2 ms raised-cosine ramps. */
+#define ANALOG_SCENE_MAX_BURSTS  8
+#define ANALOG_SCENE_SEED        668U
+#define ANALOG_SCENE_VOICE_LO_HZ 300.0
+#define ANALOG_SCENE_VOICE_HI_HZ 2500.0
+#define ANALOG_SCENE_CTCSS_HZ    100.0
+#define ANALOG_SCENE_PCM_VOICE   0.1   /* RMS, full scale 1: -20 dBFS */
+#define ANALOG_SCENE_PCM_CTCSS   0.05  /* peak: -26 dBFS */
+#define ANALOG_SCENE_PCM_FLOOR   0.001 /* RMS: -60 dBFS */
+#define ANALOG_SCENE_PCM_CLIP    0.9
+#define ANALOG_SCENE_IQ_DEV_HZ   3000.0
+#define ANALOG_SCENE_IQ_TONED_HZ 2500.0
+#define ANALOG_SCENE_IQ_CTCSS_HZ 600.0
+#define ANALOG_SCENE_UDP_STOP_MS 1000U
+#define ANALOG_SCENE_UDP_END_MS  1500U
+/* The udp scene's monitor blocks are 960 samples (symbol_analog_block_size()); at 8192 Hz each is 117 ms. */
+#define ANALOG_SCENE_UDP_RATE    8192.0
+
+typedef enum { ANALOG_SCENE_IQ = 0, ANALOG_SCENE_PCM, ANALOG_SCENE_UDP } analog_scene_kind;
+
+typedef struct {
+    const char* name;
+    double total_s; /* the scene's length */
+    double pause_s; /* udp: the sender stops before the sample at this time; 0 for none */
+    double onset_s[ANALOG_SCENE_MAX_BURSTS];
+    double len_s[ANALOG_SCENE_MAX_BURSTS];
+    analog_scene_kind kind;
+    int ctcss; /* the bursts carry a 100.0 Hz CTCSS tone */
+    int bursts;
+    int old_bursts; /* how many bursts at the start no recording may hold: the oracle measures against the rest */
+} analog_scene;
+
+/* The udp scene in its own samples at 8192 Hz: nine 960-sample blocks of the floor, then 200 samples of a burst (the
+   old source, part of the tenth block, which no recording may hold: B7, issue #668), the sender's stop, and the new
+   source's burst from there on. */
+#define ANALOG_SCENE_UDP_OLD_AT  (8640.0 / ANALOG_SCENE_UDP_RATE)
+#define ANALOG_SCENE_UDP_STOP_AT (8840.0 / ANALOG_SCENE_UDP_RATE)
+
+static const analog_scene k_scenes[] = {
+    /* Four 1 s bursts 2 s apart, each starting at another point of a 20 ms block. */
+    {
+        .name = "onsets",
+        .total_s = 8.6,
+        .onset_s = {1.003, 3.008, 5.013, 7.017},
+        .len_s = {1.0, 1.0, 1.0, 1.0},
+        .kind = ANALOG_SCENE_IQ,
+        .bursts = 4,
+    },
+    {
+        .name = "onsets-ctcss",
+        .total_s = 8.6,
+        .onset_s = {1.003, 3.008, 5.013, 7.017},
+        .len_s = {1.0, 1.0, 1.0, 1.0},
+        .kind = ANALOG_SCENE_IQ,
+        .ctcss = 1,
+        .bursts = 4,
+    },
+    /* Carriers a tone filter does not pass while they are on the air (B1, issue #668), then one it does. */
+    {
+        .name = "ctcss-short",
+        .total_s = 7.4,
+        .onset_s = {1.003, 2.508, 4.013, 5.517},
+        .len_s = {0.26, 0.28, 0.30, 0.6},
+        .kind = ANALOG_SCENE_IQ,
+        .ctcss = 1,
+        .bursts = 4,
+    },
+    {
+        .name = "level-onsets",
+        .total_s = 7.4,
+        .onset_s = {1.010, 3.040, 5.070},
+        .len_s = {1.0, 1.0, 1.0},
+        .kind = ANALOG_SCENE_PCM,
+        .bursts = 3,
+    },
+    /* The same at 8192 Hz, where a 960-sample block lasts 117 ms and the tone is passed sooner: 0.10 to 0.22 s. */
+    {
+        .name = "level-ctcss-short",
+        .total_s = 9.2,
+        .onset_s = {1.003, 2.008, 3.013, 4.017, 5.003, 6.008, 7.013, 8.017},
+        .len_s = {0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.6},
+        .kind = ANALOG_SCENE_PCM,
+        .ctcss = 1,
+        .bursts = 8,
+    },
+    /* 40 ms from 45 ms into the tenth 960-sample block at 8192 Hz (1.0547 s): the block's level is 4.7 dB under the
+       burst's, and the tap read from 60 ms is all burst. */
+    {
+        .name = "level-blip",
+        .total_s = 2.5,
+        .onset_s = {1.0996875},
+        .len_s = {0.040},
+        .kind = ANALOG_SCENE_PCM,
+        .bursts = 1,
+    },
+    {
+        .name = "udp-pause",
+        .total_s = 3.0,
+        .pause_s = ANALOG_SCENE_UDP_STOP_AT,
+        .onset_s = {ANALOG_SCENE_UDP_OLD_AT, ANALOG_SCENE_UDP_STOP_AT},
+        .len_s = {ANALOG_SCENE_UDP_STOP_AT - ANALOG_SCENE_UDP_OLD_AT, 1.0},
+        .kind = ANALOG_SCENE_UDP,
+        .bursts = 2,
+        .old_bursts = 1,
+    },
+};
+
+/* The scene the run replays (--analog-scene) and what the recording oracle compares the recordings with. */
+static struct {
+    const analog_scene* scene;
+    float* voice; /* the voice-band noise at 48 kHz, as long as the scene, RMS 1 */
+    size_t n;     /* its samples */
+    int16_t* pcm; /* udp: what the sender sends, at pcm_rate */
+    size_t pcm_n;
+    int pcm_rate;
+    int port;
+    char input_arg[64];
+    char rate_arg[16];
+    int feeding;
+    dsd_thread_t feeder;
+} g_scene;
+
+static int
+analog_apply_scene(const char* value) {
+    for (size_t i = 0; i < sizeof(k_scenes) / sizeof(k_scenes[0]); i++) {
+        if (strcmp(value, k_scenes[i].name) == 0) {
+            g_scene.scene = &k_scenes[i];
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "analog replay: --analog-scene %s is not a scene\n", value);
+    return -1;
+}
+
+/* The scene's keying envelope at @p t seconds: 1 inside a burst, 0 between, 2 ms raised-cosine ramps at its edges. */
+static double
+analog_scene_envelope(const analog_scene* scene, double t) {
+    for (int b = 0; b < scene->bursts; b++) {
+        const double start = scene->onset_s[b];
+        const double end = start + scene->len_s[b];
+        if (t > start && t < end) {
+            const double key = fmin(t - start, end - t) / ANALOG_SYNTH_RAMP_S;
+            return 0.5 - (0.5 * cos(ANALOG_PI * fmin(key, 1.0)));
+        }
+    }
+    return 0.0;
+}
+
+/* One standard Gaussian (Box-Muller, the cosine half). */
+static double
+analog_scene_gauss(uint64_t* rng) {
+    const double r = sqrt(-2.0 * log(analog_synth_uniform(rng)));
+    return r * cos(2.0 * ANALOG_PI * analog_synth_uniform(rng));
+}
+
+/* An RBJ biquad, low-pass (@p high_pass 0) or high-pass, Q 0.707, at @p hz for 48 kHz, run over @p x in place. */
+static void
+analog_scene_biquad(double* x, size_t n, double hz, int high_pass) {
+    const double w0 = 2.0 * ANALOG_PI * hz / ANALOG_SYNTH_RATE_HZ;
+    const double alpha = sin(w0) / (2.0 * 0.7071067811865476);
+    const double c = cos(w0);
+    const double a0 = 1.0 + alpha;
+    const double b1 = high_pass ? -(1.0 + c) : 1.0 - c;
+    const double b0 = high_pass ? (1.0 + c) / 2.0 : (1.0 - c) / 2.0;
+    double x1 = 0.0;
+    double x2 = 0.0;
+    double y1 = 0.0;
+    double y2 = 0.0;
+    for (size_t k = 0; k < n; k++) {
+        const double y = ((b0 * x[k]) + (b1 * x1) + (b0 * x2) + (2.0 * c * y1) - ((1.0 - alpha) * y2)) / a0;
+        x2 = x1;
+        x1 = x[k];
+        y2 = y1;
+        y1 = y;
+        x[k] = y;
+    }
+}
+
+/* The scene's voice: Gaussian noise through two high-pass and two low-pass sections, scaled to RMS 1. 0, or -1. */
+static int
+analog_scene_make_voice(size_t n) {
+    double* x = (double*)malloc(n * sizeof(double));
+    g_scene.voice = (float*)malloc(n * sizeof(float));
+    if (x == NULL || g_scene.voice == NULL) {
+        free(x);
+        return -1;
+    }
+    uint64_t rng = ANALOG_SCENE_SEED;
+    for (size_t k = 0; k < n; k++) {
+        x[k] = analog_scene_gauss(&rng);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        analog_scene_biquad(x, n, ANALOG_SCENE_VOICE_LO_HZ, 1);
+        analog_scene_biquad(x, n, ANALOG_SCENE_VOICE_HI_HZ, 0);
+    }
+    double power = 0.0;
+    for (size_t k = 0; k < n; k++) {
+        power += x[k] * x[k];
+    }
+    const double scale = power > 0.0 ? 1.0 / sqrt(power / (double)n) : 0.0;
+    for (size_t k = 0; k < n; k++) {
+        g_scene.voice[k] = (float)(x[k] * scale);
+    }
+    g_scene.n = n;
+    free(x);
+    return 0;
+}
+
+/* The iq kind as a capture: the FM carrier of the voice (and tone) in noise; 0, or -1. */
+static int
+analog_scene_capture(analog_capture* cap, const analog_scene* scene) {
+    const size_t n = g_scene.n;
+    cap->data = (unsigned char*)malloc(2U * n);
+    if (cap->data == NULL || analog_synth_sidecar(cap, 2U * n) != 0) {
+        return -1;
+    }
+    cap->data_len = 2U * n;
+    const double sigma = ANALOG_SYNTH_NOISE_LSB / ANALOG_CU8_MIDPOINT;
+    const double amplitude = sqrt(2.0 * sigma * sigma * pow(10.0, ANALOG_SYNTH_CARRIER_DB / 10.0));
+    const double dev = scene->ctcss ? ANALOG_SCENE_IQ_TONED_HZ : ANALOG_SCENE_IQ_DEV_HZ;
+    uint64_t rng = ANALOG_SCENE_SEED + 1U;
+    double phase = 0.0;
+    for (size_t k = 0; k < n; k++) {
+        const double t = (double)k / ANALOG_SYNTH_RATE_HZ;
+        /* The voice with its RMS at a third of the peak deviation, clipped at the peak, as a limiter would. */
+        double hz = dev * fmax(-1.0, fmin(1.0, (double)g_scene.voice[k] / 3.0));
+        if (scene->ctcss) {
+            hz += ANALOG_SCENE_IQ_CTCSS_HZ * sin(2.0 * ANALOG_PI * ANALOG_SCENE_CTCSS_HZ * t);
+        }
+        phase = fmod(phase + (2.0 * ANALOG_PI * hz / ANALOG_SYNTH_RATE_HZ), 2.0 * ANALOG_PI);
+        const double carrier = amplitude * analog_scene_envelope(scene, t);
+        const double r = sigma * sqrt(-2.0 * log(analog_synth_uniform(&rng)));
+        const double theta = 2.0 * ANALOG_PI * analog_synth_uniform(&rng);
+        cap->data[2U * k] = analog_synth_cu8((carrier * cos(phase)) + (r * cos(theta)));
+        cap->data[(2U * k) + 1U] = analog_synth_cu8((carrier * sin(phase)) + (r * sin(theta)));
+    }
+    return 0;
+}
+
+/* The pcm and udp kinds: the radio's audio at @p rate_hz in int16 (free() it), @p out_n samples; NULL on failure. */
+static int16_t*
+analog_scene_audio(const analog_scene* scene, long rate_hz, size_t* out_n) {
+    const size_t n = g_scene.n;
+    double* x = (double*)malloc(n * sizeof(double));
+    if (x == NULL) {
+        return NULL;
+    }
+    uint64_t rng = ANALOG_SCENE_SEED + 2U;
+    for (size_t k = 0; k < n; k++) {
+        const double t = (double)k / ANALOG_SYNTH_RATE_HZ;
+        double v = ANALOG_SCENE_PCM_VOICE * (double)g_scene.voice[k];
+        if (scene->ctcss) {
+            v += ANALOG_SCENE_PCM_CTCSS * sin(2.0 * ANALOG_PI * ANALOG_SCENE_CTCSS_HZ * t);
+        }
+        v = fmax(-ANALOG_SCENE_PCM_CLIP, fmin(ANALOG_SCENE_PCM_CLIP, v));
+        x[k] = (v * analog_scene_envelope(scene, t)) + (ANALOG_SCENE_PCM_FLOOR * analog_scene_gauss(&rng));
+    }
+    size_t m = n;
+    if (rate_hz != ANALOG_SYNTH_RATE_HZ) {
+        double* y = analog_tap_resample(x, n, ANALOG_SYNTH_RATE_HZ, rate_hz, &m);
+        free(x);
+        x = y;
+    }
+    int16_t* pcm = x != NULL ? (int16_t*)malloc(m * sizeof(int16_t)) : NULL;
+    if (pcm != NULL) {
+        for (size_t k = 0; k < m; k++) {
+            pcm[k] = (int16_t)lround(fmax(-32768.0, fmin(32767.0, x[k] * 32767.0)));
+        }
+        *out_n = m;
+    }
+    free(x);
+    return pcm;
+}
+
+/* Writes the pcm kind as the tap WAV the run takes as `-i`; 0, or -1. */
+static int
+analog_scene_write_audio(const analog_scene* scene, long rate_hz) {
+    size_t m = 0U;
+    int16_t* pcm = analog_scene_audio(scene, rate_hz, &m);
+    int rc = -1;
+    if (pcm != NULL && analog_tap_write_wav(pcm, m, (int)rate_hz) == 0
+        && dsd_test_path_join(g_tap_arg, sizeof(g_tap_arg), g_scaled_dir, ANALOG_TAP_WAV) == 0) {
+        g_tap_frames = (uint64_t)m;
+        g_tap_rate_hz = (int)rate_hz;
+        rc = 0;
+    }
+    free(pcm);
+    return rc;
+}
+
+/* A loopback UDP port nothing is bound to now: bound and let go again. 0 when none could be had. */
+static int
+analog_scene_free_port(void) {
+    struct sockaddr_in addr;
+    if (dsd_socket_init() != 0 || dsd_socket_resolve("127.0.0.1", 0, &addr) != 0) {
+        return 0;
+    }
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (sock == DSD_INVALID_SOCKET) {
+        return 0;
+    }
+    int port = 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    int len = (int)sizeof(addr);
+#else
+    socklen_t len = (socklen_t)sizeof(addr);
+#endif
+    if (dsd_socket_bind(sock, (const struct sockaddr*)&addr, (int)sizeof(addr)) == 0
+        && getsockname(sock, (struct sockaddr*)&addr, &len) == 0) {
+        port = (int)ntohs(addr.sin_port);
+    }
+    (void)dsd_socket_close(sock);
+    return port;
+}
+
+/* The udp kind: the audio in memory for the sender, and a free port for `-i udp`; 0, or -1. */
+static int
+analog_scene_prepare_udp(const analog_scene* scene, long rate_hz) {
+    g_scene.pcm = analog_scene_audio(scene, rate_hz, &g_scene.pcm_n);
+    g_scene.pcm_rate = (int)rate_hz;
+    g_scene.port = analog_scene_free_port();
+    if (g_scene.pcm == NULL || g_scene.port <= 0) {
+        return -1;
+    }
+    (void)DSD_SNPRINTF(g_scene.input_arg, sizeof(g_scene.input_arg), "udp:127.0.0.1:%d", g_scene.port);
+    (void)DSD_SNPRINTF(g_scene.rate_arg, sizeof(g_scene.rate_arg), "%ld", rate_hz);
+    return 0;
+}
+
+/* Waits until @p due_ms on the real-time clock. */
+static void
+analog_scene_wait_until(uint64_t due_ms) {
+    const uint64_t now = dsd_realtime_mono_ms();
+    if (due_ms > now) {
+        dsd_sleep_ms((unsigned int)(due_ms - now));
+    }
+}
+
+/* The udp scene's sender: 20 ms datagrams, each sent when its first sample is due, the stop before the sample at
+   pause_s, and then, once the decoder had time to read the last of it, the end of the run. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    analog_scene_feed(void* arg) {
+    (void)arg;
+    struct sockaddr_in to;
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (sock != DSD_INVALID_SOCKET && dsd_socket_resolve("127.0.0.1", g_scene.port, &to) == 0) {
+        const size_t chunk = (size_t)g_scene.pcm_rate / 50U;
+        const size_t stop_at = (size_t)lround(g_scene.scene->pause_s * (double)g_scene.pcm_rate);
+        const uint64_t began = dsd_realtime_mono_ms();
+        size_t at = 0U;
+        while (at < g_scene.pcm_n) {
+            size_t take = g_scene.pcm_n - at < chunk ? g_scene.pcm_n - at : chunk;
+            if (at < stop_at && at + take > stop_at) {
+                take = stop_at - at;
+            }
+            const uint64_t stopped = (stop_at > 0U && at >= stop_at) ? ANALOG_SCENE_UDP_STOP_MS : 0U;
+            analog_scene_wait_until(began + stopped + (uint64_t)at * 1000U / (uint64_t)g_scene.pcm_rate);
+            (void)dsd_socket_sendto(sock, g_scene.pcm + at, take * sizeof(int16_t), 0, (const struct sockaddr*)&to,
+                                    (int)sizeof(to));
+            at += take;
+        }
+        dsd_sleep_ms(ANALOG_SCENE_UDP_END_MS);
+    }
+    if (sock != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(sock);
+    }
+    dsd_exitflag_store(1);
+    DSD_THREAD_RETURN;
+}
+
+/* Makes the scene and replaces the input with it: `--iq-replay CAPTURE`, `-i TAP.wav`, or `-i udp:... -s RATE` (args
+   has room for four more); 0, or -1 with a message. */
+static int
+analog_replay_scene(char** args, int* count) {
+    static char k_replay_flag[] = "--iq-replay";
+    static char k_input_flag[] = "-i";
+    static char k_rate_flag[] = "-s";
+    const analog_scene* scene = g_scene.scene;
+    const long rate_hz = g_pcm_tap_hz.set ? (long)g_pcm_tap_hz.value : 0L;
+    if (scene->kind != ANALOG_SCENE_IQ && rate_hz <= 0) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-scene %s needs --analog-pcm-tap RATE\n", scene->name);
+        return -1;
+    }
+    for (int i = 1; i < *count; i++) {
+        if (analog_is_replay_arg(args[i]) || strcmp(args[i], "-i") == 0) {
+            DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input; drop %s\n", args[i]);
+            return -1;
+        }
+    }
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    int rc = -1;
+    if (analog_scene_make_voice((size_t)lround(scene->total_s * ANALOG_SYNTH_RATE_HZ)) != 0
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_scene") == NULL) {
+        g_scaled_dir[0] = '\0';
+    } else if (scene->kind == ANALOG_SCENE_UDP) {
+        rc = analog_scene_prepare_udp(scene, rate_hz);
+    } else if (scene->kind == ANALOG_SCENE_PCM) {
+        rc = analog_scene_write_audio(scene, rate_hz);
+    } else if (analog_scene_capture(&cap, scene) == 0) {
+        rc = rate_hz > 0 ? analog_tap_write(&cap) : analog_capture_write(&cap);
+    }
+    analog_capture_free(&cap);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-scene %s cannot make its input\n", scene->name);
+        return -1;
+    }
+    if (scene->kind == ANALOG_SCENE_UDP) {
+        args[(*count)++] = k_input_flag;
+        args[(*count)++] = g_scene.input_arg;
+        args[(*count)++] = k_rate_flag;
+        args[(*count)++] = g_scene.rate_arg;
+    } else {
+        args[(*count)++] = scene->kind == ANALOG_SCENE_IQ && rate_hz <= 0 ? k_replay_flag : k_input_flag;
+        args[(*count)++] = scene->kind == ANALOG_SCENE_IQ && rate_hz <= 0 ? g_scaled_meta : g_tap_arg;
+    }
+    args[*count] = NULL;
+    return 0;
+}
+
+static void
+analog_scene_free(void) {
+    free(g_scene.voice);
+    free(g_scene.pcm);
+    g_scene.voice = NULL;
+    g_scene.pcm = NULL;
+}
+
 /* Removes the scaled copy or the tap, if one was made. */
 static void
 analog_remove_scaled(void) {
@@ -1656,13 +2150,24 @@ analog_return_pwr(const void* rtl_ctx) {
 }
 #endif
 
-/* Runs after the engine installed its hooks and opened audio output, so these replacements stick. */
+/* Runs after the engine installed its hooks and opened audio output, so these replacements stick. With
+   --analog-keep-output the session's own output stays, and the capture only shows that nothing reached it. A udp
+   scene's sender starts here, once the input listens. */
 static int
 analog_start(dsd_opts* opts, dsd_state* state, void* context) {
     (void)state;
     (void)context;
-    opts->audio_out = 1;
-    opts->audio_out_type = 8;
+    if (!g_keep_output) {
+        opts->audio_out = 1;
+        opts->audio_out_type = 8;
+    }
+    if (g_scene.pcm != NULL && !g_scene.feeding) {
+        if (dsd_thread_create(&g_scene.feeder, analog_scene_feed, NULL) != 0) {
+            DSD_FPRINTF(stderr, "analog replay: cannot start the udp scene's sender\n");
+            return -1;
+        }
+        g_scene.feeding = 1;
+    }
     dsd_udp_audio_hooks audio = {0};
     audio.blast_analog = analog_capture_blast;
     dsd_udp_audio_hooks_set(audio);
@@ -1753,6 +2258,231 @@ analog_raw_wav_remove(void) {
     if (g_raw_wav_path[0] != '\0' && remove(g_raw_wav_path) != 0) {
         DSD_FPRINTF(stderr, "analog replay: could not remove %s\n", g_raw_wav_path);
     }
+}
+
+/* ---- the recording oracle (--analog-scene with -P, issue #668) -------------------------------------------------- */
+
+/* After the run, every recording the journal published is found in the scene: 50 ms pieces of it, its loudest one and
+ * then from its middle outwards in tenths of its length, are compared with the voice around each burst (normalised
+ * correlation, sign ignored, on every sixth sample first, then sample by sample around the best match) until one
+ * matches well, and the best match says which burst the recording holds and where its first sample was in the scene.
+ * The host prints one line per recording, in publication order:
+ *   ANALOG RECORDING: n=N burst=B score=S start_ms=X audio_ms=Y ms=L
+ * start_ms is where the recording's first sample was against the burst's start (negative: before it), audio_ms the
+ * same for its first sample that is not 0 (the squelch writes 0), ms its length. A scene's old bursts are no burst
+ * of their own: a recording that holds one starts before the burst after it. A recording that matches no burst
+ * (score under 0.5) fails, and so does one outside the --analog-record-* bounds. The CTCSS tone is not in the voice the
+ * recording is compared with, and the voice filters take it out of the recording. */
+#define ANALOG_ORACLE_RATE        48000
+#define ANALOG_ORACLE_STEP        6
+#define ANALOG_ORACLE_WINDOW      2400 /* 50 ms */
+#define ANALOG_ORACLE_BEFORE_S    0.6  /* how far before a burst's start a recording may begin */
+#define ANALOG_ORACLE_AFTER_S     0.3  /* ... and its matched piece end after the burst does */
+#define ANALOG_ORACLE_MIN_SCORE   0.5
+#define ANALOG_ORACLE_GOOD_SCORE  0.7 /* a match this good ends the search */
+#define ANALOG_ORACLE_JOURNAL_MAX (1L << 22)
+
+typedef struct {
+    double score;
+    int burst;
+    long start; /* the recording's first sample in the scene, at 48 kHz */
+} analog_match;
+
+/* |normalised correlation| of x[0, n) with the voice from @p at, every @p step-th sample. */
+static double
+analog_oracle_score(const short* x, size_t n, long at, size_t step) {
+    double xy = 0.0;
+    double xx = 0.0;
+    double yy = 0.0;
+    for (size_t i = 0; i < n; i += step) {
+        const double a = (double)x[i];
+        const double b = (double)g_scene.voice[(size_t)at + i];
+        xy += a * b;
+        xx += a * a;
+        yy += b * b;
+    }
+    return (xx > 0.0 && yy > 0.0) ? fabs(xy) / sqrt(xx * yy) : 0.0;
+}
+
+/* The best place for the piece @p x (ANALOG_ORACLE_WINDOW samples, @p offset into its recording) in burst @p b. */
+static void
+analog_oracle_search(const short* x, long offset, int b, analog_match* best) {
+    const analog_scene* scene = g_scene.scene;
+    const long lo = lround((scene->onset_s[b] - ANALOG_ORACLE_BEFORE_S) * ANALOG_ORACLE_RATE);
+    long hi = lround((scene->onset_s[b] + scene->len_s[b] + ANALOG_ORACLE_AFTER_S) * ANALOG_ORACLE_RATE);
+    hi = hi < (long)g_scene.n - ANALOG_ORACLE_WINDOW ? hi : (long)g_scene.n - ANALOG_ORACLE_WINDOW;
+    long found = -1;
+    double found_score = 0.0;
+    for (long at = lo > 0 ? lo : 0; at < hi; at += ANALOG_ORACLE_STEP) {
+        const double s = analog_oracle_score(x, ANALOG_ORACLE_WINDOW, at, ANALOG_ORACLE_STEP);
+        if (s > found_score) {
+            found_score = s;
+            found = at;
+        }
+    }
+    for (long at = found - ANALOG_ORACLE_STEP; found >= 0 && at <= found + ANALOG_ORACLE_STEP; at++) {
+        const double s = (at >= 0 && at < hi) ? analog_oracle_score(x, ANALOG_ORACLE_WINDOW, at, 1U) : 0.0;
+        if (s > best->score) {
+            best->score = s;
+            best->burst = b;
+            best->start = at - offset;
+        }
+    }
+}
+
+static void
+analog_oracle_check(const char* what, int n, double got, const analog_limit* min, const analog_limit* max) {
+    if ((min->set && got < min->value) || (max->set && got > max->value)) {
+        DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: recording %d %s %.2f ms (limits %.2f to %.2f)\n", n, what, got,
+                    min->set ? min->value : -1e9, max->set ? max->value : 1e9);
+        g_failed = 1;
+    }
+}
+
+/* Where the loudest piece of the recording starts, in steps of a tenth of a piece: a short burst among silence. */
+static long
+analog_oracle_loudest(const short* x, size_t frames) {
+    const size_t step = ANALOG_ORACLE_WINDOW / 10U;
+    double energy = 0.0;
+    for (size_t i = 0; i < ANALOG_ORACLE_WINDOW; i++) {
+        energy += (double)x[i] * (double)x[i];
+    }
+    double loudest = energy;
+    long at = 0;
+    for (size_t from = step; from + ANALOG_ORACLE_WINDOW <= frames; from += step) {
+        for (size_t i = from - step; i < from; i++) {
+            const double in = (double)x[i + ANALOG_ORACLE_WINDOW];
+            energy += (in * in) - ((double)x[i] * (double)x[i]);
+        }
+        if (energy > loudest) {
+            loudest = energy;
+            at = (long)from;
+        }
+    }
+    return at;
+}
+
+/* Finds recording @p n (@p frames samples at 48 kHz) in the scene, prints its line and checks its bounds. */
+static void
+analog_oracle_recording(int n, const short* x, size_t frames) {
+    /* The loudest piece (-1), then the middle, 40%, 60%, 30%, 70% ... of the recording. */
+    static const int k_tenths[] = {-1, 5, 4, 6, 3, 7, 2, 8, 1, 9};
+    analog_match best = {0.0, -1, 0};
+    for (size_t i = 0; i < sizeof(k_tenths) / sizeof(k_tenths[0]) && frames >= (size_t)ANALOG_ORACLE_WINDOW * 2U
+                       && best.score < ANALOG_ORACLE_GOOD_SCORE;
+         i++) {
+        long offset = k_tenths[i] < 0 ? analog_oracle_loudest(x, frames)
+                                      : (long)(frames * (size_t)k_tenths[i] / 10U) - (ANALOG_ORACLE_WINDOW / 2);
+        offset = offset + ANALOG_ORACLE_WINDOW > (long)frames ? (long)frames - ANALOG_ORACLE_WINDOW : offset;
+        offset = offset < 0 ? 0 : offset;
+        for (int b = g_scene.scene->old_bursts; b < g_scene.scene->bursts; b++) {
+            analog_oracle_search(x + offset, offset, b, &best);
+        }
+    }
+    size_t first = 0U;
+    while (first < frames && x[first] == 0) {
+        first++;
+    }
+    if (best.burst < 0 || best.score < ANALOG_ORACLE_MIN_SCORE) {
+        DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: recording %d (%zu frames) matches no burst (score %.2f)\n", n, frames,
+                    best.score);
+        g_failed = 1;
+        return;
+    }
+    const long onset = lround(g_scene.scene->onset_s[best.burst] * ANALOG_ORACLE_RATE);
+    const double start_ms = (double)(best.start - onset) * 1000.0 / ANALOG_ORACLE_RATE;
+    const double audio_ms = (double)(best.start + (long)first - onset) * 1000.0 / ANALOG_ORACLE_RATE;
+    DSD_FPRINTF(stderr, "ANALOG RECORDING: n=%d burst=%d score=%.2f start_ms=%.2f audio_ms=%.2f ms=%.2f\n", n,
+                best.burst, best.score, start_ms, audio_ms, (double)frames * 1000.0 / ANALOG_ORACLE_RATE);
+    analog_oracle_check("starts at", n, start_ms, &g_record_min_start_ms, &g_record_max_start_ms);
+    analog_oracle_check("has audio from", n, audio_ms, &g_record_min_audio_ms, &g_record_max_audio_ms);
+}
+
+/* Reads recording @p n, the file @p name in @p folder, and checks it; 0, or -1 when it cannot be read as a mono 48 kHz
+   WAV. */
+static int
+analog_oracle_file(int n, const char* folder, const char* name) {
+    char path[DSD_TEST_PATH_MAX];
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = dsd_test_path_join(path, sizeof(path), folder, name) == 0 ? sf_open(path, SFM_READ, &info) : NULL;
+    if (wav == NULL) {
+        return -1;
+    }
+    int rc = -1;
+    short* x = NULL;
+    if (info.channels == 1 && info.samplerate == ANALOG_ORACLE_RATE && info.frames > 0) {
+        x = (short*)malloc((size_t)info.frames * sizeof(short));
+    }
+    if (x != NULL && sf_read_short(wav, x, info.frames) == info.frames) {
+        analog_oracle_recording(n, x, (size_t)info.frames);
+        rc = 0;
+    }
+    free(x);
+    sf_close(wav);
+    return rc;
+}
+
+/* The file name a journal "publish" line names, past any folder ('/' or a JSON-escaped '\'), into @p out; 0, or -1. */
+static int
+analog_oracle_published_name(const char* line, size_t len, char* out, size_t cap) {
+    static const char k_key[] = "\"file\":\"";
+    const char* end = line + len;
+    const char* at = NULL;
+    for (const char* p = line; p + sizeof(k_key) - 1U <= end; p++) {
+        if (strncmp(p, k_key, sizeof(k_key) - 1U) == 0) {
+            at = p + sizeof(k_key) - 1U;
+            break;
+        }
+    }
+    if (at == NULL) {
+        return -1;
+    }
+    const char* name = at;
+    const char* p = at;
+    while (p < end && *p != '"') {
+        if (*p == '/' || *p == '\\') {
+            name = p + 1;
+        }
+        p += (*p == '\\' && p + 1 < end) ? 2 : 1;
+    }
+    const size_t name_len = (size_t)(p - name);
+    if (p >= end || name_len == 0U || name_len >= cap) {
+        return -1;
+    }
+    DSD_MEMCPY(out, name, name_len);
+    out[name_len] = '\0';
+    return 0;
+}
+
+/* After the run: every recording the journal published, in publication order (see above). */
+static void
+analog_oracle_run(const dsd_opts* opts) {
+    if (g_scene.scene == NULL || !opts->dmr_stereo_wav) {
+        return;
+    }
+    size_t len = 0U;
+    char* journal = opts->wav_journal_file[0] != '\0'
+                        ? (char*)analog_read_file(opts->wav_journal_file, ANALOG_ORACLE_JOURNAL_MAX, &len)
+                        : NULL;
+    int n = 0;
+    for (const char* line = journal; line != NULL && *line != '\0';) {
+        const char* eol = strchr(line, '\n');
+        const size_t line_len = eol != NULL ? (size_t)(eol - line) : strlen(line);
+        char name[DSD_TEST_PATH_MAX];
+        const char* publish = strstr(line, "\"type\":\"publish\"");
+        const int published = publish != NULL && publish < line + line_len;
+        n += published;
+        if (published
+            && (analog_oracle_published_name(line, line_len, name, sizeof(name)) != 0
+                || analog_oracle_file(n, opts->wav_out_dir, name) != 0)) {
+            DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: cannot read recording %d of the journal\n", n);
+            g_failed = 1;
+        }
+        line = eol != NULL ? eol + 1 : NULL;
+    }
+    free(journal);
+    DSD_FPRINTF(stderr, "ANALOG RECORDINGS: %d\n", n);
 }
 
 /* ---- report --------------------------------------------------------------------------------------------------- */
@@ -1943,6 +2673,20 @@ analog_note_resolution(void) {
     }
 }
 
+/* --analog-keep-output: the session's output as the engine left it, which must be muted with nothing played. */
+static void
+analog_check_kept_output(const dsd_opts* opts) {
+    if (!g_keep_output) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "ANALOG OUTPUT: audio_out=%d type=%d played=%llu\n", opts->audio_out, opts->audio_out_type,
+                (unsigned long long)g_totals.samples_captured);
+    if (opts->audio_out != 0 || g_totals.samples_captured != 0U) {
+        DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: the session's output is not muted\n");
+        g_failed = 1;
+    }
+}
+
 static void
 analog_check_limits(const analog_report_ctx* ctx) {
     if (g_totals.no_rate || g_totals.unclocked_reads > 0U) {
@@ -2070,6 +2814,7 @@ analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
     if (g_raw_wav_min_rms_dbfs.set) {
         analog_raw_wav_measure(opts);
     }
+    analog_check_kept_output(opts);
     analog_report();
     analog_print_call_rows(opts, state);
 }
@@ -2135,11 +2880,19 @@ analog_prepare_args(char** args, int* count) {
                             "--analog-synth-pauses replace it\n");
         return -1;
     }
+    if (g_scene.scene != NULL && (g_synth_pauses.set || g_iq_gain_db.set)) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input, as --analog-synth-pauses does\n");
+        return -1;
+    }
     if (g_iq_gain_db.set && analog_replay_scaled(args, *count) != 0) {
         return -1;
     }
-    if (g_synth_pauses.set ? analog_replay_synth(args, count) != 0
-                           : (g_pcm_tap_hz.set && analog_replay_tap(args, *count) != 0)) {
+    if (g_scene.scene != NULL) {
+        if (analog_replay_scene(args, count) != 0) {
+            return -1;
+        }
+    } else if (g_synth_pauses.set ? analog_replay_synth(args, count) != 0
+                                  : (g_pcm_tap_hz.set && analog_replay_tap(args, *count) != 0)) {
         return -1;
     }
     return (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, count) != 0) ? -1 : 0;
@@ -2151,8 +2904,8 @@ main(int argc, char** argv) {
         return analog_selftest();
     }
     /* Room for the NULL after the arguments, for the `-6 FILE` --analog-raw-wav-min-rms-dbfs adds and for the input
-       --analog-synth-pauses adds. */
-    char** args = (char**)calloc((size_t)argc + 5U, sizeof(*args));
+       --analog-synth-pauses or --analog-scene adds (`-i udp:... -s RATE` at most). */
+    char** args = (char**)calloc((size_t)argc + 7U, sizeof(*args));
     if (args == NULL) {
         return 1;
     }
@@ -2163,6 +2916,7 @@ main(int argc, char** argv) {
     if (analog_split_args(argc, argv, args, &kept) != 0 || analog_prepare_args(args, &kept) != 0) {
         analog_remove_scaled();
         analog_raw_wav_remove();
+        analog_scene_free();
         free((void*)args);
         return 2;
     }
@@ -2180,6 +2934,11 @@ main(int argc, char** argv) {
             } else {
                 rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
             }
+            if (g_scene.feeding) {
+                (void)dsd_thread_join(g_scene.feeder);
+                g_scene.feeding = 0;
+            }
+            analog_oracle_run(opts);
             if (rc == 0 && g_failed) {
                 rc = 1;
             }
@@ -2192,5 +2951,6 @@ main(int argc, char** argv) {
     free((void*)args);
     analog_remove_scaled();
     analog_raw_wav_remove();
+    analog_scene_free();
     return rc;
 }

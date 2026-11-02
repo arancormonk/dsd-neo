@@ -116,6 +116,16 @@ The P25 list-decoder benchmark includes clean high-confidence, marginal/noisy,
 and equal-metric tie-heavy inputs. It reports each complete 49-symbol decode as
 one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
 
+The NFM recording benchmark (`dsd-neo_bench_analog_record`, issue #668) times the unsynced analog finalize step on
+960-sample blocks of audio input at 48 and 44.1 kHz, under the level squelch, with the engine's NFM call hooked in:
+the tap's reads and the tone eligibility each read tracks, the voice filters, the hook, and with `-P` the conversion to
+48 kHz, the pre-roll and the WAV writes. Its `quiet` stream never opens the squelch (no call; with a pre-roll every
+block is buffered), and its `calls` stream opens it for 25 blocks in every 50 (a call, and a recording under `-P`,
+each second). Each case prints its median and fastest ns per block. The source builds on a tree without the pre-roll
+too, so the same run on both compares them; `--case K` runs one case, for a profiler. Build it like the others
+(`--target dsd-neo_bench_analog_record`) and run
+`build/perf-bench/tests/dsd-neo_bench_analog_record --blocks 20000 --repeat 9`.
+
 The TETRA Viterbi benchmark (`dsd-neo_bench_tetra_viterbi`) decodes noisy soft costs through
 `tetra_viterbi_decode_soft()` at the BSCH, SCH/HD, SCH/F and 512-bit lengths (`tetra_viterbi_*`) and through the
 full- and half-slot speech decoders (`tetra_speech_full`, `tetra_speech_half`, including depuncturing and the
