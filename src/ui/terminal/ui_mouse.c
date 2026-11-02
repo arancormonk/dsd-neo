@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #if DSD_PLATFORM_POSIX
+#include <dsd-neo/platform/atomic_compat.h>
 #include <signal.h>
 #endif
 #endif
@@ -118,15 +119,18 @@ ui_mouse_set_tracking(int on) {
  * Ctrl+Z / fg: ncurses' SIGTSTP handler calls endwin(), stops, and once continued calls doupdate(), whose resume
  * sends the mouse-on string because the mask is set, whatever the capture is. The frame after it sends the capture's
  * own state once more. SIGCONT marks the resume; it is caught only where nothing else handles it (as ncurses catches
- * its own signals), and with SA_RESTART.
+ * its own signals), and with SA_RESTART. The handler runs on whichever thread the kernel picks, so the mark is a
+ * lock-free atomic, which is safe both in a signal handler and across threads (a volatile sig_atomic_t is only the
+ * first).
  */
-static volatile sig_atomic_t g_resumed;
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "the resume mark is set in a signal handler");
+static atomic_int g_resumed;
 static int g_resume_watched;
 
 static void
 ui_mouse_on_sigcont(int sig) {
     (void)sig;
-    g_resumed = 1;
+    atomic_store(&g_resumed, 1);
 }
 
 static void
@@ -151,11 +155,10 @@ ui_mouse_watch_resume(void) {
    this thread, the one thread that takes SIGTSTP, or this thread's next refresh) is still to come. */
 static int
 ui_mouse_take_resume(void) {
-    if (!g_resumed || isendwin()) {
+    if (isendwin()) {
         return 0;
     }
-    g_resumed = 0;
-    return 1;
+    return atomic_exchange(&g_resumed, 0) != 0;
 }
 
 /* The capture keeps its state this frame: after a resume, send that state once more. */

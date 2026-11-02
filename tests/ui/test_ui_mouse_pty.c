@@ -36,6 +36,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -450,6 +451,31 @@ spread_notches_each_step(int slave, const char* tag) {
     return rc;
 }
 
+/* SIGCONT reaches whichever thread the kernel picks, so it is raised on a thread other than the UI's. The flag is
+   relaxed on purpose: it orders nothing, so the capture's own flag must be safe across threads by itself. */
+static atomic_int g_sigcont_sent;
+
+static DSD_THREAD_RETURN_TYPE
+send_sigcont(void* arg) {
+    (void)arg;
+    (void)raise(SIGCONT);
+    atomic_store_explicit(&g_sigcont_sent, 1, memory_order_relaxed);
+    DSD_THREAD_RETURN;
+}
+
+static int
+sigcont_from_another_thread(dsd_thread_t* sender) {
+    atomic_store_explicit(&g_sigcont_sent, 0, memory_order_relaxed);
+    if (dsd_thread_create(sender, send_sigcont, NULL) != 0) {
+        DSD_FPRINTF(stderr, "could not start the SIGCONT thread\n");
+        return 1;
+    }
+    while (!atomic_load_explicit(&g_sigcont_sent, memory_order_relaxed)) {
+        dsd_sleep_ms(1);
+    }
+    return 0;
+}
+
 /*
  * Ctrl+Z / fg, as ncurses' SIGTSTP handler runs it: endwin(), the stop, SIGCONT, then doupdate(), which resumes the
  * mouse and so turns tracking back on (the parse mask stays set). With @p frame_between a frame runs between SIGCONT
@@ -463,8 +489,11 @@ resume_restores_tracking(const char* tag, int frame_between) {
     g_step = "endwin() before a resume";
     endwin();
     drain_screen_output();
-    (void)raise(SIGCONT);
-    int rc = 0;
+    dsd_thread_t sender;
+    int rc = sigcont_from_another_thread(&sender);
+    if (rc != 0) {
+        return rc;
+    }
     if (frame_between) {
         rc |= frame(tag);
     } else {
@@ -489,6 +518,8 @@ resume_restores_tracking(const char* tag, int frame_between) {
         DSD_FPRINTF(stderr, "%s: idle frames wrote %zu bytes\n", tag, idle_len);
         rc = 1;
     }
+    /* Joined only now: a join orders the threads, and it would hide a race on the capture's flag. */
+    (void)dsd_thread_join(sender);
     return rc;
 }
 
