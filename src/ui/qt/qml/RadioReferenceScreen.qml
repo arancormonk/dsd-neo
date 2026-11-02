@@ -94,6 +94,14 @@ Item {
     }
     readonly property bool isP25: screen.typeDescr.indexOf("Project 25") >= 0
     readonly property bool isEdacs: screen.typeDescr.indexOf("EDACS") >= 0
+    // The runtime's stable token rather than the type name, which the runtime
+    // matches without regard to case (issue #803).
+    readonly property bool isTetra: radioReference.systemDetails.protocolToken === "tetra"
+    // What a TETRA import needs to decode, said in the preview before the
+    // review and again in the review itself. An empty bandwidth runs TETRA at
+    // 72 kHz; the Airspy and the Tetrapol systems RadioReference lists as
+    // TETRA are the two things no setting fixes.
+    readonly property string tetraNote: qsTr("TETRA needs a USB or rtl_tcp radio at a 72 kHz bandwidth (leave the bandwidth empty for that). An Airspy can't decode it. Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
 
     // Re-run per visit and whenever a new system's sites land: the options and
     // the selection belong to the system in hand, not to the screen.
@@ -267,6 +275,9 @@ Item {
         // The radios -Y retunes, as the scan warning in the preview names them.
         if (radioReference.conventional && screen.selectedSites.length > 1)
             text += "\n" + qsTr("Scanning these repeaters needs a USB RTL-SDR, rtl_tcp or Airspy radio.");
+        // Its own paragraph: three sentences read as part of the options above.
+        if (screen.isTetra)
+            text += "\n\n" + screen.tetraNote;
         var files = [];
         if (screen.planField("groupCsvText", "").length > 0)
             files.push(qsTr("Talkgroup list"));
@@ -1459,6 +1470,17 @@ Item {
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
                         color: screen.planAwaitingSelection() ? Theme.textSubdued : Theme.magenta
+                        wrapMode: Text.Wrap
+                    }
+
+                    ReadableText {
+                        objectName: "radioReferenceTetraNote"
+                        width: parent.width
+                        visible: screen.isTetra
+                        text: screen.tetraNote
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
 

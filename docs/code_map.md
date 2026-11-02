@@ -10041,7 +10041,14 @@ Qt Quick frontend (`src/ui/qt`):
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
-  row of each ID), so the preview agrees with the file. See
+  row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in
+  the review), the band plan note (P25 only) and the review's "No files are generated." line read that token and the
+  plan. `WizardScreen.applyRadioReference()` answers both CSV rows from the import: a supplied file replaces the row,
+  and an absent one clears a file an earlier import generated (`chanCsvGenerated`/`groupCsvGenerated`, seeded on an
+  edit from the library row's `radioreference` origin), keeping a hand-picked file only while editing that saved
+  system; a per-site batch's rows carry their own (possibly empty) paths. `tetraRateError()` holds the wizard's tune
+  step for `-fT` on an Airspy or off 72 kHz, and a source switch to an Airspy keeps `-fT` (issue #803;
+  `tst_wizard_sites.qml`, `tst_wizard_decode_chip.qml`, `tst_radioreference_screen.qml`). See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
   acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed

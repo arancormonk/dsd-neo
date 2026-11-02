@@ -339,7 +339,9 @@ would start and never decode. A bandwidth the radio does not offer counts as the
 The add-system wizard checks the same thing before it saves. The TETRA chip is greyed out on an Airspy, and
 a TETRA system switched to an Airspy keeps TETRA but cannot continue until you pick a USB or rtl_tcp radio or
 another decode mode; the reason shows under the decode chips. The bandwidth field's hint shows what an empty
-field runs at (72 for TETRA).
+field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in
+the review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo
+cannot decode.
 
 ## What gets generated
 

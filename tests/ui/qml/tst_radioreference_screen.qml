@@ -239,6 +239,40 @@ Item {
             screenLoader.z = 0
         }
 
+        // New feature (#803): a lone TETRA cell picks itself like any trunked
+        // site, and the preview and the review both say what the import needs
+        // to decode, before and at the last step. The note is read by its own
+        // words, so TalkBack reaches it.
+        function test_18_a_tetra_import_says_what_it_needs() {
+            loadTetraSystem(1)
+            tryVerify(function () { return tc.screen.selectedSites.length === 1 },
+                      2000, "the only cell of a TETRA system was not selected")
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true,
+                              scanList: false, warnings: []}
+            var note = findChild(tc.screen, "radioReferenceTetraNote")
+            verify(note !== null, "the TETRA note is missing")
+            tryVerify(function () { return note.visible }, 2000, "the TETRA note is not shown for a TETRA system")
+            for (var word of ["USB", "rtl_tcp", "72 kHz", "Airspy", "Tetrapol"])
+                verify(note.text.indexOf(word) >= 0, "the TETRA note does not mention " + word + ": " + note.text)
+            compare(note.Accessible.name, note.text, "the TETRA note is not read by its own words")
+
+            var review = openReview()
+            var body = reviewBody()
+            verify(body.text.indexOf(note.text) >= 0, "the review does not repeat the TETRA note: " + body.text)
+            compare(body.Accessible.name, body.text)
+            closeReview(review)
+
+            // Any other system says nothing about TETRA.
+            loadTwoSiteSystem()
+            tryVerify(function () { return !note.visible }, 2000, "a P25 system shows the TETRA note")
+            tc.screen.toggleSite(0)
+            tc.screen.plan = {ok: true, freqMhz: "851.0125", decodeFlag: "-f1", trunking: true,
+                              scanList: false, warnings: []}
+            review = openReview()
+            verify(body.text.indexOf("TETRA") < 0, "a P25 review mentions TETRA: " + body.text)
+            closeReview(review)
+        }
+
         // Regression (#803 D-B4): an import that writes no file said
         // "Generated files:" over an empty list. Reachable on main with a lone
         // conventional repeater on a system without talkgroups, and now with

@@ -50,7 +50,7 @@ QtObject {
         sites = [];
     }
     function loadSystem(sid) {
-        systemDetails = {sid: sid, name: "County radio", typeDescr: "Project 25"};
+        systemDetails = {sid: sid, name: "County radio", typeDescr: "Project 25", protocolToken: "p25"};
         sites = [{siteNumber: 1, descr: "Central", freqCount: 1,
                   controlFreqMhz: "851.0125", freqMhz: "851.0125", simulcast: false, colorCode: ""}];
     }
