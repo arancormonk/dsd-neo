@@ -357,9 +357,10 @@ Windows console runs:
   demodulated it, and no mode on audio input, where another receiver did. It names the tuned frequency as digital lines
   do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
   `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input an analog line names the
-  frequency a `-Y` row or a conventional `--trunk-scan` target confirmed it tuned its rigctl peer to; digital lines on
-  audio input still name none, and a frequency changed on the peer itself is not seen. Last comes the CTCSS tone or DCS
-  code the call was received with, as Call Info's `Rx tone:` line writes it:
+  frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan` target confirmed it
+  tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency changed on the peer
+  itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was received with, as Call
+  Info's `Rx tone:` line writes it:
   `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just

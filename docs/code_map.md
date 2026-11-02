@@ -11906,18 +11906,25 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   - Confirmed landing (issue #667 D9, `engine/scan_landing.h`, kept in `dsd_engine_scan_owner::landing`). On audio
     input `dsd_opts_tuned_freq_hz()` is 0, so an analog call heard through a rigctl peer takes the frequency a scan
     confirmed it landed the peer on: a -Y row's (`dsd_engine_scan_landing_note_row()`, at the typed commit's end in
-    `channel_scan_commit()` and in `untyped_install_row()` for an untyped step, pending ones once they land) or a
-    trunk-scan conventional target's (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's
-    control channel). It is forgotten before every row start (`channel_scan_start_row()`, the untyped steps), every
-    target switch after its preparation, at every carrier boundary but a stream gap (a manual tune among them) and at
-    the -Y release (a leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
+    `channel_scan_commit()` and in `untyped_install_row()` for an untyped step, pending ones once they land, and for a
+    manual step of a running untyped list -- Next, Previous, an avoid's step -- in app-control's `lcn_cycle_finish()`
+    through the public `dsd_engine_channel_scan_note_manual_step()`, after its carrier boundary, once the front end
+    confirmed the tune: `RTL_STREAM_TUNE_OK`, not a timeout) or a trunk-scan conventional target's
+    (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's control channel). A manual step
+    to the list's own row is the scan's step: the scan still owns the tuner. The operator's own tune (`=`, issue #671)
+    is the takeover: its carrier boundary forgets the landing and its pause leaves the scan. It is forgotten before
+    every row start (`channel_scan_start_row()`, the untyped steps), every target switch after its preparation, at a
+    manual untyped step's refused or deferred tune, at every carrier boundary but a stream gap (a manual tune among
+    them) and at the -Y release (a leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
     (`dsd_engine_rigctl_landing_forget()`, which `svc_rigctl_connect()` calls on a reconnect, a new peer and a connect
-    that leaves rigctl off); a placeholder row, a failed or pending tune and a rollback note none.
+    that leaves rigctl off); a placeholder row, a failed, pending or unconfirmed tune and a rollback note none.
     `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing once the scan
     session or channel map (`trunk_chan_map_seq`, a map replacement) moved. As with `dsd_opts_tuned_freq_hz()`, a
     frequency changed on the peer itself is not seen. Analog rows only: digital rows on a rigctl -Y channel keep the
     `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
-    real service included), `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps), `UI_RIGCTL_CONNECT`.
+    real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
+    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps), `APP_COMMAND_QUEUE` (a manual step's confirmed,
+    timed-out, refused and deferred tunes), `UI_RIGCTL_CONNECT`.
   - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
     discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
     preparation fails leaves either running, and a rollback or a revisit restores neither; the carrier boundary a

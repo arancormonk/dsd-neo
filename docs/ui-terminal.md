@@ -1204,20 +1204,20 @@ An analog call row names its mode after the `ANALOG` token, then the frequency a
 `2026-04-30 09:12:04 ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `... ANALOG NFM; FREQ: 154.430000 MHz;
 DCS D023N / D047I;`, `... ANALOG AM; FREQ: 119.100000 MHz;`. The mode is `NFM` or `AM` as dsd-neo demodulated it. On
 audio input another receiver demodulated the audio, so the row names no mode and, unless dsd-neo tuned that receiver,
-no frequency: `... ANALOG; CTCSS 100.0 Hz;`. When a `-Y` row or a conventional `--trunk-scan` target confirmed it
-tuned the rigctl peer, the analog row names that frequency; digital rows on audio input still name none, and a
-frequency changed on the peer itself is not seen. The tone is the CTCSS tone or DCS code the call was confirmed on, written as
-Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone, or one never confirmed, has none. Two
-receptions on one channel that differ only by tone now read differently. Earlier versions wrote `NFM` on every analog
-row, audio input included, and no tone. An ended analog row is stamped with the time its call ended, even when an
-input that stopped sending held the row back. Analog rows sound no call alert (`-a`). On a radio input an analog call
-needs a squelch above the -110 dB default (Input > `Squelch...`): at the default, or off, the receiver's noise would
-hold one call open, so no analog row is made and dsd-neo logs one notice until a squelch is set (see
-[Analog calls need a squelch](cli.md#analog-calls-need-a-squelch-on-a-radio-input)). A reception becomes a row only
-once it has lasted 500 ms, the 200 ms hangover included, so a kerchunk with less than about 300 ms of signal leaves none
-(see [Receive filters and service names](cli.md#receive-filters-and-service-names)). Analog rows are kept with slot 1's
-rows: each slot keeps its last 254 rows, so in a session that hears both (a `-Y` list with analog and digital rows),
-analog calls and slot 1's digital calls push each other's older rows out.
+no frequency: `... ANALOG; CTCSS 100.0 Hz;`. When a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional
+`--trunk-scan` target confirmed it tuned the rigctl peer, the analog row names that frequency; digital rows on audio
+input still name none, and a frequency changed on the peer itself is not seen. The tone is the CTCSS tone or DCS code
+the call was confirmed on, written as Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone,
+or one never confirmed, has none. Two receptions on one channel that differ only by tone now read differently. Earlier
+versions wrote `NFM` on every analog row, audio input included, and no tone. An ended analog row is stamped with the
+time its call ended, even when an input that stopped sending held the row back. Analog rows sound no call alert (`-a`).
+On a radio input an analog call needs a squelch above the -110 dB default (Input > `Squelch...`): at the default, or
+off, the receiver's noise would hold one call open, so no analog row is made and dsd-neo logs one notice until a squelch
+is set (see [Analog calls need a squelch](cli.md#analog-calls-need-a-squelch-on-a-radio-input)). A reception becomes a
+row only once it has lasted 500 ms, the 200 ms hangover included, so a kerchunk with less than about 300 ms of signal
+leaves none (see [Receive filters and service names](cli.md#receive-filters-and-service-names)). Analog rows are kept
+with slot 1's rows: each slot keeps its last 254 rows, so in a session that hears both (a `-Y` list with analog and
+digital rows), analog calls and slot 1's digital calls push each other's older rows out.
 
 ### Scoped scan controls and loaded keys
 

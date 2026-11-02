@@ -922,6 +922,22 @@ dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
     return state ? channel_scan_on_air_row(state) : -1;
 }
 
+void
+dsd_engine_channel_scan_note_manual_step(const dsd_opts* opts, dsd_state* state, int row, int landed) {
+    /* scanner_mode 1 is a -Y scan running, which owns the tuner (dsd_channel_scan_owns_tuner()); one paused or with
+       its resume pending is 0. */
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || dsd_channel_modes_present(state)
+        || row < 0 || row >= state->lcn_freq_count) {
+        return;
+    }
+    const long freq = *dsd_state_trunk_lcn_slot(state, row);
+    if (landed && freq != 0) {
+        dsd_engine_scan_landing_note_row(state, freq);
+    } else {
+        dsd_engine_scan_landing_forget(state);
+    }
+}
+
 /* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
  * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
  * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */

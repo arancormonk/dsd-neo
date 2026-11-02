@@ -7544,8 +7544,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     # The scanners and the analog call tracker together (issue #667): -Y and trunk-scan departures
     # end an analog call or discard a candidate, and a scan's confirmed landing names an analog
     # call's frequency on audio input (D9), until the rigctl connection changes (app-control's
-    # connect service). A rigctl peer on audio input, which radio-off builds have too, stood in
-    # for by --wrap.
+    # connect service), a manual step of an untyped list included. A rigctl peer on audio input,
+    # which radio-off builds have too, stood in for by --wrap.
     add_executable(
         dsd-neo_test_engine_analog_scan_calls
         engine/test_engine_analog_scan_calls.c
@@ -7568,6 +7568,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=RigctlMarkSessionPassband"
             "-Wl,--wrap=dsd_scan_key_change_prepare"
             "-Wl,--wrap=Connect"
+            "-Wl,--wrap=io_control_set_freq_tagged"
             "-Wl,--start-group"
             dsd-neo_app_control
             dsd-neo_engine

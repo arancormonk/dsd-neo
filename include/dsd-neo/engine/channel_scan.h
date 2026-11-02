@@ -111,6 +111,14 @@ int dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state*
  * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
  * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */
 int dsd_engine_channel_scan_on_air_row(const dsd_state* state);
+/** A manual step of the untyped -Y list (Next or Previous, `C`/`J`, or the step an avoid takes; issue #666) tuned the
+ * receiver to @p row, for an analog call on audio input (issue #667 D9). With @p landed (the tune was confirmed: a
+ * rigctl peer took it, an RTL tune completed), called after the step's carrier boundary, a call is then heard on the
+ * row's frequency, as after the scan's own step; a placeholder row names none. Without it (the tune was refused, or is
+ * still outstanding) the scan's landing is forgotten: the receiver may be anywhere. Only while the untyped -Y scan
+ * runs (scanner_mode 1, no trunk scan, no typed list, whose manual step notes its own landing); nothing for a scan
+ * paused or resuming, a row out of range or NULL arguments. Decoder thread. */
+void dsd_engine_channel_scan_note_manual_step(const dsd_opts* opts, dsd_state* state, int row, int landed);
 /**
  * @brief Edit one field of a typed -Y row's own settings until the scanner leaves ("this channel", issue #518).
  *

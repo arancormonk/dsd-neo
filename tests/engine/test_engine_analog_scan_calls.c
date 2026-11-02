@@ -14,11 +14,13 @@
  *  - D9: an analog call on audio input is heard on the frequency a scan confirmed it landed its rigctl peer on (a typed
  *    or untyped -Y row's commit, a trunk-scan conventional target's completed retune), and on none after a failed tune,
  *    a placeholder row, a map replacement, a manual takeover, a rollback, or a rigctl reconnect or disconnect
- *    (svc_rigctl_connect(), with Connect() stood in for too).
+ *    (svc_rigctl_connect(), with Connect() stood in for too); an untyped list's manual Next and Previous (`C`, `J`)
+ *    name the row they landed, and a refused one, or the operator's own tune (`=`), names none.
  * A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS; a candidate shows by what follows it: one that was carried
  * on qualifies on blocks that alone are too short, and one discarded does not.
  */
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
@@ -47,6 +49,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "commands_internal.h"
 #include "scan_landing.h"
 #include "services.h"
 #include "test_support.h"
@@ -79,6 +82,8 @@ bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session_passband);
 void __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
 int __real_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
 int __wrap_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
 
@@ -94,6 +99,26 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_setfreq_freq = freq;
     return g_setfreq_ok != 0;
+}
+
+/* The app-control tunes (`C`, `J`, `=`) reach the peer through io_control's rigctl leg, which answers as SetFreq does:
+   0 when the peer took the frequency, -1 when it refused. */
+int
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+    (void)state;
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
+    if (!opts || freq_hz == 0U || opts->use_rigctl != 1) {
+        return -1;
+    }
+    g_setfreq_freq = (long)freq_hz;
+    if (!g_setfreq_ok) {
+        return -1;
+    }
+    opts->rigctl_sent_freq_hz = freq_hz;
+    opts->rtlsdr_center_freq = freq_hz;
+    return 0;
 }
 
 bool
@@ -350,6 +375,63 @@ test_rigctl_connection_change_forgets_landing(void) {
     session_free(opts, state);
 }
 
+/* One command through the app-control queue, drained on this (the decoder) thread: 1 when it was applied. */
+static int
+command(dsd_opts* opts, dsd_state* state, int cmd) {
+    dsd_engine_rigctl_tune_cache_forget();
+    g_setfreq_freq = 0;
+    return dsd_app_command_action(cmd) == DSD_APP_COMMAND_SUBMIT_QUEUED && dsd_app_drain_cmds(opts, state) == 1;
+}
+
+/* The untyped -Y list's manual steps: Next (`C`) and Previous (`J`) to a row of the list are the scan's own steps, so
+   the row they land names the call's frequency, as the scan's automatic step does; a refused step, and the operator's
+   own tune (`=`, which takes the tuner from the scan), name none. */
+static void
+test_manual_cycle_landing(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (session_new(&opts, &state) != 0) {
+        expect("manual cycle: a session", 0);
+        return;
+    }
+    opts->scanner_mode = 1;
+    state->trunk_lcn_freq[0] = 966012500L;
+    state->trunk_lcn_freq[1] = 966037500L;
+    state->trunk_lcn_freq[2] = 966062500L;
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    expect("manual cycle: the scan lands row 0", landing_step(opts, state) == 966012500L);
+    dsd_app_command_session_set_open(1);
+
+    expect("manual cycle: Next tunes row 1",
+           command(opts, state, DSD_APP_CMD_CHANNEL_CYCLE) && g_setfreq_freq == 966037500L);
+    expect("manual cycle: the scan still runs", opts->scanner_mode == 1);
+    expect("manual cycle: a call after Next names row 1", call_row_hz(opts, state) == 966037500L);
+
+    expect("manual cycle: Previous tunes row 0",
+           command(opts, state, DSD_APP_CMD_CHANNEL_CYCLE_PREV) && g_setfreq_freq == 966012500L);
+    expect("manual cycle: a call after Previous names row 0", call_row_hz(opts, state) == 966012500L);
+
+    /* The peer refuses Next: the receiver may be anywhere. */
+    g_setfreq_ok = 0;
+    (void)command(opts, state, DSD_APP_CMD_CHANNEL_CYCLE);
+    g_setfreq_ok = 1;
+    expect("manual cycle: the refused Next asked the peer for row 1", g_setfreq_freq == 966037500L);
+    expect("manual cycle: a call after a refused Next names no frequency", call_row_hz(opts, state) == 0);
+
+    /* The operator's own tune takes the tuner from the scan (issue #671). */
+    expect("manual cycle: Next lands again",
+           command(opts, state, DSD_APP_CMD_CHANNEL_CYCLE) && call_row_hz(opts, state) > 0);
+    dsd_engine_rigctl_tune_cache_forget();
+    expect("manual cycle: the operator's tune is applied",
+           dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 967012500U) == DSD_APP_COMMAND_SUBMIT_QUEUED
+               && dsd_app_drain_cmds(opts, state) == 1 && g_setfreq_freq == 967012500L);
+    expect("manual cycle: the operator's tune pauses the scan", opts->scanner_mode == 0);
+    expect("manual cycle: a call after the operator's tune names no frequency", call_row_hz(opts, state) == 0);
+    dsd_app_command_session_set_open(0);
+    session_free(opts, state);
+}
+
 /* A landing is taken at the reception's first block: one that began before it keeps the frequency it began with. */
 static void
 test_landing_taken_once(void) {
@@ -550,6 +632,7 @@ main(void) {
     test_scan_landing(0);
     test_landing_taken_once();
     test_rigctl_connection_change_forgets_landing();
+    test_manual_cycle_landing();
     test_scan_leave_ends_reception();
     test_search_boundary_discards_candidate();
     test_trunk_scan_departure(0);

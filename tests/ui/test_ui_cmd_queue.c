@@ -116,6 +116,7 @@
 #include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/runtime/config.h"
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "services.h"
 #include "test_env.h"
@@ -2428,6 +2429,55 @@ test_manual_scan_steps_clear_received_tone(void) {
                                                 && state.analog_rx.ctcss_tenths_hz == 1000
                                                 && state.analog_rx.generation == seeded);
         }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/*
+ * A manual step of a running untyped -Y list (Next, Previous) is the scan's own step to its own row, so a tune the front
+ * end confirmed names that row's frequency for an analog call on audio input (issue #667 D9). One accepted but not
+ * confirmed (a timeout), a refused one and a deferred one name none: the receiver may be anywhere. The row left's
+ * landing never survives either.
+ */
+static int
+test_manual_scan_steps_note_landing(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        long landed_hz;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 462012500L, "confirmed Next names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE_PREV, RTL_STREAM_TUNE_OK, 463012500L, "confirmed Previous names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 0L, "unconfirmed Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0L, "refused Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_DEFERRED, 0L, "deferred Next names no row"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 462012500L, "confirmed avoid step names its row"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = 1;
+        opts.use_rigctl = 1;
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        state.lcn_freq_count = 3;
+        state.trunk_lcn_freq[0] = 461012500L;
+        state.trunk_lcn_freq[1] = 462012500L;
+        state.trunk_lcn_freq[2] = 463012500L;
+        state.lcn_freq_roll = 1; /* row 0 is on air, landed by the scan */
+        dsd_state_lcn_on_air_note(&state, 0);
+        dsd_engine_scan_landing_note_row(&state, 461012500L);
+        rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == (uint32_t)cases[i].landed_hz);
         freeState(&state);
     }
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
@@ -24869,6 +24919,7 @@ main(void) {
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
     rc |= test_operator_retune_rearms_cold_start();
     rc |= test_manual_scan_steps_clear_received_tone();
+    rc |= test_manual_scan_steps_note_landing();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
     rc |= test_retune_commands_clear_received_tone();
