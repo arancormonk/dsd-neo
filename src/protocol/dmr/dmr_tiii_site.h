@@ -82,8 +82,7 @@ dmr_tiii_clamp_dmrla(uint16_t site_bits, uint16_t dmrla_n) {
 /* Whether DMRLA @p dmrla_n splits a SITE into an area and a site in it: any DMRLA does, one of the SITE width or more
  * leaving the whole SITE as the area and site 0 in it. */
 static inline int
-dmr_tiii_is_split(uint16_t site_bits, uint16_t dmrla_n) {
-    (void)site_bits;
+dmr_tiii_is_split(uint16_t dmrla_n) {
     return dmrla_n != 0U;
 }
 
@@ -113,7 +112,7 @@ static inline void
 dmr_tiii_site_label(char* out, size_t out_size, uint16_t site, uint16_t site_bits, uint16_t dmrla_n, int capmax) {
     if (capmax) {
         DSD_SNPRINTF(out, out_size, "%u", (unsigned)site);
-    } else if (dmr_tiii_is_split(site_bits, dmrla_n)) {
+    } else if (dmr_tiii_is_split(dmrla_n)) {
         DSD_SNPRINTF(out, out_size, "%u.%u", (unsigned)dmr_tiii_area(site, site_bits, dmrla_n) + 1U,
                      (unsigned)dmr_tiii_site_in_area(site, site_bits, dmrla_n) + 1U);
     } else {

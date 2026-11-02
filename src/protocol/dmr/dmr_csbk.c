@@ -3210,28 +3210,30 @@ dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
     return 1U;
 }
 
-/* Whether the Motorola C_ALOHA being handled may recognise its network as Capacity Max (dmr_tiii_site.h): one that
-   passed its CRC, or one -F accepted as RAS, whose keyed CRC no one can check, when nothing else casts doubt on it. The
-   slot's flags must say RAS alone (a failed CRC never counts), RAS must be confirmed on this carrier, and the burst must
-   be one CSBK read whole from it, as dmr_ras_note_signature() takes a signature. dmr_cspdu() handles a C_ALOHA only with
-   no irrecoverable errors and the protect flag clear, and the P_CLEAR it synthesizes is never one. */
+/* Whether the Motorola C_ALOHA being handled may recognise its network as Capacity Max (dmr_tiii_site.h): a single
+   CSBK (last-block bit set, never an MBC header that happens to carry the opcode) that passed its CRC, or one -F
+   accepted as RAS, whose keyed CRC no one can check, when nothing else casts doubt on it. The slot's flags must say RAS
+   alone (a failed CRC never counts), RAS must be confirmed on this carrier, and the burst must be read whole from it,
+   as dmr_ras_note_signature() takes a signature. dmr_cspdu() handles a C_ALOHA only with no irrecoverable errors and the
+   protect flag clear, and the P_CLEAR it synthesizes is never one. */
 static int
 dmr_aloha_recognises_capmax(const dsd_opts* opts, const dsd_state* state, const uint8_t* cs_pdu_bits) {
-    if (s_dmr_cspdu_synthesized) {
+    if (s_dmr_cspdu_synthesized || cs_pdu_bits[0] != 1U) {
         return 0;
     }
     if (dmr_csbk_crc_checked(state)) {
         return 1;
     }
-    return opts->aggressive_framesync == 0 && cs_pdu_bits[0] == 1U
-           && state->event_crc_invalid[state->currentslot & 1] == DSD_CRC_RAS_UNVERIFIED && dmr_ras_confirmed(state)
-           && state->input_interrupted == 0
+    return opts->aggressive_framesync == 0 && state->event_crc_invalid[state->currentslot & 1] == DSD_CRC_RAS_UNVERIFIED
+           && dmr_ras_confirmed(state) && state->input_interrupted == 0
            && !(state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq));
 }
 
+/* The C_ALOHA line. It names Capacity Max only on a recognised network (@p capmax), whose numbers it shows raw: a
+   Motorola C_ALOHA read before recognition shows the standard numbers and so does not name it. */
 static void
 dmr_syscode_print_type0(const dsd_opts* opts, const uint8_t* cs_pdu_bits, const char* model_str, uint16_t net,
-                        const char* site_label, const char* par_str, uint16_t syscode, uint8_t is_capmax) {
+                        const char* site_label, const char* par_str, uint16_t syscode, int capmax) {
     uint8_t reserved = cs_pdu_bits[16];
     uint8_t tsccas = cs_pdu_bits[17];
     uint8_t sync = cs_pdu_bits[18];
@@ -3248,8 +3250,8 @@ dmr_syscode_print_type0(const dsd_opts* opts, const uint8_t* cs_pdu_bits, const 
     DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Cat: %s;", model_str, (unsigned)net,
                 site_label, par_str);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
-    if (is_capmax) {
-        DSD_FPRINTF(stderr, " Capacity Max");
+    if (capmax) {
+        DSD_FPRINTF(stderr, " " DSD_RXID_T3_CAPMAX_TOKEN);
     }
     if (opts->payload != 1) {
         return;
@@ -3319,7 +3321,7 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
         char par_str[8];
         dmr_syscode_set_partition_label((uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2), par_str,
                                         sizeof(par_str));
-        dmr_syscode_print_type0(opts, cs_pdu_bits, code.model_name, net, site_label, par_str, syscode, is_motorola);
+        dmr_syscode_print_type0(opts, cs_pdu_bits, code.model_name, net, site_label, par_str, syscode, capmax);
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%u-%s;%04X; ", code.model_name,
                      (unsigned)net, site_label, syscode);
         /* A C_ALOHA names this site; a C_BCAST names another and is no note. dmr_cspdu()'s gate also passes a burst -F

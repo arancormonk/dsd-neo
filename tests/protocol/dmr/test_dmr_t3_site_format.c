@@ -51,7 +51,7 @@ test_dmrla_only_when_set(void) {
 /* Small site 27 = 11011b: DMRLA 2 takes the top two bits (11) as the area and leaves 011 as the site in it. */
 static void
 test_dmrla_top_bits(void) {
-    assert(dmr_tiii_is_split(5U, 2U));
+    assert(dmr_tiii_is_split(2U));
     assert(dmr_tiii_area(27U, 5U, 2U) == 3U);
     assert(dmr_tiii_site_in_area(27U, 5U, 2U) == 3U);
     assert(dmr_tiii_area(27U, 5U, 4U) == 13U);
@@ -64,9 +64,9 @@ test_dmrla_top_bits(void) {
 /* No DMRLA leaves the site whole; one of the SITE width or more (clamped to it) makes the whole SITE the area. */
 static void
 test_no_split_and_full_width(void) {
-    assert(!dmr_tiii_is_split(5U, 0U));
-    assert(dmr_tiii_is_split(5U, 5U));
-    assert(dmr_tiii_is_split(5U, 9U));
+    assert(!dmr_tiii_is_split(0U));
+    assert(dmr_tiii_is_split(5U));
+    assert(dmr_tiii_is_split(9U));
     assert(dmr_tiii_area(27U, 5U, 5U) == 27U);
     assert(dmr_tiii_site_in_area(27U, 5U, 5U) == 0U);
     assert(dmr_tiii_area(27U, 5U, 9U) == 27U);

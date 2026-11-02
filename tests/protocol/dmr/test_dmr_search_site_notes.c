@@ -80,16 +80,17 @@ enum { SYSCODE_SMALL_12_3 = (1 << 12) | (12 << 5) | 3 };
 /* Small model, network 2, site 27 (11011b): 01 0000010 11011. */
 enum { SYSCODE_SMALL_2_27 = (1 << 12) | (2 << 5) | 27 };
 
-/* A C_ALOHA of feature set @p fid (0 standard, 0x10 Motorola: Capacity Max) carrying the 14-bit system code @p code. */
+/* A C_ALOHA of feature set @p fid (0 standard, 0x10 Motorola: Capacity Max) carrying the 14-bit system code @p code: a
+   single CSBK, its last-block bit set as on air. */
 static void
 aloha_code(dsd_opts* opts, dsd_state* state, int fid, int code, int crc_ok) {
     uint8_t bits[196];
     uint8_t bytes[24];
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(bytes, 0, sizeof(bytes));
-    bytes[0] = 25; // C_ALOHA
+    bytes[0] = 0x80U | 25U; // last block, C_ALOHA
     bytes[1] = (uint8_t)fid;
-    put_bits(bits, 0, 25, 8);
+    put_bits(bits, 0, 0x80U | 25U, 8);
     put_bits(bits, 8, (uint32_t)fid, 8);
     put_bits(bits, 40, (uint32_t)code, 14);
     dmr_cspdu(opts, state, bits, bytes, (uint32_t)crc_ok, 0);
@@ -892,8 +893,8 @@ typedef struct {
     int want;
 } capmax_gate_case;
 
-/* D3: only a Motorola C_ALOHA that passed its CRC, or one -F accepted as RAS on a carrier whose RAS is confirmed and
-   read whole from it, recognises Capacity Max; a RAS acceptance names no site. */
+/* D3: only a single Motorola C_ALOHA (never an MBC header) that passed its CRC, or one -F accepted as RAS on a carrier
+   whose RAS is confirmed and read whole from it, recognises Capacity Max; a RAS acceptance names no site. */
 static int
 test_capmax_recognition_gate(dsd_opts* opts, dsd_state* state) {
     static const capmax_gate_case cases[] = {
@@ -908,6 +909,7 @@ test_capmax_recognition_gate(dsd_opts* opts, dsd_state* state) {
         {"ras mbc header", 1, 2, DSD_CRC_RAS_UNVERIFIED, 0, 0, 1, 0},
         {"crc checked", 0, 0, 0, 0, 0, 0, 1},
         {"crc checked under -F", 1, 0, 0, 0, 0, 0, 1},
+        {"crc checked mbc header", 0, 0, 0, 0, 0, 1, 0},
     };
     int rc = 0;
     set_dmrla(opts, 0, 0);
@@ -958,8 +960,9 @@ test_capmax_recognition_gate(dsd_opts* opts, dsd_state* state) {
 }
 
 /* The reporter's start-up through the burst handler under -F: the first RAS C_ALOHA comes before RAS is confirmed and
-   reads standard, as does the adjacent site after it (which confirms RAS); the next C_ALOHA recognises the network, and
-   from then on its site and neighbours read raw. RAS acceptances name no site. */
+   reads standard, without the Capacity Max label, as does the adjacent site after it (which confirms RAS); the next
+   C_ALOHA recognises the network, and from then on its site and neighbours read raw, and its C_ALOHA lines, a FID 0 one
+   included, name Capacity Max. RAS acceptances name no site. */
 static int
 test_capmax_startup_order(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -969,8 +972,8 @@ test_capmax_startup_order(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     rc |= csbk_burst(opts, state, k_capmax_aloha, 1);
-    rc |= expect_log("startup first aloha",
-                     "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2; Cat: A; SYS: 2101; Capacity Max");
+    rc |= expect_log("startup first aloha", "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2; Cat: A; SYS: 2101;");
+    rc |= expect_int("startup first aloha has no capmax label", strstr(g_log, "Capacity Max") == NULL, 1);
     rc |= expect_text("startup first site parameters", state->dmr_site_parms, "TIII Large:2-2;2101; ");
     rc |= expect_int("startup first aloha not recognised", capmax_recognised(state), 0);
     rc |= csbk_burst(opts, state, k_capmax_adjacent, 1);
@@ -986,7 +989,7 @@ test_capmax_startup_order(dsd_opts* opts, dsd_state* state) {
     rc |= csbk_burst(opts, state, k_capmax_aloha_fid0, 1);
     rc |=
         expect_log("startup fid 0 aloha after", "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: AB; SYS: 2101;");
-    rc |= expect_int("startup fid 0 aloha has no capmax suffix", strstr(g_log, "Capacity Max") == NULL, 1);
+    rc |= expect_log("startup fid 0 aloha after label", "SYS: 2101; Capacity Max");
     rc |= expect_int("startup ras names no site", (long)(state->rx_id.valid & T3_SITE_PARTS), 0);
 
     dsd_opts_set_relaxed_crc(opts, 0);
@@ -1045,7 +1048,8 @@ test_capmax_short_lc(dsd_opts* opts, dsd_state* state) {
     uint8_t fid0[12];
     with_valid_crc(k_capmax_aloha_fid0, fid0);
     rc |= csbk_send(opts, state, fid0, 0U);
-    rc |= expect_log("fid 0 aloha after line", "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: AB; SYS: 2101;");
+    rc |= expect_log("fid 0 aloha after line",
+                     "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: AB; SYS: 2101; Capacity Max");
     rc |= expect_text("fid 0 aloha after text", id->dmr_site_text,
                       "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
     clear_record(state);
