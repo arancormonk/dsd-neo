@@ -4303,7 +4303,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `dsd_analog_rx_block_eligible_from()` is the first sample from which the gate stayed OFF or ALLOWED to the block's
   end, or the block's length when the gate in force at its end does not pass. `dsd_analog_rx_block_qualified_carrier()`
   says whether a read starting at or after that point found the carrier itself (`dsd_analog_rx_core::carrier_now`, the
-  auto squelch's flags or the level squelch above the floor), never only the hangover. The finalizer splits a block
+  auto or noise squelch's flags, open at the read's last sample, or the level squelch above the floor), never only the
+  hangover. A per-sample squelch keeps its own 20 ms grid, which a block need not share (44.1 kHz input; at 48 kHz the
+  PCM noise squelch starts with the stream's second sample, so its decisions land one sample into each block), so a
+  read that starts with the last of a carrier the squelch closed on is that carrier going, not one found. The finalizer splits a block
   that ends under a passing gate at that point where the chain's runs are chosen (`symbol_process_unsynced_audio()`
   and `symbol_process_unsynced_audio_runs()`): the start is a run that does not play, so the AGC neither adapts to nor
   plays it, and it is silence in `analog_out_f` before every sink and the hook; the sink gate ramps in from silence

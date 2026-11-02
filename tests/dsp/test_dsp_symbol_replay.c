@@ -5965,6 +5965,55 @@ test_qualified_carrier_needs_an_eligible_read_of_the_carrier(void) {
     }
 }
 
+/* qualified_carrier (B1, issue #668): a read finds the carrier itself only when the carrier is still there at its end.
+   A per-sample squelch keeps its own 20 ms grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio
+   input, whose noise squelch never sees the stream's first sample), so a read can start with a sliver of a carrier the
+   squelch then closed on: that is the carrier going, which leaves its hangover, not a carrier found. */
+static void
+test_qualified_carrier_is_open_at_the_end_of_its_read(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        unsigned int open1;
+        unsigned int reopen;
+        int qualified;
+    } cases[] = {
+        {1U, 960U, 0},   /* open on the first sample only: the squelch closed one sample in */
+        {240U, 960U, 0}, /* open for 5 ms, then closed */
+        {0U, 1U, 1},     /* closed on the first sample only: the squelch opened one sample in */
+        {0U, 600U, 1},   /* opened part-way through */
+        {300U, 600U, 1}, /* closed in the middle, open again at the end */
+        {960U, 960U, 1}, /* open throughout */
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        install_fake_rtl_hooks(1);
+        init_analog_monitor_fixture(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts.rtl_squelch_margin_db = 10;
+        opts.rtl_squelch_level = 2.0;
+        g_chain_removes_tone = 0;
+        dsd_trunk_tuning_requests_reset();
+        start_monitor_capture(&opts);
+        start_call_capture();
+        feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+        assert(last_call_block()->carrier_open == 0);
+        feed_flagged_block(&opts, &state, 1000.0f, cases[c].open1, cases[c].reopen);
+        const call_block_seen* seen = last_call_block();
+        if (seen->input != DSD_ANALOG_CALL_RECEPTION || seen->qualified_carrier != cases[c].qualified) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: qualified carrier, open over [0, %u) and from %u: input %d, qualified %d, want %d\n",
+                        cases[c].open1, cases[c].reopen, (int)seen->input, seen->qualified_carrier, cases[c].qualified);
+            assert(0);
+        }
+        stop_call_capture();
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 /* The descriptor the NFM call is handed: the block after the sink gate as before, and -- only while -P records with a
    pre-roll -- the same block before the gate, which reads the same whether the speaker plays, is muted or is the null
    output. The wall-time stamp only while -P records. */
@@ -5988,7 +6037,8 @@ run_descriptor_mode(dsd_opts* opts, dsd_state* state, int mode, float* samples_o
     feed_flagged_block(opts, state, 1000.0f, 240U, 960U);
     const call_block_seen* seen = last_call_block();
     assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->count == 960U && seen->sample_rate == 48000);
-    assert(seen->eligible_from == 0U && seen->qualified_carrier == 1 && seen->has_heard == 1);
+    /* The carrier went 5 ms into this read: it continues the call, but found no carrier to begin one (B1). */
+    assert(seen->eligible_from == 0U && seen->qualified_carrier == 0 && seen->has_heard == 1);
     assert(fabs(seen->wall_end_s - 1700000000.25) < 1e-6);
     for (int i = 0; i < 960; i++) {
         assert(sample_near(seen->heard[i], 1000.0f));
@@ -6359,6 +6409,7 @@ main(void) {
     test_tone_verdict_inside_a_block_splits_the_chain_runs();
     test_tone_rejected_start_leaves_the_agc_alone();
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
+    test_qualified_carrier_is_open_at_the_end_of_its_read();
     test_call_block_descriptor_follows_the_recording_not_the_speaker();
     test_call_block_wall_time_is_read_before_the_raw_wav();
     test_sink_generation_moves_at_every_break();

@@ -658,13 +658,27 @@ analog_rx_block_eligibility_begin(const dsd_opts* opts, const dsd_state* state, 
     session->block_qualified = 0;
 }
 
-/* A read of the monitor block from sample @p start has published its verdict (issue #668), which describes the read's
-   samples: a verdict that does not pass makes nothing of the block eligible yet, and the first one that passes after
-   it makes the block eligible from the read's start. A read that found the carrier itself (@p carrier_now) while the
-   block is eligible qualifies it. */
+/* Whether a read that found the carrier (@p carrier_now) still has it at its last sample, @p flags[@p last] (B1, issue
+   #668). A per-sample squelch keeps its own 20 ms grid, which a monitor block need not share (44.1 kHz input, or 48 kHz
+   audio input, whose noise squelch starts with the stream's second sample), so a read can start with the last of a
+   carrier the squelch then closed on: that is the carrier going, which leaves its hangover, not a carrier found. A read
+   without per-sample flags has only its own decision. */
+static int
+analog_rx_read_ends_on_carrier(const dsd_opts* opts, const dsd_state* state, const uint8_t* flags, unsigned int last,
+                               int carrier_now) {
+    if (!carrier_now || !flags || !dsd_squelch_dynamic_in_force(opts, state)) {
+        return carrier_now;
+    }
+    return dsd_squelch_gate_open(opts, state, flags[last]);
+}
+
+/* A read of the monitor block from sample @p start to @p end has published its verdict (issue #668), which describes
+   the read's samples: a verdict that does not pass makes nothing of the block eligible yet, and the first one that
+   passes after it makes the block eligible from the read's start. A read that found the carrier itself (@p
+   carrier_now) and still has it at its end (@p flags, NULL for none) while the block is eligible qualifies it. */
 static void
 analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session, unsigned int start,
-                          int carrier_now) {
+                          unsigned int end, const uint8_t* flags, int carrier_now) {
     if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
         session->block_eligible_from = ANALOG_RX_NOT_ELIGIBLE;
         session->block_qualified = 0;
@@ -674,7 +688,7 @@ analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_r
         session->block_eligible_from = start;
         session->block_qualified = 0;
     }
-    if (carrier_now) {
+    if (analog_rx_read_ends_on_carrier(opts, state, flags, end - 1U, carrier_now)) {
         session->block_qualified = 1;
     }
 }
@@ -1325,7 +1339,7 @@ dsd_analog_rx_tap_partial_flags(const dsd_opts* opts, dsd_state* state, const fl
     }
     const int carrier_now = analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, filled - start);
     session->block_taken = filled;
-    analog_rx_block_note_read(opts, state, session, start, carrier_now);
+    analog_rx_block_note_read(opts, state, session, start, filled, flags, carrier_now);
 }
 
 void
@@ -1350,7 +1364,7 @@ dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* blo
         /* The read may have started the session. */
         session = analog_rx_session_get(state);
         if (session) {
-            analog_rx_block_note_read(opts, state, session, start, carrier_now);
+            analog_rx_block_note_read(opts, state, session, start, count, flags, carrier_now);
         }
     }
 }
