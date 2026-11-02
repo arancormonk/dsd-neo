@@ -1604,6 +1604,36 @@ read_whole_file(const char* path, char** out, size_t* out_len) {
     return 0;
 }
 
+/*
+ * read_whole_file() fills its buffer to the cap with no room for a terminator,
+ * so strstr() or "%s" on it would run past the bytes fread() wrote (the MSVC
+ * debug heap fills that tail with 0xCD). Anything read as text uses this
+ * reader, which keeps one spare byte for the terminator.
+ */
+static int
+read_whole_file_text(const char* path, char** out) {
+    *out = NULL;
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
+    if (buf == NULL) {
+        fclose(fp);
+        return -1;
+    }
+    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
+    fclose(fp);
+    if (hit_cap) {
+        free(buf);
+        return -1;
+    }
+    buf[(got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES] = '\0';
+    *out = buf;
+    return 0;
+}
+
 /* safe_api.h has no compare wrapper and memcmp is not on
  * dsd-neo.no-raw-memory-api's list, but a byte loop costs nothing here. */
 static int
@@ -2476,11 +2506,11 @@ static char*
 tetra_sites_with_long_name(char* label_out, size_t label_sz) {
     char path[DSD_TEST_PATH_MAX];
     char* fixture = NULL;
-    size_t len = 0;
     if (dsd_test_path_join(path, sizeof(path), DSD_NEO_TEST_RR_FIXTURE_DIR, "trs_sites_tetra.xml") != 0
-        || read_whole_file(path, &fixture, &len) != 0) {
+        || read_whole_file_text(path, &fixture) != 0) {
         return NULL;
     }
+    const size_t len = strlen(fixture);
     /* Single spaces, so the label is the description's first 95 bytes as is. */
     char name[160];
     (void)DSD_SNPRINTF(name, sizeof(name), "%s",
@@ -2743,35 +2773,6 @@ sentinel_free(void) {
     free(g_sentinel_csv);
     g_sentinel_csv = NULL;
     g_sentinel_len = 0;
-}
-
-/*
- * read_whole_file() fills its buffer to the cap with no room for a terminator,
- * so strstr() on it would run past the bytes fread() wrote. The substring
- * helpers below get their own reader with one spare byte instead.
- */
-static int
-read_whole_file_text(const char* path, char** out) {
-    *out = NULL;
-    FILE* fp = fopen(path, "rb");
-    if (fp == NULL) {
-        return -1;
-    }
-    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
-    if (buf == NULL) {
-        fclose(fp);
-        return -1;
-    }
-    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
-    const int hit_cap = (feof(fp) == 0);
-    fclose(fp);
-    if (hit_cap) {
-        free(buf);
-        return -1;
-    }
-    buf[(got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES] = '\0';
-    *out = buf;
-    return 0;
 }
 
 static void

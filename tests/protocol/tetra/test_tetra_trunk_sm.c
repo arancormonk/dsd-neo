@@ -971,12 +971,20 @@ cc_candidates(const dsd_state* state) {
     return c ? c->count : 0;
 }
 
+/* The session's main-carrier acquisition; every session these tests open has TETRA state. */
+static const tetra_sm_acquire*
+acq_of(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    assert(ts != NULL);
+    return &ts->sm.acq;
+}
+
 static const tetra_sm_move*
 move_of(const dsd_state* state, long hz) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
+    const tetra_sm_acquire* const acq = acq_of(state);
     for (int i = 0; i < TETRA_SM_MOVES; i++) {
-        if (ts->sm.acq.moves[i].hz == hz) {
-            return &ts->sm.acq.moves[i];
+        if (acq->moves[i].hz == hz) {
+            return &acq->moves[i];
         }
     }
     return NULL;
@@ -1292,7 +1300,7 @@ test_external_tune_cancels_acquiring(void) {
     tetra_confirm_note_signalling(s.state);
     sysinfo_burst(&s, k_main, 4U);
     assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.state->last_cc_sync_time == 0);
-    assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_IDLE && tetra_st_peek(s.state)->sm.acq.stay_noted);
+    assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_IDLE && acq_of(s.state)->stay_noted);
     session_close(&s);
 }
 
@@ -1335,7 +1343,7 @@ test_main_carrier_naming_another(void) {
     tetra_confirm_note_signalling(s.state);
     sysinfo_burst(&s, k_main, 4U);
     assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.state->last_cc_sync_time == 0);
-    assert(tetra_st_peek(s.state)->sm.acq.stay_noted && !tetra_sm_owns_return(s.state));
+    assert(acq_of(s.state)->stay_noted && !tetra_sm_owns_return(s.state));
     const double later[] = {1000.0 + TETRA_SM_MOVE_SILENT_S, 1000.0 + 3.0 * TETRA_SM_MOVE_SILENT_S};
     assert(!ticks_say(&s, later, 2, "no SYSINFO on main carrier"));
     assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
@@ -1416,7 +1424,7 @@ test_history_reset_and_deferred_entries(void) {
     }
     /* Every entry held by a deferral: nothing more now, and no "tried already" either. */
     sysinfo_burst(&s, k_other_main + TETRA_SM_MOVES, 4U);
-    assert(g_returns == TETRA_SM_MOVES && !tetra_st_peek(s.state)->sm.acq.full_noted);
+    assert(g_returns == TETRA_SM_MOVES && !acq_of(s.state)->full_noted);
     at_seconds(1000.0 + TETRA_SM_MOVE_HOLD_S);
     g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
     sysinfo_burst(&s, k_other_main + TETRA_SM_MOVES, 4U);
@@ -1438,7 +1446,7 @@ test_move_history_capacity_and_resets(void) {
         tetra_confirm_note_signalling(s.state);
     }
     sysinfo_burst(&s, k_main + TETRA_SM_MOVES, 4U);
-    assert(g_returns == TETRA_SM_MOVES && tetra_st_peek(s.state)->sm.acq.full_noted);
+    assert(g_returns == TETRA_SM_MOVES && acq_of(s.state)->full_noted);
     assert(move_of(s.state, main_hz(k_main + TETRA_SM_MOVES)) == NULL);
     tetra_sm_forget_moves(s.state);
     tetra_confirm_note_signalling(s.state);
