@@ -25535,8 +25535,9 @@ expect_list_result(const char* what, uint64_t after, uint32_t request, uint32_t 
     return bad;
 }
 
-/* Two callers (the terminal and the API, say) taking request ids and submitting at once: no id is taken twice, and
-   each request comes back exactly once. */
+/* Two callers (the terminal and the API, say) taking request ids and submitting at once, while a third polls the
+   results as the drain publishes them: no id is taken twice, each request comes back exactly once, and a poll never
+   sees a result out of order. */
 enum { SCAN_LIST_CALLER_REQUESTS = 30 };
 
 typedef struct {
@@ -25548,10 +25549,36 @@ static DSD_THREAD_RETURN_TYPE
 scan_list_caller_run(void* opaque) {
     scan_list_caller* c = opaque;
     for (int i = 0; i < SCAN_LIST_CALLER_REQUESTS; i++) {
-        /* Another session's: refused as stale, so the requests change nothing whatever their order. */
+        /* No trunk scan is configured, so the coordinator is not there to ask: each is answered UNAVAILABLE and changes
+           nothing whatever their order. */
         if (submit_list_set(1U, 2, 0, &c->requests[i]) == DSD_APP_COMMAND_SUBMIT_QUEUED) {
             c->queued++;
         }
+    }
+    DSD_THREAD_RETURN;
+}
+
+/* Polls the retained results until told to stop, as a frontend's render loop does. */
+typedef struct {
+    uint64_t after;
+    atomic_int stop;
+    int out_of_order;
+    int polls;
+} scan_list_reader;
+
+static DSD_THREAD_RETURN_TYPE
+scan_list_reader_run(void* opaque) {
+    scan_list_reader* r = opaque;
+    uint64_t seen = r->after;
+    while (!atomic_load(&r->stop)) {
+        dsd_app_scan_list_result out[DSD_APP_RESULT_HISTORY];
+        const int n = dsd_app_scan_list_results_since(seen, out, DSD_APP_RESULT_HISTORY);
+        for (int i = 0; i < n; i++) {
+            r->out_of_order |= out[i].sequence <= seen || out[i].code != DSD_APP_SCAN_LIST_SET_UNAVAILABLE;
+            seen = out[i].sequence;
+        }
+        r->polls++;
+        dsd_thread_yield();
     }
     DSD_THREAD_RETURN;
 }
@@ -25563,6 +25590,13 @@ test_scan_list_requests_from_two_callers(void) {
     init_test_context(&opts, &state);
     int rc = 0;
     const uint64_t after = scan_list_newest_seq();
+    scan_list_reader reader;
+    DSD_MEMSET(&reader, 0, sizeof reader);
+    reader.after = after;
+    atomic_store(&reader.stop, 0);
+    dsd_thread_t reader_thread;
+    const int reading = dsd_thread_create(&reader_thread, scan_list_reader_run, &reader) == 0;
+    rc |= expect_true("reader started", reading);
     scan_list_caller callers[2];
     DSD_MEMSET(callers, 0, sizeof callers);
     dsd_thread_t threads[2];
@@ -25578,6 +25612,11 @@ test_scan_list_requests_from_two_callers(void) {
     rc |= expect_true("every request queued",
                       callers[0].queued == SCAN_LIST_CALLER_REQUESTS && callers[1].queued == SCAN_LIST_CALLER_REQUESTS);
     rc |= expect_int("every request applied", dsd_app_drain_cmds(&opts, &state), 2 * SCAN_LIST_CALLER_REQUESTS);
+    if (reading) {
+        atomic_store(&reader.stop, 1);
+        dsd_thread_join(reader_thread);
+        rc |= expect_true("the reader polled and saw every result in order", reader.polls > 0 && !reader.out_of_order);
+    }
     dsd_app_scan_list_result out[2 * SCAN_LIST_CALLER_REQUESTS];
     const int n = dsd_app_scan_list_results_since(after, out, 2 * SCAN_LIST_CALLER_REQUESTS);
     rc |= expect_int("one result each", n, 2 * SCAN_LIST_CALLER_REQUESTS);
@@ -25586,7 +25625,10 @@ test_scan_list_requests_from_two_callers(void) {
             const uint32_t id = callers[c].requests[i];
             int seen = 0;
             for (int k = 0; k < n; k++) {
-                seen += out[k].request == id ? 1 : 0;
+                if (out[k].request == id) {
+                    seen++;
+                    rc |= expect_int("answered as no trunk scan", out[k].code, DSD_APP_SCAN_LIST_SET_UNAVAILABLE);
+                }
             }
             const uint32_t other = callers[1 - c].requests[i];
             if (id == 0U || seen != 1 || id == other) {

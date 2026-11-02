@@ -3606,15 +3606,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     command or discarded at a session stop). A full queue refuses a toggle at submit instead of evicting the oldest,
     so a refused request is never pending and gets no result. Request ids come from the process-wide
     `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each other's results.
-    Toggles are session-only: the coordinator's lists survive a config apply, running or paused, and a save writes
-    the configured start states (D3). Tests: `APP_COMMAND_QUEUE`.
+    The result is authoritative for the outcome and the toast; the snapshot's `trunk_scan_lists_seq` is for the
+    lists shown, and the result can come first (its publication precedes the drain's snapshot, which a watchdog
+    tick can also put off), so a frontend clears a pending row on its result and renders the lists once
+    `trunk_scan_lists_seq` moves. The code is the coordinator's even where the command's status is not: a rigctl
+    passband follow-up refused after a switch marks the command FAILED (and the recording view's outcome with it)
+    while the code stays OK. The handler hands its code back through an out-parameter along `apply_cmd()`, never a
+    shared static. Toggles are session-only: the coordinator's lists survive a config apply, running or paused, and a
+    save writes the configured start states (D3). Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
     (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
     history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every completion (the control API, which
-    reports a `result_gap` when more completed than the history held)
+    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
+    completion (the control API, which reports a `result_gap` when more completed than the history held)
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the

@@ -14,16 +14,18 @@
 #include "command_dispatch.h"
 #include "scan_list_results.h"
 
-/* The coordinator's answers pass through unchanged. */
-_Static_assert((int)DSD_APP_SCAN_LIST_SET_OK == (int)DSD_TRUNK_SCAN_LIST_SET_OK
-                   && (int)DSD_APP_SCAN_LIST_SET_UNCHANGED == (int)DSD_TRUNK_SCAN_LIST_SET_UNCHANGED
-                   && (int)DSD_APP_SCAN_LIST_SET_REFUSED_LAST == (int)DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST
-                   && (int)DSD_APP_SCAN_LIST_SET_BUSY == (int)DSD_TRUNK_SCAN_LIST_SET_BUSY
-                   && (int)DSD_APP_SCAN_LIST_SET_UNAVAILABLE == (int)DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE
-                   && (int)DSD_APP_SCAN_LIST_SET_PAUSED == (int)DSD_TRUNK_SCAN_LIST_SET_PAUSED
-                   && (int)DSD_APP_SCAN_LIST_SET_STALE == (int)DSD_TRUNK_SCAN_LIST_SET_STALE
-                   && (int)DSD_APP_SCAN_LIST_ALL == (int)DSD_TRUNK_SCAN_LIST_ALL,
-               "scan-list result codes must match the coordinator's");
+/* The coordinator's answers pass through unchanged (each side + 0: an int, so no enum types are compared). */
+_Static_assert(DSD_APP_SCAN_LIST_SET_OK + 0 == DSD_TRUNK_SCAN_LIST_SET_OK + 0, "OK is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_UNCHANGED + 0 == DSD_TRUNK_SCAN_LIST_SET_UNCHANGED + 0,
+               "UNCHANGED is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_REFUSED_LAST + 0 == DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST + 0,
+               "REFUSED_LAST is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_BUSY + 0 == DSD_TRUNK_SCAN_LIST_SET_BUSY + 0, "BUSY is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_UNAVAILABLE + 0 == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE + 0,
+               "UNAVAILABLE is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_PAUSED + 0 == DSD_TRUNK_SCAN_LIST_SET_PAUSED + 0, "PAUSED is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_SET_STALE + 0 == DSD_TRUNK_SCAN_LIST_SET_STALE + 0, "STALE is the coordinator's");
+_Static_assert(DSD_APP_SCAN_LIST_ALL + 0 == DSD_TRUNK_SCAN_LIST_ALL + 0, "every list is the coordinator's");
 
 static dsd_mutex_t result_mutex;
 static atomic_int mutex_state = 0;

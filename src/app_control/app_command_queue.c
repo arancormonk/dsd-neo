@@ -8074,11 +8074,6 @@ apply_cmd_scan_avoid_remove(const dsd_opts* opts, dsd_state* state, const struct
                       : apply_scan_avoid_remove_lcn(opts, state, &p);
 }
 
-/* What the DSD_APP_CMD_SCAN_LIST_SET being applied did (issue #697), for its retained result: apply_cmd() sets INVALID
-   before every dispatch and SEARCH when Signal search refuses it, and the handler the coordinator's answer. Decoder
-   thread only, as the drain is. */
-static int32_t g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_INVALID;
-
 /* What a raw submission can carry (issue #697): a session that can name one, a list number or every list, and an on or
    off. A list past the scan's lists is the coordinator's to call stale. */
 static int
@@ -8150,10 +8145,11 @@ scan_list_set_toast(dsd_state* state, int code, int list, int enabled) {
 }
 
 /* DSD_APP_CMD_SCAN_LIST_SET (issue #697): the coordinator switches the list (dsd_trunk_scan_hook_list_set(), which
-   takes its own try of the P25 SM tick guard, so this command is not apply-guarded) and its answer is the result. A
-   switch, or a list already as asked, completes; every refusal fails. */
+   takes its own try of the P25 SM tick guard, so this command is not apply-guarded) and its answer goes to @p code,
+   the retained result's (left as the caller set it for a payload refused here). A switch, or a list already as asked,
+   completes; every refusal fails. */
 static int
-apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* code_out) {
     dsd_app_scan_list_set_payload p;
     if (!state || c->n != sizeof p) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -8163,7 +8159,7 @@ apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     const int code = dsd_trunk_scan_hook_list_set(opts, state, p.session, p.list, p.enabled, p.request);
-    g_scan_list_set_code = code;
+    *code_out = code;
     scan_list_set_toast(state, code, p.list, p.enabled);
     return (code == DSD_APP_SCAN_LIST_SET_OK || code == DSD_APP_SCAN_LIST_SET_UNCHANGED) ? UI_CMD_APPLY_COMPLETED
                                                                                          : UI_CMD_APPLY_FAILED;
@@ -8177,7 +8173,6 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         case DSD_APP_CMD_SCAN_AVOID: op = DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE; break;
         case DSD_APP_CMD_SCAN_AVOID_CLEAR: op = DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR; break;
         case DSD_APP_CMD_SCAN_AVOID_REMOVE: return apply_cmd_scan_avoid_remove(opts, state, c);
-        case DSD_APP_CMD_SCAN_LIST_SET: return apply_cmd_scan_list_set(opts, state, c);
         default: return 0;
     }
     if (!state) {
@@ -9789,8 +9784,9 @@ ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return ui_cmd_dispatch(opts, state, c);
 }
 
+/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did (its retained result); other commands leave it. */
 static int
-apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
         apply_cmd_eye_spectrum,     apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_skip_slot,
@@ -9836,6 +9832,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #endif
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return apply_cmd_scan_list_set(opts, state, c, scan_list_code);
+    }
     for (size_t i = 0; i < (sizeof k_command_groups / sizeof k_command_groups[0]); ++i) {
         r = k_command_groups[i](opts, state, c);
         if (r) {
@@ -10254,7 +10253,8 @@ apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rig
 }
 
 static int
-apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
+apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
+                 int32_t* scan_list_code) {
     /* Before the suspend, so it is the request the row in force made. */
     const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);
@@ -10271,7 +10271,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
        command that leaves the scope in force starts opens on the row's settings with the CQPSK state an open picks,
        and is asked for the row's profile at once (ui_publish_row_to_started_stream()). */
     const unsigned int starts_before = svc_rtl_start_count();
-    const int result = apply_cmd_unscoped(opts, state, c);
+    const int result = apply_cmd_unscoped(opts, state, c, scan_list_code);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
@@ -10359,11 +10359,14 @@ recording_command_outcome(const struct dsd_app_command* c, int result) {
     return result == UI_CMD_APPLY_COMPLETED ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
 }
 
+/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did, for its retained result (issue #697): SEARCH when
+   Signal search refuses it, the coordinator's answer once the handler asked it, INVALID for anything that stops it
+   before then. */
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_INVALID;
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
+    *scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
     if (!command_allowed_during_search(state, c)) {
-        g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_SEARCH;
+        *scan_list_code = DSD_APP_SCAN_LIST_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
@@ -10383,7 +10386,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     }
     g_apply_cmd_guard_held = guarded;
     g_config_recording_applied = 0;
-    const int result = apply_cmd_scoped(opts, state, c, guarded);
+    const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
     g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {
@@ -10787,13 +10790,14 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             n_applied++;
             continue;
         }
-        const int result = apply_cmd(opts, state, &cmd);
+        int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+        const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
-        dsd_app_scan_list_publish_result(&cmd, g_scan_list_set_code);
+        dsd_app_scan_list_publish_result(&cmd, scan_list_code);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
