@@ -42,7 +42,7 @@ static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
 /* The few start-time options the frame needs before the decoder's first publication (whether curses runs, whether
-   keys are read), copied by ui_start() so the UI thread never reads the decoder's live options. The rest stays zero.
+   keys are read, whether opening it warns about -Z), copied by ui_start() so the UI thread never reads the decoder's live options. The rest stays zero.
    Static: a dsd_opts is too large for a stack. */
 static dsd_opts g_ui_start_opts;
 static const dsd_opts* g_ui_opts = NULL;
@@ -64,7 +64,7 @@ ui_is_thread_context(void) {
  * a second acquisition mid-frame would change what the rest of the frame reads; nothing else acquires. Before the first
  * publication (runtime start publishes before this thread exists, so practically never) the state is NULL, which the
  * key path honours as Quit only and the draw as nothing to draw, and the options fall back to the start-time copy
- * ui_start() made (g_ui_start_opts), read only to tell whether curses runs and keys are read. The decoder's live
+ * ui_start() made (g_ui_start_opts), read only to tell whether curses runs (and warns about -Z) and keys are read. The decoder's live
  * structs are never read on this thread.
  */
 typedef struct {
@@ -82,6 +82,7 @@ ui_keep_start_opts(const dsd_opts* opts) {
     }
     g_ui_start_opts.frontend_kind = opts->frontend_kind;
     g_ui_start_opts.audio_in_type = opts->audio_in_type;
+    g_ui_start_opts.payload = opts->payload; /* dsd_terminal_open()'s -Z warning */
     g_ui_start_opts.frontend_terminal_display.mouse_wheel = opts->frontend_terminal_display.mouse_wheel;
     g_ui_opts = &g_ui_start_opts;
 }
@@ -367,7 +368,10 @@ static DSD_THREAD_RETURN_TYPE
         dsd_sleep_ms(sleep_ms);
     }
 
+    /* RadioReference first (it closes a chooser borrowing the wizard's strings before freeing them), then every other
+       overlay, owned contexts disposed, while curses still runs. */
     rr_panel_shutdown();
+    ui_overlays_shutdown();
     ui_close_curses_if_opened(curses_opened);
 
     DSD_THREAD_RETURN;

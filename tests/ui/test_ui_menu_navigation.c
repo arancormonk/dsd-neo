@@ -76,6 +76,10 @@ static void (*g_prompt_answer)(void* user) = NULL;
 static void* g_prompt_answer_user = NULL;
 static const dsd_opts* g_answer_opts = NULL;
 static const dsd_state* g_answer_state = NULL;
+/* Issue #672 (B17): what the overlay shutdown closed, in order ("help", "prompt", "chooser"), and how many times the
+   prompt's cancel opens a follow-up prompt, as a callback may. */
+static char g_close_log[128];
+static int g_prompt_cancel_reopens = 0;
 
 static void
 capture_action(const char* id) {
@@ -372,6 +376,34 @@ ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
     g_help_render_calls++;
 }
 
+static void
+log_close(const char* what) {
+    const size_t used = strlen(g_close_log);
+    (void)DSD_SNPRINTF(g_close_log + used, sizeof g_close_log - used, "%s%s", used ? "," : "", what);
+}
+
+void
+ui_help_close(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("help");
+    g_help_active = 0;
+}
+
+void
+ui_prompt_close_all(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("prompt");
+    if (g_prompt_active && g_prompt_cancel_reopens > 0) {
+        g_prompt_cancel_reopens--;
+        return; /* the cancel opened the next prompt */
+    }
+    g_prompt_active = 0;
+}
+
+void
+ui_chooser_close(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("chooser");
+    g_chooser_active = 0;
+}
+
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
     return g_chooser_active;
@@ -550,6 +582,60 @@ resize_term(int lines, int columns) {
     (void)lines;
     (void)columns;
     return OK;
+}
+
+/* Issue #672 (B17): exit closes every overlay - help, the prompt (whose cancel may open a chooser), the chooser and every
+   menu frame - and resets the overlay, so the next start opens on a fresh root menu. */
+static void
+test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state) {
+    g_fixture = 0;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    for (int i = 0; i < 4; i++) { /* root0 -> root2 (root1 is disabled) -> ... -> root5 */
+        assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    }
+    assert(ui_menu_handle_key('\n', opts, state) == 1); /* into root5's submenu: two frames */
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert_last_action("sub0");
+    g_help_active = 1;
+    g_prompt_active = 1;
+    g_chooser_active = 1;
+    g_prompt_cancel_reopens = 1;
+    g_close_log[0] = '\0';
+    ui_overlays_shutdown();
+    /* The prompt's cancel opened a follow-up prompt; a second pass closes it. */
+    assert(strcmp(g_close_log, "help,prompt,chooser,prompt,chooser") == 0);
+    assert(!g_help_active && !g_prompt_active && !g_chooser_active);
+    assert(ui_menu_is_open() == 0);
+    assert(g_rr_panel_close_calls == 1); /* the frames' own close, after rr_panel_shutdown() has run */
+
+    /* Nothing open: help is closed (idempotent) and nothing else runs. */
+    g_close_log[0] = '\0';
+    ui_overlays_shutdown();
+    assert(strcmp(g_close_log, "help") == 0);
+    assert(ui_menu_is_open() == 0);
+
+    /* Restart: the root menu opens fresh at depth one, so Left closes it rather than popping a stale submenu. */
+    reset_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert_last_action("root0");
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* A prompt-only overlay shut down with its modal open does not survive as a modal-only overlay either. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_prompt_modal);
+    assert(ui_menu_is_open() == 1);
+    ui_overlays_shutdown();
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_async(opts, state);
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 1); /* a full menu now, not closed as an empty modal-only frame */
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
 }
 
 int
@@ -932,6 +1018,8 @@ main(void) {
     assert(ui_menu_handle_key('\n', next_opts, next_state) == 1);
     assert(g_answer_opts == next_opts && g_answer_state == next_state);
     assert(ui_menu_is_open() == 0);
+
+    test_overlays_shutdown_and_restart(opts, state);
 
     printf("UI_MENU_NAVIGATION: OK\n");
     return 0;

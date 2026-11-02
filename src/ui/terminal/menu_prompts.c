@@ -29,6 +29,7 @@
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 #include "ui_keys.h"
+#include "ui_text.h"
 
 typedef struct {
     int active;
@@ -41,10 +42,59 @@ typedef struct {
     size_t cursor;                        // cursor position within buf [0..len]
     ui_prompt_string_done_fn on_done_str; // NULL text indicates cancel
     void* user;
-    int mask; // 1: render '*' per byte, and scrub buf + the submit copy
+    ui_context_dispose_fn dispose; // owned prompt: frees user once the prompt is done with it
+    int mask;                      // 1: render '*' per byte, and scrub buf + the submit copy
 } UiPrompt;
 
 static UiPrompt g_prompt = {0};
+
+/*
+ * The owned context of the prompt or chooser whose done-callback is running (issue #672, B8). The callback may take it
+ * (ui_prompt_take_context(), ui_chooser_take_context()); otherwise it is disposed once the callback returns. A callback
+ * whose next widget answers synchronously (an empty list, a failed allocation) runs that widget's callback inside its
+ * own, so entering saves the outer record by value and leaving puts it back.
+ */
+typedef struct {
+    void* user;
+    ui_context_dispose_fn dispose;
+} UiPendingContext;
+
+static UiPendingContext g_prompt_pending;
+static UiPendingContext g_chooser_pending;
+
+static UiPendingContext
+ui_pending_enter(UiPendingContext* slot, void* user, ui_context_dispose_fn dispose) {
+    const UiPendingContext outer = *slot;
+    slot->user = user;
+    slot->dispose = dispose;
+    return outer;
+}
+
+/* Put the outer record back, then dispose this callback's context unless the callback took it. */
+static void
+ui_pending_leave(UiPendingContext* slot, UiPendingContext outer) {
+    const UiPendingContext mine = *slot;
+    *slot = outer;
+    if (mine.dispose) {
+        mine.dispose(mine.user);
+    }
+}
+
+static void*
+ui_pending_take(UiPendingContext* slot) {
+    if (!slot->dispose) {
+        return NULL;
+    }
+    void* user = slot->user;
+    slot->user = NULL;
+    slot->dispose = NULL;
+    return user;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_chooser_fail_next_start;
+static int g_prompt_fail_next_alloc;
+#endif
 
 // ---- Typed prompt context structures ----
 typedef struct {
@@ -69,9 +119,23 @@ typedef struct {
     WINDOW* win;
     ui_chooser_done_fn on_done;
     void* user;
+    ui_context_dispose_fn dispose; // owned chooser: frees user once the chooser is done with it
+    /* Measured once per start (issue #672, B7) under one output decision, so the window width is not recomputed over
+       every item each frame: cells, not bytes. */
+    int unicode;
+    int title_cells;
+    int max_item_cells;
 } UiChooser;
 
 static UiChooser g_chooser = {0};
+
+static const char k_chooser_default_title[] = "Select";
+
+enum {
+    /* Bytes of one item or title the chooser draws; text past it is dropped (a line this long is cut on any terminal),
+       as the status row drops text past UI_ROW_TEXT_MAX. */
+    UI_CHOOSER_TEXT_MAX = 768,
+};
 
 // ---- Help overlay state ----
 typedef struct {
@@ -276,16 +340,29 @@ ui_prompt_secure_zero(void* p, size_t n) {
     }
 }
 
+/* Run a prompt's done-callback, then dispose its owned context unless the callback took it. */
+static void
+ui_prompt_deliver(ui_prompt_string_done_fn cb, void* user, ui_context_dispose_fn dispose, const char* text) {
+    const UiPendingContext outer = ui_pending_enter(&g_prompt_pending, user, dispose);
+    if (cb) {
+        cb(user, text);
+    }
+    ui_pending_leave(&g_prompt_pending, outer);
+}
+
+void*
+ui_prompt_take_context(void) {
+    return ui_pending_take(&g_prompt_pending);
+}
+
 void
 ui_prompt_close_all(void) {
-    // If an active prompt is being closed without an explicit completion,
-    // signal a cancel to allow user context cleanup.
-    if (g_prompt.active && g_prompt.on_done_str) {
-        void (*cb)(void*, const char*) = g_prompt.on_done_str;
-        void* up = g_prompt.user;
-        g_prompt.on_done_str = NULL; // prevent double-callback
-        cb(up, NULL);
-    }
+    // An active prompt closed without an explicit completion gets a cancel, so its context is released. Delivered
+    // after the prompt is gone (below), so the callback may open another prompt without this close discarding it.
+    const int deliver = g_prompt.active;
+    const ui_prompt_string_done_fn cb = g_prompt.on_done_str;
+    void* up = g_prompt.user;
+    const ui_context_dispose_fn dispose = g_prompt.dispose;
 
     if (g_prompt.win) {
         delwin(g_prompt.win);
@@ -303,38 +380,70 @@ ui_prompt_close_all(void) {
     }
     (void)ui_prompt_curs_set(0); // hide cursor when no prompt is active
     DSD_MEMSET(&g_prompt, 0, sizeof(g_prompt));
+    if (deliver) {
+        ui_prompt_deliver(cb, up, dispose, NULL);
+    }
+}
+
+enum {
+    /* A replaced prompt's cancel may open a prompt of its own; a few closes clear what that opens too. */
+    UI_PROMPT_REPLACE_PASSES = 4,
+};
+
+/* Close whatever prompt is open before another opens, and whatever its cancel opened in turn. */
+static void
+ui_prompt_close_for_open(void) {
+    for (int pass = 0; pass < UI_PROMPT_REPLACE_PASSES && g_prompt.active; pass++) {
+        ui_prompt_close_all();
+    }
+}
+
+static char*
+ui_prompt_alloc_buffer(size_t cap) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_prompt_fail_next_alloc) {
+        g_prompt_fail_next_alloc = 0;
+        return NULL;
+    }
+#endif
+    return (char*)calloc(cap, 1);
 }
 
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
-                            void* user_ctx) {
-    ui_prompt_close_all();
+ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user_ctx, ui_context_dispose_fn dispose) {
+    ui_prompt_close_for_open();
+    if (cap < 2) {
+        cap = 2;
+    }
+    char* buf = ui_prompt_alloc_buffer(cap);
+    if (!buf) {
+        // Allocation failed: answer cancel at once, so the user context is released.
+        ui_prompt_deliver(on_done, user_ctx, dispose, NULL);
+        return;
+    }
     g_prompt.active = 1;
     g_prompt.title = title;
     g_prompt.on_done_str = on_done;
     g_prompt.user = user_ctx;
-    if (cap < 2) {
-        cap = 2;
-    }
-    g_prompt.buf = (char*)calloc(cap, 1);
+    g_prompt.dispose = dispose;
+    g_prompt.buf = buf;
     g_prompt.cap = cap;
     g_prompt.len = 0;
-    if (!g_prompt.buf) {
-        // Allocation failed: immediately signal cancel to ensure user context can be freed.
-        if (on_done) {
-            on_done(user_ctx, NULL);
-        }
-        g_prompt.active = 0;
-        return;
-    }
     if (prefill && *prefill) {
         dsd_strncpy_s(g_prompt.buf, cap, prefill, cap - 1);
         g_prompt.buf[cap - 1] = '\0';
         g_prompt.len = strlen(g_prompt.buf);
         g_prompt.cursor = g_prompt.len;
     }
+}
+
+void
+ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user_ctx) {
+    ui_prompt_open_string_owned(title, prefill, cap, on_done, user_ctx, NULL);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed
@@ -510,16 +619,10 @@ ui_prompt_handle_resize_event(void) {
     }
 }
 
+/* Esc: the close delivers the cancel, after the prompt is gone, so the callback can safely open a new prompt. */
 static void
 ui_prompt_cancel(void) {
-    void (*cb)(void*, const char*) = g_prompt.on_done_str;
-    void* up = g_prompt.user;
-    // Close first so callbacks can safely open a new prompt.
-    g_prompt.on_done_str = NULL; // prevent close_all() from calling again
     ui_prompt_close_all();
-    if (cb) {
-        cb(up, NULL);
-    }
 }
 
 static int
@@ -567,8 +670,9 @@ ui_prompt_delete_at_cursor(void) {
 
 static void
 ui_prompt_submit(void) {
-    void (*cb)(void*, const char*) = g_prompt.on_done_str;
+    const ui_prompt_string_done_fn cb = g_prompt.on_done_str;
     void* up = g_prompt.user;
+    const ui_context_dispose_fn dispose = g_prompt.dispose;
     const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
     // Captured before close_all() zeroes g_prompt: the heap copy below outlives it.
     const size_t copy_len = g_prompt.len;
@@ -579,12 +683,10 @@ ui_prompt_submit(void) {
             DSD_MEMCPY(text_copy, g_prompt.buf, g_prompt.len + 1);
         }
     }
-    // Close first so callbacks can safely open a new prompt.
-    g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+    // Close first so callbacks can safely open a new prompt; the close delivers nothing (this submit does).
+    g_prompt.active = 0;
     ui_prompt_close_all();
-    if (cb) {
-        cb(up, have_text ? text_copy : "");
-    }
+    ui_prompt_deliver(cb, up, dispose, have_text ? text_copy : "");
     // Zeroed for every prompt, as the input buffer is: a plain prompt can carry a key or token too.
     if (text_copy) {
         ui_prompt_secure_zero(text_copy, copy_len + 1);
@@ -1271,23 +1373,65 @@ ui_help_render(void) {
 
 // ---- Chooser implementations ----
 
+/* Detach, close, call back, then dispose an owned context the callback did not take. */
 static void
 ui_chooser_finish(int sel) {
-    void (*cb)(void*, int) = g_chooser.on_done;
+    const ui_chooser_done_fn cb = g_chooser.on_done;
     void* userp = g_chooser.user;
+    const ui_context_dispose_fn dispose = g_chooser.dispose;
     g_chooser.on_done = NULL; // prevent double-callback during close/reentry
+    g_chooser.dispose = NULL; // the close below disposes nothing; this finish does, after the callback
     ui_chooser_close();
+    const UiPendingContext outer = ui_pending_enter(&g_chooser_pending, userp, dispose);
     if (cb) {
         cb(userp, sel);
     }
+    ui_pending_leave(&g_chooser_pending, outer);
 }
 
-// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
-// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
-void
-ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
-                    void* user_ctx) {
-    if (!items || count <= 0) {
+void*
+ui_chooser_take_context(void) {
+    return ui_pending_take(&g_chooser_pending);
+}
+
+static int
+ui_chooser_start_fails(const char* const* items, int count) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_chooser_fail_next_start) {
+        g_chooser_fail_next_start = 0;
+        return 1;
+    }
+#endif
+    return !items || count <= 0;
+}
+
+static int
+ui_chooser_text_cells(const char* text) {
+    return text ? ui_text_cells(g_chooser.unicode, text, strlen(text)) : 0;
+}
+
+static int
+ui_chooser_max_item_width(void) {
+    int max_item = 0;
+    for (int i = 0; i < g_chooser.count; i++) {
+        int item_cells = ui_chooser_text_cells(g_chooser.items[i]);
+        if (item_cells > max_item) {
+            max_item = item_cells;
+        }
+    }
+    return max_item;
+}
+
+static void
+ui_chooser_start_impl(const char* title, const char* const* items, int count, int initial_sel,
+                      ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose) {
+    /* A start over an open owned chooser replaces it, and the close disposes its context - unless this start is
+       handed the same context, which then stays alive under this start's terms. */
+    if (g_chooser.dispose && g_chooser.user == user_ctx) {
+        g_chooser.dispose = NULL;
+    }
+    ui_chooser_close();
+    if (ui_chooser_start_fails(items, count)) {
         // An empty list cancels straight away, but it still leaves by the one
         // door every other chooser result uses: publish the callback into
         // g_chooser and let ui_chooser_finish() deliver it. That keeps the
@@ -1296,9 +1440,9 @@ ui_chooser_start_at(const char* title, const char* const* items, int count, int 
         // chooser state that pairs it with its callback - never handed straight
         // from one caller's argument list to whatever function pointer the
         // caller passed in.
-        ui_chooser_close();
         g_chooser.on_done = on_done;
         g_chooser.user = user_ctx;
+        g_chooser.dispose = dispose;
         ui_chooser_finish(-1);
         return;
     }
@@ -1311,10 +1455,24 @@ ui_chooser_start_at(const char* title, const char* const* items, int count, int 
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
     g_chooser.user = user_ctx;
-    if (g_chooser.win) {
-        delwin(g_chooser.win);
-        g_chooser.win = NULL;
-    }
+    g_chooser.dispose = dispose;
+    g_chooser.unicode = ui_text_unicode_output();
+    g_chooser.title_cells = ui_chooser_text_cells(title ? title : k_chooser_default_title);
+    g_chooser.max_item_cells = ui_chooser_max_item_width();
+}
+
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
+void
+ui_chooser_start_owned(const char* title, const char* const* items, int count, int initial_sel,
+                       ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose) {
+    ui_chooser_start_impl(title, items, count, initial_sel, on_done, user_ctx, dispose);
+}
+
+void
+ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
+                    void* user_ctx) {
+    ui_chooser_start_impl(title, items, count, initial_sel, on_done, user_ctx, NULL);
 }
 
 void
@@ -1326,12 +1484,18 @@ ui_chooser_start(const char* title, const char* const* items, int count, ui_choo
 
 void
 ui_chooser_close(void) {
+    void* user = g_chooser.user;
+    const ui_context_dispose_fn dispose = g_chooser.dispose;
     if (g_chooser.win) {
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
     (void)ui_prompt_curs_set(0);
     DSD_MEMSET(&g_chooser, 0, sizeof(g_chooser));
+    /* Closed without an answer: no callback, and an owned context goes now that nothing reads its strings. */
+    if (dispose) {
+        dispose(user);
+    }
 }
 
 int
@@ -1444,20 +1608,8 @@ ui_chooser_handle_key(int ch) {
 }
 
 static int
-ui_chooser_max_item_width(void) {
-    int max_item = 0;
-    for (int i = 0; i < g_chooser.count; i++) {
-        int item_len = (int)strlen(g_chooser.items[i]);
-        if (item_len > max_item) {
-            max_item = item_len;
-        }
-    }
-    return max_item;
-}
-
-static int
-ui_chooser_initial_width(const char* title, const char* footer, int max_item) {
-    int width = 4 + (int)strlen(title);
+ui_chooser_initial_width(int title_cells, const char* footer, int max_item) {
+    int width = 4 + title_cells;
     int item_need = 4 + max_item;
     if (item_need > width) {
         width = item_need;
@@ -1500,12 +1652,12 @@ ui_chooser_fit_height(int desired_height, int screen_height) {
 }
 
 static int
-ui_chooser_compute_window_rect_for_terminal(const char* title, const char* footer, int max_item, int count,
-                                            int screen_h, int screen_w, int* h, int* w, int* wy, int* wx) {
-    if (!title || !footer || !h || !w || !wy || !wx) {
+ui_chooser_compute_window_rect_for_terminal(int title_cells, const char* footer, int max_item, int count, int screen_h,
+                                            int screen_w, int* h, int* w, int* wy, int* wx) {
+    if (!footer || !h || !w || !wy || !wx) {
         return 0;
     }
-    int local_w = ui_chooser_initial_width(title, footer, max_item);
+    int local_w = ui_chooser_initial_width(title_cells, footer, max_item);
     int local_h = count + 5;
     if (local_h < 7) {
         local_h = 7;
@@ -1530,11 +1682,11 @@ ui_chooser_compute_window_rect_for_terminal(const char* title, const char* foote
 }
 
 static int
-ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+ui_chooser_compute_window_rect(const char* footer, int* h, int* w, int* wy, int* wx) {
     int scr_h = 0, scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
-    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, g_chooser.count, scr_h, scr_w, h, w, wy,
-                                                       wx);
+    return ui_chooser_compute_window_rect_for_terminal(g_chooser.title_cells, footer, g_chooser.max_item_cells,
+                                                       g_chooser.count, scr_h, scr_w, h, w, wy, wx);
 }
 
 static void
@@ -1548,6 +1700,27 @@ ui_chooser_clamp_selection(void) {
     ui_chooser_keep_selection_visible();
 }
 
+/*
+ * Draw text at (y, x) in at most @p budget cells (issue #672, B7): sanitized, measured and cut between code points by
+ * the status row's text model (ui_text.h), with its marker when anything was cut, so a long name never splits a UTF-8
+ * character and never loses its end without saying so. What reaches curses is the byte span of the cut.
+ */
+static void
+ui_chooser_draw_text(WINDOW* win, int y, int x, const char* text, int budget) {
+    char shown[UI_CHOOSER_TEXT_MAX];
+    const char* src = text ? text : "";
+    const size_t len = ui_text_sanitize(g_chooser.unicode, src, strnlen(src, sizeof shown), shown, sizeof shown);
+    const char* marker = NULL;
+    const size_t cut = ui_text_fit(g_chooser.unicode, shown, len, budget, &marker);
+    wmove(win, y, x);
+    if (cut > 0U) {
+        waddnstr(win, shown, (int)cut);
+    }
+    if (marker) {
+        waddstr(win, marker);
+    }
+}
+
 static void
 ui_chooser_draw_title(WINDOW* win, const char* title, int body_w, int page_rows) {
     if (!win || !title) {
@@ -1556,15 +1729,24 @@ ui_chooser_draw_title(WINDOW* win, const char* title, int body_w, int page_rows)
     if (g_chooser.count > page_rows) {
         int first = g_chooser.top + 1;
         int last = g_chooser.top + page_rows;
-        char title_line[256];
         if (last > g_chooser.count) {
             last = g_chooser.count;
         }
-        DSD_SNPRINTF(title_line, sizeof title_line, "%s (%d-%d/%d)", title, first, last, g_chooser.count);
-        mvwaddnstr(win, 1, 2, title_line, body_w);
+        char range[48];
+        DSD_SNPRINTF(range, sizeof range, " (%d-%d/%d)", first, last, g_chooser.count);
+        const int title_budget = body_w - (int)strlen(range);
+        if (title_budget > ui_text_marker_cells(g_chooser.unicode)) {
+            /* The range stays whole and the title gives way: where in the list this page is outlasts a long name. */
+            ui_chooser_draw_text(win, 1, 2, title, title_budget);
+            waddstr(win, range);
+            return;
+        }
+        char title_line[UI_CHOOSER_TEXT_MAX];
+        DSD_SNPRINTF(title_line, sizeof title_line, "%s%s", title, range);
+        ui_chooser_draw_text(win, 1, 2, title_line, body_w);
         return;
     }
-    mvwaddnstr(win, 1, 2, title, body_w);
+    ui_chooser_draw_text(win, 1, 2, title, body_w);
 }
 
 static void
@@ -1579,7 +1761,7 @@ ui_chooser_draw_items(WINDOW* win, int w, int body_w, int page_rows) {
         if (i == g_chooser.sel) {
             wattron(win, A_REVERSE);
         }
-        mvwaddnstr(win, y++, 2, g_chooser.items[i], body_w);
+        ui_chooser_draw_text(win, y++, 2, g_chooser.items[i], body_w);
         if (i == g_chooser.sel) {
             wattroff(win, A_REVERSE);
         }
@@ -1599,11 +1781,10 @@ ui_chooser_render(void) {
         ui_chooser_finish(-1);
         return;
     }
-    const char* title = g_chooser.title ? g_chooser.title : "Select";
+    const char* title = g_chooser.title ? g_chooser.title : k_chooser_default_title;
     const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/Left: back";
-    int max_item = ui_chooser_max_item_width();
     int h = 0, w = 0, wy = 0, wx = 0;
-    if (!ui_chooser_compute_window_rect(title, footer, max_item, &h, &w, &wy, &wx)) {
+    if (!ui_chooser_compute_window_rect(footer, &h, &w, &wy, &wx)) {
         ui_chooser_finish(-1);
         return;
     }
@@ -1657,6 +1838,14 @@ ui_chooser_test_snapshot(void) {
     return snapshot;
 }
 
+const char*
+ui_chooser_test_item(int index) {
+    if (!g_chooser.active || g_chooser.items == NULL || index < 0 || index >= g_chooser.count) {
+        return NULL;
+    }
+    return g_chooser.items[index];
+}
+
 void
 ui_help_test_set_metrics(int line_count, int page_rows, int scroll) {
     if (line_count < 0) {
@@ -1698,19 +1887,36 @@ int
 ui_chooser_max_item_width_for_test(const char* const* items, int count) {
     const char* const* saved_items = g_chooser.items;
     int saved_count = g_chooser.count;
+    int saved_unicode = g_chooser.unicode;
     g_chooser.items = items;
     g_chooser.count = count;
+    g_chooser.unicode = ui_text_unicode_output();
     int max_item = ui_chooser_max_item_width();
     g_chooser.items = saved_items;
     g_chooser.count = saved_count;
+    g_chooser.unicode = saved_unicode;
     return max_item;
 }
 
 int
 ui_chooser_layout_for_test(const char* title, const char* footer, int max_item, int count, int screen_h, int screen_w,
                            int* h, int* w, int* wy, int* wx) {
-    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, count, screen_h, screen_w, h, w, wy,
-                                                       wx);
+    if (!title) {
+        return 0;
+    }
+    const int title_cells = ui_text_cells(ui_text_unicode_output(), title, strlen(title));
+    return ui_chooser_compute_window_rect_for_terminal(title_cells, footer, max_item, count, screen_h, screen_w, h, w,
+                                                       wy, wx);
+}
+
+void
+ui_chooser_test_fail_next_start(void) {
+    g_chooser_fail_next_start = 1;
+}
+
+void
+ui_prompt_test_fail_next_alloc(void) {
+    g_prompt_fail_next_alloc = 1;
 }
 
 int

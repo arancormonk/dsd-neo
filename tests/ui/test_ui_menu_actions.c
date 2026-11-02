@@ -76,6 +76,7 @@ typedef struct {
     ui_prompt_string_done_fn str_cb;
     ui_prompt_int_done_fn int_cb;
     ui_prompt_double_done_fn double_cb;
+    ui_context_dispose_fn dispose; /* an owned prompt's (issue #672, B8) */
     int calls;
 } PromptCapture;
 
@@ -86,6 +87,7 @@ typedef struct {
     int initial_sel;
     void* user;
     void (*on_done)(void*, int);
+    ui_context_dispose_fn dispose; /* an owned chooser's (issue #672, B8) */
     int calls;
 } ChooserCapture;
 
@@ -465,7 +467,15 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
     g_prompt.str_cb = on_done;
     g_prompt.int_cb = NULL;
     g_prompt.double_cb = NULL;
+    g_prompt.dispose = NULL;
     g_prompt.calls++;
+}
+
+void
+ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user, ui_context_dispose_fn dispose) {
+    ui_prompt_open_string_async(title, prefill, cap, on_done, user);
+    g_prompt.dispose = dispose;
 }
 
 void
@@ -523,12 +533,20 @@ ui_chooser_start_at(const char* title, const char* const* items, int count, int 
     }
     g_chooser.user = user;
     g_chooser.on_done = on_done;
+    g_chooser.dispose = NULL;
     g_chooser.calls++;
 }
 
 void
 ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
     ui_chooser_start_at(title, items, count, 0, on_done, user);
+}
+
+void
+ui_chooser_start_owned(const char* title, const char* const* items, int count, int initial_sel,
+                       ui_chooser_done_fn on_done, void* user, ui_context_dispose_fn dispose) {
+    ui_chooser_start_at(title, items, count, initial_sel, on_done, user);
+    g_chooser.dispose = dispose;
 }
 
 const dsdneoRuntimeConfig*
@@ -724,6 +742,22 @@ void
 chooser_done_config_profile(void* u, int sel) {
     (void)u;
     (void)sel;
+}
+
+/* menu_callbacks.c's disposes, which the openers hand their owned choosers and prompts (issue #672, B8). */
+void
+config_profile_ctx_dispose(void* u) {
+    free_profile_ctx((ProfileSelCtx*)u);
+}
+
+void
+pulse_sel_ctx_dispose(void* u) {
+    free_pulse_ctx((PulseSelCtx*)u);
+}
+
+void
+env_edit_ctx_dispose(void* u) {
+    free(u);
 }
 
 void
@@ -1241,7 +1275,9 @@ test_config_profile_and_env_actions(void) {
     rc |= expect_str("profile chooser title", g_chooser.title, "Load Profile");
     rc |= expect_int("profile chooser count", g_chooser.n, 2);
     rc |= expect_str("profile label zero", g_chooser.labels[0], "base");
-    free_profile_ctx((ProfileSelCtx*)g_chooser.user);
+    /* Issue #672 (B8): the chooser owns the context and its labels, and frees them through the profile dispose. */
+    rc |= expect_int("profile chooser owns its context", g_chooser.dispose == config_profile_ctx_dispose, 1);
+    g_chooser.dispose(g_chooser.user);
 
     /* Issue #672 (B10): the re-parse is handed to the decoder (env_reparse_runtime_cfg() submits it; UI_MENU_ENV pins
        that). That the menu writes no options is a compile-time fact: the re-parse takes none and the context is
@@ -1322,7 +1358,8 @@ test_io_actions_and_choosers(void) {
     rc |= expect_str("pulse out chooser", g_chooser.title, "Select Pulse Output");
     rc |= expect_int("pulse out count", g_chooser.n, 1);
     rc |= expect_int("pulse out label has index", strstr(g_chooser.labels[0], "[3] out0") != NULL, 1);
-    free_pulse_ctx((PulseSelCtx*)g_chooser.user);
+    rc |= expect_int("pulse out chooser owns its context", g_chooser.dispose == pulse_sel_ctx_dispose, 1);
+    g_chooser.dispose(g_chooser.user);
 
     reset_capture();
     io_set_udp_out(&ctx);
@@ -1901,7 +1938,8 @@ test_additional_prompt_and_toggle_actions(void) {
     act_env_editor(&ctx);
     rc |= expect_str("env editor prompt", g_prompt.title, "Enter DSD_NEO_* variable name");
     rc |= expect_str("env editor prefill", g_prompt.prefill, "DSD_NEO_");
-    release_prompt_user();
+    rc |= expect_int("env editor prompt owns its context", g_prompt.dispose == env_edit_ctx_dispose, 1);
+    g_prompt.dispose(g_prompt.user);
 
     reset_capture();
     inv_x2(NULL);
@@ -2264,7 +2302,8 @@ test_config_and_pulse_failure_variants(void) {
     rc |= expect_str("pulse input chooser", g_chooser.title, "Select Pulse Input");
     rc |= expect_int("pulse input count", g_chooser.n, 1);
     rc |= expect_int("pulse input label has index", strstr(g_chooser.labels[0], "[4] in0") != NULL, 1);
-    free_pulse_ctx((PulseSelCtx*)g_chooser.user);
+    rc |= expect_int("pulse in chooser owns its context", g_chooser.dispose == pulse_sel_ctx_dispose, 1);
+    g_chooser.dispose(g_chooser.user);
 
     return rc;
 }

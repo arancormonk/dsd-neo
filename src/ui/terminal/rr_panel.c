@@ -269,12 +269,14 @@ rr_panel_refresh_queue_start_next(void) {
 /* ---- Imported Systems browser -------------------------------------------- */
 
 /*
- * ui_chooser_start() copies NOTHING - it keeps the title, the item array and
- * every string in it by pointer until the chooser closes (menu_prompts.c). So
- * one heap context outlives every chooser level of this flow: the system list,
- * the per-system action list, and the delete confirmation all borrow strings
- * from it, and each done-callback either advances to the next level (keeping the
- * context) or frees it exactly once.
+ * The chooser copies NOTHING - it keeps the title, the item array and every
+ * string in it by pointer until the chooser closes (menu_prompts.c). So one heap
+ * context outlives every chooser level of this flow: the system list, the
+ * per-system action list, and the delete confirmation all borrow strings from
+ * it. Each level's chooser owns it (issue #672, B8): a done-callback that
+ * advances takes it back (ui_chooser_take_context()) and hands it to the next
+ * level's chooser; otherwise the chooser disposes it once, after the callback,
+ * or when it is closed (exit), replaced, or cancelled from the render path.
  */
 #define RR_BROWSE_ROW_MAX        256
 #define RR_BROWSE_TITLE_MAX      176
@@ -305,9 +307,35 @@ typedef struct {
     const char* confirm_items[2];
 } RrBrowseCtx;
 
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_rr_browse_live_contexts;
+
+int
+rr_panel_browse_live_contexts_for_test(void) {
+    return g_rr_browse_live_contexts;
+}
+#endif
+
+static RrBrowseCtx*
+rr_browse_ctx_new(void) {
+    RrBrowseCtx* ctx = (RrBrowseCtx*)calloc(1U, sizeof(*ctx));
+#ifdef DSD_NEO_TEST_HOOKS
+    if (ctx != NULL) {
+        g_rr_browse_live_contexts++;
+    }
+#endif
+    return ctx;
+}
+
+/* The owned choosers' dispose, and the opener's own cleanup before any chooser owns the context. */
 static void
-rr_browse_ctx_free(RrBrowseCtx* ctx) {
-    free(ctx);
+rr_browse_ctx_dispose(void* u) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (u != NULL) {
+        g_rr_browse_live_contexts--;
+    }
+#endif
+    free(u);
 }
 
 /* Re-apply the stored system from its recipe, exactly as a fresh import would. */
@@ -440,41 +468,43 @@ rr_browse_refresh(const RrLibrarySystem* s) {
     (void)rr_panel_refresh_queue_start_next();
 }
 
+/* The context a level's callback is handed: read there; the chooser's dispose frees it. */
+static const RrBrowseCtx*
+rr_browse_ctx_of(void* u) {
+    return (RrBrowseCtx*)u;
+}
+
 /* Level 3: the delete confirmation. Index 0 is Cancel so a stray Enter is safe. */
 static void
 rr_browse_confirm_done(void* u, int sel) {
-    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
+    const RrBrowseCtx* ctx = rr_browse_ctx_of(u);
     if (ctx == NULL) {
         return;
     }
     if (sel == 1 && ctx->sel >= 0 && ctx->sel < ctx->lib.count) {
         rr_browse_delete(&ctx->lib.systems[ctx->sel]);
     }
-    rr_browse_ctx_free(ctx);
 }
 
-/* Level 2: the chosen action. */
+/* Level 2: the chosen action. The chooser disposes the context after this returns, unless Delete hands it on. */
 static void
 rr_browse_action_done(void* u, int sel) {
-    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
-    if (ctx == NULL) {
+    const RrBrowseCtx* chosen = rr_browse_ctx_of(u);
+    if (chosen == NULL) {
         return;
     }
-    if (sel < 0 || sel >= ctx->action_n || ctx->sel < 0 || ctx->sel >= ctx->lib.count) {
-        rr_browse_ctx_free(ctx);
+    if (sel < 0 || sel >= chosen->action_n || chosen->sel < 0 || chosen->sel >= chosen->lib.count) {
         return;
     }
-    const RrLibrarySystem* s = &ctx->lib.systems[ctx->sel];
-    switch (ctx->action_kind[sel]) {
-        case RR_ACT_USE:
-            rr_browse_apply(s);
-            rr_browse_ctx_free(ctx);
-            return;
-        case RR_ACT_REFRESH:
-            rr_browse_refresh(s);
-            rr_browse_ctx_free(ctx);
-            return;
+    const RrLibrarySystem* s = &chosen->lib.systems[chosen->sel];
+    switch (chosen->action_kind[sel]) {
+        case RR_ACT_USE: rr_browse_apply(s); return;
+        case RR_ACT_REFRESH: rr_browse_refresh(s); return;
         case RR_ACT_DELETE: {
+            RrBrowseCtx* ctx = (RrBrowseCtx*)ui_chooser_take_context();
+            if (ctx == NULL) {
+                return;
+            }
             char named[RR_BROWSE_TITLE_MAX];
             rr_library_display_name(s, named, sizeof named);
             /* Bounded so the WORDING always survives: named[] is as wide as
@@ -485,13 +515,14 @@ rr_browse_action_done(void* u, int sel) {
                                (int)(sizeof ctx->title - sizeof "Delete  from disk?"), named);
             ctx->confirm_items[0] = "Cancel";
             ctx->confirm_items[1] = "Delete permanently";
-            ui_chooser_start(ctx->title, ctx->confirm_items, 2, rr_browse_confirm_done, ctx);
+            /* Owned by the confirmation from here; touched no more, as a start can answer (and dispose) at once. */
+            ui_chooser_start_owned(ctx->title, ctx->confirm_items, 2, 0, rr_browse_confirm_done, ctx,
+                                   rr_browse_ctx_dispose);
             return;
         }
         default:
             /* Never the destructive branch: an action kind this switch does not
                know must do nothing, not fall through to deleting files. */
-            rr_browse_ctx_free(ctx);
             return;
     }
 }
@@ -499,12 +530,12 @@ rr_browse_action_done(void* u, int sel) {
 /* Level 1: a system was chosen; offer its actions. */
 static void
 rr_browse_system_done(void* u, int sel) {
-    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
-    if (ctx == NULL) {
-        return;
+    const RrBrowseCtx* chosen = rr_browse_ctx_of(u);
+    if (chosen == NULL || sel < 0 || sel >= chosen->lib.count) {
+        return; /* the chooser disposes the context */
     }
-    if (sel < 0 || sel >= ctx->lib.count) {
-        rr_browse_ctx_free(ctx);
+    RrBrowseCtx* ctx = (RrBrowseCtx*)ui_chooser_take_context();
+    if (ctx == NULL) {
         return;
     }
     ctx->sel = sel;
@@ -529,7 +560,9 @@ rr_browse_system_done(void* u, int sel) {
     ctx->action_n++;
 
     rr_library_display_name(s, ctx->title, sizeof ctx->title);
-    ui_chooser_start(ctx->title, ctx->action_items, ctx->action_n, rr_browse_action_done, ctx);
+    /* Owned by the action list from here; touched no more, as a start can answer (and dispose) at once. */
+    ui_chooser_start_owned(ctx->title, ctx->action_items, ctx->action_n, 0, rr_browse_action_done, ctx,
+                           rr_browse_ctx_dispose);
 }
 
 /* The rr_panel_open_* pair takes the frame's published snapshot pair (issue #672, B9); the panel only reads it. */
@@ -569,7 +602,7 @@ rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    RrBrowseCtx* ctx = (RrBrowseCtx*)calloc(1U, sizeof(*ctx));
+    RrBrowseCtx* ctx = rr_browse_ctx_new();
     if (ctx == NULL) {
         ui_statusf("Out of memory");
         return;
@@ -577,7 +610,7 @@ rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
     ctx->sel = -1;
     if (rr_library_scan(&ctx->lib, dir) < 0) {
         ui_statusf("Could not read the imports directory %s", dir);
-        rr_browse_ctx_free(ctx);
+        rr_browse_ctx_dispose(ctx);
         return;
     }
     if (ctx->lib.count == 0) {
@@ -587,7 +620,7 @@ rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
            looked: the directory is in docs/radioreference-import.md, and a path
            here was what pushed the advice off the row. */
         ui_statusf("No imported systems yet; use Import from RadioReference... first.");
-        rr_browse_ctx_free(ctx);
+        rr_browse_ctx_dispose(ctx);
         return;
     }
     rr_library_sort(&ctx->lib);
@@ -631,7 +664,8 @@ rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
             rr_wizard_core_set_stored_app_key(w, opts->rr_app_key);
         }
     }
-    ui_chooser_start(ctx->title, ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
+    ui_chooser_start_owned(ctx->title, ctx->items, ctx->lib.count, 0, rr_browse_system_done, ctx,
+                           rr_browse_ctx_dispose);
 }
 
 void
@@ -655,7 +689,8 @@ rr_panel_shutdown(void) {
            came from, which opens a chooser through the hooks - and ui_chooser_start()
            keeps the title and the item array BY POINTER, both of them owned by the
            core rr_wizard_core_destroy() is about to free. Close it while those
-           pointers are still valid. */
+           pointers are still valid. An Imported Systems chooser open instead is
+           closed too, and disposes its own context. */
         ui_chooser_close();
         rr_wizard_core_destroy(g_rr_panel.core);
         g_rr_panel.core = NULL;

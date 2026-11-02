@@ -19,6 +19,20 @@ typedef void (*ui_prompt_int_done_fn)(void* user, int ok, int value);
 typedef void (*ui_prompt_double_done_fn)(void* user, int ok, double value);
 typedef void (*ui_chooser_done_fn)(void* user, int selected);
 
+/**
+ * @brief Frees an owned prompt or chooser context (issue #672, B8).
+ *
+ * The owned variants (ui_prompt_open_string_owned(), ui_chooser_start_owned())
+ * take the context with this function and call it exactly once, after the
+ * widget has stopped reading anything the context holds (a borrowed title, the
+ * item strings and the array of them): after the done-callback returns, or
+ * without a callback when the widget is closed, replaced or shut down. A
+ * done-callback that hands the context on to another owned widget takes it
+ * back first with ui_prompt_take_context() / ui_chooser_take_context(), and the
+ * dispose is then the new widget's to call.
+ */
+typedef void (*ui_context_dispose_fn)(void* user);
+
 // ---- String/Int/Double Prompt API ----
 
 /**
@@ -35,6 +49,27 @@ typedef void (*ui_chooser_done_fn)(void* user, int selected);
  */
 void ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
                                  void* user_ctx);
+
+/**
+ * @brief Open a string prompt that owns its context (issue #672, B8).
+ *
+ * As ui_prompt_open_string_async(), and @p dispose(user_ctx) runs exactly once:
+ * after @p on_done returns (submit, Esc, or the cancel a close, a replacing
+ * open or a failed buffer allocation delivers), unless the callback took the
+ * context with ui_prompt_take_context(). The title may point into the context.
+ */
+void ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                                 void* user_ctx, ui_context_dispose_fn dispose);
+
+/**
+ * @brief Take the context of the owned prompt whose callback is running.
+ *
+ * Only valid inside that done-callback: returns the context and clears the
+ * pending dispose, so the caller now owns it (to hand it to another owned
+ * widget, or to free it). Returns NULL outside an owned prompt's callback, and
+ * on a second call.
+ */
+void* ui_prompt_take_context(void);
 
 /**
  * @brief Open a masked (secret) string prompt asynchronously.
@@ -84,6 +119,10 @@ void ui_prompt_open_double_async(const char* title, double initial, ui_prompt_do
 
 /**
  * @brief Close all active prompts (forcefully).
+ *
+ * An open prompt's callback gets the cancel (NULL text) after the prompt is
+ * gone, so the callback may open another; an owned prompt's context is then
+ * disposed.
  */
 void ui_prompt_close_all(void);
 
@@ -164,7 +203,32 @@ void ui_chooser_start_at(const char* title, const char* const* items, int count,
                          ui_chooser_done_fn on_done, void* user_ctx);
 
 /**
+ * @brief Start a chooser that owns its context (issue #672, B8).
+ *
+ * As ui_chooser_start_at(), and @p dispose(user_ctx) runs exactly once: after
+ * @p on_done returns (pick, cancel, the empty list's or the render path's
+ * cancel), unless the callback took the context with
+ * ui_chooser_take_context(); or, with no callback, when the chooser is closed
+ * (ui_chooser_close(), shutdown) or replaced by another start. The title, the
+ * item array and its strings may all live in the context.
+ */
+void ui_chooser_start_owned(const char* title, const char* const* items, int count, int initial_sel,
+                            ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose);
+
+/**
+ * @brief Take the context of the owned chooser whose callback is running.
+ *
+ * Only valid inside that done-callback: returns the context and clears the
+ * pending dispose, so the caller now owns it - to start the next owned
+ * chooser or prompt with it, which disposes it from then on. Returns NULL
+ * outside an owned chooser's callback, and on a second call.
+ */
+void* ui_chooser_take_context(void);
+
+/**
  * @brief Close the chooser overlay.
+ *
+ * No callback runs; an owned chooser's context is disposed.
  */
 void ui_chooser_close(void);
 
@@ -210,7 +274,14 @@ typedef struct {
 } UiPromptViewTestSnapshot;
 
 void ui_chooser_test_set_page_rows(int page_rows);
+/** @brief Test hook: the next chooser start cancels at once, as an empty list does (a failed hand-off). */
+void ui_chooser_test_fail_next_start(void);
+/** @brief Test hook: the next prompt open fails its buffer allocation (cancel delivered synchronously). */
+void ui_prompt_test_fail_next_alloc(void);
 UiChooserTestSnapshot ui_chooser_test_snapshot(void);
+/** @brief Test hook: the open chooser's item @p index as it was started with, or NULL when none is open or it is out
+ *         of range. */
+const char* ui_chooser_test_item(int index);
 void ui_help_test_set_metrics(int line_count, int page_rows, int scroll);
 UiHelpTestSnapshot ui_help_test_snapshot(void);
 int ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, size_t out_size);

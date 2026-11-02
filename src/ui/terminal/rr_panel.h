@@ -34,4 +34,9 @@ void rr_panel_close(void);
 /** @brief Destroy the wizard. UI thread only, before curses closes; can block ~1 s. */
 void rr_panel_shutdown(void);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** @brief Test hook: Imported Systems browser contexts allocated and not yet disposed. */
+int rr_panel_browse_live_contexts_for_test(void);
+#endif
+
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_PANEL_H_ */

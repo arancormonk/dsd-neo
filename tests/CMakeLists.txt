@@ -2952,13 +2952,16 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
-    # The real panel and library; the wizard core, prompt widgets and app-control commands are stubbed in the test.
+    # The real panel, library and chooser/prompt widgets; the wizard core and app-control commands are stubbed in the
+    # test.
     add_executable(
         dsd-neo_test_ui_rr_panel_keys
         ui/test_ui_rr_panel_keys.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_panel_keys
@@ -2966,6 +2969,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE DSD_NEO_TEST_HOOKS
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_panel_keys
@@ -2994,16 +3001,20 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     add_test(NAME UI_RR_LIBRARY COMMAND dsd-neo_test_ui_rr_library)
 
+    # The picker's flow through the real chooser and prompt widgets (issue #672, B8).
     add_executable(
         dsd-neo_test_ui_csv_picker
         ui/test_ui_csv_picker.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_csv_picker
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_csv_picker
@@ -3011,7 +3022,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_csv_picker
-        PRIVATE dsd-neo_runtime dsd-neo_test_support
+        PRIVATE dsd-neo_runtime dsd-neo_test_support ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_CSV_PICKER COMMAND dsd-neo_test_ui_csv_picker)
 
@@ -3452,6 +3463,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
@@ -3662,12 +3674,73 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
 
+    # The text model the status row and the chooser share (issue #672, B7): built for ncurses, and with
+    # DSD_USE_PDCURSES for a wide and a narrow PDCurses (whose ASCII-only path no other build here reaches).
+    add_executable(
+        dsd-neo_test_ui_text
+        ui/test_ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_text
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(dsd-neo_test_ui_text PRIVATE dsd-neo_runtime)
+    add_test(NAME UI_TEXT COMMAND dsd-neo_test_ui_text)
+
+    add_executable(
+        dsd-neo_test_ui_text_pdc_wide
+        ui/test_ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_text_pdc_wide
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_text_pdc_wide
+        PRIVATE DSD_USE_PDCURSES DSD_HAS_PDCURSES_WIDE_API=1
+    )
+    target_link_libraries(dsd-neo_test_ui_text_pdc_wide PRIVATE dsd-neo_runtime)
+    add_test(NAME UI_TEXT_PDC_WIDE COMMAND dsd-neo_test_ui_text_pdc_wide)
+
+    if(NOT DSD_HAS_PDCURSES_WIDE_API)
+        add_executable(
+            dsd-neo_test_ui_text_pdc_narrow
+            ui/test_ui_text.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        )
+        target_include_directories(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE DSD_USE_PDCURSES
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE dsd-neo_runtime
+        )
+        add_test(
+            NAME UI_TEXT_PDC_NARROW
+            COMMAND dsd-neo_test_ui_text_pdc_narrow
+        )
+    endif()
+
     # The status row writer on a real ncurses screen (issue #669): cut between whole fields, never the last column,
     # attributes restored, wcwidth() cells.
     add_executable(
         dsd-neo_test_ui_row
         ui/test_ui_row.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_row
@@ -3711,6 +3784,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_compile_definitions(
@@ -4034,6 +4108,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_chooser_navigation
         ui/test_ui_chooser_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_chooser_navigation
@@ -4048,7 +4123,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_chooser_navigation
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(
         NAME UI_CHOOSER_NAVIGATION
@@ -4059,6 +4134,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_cursor
         ui/test_ui_prompt_cursor.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_cursor
@@ -4073,7 +4149,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_cursor
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
 
@@ -4081,6 +4157,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_validation
         ui/test_ui_prompt_validation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_validation
@@ -4095,7 +4172,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_validation
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(
         NAME UI_PROMPT_VALIDATION
@@ -4106,6 +4183,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_secret
         ui/test_ui_prompt_secret.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_secret
@@ -4120,7 +4198,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_secret
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
 

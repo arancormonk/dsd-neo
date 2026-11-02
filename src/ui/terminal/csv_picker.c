@@ -121,7 +121,8 @@ ui_csv_picker_collect(const char* dir, const char* kind, char paths[][CSV_PICKER
 
 /* ---- The chooser-or-prompt flow ------------------------------------------ */
 
-/* One heap context outlives the chooser, which borrows every string it holds. */
+/* One heap context outlives the chooser, which borrows every string it holds, and then the fall-back prompt, which
+   borrows its title. Each owns it in turn (issue #672, B8) and disposes it once. */
 typedef struct {
     char paths[CSV_PICKER_MAX][CSV_PICKER_PATH_MAX];
     char labels[CSV_PICKER_MAX][CSV_PICKER_LABEL_MAX];
@@ -135,28 +136,58 @@ typedef struct {
 
 static const char k_csv_picker_enter_path[] = "Enter a path...";
 
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_csv_picker_live_contexts;
+
+int
+ui_csv_picker_live_contexts_for_test(void) {
+    return g_csv_picker_live_contexts;
+}
+#endif
+
+static CsvPickerCtx*
+csv_picker_ctx_new(void) {
+    CsvPickerCtx* ctx = (CsvPickerCtx*)calloc(1U, sizeof(*ctx));
+#ifdef DSD_NEO_TEST_HOOKS
+    if (ctx != NULL) {
+        g_csv_picker_live_contexts++;
+    }
+#endif
+    return ctx;
+}
+
+/* The owned chooser's and prompt's dispose: runs once, after the widget holding the context stops reading it. */
+static void
+csv_picker_ctx_dispose(void* user) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (user != NULL) {
+        g_csv_picker_live_contexts--;
+    }
+#endif
+    free(user);
+}
+
+/* The context a chooser or prompt callback is handed; the callback only reads it, the widget's dispose frees it. */
+static const CsvPickerCtx*
+csv_picker_ctx_of(void* user) {
+    return (CsvPickerCtx*)user;
+}
+
 /*
- * The prompt's own done-callback, so the context outlives the prompt.
+ * The prompt's own done-callback, forwarding to the caller's.
  *
- * ui_prompt_open_string_async() keeps the title BY POINTER for the whole life of
+ * ui_prompt_open_string_owned() keeps the title BY POINTER for the whole life of
  * the prompt (menu_prompts.c, `g_prompt.title = title;`) and ui_prompt_render()
- * dereferences it on every frame. Freeing the context that owns the title right
- * after opening the prompt - which is what this used to do - left that pointer
- * dangling into a >128 KB block glibc returns to the OS, so the next render
- * faulted. The caller's callback is forwarded from here and the context is freed
- * exactly once, after the prompt has stopped reading it.
+ * dereferences it on every frame, so the context that owns the title must live
+ * until the prompt is done with it: the prompt owns it and disposes it after
+ * this callback returns (freeing it right after opening the prompt once left
+ * that pointer dangling into a >128 KB block glibc returns to the OS).
  */
 static void
 csv_picker_prompt_done(void* user, const char* text) {
-    CsvPickerCtx* ctx = (CsvPickerCtx*)user;
-    if (ctx == NULL) {
-        return;
-    }
-    const ui_prompt_string_done_fn cb = ctx->on_done;
-    void* cb_ctx = ctx->user_ctx;
-    free(ctx);
-    if (cb != NULL) {
-        cb(cb_ctx, text);
+    const CsvPickerCtx* ctx = csv_picker_ctx_of(user);
+    if (ctx != NULL && ctx->on_done != NULL) {
+        ctx->on_done(ctx->user_ctx, text);
     }
 }
 
@@ -164,14 +195,15 @@ csv_picker_prompt_done(void* user, const char* text) {
 static void
 csv_picker_prompt(CsvPickerCtx* ctx) {
     /* On an allocation failure inside the prompt this answers cancel
-       synchronously, which frees ctx through csv_picker_prompt_done(); nothing
-       may touch ctx after this call either way. */
-    ui_prompt_open_string_async(ctx->prompt_title, NULL, ctx->cap, csv_picker_prompt_done, ctx);
+       synchronously and then disposes ctx; nothing may touch ctx after this
+       call either way. */
+    ui_prompt_open_string_owned(ctx->prompt_title, NULL, ctx->cap, csv_picker_prompt_done, ctx, csv_picker_ctx_dispose);
 }
 
+/* The chooser disposes the context after this returns, unless the path row hands it to the prompt. */
 static void
 csv_picker_chooser_done(void* user, int sel) {
-    CsvPickerCtx* ctx = (CsvPickerCtx*)user;
+    const CsvPickerCtx* ctx = csv_picker_ctx_of(user);
     if (ctx == NULL) {
         return;
     }
@@ -180,19 +212,20 @@ csv_picker_chooser_done(void* user, int sel) {
         if (ctx->on_done != NULL) {
             ctx->on_done(ctx->user_ctx, NULL);
         }
-        free(ctx);
         return;
     }
     if (sel < ctx->count) {
         if (ctx->on_done != NULL) {
             ctx->on_done(ctx->user_ctx, ctx->paths[sel]);
         }
-        free(ctx);
         return;
     }
-    /* The final "Enter a path..." row: fall back to the prompt, which takes
-       ownership of the context and frees it when it completes. */
-    csv_picker_prompt(ctx);
+    /* The final "Enter a path..." row: take the context from the chooser and
+       hand it to the prompt, which disposes it when it completes. */
+    CsvPickerCtx* owned = (CsvPickerCtx*)ui_chooser_take_context();
+    if (owned != NULL) {
+        csv_picker_prompt(owned);
+    }
 }
 
 /* cppcheck miscounts the parameters across the ui_prompt_string_done_fn callback
@@ -218,7 +251,7 @@ ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap
         }
     }
 
-    CsvPickerCtx* ctx = (CsvPickerCtx*)calloc(1U, sizeof(*ctx));
+    CsvPickerCtx* ctx = csv_picker_ctx_new();
     if (ctx == NULL) {
         /* Out of memory for the chooser context is not a reason to strand the
            user: fall back to the plain prompt. */
@@ -249,7 +282,8 @@ ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap
         ctx->items[i] = ctx->labels[i];
     }
     ctx->items[ctx->count] = k_csv_picker_enter_path;
-    ui_chooser_start(prompt_title, ctx->items, ctx->count + 1, csv_picker_chooser_done, ctx);
+    ui_chooser_start_owned(ctx->prompt_title, ctx->items, ctx->count + 1, 0, csv_picker_chooser_done, ctx,
+                           csv_picker_ctx_dispose);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed

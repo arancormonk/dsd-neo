@@ -18,6 +18,7 @@
 #include <time.h>
 #include "menu_prompts.h"
 #include "ui_keys.h"
+#include "ui_text.h"
 
 static int g_string_done_called = 0;
 static int g_string_was_null = 0;
@@ -869,6 +870,169 @@ test_chooser_layout_contracts(void) {
     assert(ui_chooser_layout_for_test("Pick", NULL, max_item, 2, 24, 80, &h, &w, &y, &x) == 0);
 }
 
+/* Issue #672 (B7): the window is sized in cells, not bytes: "漢字漢字" is 12 bytes, and 8 cells on ncurses with UTF-8
+   output, four ('?' each, or one cell each on PDCurses) otherwise. */
+static void
+test_chooser_layout_measures_cells(void) {
+    static const char kTitle[] = "\xE6\xBC\xA2\xE5\xAD\x97\xE6\xBC\xA2\xE5\xAD\x97";
+    static const char* const WIDE[] = {"\xE6\xBC\xA2\xE5\xAD\x97\xE6\xBC\xA2\xE5\xAD\x97\xE6\xBC\xA2\xE5\xAD\x97"};
+#if defined(DSD_USE_PDCURSES)
+    const int two_cells = 0;
+#else
+    const int two_cells = ui_text_unicode_output();
+#endif
+    assert(ui_chooser_max_item_width_for_test(WIDE, 1) == (two_cells ? 12 : 6));
+    int h = -1;
+    int w = -1;
+    int y = -1;
+    int x = -1;
+    assert(ui_chooser_layout_for_test(kTitle, "Footer", 0, 1, 24, 80, &h, &w, &y, &x) == 1);
+    assert(w == (two_cells ? 4 + 8 + 2 : 4 + 4 + 2));
+}
+
+/* ---- Owned prompts (issue #672, B8) ---- */
+
+typedef struct {
+    int disposed;
+    int callbacks;
+    int got_null;
+    char text[32];
+    int in_callback;
+    int disposed_in_callback;
+    int take;         /* 1: the callback takes the context and hands it to the next owned prompt */
+    int fail_handoff; /* 1: that next prompt cannot allocate */
+    void* taken_again;
+} OwnedPrompt;
+
+static OwnedPrompt g_owned;
+
+static void
+owned_prompt_dispose(void* user) {
+    OwnedPrompt* p = (OwnedPrompt*)user;
+    p->disposed++;
+    if (p->in_callback) {
+        p->disposed_in_callback = 1;
+    }
+}
+
+static void
+owned_prompt_done(void* user, const char* text) {
+    OwnedPrompt* p = (OwnedPrompt*)user;
+    p->in_callback = 1;
+    p->callbacks++;
+    p->got_null = (text == NULL);
+    DSD_SNPRINTF(p->text, sizeof p->text, "%s", text ? text : "");
+    if (p->take) {
+        p->take = 0;
+        void* taken = ui_prompt_take_context();
+        assert(taken == p);
+        p->taken_again = ui_prompt_take_context();
+        if (p->fail_handoff) {
+            ui_prompt_test_fail_next_alloc();
+        }
+        ui_prompt_open_string_owned("Next", NULL, 16, owned_prompt_done, taken, owned_prompt_dispose);
+    }
+    p->in_callback = 0;
+}
+
+static void
+open_owned(void) {
+    DSD_MEMSET(&g_owned, 0, sizeof g_owned);
+    ui_prompt_open_string_owned("Owned", "ab", 16, owned_prompt_done, &g_owned, owned_prompt_dispose);
+    assert(ui_prompt_active() == 1);
+}
+
+/* A borrowed prompt whose cancel opens another prompt, as a multi-step entry might. */
+static void
+cancel_opens_prompt(void* user, const char* text) {
+    (void)user;
+    if (!text) {
+        ui_prompt_open_string_async("Follow-up", NULL, 8, capture_string_done, NULL);
+    }
+}
+
+static void
+test_owned_prompt(void) {
+    /* Submit: the callback, then the dispose, once. */
+    open_owned();
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_owned.callbacks == 1 && !g_owned.got_null && strcmp(g_owned.text, "ab") == 0);
+    assert(g_owned.disposed == 1 && !g_owned.disposed_in_callback);
+    assert(ui_prompt_active() == 0);
+
+    /* Esc. */
+    open_owned();
+    assert(ui_prompt_handle_key(DSD_KEY_ESC) == 1);
+    assert(g_owned.callbacks == 1 && g_owned.got_null && g_owned.disposed == 1 && !g_owned.disposed_in_callback);
+
+    /* Closed (the exit path): the cancel, then the dispose; a second close does nothing. */
+    open_owned();
+    ui_prompt_close_all();
+    assert(g_owned.callbacks == 1 && g_owned.got_null && g_owned.disposed == 1);
+    ui_prompt_close_all();
+    assert(g_owned.callbacks == 1 && g_owned.disposed == 1);
+
+    /* Replaced by another prompt: cancelled and disposed; the new prompt stays open. */
+    open_owned();
+    reset_string_capture();
+    ui_prompt_open_string_async("Plain", NULL, 8, capture_string_done, NULL);
+    assert(g_owned.callbacks == 1 && g_owned.got_null && g_owned.disposed == 1);
+    assert(ui_prompt_active() == 1);
+    assert(g_string_done_called == 0);
+    ui_prompt_close_all();
+    assert(g_string_done_called == 1 && g_string_was_null == 1);
+
+    /* No buffer: the cancel and the dispose at once, nothing left open. */
+    DSD_MEMSET(&g_owned, 0, sizeof g_owned);
+    ui_prompt_test_fail_next_alloc();
+    ui_prompt_open_string_owned("No memory", NULL, 16, owned_prompt_done, &g_owned, owned_prompt_dispose);
+    assert(g_owned.callbacks == 1 && g_owned.got_null && g_owned.disposed == 1);
+    assert(ui_prompt_active() == 0);
+
+    /* Taken and handed to the next prompt: not disposed until that one is done. */
+    open_owned();
+    g_owned.take = 1;
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_owned.taken_again == NULL);
+    assert(g_owned.disposed == 0);
+    assert(ui_prompt_active() == 1);
+    assert(ui_prompt_handle_key('z') == 1);
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_owned.callbacks == 2 && strcmp(g_owned.text, "z") == 0);
+    assert(g_owned.disposed == 1);
+
+    /* The same hand-off whose next prompt cannot allocate: still disposed exactly once. */
+    open_owned();
+    g_owned.take = 1;
+    g_owned.fail_handoff = 1;
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_owned.callbacks == 2 && g_owned.got_null);
+    assert(g_owned.disposed == 1);
+    assert(ui_prompt_active() == 0);
+
+    /* Nothing to take outside a callback, or in a borrowed prompt's. */
+    assert(ui_prompt_take_context() == NULL);
+
+    /* A prompt the closed prompt's cancel opens survives the close: the cancel runs after the old prompt is gone. */
+    reset_string_capture();
+    ui_prompt_open_string_async("Steps", NULL, 8, cancel_opens_prompt, NULL);
+    ui_prompt_close_all();
+    assert(ui_prompt_active() == 1);
+    assert(ui_prompt_handle_key('q') == 1);
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_string_done_called == 1 && strcmp(g_string_text, "q") == 0);
+    assert(ui_prompt_active() == 0);
+
+    /* Replaced while such a prompt is open: the follow-up its cancel opens is closed too (cancelled, so its context is
+       released), and the new prompt is the one left open. */
+    reset_string_capture();
+    ui_prompt_open_string_async("Steps", NULL, 8, cancel_opens_prompt, NULL);
+    open_owned();
+    assert(g_string_done_called == 1 && g_string_was_null == 1);
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_owned.callbacks == 1 && strcmp(g_owned.text, "ab") == 0 && g_owned.disposed == 1);
+}
+
 static void
 test_prompt_layout_and_view_contracts(void) {
     assert(ui_prompt_center_axis_for_test(24, 8) == 8);
@@ -988,6 +1152,8 @@ main(void) {
     test_help_scroll_navigation_clamps_to_content();
     test_help_wrap_text_contracts();
     test_chooser_layout_contracts();
+    test_chooser_layout_measures_cells();
+    test_owned_prompt();
     test_prompt_layout_and_view_contracts();
     printf("UI_PROMPT_VALIDATION: OK\n");
     return 0;

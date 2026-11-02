@@ -97,5 +97,14 @@ int ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state);
  * @brief Draw/update one frame of the overlay (no input read here).
  */
 void ui_menu_tick(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief Close every overlay as the UI thread stops (issue #672, B17), before curses closes.
+ *
+ * Help, any prompt (its callback gets the cancel), any chooser (no callback) and every menu frame window go, owned
+ * prompt and chooser contexts are disposed once, and the overlay's bookkeeping is reset, so a later start begins with
+ * nothing open. Call it after rr_panel_shutdown(), which closes a chooser borrowing the wizard's strings before it
+ * frees them.
+ */
+void ui_overlays_shutdown(void);
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_ */

@@ -460,6 +460,24 @@ ui_menu_is_open(void) {
     return g_overlay_open;
 }
 
+enum {
+    /* A prompt's cancel can open another prompt or chooser; a few passes close what that opens too. */
+    UI_OVERLAY_SHUTDOWN_PASSES = 4,
+};
+
+void
+ui_overlays_shutdown(void) {
+    ui_help_close();
+    for (int pass = 0; pass < UI_OVERLAY_SHUTDOWN_PASSES && (ui_prompt_active() || ui_chooser_active()); pass++) {
+        ui_prompt_close_all();
+        ui_chooser_close();
+    }
+    ui_overlay_close_all();
+    DSD_MEMSET(g_stack, 0, sizeof(g_stack));
+    g_ctx.opts = NULL;
+    g_ctx.state = NULL;
+}
+
 int
 ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);

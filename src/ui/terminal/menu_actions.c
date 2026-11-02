@@ -182,33 +182,6 @@ config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
     return 1;
 }
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
-/* GCC's analyzer loses the tie between pctx->n and the count that filled
- * pctx->names, so it walks a path where the names were allocated but this loop
- * runs zero times and reports them as leaked.
- * The analyzer arrived in GCC 10; before that the option below is unknown,
- * which -Werror turns into a build failure. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
-#endif
-static void
-config_profile_free_context(ProfileSelCtx* pctx) {
-    if (!pctx) {
-        return;
-    }
-    if (pctx->names) {
-        for (int i = 0; i < pctx->n; i++) {
-            free((void*)pctx->names[i]);
-        }
-    }
-    free((void*)pctx->labels);
-    free((void*)pctx->names);
-    free(pctx);
-}
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
-#pragma GCC diagnostic pop
-#endif
-
 static ProfileSelCtx*
 config_profile_create_context(const char* path, const char** names, int count) {
     if (!path || !*path || !names || count <= 0) {
@@ -222,21 +195,21 @@ config_profile_create_context(const char* path, const char** names, int count) {
     pctx->n = count;
     int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path);
     if (n < 0 || n >= (int)sizeof pctx->path) {
-        config_profile_free_context(pctx);
+        config_profile_ctx_dispose(pctx);
         return NULL;
     }
 
     pctx->labels = (const char**)calloc((size_t)count, sizeof(char*));
     pctx->names = (const char**)calloc((size_t)count, sizeof(char*));
     if (!pctx->labels || !pctx->names) {
-        config_profile_free_context(pctx);
+        config_profile_ctx_dispose(pctx);
         return NULL;
     }
 
     for (int i = 0; i < count; i++) {
         pctx->names[i] = dsd_strdup(names[i] ? names[i] : "");
         if (!pctx->names[i]) {
-            config_profile_free_context(pctx);
+            config_profile_ctx_dispose(pctx);
             return NULL;
         }
         pctx->labels[i] = pctx->names[i];
@@ -276,7 +249,8 @@ act_config_load_profile(void* v) {
         return;
     }
 
-    ui_chooser_start("Load Profile", pctx->labels, pctx->n, chooser_done_config_profile, pctx);
+    ui_chooser_start_owned("Load Profile", pctx->labels, pctx->n, 0, chooser_done_config_profile, pctx,
+                           config_profile_ctx_dispose);
 }
 
 void
@@ -1241,7 +1215,8 @@ act_env_editor(void* v) {
         return;
     }
     ec->c = (UiCtx*)v;
-    ui_prompt_open_string_async("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec);
+    ui_prompt_open_string_owned("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec,
+                                env_edit_ctx_dispose);
 }
 
 // ---- Prompt wrappers for Advanced menu ----
@@ -1516,7 +1491,7 @@ io_set_pulse_device_common(void* vctx, int is_input, const char* chooser_title, 
     pctx->names = names;
     pctx->bufs = bufs;
     pctx->n = n;
-    ui_chooser_start(chooser_title, labels, n, on_done, pctx);
+    ui_chooser_start_owned(chooser_title, labels, n, 0, on_done, pctx, pulse_sel_ctx_dispose);
 }
 
 void

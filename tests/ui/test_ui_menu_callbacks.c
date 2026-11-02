@@ -53,6 +53,7 @@ typedef struct {
     void* user;
     ui_prompt_string_done_fn str_cb;
     ui_prompt_int_done_fn int_cb;
+    ui_context_dispose_fn dispose; /* an owned prompt's (issue #672, B8) */
     int initial_int;
     int calls;
 } PromptCapture;
@@ -226,7 +227,42 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
     g_prompt.user = user;
     g_prompt.str_cb = on_done;
     g_prompt.int_cb = NULL;
+    g_prompt.dispose = NULL;
     g_prompt.calls++;
+}
+
+void
+ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user, ui_context_dispose_fn dispose) {
+    ui_prompt_open_string_async(title, prefill, cap, on_done, user);
+    g_prompt.dispose = dispose;
+}
+
+/* The owned context of the prompt whose callback answer_owned_prompt() is running, as menu_prompts.c keeps it. */
+static void* g_pending_context;
+
+void*
+ui_prompt_take_context(void) {
+    void* user = g_pending_context;
+    g_pending_context = NULL;
+    return user;
+}
+
+/* Answer an owned widget as menu_prompts.c does: the callback, then the dispose unless the callback took the context. */
+static void
+answer_owned_prompt(ui_prompt_string_done_fn cb, void* user, ui_context_dispose_fn dispose, const char* text) {
+    g_pending_context = user;
+    cb(user, text);
+    if (g_pending_context != NULL) {
+        g_pending_context = NULL;
+        dispose(user);
+    }
+}
+
+static void
+answer_owned_chooser(ui_chooser_done_fn cb, void* user, ui_context_dispose_fn dispose, int sel) {
+    cb(user, sel);
+    dispose(user);
 }
 
 /* menu_actions.c owns the frequency prompt (UI_MENU_ACTIONS pins its title and capacity); a refusal reopens it. */
@@ -614,7 +650,7 @@ test_config_callbacks_apply_and_report_failures(void) {
 
     reset_capture();
     ProfileSelCtx* pctx = make_profile_ctx("/tmp/profiles.toml", "mobile");
-    chooser_done_config_profile(pctx, 0);
+    answer_owned_chooser(chooser_done_config_profile, pctx, config_profile_ctx_dispose, 0);
     rc |= expect_int("profile load asks the service once", g_cfg_svc.profile_calls, 1);
     rc |= expect_str("profile load path", g_cfg_svc.path, "/tmp/profiles.toml");
     rc |= expect_str("profile load names the profile", g_cfg_svc.profile, "mobile");
@@ -624,13 +660,13 @@ test_config_callbacks_apply_and_report_failures(void) {
     reset_capture();
     pctx = make_profile_ctx("/tmp/profiles.toml", "field");
     g_profile_load_rc = -1;
-    chooser_done_config_profile(pctx, 0);
+    answer_owned_chooser(chooser_done_config_profile, pctx, config_profile_ctx_dispose, 0);
     rc |= expect_int("profile failure asks the service", g_cfg_svc.profile_calls, 1);
     rc |= expect_str("profile load failure", g_status, "Failed to load profile field from /tmp/profiles.toml");
 
     reset_capture();
     pctx = make_profile_ctx("/tmp/profiles.toml", "base");
-    chooser_done_config_profile(pctx, -1);
+    answer_owned_chooser(chooser_done_config_profile, pctx, config_profile_ctx_dispose, -1);
     rc |= expect_int("profile cancel reads nothing", g_cfg_svc.profile_calls, 0);
     rc |= expect_int("profile cancel no status", g_status_calls, 0);
 
@@ -1179,7 +1215,7 @@ test_env_editor_and_protocol_callbacks(void) {
     EnvEditCtx* bad = (EnvEditCtx*)calloc(1, sizeof *bad);
     assert(bad != NULL);
     bad->c = &ctx;
-    cb_env_edit_name(bad, "PATH");
+    answer_owned_prompt(cb_env_edit_name, bad, env_edit_ctx_dispose, "PATH");
     rc |= expect_int("invalid env name no prompt", g_prompt.calls, 0);
     rc |= expect_int("invalid env name status", strstr(g_status, "DSD_NEO_") != NULL, 1);
 
@@ -1188,11 +1224,14 @@ test_env_editor_and_protocol_callbacks(void) {
     EnvEditCtx* ec = (EnvEditCtx*)calloc(1, sizeof *ec);
     assert(ec != NULL);
     ec->c = &ctx;
-    cb_env_edit_name(ec, "DSD_NEO_TEST_VALUE");
+    answer_owned_prompt(cb_env_edit_name, ec, env_edit_ctx_dispose, "DSD_NEO_TEST_VALUE");
     rc |= expect_int("valid env name prompts", g_prompt.calls, 1);
     rc |= expect_str("env prompt prefill", g_prompt.prefill, "old");
+    /* Issue #672 (B8): the name prompt hands its context to the value prompt, which owns it from here. */
+    rc |= expect_int("env value prompt owns the context", g_prompt.user == ec, 1);
+    rc |= expect_int("env value prompt disposes it", g_prompt.dispose == env_edit_ctx_dispose, 1);
     assert(g_prompt.str_cb != NULL);
-    g_prompt.str_cb(g_prompt.user, "new");
+    answer_owned_prompt(g_prompt.str_cb, g_prompt.user, g_prompt.dispose, "new");
     rc |= expect_str("env set name", g_env_name, "DSD_NEO_TEST_VALUE");
     rc |= expect_str("env set value", g_env_value, "new");
     rc |= expect_int("env set sets once", g_env_set_calls, 1);
@@ -1203,7 +1242,7 @@ test_env_editor_and_protocol_callbacks(void) {
     assert(canceled != NULL);
     canceled->c = &ctx;
     DSD_SNPRINTF(canceled->name, sizeof canceled->name, "%s", "DSD_NEO_CANCELED");
-    cb_env_edit_value(canceled, NULL);
+    answer_owned_prompt(cb_env_edit_value, canceled, env_edit_ctx_dispose, NULL);
     rc |= expect_int("env cancel sets nothing", g_env_set_calls, 0);
     rc |= expect_int("env cancel reparses nothing", g_reparse_calls, 0);
 
@@ -1212,7 +1251,7 @@ test_env_editor_and_protocol_callbacks(void) {
     assert(clear != NULL);
     clear->c = &ctx;
     DSD_SNPRINTF(clear->name, sizeof clear->name, "%s", "DSD_NEO_CLEAR_ME");
-    cb_env_edit_value(clear, "");
+    answer_owned_prompt(cb_env_edit_value, clear, env_edit_ctx_dispose, "");
     rc |= expect_str("env clear name", g_env_name, "DSD_NEO_CLEAR_ME");
     rc |= expect_int("env clear calls unset", g_env_unset_calls, 1);
     rc |= expect_int("env clear does not set an empty value", g_env_set_calls, 0);
@@ -1225,7 +1264,7 @@ test_env_editor_and_protocol_callbacks(void) {
     assert(full != NULL);
     full->c = &ctx;
     DSD_SNPRINTF(full->name, sizeof full->name, "%s", "DSD_NEO_TOO_MANY");
-    cb_env_edit_value(full, "1");
+    answer_owned_prompt(cb_env_edit_value, full, env_edit_ctx_dispose, "1");
     rc |= expect_str("env refused names a full table", g_status,
                      "Could not set DSD_NEO_TOO_MANY: too many variables changed");
 
@@ -1236,7 +1275,7 @@ test_env_editor_and_protocol_callbacks(void) {
     assert(bad_store != NULL);
     bad_store->c = &ctx;
     DSD_SNPRINTF(bad_store->name, sizeof bad_store->name, "%s", "DSD_NEO_REFUSED");
-    cb_env_edit_value(bad_store, "1");
+    answer_owned_prompt(cb_env_edit_value, bad_store, env_edit_ctx_dispose, "1");
     rc |= expect_str("env refused names an invalid name", g_status,
                      "Could not set DSD_NEO_REFUSED: invalid variable name");
     g_env_set_fails = 0;
@@ -1246,7 +1285,7 @@ test_env_editor_and_protocol_callbacks(void) {
     EnvEditCtx* equals = (EnvEditCtx*)calloc(1, sizeof *equals);
     assert(equals != NULL);
     equals->c = &ctx;
-    cb_env_edit_name(equals, "DSD_NEO_X=1");
+    answer_owned_prompt(cb_env_edit_name, equals, env_edit_ctx_dispose, "DSD_NEO_X=1");
     rc |= expect_int("env name with = no prompt", g_prompt.calls, 0);
     rc |= expect_str("env name with = status", g_status, "Variable name cannot contain =");
 
@@ -1274,19 +1313,19 @@ test_pulse_chooser_callbacks_pack_selected_names(void) {
 
     reset_capture();
     PulseSelCtx* out = make_pulse_ctx(&state, "speaker.monitor", "headphones");
-    chooser_done_pulse_out(out, 1);
+    answer_owned_chooser(chooser_done_pulse_out, out, pulse_sel_ctx_dispose, 1);
     rc |= expect_cmd_string("pulse out selected command", DSD_APP_CMD_PULSE_OUT_SET, "headphones");
     rc |= expect_int("pulse out status", strstr(g_status, "Pulse out requested: headphones") != NULL, 1);
 
     reset_capture();
     PulseSelCtx* in = make_pulse_ctx(&state, "mic0", "line-in");
-    chooser_done_pulse_in(in, 0);
+    answer_owned_chooser(chooser_done_pulse_in, in, pulse_sel_ctx_dispose, 0);
     rc |= expect_cmd_string("pulse in selected command", DSD_APP_CMD_PULSE_IN_SET, "mic0");
     rc |= expect_int("pulse in status", strstr(g_status, "Pulse in requested: mic0") != NULL, 1);
 
     reset_capture();
     PulseSelCtx* cancel = make_pulse_ctx(&state, "unused0", "unused1");
-    chooser_done_pulse_in(cancel, -1);
+    answer_owned_chooser(chooser_done_pulse_in, cancel, pulse_sel_ctx_dispose, -1);
     rc |= expect_int("pulse cancel no command", g_cmd.calls, 0);
     rc |= expect_int("pulse cancel no status", g_status_calls, 0);
 

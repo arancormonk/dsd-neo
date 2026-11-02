@@ -144,6 +144,9 @@ void
 rr_panel_shutdown(void) {}
 
 void
+ui_overlays_shutdown(void) {}
+
+void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;

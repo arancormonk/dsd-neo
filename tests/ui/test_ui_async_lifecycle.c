@@ -68,6 +68,9 @@ static int g_timeout_calls;
 static int g_escdelay_calls;
 static int g_ncurses_open_calls;
 static int g_ncurses_close_calls;
+/* The UI thread's exit, in order ("rr", "overlays", "close"), and the -Z flag curses was opened with (issue #672). */
+static char g_exit_log[64];
+static int g_open_payload = -1;
 static int g_clearok_calls;
 static int g_ncurses_input_calls;
 static int g_last_menu_key = ERR;
@@ -271,18 +274,32 @@ dsd_app_frontend_redraw_consume(void) {
 
 void
 dsd_terminal_open(const dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
+    g_open_payload = opts ? opts->payload : -1;
     g_ncurses_open_calls++;
+}
+
+static void
+log_exit(const char* what) {
+    const size_t used = strlen(g_exit_log);
+    (void)DSD_SNPRINTF(g_exit_log + used, sizeof g_exit_log - used, "%s%s", used ? "," : "", what);
 }
 
 void
 dsd_terminal_close(void) {
+    log_exit("close");
     g_ncurses_close_calls++;
 }
 
 void
-rr_panel_shutdown(void) {}
+rr_panel_shutdown(void) {
+    log_exit("rr");
+}
+
+void
+ui_overlays_shutdown(void) {
+    log_exit("overlays");
+}
 
 void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
@@ -644,9 +661,15 @@ test_ui_thread_takes_the_stop_signal(void) {
     g_stop_signal_calls = 0;
     g_last_stop_signal_blocked = -1;
     g_open_calls_at_stop_signal = -1;
+    g_exit_log[0] = '\0';
+    g_open_payload = -1;
+    opts.payload = 1; /* -Z: curses opens on the start-time copy, which must carry it for the warning */
 
     int rc = expect_int("stop-signal-start-return", ui_start(&opts, &state), 0);
     rc |= expect_int("stop-signal-start-leaves-caller", g_stop_signal_calls, 0);
+    /* Nothing published yet, so curses opens on the start-time copy. */
+    g_latest_opts = NULL;
+    g_latest_state = NULL;
 
     /* The stop is already requested when the entry runs: it opens curses, runs no frame and closes. */
     g_run_entry_on_join = 1;
@@ -656,6 +679,13 @@ test_ui_thread_takes_the_stop_signal(void) {
     rc |= expect_int("stop-signal-calls", g_stop_signal_calls, 1);
     rc |= expect_int("stop-signal-unblocked", g_last_stop_signal_blocked, 0);
     rc |= expect_int("stop-signal-before-curses-opens", g_open_calls_at_stop_signal, 0);
+    /* Issue #672: the start-time copy keeps -Z for dsd_terminal_open()'s warning (nothing was published here). */
+    rc |= expect_int("start-copy-keeps-payload", g_open_payload, 1);
+    /* Issue #672 (B17): RadioReference first, then every other overlay, while curses still runs. */
+    if (strcmp(g_exit_log, "rr,overlays,close") != 0) {
+        DSD_FPRINTF(stderr, "exit order '%s', want 'rr,overlays,close'\n", g_exit_log);
+        rc |= 1;
+    }
     return rc;
 }
 

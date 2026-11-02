@@ -76,6 +76,13 @@ mutable_ui_ctx_from_callback(void* user) {
     return (UiCtx*)user;
 }
 
+/* An owned chooser's or prompt's context (issue #672, B8): the callback reads it, the widget's dispose frees it. The
+   parameter stays void*, as the widgets' callback types have it. */
+static const void*
+owned_context(void* user) {
+    return user;
+}
+
 // ---- Simple path callbacks ----
 
 /* A session override (#782). A refused one is reported: the row would otherwise flip back with no word. */
@@ -265,8 +272,9 @@ cb_config_load(void* v, const char* path) {
     }
 }
 
-static void
-config_profile_free_context(ProfileSelCtx* pctx) {
+void
+config_profile_ctx_dispose(void* u) {
+    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
     if (!pctx) {
         return;
     }
@@ -282,7 +290,7 @@ config_profile_free_context(ProfileSelCtx* pctx) {
 
 void
 chooser_done_config_profile(void* u, int sel) {
-    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
+    const ProfileSelCtx* pctx = (const ProfileSelCtx*)owned_context(u);
     if (!pctx) {
         return;
     }
@@ -294,8 +302,6 @@ chooser_done_config_profile(void* u, int sel) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
         }
     }
-
-    config_profile_free_context(pctx);
 }
 
 void
@@ -1279,13 +1285,14 @@ cb_lr_custom(void* v, const char* path) {
 // ---- Env editor callbacks ----
 
 void
+env_edit_ctx_dispose(void* u) {
+    free(u);
+}
+
+void
 cb_env_edit_value(void* u, const char* val) {
-    EnvEditCtx* ec = (EnvEditCtx*)u;
-    if (!ec) {
-        return;
-    }
-    if (!val) {
-        free(ec);
+    const EnvEditCtx* ec = (const EnvEditCtx*)owned_context(u);
+    if (!ec || !val) {
         return;
     }
     /* A session override (#782): the process environment is never written while the decoder reads it. */
@@ -1300,35 +1307,34 @@ cb_env_edit_value(void* u, const char* val) {
     }
     // Apply to runtime config as appropriate
     env_reparse_runtime_cfg();
-    free(ec);
 }
 
 void
 cb_env_edit_name(void* u, const char* name) {
-    EnvEditCtx* ec = (EnvEditCtx*)u;
-    if (!ec) {
-        return;
-    }
+    (void)u; /* the context is taken below, once the name is good */
     if (!name || !*name) {
-        free(ec);
-        return;
+        return; /* the name prompt disposes the context */
     }
     // Require DSD_NEO_ prefix for safety
     if (dsd_strncasecmp(name, "DSD_NEO_", 8) != 0) {
         ui_statusf("Variable name must start with DSD_NEO_");
-        free(ec);
         return;
     }
     if (strchr(name, '=') != NULL) {
         ui_statusf("Variable name cannot contain =");
-        free(ec);
+        return;
+    }
+    /* Taken from the name prompt and handed to the value prompt, which disposes it when it completes. */
+    EnvEditCtx* ec = (EnvEditCtx*)ui_prompt_take_context();
+    if (!ec) {
         return;
     }
     DSD_SNPRINTF(ec->name, sizeof ec->name, "%s", name);
     /* The prompt copies the prefill; the copy here is zeroed, since a value may be a key or token. */
     char cur[256];
     (void)dsd_env_copy(ec->name, cur, sizeof cur);
-    ui_prompt_open_string_async("Enter value (empty to clear)", cur, sizeof cur, cb_env_edit_value, ec);
+    ui_prompt_open_string_owned("Enter value (empty to clear)", cur, sizeof cur, cb_env_edit_value, ec,
+                                env_edit_ctx_dispose);
     DSD_SECURE_ZERO(cur, sizeof cur);
 }
 
@@ -1364,29 +1370,30 @@ chooser_free_lists(const char** names, char** bufs, int n, const char** labels) 
 }
 
 void
-chooser_done_pulse_out(void* u, int sel) {
+pulse_sel_ctx_dispose(void* u) {
     PulseSelCtx* pc = (PulseSelCtx*)u;
     if (pc) {
-        if (sel >= 0 && sel < pc->n) {
-            const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, name);
-            ui_statusf("Pulse out requested: %s", name);
-        }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
         free(pc);
     }
 }
 
 void
+chooser_done_pulse_out(void* u, int sel) {
+    const PulseSelCtx* pc = (const PulseSelCtx*)owned_context(u);
+    if (pc && sel >= 0 && sel < pc->n) {
+        const char* name = pc->names[sel];
+        (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, name);
+        ui_statusf("Pulse out requested: %s", name);
+    }
+}
+
+void
 chooser_done_pulse_in(void* u, int sel) {
-    PulseSelCtx* pc = (PulseSelCtx*)u;
-    if (pc) {
-        if (sel >= 0 && sel < pc->n) {
-            const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_IN_SET, name);
-            ui_statusf("Pulse in requested: %s", name);
-        }
-        chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
-        free(pc);
+    const PulseSelCtx* pc = (const PulseSelCtx*)owned_context(u);
+    if (pc && sel >= 0 && sel < pc->n) {
+        const char* name = pc->names[sel];
+        (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_IN_SET, name);
+        ui_statusf("Pulse in requested: %s", name);
     }
 }

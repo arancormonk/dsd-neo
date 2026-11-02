@@ -69,6 +69,7 @@ test_printw(const char* fmt, ...) {
 
 #include "../../src/ui/terminal/ncurses_dsp_display.c"
 #include "../../src/ui/terminal/ui_row.c"
+#include "../../src/ui/terminal/ui_text.c"
 
 #undef printw
 #undef getmaxyx

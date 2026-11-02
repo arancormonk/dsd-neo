@@ -102,6 +102,18 @@ void
 ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
+void
+ui_help_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+ui_prompt_close_all(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+ui_chooser_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
     return 0;

@@ -9,6 +9,10 @@
  *  - Enter, as '\n', '\r' or KEY_ENTER, starts the import.
  *  - Keypad Enter on a Windows terminal (PDCurses PADENTER) starts it too (B13).
  *  - Any other key does not.
+ * And the Imported Systems browser's context through its three chooser levels
+ * (issue #672, B8): owned by each level's chooser in turn, disposed exactly once
+ * when a level is answered, replaced, cancelled from the render path or closed
+ * at UI exit, and when a hand-off to the next level fails at once.
  *
  * And the Imported Systems browser's "Use this system" / "Load these files"
  * over a real imports directory (issue #803): each asks the session gate
@@ -16,8 +20,9 @@
  * mode, the files-only load for the channel map it loads - and posts nothing
  * when the gate says no.
  *
- * The wizard core, the prompt widgets and the app-control commands are stubbed
- * at the seams rr_panel.c calls; the panel and the library are the real code.
+ * The wizard core and the app-control commands are stubbed at the seams
+ * rr_panel.c calls; the panel, the library and the chooser and prompt widgets
+ * are the real code.
  */
 
 #include <assert.h>
@@ -30,6 +35,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -241,43 +247,7 @@ rr_wizard_core_files_block_reason(const dsd_opts* osnap, const dsd_state* snap, 
     return g_files_gate_blocks;
 }
 
-/* ---- Widget, status and app-control seams: inert ---- */
-
-void
-ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
-                            void* user_ctx) {
-    (void)title;
-    (void)prefill;
-    (void)cap;
-    (void)on_done;
-    (void)user_ctx;
-}
-
-void
-ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx) {
-    (void)title;
-    (void)cap;
-    (void)on_done;
-    (void)user_ctx;
-}
-
-/* The last chooser opened: the browser walks its levels through these callbacks. */
-static const char* const* g_chooser_items = NULL;
-static int g_chooser_count = 0;
-static ui_chooser_done_fn g_chooser_done = NULL;
-static void* g_chooser_user = NULL;
-
-void
-ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
-    (void)title;
-    g_chooser_items = items;
-    g_chooser_count = count;
-    g_chooser_done = on_done;
-    g_chooser_user = user_ctx;
-}
-
-void
-ui_chooser_close(void) {}
+/* ---- Window, status and app-control seams: inert (no window: the render path cancels) ---- */
 
 WINDOW*
 ui_make_window(int h, int w, int y, int x) {
@@ -472,21 +442,19 @@ static dsd_opts g_frame_opts;
 static dsd_state g_frame_state;
 
 /* Open the browser on the frame's pair, pick its only system, then its first action, whose label must be
-   @p want_action. */
+   @p want_action, through the real chooser's keys. */
 static void
 browse_first_action(const char* want_action) {
-    g_chooser_done = NULL;
     rr_panel_open_library(&g_frame_opts, &g_frame_state);
-    assert(g_chooser_done != NULL && g_chooser_count == 1);
-    ui_chooser_done_fn pick_system = g_chooser_done;
-    void* ctx = g_chooser_user;
-    g_chooser_done = NULL;
-    pick_system(ctx, 0);
-    assert(g_chooser_done != NULL && g_chooser_count == 3);
-    assert(strcmp(g_chooser_items[0], want_action) == 0);
-    ui_chooser_done_fn pick_action = g_chooser_done;
-    g_chooser_done = NULL;
-    pick_action(g_chooser_user, 0); /* frees the browser's context */
+    assert(ui_chooser_active() == 1 && ui_chooser_test_snapshot().count == 1);
+    assert(ui_chooser_handle_key('\n') == 1); /* the system: its actions */
+    assert(ui_chooser_active() == 1 && ui_chooser_test_snapshot().count == 3);
+    assert(ui_chooser_test_snapshot().sel == 0);
+    const char* first = ui_chooser_test_item(0);
+    assert(first != NULL && strcmp(first, want_action) == 0);
+    assert(ui_chooser_handle_key('\n') == 1); /* the action, which frees the browser's context */
+    assert(ui_chooser_active() == 0);
+    assert(rr_panel_browse_live_contexts_for_test() == 0);
 }
 
 /* "Use this system" asks the gate for the recipe's own decode mode, and a refusal posts nothing. */
@@ -546,6 +514,133 @@ test_load_these_files_is_still_checked(void) {
     remove_import(chan);
 }
 
+/* ---- The Imported Systems browser (issue #672, B8) ---- */
+
+static int g_other_done_calls;
+
+static void
+other_chooser_done(void* user, int sel) {
+    (void)user;
+    (void)sel;
+    g_other_done_calls++;
+}
+
+static int
+live(void) {
+    return rr_panel_browse_live_contexts_for_test();
+}
+
+/* Level 1: the system list over the one imported system. */
+static void
+open_level(int level) {
+    rr_panel_open_library(NULL, NULL);
+    assert(ui_chooser_active() == 1);
+    assert(ui_chooser_test_snapshot().count == 1);
+    assert(live() == 1);
+    if (level >= 2) {
+        assert(ui_chooser_handle_key('\n') == 1); /* the system: its actions */
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_test_snapshot().count == 3);
+        assert(live() == 1);
+    }
+    if (level >= 3) {
+        assert(ui_chooser_handle_key(KEY_END) == 1); /* "Delete imported files": the confirmation */
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_test_snapshot().count == 2);
+        assert(ui_chooser_test_snapshot().sel == 0); /* Cancel */
+        assert(live() == 1);
+    }
+}
+
+static void
+expect_gone(void) {
+    assert(live() == 0);
+    assert(ui_chooser_active() == 0);
+}
+
+static void
+test_browser_levels(void) {
+    static const char* const other_items[] = {"Other"};
+    for (int level = 1; level <= 3; level++) {
+        /* Esc at the level. */
+        open_level(level);
+        assert(ui_chooser_handle_key(27) == 1);
+        expect_gone();
+
+        /* Replaced by another chooser: disposed with no callback of its own; the new chooser is untouched. */
+        open_level(level);
+        g_other_done_calls = 0;
+        ui_chooser_start("Other", other_items, 1, other_chooser_done, NULL);
+        assert(live() == 0);
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(g_other_done_calls == 1);
+        expect_gone();
+
+        /* Cancelled from the render path (no window can be made here). */
+        open_level(level);
+        ui_chooser_render();
+        expect_gone();
+
+        /* UI exit with no wizard core: rr_panel_shutdown() leaves the chooser, the overlay shutdown closes it. */
+        open_level(level);
+        rr_panel_shutdown();
+        assert(live() == 1);
+        ui_chooser_close();
+        expect_gone();
+
+        /* UI exit after an import made the wizard core: rr_panel_shutdown() closes the chooser itself. */
+        rr_panel_open_import(NULL, NULL);
+        rr_panel_close();
+        open_level(level);
+        rr_panel_shutdown();
+        expect_gone();
+    }
+
+    /* A hand-off whose next level answers at once (a start that fails): the context is disposed exactly once. */
+    open_level(1);
+    ui_chooser_test_fail_next_start();
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+    open_level(2);
+    assert(ui_chooser_handle_key(KEY_END) == 1);
+    ui_chooser_test_fail_next_start();
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+
+    /* The confirmation's Cancel answers and disposes; the files stay. */
+    open_level(3);
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+}
+
+/* One imported system (a group list and its sidecar) in the scratch imports directory browser_setup() made: the
+   config path latches on its first lookup, so every browser case shares that one directory. */
+static void
+with_one_import(void (*run)(void)) {
+    char csv[DSD_TEST_PATH_MAX];
+    assert(dsd_test_path_join(csv, sizeof csv, g_imports, "Sys group.csv") == 0);
+    FILE* fp = dsd_fopen_private(csv, "w");
+    assert(fp != NULL);
+    assert(fputs("1,x\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_rr_provenance p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    DSD_STRNCPY(p.kind, "group", sizeof p.kind - 1);
+    p.sid = 100;
+    DSD_STRNCPY(p.system_name, "Sys", sizeof p.system_name - 1);
+    p.imported_at = 1755500000LL;
+    assert(dsd_rr_provenance_write(csv, &p) == 0);
+
+    run();
+
+    char side[DSD_TEST_PATH_MAX + 8];
+    (void)DSD_SNPRINTF(side, sizeof side, "%s.rr", csv);
+    assert(remove(side) == 0); /* still there: no level deleted anything */
+    assert(remove(csv) == 0);
+}
+
 int
 main(void) {
     assert_key_imports('\n');
@@ -563,7 +658,6 @@ main(void) {
     browser_setup();
     test_use_this_system_is_checked_for_its_kind();
     test_load_these_files_is_still_checked();
-    browser_teardown();
 
     /* A blocked plan: the planner's block is said here, a session refusal goes
        to the core, which asks the session again (issue #803). */
@@ -580,6 +674,9 @@ main(void) {
 
     rr_panel_shutdown();
     assert(rr_panel_active() == 0);
+
+    with_one_import(test_browser_levels);
+    browser_teardown();
 
     printf("UI_RR_PANEL_KEYS: OK\n");
     return 0;
