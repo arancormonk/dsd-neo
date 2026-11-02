@@ -15,13 +15,16 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/config_files.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -640,10 +643,12 @@ test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state)
 
 int
 main(void) {
-    static unsigned char opts_token;
-    static unsigned char state_token;
-    dsd_opts* opts = (dsd_opts*)&opts_token;
-    dsd_state* state = (dsd_state*)&state_token;
+    /* The frame's pair: real objects (only their addresses are compared), on the heap as dsd_opts/dsd_state go. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_opts* next_opts = (dsd_opts*)calloc(1, sizeof(*next_opts));
+    dsd_state* next_state = (dsd_state*)calloc(1, sizeof(*next_state));
+    assert(opts && state && next_opts && next_state);
 
     g_fixture = 1;
     ui_menu_open_async(opts, state);
@@ -1005,10 +1010,6 @@ main(void) {
 
     /* A prompt answered frames after it opened, across a publication and a decoder restart, runs its callback with the
        pair the frame it is answered in handed the menu, never the opener frame's. */
-    static unsigned char next_opts_token;
-    static unsigned char next_state_token;
-    const dsd_opts* next_opts = (const dsd_opts*)&next_opts_token;
-    const dsd_state* next_state = (const dsd_state*)&next_state_token;
     reset_modal_capture();
     g_answer_opts = NULL;
     g_answer_state = NULL;
@@ -1021,6 +1022,10 @@ main(void) {
 
     test_overlays_shutdown_and_restart(opts, state);
 
+    free(next_state);
+    free(next_opts);
+    free(state);
+    free(opts);
     printf("UI_MENU_NAVIGATION: OK\n");
     return 0;
 }
