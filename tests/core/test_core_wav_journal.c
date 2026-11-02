@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/recording_view.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
@@ -777,7 +778,7 @@ expect_pending_then_linked(const char* what, const char* id, uint64_t epoch, con
 }
 
 /* Issue #756: an NFM call held through a pause is one recording. It is published once, pending on the call's epoch and
-   linked by its one commit, named as the NFM call with its service; it starts at the first burst and lasts both bursts
+   linked by its one commit, named as the analog call with its service; it starts at the first burst and lasts both bursts
    and the silence written between them. */
 static int
 test_held_nfm_call_is_one_recording(void) {
@@ -815,8 +816,9 @@ test_held_nfm_call_is_one_recording(void) {
             DSD_SNPRINTF(id, sizeof id, "%s", field_s(pub, "id"));
             rc |= expect_int("held nfm: both bursts and the pause", field_ll(pub, "duration_ms"), 40 + 200 + 40);
             rc |= expect_int("held nfm: starts at the first burst", field_ll(pub, "start"), (long long)k_t0 + 10);
-            rc |= expect_true("held nfm: the NFM name with its service",
-                              strstr(field_s(pub, "file"), "_NFM_SVC_Dispatch.wav") != NULL);
+            /* Heard on an audio input, whose mode is not known: the analog name (issue #667). */
+            rc |= expect_true("held nfm: the analog name with its service",
+                              strstr(field_s(pub, "file"), "_ANALOG_SVC_Dispatch.wav") != NULL);
         }
     }
     rc |= expect_int("held nfm: published once", published, 1);
@@ -848,7 +850,9 @@ test_pending_closers_are_linked_at_the_commit(void) {
             if (field_ll(pub, "rate") == 48000) {
                 DSD_SNPRINTF(id, sizeof id, "%s", field_s(pub, "id"));
                 rc |= expect_int("nfm: two 20 ms blocks", field_ll(pub, "duration_ms"), 40);
-                rc |= expect_true("nfm: published under the NFM name", strstr(field_s(pub, "file"), "_NFM") != NULL);
+                /* An audio input's call, whose mode is not known (issue #667). */
+                rc |= expect_true("nfm: published under the analog name",
+                                  strstr(field_s(pub, "file"), "_ANALOG.wav") != NULL);
             }
         }
         rc |= expect_true("nfm: the call's recording published", id[0] != '\0');
@@ -1442,6 +1446,207 @@ test_error_failed_and_rdio_shapes(void) {
     return rc;
 }
 
+/* --- Issue #667: analog recordings named by their mode, and the discard of one that is never published. --- */
+
+/* An analog call on slot 0 heard in @p mode, as the tracker observes one: no identity, target 0. */
+static void
+begin_analog_call(rig* r, uint8_t mode) {
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .frequency_hz = mode == DSD_ANALOG_MODE_UNKNOWN ? 0 : 154430000,
+        .analog_mode = mode,
+    };
+    (void)dsd_call_state_observe(r->state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(r->opts, r->state, 0);
+}
+
+/* A per-call segment opened in the rig's folder and written with one 20 ms block; NULL when the open failed. */
+static SNDFILE*
+analog_segment(rig* r, char* path, size_t path_size) {
+    SNDFILE* wav = open_wav_file(r->opts->wav_out_dir, path, path_size, 48000, 0);
+    static short block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = (short)((i % 48) * 400 - 9600);
+    }
+    dsd_wav_segment_write(wav, block, 960, "analog test");
+    return wav;
+}
+
+typedef struct {
+    int files;
+    int named; /* published under the analog name of @c mode */
+    const char* mode;
+} analog_names;
+
+static int
+count_analog_names_cb(const char* name, void* user) {
+    analog_names* names = (analog_names*)user;
+    if (strstr(name, ".jsonl") != NULL) {
+        return 0;
+    }
+    names->files++;
+    names->named += dsd_test_analog_recording_name_is(name, names->mode, NULL);
+    return 0;
+}
+
+static analog_names
+list_analog_names(const rig* r, const char* mode) {
+    analog_names names = {0, 0, mode};
+    (void)dsd_dir_list(r->dir, count_analog_names_cb, &names);
+    return names;
+}
+
+/* An analog recording is named by the mode its call was heard in, closed with its row (the row's mode) or without one
+   (a teardown's, by the mode it is given): _NFM, _AM, or _ANALOG on an audio input, where the mode is not known. Main
+   named every one _NFM. */
+static int
+test_analog_recordings_are_named_by_mode(void) {
+    static const struct {
+        uint8_t mode;
+        const char* token;
+    } k_modes[] = {
+        {DSD_ANALOG_MODE_NFM, "NFM"},
+        {DSD_ANALOG_MODE_AM, "AM"},
+        {DSD_ANALOG_MODE_UNKNOWN, "ANALOG"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_modes / sizeof k_modes[0]; i++) {
+        char tag[96];
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_analog_mode");
+        begin_analog_call(&r, k_modes[i].mode);
+        char path[1024];
+        SNDFILE* wav = analog_segment(&r, path, sizeof path);
+        (void)close_and_publish_call_wav(wav, r.opts, r.state, 0, path, r.opts->wav_out_dir, dsd_decode_time());
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row's recording is named by its mode", k_modes[i].token);
+        rc |= expect_true(tag, pub && dsd_test_analog_recording_name_is(field_s(pub, "file"), k_modes[i].token, NULL));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the journal names the file on disk", k_modes[i].token);
+        rc |= expect_int(tag, list_analog_names(&r, k_modes[i].token).named, 1);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+
+        /* No row left: the mode the closer is given. */
+        wav = analog_segment(&r, path, sizeof path);
+        (void)close_and_rename_analog_wav_file(wav, path, r.opts->wav_out_dir, k_modes[i].mode);
+        const analog_names names = list_analog_names(&r, k_modes[i].token);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: a rowless recording is named by the mode given", k_modes[i].token);
+        rc |= expect_true(tag, names.files == 2 && names.named == 2);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+static int g_unremoved_warnings;
+static int g_close_warnings;
+
+static void
+count_discard_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level != LOG_LEVEL_WARN || !text) {
+        return;
+    }
+    g_unremoved_warnings += strstr(text, "could not be removed") != NULL;
+    g_close_warnings += strstr(text, "did not close cleanly") != NULL;
+}
+
+/* The close seam, which only the segment table's close reaches (wav_segment_close(), after it forgets the segment and
+   its latch): counted. */
+static int g_segment_closes;
+
+static int
+counting_close(SNDFILE* file) {
+    g_segment_closes++;
+    return sf_close(file);
+}
+
+static int
+file_exists(const char* path) {
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    (void)fclose(f);
+    return 1;
+}
+
+static dsd_wav_recording_status
+recording_status(void) {
+    dsd_wav_recording_status status;
+    DSD_MEMSET(&status, 0, sizeof status);
+    dsd_wav_recording_status_get(&status);
+    return status;
+}
+
+/* The temporary recording of an analog reception that never became a call is discarded: closed through the segment
+   table, so a short write's latch goes with it, its file removed, nothing journaled, published or exported. A close
+   that fails still removes it, and counts no failure. */
+static int
+test_unpublished_analog_recording_is_discarded(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_analog_discard");
+    dsd_neo_log_set_tap(count_discard_log_lines, NULL);
+    g_unremoved_warnings = 0;
+    g_close_warnings = 0;
+    begin_analog_call(&r, DSD_ANALOG_MODE_NFM);
+
+    char path[1024];
+    g_segment_closes = 0;
+    dsd_wav_test_set_io(short_write, counting_close);
+    SNDFILE* wav = analog_segment(&r, path, sizeof path);
+    rc |= expect_true("discard: the segment opened", wav != NULL && file_exists(path));
+    rc |= expect_int("discard: its short write latched it", recording_status().failures[DSD_WAV_RECORDING_ERROR_WRITE],
+                     1);
+    rc |= expect_true("discard: returns no handle", discard_analog_wav_file(wav, path) == NULL);
+    dsd_wav_test_set_io(NULL, NULL);
+    rc |= expect_int("discard: closed through the segment table", g_segment_closes, 1);
+    rc |= expect_true("discard: the file is gone", !file_exists(path));
+
+    dsd_wav_test_set_io(NULL, failing_close);
+    wav = analog_segment(&r, path, sizeof path);
+    (void)discard_analog_wav_file(wav, path);
+    dsd_wav_test_set_io(NULL, NULL);
+    rc |= expect_true("discard after a failed close: the file is gone", !file_exists(path));
+    rc |= expect_int("discard after a failed close: counted as no close failure",
+                     recording_status().failures[DSD_WAV_RECORDING_ERROR_CLOSE], 0);
+    rc |= expect_int("discard after a failed close: nothing logged", g_close_warnings + g_unremoved_warnings, 0);
+
+    reload(&r);
+    rc |= expect_int("discard: nothing journaled", g_j.count, 0);
+    rc |= expect_int("discard: no recording left", list_analog_names(&r, "NFM").files, 0);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    dsd_neo_log_set_tap(NULL, NULL);
+    rig_close(&r);
+    return rc;
+}
+
+/* A segment whose open failed keeps its diagnostics (the log line, the journal's open error), and discarding it adds
+   nothing: no second record, no file. */
+static int
+test_failed_analog_open_keeps_its_error_through_a_discard(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_analog_open_fail");
+    begin_analog_call(&r, DSD_ANALOG_MODE_NFM);
+    dsd_wav_test_fail_opens_after(0);
+    char path[1024];
+    SNDFILE* wav = analog_segment(&r, path, sizeof path);
+    dsd_wav_test_fail_opens_after(-1);
+    rc |= expect_true("open failure: no segment", wav == NULL && path[0] == '\0');
+    rc |= expect_true("open failure: the discard returns no handle", discard_analog_wav_file(wav, path) == NULL);
+    reload(&r);
+    rc |= expect_int("open failure: one record", g_j.count, 1);
+    const char* err = record(&g_j, "error", 0);
+    rc |= expect_str("open failure: its open error", err ? field_s(err, "kind") : "", "open");
+    rc |= expect_int("open failure: counted", recording_status().failures[DSD_WAV_RECORDING_ERROR_OPEN], 1);
+    rc |= expect_int("open failure: no file", list_analog_names(&r, "NFM").files, 0);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    rig_close(&r);
+    return rc;
+}
+
 /* A radio list change applied after the call's last render, then WAV_STOP before the next render, as one command drain
    delivers them: the stop's close follows the policy in force (issue #773 D7). A radio row turned stream=off keeps the
    recording local (no DirWatch sidecar); with stream on the sidecar is written. */
@@ -1596,6 +1801,9 @@ main(void) {
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
     rc |= test_wav_stop_follows_a_fresh_stream_verdict();
+    rc |= test_analog_recordings_are_named_by_mode();
+    rc |= test_unpublished_analog_recording_is_discarded();
+    rc |= test_failed_analog_open_keeps_its_error_through_a_discard();
     rc |= test_path_forms();
     rc |= test_temp_token_is_the_names_token();
     if (rc == 0) {

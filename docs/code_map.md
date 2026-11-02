@@ -1375,8 +1375,9 @@ suite runs under this compiler.
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
   - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
     rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
-    failure that keeps the temp file. `open_wav_file()` journals an open failure. The NFM teardown close
-    (`close_and_rename_analog_wav_file()`, no options, no row) writes nothing. Each segment's id is its temp name's
+    failure that keeps the temp file. `open_wav_file()` journals an open failure. The analog teardown close
+    (`close_and_rename_analog_wav_file()`, no options, no row) and the discard of an unpublished analog recording
+    (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's
     token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
@@ -1537,6 +1538,23 @@ suite runs under this compiler.
   Tests: `CORE_RECEIVE` (`test_analog_row_text`, `test_analog_mode_rows`), `CORE_CALL_ALERT_HISTORY`
   (`test_analog_call_sounds_no_alerts`, `test_digital_end_sounds_when_an_analog_call_takes_the_slot`,
   `test_digital_call_after_an_analog_call_sounds_only_its_start`), `CORE_VOICE_CHAIN` (the alert's UDP port).
+- Explicit BEGIN (issue #667; `call_state.c`, `dsd_events.c`). Two optional observation fields let the analog tracker
+  begin a call it qualified late with what it saw first. `has_receive_seed` + `receive_seed`: on a BEGIN the seed is
+  the identity the call is heard with, instead of the live publication (`call_state_observed_identity()`); a CONTINUE
+  ignores it. The service name follows it: `dsd_call_state_refresh_receive()` names an analog call by the identity it
+  holds even while the live one reads another tone (that change is the tracker's boundary, which ends the call), and a
+  live identity still being acquired never erases it. `start_wall`: decode-clock wall seconds of the call's first
+  sample (the `dsd_decode_*` wall domain), kept fractional on the canonical call (`dsd_call_snapshot::start_wall`) and
+  in the render context. Without either field nothing changes.
+- Analog stamps (issue #667). An analog row whose call has a `start_wall` is stamped from it on every render
+  (`watchdog_event_current_stamp_item()`): `event_start_time = floor(start_wall)` and
+  `event_time = floor(start_wall + elapsed)`, the end from the full sum, so 1000.9 s + 0.6 s ends in 1001 where
+  `start + (time_t)elapsed` gave 1000. Without one it is stamped as every row is (the first render's clock minus the
+  elapsed, then start + elapsed). An ended analog row's text prefix is its `event_time`, not the render's clock
+  (`watchdog_event_text_time()`), so a commit an input stall delayed still reads when the call ended (A2). Digital rows
+  ignore `start_wall`, keep the render's clock in their prefix, and `--playfiles` keeps the stamp the file reader gave
+  the row: the visible-prefix contract merges preserve. Tests: `CORE_RECEIVE` (`test_analog_seeded_begin`,
+  `test_analog_wall_anchored_stamps`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -11853,10 +11871,17 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     same), see `docs/testing.md`.
   - Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz
     call-WAV conversion lane; `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing
-    diagnostic raw capture. An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup,
-    source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer
-    has the row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no
-    rdio export), so it is never left under its temp name nor given the digital shape.
+    diagnostic raw capture. An analog recording is published as `<date>_<time>_<nnnnn>_<mode>[_SVC_<name>].wav` (no
+    talkgroup, source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`, the mode token
+    the row's `analog_mode` (`dsd_analog_mode_name()`: `NFM`, `AM`, or `ANALOG` on audio input; issue #667). A teardown
+    that no longer has the row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`,
+    no service, no rdio export) under the mode the call began in (`analog_call::mode`), so it is never left under its
+    temp name nor given the digital shape. A short write is logged as `NFM call`, `AM call` or `Analog call`
+    (`analog_call_label()`). `discard_analog_wav_file()` drops a temporary recording that is never published: it closes
+    through the segment table (`wav_segment_close()`, so a short write's latch goes with it) and removes the file, even
+    after a failed close, with no rename, journal record or rdio export; an open or write failure it had stays logged
+    (an open failure journaled) as before. Tests: `CORE_WAV_JOURNAL` (`test_analog_recordings_are_named_by_mode`,
+    `test_unpublished_analog_recording_is_discarded`, `test_failed_analog_open_keeps_its_error_through_a_discard`).
   - A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
     freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data

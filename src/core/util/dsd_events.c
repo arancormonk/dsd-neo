@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/tuner_owner.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1506,6 +1507,9 @@ typedef struct {
      * the pair's difference is exactly the epoch's elapsed. */
     double call_elapsed_s;
     uint8_t call_elapsed_valid;
+    /* The call's first sample in decode-clock wall seconds (dsd_call_snapshot::start_wall), or 0: anchors an analog
+     * row's stamps in place of the render's clock (issue #667). */
+    double start_wall;
 } watchdog_event_current_ctx;
 
 typedef struct {
@@ -1635,6 +1639,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
             ctx->call_elapsed_valid = 1U;
         }
     }
+    ctx->start_wall = call->start_wall;
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
@@ -2073,6 +2078,44 @@ watchdog_event_current_load_tuning(const dsd_opts* opts, const dsd_state* state,
     }
 }
 
+// Whether @p ctx stamps its row from the call's own first-sample wall anchor: an analog row whose call was begun with
+// one (issue #667). Every other row, and an analog one begun without it, is stamped from the render's clock.
+static int
+watchdog_event_ctx_wall_anchored(const watchdog_event_current_ctx* ctx) {
+    return ctx->protocol == DSD_SYNC_ANALOG && ctx->start_wall > 0.0;
+}
+
+// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row).
+static void
+watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, time_t now) {
+    item->event_time = now;
+    if (watchdog_event_ctx_wall_anchored(ctx)) {
+        // Both from the fractional anchor, the end from the full sum before it is truncated: a call that began at
+        // x.9 and ran 0.6 s ends in the next second, which start + (time_t)elapsed would put a second early.
+        item->event_start_time = (time_t)floor(ctx->start_wall);
+        if (ctx->call_elapsed_valid) {
+            item->event_time = (time_t)floor(ctx->start_wall + ctx->call_elapsed_s);
+        }
+        return;
+    }
+    if (ctx->call_elapsed_valid) {
+        // Stamped once, on the epoch's first render: re-deriving it every pass
+        // from two independently truncated clocks makes the stamp jitter by a
+        // second between renders, and the committed value is whatever the last
+        // render happened to say. The retire/commit paths clear the staged row
+        // between epochs and the caller drops another epoch's, so a nonzero
+        // stamp here is always this epoch's own.
+        if (item->event_start_time == 0) {
+            item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+        }
+        // Anchored to the fixed start plus the canonical epoch's own elapsed, so
+        // event_time - event_start_time is exactly the epoch's elapsed on every
+        // render — including under Android doze and NTP steps, which move the
+        // wall clock without moving the call's monotonic timeline.
+        item->event_time = item->event_start_time + (time_t)ctx->call_elapsed_s;
+    }
+}
+
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
                                    const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
@@ -2120,23 +2163,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
         item->event_start_time = 0;
     }
     if (opts->playfiles == 0) {
-        item->event_time = now;
-        if (ctx->call_elapsed_valid) {
-            // Stamped once, on the epoch's first render: re-deriving it every pass
-            // from two independently truncated clocks makes the stamp jitter by a
-            // second between renders, and the committed value is whatever the last
-            // render happened to say. The retire/commit paths clear the staged row
-            // between epochs and the line above drops another epoch's, so a nonzero
-            // stamp here is always this epoch's own.
-            if (item->event_start_time == 0) {
-                item->event_start_time = now - (time_t)ctx->call_elapsed_s;
-            }
-            // Anchored to the fixed start plus the canonical epoch's own elapsed, so
-            // event_time - event_start_time is exactly the epoch's elapsed on every
-            // render — including under Android doze and NTP steps, which move the
-            // wall clock without moving the call's monotonic timeline.
-            item->event_time = item->event_start_time + (time_t)ctx->call_elapsed_s;
-        }
+        watchdog_event_current_stamp_item(item, ctx, now);
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
@@ -2673,7 +2700,7 @@ watchdog_event_current_build_event_analog(const watchdog_event_current_ctx* ctx,
         (void)dsd_freq_hz_mhz_text((uint32_t)ctx->freq_hz, mhz, sizeof mhz);
         DSD_SNPRINTF(freq_str, sizeof freq_str, "FREQ: %s MHz; ", mhz);
     }
-    char tone_str[DSD_DCS_LABEL_SIZE + 2]; /* either label and its "; " */
+    char tone_str[DSD_CTCSS_LABEL_SIZE + DSD_DCS_LABEL_SIZE + 2]; /* room for either label, and its "; " */
     watchdog_event_analog_tone_text(&ctx->receive_identity, tone_str, sizeof tone_str);
     DSD_SNPRINTF(event_string, event_size, "%s %s %s%s%s; %s%s", datestr, timestr, sys, mode_known ? " " : "",
                  mode_known ? dsd_analog_mode_name(ctx->analog_mode) : "", freq_str, tone_str);
@@ -2822,7 +2849,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
 // parseable prefix -- a row a protocol staged directly rather than rendering.
 //
 // The displayed string is preferred rather than the stamp because the two are not always the same
-// clock. Every builder renders the prefix from dsd_decode_time(), but watchdog_event_current_update_item()
+// clock. Every builder renders the prefix from dsd_decode_time() (an ended analog row's from its own
+// event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
 // only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
 // is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
 // rewrite a committed row's visible date and time to a value none of its siblings use, purely
@@ -3072,6 +3100,18 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     lifecycle->ended_committed = 1U;
 }
 
+// The time a rendered row's text is stamped with: the render's, except an ended analog row's, which reads its own end
+// (event_time), so a commit the input delayed (a stalled stdin) still reads when the call ended (issue #667 A2). Every
+// other row, and --playfiles, keeps the render's clock: the visible prefix a merge then preserves.
+static time_t
+watchdog_event_text_time(const dsd_opts* opts, const dsd_call_snapshot* call, const Event_History* item, time_t now) {
+    if (opts->playfiles == 0 && call->protocol == DSD_SYNC_ANALOG && call->phase == DSD_CALL_PHASE_ENDED
+        && item->event_time > 0) {
+        return item->event_time;
+    }
+    return now;
+}
+
 static void
 watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                             dsd_call_event_lifecycle* lifecycle, int finalize_ended) {
@@ -3116,13 +3156,13 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
+    const time_t now = dsd_decode_time();
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
     char timestr[9];
     char datestr[11];
-    time_t now = dsd_decode_time();
-    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
+    const time_t text_time = watchdog_event_text_time(opts, call, &candidate, now);
+    (void)dsd_format_local_datetime(text_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(text_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     DSD_SNPRINTF(candidate.service_label, sizeof(candidate.service_label), "%s", call->service_label);
     candidate.receive_identity = call->receive_identity;
 

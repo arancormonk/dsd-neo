@@ -148,10 +148,20 @@ SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, c
 SNDFILE* close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
                                     const char* wav_out_filename, const char* dir, time_t opened);
 /**
- * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
- * own end) and publish it under the NFM name, without a service name or an rdio export.
+ * Close a conventional analog call's recording that no longer has its history row (a teardown that skipped the call's
+ * own end) and publish it under the analog name of @p analog_mode (a dsd_analog_mode, <dsd-neo/core/analog_mode.h>:
+ * `_NFM`, `_AM`, or `_ANALOG` when unknown), without a service name or an rdio export. A recording closed with its row
+ * (close_and_publish_call_wav()) takes the row's mode.
  */
-SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir);
+SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir,
+                                          uint8_t analog_mode);
+/**
+ * Discard a conventional analog reception's temporary recording that is never published (issue #667: it ended before
+ * it counted as a call). It closes through the per-call segment table, so a short write's latch goes with it, and the
+ * temp file is removed, even after a failed close: no rename, no journal record, no rdio export. What its open or a
+ * write already reported (the log line, an open failure's journal error) stays. Returns NULL.
+ */
+SNDFILE* discard_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);

@@ -399,13 +399,15 @@ dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
 }
 
 /**
- * Whether @p name is a published conventional NFM per-call recording, `<date>_<time>_<5 digits>_NFM[_SVC_<service>].wav`
- * (issue #637): no talkgroup, source or call type. @p service is the sanitized service component, or NULL for none.
+ * Whether @p name is a published conventional analog per-call recording,
+ * `<date>_<time>_<5 digits>_<mode>[_SVC_<service>].wav` (issue #637): no talkgroup, source or call type. @p mode is the
+ * name's mode token (issue #667): "NFM", "AM", or "ANALOG" for an audio input's call. @p service is the sanitized service
+ * component, or NULL for none.
  */
 static inline int
-dsd_test_nfm_recording_name_is(const char* name, const char* service) {
-    static const char shape[] = "dddddddd_dddddd_ddddd_NFM";
-    if (!name) {
+dsd_test_analog_recording_name_is(const char* name, const char* mode, const char* service) {
+    static const char shape[] = "dddddddd_dddddd_ddddd_";
+    if (!name || !mode) {
         return 0;
     }
     for (size_t i = 0; i < sizeof shape - 1U; i++) {
@@ -415,6 +417,11 @@ dsd_test_nfm_recording_name_is(const char* name, const char* service) {
         }
     }
     const char* rest = name + sizeof shape - 1U;
+    const size_t mode_length = strlen(mode);
+    if (strncmp(rest, mode, mode_length) != 0) {
+        return 0;
+    }
+    rest += mode_length;
     if (service) {
         static const char svc[] = "_SVC_";
         const size_t length = strlen(service);

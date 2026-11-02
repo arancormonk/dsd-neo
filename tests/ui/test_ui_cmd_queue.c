@@ -11486,7 +11486,8 @@ static int
 count_nfm_recording(const char* name, void* user) {
     nfm_recording_names* names = (nfm_recording_names*)user;
     names->files++;
-    names->named += strstr(name, "_NFM_") != NULL && strstr(name, "_SVC_Traveler") != NULL && !strstr(name, "TEMP");
+    /* An audio input's call: its mode is not known, so it is named _ANALOG (issue #667). */
+    names->named += strstr(name, "_ANALOG_SVC_Traveler") != NULL && !strstr(name, "TEMP");
     return 0;
 }
 

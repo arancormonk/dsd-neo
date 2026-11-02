@@ -350,7 +350,9 @@ Windows console runs:
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
   before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
-  and no tone. The control API's `event` text is the same row.
+  and no tone. An analog line is stamped with the time its call ended, even when it is written later (an input that
+  stopped sending held the end back); earlier versions stamped it when it was written. The control API's `event` text
+  is the same row.
   A call line names the system and site the call was heard on, and a DMR trunked call's own channel by its numbering
   (`LSN:`, `LPCN:`, `LCN:`), from the parts the carrier sent: see [Event History Rows](ui-terminal.md#event-history-rows)
   for the tokens per protocol. A part never received is left out, never printed as 0.
@@ -1644,7 +1646,9 @@ Carrier end (200 ms after the carrier drops, or after a longer pause with `--ana
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
 include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
-`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
+`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. The name gives the mode the call was heard in: `_NFM`, `_AM`
+for an AM call, and `_ANALOG` on audio input, where another receiver demodulated it
+(`20261021_142839_51828_ANALOG_SVC_20R_Traveler.wav`). Earlier versions named every one `_NFM`. Rdio exports use the service name in their talkgroup label field
 while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
 named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
 [receive configuration](config-system.md) and [row options](csv-formats.md).

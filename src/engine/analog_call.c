@@ -51,6 +51,7 @@ typedef struct {
     double last_m;
     uint32_t boundaries_seen; /* the receiver's boundaries epoch when the call began; a move ends it */
     dsd_receive_identity identity;
+    uint8_t mode; /* dsd_analog_mode the call began in, as its row has it: its recording's name and log label */
 } analog_call;
 
 /* A teardown that skipped dsd_engine_finalize_calls() still publishes an open recording under its final name, without
@@ -59,7 +60,7 @@ static void
 analog_call_free(void* ptr) {
     analog_call* call = (analog_call*)ptr;
     if (call->rec.wav) {
-        call->rec.wav = close_and_rename_analog_wav_file(call->rec.wav, call->rec.path, call->rec.dir);
+        call->rec.wav = close_and_rename_analog_wav_file(call->rec.wav, call->rec.path, call->rec.dir, call->mode);
     }
     free(call);
 }
@@ -185,16 +186,27 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* What the analog sink hands the recording's samples to: the open WAV alone, as each sink's own context type carries
-   only what its writer needs (symbol_raw_wav_sink, symbol_monitor_sink), never the module's state. */
+/* What the analog sink hands the recording's samples to: the open WAV and its log label, as each sink's own context
+   type carries only what its writer needs (symbol_raw_wav_sink, symbol_monitor_sink), never the module's state. */
 typedef struct {
     SNDFILE* wav;
+    const char* label;
 } analog_call_sink;
+
+/* What a short write to the call's recording is logged as: the call by its mode, as its recording is named. */
+static const char*
+analog_call_label(const analog_call* call) {
+    switch (call->mode) {
+        case DSD_ANALOG_MODE_NFM: return "NFM call";
+        case DSD_ANALOG_MODE_AM: return "AM call";
+        default: return "Analog call";
+    }
+}
 
 static void
 analog_call_write(const void* context, const short* samples, size_t count) {
     const analog_call_sink* sink = (const analog_call_sink*)context;
-    dsd_wav_segment_write(sink->wav, samples, count, "NFM call");
+    dsd_wav_segment_write(sink->wav, samples, count, sink->label);
 }
 
 static analog_call*
@@ -244,7 +256,7 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
         analog_call_close_recording(opts, state, call);
     }
     if (rec->wav) {
-        const analog_call_sink sink = {rec->wav};
+        const analog_call_sink sink = {rec->wav, analog_call_label(call)};
         (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, samples, count, 1.0, sample_rate, 48000,
                                     analog_call_write, &sink);
         rec->spans_pause = 1;
@@ -262,7 +274,7 @@ analog_call_write_pause(const dsd_opts* opts, analog_call* call) {
     }
     for (uint64_t left = call->owed48; left > 0U;) {
         const size_t n = left < DSD_ANALOG_SINK_CHUNK ? (size_t)left : DSD_ANALOG_SINK_CHUNK;
-        dsd_wav_segment_write(rec->wav, silence, n, "NFM call");
+        dsd_wav_segment_write(rec->wav, silence, n, analog_call_label(call));
         left -= n;
     }
 }
@@ -335,6 +347,7 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
     }
     if (!call->active) {
         call->boundaries_seen = state->analog_rx.boundaries;
+        call->mode = observation.analog_mode;
     }
     call->active = 1;
     const dsd_call_crypto_update crypto = {

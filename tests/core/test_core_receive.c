@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -123,10 +124,11 @@ check_recording(const char* name, void* user) {
     recording_check* check = user;
     assert(strstr(name, ".wav")); /* NFM's zero target must not fabricate an Rdio sidecar. */
     assert(!strstr(name, "TEMP"));
-    /* The NFM name: no talkgroup, source or call type, and the sanitized service last (issue #637). */
-    const int traveler = dsd_test_nfm_recording_name_is(name, "Traveler__West_");
-    const int dispatch = dsd_test_nfm_recording_name_is(name, "Dispatch");
-    const int unnamed = dsd_test_nfm_recording_name_is(name, NULL);
+    /* The analog name, ANALOG on this audio input (issue #667): no talkgroup, source or call type, and the sanitized
+       service last (issue #637). */
+    const int traveler = dsd_test_analog_recording_name_is(name, "ANALOG", "Traveler__West_");
+    const int dispatch = dsd_test_analog_recording_name_is(name, "ANALOG", "Dispatch");
+    const int unnamed = dsd_test_analog_recording_name_is(name, "ANALOG", NULL);
     assert(traveler || dispatch || unnamed);
     check->traveler += traveler;
     check->dispatch += dispatch;
@@ -163,8 +165,8 @@ typedef struct {
 static int
 count_service_files(const char* name, void* user) {
     service_files* check = user;
-    check->traveler += dsd_test_nfm_recording_name_is(name, "Traveler__West_");
-    check->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
+    check->traveler += dsd_test_analog_recording_name_is(name, "ANALOG", "Traveler__West_");
+    check->dispatch += dsd_test_analog_recording_name_is(name, "ANALOG", "Dispatch");
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -204,7 +206,7 @@ static int
 check_teardown_recording(const char* name, void* user) {
     teardown_check* check = user;
     check->temp += strstr(name, "TEMP") != NULL;
-    check->unnamed += dsd_test_nfm_recording_name_is(name, NULL);
+    check->unnamed += dsd_test_analog_recording_name_is(name, "ANALOG", NULL);
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -494,7 +496,8 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
     teardown_check teardown = {.dir = directory};
     assert(dsd_dir_list(directory, check_teardown_recording, &teardown) == 0);
-    /* With no history row left it is published as an unnamed NFM recording, not under the digital name. */
+    /* With no history row left it is published as an unnamed analog recording under the call's mode (ANALOG on this
+       audio input), not under the digital name. */
     assert(teardown.files == 1 && teardown.temp == 0 && teardown.unnamed == 1);
     assert(dsd_test_rmdir(directory) == 0);
 }
@@ -510,8 +513,8 @@ static int
 check_tone_sync_recording(const char* name, void* user) {
     tone_sync_recordings* found = user;
     assert(!strstr(name, "TEMP"));
-    found->traveler += dsd_test_nfm_recording_name_is(name, "Traveler");
-    found->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
+    found->traveler += dsd_test_analog_recording_name_is(name, "ANALOG", "Traveler");
+    found->dispatch += dsd_test_analog_recording_name_is(name, "ANALOG", "Dispatch");
     found->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
@@ -521,7 +524,7 @@ check_tone_sync_recording(const char* name, void* user) {
 
 /* A tone change the decoder's own sync of the slot sees first (the frame sync's partial tone tap runs ahead of the next
    output block) is the analog call's lifecycle boundary, not the call state's: the recording still closes against the
-   call's own row, named and as NFM, never against the row the sync had already committed and cleared. */
+   call's own row, named and as analog, never against the row the sync had already committed and cleared. */
 static void
 test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -756,6 +759,182 @@ test_analog_mode_rows(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* An analog BEGIN on slot 0, 154.430 MHz in NFM, observed at @p observed_m and seeded with @p seed unless it is NULL. */
+static dsd_call_observation
+analog_begin(const dsd_receive_identity* seed, double observed_m) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_VOICE,
+        .frequency_hz = 154430000,
+        .analog_mode = DSD_ANALOG_MODE_NFM,
+        .observed_m = observed_m,
+    };
+    if (seed) {
+        observation.has_receive_seed = 1;
+        observation.receive_seed = *seed;
+    }
+    return observation;
+}
+
+/* Begin a call with @p observation, render it and end it @p length_s later: its committed row. */
+static const Event_History*
+analog_seeded_call(dsd_opts* opts, dsd_state* state, const dsd_call_observation* observation, double length_s) {
+    assert(dsd_call_state_observe(state, observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(dsd_call_state_end_ex(state, 0, observation->observed_m + length_s, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+    assert(row->systype == DSD_SYNC_ANALOG);
+    return row;
+}
+
+static int
+same_identity(const dsd_receive_identity* identity, int kind, int value) {
+    return identity->known && identity->kind == kind && identity->value == value;
+}
+
+/* Issue #667: a BEGIN seeded with the identity the tracker confirmed is heard with it, whatever the receiver publishes
+   as the call begins (nothing confirmed yet, a closed carrier, another tone), and is named by it, on the call and on its
+   row. A confirmed untoned seed names no tone over a live one. Without a seed the live identity is the call's, as
+   before, and a CONTINUE's seed is ignored. */
+static void
+test_analog_seeded_begin(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    assert(dsd_receive_names_parse("--tone-name '100.0=Traveler' --tone-name '141.3=Dispatch'", &opts->receive.names,
+                                   NULL, 0)
+           == 0);
+    const dsd_receive_identity traveler = {.value = 1000, .kind = DSD_RECEIVE_CTCSS, .known = 1};
+    const dsd_receive_identity untoned = {.kind = DSD_RECEIVE_NONE, .known = 1};
+
+    static const struct {
+        row_tone live;
+        int carrier_open;
+    } k_live[] = {{ROW_TONE_ACQUIRING, 1}, {ROW_TONE_CTCSS, 0}, {ROW_TONE_CTCSS, 1}};
+
+    double now_m = 500.0;
+    dsd_call_snapshot call;
+    for (size_t i = 0; i < sizeof k_live / sizeof k_live[0]; i++) {
+        row_set_tone(state, k_live[i].live, 1413, 0);
+        state->analog_rx.carrier_open = k_live[i].carrier_open;
+        const dsd_call_observation observation = analog_begin(&traveler, now_m);
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        assert(dsd_call_state_get(state, 0, &call) > 0);
+        assert(same_identity(&call.receive_identity, DSD_RECEIVE_CTCSS, 1000));
+        assert(strcmp(call.service_label, "Traveler") == 0);
+        assert(dsd_call_state_end_ex(state, 0, now_m + 1.0, DSD_CALL_END_EXPLICIT) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+        assert(strcmp(row_text(row), "[Traveler] ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz; ") == 0);
+        assert(strcmp(row->service_label, "Traveler") == 0);
+        assert(same_identity(&row->receive_identity, DSD_RECEIVE_CTCSS, 1000));
+        now_m += 10.0;
+    }
+
+    /* Live CTCSS 141.3 Hz throughout: a confirmed untoned seed, then no seed. */
+    row_set_tone(state, ROW_TONE_CTCSS, 1413, 0);
+    dsd_call_observation observation = analog_begin(&untoned, now_m);
+    const Event_History* row = analog_seeded_call(opts, state, &observation, 1.0);
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; ") == 0);
+    assert(row->service_label[0] == '\0' && same_identity(&row->receive_identity, DSD_RECEIVE_NONE, 0));
+    observation = analog_begin(NULL, now_m + 10.0);
+    row = analog_seeded_call(opts, state, &observation, 1.0);
+    assert(strcmp(row_text(row), "[Dispatch] ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 141.3 Hz; ") == 0);
+
+    /* A CONTINUE carrying a seed leaves the call's identity: only a BEGIN is seeded. */
+    row_set_tone(state, ROW_TONE_ACQUIRING, 0, 0);
+    observation = analog_begin(&traveler, now_m + 20.0);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    observation.receive_seed.value = 1413;
+    observation.observed_m += 0.5;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0, &call) > 0 && same_identity(&call.receive_identity, DSD_RECEIVE_CTCSS, 1000));
+    assert(dsd_call_state_end_ex(state, 0, now_m + 21.0, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    DSD_MEMSET(&state->analog_rx, 0, sizeof state->analog_rx);
+}
+
+/* Whether @p row's text starts with the "YYYY-MM-DD HH:MM:SS " of @p t. */
+static int
+row_text_stamped(const Event_History* row, time_t t) {
+    char date[16];
+    char clock[16];
+    char want[40];
+    (void)dsd_format_local_datetime(t, DSD_LOCAL_DATETIME_DATE_HYPHEN, date, sizeof date);
+    (void)dsd_format_local_datetime(t, DSD_LOCAL_DATETIME_TIME_COLON, clock, sizeof clock);
+    DSD_SNPRINTF(want, sizeof want, "%s %s ", date, clock);
+    return strncmp(row->event_string, want, strlen(want)) == 0;
+}
+
+static void
+set_decode_wall(time_t t) {
+    dsd_decode_clock_test_set_ns((uint64_t)t * 1000000000ULL);
+}
+
+/* Issue #667: an analog call begun with its first sample's wall anchor is stamped from it, fractional to the end. It
+   starts in the anchor's second and ends in the second of the anchor plus its length, whenever it renders: one at
+   x.9 s that runs 0.6 s ends in the next second, where start + (time_t)elapsed put it a second early. An ended analog
+   row's text reads its end, not the render's clock (A2: a commit an input stall delayed), anchored or not. A digital
+   row is stamped as before, an anchor given or not, and its text reads the render's clock. */
+static void
+test_analog_wall_anchored_stamps(dsd_opts* opts, dsd_state* state) {
+    const time_t t0 = (time_t)1700000000;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    DSD_MEMSET(&state->analog_rx, 0, sizeof state->analog_rx);
+    const Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+
+    /* Rendered 30 s late throughout: the stamps are the anchor's. */
+    dsd_decode_clock_use_test((uint64_t)(t0 + 30) * 1000000000ULL);
+    dsd_call_observation observation = analog_begin(NULL, 600.0);
+    observation.start_wall = (double)t0 + 0.9;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0, &call) > 0 && fabs(call.start_wall - ((double)t0 + 0.9)) < 1e-6);
+    assert(staged->event_start_time == t0 && staged->event_time == t0);
+    assert(dsd_call_state_end_ex(state, 0, 600.6, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(row->event_start_time == t0 && row->event_time == t0 + 1);
+    assert(row_text_stamped(row, t0 + 1));
+
+    /* No anchor: the start from the first render as before; the ended row's text still reads its end. */
+    set_decode_wall(t0 + 100);
+    observation = analog_begin(NULL, 700.0);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(staged->event_start_time == t0 + 100);
+    set_decode_wall(t0 + 140);
+    assert(dsd_call_state_end_ex(state, 0, 702.5, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(row->event_start_time == t0 + 100 && row->event_time == t0 + 102);
+    assert(row_text_stamped(row, t0 + 102));
+
+    /* Digital: an anchor is not its stamps, and its text keeps the render's clock. */
+    set_decode_wall(t0 + 200);
+    const dsd_call_observation digital = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .start_wall = (double)t0 + 0.9,
+        .observed_m = 800.0,
+    };
+    assert(dsd_call_state_observe(state, &digital, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(staged->event_start_time == t0 + 200);
+    set_decode_wall(t0 + 230);
+    assert(dsd_call_state_end_ex(state, 0, 801.6, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(opts, state, 0);
+    assert(row->systype == DSD_SYNC_P25P1_POS);
+    assert(row->event_start_time == t0 + 200 && row->event_time == t0 + 201);
+    assert(row_text_stamped(row, t0 + 230));
+    dsd_decode_clock_use_system();
+}
+
 /* A trunking context remembers the access code verified on each voice channel and refuses a grant to one the policy in
    force rejects; a channel never verified, or one the policy admits again after an edit, is followed. */
 static void
@@ -926,7 +1105,7 @@ take_hold_file(const char* name, void* user) {
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
     found->temp += strstr(name, "TEMP") != NULL;
-    found->named += dsd_test_nfm_recording_name_is(name, NULL);
+    found->named += dsd_test_analog_recording_name_is(name, "ANALOG", NULL);
     assert(found->files < HOLD_FILES);
     SF_INFO info = {0};
     SNDFILE* wav = sf_open(path, SFM_READ, &info);
@@ -941,7 +1120,8 @@ take_hold_file(const char* name, void* user) {
     return 0;
 }
 
-/* Read and remove every recording in the rig's folder: each must be published, under the NFM name, never left TEMP_. */
+/* Read and remove every recording in the rig's folder: each must be published, under the analog name (ANALOG on the
+   rig's audio input), never left TEMP_. */
 static void
 hold_take(const hold_rig* r, hold_files* found, int files) {
     DSD_MEMSET(found, 0, sizeof(*found));
@@ -1379,8 +1559,8 @@ typedef struct {
 static int
 take_hold_service(const char* name, void* user) {
     hold_services* found = user;
-    const int dispatch = dsd_test_nfm_recording_name_is(name, "Dispatch");
-    assert(dispatch || dsd_test_nfm_recording_name_is(name, "Traveler"));
+    const int dispatch = dsd_test_analog_recording_name_is(name, "ANALOG", "Dispatch");
+    assert(dispatch || dsd_test_analog_recording_name_is(name, "ANALOG", "Traveler"));
     found->traveler += !dispatch;
     found->dispatch += dispatch;
     char path[DSD_TEST_PATH_MAX * 2];
@@ -1781,7 +1961,8 @@ hold_seam_write(SNDFILE* file, const short* samples, long long count) {
 static void
 count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
-    if (level == LOG_LEVEL_WARN && text && strstr(text, "NFM call: wrote") != NULL) {
+    /* The hold rig's audio input names its calls by no mode (issue #667). */
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "Analog call: wrote") != NULL) {
         g_hold_write_warnings++;
     }
     if (level == LOG_LEVEL_WARN && text && strstr(text, "Rdio export") != NULL) {
@@ -1974,6 +2155,8 @@ main(void) {
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog_row_text(opts, state);
     test_analog_mode_rows(opts, state);
+    test_analog_seeded_begin(opts, state);
+    test_analog_wall_anchored_stamps(opts, state);
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->event_history_s = history;

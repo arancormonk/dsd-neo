@@ -1207,7 +1207,8 @@ audio input another receiver demodulated the audio, so the row names no mode and
 frequency: `... ANALOG; CTCSS 100.0 Hz;`. The tone is the CTCSS tone or DCS code the call was confirmed on, written as
 Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone, or one never confirmed, has none. Two
 receptions on one channel that differ only by tone now read differently. Earlier versions wrote `NFM` on every analog
-row, audio input included, and no tone. Analog rows sound no call alert (`-a`).
+row, audio input included, and no tone. An ended analog row is stamped with the time its call ended, even when an
+input that stopped sending held the row back. Analog rows sound no call alert (`-a`).
 
 ### Scoped scan controls and loaded keys
 

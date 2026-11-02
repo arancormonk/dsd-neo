@@ -465,6 +465,7 @@ test_raw_open_closes_the_previous_raw_wav(void) {
     return rc;
 }
 
+/* An NFM call on an audio input, where the mode is not known: its recording is named _ANALOG (issue #667). */
 static void
 setup_nfm(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -508,7 +509,7 @@ test_stop_publishes_the_nfm_recording_at_once(void) {
     const dir_count c = count_dir(r.dir);
     rc |= expect_int("no temp file left", c.temp, 0);
     rc |= expect_int("the nfm recording published", c.published, 1);
-    rc |= expect_true("published under the nfm name", strstr(c.published_name, "_NFM") != NULL);
+    rc |= expect_true("published under the analog name", strstr(c.published_name, "_ANALOG.wav") != NULL);
     rc |= expect_true("the call goes on", dsd_engine_analog_call_active(r.state));
     dsd_call_snapshot after;
     DSD_MEMSET(&after, 0, sizeof after);
@@ -1351,7 +1352,8 @@ test_stop_publishes_the_nfm_recording_in_its_folder(void) {
     submit(DSD_APP_CMD_WAV_STOP);
     (void)drain(&r);
     const dir_count c = count_dir(r.dir);
-    rc |= expect_true("published in its own folder", c.published == 1 && strstr(c.published_name, "_NFM") != NULL);
+    rc |=
+        expect_true("published in its own folder", c.published == 1 && strstr(c.published_name, "_ANALOG.wav") != NULL);
     rc |= expect_int("nothing in the new folder", count_dir(other).files, 0);
     rig_close(&r);
     remove_folder(other);
@@ -1380,7 +1382,7 @@ nfm_epoch(const rig* r) {
 static long long
 take_nfm_frames(const char* dir) {
     const dir_count c = count_dir(dir);
-    if (c.published != 1 || strstr(c.published_name, "_NFM") == NULL) {
+    if (c.published != 1 || strstr(c.published_name, "_ANALOG.wav") == NULL) {
         return -1;
     }
     char path[DSD_TEST_PATH_MAX * 2];

@@ -138,6 +138,20 @@ typedef struct {
      * Taken by the observation that begins an epoch; a later observation never changes it.
      */
     uint8_t analog_mode;
+    /**
+     * Set on a BEGIN observation: @ref receive_seed is the receive identity the call is heard with, used instead of
+     * the live publication (dsd_receive_identity_current()), and the call's service name is the seed's. The analog
+     * tracker hands over the tone it confirmed before the call qualified, which the live publication may since have
+     * lost or changed (issue #667). Ignored on CONTINUE.
+     */
+    uint8_t has_receive_seed;
+    dsd_receive_identity receive_seed;
+    /**
+     * Decode-clock wall seconds (the dsd_decode_* wall domain) of the call's first sample, on the observation that
+     * begins an epoch; kept, fractional, as dsd_call_snapshot::start_wall. 0: none, the row's stamps are derived from
+     * its render as before.
+     */
+    double start_wall;
     double observed_m;
 } dsd_call_observation;
 
@@ -251,6 +265,12 @@ typedef struct {
     double started_m;
     double updated_m;
     double ended_m;
+    /**
+     * Decode-clock wall seconds of the epoch's first sample, as the observation that began it gave it
+     * (dsd_call_observation::start_wall), or 0. Kept fractional: an analog row's start stamp is its floor and its end
+     * stamp the floor of it plus the epoch's elapsed (issue #667).
+     */
+    double start_wall;
     /** First decoded-media update in this logical transmission (monotonic seconds), or 0. */
     double media_started_m;
     /** Most recent decoded-media update in this logical transmission (monotonic seconds), or 0. */
