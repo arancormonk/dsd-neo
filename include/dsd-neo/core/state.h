@@ -2224,6 +2224,17 @@ struct dsd_state {
        list replacement, a trunk-scan start), pauses or resumes, so a row tune that timed out under one scan never
        commits its row in the next, nor after a pause. */
     uint32_t lcn_scan_session;
+    /* Where the list is, apart from where it goes next (issue #666). lcn_freq_roll is the cursor: the next step starts
+       there, and a step may move it before its row lands (a skip, a wrap, a failed or pending tune) or past a 0 Hz
+       placeholder it parks on, so roll - 1 is not always the row heard. lcn_on_air_row is the last non-zero row an
+       accepted step selected (-1 none), with the row's frequency at the time: a row since removed or changed reads as
+       none (dsd_state_lcn_heard_row()). -2 is none after a hard-failed step found no row recorded: unlike -1, the row
+       heard does not fall back to roll - 1, a row never tuned. lcn_back_retry_row is the row a hard-failed backward
+       step tried (-1 none). */
+    int lcn_on_air_row;
+    long int lcn_on_air_freq;
+    long int lcn_back_retry_freq;
+    int lcn_back_retry_row;
     int is_con_plus; //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
 
     //new nxdn stuff
@@ -2960,6 +2971,52 @@ int dsd_state_trunk_lcn_usable_count(const dsd_state* state);
  * empty or every row is avoided.
  */
 int dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from);
+
+/**
+ * Record scan-list row @p row as the one the last accepted step selected (issue #666), with its frequency, and drop
+ * any backward-retry row. Written by exactly the events that move lcn_freq_roll past a row the receiver was put on: a
+ * typed row's commit, an untyped row's install, a manual untyped step that tuned, a P25 hunt probe of a -T channel map
+ * row whose tune was accepted. A row outside the list or a 0 Hz placeholder (a park, not a tune) records nothing.
+ */
+void dsd_state_lcn_on_air_note(dsd_state* state, int row);
+
+/**
+ * A step's tune failed hard (refused, either direction, manual or timed, a P25 hunt probe of a -T channel-map row
+ * included). A recorded row that still describes the list stays: the receiver is still on it. With none, the row heard
+ * becomes none, not the row before lcn_freq_roll, which the failure may have moved past the row it never tuned, until
+ * a row is recorded or the records are reset (dsd_state_lcn_nav_reset(): a list loaded or replaced).
+ */
+void dsd_state_lcn_on_air_note_refused(dsd_state* state);
+
+/** Forget the recorded row (dsd_state_lcn_on_air_note()). */
+void dsd_state_lcn_on_air_clear(dsd_state* state);
+
+/**
+ * The recorded row while it still describes the list: inside lcn_freq_count, not 0 Hz, and holding the frequency it
+ * held when it was recorded. -1 otherwise, and for a NULL state.
+ */
+int dsd_state_lcn_on_air_row(const dsd_state* state);
+
+/**
+ * The scan-list row heard: the recorded row (dsd_state_lcn_on_air_row()), else, before any step recorded one, the row
+ * before lcn_freq_roll when it exists and is not 0 Hz; -1 when neither, and after a hard-failed step with no row
+ * recorded (dsd_state_lcn_on_air_note_refused()). Unlike roll - 1 it does not move when a step skips, wraps, fails,
+ * waits on its tune, or parks on a placeholder.
+ */
+int dsd_state_lcn_heard_row(const dsd_state* state);
+
+/** Record @p row, with its frequency, as the row a hard-failed backward step tried; same validity rule as the
+ * on-air row, so a 0 Hz or out-of-list row records nothing. */
+void dsd_state_lcn_back_retry_note(dsd_state* state, int row);
+
+/** Forget the backward-retry row. */
+void dsd_state_lcn_back_retry_clear(dsd_state* state);
+
+/** The backward-retry row while it still describes the list (as dsd_state_lcn_on_air_row()), else -1. */
+int dsd_state_lcn_back_retry_row(const dsd_state* state);
+
+/** Forget both the on-air and the backward-retry rows: the list or its session changed under them. */
+void dsd_state_lcn_nav_reset(dsd_state* state);
 
 /**
  * Whether the scan list is operator-supplied rather than learned over the air.

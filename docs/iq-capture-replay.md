@@ -534,8 +534,9 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
   the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
   than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control
-  channel (`return_cc`), and the channel cycle (`channel_cycle`: the next LCN, P25 control channel candidate or `-Y`
-  row; `--trunk-scan` refuses a replay input altogether). The terminal hides its `Frequency...` row during a replay
+  channel (`return_cc`), and the channel cycle (`channel_cycle` and `channel_cycle_prev`, the terminal's `L` and `J`:
+  the next or previous LCN, P25 control channel candidate or `-Y` row; `--trunk-scan` refuses a replay input
+  altogether). The terminal hides its `Frequency...` row during a replay
   rather than open a prompt whose answer is refused. Commands whose main effect is not a retune still act: the scan
   hold and avoid, skip and lockout. The retunes trunking and the conventional scanner ask for are ignored, as
   described above.

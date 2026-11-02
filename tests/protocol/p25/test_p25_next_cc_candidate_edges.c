@@ -7,6 +7,7 @@
  * P25 next CC candidate edge cases.
  * - Returns 0 when empty list
  * - Returns 0 when only current CC, zeros, or generic neighbors are present
+ * - The previous candidate (issue #666) refuses the same, and walks current-site candidates backward
  */
 
 #include <dsd-neo/core/opts.h>
@@ -55,6 +56,18 @@ main(void) {
     long neighbor_only[1] = {852000000};
     p25_cc_record_neighbor_frequencies(&opts, &st, neighbor_only, 1);
     rc |= expect_eq_int("neighbor-only", p25_cc_next_candidate(&st, &out), 0);
+    rc |= expect_eq_int("prev-null-out", p25_cc_prev_candidate(&st, NULL), 0);
+    rc |= expect_eq_int("prev-neighbor-only", p25_cc_prev_candidate(&st, &out), 0);
+    rc |= expect_eq_int("prev-keeps-out", out == -1, 1);
+
+    rc |= expect_eq_int("site-a", p25_cc_add_candidate(&st, 853000000, 0), 1);
+    rc |= expect_eq_int("site-b", p25_cc_add_candidate(&st, 854000000, 0), 1);
+    rc |= expect_eq_int("prev-first", p25_cc_prev_candidate(&st, &out), 1);
+    rc |= expect_eq_int("prev-first-is-the-last", out == 854000000, 1);
+    rc |= expect_eq_int("prev-again", p25_cc_prev_candidate(&st, &out), 1);
+    rc |= expect_eq_int("prev-again-steps-back", out == 853000000, 1);
+    rc |= expect_eq_int("next-after-prev", p25_cc_next_candidate(&st, &out), 1);
+    rc |= expect_eq_int("next-goes-on-from-it", out == 854000000, 1);
     return rc;
 }
 

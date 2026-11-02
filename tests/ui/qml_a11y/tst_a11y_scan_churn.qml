@@ -254,7 +254,7 @@ Item {
             var monitor = findChild(app, "monitorScreen");
             verify(monitor !== null && monitor.visible, "the monitor is on screen");
             var label = findChild(monitor, "otherSlotLabel");
-            var still = ["scanHoldButton", "scanAvoidButton", "scanNextButton", "recentCallsList"].map(function (name) {
+            var still = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton", "recentCallsList"].map(function (name) {
                 var found = findChild(monitor, name);
                 verify(found !== null && found.visible, name + " must be on screen");
                 return found;

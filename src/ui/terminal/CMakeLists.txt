@@ -16,6 +16,7 @@ target_sources(
         ncurses_trunk_display.c
         ui_prims.c
         ui_row.c
+        ui_mouse.c
         ui_async.c
         ui_read_key.c
         menu_core.c

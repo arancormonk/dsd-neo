@@ -362,6 +362,7 @@ the session; they never write the process environment.
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
 | `pulse_output` | STRING | Deprecated read alias for `pulse_sink` | (empty) |
 | `frontend` | ENUM | Frontend implementation (`none|terminal`); deprecated `native` values load as `none` | `none` |
+| `terminal_mouse_wheel` | BOOL | Terminal mouse wheel steps channels while a `-Y` or `--trunk-scan` list runs (Menu -> Display -> Mouse wheel steps channels) | `false` |
 | `ncurses_ui` | BOOL | Deprecated read alias; `true` selects `terminal`, `false` selects `none` | `false` |
 
 **[mode] section:**

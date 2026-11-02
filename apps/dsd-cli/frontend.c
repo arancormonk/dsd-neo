@@ -26,6 +26,7 @@
 #endif
 
 #if DSD_CLI_HAS_TERMINAL_UI
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_async.h>
 #endif
 
@@ -153,6 +154,11 @@ dsd_cli_frontend_run(dsd_opts* opts, dsd_state* state) {
         return 1;
 #else
         have_hooks = 1;
+        /* Ctrl+Z belongs to the terminal UI thread, the one thread that leaves SIGTSTP unblocked (ui_async.c). Blocked
+           here, before the run opens its input and outputs, it stays blocked in every thread this one or a library
+           starts from it (an audio server's, a USB event thread), and a stop never runs curses' handler beside the UI
+           thread's drawing. It stays blocked past the UI's stop: the run's tail and exit take no stop. */
+        (void)dsd_thread_block_stop_signal(1);
 #endif
     }
 

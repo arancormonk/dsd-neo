@@ -226,9 +226,18 @@ int dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state*
  *
  * Hold keeps the idle dwell on the active target from expiring without stopping its state machine;
  * avoid flags the active target for the session and moves on; clear puts every avoided
- * target back; advance moves now. Returns the codes documented beside the op enum;
- * DSD_TRUNK_SCAN_CONTROL_PAUSED for every op while the scan is paused (issue #671).
- * Decoder thread only: avoid and advance retune.
+ * target back; advance moves to the next eligible target now and retreat to the previous one
+ * (issue #666). Avoid and every automatic rotation walk forward; only the hold toggle changes the hold.
+ *
+ * Returns the codes documented beside the op enum; DSD_TRUNK_SCAN_CONTROL_PAUSED for every op
+ * while the scan is paused (issue #671). Avoid, advance and retreat return 0 when the active
+ * target changed and 1 when it did not: no other target was eligible (all avoided or cooling
+ * down after a failed retune), no switch could be prepared (its key sets did not allocate), or
+ * every alternate's retune failed and the receiver fell back onto the original. The caller cannot
+ * tell these apart, so its message names only the outcome. Advance and retreat answer
+ * DSD_TRUNK_SCAN_CONTROL_REFUSED on a single-target list and avoid when it would leave no
+ * usable target; DSD_TRUNK_SCAN_CONTROL_BUSY when the P25 tick guard is held.
+ * Decoder thread only: avoid, advance and retreat retune.
  */
 int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);

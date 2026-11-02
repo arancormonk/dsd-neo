@@ -1381,6 +1381,10 @@ only where that seam exists: GCC or Clang builds off macOS, and for `APP_COMMAND
 also need a radio build. All of these bounds come from synthetic signals. `--wrap` replaces only calls that reach the
 symbol from another object file, so a call made inside the object that defines it is not wrapped: the input switch lives
 in `dsd_audio_input_switch.c`, apart from `dsd_audio.c`, so the `openAudioInput()` wrap reaches its Pulse open.
+The untyped manual walk's cases (issue #666: a refused row, the visit windows, a walk with nothing to land on) need no
+`--wrap`: they answer the manual retunes' io_control leg through the queue's portable seam,
+`dsd_app_command_test_set_manual_tune_leg()` (a sibling of the frequency entry's `dsd_app_command_test_set_tune_leg()`),
+with a result scripted per frequency, so they run on every toolchain.
 
 The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
 cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's
@@ -2720,8 +2724,8 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   the decode quality group, the received tone, the tone filter and its Edit button). G moves the readings 40 times at a
   100 ms period: the strip renames at most once a period and once more, and catches up. H holds the closed sheets and
   the screens hidden under the monitor to no event at all over time, at a 30 ms period with readings moving and hops.
-- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses Hold scan through the accessible press
-  action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
+- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses the scan's Hold through the accessible
+  press action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
   when it never does (back to the engine's state after 2 s). `tst_a11y_focus_return.qml` makes the window give up its
   focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
   (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus
@@ -2887,6 +2891,27 @@ example, `APP_CONTROL_TRUNK_SCAN_VALIDATE` builds in
 `trunk_scan_document_internal.h` counts the channel maps one
 `dsd_app_trunk_scan_validate_bundle()` call inspects and the files it dry-runs,
 so the test can show that rows naming the same file share one check.
+
+### Terminal input on a real pty
+
+`UI_MOUSE_PTY` (`tests/ui/test_ui_mouse_pty.c`, every host but Windows) runs the terminal's frame loop
+(`ui_async.c`) with the real mouse capture (`ui_mouse.c`) and key read (`ui_read_key.c`) on the host's ncurses,
+through a pseudo-terminal: `posix_openpt()`, the slave dup'ed onto stdout (as `initscr()` writes there, and `putp()`
+always does) and `newterm("xterm-256color", stdout, slave)`. The test writes SGR mouse reports into the master and
+polls the slave until they are queued, then runs frames. It covers a class that stubs cannot show: ncurses' `wgetch()`
+loops into a blocking read when a queued report does not match the parse mask, so a capture switched off with
+`mousemask(0)` froze the UI thread on the next click until another key arrived. After the menu opens, the setting goes
+off and the `-Y` scan stops, a click, a lone press and a wheel notch are each queued with no key typed after them, and
+every frame must return within 1 s, leave the input empty, step nothing and hand no key to a handler. The bound is
+loose on purpose: a frame that blocks waits for a key that never comes, so 1 s only has to clear a scheduler stall on a
+loaded runner. A frame that blocks would hang, so `alarm()` fails the test after 20 s. It also checks the tracking strings reach the
+terminal (`ESC [?1006;1000h` / `l`) and that wheel notches step with the capture on. Ctrl+Z / `fg` is run as
+ncurses' SIGTSTP handler runs it, without the stop: `endwin()`, `raise(SIGCONT)` and the resume's `doupdate()` (or a
+frame, whose refresh resumes): the resume turns tracking on, the next frame must leave it as the capture is (off, or
+on), and idle frames after it must write nothing. A closed terminal's `endwin()` and a reopened one's first
+`doupdate()` must not turn tracking on. The admission reads `TERM` and
+`NCURSES_GPM_TERMS` through session overrides, so the host's environment does not matter. It exits 77 (skipped) with
+no pty, no `xterm-256color` terminfo, or an ncurses without button 5.
 
 ### Decode time in unit tests
 

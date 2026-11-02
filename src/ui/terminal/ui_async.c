@@ -4,8 +4,10 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -25,6 +27,14 @@
 #include "dsd-neo/platform/platform.h"
 #include "rr_panel.h"
 #include "ui_keys.h"
+#include "ui_mouse.h"
+
+/* At most one wheel step per 150 ms: a touchpad flick sends dozens of notches, and the command queue drops its
+   oldest entry when full. Notches inside the gap are dropped, not queued. */
+#define UI_WHEEL_STEP_GAP_NS    (150ULL * 1000ULL * 1000ULL)
+/* At most this many reads after a wheel report in one input pass (ui_read_past_wheel_burst()); the bound only keeps a
+   stream that never runs dry from holding the pass. */
+#define UI_WHEEL_BURST_READ_MAX 256
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
@@ -34,6 +44,9 @@ static dsd_opts* g_ui_opts = NULL;
 static dsd_state* g_ui_state = NULL;
 static int g_ui_curses_cfg_done = 0;
 static atomic_int g_ui_in_context = 0;
+// UI thread only: when the last wheel notch stepped the channel.
+static uint64_t g_ui_wheel_step_ns = 0;
+static int g_ui_wheel_stepped = 0;
 
 int
 ui_is_thread_context(void) {
@@ -99,10 +112,82 @@ ui_handle_normal_input(int ch) {
     }
 }
 
+/*
+ * The wheel steps channels only while the setting is on, a -Y or --trunk-scan rotation runs (a paused scan does not),
+ * no menu, prompt or other overlay is open (the `=` prompt is one), keys are read at all (not with STDIN input), the
+ * input is no I/Q replay (which refuses every retune, so a notch could only toast) and the terminal can report the
+ * wheel. Decided from the frame's snapshots, never the decoder's live structs.
+ */
+static int
+ui_wheel_capture_wanted(const dsd_opts* osnap, const dsd_state* ssnap) {
+    if (osnap->frontend_terminal_display.mouse_wheel == 0 || osnap->audio_in_type == AUDIO_IN_STDIN
+        || dsd_opts_input_is_iq_replay(osnap)) {
+        return 0;
+    }
+    if (ui_menu_is_open()) {
+        return 0;
+    }
+    dsd_app_scan_state_view scan;
+    if (dsd_app_scan_state_view_get(osnap, ssnap, &scan) != 0 || !scan.running) {
+        return 0;
+    }
+    return ui_mouse_wheel_available(NULL) ? 1 : 0;
+}
+
+static int
+ui_key_is_wheel(int ch) {
+    return ch == UI_KEY_WHEEL_UP || ch == UI_KEY_WHEEL_DOWN;
+}
+
+/* Wheel up (away from the user) is Previous and down is Next, as Up and Down move through a list. */
 static void
-ui_process_input_frame(const dsd_opts* osnap) {
+ui_handle_wheel(int ch, int eligible) {
+    if (!eligible) {
+        return;
+    }
+    const uint64_t now_ns = dsd_realtime_mono_ns();
+    if (g_ui_wheel_stepped && now_ns - g_ui_wheel_step_ns < UI_WHEEL_STEP_GAP_NS) {
+        return;
+    }
+    g_ui_wheel_stepped = 1;
+    g_ui_wheel_step_ns = now_ns;
+    (void)dsd_app_command_action(ch == UI_KEY_WHEEL_UP ? DSD_APP_CMD_CHANNEL_CYCLE_PREV : DSD_APP_CMD_CHANNEL_CYCLE);
+}
+
+/*
+ * The reports already queued behind a wheel report arrived with it: one gesture, which steps once at most. Read one a
+ * frame, a flick's dozens would outlast the throttle and go on stepping after the wheel stopped, so they are read now,
+ * without waiting for more. The first key that is not a wheel report ends the run and is returned, to be handled in
+ * this pass in the order it was typed; ERR when the input ran dry. A click reads as ERR too and ends the run early.
+ */
+static int
+ui_read_past_wheel_burst(const dsd_opts* osnap) {
+    for (int i = 0; i < UI_WHEEL_BURST_READ_MAX; i++) {
+        const int ch = ui_read_key_nonblocking(osnap);
+        if (!ui_key_is_wheel(ch)) {
+            return ch;
+        }
+    }
+    return ERR;
+}
+
+static void
+ui_wheel_forget(void) {
+    g_ui_wheel_stepped = 0;
+    g_ui_wheel_step_ns = 0;
+}
+
+static void
+ui_process_input_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
     ui_configure_curses_once();
+    const int wheel_wanted = ui_wheel_capture_wanted(osnap, ssnap);
+    ui_mouse_capture_set(wheel_wanted);
     int ch = ui_read_key_nonblocking(osnap);
+    if (ui_key_is_wheel(ch)) {
+        // Handled here: dsd_terminal_handle_input() and the menu never see a wheel code.
+        ui_handle_wheel(ch, wheel_wanted && ui_mouse_capture_is_on());
+        ch = ui_read_past_wheel_burst(osnap);
+    }
     if (ui_menu_is_open()) {
         ui_handle_menu_input(ch);
         return;
@@ -122,30 +207,31 @@ ui_open_curses_if_needed(void) {
 static void
 ui_close_curses_if_opened(int curses_opened) {
     if (curses_opened) {
+        ui_mouse_capture_close();
+        ui_wheel_forget();
         dsd_terminal_close();
     }
 }
 
 static void
-ui_draw_frame(const dsd_opts* osnap) {
-    /* Draw using a state snapshot when available */
-    const dsd_state* snap = dsd_app_get_latest_snapshot();
-    if (snap) {
-        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)snap);
+ui_draw_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
+    /* Draw using the frame's state snapshot when available */
+    if (ssnap) {
+        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)ssnap);
     } else {
         dsd_terminal_render((dsd_opts*)osnap, g_ui_state);
     }
 }
 
 static void
-ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
+ui_draw_if_needed(const dsd_opts* osnap, const dsd_state* ssnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
     uint64_t now_ns = dsd_realtime_mono_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
     if (!(dsd_app_frontend_redraw_consume() || dt_ns >= frame_ns)) {
         return;
     }
     atomic_store(&g_ui_in_context, 1);
-    ui_draw_frame(osnap);
+    ui_draw_frame(osnap, ssnap);
     atomic_store(&g_ui_in_context, 0);
     ui_commit_frame();
     *last_draw_ns = now_ns;
@@ -159,6 +245,8 @@ dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
     g_ui_curses_cfg_done = 0;
     (void)dsd_app_frontend_redraw_consume();
     atomic_store(&g_ui_in_context, 0);
+    ui_mouse_reset_for_test();
+    ui_wheel_forget();
 }
 
 const dsd_opts*
@@ -178,7 +266,7 @@ dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts) {
 
 void
 dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
-    ui_process_input_frame(opts);
+    ui_process_input_frame(opts, dsd_app_get_latest_snapshot());
 }
 
 int
@@ -196,7 +284,7 @@ dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_n
     if (last_draw_ns == NULL) {
         return;
     }
-    ui_draw_if_needed(opts, last_draw_ns, frame_ns);
+    ui_draw_if_needed(opts, dsd_app_get_latest_snapshot(), last_draw_ns, frame_ns);
 }
 #endif
 
@@ -209,6 +297,13 @@ static DSD_THREAD_RETURN_TYPE
 
     const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
+    /* Ctrl+Z is this thread's: curses' SIGTSTP handler ends the screen, stops, and redraws it at the resume, while this
+       thread draws it every frame. Run on another thread, the handler's redraw overlapped this thread's, and the two
+       curses updates, each of which ignores SIGTSTP for its length and then restores the action it saved, could leave
+       the signal ignored for good. Every other thread starts with it blocked (dsd_thread_create(), and the session
+       thread the CLI blocks before the run), so the kernel hands a Ctrl+Z only to this one. */
+    (void)dsd_thread_block_stop_signal(0);
+
     // Initialize ncurses lifecycle in UI thread
     int curses_opened = ui_open_curses_if_needed();
 
@@ -218,9 +313,10 @@ static DSD_THREAD_RETURN_TYPE
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays are single-owner in the UI thread.
         const dsd_opts* osnap = ui_get_opts_snapshot_or_default();
+        const dsd_state* ssnap = dsd_app_get_latest_snapshot();
         if (ui_curses_is_active(osnap)) {
-            ui_process_input_frame(osnap);
-            ui_draw_if_needed(osnap, &last_draw_ns, frame_ns);
+            ui_process_input_frame(osnap, ssnap);
+            ui_draw_if_needed(osnap, ssnap, &last_draw_ns, frame_ns);
         }
 
         dsd_sleep_ms(sleep_ms);

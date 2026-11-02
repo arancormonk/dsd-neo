@@ -109,6 +109,10 @@ enum dsd_app_command_id {
     // Resume the paused -Y scan (the next row from its cursor) or trunk scan (the target it left); no payload. A
     // running scan is left as it is, and with none paused nothing starts.
     DSD_APP_CMD_SCAN_RESUME = 219,
+    // Previous channel (issue #666): CHANNEL_CYCLE's step backward through the same list -- the previous trunk-scan
+    // target, -Y row, P25 control-channel candidate (-^) or LCN -- refused as it is (a replay, Signal search, a paused
+    // scan, no tuner); no payload. The rotation and Next carry on forward from where it lands.
+    DSD_APP_CMD_CHANNEL_CYCLE_PREV = 220,
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
@@ -323,6 +327,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE = 625,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE = 626,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE = 627,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE = 628,
 
     // Key management
     DSD_APP_CMD_KEY_BASIC_SET = 640,     // payload: uint32_t

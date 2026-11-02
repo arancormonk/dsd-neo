@@ -33,15 +33,14 @@ channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_lab
          * may share a display name (issue #782). Frontends name an id for display (the Qt channel-name map). */
         return state->trunk_scan_active_id;
     }
-    /* lcn_freq_roll is advanced past the row just tuned, so the row on air is roll - 1.
-     * Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol
-     * writer that shrinks the count leaves roll pointing past the end. A row whose
-     * frequency is 0 -- the placeholder an importer writes to keep the file's numbering --
-     * is stepped over without a retune, so the receiver is still on the previous row for
-     * that whole hangtime and the placeholder's name would credit the wrong channel. */
-    if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
-        && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
-        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+    /* The row heard, not the one before the cursor (issue #666): a step moves lcn_freq_roll before its row lands, and
+     * the calls of the row it leaves end after that (at the carrier boundary), so roll - 1 would name them after a row
+     * skipped over, or none after a wrap. A row whose frequency is 0 -- the placeholder an importer writes to keep the
+     * file's numbering -- is stepped over without a retune, so the receiver is still on the row heard for that whole
+     * hangtime and the placeholder's name would credit the wrong channel. */
+    const int heard = opts->scanner_mode == 1 ? dsd_state_lcn_heard_row(state) : -1;
+    if (heard >= 0) {
+        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)heard);
         if (name && name[0] != '\0') {
             *source = DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST;
         }

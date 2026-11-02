@@ -177,6 +177,7 @@ Main Menu
 │   ├── Conventional scanning [Off]              y   ([On], [Paused]; Trunk scan [Running] or [Paused] under --trunk-scan)
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning, not while a scan is paused)
+│   ├── Previous channel                         J   (while trunking or scanning, not while a scan is paused)
 │   ├── Scan hold [Off]                          Y   (while a -Y or --trunk-scan scan runs)
 │   ├── Avoid current channel                    b   (while a -Y or --trunk-scan scan runs)
 │   ├── Clear avoids [0]                             (while a -Y or --trunk-scan scan runs)
@@ -288,6 +289,7 @@ Main Menu
 │   └── DSP structured output...
 ├── Display
 │   ├── Compact view [Off]                       c
+│   ├── Mouse wheel steps channels [Off]
 │   ├── Sections
 │   │   ├── Channels [On]
 │   │   ├── DSP panel [Off]                          (radio input only)
@@ -731,8 +733,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `=` | Frequency entry over the main screen (Input > `Frequency...`); a running scan pauses on the frequency typed. On Windows also `Shift+Enter` and `Shift`+keypad Enter |
 | `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime) |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
-| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels or P25 control-channel candidates (`-^`), or move to the next `--trunk-scan` target. Needs a radio input or a rigctl peer |
+| `J` | Previous channel: the same list as `L`, one step back; a running scan carries on forward from there. Same requirements |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`J` and `L` still move while held) |
 | `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
@@ -742,10 +745,25 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the avoids,
-and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or paused,
-`t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on
-stops the scan.
+While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the
+avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or
+paused, `t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning
+trunking on stops the scan.
+
+**Mouse wheel.** Off by default: turn on Display → **Mouse wheel steps channels**, or set `terminal_mouse_wheel = true`
+under `[output]` in the config file (Save config keeps the menu setting). While a `-Y` or `--trunk-scan` list runs,
+wheel up steps to the previous channel (as `J`) and wheel down to the next (as `L`), at most one step every 150 ms, so
+a fast flick or a touchpad swipe moves one channel. It acts on the main screen only: while the menu, a prompt or the
+`=` frequency entry is open, the scan is paused or stopped, or an I/Q replay is playing (a replay cannot change
+channel), dsd-neo stops reading the mouse and the wheel does what the terminal does without it (many terminals move
+through the menu with it). While dsd-neo reads the mouse, hold Shift to select and copy text, and a notch with Shift,
+Ctrl or Alt held does not step; Windows reports no modifiers with the wheel, so there every notch steps. In the classic
+Windows console (conhost), reading the mouse turns QuickEdit's drag-select off until the wheel stops acting (Shift-drag
+selects meanwhile); Windows Terminal selects with Shift. The row is not offered on the Linux text console, where ncurses
+reads the mouse through GPM, when `NCURSES_GPM_TERMS` is set, on a terminal whose terminfo has no xterm mouse key
+(`kmous`), or in a build against an ncurses without a fifth mouse button (mouse version 1, such as the macOS SDK's
+ncurses 5.7). A terminal that answers in another mouse encoding than its `TERM` promises can leak the reports as text:
+set the right `TERM`.
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them

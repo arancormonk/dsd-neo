@@ -31,6 +31,7 @@
 
 #include "menu_actions.h"
 #include "menu_labels.h"
+#include "ui_mouse.h"
 
 #define NC_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -669,13 +670,22 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .on_select = act_return_cc},
     {.id = "trunk.cycle",
      .label = "Next channel",
-     .help = "Step to the next channel in the map, or the next trunk-scan target.",
+     .help = "Step to the next channel in the map, the next P25 control-channel candidate (-^), or the next "
+             "trunk-scan target. Needs a radio input or a rigctl peer.",
      .hotkey = "L",
      .is_enabled = trunk_enabled,
      .on_select = act_channel_cycle},
+    {.id = "trunk.cycle_prev",
+     .label = "Previous channel",
+     .help = "Step back to the previous channel in the map, P25 control-channel candidate (-^), or trunk-scan "
+             "target. A running scan carries on forward from there. Needs a radio input or a rigctl peer.",
+     .hotkey = "J",
+     .is_enabled = trunk_enabled,
+     .on_select = act_channel_prev},
     {.id = "trunk.hold",
      .label_fn = lbl_scan_hold,
-     .help = "Stay on the channel or trunk-scan target on air; Next channel still moves. Off resumes the rotation.",
+     .help = "Stay on the channel or trunk-scan target on air; Previous and Next channel still move. Off resumes the "
+             "rotation.",
      .hotkey = "Y",
      .is_enabled = scan_rotation_active,
      .on_select = act_scan_hold_toggle},
@@ -1110,6 +1120,12 @@ const NcMenuItem DISPLAY_MENU_ITEMS[] = {
      .help = "Collapse the screen to a scanner-style layout.",
      .hotkey = "c",
      .on_select = act_toggle_ui_compact},
+    {.id = "disp.mouse_wheel",
+     .label_fn = lbl_ui_mouse_wheel,
+     .help = "Wheel up steps to the Previous channel, down to the Next, while a -Y or --trunk-scan list runs. "
+             "Hold Shift to select text.",
+     .is_enabled = ui_mouse_wheel_available,
+     .on_select = act_toggle_ui_mouse_wheel},
     {.id = "disp.sections",
      .label = "Sections",
      .help = "Which on-screen sections are shown.",

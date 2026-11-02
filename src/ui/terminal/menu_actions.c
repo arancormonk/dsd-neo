@@ -1865,6 +1865,12 @@ act_toggle_ui_compact(void* v) {
 }
 
 void
+act_toggle_ui_mouse_wheel(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_MOUSE_WHEEL_TOGGLE);
+}
+
+void
 act_toggle_ui_p25_callsign(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
@@ -2185,6 +2191,7 @@ DSD_SIMPLE_ACTION(act_provoice_esk, DSD_APP_CMD_PROVOICE_ESK_TOGGLE)
 DSD_SIMPLE_ACTION(act_provoice_mode, DSD_APP_CMD_PROVOICE_MODE_TOGGLE)
 DSD_SIMPLE_ACTION(act_return_cc, DSD_APP_CMD_RETURN_CC)
 DSD_SIMPLE_ACTION(act_channel_cycle, DSD_APP_CMD_CHANNEL_CYCLE)
+DSD_SIMPLE_ACTION(act_channel_prev, DSD_APP_CMD_CHANNEL_CYCLE_PREV)
 DSD_SIMPLE_ACTION(act_scan_hold_toggle, DSD_APP_CMD_SCAN_HOLD_TOGGLE)
 DSD_SIMPLE_ACTION(act_scan_avoid, DSD_APP_CMD_SCAN_AVOID)
 DSD_SIMPLE_ACTION(act_scan_avoid_clear, DSD_APP_CMD_SCAN_AVOID_CLEAR)

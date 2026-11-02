@@ -14,7 +14,8 @@
 /* ---- Generated from menu_items.c: every symbol the tree references. ----
    Regenerate with: grep -oE '\.(on_select|label_fn|is_enabled) = [a-z_0-9]+' src/ui/terminal/menu_items.c
    The *_RADIO lists hold what menu_actions.h and menu_labels.h declare only under USE_RADIO: the radio-off audit
-   (UI_MENU_TREE_AUDIT_NO_RADIO) stubs only the rest. */
+   (UI_MENU_TREE_AUDIT_NO_RADIO) stubs only the rest. AUDIT_PREDICATES_WHEEL holds the predicate ui_mouse.h
+   declares. */
 
 #define AUDIT_ACTIONS(X)                                                                                               \
     X(act_allow_toggle)                                                                                                \
@@ -26,6 +27,7 @@
     X(act_auto_ppm_zerohz_prompt)                                                                                      \
     X(act_auto_ppm_zeroppm_prompt)                                                                                     \
     X(act_channel_cycle)                                                                                               \
+    X(act_channel_prev)                                                                                                \
     X(act_config_load)                                                                                                 \
     X(act_config_load_profile)                                                                                         \
     X(act_config_save_as)                                                                                              \
@@ -118,6 +120,7 @@
     X(act_toggle_invert)                                                                                               \
     X(act_toggle_payload)                                                                                              \
     X(act_toggle_ui_channels)                                                                                          \
+    X(act_toggle_ui_mouse_wheel)                                                                                       \
     X(act_toggle_ui_compact)                                                                                           \
     X(act_toggle_ui_p25_affil)                                                                                         \
     X(act_toggle_ui_p25_callsign)                                                                                      \
@@ -316,6 +319,7 @@
     X(lbl_tune_group)                                                                                                  \
     X(lbl_tune_priv)                                                                                                   \
     X(lbl_ui_channels)                                                                                                 \
+    X(lbl_ui_mouse_wheel)                                                                                              \
     X(lbl_ui_compact)                                                                                                  \
     X(lbl_ui_p25_affil)                                                                                                \
     X(lbl_ui_p25_callsign)                                                                                             \
@@ -364,6 +368,9 @@
     X(rr_key_prompt_offered_and_feature)                                                                               \
     X(scan_rotation_active)                                                                                            \
     X(trunk_enabled)
+
+/* Apart, so UI_MOUSE_NO_WHEEL can link the real ui_mouse.c in its place. */
+#define AUDIT_PREDICATES_WHEEL(X) X(ui_mouse_wheel_available)
 
 #define AUDIT_PREDICATES_RADIO(X)                                                                                      \
     X(is_airspy_input)                                                                                                 \

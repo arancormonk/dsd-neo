@@ -365,6 +365,9 @@ nxdn_cc_hunt_probe(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, doub
         return;
     }
     ctx->retry_after_m = now_m + NXDN_CC_HUNT_PROBE_S;
+    /* A probe is a forward start, as Next is, so it drops the row a refused Previous left to retry on the channel map,
+       whatever its tune does (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
     const long freq = nxdn_cc_hunt_next_candidate(ctx, state);
     if (freq <= 0) {
         return;

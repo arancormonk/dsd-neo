@@ -51,6 +51,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <memory>
@@ -932,6 +933,45 @@ test_scan_row_edit_bridge() {
     freeState(&state);
 }
 
+static int g_scan_control_calls = 0;
+static int g_scan_control_last_op = 0;
+
+static int
+record_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    (void)opts;
+    (void)state;
+    g_scan_control_calls++;
+    g_scan_control_last_op = op;
+    return 0;
+}
+
+/* Issue #666: the Monitor's Prev and Next go through the real bridge and decoder queue as their own commands. Under a
+ * running trunk scan the two reach the coordinator as the step each names, so a bridge that sent Next's id for Prev (or
+ * nothing at all) shows here. */
+static void
+test_scan_step_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "county");
+    dsd_trunk_scan_hooks hooks = {};
+    hooks.control = record_scan_control;
+    dsd_trunk_scan_hooks_set(&hooks);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.previousChannel());
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(g_scan_control_calls == 1 && g_scan_control_last_op == DSD_TRUNK_SCAN_CONTROL_RETREAT);
+    check(bridge.nextChannel());
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(g_scan_control_calls == 2 && g_scan_control_last_op == DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    dsd_app_frontend_runtime_stop();
+    dsd_trunk_scan_hooks_set(nullptr);
+    freeState(&state);
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -1178,6 +1218,7 @@ main(int argc, char** argv) {
     test_am_bandwidth_bridge();
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
+    test_scan_step_bridge();
     test_zero_bounds();
     test_bridge_row_tokens();
     test_auto_start_requests();

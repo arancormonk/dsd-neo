@@ -33,6 +33,8 @@ Generated (do not edit/commit):
     terminal it opens the app-control frontend runtime itself; at stop the API goes before the runtime it submits to.
     It hands the parsed API token to the server and wipes it from `dsd_opts`, and publishes telemetry once right after
     starting it, before the decoder runs: the API feed's first look, from which every event row reaches subscribers.
+    With the terminal frontend it blocks SIGTSTP on the session thread before the run, so only the terminal UI thread
+    takes Ctrl+Z (see UI, Ctrl+Z / `fg`).
 - Build files: `apps/dsd-cli/CMakeLists.txt` (`DSD_CLI_HAS_API` when `DSD_ENABLE_API` builds `dsd-neo_api`)
 
 ## Engine
@@ -152,6 +154,80 @@ Generated (do not edit/commit):
     `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
     `include/dsd-neo/engine/manual_tune.h`, and the untyped step's shared pieces in `src/engine/scan_step_untyped.h`
     (see "A manual tune stays out of that ledger" under the trunk-tuning hooks below)
+  - The -Y list's cursor and its position (issue #666): `dsd_state::lcn_freq_roll` is only the cursor, the row the next
+    step starts from. A step may move it before its row lands (the timed untyped step's pre-tune `roll = row`, a skip
+    past avoided rows, a wrap), past a row whose tune failed, or past a 0 Hz placeholder it parks on, so `roll - 1` is
+    not the row heard. The position is `lcn_on_air_row` with the row's frequency (`lcn_on_air_freq`), helpers in
+    `src/core/util/dsd_state_lcn_nav.c` declared in `<dsd-neo/core/state.h>`. It is written by exactly the events that
+    move the cursor past a row the receiver was put on: `untyped_install_row()` (`engine.c`) for a non-zero row (the
+    timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
+    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), a manual untyped
+    step (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`, and a P25 hunt probe
+    on a `-T` channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it picked past
+    a duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a placeholder park, a
+    deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
+    step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
+    another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
+    none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. A hard-failed step (either
+    direction, manual or timed, typed or untyped, late failures included, and a refused P25 hunt probe of a `-T`
+    channel-map row) that finds no valid record calls `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the
+    `roll - 1` the failure moved past, until a step records a row or `dsd_state_lcn_nav_reset()` runs; a valid record
+    is left alone. The value rides both snapshots with the record. `lcn_back_retry_row`/`_freq`
+    (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
+    heard is what the channel label (`channel_label.c`), the terminal Scan Mode line and the untyped branch of
+    `dsd_engine_channel_scan_on_air_row()` read; Avoid (`apply_manual_scan_avoid()`) flags that row, which on a typed
+    list is the landed row (`tuned_row`). `dsd_state_lcn_nav_reset()` runs wherever the list or its session is
+    replaced (`initState()`, `chan_map_adopt()`, `svc_clear_channel_map()`, the P25 CC selection's automatic anchor);
+    the four fields ride the UI snapshot's `p25_p2_active_slot..dstar_gps` range (a static assert pins them) and each
+    trunk-scan target's snapshot with its cursor (tests: `CORE_STATE_LCN_NAV`, `CORE_CHANNEL_LABEL`,
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_CHANNEL_SCAN`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`).
+  - A row a front end refuses on an untyped list moves only the cursor past it (issue #666), so a row the tuner never
+    takes (a rigctl peer answering `RPRT -1` out of its band) cannot hold `L` or the timed `-Y` step on it. The timed
+    step (`no_carrier_step_scanner_mode_if_needed()`, a refusal by any leg, a partial move included) and a late failure
+    of its pending tune (`dsd_engine_scan_untyped_poll()`) set `roll = row + 1`; the boundary, the tone reset and the
+    deadline behave as for any abandoned step, and a step with no front end keeps the cursor. The manual walk
+    (`apply_manual_lcn_cycle_untyped_dir_locked()` in `app_command_queue.c`, through `lcn_cycle_pick()`,
+    `lcn_cycle_on_tune_outcome()` and `lcn_cycle_finish()`) does the same and also sets the voice gate's and visit cap's
+    `*_roll_seen` to the new cursor, since both read any cursor move as a retune and the receiver did not move. So a
+    later accepted step can land with the cursor unchanged (Next refused on B, then Previous lands B): under `-Y`,
+    `lcn_cycle_finish()` restarts both windows itself (`dsd_scan_voice_gate_note_retune()`) rather than leave it to
+    a cursor move, as the timed step's `untyped_install_row()` and the typed `channel_scan_commit()` already do. A
+    deferred tune is no refusal and keeps the cursor for a retry: `DSD_UNTYPED_STEP_DEFERRED` in the step and the
+    resume (whose toast then says "deferred", as a typed resume's does), and `request_manual_tune()`'s io_control leg
+    reports `DSD_TRUNK_TUNE_RESULT_DEFERRED` apart from a failure.
+  - Previous channel (`DSD_APP_CMD_CHANNEL_CYCLE_PREV` = 220, API `channel_cycle_prev`; issue #666) is Next
+    (`CHANNEL_CYCLE`) walked backward through the same list, and `apply_cmd_channel_cycle()` takes both ids with the
+    same refusals in the same order: an I/Q replay, Signal search (`command_allowed_during_search()`), a paused scan,
+    then no tuner (neither rigctl nor `AUDIO_IN_RTL`: `No tuner to change channel: use a radio input or a rigctl peer`,
+    a failed command, for both ids; it used to do nothing silently). Under `--trunk-scan` it posts RETREAT. One step per
+    press; the rotation, Next and a resume carry on forward from where it lands, since a landing writes `roll = row + 1`
+    either way.
+    - Untyped and `-T` lists (`apply_manual_lcn_cycle_untyped_dir_locked()`, `lcn_cycle_back_start()`): the walk goes
+      back from the row a refused Previous left to retry, else from the row heard taken back to the first row of its
+      run of equal frequencies (never across row 0), else from the last row; it lands on a run's first row
+      (`lcn_cycle_pick()`), so an avoided first row skips its run and the first and last rows never join. A refusal
+      keeps the cursor and the row heard and notes the row to retry (`dsd_state_lcn_back_retry_note()`); a deferral and
+      a walk with nowhere to land change nothing.
+    - Typed `-Y` lists (`dsd_engine_channel_scan_step_manual_dir()`): back from the retry, else from the position
+      (`dsd_state_lcn_on_air_row()`, not a failed or pending row), else from the last row; rows on one frequency are all
+      kept. `channel_scan::step_dir` says which way the staged row's step went: each start sets it before staging
+      (`channel_scan_begin_step()`; a Previous creates the extension for it), a restage of the row keeps it, and a pause
+      drops it. Its failure, at the tune or late (`dsd_engine_channel_scan_pending()`), goes through
+      `channel_scan_row_refused()`: forward moves the cursor past the row, back keeps the cursor and notes the retry. A
+      restage the tuner defers leaves nothing outstanding and the position on the row before, so the next Previous
+      reselects the row. While a row is outstanding a press services it, either way.
+    - The retry is dropped by any position write and at the start of every forward step: Next on either list or leg
+      (`apply_manual_channel_cycle_dir_locked()` clears it before the leg is chosen, so a `-^` candidate Next drops
+      it too; the list walk keeps its own clear for Avoid's step), the timed untyped step
+      (`no_carrier_step_scanner_mode_if_needed()`), the typed timed step (`dsd_engine_channel_scan_step()`), Avoid's
+      step, and every control-channel hunt probe, whatever its tune does (the P25 `try_next_cc()` before it picks a
+      leg, candidate or list; the DMR `dmr_cc_hunt()`; the NXDN `nxdn_cc_hunt_probe()`; each after its own pacing
+      gate, so a tick that does not probe changes nothing), so a refused Previous, a refused Next (or hunt probe), then
+      Previous starts from the row heard again.
+    - `-^` candidates: `p25_cc_prev_candidate()` (`dsd_trunk_cc_candidates_prev()`), with the same checkpoint and
+      restore on a deferral as Next.
+    - Tests: `APP_COMMAND_QUEUE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_NO_CARRIER_RESET`, `RUNTIME_TRUNK_CC_CANDIDATES`,
+      `P25_NEXT_CC_CANDIDATE_EDGES`, `API_COMMANDS`.
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
@@ -185,9 +261,9 @@ Generated (do not edit/commit):
     `dsd_channel_mode_hears_tones()`) -- not avoided, and not an analog row skipped at every visit
     (`dsd_engine_scan_analog_width_skipped()`: the width of the demodulator its class runs, AM or NFM, its own or the
     configured one of that kind, refused at the DSP rate, or an am row on audio input with no rigctl peer); the row on
-    air is the typed scanner's last landed tune, which a failed start does not move, else the one before
-    `lcn_freq_roll`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so the same
-    traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
+    air is the typed scanner's last landed tune, which a failed start does not move, else the row heard,
+    `dsd_state_lcn_heard_row()`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so
+    the same traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
     `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
     another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
@@ -829,6 +905,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     a fake `pa_simple` and a fake clock; `PLATFORM_AUDIO_PORTAUDIO_RECOVERY` runs the PortAudio pump thread and locks
     over a fake PortAudio (built wherever `portaudio.h` is found) and checks that every open and close runs on the
     opening thread and that no two overlap
+  - Thread stop signal: on POSIX `dsd_thread_create()` (the inline macro in C and C++, and `dsd_thread_create_impl()`)
+    blocks SIGTSTP in the creator around its `pthread_create()` and puts the creator's mask back, so every thread starts
+    with Ctrl+Z blocked and the creator keeps its own; `dsd_thread_block_stop_signal()` sets it on the calling thread
+    (Windows: no-op). The terminal UI thread is the one that unblocks it (see UI, Ctrl+Z / `fg`). Test:
+    `PLATFORM_THREAD_STOP_SIGNAL`
   - Whole-frame descriptor writes (issue #659): `dsd_write_frames()` in `file_compat.h` finishes interrupted and short
     writes, returns `DSD_WRITE_FRAMES_WOULD_BLOCK` at once when a non-blocking descriptor is full at a frame boundary,
     waits (`poll()`, POSIX only, at most 250 ms in all, an interrupted wait going on only for what is left of it) only to
@@ -1013,8 +1094,9 @@ suite runs under this compiler.
   input gain.
 - API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
   should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
-  scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
-  frontend words it as a target or a channel and never names both at once. The Qt app writes each entry's uid as the
+  scan-list row heard (`dsd_state_lcn_heard_row()`, issue #666: not the row before the cursor);
+  `dsd_channel_label_current_source()` says which of the two it is, so a frontend words it as a target or a channel
+  and never names both at once. The Qt app writes each entry's uid as the
   target id, so its History and monitor show the entry's name for it (`CallHistoryModel::setChannelNames()`,
   `MetricsModel::setChannelNames()`, from Main's scan list, issue #671): History maps it only for display, and a row
   keeps the id it was heard on, which tells two targets of one name apart and outlives a rename. History's names add
@@ -2255,6 +2337,28 @@ suite runs under this compiler.
     between refusals is pinned by the test. `dsd_freq_hz_mhz_text()` is the one MHz spelling (`%u.%06u`, exact and
     locale-free; the caller picks the placeholder for 0): the terminal `FRQ:` field and `Frequency...` label, every tune
     toast, the `-Y` avoid toast and the analog event row. Tests: `RUNTIME_FREQ_PARSE`, fuzz `runtime_freq_parse`.
+  - Control-channel candidates (`include/dsd-neo/runtime/trunk_cc_candidates.h`, a `dsd_state` extension), walked by
+    the P25 and DMR hunts and the manual `L` candidate leg.
+    - `dsd_trunk_cc_candidates_next()` hands out the next eligible entry and counts it in `used`. Finding none leaves
+      `idx` where it was, so `idx` 0 still means nothing was handed out (issue #666).
+    - `dsd_trunk_cc_candidates_prev()` (issue #666) walks backward with the same filter: from the entry before the last
+      one handed out (`idx - 1`), wrapping and ending at that entry, or with none handed out from the last entry. The
+      entry found becomes the last handed out (`idx = j + 1`, `used++`), so either walk goes on from it; finding none
+      changes nothing.
+    - A pick comes before its tune. Each caller takes `dsd_trunk_cc_candidates_checkpoint()` first and hands it to
+      `dsd_trunk_cc_candidates_restore()` when the tune is DEFERRED (no retune scheduled: "retry without advancing
+      state"), so the next try picks the same entry; a refused or timed-out tune keeps it passed. The P25 hunt
+      (`try_next_cc()` through `p25_hunt_reject_outcome()`) puts its user-list cursor `lcn_freq_roll` back the same
+      way, and the DMR hunt (`dmr_cc_hunt()`) its `cc_hunt_index`. A P25 user-list probe keeps the position as a manual
+      `L` does (`lcn_cycle_on_tune_outcome()`'s forward rules, mirrored with the core `dsd_state_lcn_*` helpers since
+      the SM cannot reach app-control): the probe drops the backward retry whatever the tune does, on either leg
+      (`try_next_cc()`), an accepted tune records the row (`dsd_state_lcn_on_air_note()` in `try_next_cc()`), a refused or timed-out one
+      calls `dsd_state_lcn_on_air_note_refused()` (`p25_hunt_reject_outcome()`; a valid row heard stays), and a deferral
+      writes nothing. So `J` goes back from the row the hunt tuned, never from one it was refused. A 0 Hz row's
+      control-channel fallback is no list row and writes nothing. The DMR and NXDN hunts walk no list position and
+      never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
+      `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
+      `NXDN_CC_HUNT`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
       `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),
@@ -2790,8 +2894,15 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
   target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
-  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed and "paused" while
-  it is paused (`src/app_control/app_command_queue.c`)
+  active target, clear avoids, advance now, retreat now); answers "unavailable" when trunk scan is not installed and
+  "paused" while it is paused (`src/app_control/app_command_queue.c`)
+  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided and cooling
+    targets skipped), the original last in both directions, so the fallback and rollback are shared. Avoid and every
+    automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on the target
+    a step or avoid lands on.
+  - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
+    switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
+    stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl
@@ -2884,9 +2995,10 @@ never goes on decoding under an entry's frequency the receiver did not reach. Th
 row (boundary, then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no
 modes, the same session and map, the row still on the frequency tuned. Otherwise nothing commits and only the frequency
 stands; a landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only
-the carrier it left). A late failure, or a drop, abandons the row as a failure inside the wait does: the cursor stays
-for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the outgoing
-boundary and resets the received tone, but keeps the cursor and the deadline. `dsd_engine_scan_untyped_enter_row()` runs
+the carrier it left). A late failure abandons the row as a failure inside the wait does: the cursor moves past the
+row the front end refused (issue #666), the scan's windows reopen, no toast; a drop leaves the cursor and the windows
+as they are. A failure after the rigctl leg moved still runs the outgoing boundary and resets the received tone, moves
+the cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs
 the same pieces with the boundary inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency
 they last sent; a manual tune moves the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the
 `TUNE` carrier boundary and at every tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET`
@@ -3076,16 +3188,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
     `RTL_SET_FREQ` (the terminal's frequency entry, `=` or Input > `Frequency...`, Qt's Spectrum "Go to" and the API's
     `rtl_set_freq`), `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases,
-    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` (every leg: LCN, P25
-    candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q replay cannot retune."
-    (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail on the backend's
-    deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their main effect is on
-    the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts point at a release;
-    every refusal of the tap, the owner gates included, is a failed command with its reason toasted, as the frequency
-    entry's are. Qt and the control API learn it from the toast: they see only whether the command was queued. Qt's
-    Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call
-    codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading
-    follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV`
+    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
+    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
+    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+    main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
+    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
+    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
+    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
+    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
     the `-Y` avoid (`Avoiding <MHz> (<n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads stay Hz (the
@@ -3127,14 +3240,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     no paused scan to resume`), and a second one while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are
     refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
     stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
-    and trunking off leaves the pause. Hold, avoid, clear avoids and Next channel on a paused scan answer `Scan paused:
-    resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan keeps its hold,
-    while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan ends at an input
-    switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference adoption,
-    and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`, `SCAN_RESUME` and
-    `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part. `operator_tuned` is cleared
-    only by a resume and at session start, never by turning trunking or `-Y` on (an Explore followed by "Follow this
-    system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`.
+    and trunking off leaves the pause. Hold, avoid, clear avoids and Next and Previous channel on a paused scan answer
+    `Scan paused: resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan
+    keeps its hold, while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan
+    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
+    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
+    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
+    `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
+    followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
+    `API_COMMANDS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -8594,6 +8708,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     eleven places (` FRQ: %11s MHz;`, `-` in the same room at 0), so a SoapySDR row's `Args:` after it holds its column
     across retunes; that row leads with `| Soapy;` so `FRQ:` fits ahead of the 80-column cut (issue #670). Tests:
     `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
+  - Ctrl+Z / `fg` belongs to the UI thread (`ui_async.c`): ncurses' SIGTSTP handler calls `endwin()`, stops, and at the
+    resume calls `doupdate()`, and every `doupdate()` sets SIGTSTP to `SIG_IGN` for its length and then restores the
+    action it saved in one static. The kernel hands the signal to any thread that does not block it, so a handler run
+    on a decoder or I/O thread overlapped the UI thread's own redraws (the open menu redraws every frame), the two saves
+    crossed, and SIGTSTP stayed ignored for the rest of the session. So exactly one thread leaves it unblocked:
+    `dsd_cli_frontend_run()` blocks it on the session thread before the run opens anything when the terminal frontend
+    runs (every thread that thread or a library starts from it inherits the block; it stays blocked past `ui_stop()`,
+    so the run's tail takes no stop), `dsd_thread_create()` starts every thread with it blocked (a thread the UI thread
+    starts, the RadioReference client's worker, too), and `ui_thread_main()` unblocks it for itself before
+    `initscr()`. Without the terminal frontend the main thread keeps it. POSIX only. Tests:
+    `PLATFORM_THREAD_STOP_SIGNAL`, `RUNTIME_CLI_FRONTEND_TERMINAL`, `UI_ASYNC_LIFECYCLE`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
@@ -8616,9 +8741,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     opens the prompt or one line of help with the reason (an I/Q replay; no connected rigctl peer). The `y` row
     (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
     resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold,
-    avoid and clear avoids (`scan_rotation_active()`) and Next channel under a trunk scan (`trunk_enabled()`) need the
-    scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`,
-    `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
+    avoid and clear avoids (`scan_rotation_active()`) and Next and Previous channel under a trunk scan
+    (`trunk_enabled()`) need the scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`,
+    `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
@@ -8636,6 +8761,48 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `UI_READ_KEY`, `UI_PROMPT_VALIDATION`, `UI_PROMPT_SECRET`, `UI_HOTKEYS_REGRESSION` (the fake `tests/ui/curses.h`
     defines `PADENTER`, `SHF_PADENTER`, `PDC_KEY_MODIFIER_SHIFT` and declares `PDC_get_key_modifiers()`, which the
     test defines), `UI_RR_PANEL_KEYS`.
+  - Mouse wheel (issue #666): `ui_read_key()` turns `KEY_MOUSE` (on the wide PDCurses path, `KEY_CODE_YES` +
+    `KEY_MOUSE`) into `UI_KEY_WHEEL_UP` (button 4 press) or `UI_KEY_WHEEL_DOWN` (button 5 press), private codes beside
+    `UI_KEY_WIDE_CHAR` in `ui_keys.h`, and anything else into `ERR`: clicks, releases, a horizontal wheel, a refused
+    `getmouse()` or `bstate` 0, and on ncurses a notch with `BUTTON_SHIFT`/`CTRL`/`ALT` (PDCurses reports no wheel
+    modifiers, so every vertical notch counts there). ncurses may return one `KEY_MOUSE` for several reports already
+    waiting and leave the rest in its queue with no `KEY_MOUSE` of their own (separate notches can also come as one
+    each), so every read drains the queue with `getmouse()` and the first notch in it counts; PDCurses has no queue and
+    reads `nc_getmouse()` once. `UI_KEY_HAVE_WHEEL` (`KEY_MOUSE`, `BUTTON4_PRESSED` and `BUTTON5_PRESSED` defined)
+    builds the wheel in; an ncurses with mouse version 1 builds it out. The frame loop (`ui_async.c`) handles the wheel
+    codes itself: `dsd_terminal_handle_input()` (live decoder pointers) and the menu never see them, and a wheel code
+    read while ineligible is dropped. Capture rule (`ui_mouse.{h,c}`, UI thread only): each frame wants the capture when
+    `frontend_terminal_display.mouse_wheel` is on, `dsd_app_scan_state_view_get()` on the frame's opts and state
+    snapshots (fetched once per frame; the draw renders the same state snapshot) reports `running` (a paused scan does
+    not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt counts), the input is not STDIN
+    nor an I/Q replay (`dsd_opts_input_is_iq_replay()`: it refuses every retune, so a notch could only toast), and
+    `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate); `ui_mouse_capture_set()` acts on a
+    change only. ncurses: the first capture calls `mouseinterval(0)` and `mousemask()` with buttons 1-3 press and
+    release plus the 4 and 5 presses; that parse mask is never cleared at runtime, because a report outside the mask
+    makes `wgetch()` loop into a blocking read (a click after `mousemask(0)` froze the UI thread until the next key). On
+    and off after that is the terminal's tracking string: terminfo `XM` through `tiparm()` and `putp()` (which writes to
+    stdout, so it is flushed), else ncurses' own default by the same rule as its `init_xterm_mouse()` (numeric `XM` 1006
+    gives the SGR form). ncurses is admitted only where it uses its xterm mouse driver (`ui_mouse_xterm_admitted()`,
+    pure): `kmous` begins with ESC `[`, `NCURSES_GPM_TERMS` is unset (any value refuses) and `TERM` (both read through
+    `dsd_env_copy()`) does not contain "linux"; otherwise `mousemask()` is never called and the row is hidden. A
+    `mousemask()` that returns 0 hides it too. PDCurses: `mousemask()` with that mask plus `MOUSE_WHEEL_SCROLL` on and 0
+    off (its read never blocks, and mask 0 gives conhost its QuickEdit back), `mouseinterval(0)` once.
+    Because the ncurses mask stays set, ncurses' resume after Ctrl+Z / `fg` (its SIGTSTP handler: `endwin()`, the
+    stop, then `doupdate()`, which calls `_nc_mouse_resume()`) turns tracking on whatever the capture is. The first
+    capture installs a SIGCONT handler (only over the default action, with `SA_RESTART`) that sets a `sig_atomic_t`
+    flag; the next `ui_mouse_capture_set()` that finds it while `isendwin()` is false (the resume has run, on the UI
+    thread, the one thread that takes SIGTSTP) sends the capture's state once more. Steady frames read the flag and write nothing.
+    `ui_mouse_capture_close()` before `dsd_terminal_close()` turns the capture off, on ncurses with `mousemask(0)`,
+    which releases the mask so `endwin()` and a reopened terminal's first refresh (a second `initscr()` keeps the
+    screen, so it resumes) leave tracking off, and forgets the terminal. Each accepted notch posts `DSD_APP_CMD_CHANNEL_CYCLE_PREV` (up) or
+    `DSD_APP_CMD_CHANNEL_CYCLE` (down) through `dsd_app_command_action()`, at most one per 150 ms on
+    `dsd_realtime_mono_ns()` (later notches dropped, so a flick cannot flood the 128-slot queue, which drops its oldest
+    command). Decided limits: a hard crash leaves an ncurses terminal in mouse mode; after `fg` tracking is on until the
+    next frame, and stays on until the next capture change if something else already handles SIGCONT (dsd-neo does
+    not). Tests: `UI_READ_KEY`,
+    `UI_ASYNC_LIFECYCLE` (curses and terminfo stubs), `UI_MOUSE` (admission), `UI_MOUSE_NO_WHEEL` (built against the
+    fake `tests/ui/curses.h`, which has no button 5: the row is hidden), `UI_MOUSE_PTY` (real ncurses on a pty,
+    `docs/testing.md`), `UI_PROMPT_VALIDATION`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
@@ -9419,11 +9586,12 @@ Qt Quick frontend (`src/ui/qt`):
     `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that pauses a running scan); taps, drags and steps keep
     `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet says Tune pauses the scan while one runs, and closes
     with the reason when `goToAllowed` falls (a replay keeps its own). `CommandBridge::resumeScan()` (`SCAN_RESUME`)
-    backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of Hold/Avoid/Next
-    while paused; the header reads `SCAN PAUSED · n targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main
-    names the session from the decoder, never from a queued command: `syncOperatorHold()` (on the lifecycle's Running
-    with options known) swaps `sessionSystem` for an "Exploring" map while `operatorTuned` holds, keeping the session's
-    map and row in `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
+    backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of
+    Hold/Avoid/Prev/Next while paused, one row across the grid's columns; the header reads `SCAN PAUSED · n
+    targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a
+    queued command: `syncOperatorHold()` (on the lifecycle's Running with options known) swaps `sessionSystem` for an
+    "Exploring" map while `operatorTuned` holds, keeping the session's map and row in
+    `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
     resume; a scan list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its
     spectrum takes taps until Resume scan, or for good once the paused scan is stopped. The decoder sets
     `operator_tuned` on every accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection,
@@ -9645,7 +9813,7 @@ Qt Quick frontend (`src/ui/qt`):
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
   (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as checked
   (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does the
-  scan controls' Hold scan. Mute, Hold TG and Hold scan read back a command the decoder applies later, so they set
+  scan controls' Hold. Mute, Hold TG and the scan's Hold read back a command the decoder applies later, so they set
   `commandToggle` (issue #782): from the press they show and report the state asked for (`shownChecked`) until `checked`
   changes or 2 s pass. Qt's Android bridge sends the click event TalkBack reads out as the press returns, with the
   node's state then, before the engine's state reaches `checked` (`tst_a11y_monitor_controls.qml`). Four columns where a
@@ -9654,6 +9822,18 @@ Qt Quick frontend (`src/ui/qt`):
   line count and one height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces
   (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's border is never lost to the list's clip in tier 5.
   Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`, `test_toggles_show_checked`), `tst_monitor_compact.qml`.
+- Monitor scan controls (`scanControlsRow` in `qml/MonitorScreen.qml`, issue #666): Hold · Avoid · Prev · Next while
+  `scanRotationActive`, on the call actions' grid rule above over the labels Hold, Avoid, Prev, Next, one word each so
+  the four keep one 48 px row from a 320 dp phone up at 1.0 (and `test_phone_portrait_guarantees` holds at 360x690);
+  two rows of two (Prev and Next under Hold and Avoid) once "Avoid" outgrows a quarter cell, from 1.3 at 360 dp. The
+  cells are sized from `screen.width` less its padding, not from the strip's host, since their height is part of the
+  budget that picks the host. Each button's accessible name says it acts on the scan, not the call ("Hold the scan
+  here", "Avoid this scan channel", "Previous scan channel", "Next scan channel"); Hold is a `commandToggle`. Prev and
+  Next send `CommandBridge::previousChannel()`/`nextChannel()` (`CHANNEL_CYCLE_PREV`/`CHANNEL_CYCLE`), and their
+  refusals (replay, Signal search, a paused scan, no tuner) arrive as `uiMessage`. While `scanPaused` the four hide
+  and `scanResumeButton` spans the columns in one row. No wheel handler: the row scrolls with the list from tier 3.
+  Tests: `tst_monitor_recent_calls.qml` (`test_03c` to `test_03f`), `tst_a11y_monitor_controls.qml`
+  (`test_scan_controls_are_named_for_the_scan`), `UI_QT_CONTROLLER` (`test_scan_step_bridge`).
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
@@ -10905,7 +11085,7 @@ Each run gives its setup, then what must hold:
   title is reached and read as a heading, and each "(none announced)" right after its section's heading.
 - **Focus after a dialog.** With TalkBack on Connect RTL-SDR, raise the USB permission dialog and dismiss it with Back;
   then swipe: focus moves on from Connect at once, with no touch needed (`ScreenReaderFocusRelease`).
-- **Hold scan.** With TalkBack on Hold scan during a scan, activate it six times: each time TalkBack says the new
+- **Hold scan.** With TalkBack on the scan's Hold during a scan, activate it six times: each time TalkBack says the new
   state ("on" when it holds), matching the header's HOLD.
 - **Scan header.** With TalkBack on the scan header during a 300 ms dwell scan, it is read at most every 5 s, and at
   once when the scan is held or released.

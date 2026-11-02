@@ -5,10 +5,10 @@ import "../../../src/ui/qt/qml" as Ui
 
 // Issue #782: the Monitor's toggles as TalkBack presses and reads them.
 //
-// Hold scan, Hold TG and Mute read back a command the decoder applies later: `checked` follows the engine's state,
-// which reaches the screen on a later refresh. Qt's Android bridge builds the click event TalkBack reads out as soon as
-// the press returns, so each toggle reports the state asked for from the press on, until the engine's state arrives or
-// a few seconds pass without it.
+// The scan's Hold, Hold TG and Mute read back a command the decoder applies later: `checked` follows the engine's
+// state, which reaches the screen on a later refresh. Qt's Android bridge builds the click event TalkBack reads out as
+// soon as the press returns, so each toggle reports the state asked for from the press on, until the engine's state
+// arrives or a few seconds pass without it.
 Item {
     id: root
     width: 420
@@ -72,6 +72,21 @@ Item {
             compare(testContext.accessibleNode(hold).checked, true);
             tryCompare(hold, "shownChecked", false, 3000, "back to the engine's state when the hold never comes");
             compare(testContext.accessibleNode(hold).checked, false);
+        }
+
+        // Issue #666 (B9): each scan control says what it acts on. On a screen whose call actions also hold and avoid
+        // (a talkgroup), "Avoid" and "Next" alone did not say they act on the scan; Prev is named alike. Each name
+        // starts with the word on the button, or ("Prev") the word it shortens, so a reader hears what the eye sees.
+        function test_scan_controls_are_named_for_the_scan() {
+            var names = {scanHoldButton: "Hold the scan here", scanAvoidButton: "Avoid this scan channel",
+                         scanPrevButton: "Previous scan channel", scanNextButton: "Next scan channel"};
+            for (var objectName in names) {
+                var button = findChild(monitor, objectName);
+                verify(button !== null, objectName + " is missing");
+                var node = testContext.accessibleNode(button);
+                verify(node.inTree && node.focusable, objectName + " is a swipe stop");
+                compare(node.name, names[objectName], objectName);
+            }
         }
 
         // Hold TG sends the hold or release the press asks for, not one read from the engine's state: pressed twice

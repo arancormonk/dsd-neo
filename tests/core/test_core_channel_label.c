@@ -214,11 +214,52 @@ test_scanner_row_name(void) {
     return rc;
 }
 
+/* Issue #666: the label names the row heard, which a step records as it selects it, not the row before the cursor: a
+   step moves the cursor past an avoided row or across the end of the list before its row lands, and the calls of the
+   row it leaves end after that. A placeholder parked on keeps the row heard named. */
+static int
+test_scanner_row_heard_outlives_the_cursor(void) {
+    int rc = 0;
+    char out[DSD_CHANNEL_LABEL_SIZE];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!opts || !st || seed_scan_list(st) != 0) {
+        free(opts);
+        free_test_state(st);
+        return 1;
+    }
+    opts->scanner_mode = 1;
+    dsd_state_lcn_nav_reset(st);
+    dsd_state_lcn_on_air_note(st, 2);
+    st->lcn_freq_roll = 0; /* the wrap's pre-tune cursor */
+    rc |= expect_true("wrap keeps the row heard",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1 && strcmp(out, "Charlie") == 0);
+    dsd_state_lcn_on_air_note(st, 0);
+    st->lcn_freq_roll = 2; /* a skip's pre-tune cursor: row 1 avoided, row 2 waiting on its tune */
+    rc |= expect_true("unnamed row heard reports none", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
+    dsd_state_lcn_on_air_note(st, 1);
+    st->trunk_lcn_freq[2] = 0L;
+    st->lcn_freq_roll = 3; /* parked on the placeholder */
+    rc |= expect_true("park keeps the row heard",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1 && strcmp(out, "Bravo") == 0);
+    /* The row heard changed under the record: the cursor rule names what is before it, never a placeholder. */
+    st->trunk_lcn_freq[1] = 862000000L;
+    rc |= expect_true("changed row falls back to the cursor",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 0 && out[0] == '\0');
+    st->lcn_freq_roll = 2;
+    rc |= expect_true("cursor rule names the row before it",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1 && strcmp(out, "Bravo") == 0);
+    free(opts);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_missing_inputs_report_no_label();
     rc |= test_trunk_scan_target_wins();
     rc |= test_scanner_row_name();
+    rc |= test_scanner_row_heard_outlives_the_cursor();
     return rc;
 }

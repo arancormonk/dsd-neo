@@ -35,6 +35,7 @@ target_sources(
         util/bit_packing.c
         util/dsd_init.c
         util/dsd_state_trunk_lcn.c
+        util/dsd_state_lcn_nav.c
         util/channel_modes_rigctl.c
         util/dsd_state_p25_bandplan.c
         util/key_set.c

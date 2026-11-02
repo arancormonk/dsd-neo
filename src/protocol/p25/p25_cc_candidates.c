@@ -74,6 +74,14 @@ p25_cc_next_candidate(dsd_state* state, long* out_freq) {
     return dsd_trunk_cc_candidates_next(state, dsd_decode_now_mono_s(), DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
 }
 
+int
+p25_cc_prev_candidate(dsd_state* state, long* out_freq) {
+    if (!state || !out_freq) {
+        return 0;
+    }
+    return dsd_trunk_cc_candidates_prev(state, dsd_decode_now_mono_s(), DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
+}
+
 static int
 p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     if (!state || !out || out_len == 0) {

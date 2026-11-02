@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -72,6 +73,7 @@ static char g_targets[DSD_TEST_PATH_MAX];
 static char g_channels[DSD_TEST_PATH_MAX];
 static long g_frequency;
 static int g_cc_tunes;
+static long g_cc_tune_freq; // the last frequency a CC tune asked for, whatever its result
 static int g_returns;
 static int g_queries;
 static int g_query_failed;
@@ -99,6 +101,7 @@ static dsd_trunk_tune_result
 cc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
     (void)sps;
     ++g_cc_tunes;
+    g_cc_tune_freq = freq;
     g_request = request_id;
     if (dsd_trunk_tune_result_is_ok(g_result)) {
         if (!g_hw_model || g_result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -382,6 +385,111 @@ pending_and_failed_probes(void) {
     dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
                  "successful replacement clears the failed frame gate");
+    cleanup();
+    return rc;
+}
+
+/* One hunt probe after the acquisition ran out, answered with @p result: the frequency it asked for (0 for none). */
+static long
+dmr_probe_once(dmr_sm_ctx_t* ctx, dsd_trunk_tune_result result) {
+    g_result = result;
+    const int tunes = g_cc_tunes;
+    expire_acquisition(ctx);
+    return g_cc_tunes == tunes + 1 ? g_cc_tune_freq : 0;
+}
+
+/*
+ * Issue #666 (B5): a deferred probe schedules no retune and must be retried without advancing state. The hunt walked
+ * its channel map (cc_hunt_index) before it tuned and handled a deferral as a refusal, so the deferred row was passed
+ * and the next probe went on to the row after it. It now retries the same row; a refusal still passes it.
+ */
+static int
+dmr_deferred_mapped_probe_is_retried(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    aloha(1);
+    int rc = expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED) == 452000000L, "mapped: the probe asks for B");
+    const int index = ctx->cc_hunt_index;
+    rc |= expect(g_frequency == 451000000L && g_state.trunk_cc_freq == 451000000L,
+                 "mapped: the deferral moves neither tuner nor anchor");
+    const long retried = dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    if (retried != 452000000L) {
+        DSD_FPRINTF(stderr, "mapped: the next probe asked for %ld Hz (want 452000000 Hz)\n", retried);
+    }
+    rc |= expect(retried == 452000000L && ctx->cc_hunt_index == index, "mapped: the next probe retries B");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 452000000L, "mapped: B refused");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_OK) == 453000000L && g_frequency == 453000000L,
+                 "mapped: a refusal passes B, as before");
+    cleanup();
+    return rc;
+}
+
+/*
+ * Issue #666 (review gate, fix 5): a hunt probe is a forward start, as Next is, so it drops the row a refused Previous
+ * left to retry on the channel map, whatever its tune does. Kept, it sent the next Previous back from the refused row,
+ * past the row it should have retried.
+ */
+static int
+dmr_probe_drops_the_back_retry(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    aloha(1);
+    dsd_state_lcn_back_retry_note(&g_state, 3);
+    int rc = expect(dsd_state_lcn_back_retry_row(&g_state) == 3, "retry: a refused Previous left row 3");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) != 0, "retry: a probe was refused");
+    rc |= expect(dsd_state_lcn_back_retry_row(&g_state) == -1, "retry: a refused probe drops it");
+    dsd_state_lcn_back_retry_note(&g_state, 3);
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED) != 0, "retry: a probe was deferred");
+    rc |= expect(dsd_state_lcn_back_retry_row(&g_state) == -1, "retry: a deferred probe drops it");
+    cleanup();
+    return rc;
+}
+
+/* The same for a site with no channel map, whose hunt walks the current-site control-channel candidates: a deferred
+   probe keeps the candidate walk (its index and use count), a refused one passes the candidate. */
+static int
+dmr_deferred_candidate_probe_is_retried(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
+    g_state.trunk_cc_freq = 451000000L;
+    g_state.lcn_freq_count = 0;
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(ctx, &g_opts, &g_state);
+    aloha(1);
+    g_state.synctype = DSD_SYNC_NONE;
+    noCarrier(&g_opts, &g_state);
+    int rc = expect(dsd_trunk_dmr_recovery_allowed(&g_opts, &g_state), "candidates: DMR owns the recovery");
+    (void)dsd_trunk_cc_candidates_add(&g_state, 455000000L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&g_state, 456000000L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&g_state);
+    if (!cc) {
+        cleanup();
+        return 1;
+    }
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED) == 455000000L,
+                 "candidates: the probe asks for the first candidate");
+    rc |= expect(cc->idx == 0 && cc->used == 0U, "candidates: a deferral keeps the walk");
+    const long retried = dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    if (retried != 455000000L) {
+        DSD_FPRINTF(stderr, "candidates: the next probe asked for %ld Hz (want 455000000 Hz)\n", retried);
+    }
+    rc |= expect(retried == 455000000L && cc->idx == 0 && cc->used == 0U,
+                 "candidates: the next probe retries the same candidate");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 455000000L && cc->idx == 1 && cc->used == 1U,
+                 "candidates: a refusal passes it, as before");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_OK) == 456000000L, "candidates: then the next one");
     cleanup();
     return rc;
 }
@@ -2367,6 +2475,9 @@ main(void) {
     rc |= held_call_return(2.0f);
     rc |= hunt_and_reacquire();
     rc |= pending_and_failed_probes();
+    rc |= dmr_deferred_mapped_probe_is_retried();
+    rc |= dmr_probe_drops_the_back_retry();
+    rc |= dmr_deferred_candidate_probe_is_retried();
     rc |= cap_plus_rest_recovery();
     rc |= switch_while_probe_pending();
     rc |= standalone_recovery();

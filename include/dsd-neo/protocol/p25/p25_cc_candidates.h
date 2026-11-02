@@ -126,6 +126,10 @@ void p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, 
 /** Return the next eligible current-site control-channel candidate. */
 int p25_cc_next_candidate(dsd_state* state, long* out_freq);
 
+/** Return the current-site control-channel candidate before the last one handed out (issue #666): the walk of
+    p25_cc_next_candidate() backward, which either goes on from. */
+int p25_cc_prev_candidate(dsd_state* state, long* out_freq);
+
 /**
  * Apply a resolved neighbor update. An update with only @ref p25_neighbor_record_update_t.freq set refreshes the
  * matching record without clobbering learned metadata.

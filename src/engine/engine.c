@@ -1405,8 +1405,9 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
 #endif
 
 /* The RTL leg of untyped_tune_row(): DSD_UNTYPED_STEP_OK, DSD_UNTYPED_STEP_PENDING for a tune that timed out (noted
- * against the row, the scan session and the map), or a failure, _FAILED_MOVED when the rigctl leg @p moved the
- * receiver. Without RTL support every tune fails. */
+ * against the row, the scan session and the map), DSD_UNTYPED_STEP_DEFERRED for one deferred behind another owner's
+ * (issue #666), or a failure, _FAILED_MOVED when the rigctl leg @p moved the receiver. Without RTL support every tune
+ * fails. */
 static int
 untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, int moved) {
     const int failed = moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
@@ -1419,11 +1420,19 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
                                             row, state->lcn_scan_session, state->trunk_chan_map_seq);
         return DSD_UNTYPED_STEP_PENDING;
     }
+    if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+        return DSD_UNTYPED_STEP_DEFERRED;
+    }
     return (result == DSD_TRUNK_TUNE_RESULT_OK) ? DSD_UNTYPED_STEP_OK : failed;
 #else
     UNUSED4(opts, state, row, freq);
     return failed;
 #endif
+}
+
+static int
+untyped_front_end_present(const dsd_opts* opts) {
+    return opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL;
 }
 
 /* Puts every configured front end on @p freq for @p row of the untyped list, the rigctl leg first. @p moved is set once
@@ -1434,7 +1443,7 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
 static int
 untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* moved) {
     *moved = 0;
-    if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
+    if (!untyped_front_end_present(opts)) {
         return DSD_UNTYPED_STEP_FAILED;
     }
     if (opts->use_rigctl == 1) {
@@ -1449,14 +1458,16 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* 
     return untyped_tune_row_rtl(opts, state, row, freq, *moved);
 }
 
-/* Commit @p row of the untyped list as the row on air: the cursor past it, its keys, the received tone cleared (the
- * untyped step never runs the acquisition reset the typed rows do, so a new channel must not inherit the old one's,
- * issue #522), and fresh scan clocks. A placeholder (0 Hz) row parks where the receiver is: only the cursor and the
- * clocks. Runs after the carrier boundary has ended the calls of the row left, under its keys. */
+/* Commit @p row of the untyped list as the row on air: the cursor past it, the row recorded as the one heard (issue
+ * #666), its keys, the received tone cleared (the untyped step never runs the acquisition reset the typed rows do, so a
+ * new channel must not inherit the old one's, issue #522), and fresh scan clocks. A placeholder (0 Hz) row parks where
+ * the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still on. Runs after
+ * the carrier boundary has ended the calls of the row left, under its keys and its name. */
 static void
 untyped_install_row(dsd_state* state, int row, time_t now) {
     state->lcn_freq_roll = row + 1;
     if (*dsd_state_trunk_lcn_slot(state, row) != 0) {
+        dsd_state_lcn_on_air_note(state, row);
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
     }
@@ -1526,8 +1537,18 @@ no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t n
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
 }
 
-/* The step moved nothing to land on (failed or pending): the receiver may have moved under a leg that did land, so the
-   tone heard on the old frequency no longer describes it (issue #522), and the scan's windows reopen. */
+/* Whether a step's @p result is a front end refusing its row (issue #666): the timed step, and a late failure of its
+   tune, move the cursor past that row, so a row the tuner never takes (a rigctl peer answering RPRT -1 out of its band)
+   cannot hold the scan on it for good. A deferred or pending tune is not a refusal, and a step with no front end to ask
+   refused no row. */
+static int
+untyped_step_refused_row(const dsd_opts* opts, int result) {
+    return (result == DSD_UNTYPED_STEP_FAILED || result == DSD_UNTYPED_STEP_FAILED_MOVED)
+           && untyped_front_end_present(opts);
+}
+
+/* The step moved nothing to land on (failed, deferred or pending): the receiver may have moved under a leg that did
+   land, so the tone heard on the old frequency no longer describes it (issue #522), and the scan's windows reopen. */
 static void
 untyped_note_unlanded(const dsd_opts* opts, dsd_state* state, int moved, time_t now) {
     if (moved) {
@@ -1616,6 +1637,9 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
                                               polled == DSD_MANUAL_TUNE_DROPPED ? DSD_SCAN_RESUME_INTERRUPTED
                                                                                 : DSD_SCAN_RESUME_FAILED_TUNE);
     } else if (polled == DSD_MANUAL_TUNE_FAILED) {
+        /* The front end refused the row late: the cursor moves past it, as at a refusal in the step (issue #666). */
+        state->lcn_freq_roll = settled.row + 1;
+        dsd_state_lcn_on_air_note_refused(state);
         no_carrier_rearm_abandoned_scan(opts, state, now);
     }
     /* A step dropped while the scan runs (a newer tune, a stream reopen) failed nothing: what replaced it decides the
@@ -1646,6 +1670,8 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
         return result > 0;
     }
     no_carrier_reset_nxdn_scan_markers(state);
+    /* The rotation goes on forward from the cursor, whatever a refused Previous left to retry (issue #666). */
+    dsd_state_lcn_back_retry_clear(state);
     // Rows the operator avoided are stepped over in this same pass rather than costing a
     // hangtime each, so a long run of avoids does not stall the scan.
     const int row = dsd_engine_scan_untyped_find_row(state, state->lcn_freq_roll, 0);
@@ -1669,12 +1695,19 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // abandoned, but the radio is no longer on the frequency the open call was decoded from. That
     // still has to report as a hop or the finalizer ends the call as sync loss and leaves it
     // reacquirable by whatever decodes next -- on a different frequency. A tune that timed out commits
-    // its row only once it lands (issue #671): until then the cursor, the keys and the clocks stay.
+    // its row only once it lands (issue #671): until then the cursor, the keys and the clocks stay. A row a
+    // front end refused is passed (issue #666): the cursor moves past it, and only the cursor, so the row heard,
+    // its keys and the deadline stay; with no row heard recorded yet, none, not the refused row before the cursor.
+    // A deferred tune keeps the cursor for a retry.
     int moved = 0;
     const int result = untyped_tune_row(opts, state, row, freq, &moved);
     if (result == DSD_UNTYPED_STEP_OK) {
         *install_row = row;
         return 1;
+    }
+    if (untyped_step_refused_row(opts, result)) {
+        state->lcn_freq_roll = row + 1;
+        dsd_state_lcn_on_air_note_refused(state);
     }
     untyped_note_unlanded(opts, state, moved, now);
     return moved;

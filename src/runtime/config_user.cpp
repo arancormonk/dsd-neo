@@ -1070,6 +1070,9 @@ render_output_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->frontend_kind_is_set) {
         DSD_FPRINTF(out, "frontend = \"%s\"\n", frontend_kind_to_ini_name(cfg->frontend_kind));
     }
+    if (cfg->terminal_mouse_wheel_is_set) {
+        DSD_FPRINTF(out, "terminal_mouse_wheel = %s\n", cfg->terminal_mouse_wheel ? "true" : "false");
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1608,6 +1611,9 @@ apply_output_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (cfg->frontend_kind_is_set) {
         opts->frontend_kind = cfg->frontend_kind;
     }
+    if (cfg->terminal_mouse_wheel_is_set) {
+        opts->frontend_terminal_display.mouse_wheel = cfg->terminal_mouse_wheel ? 1 : 0;
+    }
 }
 
 /* @p stage_mode: the preset is staged for an apply that can still be put back (dsd_stage_user_config_to_opts()), whose
@@ -2044,6 +2050,8 @@ snapshot_output_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     }
     cfg->frontend_kind = opts->frontend_kind;
     cfg->frontend_kind_is_set = 1;
+    cfg->terminal_mouse_wheel = opts->frontend_terminal_display.mouse_wheel ? 1 : 0;
+    cfg->terminal_mouse_wheel_is_set = 1;
 }
 
 static void

@@ -1320,17 +1320,17 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
     ui_row row;
     ui_io_row_begin(&row);
     ui_row_field(&row, "| Scan Mode:");
-    // lcn_freq_roll is advanced past the entry just tuned, so the displayed slot is roll - 1.
-    // Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol writer
-    // that shrinks the count (nxdn_element.c, p25p2_vpdu.c, dmr_csbk.c) leaves roll pointing
-    // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
-    // count that reserved it.
-    if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
+    // The row heard (issue #666), not roll - 1: a placeholder the scan parks on, or a step still
+    // waiting on its tune, moves the cursor while the receiver stays where it is. The helper
+    // bounds the row by lcn_freq_count: a protocol writer that shrinks the count (nxdn_element.c,
+    // p25p2_vpdu.c, dmr_csbk.c) leaves roll pointing past the end, and slots >= 26 resolve into
+    // the heap tail, which is only as long as the count that reserved it.
+    const int heard = dsd_state_lcn_heard_row(state);
+    if (heard >= 0) {
         char mhz[24];
-        ui_row_field(&row, " Frequency: %s MHz",
-                     ui_num(mhz, sizeof mhz,
-                            (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000, 11, 6,
-                            0));
+        ui_row_field(
+            &row, " Frequency: %s MHz",
+            ui_num(mhz, sizeof mhz, (double)*dsd_state_trunk_lcn_slot_const(state, heard) / 1000000, 11, 6, 0));
     } else {
         ui_row_field(&row, " %*s", (int)strlen("Frequency:  MHz") + 11, "");
     }

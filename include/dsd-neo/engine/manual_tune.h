@@ -70,8 +70,8 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
  * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
- * An untyped -Y step's failure is not toasted: the scan retries the row, as after a step that failed in its wait, and
- * the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
+ * An untyped -Y step's failure is not toasted: the scan passes the row, as after a step that failed in its wait (issue
+ * #666), and the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
  *
  * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or DSD_MANUAL_TUNE_DROPPED.
  */

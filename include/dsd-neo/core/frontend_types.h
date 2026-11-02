@@ -44,6 +44,7 @@ typedef struct dsd_frontend_terminal_display_opts {
     uint8_t terminal_history;
     uint8_t eye_unicode;
     uint8_t eye_color;
+    uint8_t mouse_wheel; /* opt-in: terminal wheel steps -Y/trunk-scan channels */
 } dsd_frontend_terminal_display_opts;
 
 #ifdef __cplusplus

@@ -47,6 +47,13 @@ dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
     return 0;
 }
 
+/* No SIGTSTP on Windows: no thread takes a terminal stop. */
+int
+dsd_thread_block_stop_signal(int blocked) {
+    (void)blocked;
+    return 0;
+}
+
 int
 dsd_thread_join(dsd_thread_t thread) {
     if (thread == NULL || thread == INVALID_HANDLE_VALUE) {

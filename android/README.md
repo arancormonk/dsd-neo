@@ -2031,8 +2031,14 @@ confirmation says it pauses the scan rather than ending it; paused, it still tak
 list carries on from the channel it stopped on, a scan list returns to the target it
 left. Monitor's header reads **SCAN PAUSED · 3 targets** (or **channels**) instead of
 the scan position, the session is named **Exploring** until the resume, and **Resume
-scan** takes the place of **Hold scan**, **Avoid** and **Next**. A pause made from the
-terminal or the API shows the same way. If trunking or anything else takes the tuner
+scan** takes the place of **Hold**, **Avoid**, **Prev** and **Next**. A pause made from
+the terminal or the API shows the same way.
+
+While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
+channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps
+back one channel (or scan-list target) in the list **Next** walks, and the scan carries
+on forward from there. Both need a radio input (or a rigctl peer) to retune. With large
+text the four buttons take two rows of two. If trunking or anything else takes the tuner
 while **Go to** is open, the sheet closes and says why.
 
 The line under the Spectrum view's sync and SNR names the system on the carrier

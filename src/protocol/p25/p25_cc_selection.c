@@ -127,6 +127,7 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
             state->trunk_lcn_freq[0] = hz;
             state->lcn_freq_count = 1;
             state->lcn_freq_roll = 0;
+            dsd_state_lcn_nav_reset(state);
         }
         state->samplesPerSymbol = sps;
         state->symbolCenter = dsd_opts_symbol_center(sps);

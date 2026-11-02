@@ -383,8 +383,8 @@ Item {
         // Issue #782: a scan rotation that mixes two-slot DMR with single-slot
         // NXDN and P25 targets. Once it has visited a two-slot carrier the slot
         // strip's place stays reserved, so the hops move nothing: not the tier,
-        // not the header, not the list, and not Hold, Avoid or Next, which sit
-        // under the strip. Only the slot's own content follows the carrier.
+        // not the header, not the list, and not Hold, Avoid, Prev or Next, which
+        // sit under the strip. Only the slot's own content follows the carrier.
         function hopTo(i) {
             var protocol = ["DMR", "NXDN", "P25"][i % 3];
             testContext.publishTarget({twoSlotCarrier: protocol === "DMR", siteProtocol: protocol, scanTargetOrdinal: (i % 3) + 1});
@@ -408,7 +408,7 @@ Item {
             settle();
             tc.list.positionViewAtBeginning();
             settle();
-            var buttons = ["scanHoldButton", "scanAvoidButton", "scanNextButton"];
+            var buttons = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton"];
             var held = {tier: tc.monitor.tier, wide: tc.monitor.wideHeaderActions, strip: tc.monitor.stripHeight, listY: tc.list.y, listHeight: tc.list.height};
             var scene = buttons.map(function (name) { return item(name).mapToItem(null, 0, 0); });
             var label = item("otherSlotLabel");
@@ -609,7 +609,7 @@ Item {
             }
             compare(nested, 0, "a Flickable inside the list");
             // Every control in the list header is reachable, and so is the last row.
-            for (var name of ["monitorDetailsRow", "scanNextButton", "otherSlotPanel"]) {
+            for (var name of ["monitorDetailsRow", "scanPrevButton", "scanNextButton", "otherSlotPanel"]) {
                 var control = item(name);
                 tc.list.contentY = Math.max(tc.list.originY, Math.min(control.mapToItem(tc.list.contentItem, 0, 0).y, tc.list.originY + tc.list.contentHeight - tc.list.height));
                 settle();

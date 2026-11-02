@@ -41,6 +41,10 @@ int dsd_app_command_test_last_restart_required(void);
 /* Replace the frequency entry's tune leg (svc_rtl_tune_only()) with @p tune_leg, or put it back with NULL: the result
    it returns is the tune's, and it caches what a success applied in opts->rtlsdr_center_freq as the real one does. */
 void dsd_app_command_test_set_tune_leg(int (*tune_leg)(dsd_opts* opts, dsd_state* state, uint32_t hz));
+/* Replace the io_control tune of the manual retunes (the channel and candidate cycles, the returns to the control
+   channel; io_control_set_freq()) with @p tune_leg, or put it back with NULL, under the same contract. A table keyed by
+   frequency in @p tune_leg scripts a list whose rows answer differently (issue #666). */
+void dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz));
 #endif
 
 #ifdef __cplusplus

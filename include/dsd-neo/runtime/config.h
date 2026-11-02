@@ -588,6 +588,8 @@ typedef struct dsdneoUserConfig {
     char pulse_output[256];
     dsd_frontend_kind frontend_kind;
     int frontend_kind_is_set;
+    int terminal_mouse_wheel;        /* terminal wheel steps -Y/trunk-scan channels */
+    int terminal_mouse_wheel_is_set; /* distinguish explicit value from default */
 
     /* [mode] */
     int has_mode;

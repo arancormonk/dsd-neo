@@ -85,6 +85,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"output", "backend", "Audio output backend", "pulse", "pulse|null", DSDCFG_TYPE_ENUM, 0, 0},
     {"output", "pulse_sink", "PulseAudio sink device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"output", "frontend", "Frontend implementation", "none", "none|terminal", DSDCFG_TYPE_ENUM, 0, 0},
+    {"output", "terminal_mouse_wheel", "Terminal mouse wheel steps -Y and trunk-scan channels", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",

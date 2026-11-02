@@ -2476,6 +2476,34 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_cli_frontend PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CLI_FRONTEND COMMAND dsd-neo_test_runtime_cli_frontend)
 
+# The terminal frontend's SIGTSTP block on the session thread (POSIX; Windows has no SIGTSTP).
+if(DSD_ENABLE_TERMINAL_UI AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        runtime/test_runtime_cli_frontend_terminal.c
+        ${PROJECT_SOURCE_DIR}/apps/dsd-cli/frontend.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE DSD_CLI_HAS_TERMINAL_UI=1
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_cli_frontend_terminal
+        PRIVATE dsd-neo_runtime dsd-neo_platform
+    )
+    add_test(
+        NAME RUNTIME_CLI_FRONTEND_TERMINAL
+        COMMAND dsd-neo_test_runtime_cli_frontend_terminal
+    )
+endif()
+
 add_executable(
     dsd-neo_test_runtime_cli_frontend_api
     runtime/test_runtime_cli_frontend_api.c
@@ -2574,7 +2602,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_async_lifecycle
         ui/test_ui_async_lifecycle.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
     )
     # NCURSES_REENTRANT=0 keeps stdscr an extern variable (rather than a
     # function-call macro) so the curses stubs below can define and assign it.
@@ -2688,6 +2718,7 @@ add_executable(
     # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail and the
     # per-row name store beside it.
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     # Adopt/clear move and release the per-row key store; the swap consults the lockout epoch.
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -3348,6 +3379,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+            ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -4019,6 +4051,78 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(dsd-neo_test_ui_read_key PRIVATE ${CURSES_LIBRARIES})
     add_test(NAME UI_READ_KEY COMMAND dsd-neo_test_ui_read_key)
+
+    # The mouse wheel's xterm-driver admission, and its Display row against the
+    # host curses (issue #666).
+    add_executable(
+        dsd-neo_test_ui_mouse
+        ui/test_ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_mouse
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_mouse
+        PRIVATE dsd-neo_platform ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_MOUSE COMMAND dsd-neo_test_ui_mouse)
+
+    # The same against the fake tests/ui/curses.h, which has no button 5 (an
+    # ncurses with mouse version 1): the wheel is built out and its row hidden.
+    add_executable(
+        dsd-neo_test_ui_mouse_no_wheel
+        ui/test_ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_mouse_no_wheel
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/ui
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_MOUSE_NO_WHEEL COMMAND dsd-neo_test_ui_mouse_no_wheel)
+
+    # The frame loop's wheel capture on the host's real ncurses through a pty:
+    # a queued click after the capture switches off never blocks a frame. Skips
+    # (77) without a pty, xterm-256color terminfo or button 5.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_ui_mouse_pty
+            ui/test_ui_mouse_pty.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_mouse.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE DSD_NEO_TEST_HOOKS
+        )
+        target_include_directories(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+                ${CURSES_INCLUDE_DIRS}
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_mouse_pty
+            PRIVATE dsd-neo_platform ${CURSES_LIBRARIES}
+        )
+        add_test(NAME UI_MOUSE_PTY COMMAND dsd-neo_test_ui_mouse_pty)
+        set_tests_properties(
+            UI_MOUSE_PTY
+            PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+        )
+    endif()
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase
@@ -6207,6 +6311,21 @@ add_test(
     COMMAND dsd-neo_test_core_state_trunk_lcn_avoid
 )
 
+# Issue #666: the scan list's position records (the row heard, the backward-retry row)
+add_executable(
+    dsd-neo_test_core_state_lcn_nav
+    test_support/scan_group_stubs.c
+    core/test_core_state_lcn_nav.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
+)
+target_include_directories(
+    dsd-neo_test_core_state_lcn_nav
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_state_lcn_nav PRIVATE dsd-neo_runtime)
+add_test(NAME CORE_STATE_LCN_NAV COMMAND dsd-neo_test_core_state_lcn_nav)
+
 add_executable(
     dsd-neo_test_core_trunk_cold_start
     test_support/scan_group_stubs.c
@@ -7581,6 +7700,7 @@ add_executable(
     # A refused resume leaves a manual rigctl request the session's (issue #671).
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
 )
@@ -7653,6 +7773,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
     ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
@@ -8304,6 +8425,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
+            "LINKER:--wrap=dsd_engine_signal_search_active"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
@@ -10340,6 +10462,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -10372,6 +10495,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_sm_release.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -10404,6 +10528,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -10440,6 +10565,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -10483,6 +10609,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
@@ -10518,6 +10645,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -10570,6 +10698,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_move_release
@@ -10604,6 +10733,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -12862,6 +12992,22 @@ target_link_libraries(
 )
 add_test(NAME P25_SM_CAND_COOLDOWN COMMAND dsd-neo_test_p25_sm_cand_cooldown)
 
+# P25 SM hunt: a deferred probe retries its candidate or channel-list row, and an accepted row is the row heard
+# (issue #666)
+add_executable(
+    dsd-neo_test_p25_sm_hunt_deferred
+    protocol/p25/test_p25_sm_hunt_deferred.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_hunt_deferred
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_hunt_deferred
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_SM_HUNT_DEFERRED COMMAND dsd-neo_test_p25_sm_hunt_deferred)
+
 # P25 SM tag ring buffer semantics
 add_executable(
     dsd-neo_test_p25_sm_tags_ring
@@ -14688,6 +14834,27 @@ target_link_libraries(
 add_test(NAME PLATFORM_THREAD_YIELD COMMAND dsd-neo_test_platform_thread_yield)
 # A yield that blocks shows up as a hang, not a failed assert.
 set_tests_properties(PLATFORM_THREAD_YIELD PROPERTIES TIMEOUT 60)
+
+# SIGTSTP and pthread_sigmask() are POSIX; a Windows thread takes no terminal stop.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_platform_thread_stop_signal
+        platform/test_platform_thread_stop_signal.c
+        platform/test_platform_thread_stop_signal_cpp.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_platform_thread_stop_signal
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_thread_stop_signal
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME PLATFORM_THREAD_STOP_SIGNAL
+        COMMAND dsd-neo_test_platform_thread_stop_signal
+    )
+endif()
 
 set(_sndfile_fwd_contract_src
     "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c"

@@ -3320,6 +3320,31 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int sym_rate) {
     state->sps_hunt_counter = 0;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* A test's stand-in for the manual retunes' io_control leg (dsd_app_command_test_set_manual_tune_leg()), the sibling of
+   the frequency entry's: portable, where a link-time wrap of the io/control tune is not. */
+static int (*g_test_manual_tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz);
+
+void
+dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz)) {
+    g_test_manual_tune_leg = tune_leg;
+}
+#endif
+
+/* The io_control leg of request_manual_tune(): an RTL_STREAM_TUNE_* result, or -1 refused. */
+static int
+manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_test_manual_tune_leg) {
+        return g_test_manual_tune_leg(opts, state, hz);
+    }
+#endif
+    return io_control_set_freq(opts, state, hz);
+}
+
+/* @p out_result is the CC hook's result on the CC leg. On the io_control leg it is OK for an accepted tune (a timeout
+   included), DEFERRED for a deferred one and FAILED otherwise, so a caller can tell a front end's refusal from a tune
+   to retry (issue #666). */
 static int
 request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action,
                     dsd_trunk_tune_result* out_result, uint64_t* out_request_id) {
@@ -3339,10 +3364,12 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
 #if LONG_MAX > UINT32_MAX
         carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
 #endif
-        result = carried ? io_control_set_freq(opts, state, (uint32_t)freq) : -1;
+        result = carried ? manual_tune_io_leg(opts, state, (uint32_t)freq) : -1;
         if (result != RTL_STREAM_TUNE_DEFERRED) {
             /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
             dsd_engine_manual_tune_supersede(state);
+        } else {
+            tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
         }
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
@@ -3586,16 +3613,25 @@ cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
     nxdn_cc_hunt_note_retune(opts, state);
 }
 
+/* The candidate leg of a cycle in direction @p dir (1 Next, -1 Previous; issue #666). */
 static int
-try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
     long cand = 0;
-    if (opts->p25_prefer_candidates != 1 || !p25_cc_next_candidate(state, &cand)) {
+    dsd_trunk_cc_candidates_cursor cursor;
+    dsd_trunk_cc_candidates_checkpoint(state, &cursor);
+    if (opts->p25_prefer_candidates != 1
+        || !(dir < 0 ? p25_cc_prev_candidate(state, &cand) : p25_cc_next_candidate(state, &cand))) {
         return UI_CMD_APPLY_UNHANDLED;
     }
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id)) {
+        if (tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+            /* Nothing was tuned, so nothing was tried: the next press picks the same candidate (issue #666). A
+               refusal keeps it passed, as before. */
+            dsd_trunk_cc_candidates_restore(state, &cursor);
+        }
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -3618,45 +3654,64 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The row an untyped walk lands on (issue #666): from @p start, which is examined first, one row at a time in direction
+   @p dir (1 forward, -1 back), wrapping, the first with a frequency that is not avoided and that begins its run of
+   equal frequencies (row 0 always begins one). A run is one channel, so an avoided first row skips its run. One pass
+   over the list at most; -1 for none. */
 static int
-apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
-    int count = state->lcn_freq_count;
-    if (count <= 0) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-
-    int next = state->lcn_freq_roll;
-    if (next < 0 || next >= count) {
-        next = 0;
-    }
-    const int start = next;
-    long freq = 0;
+lcn_cycle_pick(const dsd_state* state, int start, int dir) {
+    const int count = state->lcn_freq_count;
+    int row = start;
     for (int examined = 0; examined < count; examined++) {
-        freq = *dsd_state_trunk_lcn_slot(state, next);
-        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)next)
-            && (next == 0 || *dsd_state_trunk_lcn_slot(state, next - 1) != freq)) {
-            break;
+        const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
+            && (row == 0 || *dsd_state_trunk_lcn_slot_const(state, row - 1) != freq)) {
+            return row;
         }
-        next++;
-        if (next >= count) {
-            next = 0;
-        }
-        freq = 0;
+        row = (row + dir + count) % count;
     }
+    return -1;
+}
 
-    if (freq == 0) {
-        state->lcn_freq_roll = start + 1;
-        if (state->lcn_freq_roll >= count) {
-            state->lcn_freq_roll = 0;
-        }
-        return UI_CMD_APPLY_COMPLETED;
+/* The cursor, the row heard and the retry after a walk in direction @p dir tuned @p row and the tune ended in
+   @p result (issue #666). Landed (either way): the cursor past the row, which becomes the row heard. Deferred: nothing,
+   so the next press tries the same row. Refused: going back, the row is the one to retry; going forward, the cursor
+   moves past it, so a row the tuner never takes cannot hold `L` on it. Either way a recorded row heard stays, and with
+   none the row heard is none rather than the row before the cursor, which names no row tuned. The scan's visit
+   timers read any cursor move as a retune, which a refusal is not, so each one that had seen the cursor is told the
+   new one and keeps its windows. One that had not seen it is left alone: the move it has yet to see (a landing, say)
+   still restarts its windows. */
+static void
+lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_result result) {
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        state->lcn_freq_roll = row + 1;
+        dsd_state_lcn_on_air_note(state, row);
+        return;
     }
-    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
-    uint64_t request_id = 0U;
-    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", &tune_result, &request_id)) {
-        return UI_CMD_APPLY_FAILED;
+    if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+        return;
     }
+    dsd_state_lcn_on_air_note_refused(state);
+    if (dir < 0) {
+        dsd_state_lcn_back_retry_note(state, row);
+        return;
+    }
+    const int seen = state->lcn_freq_roll;
+    state->lcn_freq_roll = row + 1;
+    if (state->scan_voice_gate_roll_seen == seen) {
+        state->scan_voice_gate_roll_seen = state->lcn_freq_roll;
+    }
+    if (state->scan_visit_roll_seen == seen) {
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+    }
+}
 
+/* A walk's accepted tune of @p row (@p tune_result, @p request_id from request_manual_tune()), forward or back:
+   the calls end and what was received goes, the cursor and the row heard follow (lcn_cycle_on_tune_outcome()), the
+   row's keys apply, and a P25 SM that owns the trunk is handed back its control channel. */
+static void
+lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_trunk_tune_result tune_result,
+                 uint64_t request_id) {
     reset_call_tracking(opts, state, 0);
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
@@ -3667,22 +3722,87 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
-    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
-    state->lcn_freq_roll = next + 1;
-    dsd_scan_row_keys_apply(state, next);
+    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)*dsd_state_trunk_lcn_slot(state, row) / 1000000);
+    lcn_cycle_on_tune_outcome(state, row, 1, DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_scan_row_keys_apply(state, row);
     mark_cc_sync(state, 1);
+    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) {
+        /* A -Y row's visit starts over here, not at the cursor move the timers read as a retune: a landing can leave
+           the cursor where an earlier refusal put it (Next refused on B, then Previous lands B), and B must not
+           inherit the voice gate and visit cap windows of the row before it. */
+        dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    }
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
     }
+}
+
+/* Where a backward untyped walk starts looking (issue #666): before the row a refused Previous left to retry, else
+   before the row heard, taken back to the first row of its run of equal frequencies (a run is one channel; never
+   across row 0), wrapping; with neither, at the last row. */
+static int
+lcn_cycle_back_start(const dsd_state* state) {
+    const int count = state->lcn_freq_count;
+    int anchor = dsd_state_lcn_back_retry_row(state);
+    if (anchor < 0) {
+        anchor = dsd_state_lcn_heard_row(state);
+        while (anchor > 0
+               && *dsd_state_trunk_lcn_slot_const(state, anchor - 1)
+                      == *dsd_state_trunk_lcn_slot_const(state, anchor)) {
+            anchor--;
+        }
+    }
+    return anchor < 0 ? count - 1 : (anchor - 1 + count) % count;
+}
+
+/* One untyped (or -T) list step in direction @p dir (1 Next, -1 Previous; issue #666). Forward starts at the cursor,
+   whatever a refused Previous left to retry; back, at lcn_cycle_back_start(). */
+static int
+apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
+    const int count = state->lcn_freq_count;
+    if (count <= 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    int start = 0;
+    if (dir > 0) {
+        dsd_state_lcn_back_retry_clear(state);
+        start = (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= count) ? 0 : state->lcn_freq_roll;
+    } else {
+        start = lcn_cycle_back_start(state);
+    }
+    const int row = lcn_cycle_pick(state, start, dir);
+    if (row < 0) {
+        /* Nowhere to land: the row heard, the keys and the calls stay. Forward, the cursor steps on, as it always has;
+           back, nothing moves. */
+        if (dir > 0) {
+            state->lcn_freq_roll = start + 1 >= count ? 0 : start + 1;
+        }
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    if (!request_manual_tune(opts, state, *dsd_state_trunk_lcn_slot(state, row), 0, "Channel cycle", &tune_result,
+                             &request_id)) {
+        lcn_cycle_on_tune_outcome(state, row, dir, tune_result);
+        return UI_CMD_APPLY_FAILED;
+    }
+    lcn_cycle_finish(opts, state, row, p25_live, tune_result, request_id);
     return UI_CMD_APPLY_COMPLETED;
+}
+
+/* A list step in direction @p dir: a typed -Y list's rows through the channel scan, any other list here. */
+static int
+apply_manual_lcn_cycle_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
+    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
+        return dsd_engine_channel_scan_step_manual_dir(opts, state, dir) < 0 ? UI_CMD_APPLY_FAILED
+                                                                             : UI_CMD_APPLY_COMPLETED;
+    }
+    return apply_manual_lcn_cycle_untyped_dir_locked(opts, state, p25_live, dir);
 }
 
 static int
 apply_manual_lcn_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
-    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
-        return dsd_engine_channel_scan_step_manual(opts, state) < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
-    }
-    return apply_manual_lcn_cycle_untyped_locked(opts, state, p25_live);
+    return apply_manual_lcn_cycle_dir_locked(opts, state, p25_live, 1);
 }
 
 static int
@@ -3692,22 +3812,39 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
 
 /* #506: both legs retune through the tuning hooks, past p25_sm_release(), exactly
  * like the lockout and the return-to-CC do. Without the handoff the SM stays TUNED on
- * the assignment it was following and refuses every later grant as a preemption of it. */
+ * the assignment it was following and refuses every later grant as a preemption of it.
+ * @p dir is the cycle's direction: 1 Next, -1 Previous (issue #666). Next is a forward start whichever leg takes it, so
+ * it drops the row a refused Previous left to retry before the leg is chosen: a candidate Next, which never reaches the
+ * list walk's own clear, would otherwise leave that row for the next Previous on the list. */
 static int
-apply_manual_channel_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
-    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
-        return apply_manual_lcn_cycle_locked(opts, state, p25_live);
+apply_manual_channel_cycle_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
+    if (dir > 0) {
+        dsd_state_lcn_back_retry_clear(state);
     }
-    const int candidate_status = try_manual_candidate_cycle_locked(opts, state, p25_live);
+    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
+        return apply_manual_lcn_cycle_dir_locked(opts, state, p25_live, dir);
+    }
+    const int candidate_status = try_manual_candidate_cycle_locked(opts, state, p25_live, dir);
     if (candidate_status != UI_CMD_APPLY_UNHANDLED) {
         return candidate_status;
     }
-    return apply_manual_lcn_cycle_locked(opts, state, p25_live);
+    return apply_manual_lcn_cycle_dir_locked(opts, state, p25_live, dir);
 }
 
 static int
-apply_manual_channel_cycle(dsd_opts* opts, dsd_state* state) {
-    return run_manual_retune_guarded(opts, state, apply_manual_channel_cycle_locked);
+apply_manual_channel_cycle_next_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    return apply_manual_channel_cycle_dir_locked(opts, state, p25_live, 1);
+}
+
+static int
+apply_manual_channel_cycle_prev_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    return apply_manual_channel_cycle_dir_locked(opts, state, p25_live, -1);
+}
+
+static int
+apply_manual_channel_cycle(dsd_opts* opts, dsd_state* state, int dir) {
+    return run_manual_retune_guarded(
+        opts, state, dir < 0 ? apply_manual_channel_cycle_prev_locked : apply_manual_channel_cycle_next_locked);
 }
 
 #ifdef USE_RADIO
@@ -4399,6 +4536,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_CONST_NORM_TOGGLE,
     DSD_APP_CMD_EYE_TOGGLE,
     DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE,
     DSD_APP_CMD_EYE_COLOR_TOGGLE,
     DSD_APP_CMD_FSK_HIST_TOGGLE,
     DSD_APP_CMD_SPECTRUM_TOGGLE,
@@ -4415,6 +4553,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_RIGCTL_CONNECT,
     DSD_APP_CMD_RETURN_CC,
     DSD_APP_CMD_CHANNEL_CYCLE,
+    DSD_APP_CMD_CHANNEL_CYCLE_PREV,
     DSD_APP_CMD_SYMCAP_SAVE,
     DSD_APP_CMD_SYMCAP_STOP,
     DSD_APP_CMD_REPLAY_LAST,
@@ -5074,6 +5213,17 @@ ui_cmd_handle_eye_unicode_toggle(dsd_opts* opts, dsd_state* state, const struct 
     return 1;
 }
 
+/* Opt-in terminal wheel stepping (issue #666). The toast names the state because the setting changes nothing on screen
+   until a -Y or --trunk-scan list runs. */
+static int
+ui_cmd_handle_mouse_wheel_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    opts->frontend_terminal_display.mouse_wheel = opts->frontend_terminal_display.mouse_wheel ? 0 : 1;
+    ui_set_toast(state, 3, "Mouse wheel steps channels: %s",
+                 opts->frontend_terminal_display.mouse_wheel ? "On" : "Off");
+    return 1;
+}
+
 static int
 ui_cmd_handle_eye_color_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
@@ -5139,6 +5289,7 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_EYE_TOGGLE, ui_cmd_handle_eye_toggle},
         {DSD_APP_CMD_EYE_UNICODE_TOGGLE, ui_cmd_handle_eye_unicode_toggle},
+        {DSD_APP_CMD_MOUSE_WHEEL_TOGGLE, ui_cmd_handle_mouse_wheel_toggle},
         {DSD_APP_CMD_EYE_COLOR_TOGGLE, ui_cmd_handle_eye_color_toggle},
         {DSD_APP_CMD_FSK_HIST_TOGGLE, ui_cmd_handle_fsk_hist_toggle},
         {DSD_APP_CMD_SPECTRUM_TOGGLE, ui_cmd_handle_spectrum_toggle},
@@ -7315,11 +7466,13 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
+/* Avoids the row the receiver is on (issue #666), not the one before the cursor: a placeholder the scan parked on, or a
+   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. */
 static void
 apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
-    const int count = state->lcn_freq_count;
-    const int roll = state->lcn_freq_roll;
-    if (count <= 0 || roll < 1 || roll > count) {
+    const int row = dsd_engine_channel_scan_on_air_row(state);
+    const long freq = row >= 0 ? *dsd_state_trunk_lcn_slot(state, row) : 0L;
+    if (freq == 0) {
         ui_set_toast(state, 3, "No scan channel on air to avoid");
         return;
     }
@@ -7327,8 +7480,6 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Cannot avoid the last usable scan channel");
         return;
     }
-    const int row = roll - 1;
-    const long freq = *dsd_state_trunk_lcn_slot(state, row);
     if (dsd_state_trunk_lcn_avoid_set(state, (size_t)row, 1) != 0) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;
@@ -7349,28 +7500,17 @@ apply_manual_scan_avoid_clear(dsd_state* state) {
     ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
 }
 
-/* A scan control (hold, avoid, clear avoids, next) asked of a paused scan, -Y or trunk scan (issue #671): the scan has
-   no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
+/* A scan control (hold, avoid, clear avoids, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the
+   scan has no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
 static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
 
-/* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
-static int
-apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
-    char target_id[sizeof(state->trunk_scan_active_id)];
-    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
-    const int rc = dsd_trunk_scan_hook_control(opts, state, op);
-    if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
-        ui_set_toast(state, 3, "Trunk scan busy; try again");
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
-        ui_set_toast(state, 3, "Trunk scan is not running");
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    if (rc == DSD_TRUNK_SCAN_CONTROL_PAUSED) {
-        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
-        return UI_CMD_APPLY_FAILED;
-    }
+/* Next or Previous channel with nothing to tune (issue #666): neither a radio input nor a rigctl peer
+   (scan_control_tuner_present()). */
+static const char k_channel_cycle_no_tuner[] = "No tuner to change channel: use a radio input or a rigctl peer";
+
+/* The toast for an op the coordinator answered. @p target_id is the target that was on air before the op. */
+static void
+trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id) {
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
             if (rc >= 0) {
@@ -7391,12 +7531,38 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
             }
             break;
         case DSD_TRUNK_SCAN_CONTROL_ADVANCE:
+        case DSD_TRUNK_SCAN_CONTROL_RETREAT:
             if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
                 ui_set_toast(state, 3, "Trunk scan has only one target");
+            } else if (rc == 1) {
+                /* Stayed: nothing else was eligible, no switch could be prepared, or every alternate failed and the
+                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. */
+                ui_set_toast(state, 3, "Staying on target %s", state->trunk_scan_active_id);
             }
             break;
         default: break;
     }
+}
+
+/* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
+static int
+apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    char target_id[sizeof(state->trunk_scan_active_id)];
+    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
+    const int rc = dsd_trunk_scan_hook_control(opts, state, op);
+    if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
+        ui_set_toast(state, 3, "Trunk scan busy; try again");
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
+        ui_set_toast(state, 3, "Trunk scan is not running");
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_PAUSED) {
+        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
+        return UI_CMD_APPLY_FAILED;
+    }
+    trunk_scan_control_toast(state, op, rc, target_id);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7431,34 +7597,40 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     return 1;
 }
 
+/* Next or Previous channel (CHANNEL_CYCLE, CHANNEL_CYCLE_PREV; issue #666): one step through the list the session
+   runs, the same either way. */
 static int
 apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (c->id != DSD_APP_CMD_CHANNEL_CYCLE) {
+    if (c->id != DSD_APP_CMD_CHANNEL_CYCLE && c->id != DSD_APP_CMD_CHANNEL_CYCLE_PREV) {
         return 0;
     }
     if (!state) {
         return 1;
     }
-    // Every leg below is a retune the user asked for -- the next target, -Y row, P25 candidate or LCN -- refused during
-    // an I/Q replay as a tap is (issue #575).
+    const int dir = c->id == DSD_APP_CMD_CHANNEL_CYCLE_PREV ? -1 : 1;
+    // Every leg below is a retune the user asked for -- the next or previous target, -Y row, P25 candidate or LCN --
+    // refused during an I/Q replay as a tap is (issue #575).
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    // Under --trunk-scan "next" means the next target. Walking the parked target's own
+    // Under --trunk-scan "next" and "previous" mean a target. Walking the parked target's own
     // LCN list here would retune under the coordinator's feet and be snapshotted as if
     // the target had moved itself.
     if (opts->trunk_scan_enabled == 1) {
-        return apply_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+        return apply_trunk_scan_control(opts, state,
+                                        dir < 0 ? DSD_TRUNK_SCAN_CONTROL_RETREAT : DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     }
     /* A paused -Y list's next row is the resume's to choose: a step now would tune a row with no scan running it. */
     if (state->lcn_scan_paused) {
         ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
         return UI_CMD_APPLY_FAILED;
     }
-    if (scan_control_tuner_present(opts)) {
-        return apply_manual_channel_cycle(opts, state);
+    if (!scan_control_tuner_present(opts)) {
+        /* Nothing here can move the receiver (issue #666): say so, and what can, rather than doing nothing. */
+        ui_set_toast(state, 3, "%s", k_channel_cycle_no_tuner);
+        return UI_CMD_APPLY_FAILED;
     }
-    return 1;
+    return apply_manual_channel_cycle(opts, state, dir);
 }
 
 static int
@@ -9659,6 +9831,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_CONST_GATE_DELTA,
     DSD_APP_CMD_EYE_TOGGLE,
     DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_MOUSE_WHEEL_TOGGLE,
     DSD_APP_CMD_EYE_COLOR_TOGGLE,
     DSD_APP_CMD_FSK_HIST_TOGGLE,
     DSD_APP_CMD_SPECTRUM_TOGGLE,

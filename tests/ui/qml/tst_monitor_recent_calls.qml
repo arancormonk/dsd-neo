@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // The monitor's recent-calls pane is the same newest-first list as the history
 // log, and drifts the same way if the top is not re-asserted. It carries no
@@ -13,6 +14,14 @@ Item {
 
     width: 420
     height: 900
+
+    // The scan buttons' label font, as the row measures it.
+    FontMetrics {
+        id: labelMetrics
+        font.family: Ui.Theme.sans
+        font.pixelSize: Ui.Theme.fontSize(15)
+        font.weight: Font.DemiBold
+    }
 
     Loader {
         id: screenLoader
@@ -310,12 +319,13 @@ Item {
             var row = findChild(screenLoader.item, "scanControlsRow")
             var hold = findChild(screenLoader.item, "scanHoldButton")
             var avoid = findChild(screenLoader.item, "scanAvoidButton")
+            var prev = findChild(screenLoader.item, "scanPrevButton")
             var next = findChild(screenLoader.item, "scanNextButton")
             var badge = findChild(screenLoader.item, "scanAvoidRow")
             var value = findChild(screenLoader.item, "scanAvoidValue")
             var clear = findChild(screenLoader.item, "scanAvoidClearButton")
             verify(row !== null, "the scan controls row is missing")
-            verify(hold !== null && avoid !== null && next !== null, "a scan control button is missing")
+            verify(hold !== null && avoid !== null && prev !== null && next !== null, "a scan control button is missing")
             verify(badge !== null && value !== null && clear !== null, "the avoided badge is missing")
 
             testContext.setMetric("scanRotationActive", false)
@@ -326,11 +336,11 @@ Item {
             testContext.setMetric("scanRotationActive", true)
             tryVerify(function () { return row.visible })
             // One label; the engine's hold shows as checked (#718).
-            compare(hold.text, "Hold scan")
+            compare(hold.text, "Hold")
             verify(hold.checkable && !hold.checked)
             testContext.setMetric("scanHold", true)
             tryVerify(function () { return hold.checked })
-            compare(hold.text, "Hold scan")
+            compare(hold.text, "Hold")
             testContext.setMetric("scanHold", false)
             tryVerify(function () { return !hold.checked })
 
@@ -343,10 +353,12 @@ Item {
             testContext.resetCommands()
             hold.clicked()
             avoid.clicked()
+            prev.clicked()
             next.clicked()
             clear.clicked()
             compare(testContext.scanHoldCalls(), 1)
             compare(testContext.scanAvoidCalls(), 1)
+            compare(testContext.previousChannelCalls(), 1)
             compare(testContext.nextChannelCalls(), 1)
             compare(testContext.scanAvoidClearCalls(), 1)
 
@@ -367,7 +379,7 @@ Item {
 
         // Issue #671: a scan the operator paused has nothing on air to hold,
         // avoid or step past, so the row offers the one thing left: Resume scan,
-        // across the width the three took. A -Y resume already waiting on its
+        // across the width the four take. A -Y resume already waiting on its
         // first channel has nothing to ask for twice. The avoided count waits
         // with the scan, out of sight, since Clear is refused while it is paused.
         function test_03d_a_paused_scan_offers_resume_in_place_of_the_controls() {
@@ -375,6 +387,7 @@ Item {
             var resume = findChild(screenLoader.item, "scanResumeButton")
             var hold = findChild(screenLoader.item, "scanHoldButton")
             var avoid = findChild(screenLoader.item, "scanAvoidButton")
+            var prev = findChild(screenLoader.item, "scanPrevButton")
             var next = findChild(screenLoader.item, "scanNextButton")
             var badge = findChild(screenLoader.item, "scanAvoidRow")
             verify(resume !== null, "the resume button is missing")
@@ -390,11 +403,13 @@ Item {
                 testContext.setMetric("scanResumable", true)
                 tryVerify(function () { return resume.visible })
                 verify(row.visible, "the row went with the rotation")
-                verify(!hold.visible && !avoid.visible && !next.visible, "a paused scan kept its rotation controls")
+                verify(!hold.visible && !avoid.visible && !prev.visible && !next.visible, "a paused scan kept its rotation controls")
                 verify(!badge.visible, "a paused scan offered Clear")
                 compare(resume.text, "Resume scan")
                 verify(resume.enabled)
-                compare(resume.width, 3 * hold.width + 2 * row.spacing, "the resume does not span the row")
+                compare(row.columns, 4)
+                compare(resume.width, 4 * hold.width + 3 * row.spacing, "the resume does not span the row")
+                compare(resume.x, hold.x, "the resume starts where Hold does")
                 verify(resume.height >= 48, "the resume is under a touch target")
                 resume.clicked()
                 compare(testContext.resumeScanCalls(), 1)
@@ -411,6 +426,151 @@ Item {
                 testContext.setMetric("scanRotationActive", false)
                 testContext.setMetric("scanAvoidCount", 0)
                 testContext.setHostRunning(false)
+            }
+        }
+
+        // Issue #666 (D3): Hold, Avoid, Prev and Next are four equal whole-pixel
+        // cells on the call actions' rule: four columns while a quarter of the row,
+        // less the 12 px either side of a label, fits the longest word, else two
+        // rows of two, Prev and Next under Hold and Avoid. On a 360 dp phone the
+        // four fit one 48 px row at normal text and fall back to two columns at
+        // 1.6x. A paused scan's Resume spans the columns in one row.
+        function test_03e_the_scan_row_is_one_grid_of_four_data() {
+            return [
+                {tag: "360@1", width: 360, scale: 1, columns: 4},
+                {tag: "320@1", width: 320, scale: 1, columns: 4},
+                {tag: "360@1.6", width: 360, scale: 1.6, columns: 2},
+                {tag: "411@1.6", width: 411, scale: 1.6, columns: 2},
+                {tag: "640@1.6", width: 640, scale: 1.6, columns: 4},
+                {tag: "320@2", width: 320, scale: 2, columns: 2}
+            ]
+        }
+        function test_03e_the_scan_row_is_one_grid_of_four(data) {
+            var monitor = screenLoader.item
+            var row = findChild(monitor, "scanControlsRow")
+            var resume = findChild(monitor, "scanResumeButton")
+            var buttons = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton"].map(function (name) {
+                var found = findChild(monitor, name)
+                verify(found !== null, name + " is missing")
+                return found
+            })
+            root.width = data.width
+            Ui.Theme.fontScale = data.scale
+            testContext.setHostRunning(true)
+            try {
+                testContext.setMetric("scanRotationActive", true)
+                tryVerify(function () { return row.visible })
+                waitForRendering(monitor)
+                compare(row.columns, data.columns)
+                var rows = 4 / data.columns
+                compare(row.height, rows * row.cellHeight + (rows - 1) * row.spacing)
+                for (var i = 0; i < 4; ++i) {
+                    var b = buttons[i]
+                    verify(b.visible && b.enabled, b.objectName)
+                    compare(b.width, buttons[0].width, b.objectName + " is a cell of its own width")
+                    compare(b.width, Math.floor(b.width), b.objectName + " ends on a fraction")
+                    compare(b.height, buttons[0].height, b.objectName)
+                    verify(b.height >= Ui.Theme.minimumTouchSize, b.objectName + " is under a touch target")
+                    var left = b.mapToItem(monitor, 0, 0).x
+                    verify(left >= Ui.Theme.screenPadding - 0.5 && left + b.width <= data.width - Ui.Theme.screenPadding + 0.5,
+                           b.objectName + " leaves the screen's padding")
+                }
+                // Reading order: Hold, Avoid, then Prev, Next, across and down.
+                compare(buttons[1].y, buttons[0].y)
+                compare(buttons[3].y, buttons[2].y)
+                compare(buttons[2].y > buttons[0].y, data.columns === 2, "Prev starts the second row")
+                var cell = buttons[0].width
+                compare(buttons[1].x - buttons[0].x, cell + row.spacing)
+                compare(buttons[3].x - buttons[2].x, cell + row.spacing)
+                compare(buttons[2].x, data.columns === 2 ? buttons[0].x : buttons[1].x + cell + row.spacing)
+
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setMetric("scanPaused", true)
+                testContext.setMetric("scanResumable", true)
+                tryVerify(function () { return resume.visible })
+                compare(resume.x, buttons[0].x, "the resume starts where Hold does")
+                compare(resume.width, data.columns * buttons[0].width + (data.columns - 1) * row.spacing,
+                        "the resume spans the columns")
+                compare(row.height, resume.height, "a paused scan's row is the one resume")
+                compare(resume.height, buttons[0].height)
+            } finally {
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("scanResumable", false)
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setHostRunning(false)
+                Ui.Theme.resetFontScale()
+                root.width = 420
+            }
+        }
+
+        // Issue #666 (B10): a scan button's label never breaks inside a word,
+        // whatever the text size. On a 320 dp phone at Android's 200% font size
+        // "Avoid" outgrew a third of the row and its label read "Avoi" over "d".
+        // The paused row's Resume scan is held to the same rule.
+        function test_03f_scan_labels_never_break_inside_a_word_data() {
+            return [
+                {tag: "360@1", width: 360, scale: 1},
+                {tag: "320@1", width: 320, scale: 1},
+                {tag: "360@1.3", width: 360, scale: 1.3},
+                {tag: "360@1.6", width: 360, scale: 1.6},
+                {tag: "320@1.6", width: 320, scale: 1.6},
+                {tag: "320@2", width: 320, scale: 2},
+                {tag: "411@2", width: 411, scale: 2}
+            ]
+        }
+        function labelOf(button) {
+            for (var i = 0; i < button.children.length; ++i) {
+                var child = button.children[i]
+                if (child.lineCount !== undefined && child.text === button.text)
+                    return child
+            }
+            return null
+        }
+        // The visible labels in the scan row, each checked whole-word: returns
+        // their texts in row order.
+        function checkScanLabels(row) {
+            var seen = []
+            for (var i = 0; i < row.children.length; ++i) {
+                var button = row.children[i]
+                var label = button.visible && button.text !== undefined ? labelOf(button) : null
+                if (label === null)
+                    continue
+                var words = button.text.split(" ")
+                verify(label.lineCount <= words.length,
+                       button.objectName + ": \"" + button.text + "\" breaks inside a word (" + label.lineCount + " lines)")
+                for (var word of words)
+                    verify(label.width >= labelMetrics.advanceWidth(word),
+                           button.objectName + ": \"" + word + "\" does not fit its cell")
+                verify(!label.truncated, button.objectName + ": \"" + button.text + "\" is cut short")
+                seen.push(button.text)
+            }
+            return seen
+        }
+        function test_03f_scan_labels_never_break_inside_a_word(data) {
+            var row = findChild(screenLoader.item, "scanControlsRow")
+            var resume = findChild(screenLoader.item, "scanResumeButton")
+            root.width = data.width
+            Ui.Theme.fontScale = data.scale
+            testContext.setHostRunning(true)
+            try {
+                testContext.setMetric("scanRotationActive", true)
+                tryVerify(function () { return row.visible })
+                waitForRendering(screenLoader.item)
+                compare(checkScanLabels(row), ["Hold", "Avoid", "Prev", "Next"])
+
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setMetric("scanPaused", true)
+                testContext.setMetric("scanResumable", true)
+                tryVerify(function () { return resume.visible })
+                waitForRendering(screenLoader.item)
+                compare(checkScanLabels(row), ["Resume scan"])
+            } finally {
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("scanResumable", false)
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setHostRunning(false)
+                Ui.Theme.resetFontScale()
+                root.width = 420
             }
         }
 

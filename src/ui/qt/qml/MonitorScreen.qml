@@ -1160,32 +1160,55 @@ Item {
         // channel") arrive through uiMessage below. While the operator has the
         // scan paused (issue #671) there is nothing on air to hold, avoid or
         // step past, and the one thing to do is resume it.
-        Row {
+        Item {
             id: scanControls
             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
             objectName: "scanControlsRow"
 
             width: parent.width
-            spacing: 10
+            readonly property int spacing: 10
             visible: metrics.scanRotationActive || screen.scanPaused
-            // Whole pixels: a cell ending on a fraction loses its right border to
-            // the list's clip when the strip is in the list. Sized from the width
-            // both of the strip's hosts give it (the screen less its padding), not
-            // from the host it sits in: the cells' height is part of the budget
-            // that picks the host, and reading the host back closed that loop.
-            readonly property real cell: Math.floor((screen.width - 2 * Theme.screenPadding - 20) / 3)
-            leftPadding: Math.floor((width - 3 * cell - 20) / 2)
-            // One height for the three, from the widest label: a label that needs
-            // two lines on a narrow phone takes them in every cell.
-            readonly property real cellHeight: {
+            // Hold, Avoid, Prev and Next (issue #666) on the call actions' grid
+            // rule: four equal columns when the longest word of any label fits a
+            // quarter cell less the 12 px OutlineButton keeps either side, else two
+            // rows of two, so no label ever breaks inside a word. One word each
+            // keeps the four on one 48 px row on a 320 dp phone at normal text.
+            readonly property var labels: [qsTr("Hold"), qsTr("Avoid"), qsTr("Prev"), qsTr("Next")]
+            readonly property real widest: {
+                // advanceWidth() is a call, which a binding does not track:
+                // reading the font re-measures on a scale change.
                 var font = scanMetrics.font;
                 var widest = 0;
-                for (var label of [qsTr("Hold scan"), qsTr("Avoid"), qsTr("Next")])
+                for (var label of labels)
                     widest = Math.max(widest, scanMetrics.advanceWidth(label));
-                var lines = widest <= cell - 24 ? 1 : 2;
-                return Math.max(Theme.minimumTouchSize, Math.ceil(lines * scanMetrics.lineSpacing) + 24);
+                return Math.ceil(widest);
             }
-            height: cellHeight
+            readonly property real longestWord: {
+                var font = scanMetrics.font;
+                var longest = 0;
+                for (var label of labels) {
+                    for (var word of label.split(" "))
+                        longest = Math.max(longest, scanMetrics.advanceWidth(word));
+                }
+                return Math.ceil(longest);
+            }
+            // Sized from the width both of the strip's hosts give it (the screen
+            // less its padding), not from the host it sits in: the cells' height
+            // is part of the budget that picks the host, and reading the host back
+            // closed that loop.
+            readonly property real span: screen.width - 2 * Theme.screenPadding
+            readonly property int columns: (span - 3 * spacing) / 4 - 24 >= longestWord ? 4 : 2
+            // Whole pixels: a cell ending on a fraction loses its right border to
+            // the list's clip when the strip is in the list.
+            readonly property real cell: Math.floor((span - (columns - 1) * spacing) / columns)
+            // What the whole pixels leave over, split either side.
+            readonly property real inset: Math.floor((width - columns * cell - (columns - 1) * spacing) / 2)
+            // One height for every cell, from the widest label.
+            readonly property int labelLines: widest <= cell - 24 ? 1 : 2
+            readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * scanMetrics.lineSpacing) + 24)
+            // A paused scan shows the one Resume.
+            readonly property int rows: screen.scanPaused ? 1 : Math.ceil(4 / columns)
+            height: rows * cellHeight + (rows - 1) * spacing
 
             FontMetrics {
                 id: scanMetrics
@@ -1197,9 +1220,12 @@ Item {
             OutlineButton {
                 objectName: "scanResumeButton"
 
-                // The three cells' width, so the row keeps its edges.
-                width: 3 * scanControls.cell + 2 * scanControls.spacing
+                // The columns' width, so the row keeps its edges.
+                x: scanControls.inset
+                width: scanControls.columns * scanControls.cell + (scanControls.columns - 1) * scanControls.spacing
                 height: scanControls.cellHeight
+                maximumLineCount: scanControls.labelLines
+                wrapMode: Text.WordWrap
                 visible: screen.scanPaused
                 text: qsTr("Resume scan")
                 // Not twice: a -Y resume already waiting on its tune reads paused.
@@ -1210,11 +1236,15 @@ Item {
             OutlineButton {
                 objectName: "scanHoldButton"
 
+                x: scanControls.inset + (0 % scanControls.columns) * (scanControls.cell + scanControls.spacing)
+                y: Math.floor(0 / scanControls.columns) * (scanControls.cellHeight + scanControls.spacing)
                 width: scanControls.cell
                 height: scanControls.cellHeight
+                maximumLineCount: scanControls.labelLines
+                wrapMode: Text.WordWrap
                 // A toggle with one label, its hold shown as checked like Hold TG's
                 // (#718): "Release scan" took two lines on a phone.
-                text: qsTr("Hold scan")
+                text: qsTr("Hold")
                 accessibleName: qsTr("Hold the scan here")
                 checkable: true
                 checked: screen.scanHeld
@@ -1227,20 +1257,47 @@ Item {
             OutlineButton {
                 objectName: "scanAvoidButton"
 
+                x: scanControls.inset + (1 % scanControls.columns) * (scanControls.cell + scanControls.spacing)
+                y: Math.floor(1 / scanControls.columns) * (scanControls.cellHeight + scanControls.spacing)
                 width: scanControls.cell
                 height: scanControls.cellHeight
+                maximumLineCount: scanControls.labelLines
+                wrapMode: Text.WordWrap
                 text: qsTr("Avoid")
+                // The call actions below avoid a talkgroup; this one, the channel.
+                accessibleName: qsTr("Avoid this scan channel")
                 visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.avoidCurrentChannel()
             }
 
             OutlineButton {
-                objectName: "scanNextButton"
+                objectName: "scanPrevButton"
 
+                x: scanControls.inset + (2 % scanControls.columns) * (scanControls.cell + scanControls.spacing)
+                y: Math.floor(2 / scanControls.columns) * (scanControls.cellHeight + scanControls.spacing)
                 width: scanControls.cell
                 height: scanControls.cellHeight
+                maximumLineCount: scanControls.labelLines
+                wrapMode: Text.WordWrap
+                text: qsTr("Prev")
+                accessibleName: qsTr("Previous scan channel")
+                visible: !screen.scanPaused
+                enabled: decoderHost.running
+                onClicked: commands.previousChannel()
+            }
+
+            OutlineButton {
+                objectName: "scanNextButton"
+
+                x: scanControls.inset + (3 % scanControls.columns) * (scanControls.cell + scanControls.spacing)
+                y: Math.floor(3 / scanControls.columns) * (scanControls.cellHeight + scanControls.spacing)
+                width: scanControls.cell
+                height: scanControls.cellHeight
+                maximumLineCount: scanControls.labelLines
+                wrapMode: Text.WordWrap
                 text: qsTr("Next")
+                accessibleName: qsTr("Next scan channel")
                 visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.nextChannel()

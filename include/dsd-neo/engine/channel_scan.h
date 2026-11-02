@@ -14,8 +14,17 @@ extern "C" {
 #endif
 /** Enter the next eligible row. 1 committed, 0 parked/pending, -1 failed. Ignores hold for manual use. */
 int dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
-/** Manual next-row action: skip zero-frequency placeholders in one bounded pass. */
+/** Manual next-row action: dsd_engine_channel_scan_step_manual_dir() forward. */
 int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
+/** Manual step one row in direction @p dir (1 Next, -1 Previous; issue #666), skipping zero-frequency placeholders and
+ * avoided rows in one bounded pass and keeping rows that share a frequency (each may run another mode, options or
+ * keys). Forward starts at the cursor (lcn_freq_roll). Back starts before the row a refused Previous left to retry,
+ * else before the row heard (the last row a step landed: dsd_state_lcn_on_air_row()), wrapping, else at the last row.
+ * A row that lands moves the cursor past it either way; a refused one moves the cursor past it going forward, and
+ * going back keeps the cursor and is the row the next Previous retries; a deferral changes nothing. While a row's tune
+ * is outstanding or owed a restage, the press services it instead, either way. 1 committed, 0 parked/pending or
+ * nothing to land on, -1 failed. */
+int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
@@ -40,13 +49,14 @@ int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
  * untyped one has no scope); with @p in_place (no tune follows: a tuner release) the carrier's decoding is forgotten
  * next, as a carrier boundary would, since none runs. Then the configured decoder, receive profile and rigctl
- * passband come back as at a leave, and the row keys leave. Kept: the list, the cursor (lcn_freq_roll), the avoids,
- * the session edits and their session. Dropped: a row tune staged or pending (nothing commits after the pause,
- * lcn_scan_session moves), a retry, a commit owed, the row on air and its staged options and keys, and an operator
- * hold. Leaves scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume still pending. Nothing
- * to do (0) without a -Y scan running or resuming (dsd_channel_scan_owns_tuner()). Returns what the return to the configured profile asked of the
- * monitor, as dsd_engine_channel_scan_leave() does; the interactive pause goes through svc_pause_channel_scan().
- * Safe under the P25 SM tick guard: nothing under it takes the guard its caller holds. Decoder thread. */
+ * passband come back as at a leave, and the row keys leave. Kept: the list, the cursor (lcn_freq_roll) and the row
+ * heard (issue #666), the avoids, the session edits and their session. Dropped: a row tune staged or pending (nothing
+ * commits after the pause, lcn_scan_session moves), a retry, a commit owed, the row on air and its staged options and
+ * keys, and an operator hold. Leaves scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume
+ * still pending. Nothing to do (0) without a -Y scan running or resuming (dsd_channel_scan_owns_tuner()). Returns
+ * what the return to the configured profile asked of the monitor, as dsd_engine_channel_scan_leave() does; the
+ * interactive pause goes through svc_pause_channel_scan(). Safe under the P25 SM tick guard: nothing under it takes
+ * the guard its caller holds. Decoder thread. */
 int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place);
 
 /** dsd_engine_channel_scan_resume() results. */
@@ -91,11 +101,16 @@ int dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* 
  * digital or am row, or one inheriting a decode mode other than the FM monitor) or whose tone policy passes the
  * traffic. A row on the frequency on air that runs the FM monitor under a policy that rejects the traffic too (the
  * same policy, as every row of a list without modes runs) is nowhere to go. The row on air is the one whose tune last
- * landed on this map, which a failed start does not change; for a list without modes, the one before lcn_freq_roll.
+ * landed on this map, which a failed start does not change; for a list without modes, the row heard
+ * (dsd_engine_channel_scan_on_air_row()).
  * Without such a row a step would only land on the row on air, or on a row that rejects the traffic alike, end the
  * reception and judge the same traffic once more, so the scanner keeps it, muted. Works on both the typed and the
  * untyped (legacy) -Y list. 0 for NULL arguments. */
 int dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state);
+/** The -Y list row the receiver is on (issue #666): on a typed list the row whose tune last landed on the current map,
+ * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
+ * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */
+int dsd_engine_channel_scan_on_air_row(const dsd_state* state);
 /**
  * @brief Edit one field of a typed -Y row's own settings until the scanner leaves ("this channel", issue #518).
  *

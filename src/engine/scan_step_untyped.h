@@ -26,6 +26,9 @@ enum {
     DSD_UNTYPED_STEP_FAILED_MOVED = 2, /* A leg moved the receiver and a later one failed: the outgoing boundary ran and
                                           the tone heard went, but the row is not committed. */
     DSD_UNTYPED_STEP_FAILED = 3,       /* Nothing moved. */
+    DSD_UNTYPED_STEP_DEFERRED = 4,     /* The RTL tune was deferred behind another owner's, so the row is tried again
+                                          rather than passed as one a front end refused (issue #666). A rigctl leg that
+                                          moved first already ran the outgoing boundary. */
 };
 
 /* The first row at or after @p from_roll (wrapping; one outside the list starts at row 0) that is not avoided, and with
@@ -34,19 +37,20 @@ enum {
 int dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders);
 
 /* Tune every configured front end to @p row and commit it as the timed step does (see the results above), with @p now
-   the decode clock's wall second (dsd_decode_time()) the row's clocks start from. A failure, pending or not, reopens
-   the scan's windows as an abandoned step does. A placeholder row only parks (committed, no tune, no boundary). Runs
-   the SCAN_STEP carrier boundary, which takes no tick guard. Decoder thread. */
+   the decode clock's wall second (dsd_decode_time()) the row's clocks start from. A row that does not land (failed,
+   deferred or pending) reopens the scan's windows as an abandoned step does, and leaves the cursor to the caller. A
+   placeholder row only parks (committed, no tune, no boundary). Runs the SCAN_STEP carrier boundary, which takes no
+   tick guard. Decoder thread. */
 int dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now);
 
 /* The engine loop's poll of a manual tune that timed out (dsd_engine_manual_tune_poll()). An untyped step's row commits
    when its tune lands while its scan is still current: a -Y scan without modes, running or with a resume pending
    (dsd_state::lcn_scan_resume_pending), in the same session (dsd_state::lcn_scan_session), on the same map
    (trunk_chan_map_seq), the row still on the frequency tuned. A resume's landing then publishes the scan
-   (dsd_engine_channel_scan_resume_landed()). A failure reopens the scan's windows, as a step that failed in its wait
-   does; a resume's failure leaves the scan paused instead (dsd_engine_channel_scan_resume_failed()). A row whose scan
-   is no longer current commits nothing: the poll's reconcile of the cached frequency is all. Returns the poll's result.
-   Decoder thread. */
+   (dsd_engine_channel_scan_resume_landed()). A failure moves the cursor past the row the front end refused and reopens
+   the scan's windows, as a refusal in the step does (issue #666); a resume's failure leaves the scan paused instead
+   (dsd_engine_channel_scan_resume_failed()). A row whose scan is no longer current commits nothing: the poll's
+   reconcile of the cached frequency is all. Returns the poll's result. Decoder thread. */
 int dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state);
 
 /* A resume's row has landed and is installed (issue #671): the scan runs again (scanner_mode 1) and is no longer

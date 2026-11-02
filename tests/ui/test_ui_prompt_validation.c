@@ -361,8 +361,9 @@ static void
 test_prompt_ignores_non_character_keys(void) {
     open_plain_prompt();
     type_text("a");
-    static const int keys[] = {KEY_UP,      KEY_DOWN,     KEY_NPAGE, KEY_PPAGE, KEY_F(1), KEY_F(12), KEY_MOUSE, KEY_MAX,
-                               KEY_MAX - 1, KEY_MAX + 75, 0x1FF,     0x4FE,     0x10000,  1,         0x1F};
+    static const int keys[] = {KEY_UP,  KEY_DOWN,        KEY_NPAGE,        KEY_PPAGE, KEY_F(1), KEY_F(12), KEY_MOUSE,
+                               KEY_MAX, KEY_MAX - 1,     KEY_MAX + 75,     0x1FF,     0x4FE,    0x10000,   1,
+                               0x1F,    UI_KEY_WHEEL_UP, UI_KEY_WHEEL_DOWN};
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         assert(ui_prompt_handle_key(keys[i]) == 1);
         assert(ui_prompt_active() == 1);

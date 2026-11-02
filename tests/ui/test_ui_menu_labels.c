@@ -1005,6 +1005,9 @@ test_display_and_advanced_labels(void) {
     rc |= expect_str("compact view off", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact view [Off]");
     opts.frontend_terminal_display.terminal_compact = 1;
     rc |= expect_str("compact view on", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact view [On]");
+    rc |= expect_str("mouse wheel off", lbl_ui_mouse_wheel(&ctx, b, sizeof(b)), "Mouse wheel steps channels [Off]");
+    opts.frontend_terminal_display.mouse_wheel = 1;
+    rc |= expect_str("mouse wheel on", lbl_ui_mouse_wheel(&ctx, b, sizeof(b)), "Mouse wheel steps channels [On]");
 
     opts.frontend_display.constellation = 1;
     opts.frontend_display.const_norm_mode = 0;
