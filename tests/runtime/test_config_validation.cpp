@@ -1645,6 +1645,21 @@ test_analog_max_gap_validation(void) {
     return rc;
 }
 
+/* Issue #668: [recording] analog_preroll_ms (0..1000) is refused outside its range, as the NFM max gap is. */
+static int
+test_analog_preroll_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("analog_preroll_ms", "0", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "200", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "1000", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 1000] and is refused");
+    rc |= run_recording_key_case("analog_preroll_ms", "1001", DSDCFG_DIAG_ERROR,
+                                 "Value 1001 is out of range [0, 1000] and is refused");
+    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    return rc;
+}
+
 /* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
  * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
 static int
@@ -2396,6 +2411,7 @@ main(void) {
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
     rc |= test_analog_max_gap_validation();
+    rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

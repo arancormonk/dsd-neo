@@ -99,6 +99,7 @@ typedef struct {
 /* The NFM recording pre-roll in ms (dsd_opts.analog_record_preroll_ms, issue #668): how much of the allowed audio just
    before a reception a new per-call recording opens with. 0 is off. */
 #define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 0
+#define DSD_ANALOG_RECORD_PREROLL_MAX_MS     1000
 
 struct dsd_opts {
 #ifdef __cplusplus

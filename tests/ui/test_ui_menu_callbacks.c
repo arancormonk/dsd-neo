@@ -749,6 +749,18 @@ test_typed_callbacks_clamp_and_cancel(void) {
         rc |= expect_int("nfm pause hold as typed", cmd_i32(), k_gaps[i]);
     }
 
+    /* The NFM pre-roll (issue #668) goes to the command as typed too. */
+    reset_capture();
+    cb_analog_record_preroll(&ctx, 0, 200);
+    rc |= expect_int("canceled nfm pre-roll no command", g_cmd.calls, 0);
+    const int k_prerolls[] = {200, 0, -5, 1001};
+    for (size_t i = 0; i < sizeof k_prerolls / sizeof k_prerolls[0]; i++) {
+        reset_capture();
+        cb_analog_record_preroll(&ctx, 1, k_prerolls[i]);
+        rc |= expect_int("nfm pre-roll command", g_cmd.id, DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET);
+        rc |= expect_int("nfm pre-roll as typed", cmd_i32(), k_prerolls[i]);
+    }
+
     return rc;
 }
 

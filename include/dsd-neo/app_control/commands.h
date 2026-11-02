@@ -164,6 +164,11 @@ enum dsd_app_command_id {
     // its next block or tick. Waits while a decoder holds a carrier, refused during Signal search; the recording view
     // reports it.
     DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET = 449,
+    // payload: int32_t ms 0..1000 (0 is off); opts->analog_record_preroll_ms: the audio heard just before an NFM call
+    // that each new recording starts with (issue #668). Out of range fails and changes nothing. Applying it, even with
+    // the value in force, drops the audio held so far. Waits while a decoder holds a carrier, refused during Signal
+    // search; the recording view reports it.
+    DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET = 450,
 
     // Networking / device configs
     DSD_APP_CMD_UDP_OUT_CFG = 460,           // payload: struct { char host[256]; int32_t port; }

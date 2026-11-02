@@ -223,12 +223,12 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
     return 1;
 }
 
-/* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756) and
-   the NFM rdio-scanner keys (issue #668). */
+/* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756), and
+   the NFM pre-roll and rdio-scanner keys (issue #668). */
 static int
 recording_key_is_refused_out_of_range(const char* key) {
-    return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "rdio_analog_system_id") == 0
-           || strcmp(key, "rdio_analog_talkgroup") == 0;
+    return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "analog_preroll_ms") == 0
+           || strcmp(key, "rdio_analog_system_id") == 0 || strcmp(key, "rdio_analog_talkgroup") == 0;
 }
 
 /* A refused key (above) outside the schema's range is an error rather than the schema walk's warning, as an analog

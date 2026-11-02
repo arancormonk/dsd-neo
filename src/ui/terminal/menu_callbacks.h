@@ -37,6 +37,7 @@ void cb_setmod_bw(void* v, int ok, int bw);
 void cb_scan_voice_qualify(void* v, int ok, int ms);
 void cb_scan_voice_hold(void* v, int ok, int ms);
 void cb_analog_record_max_gap(void* v, int ok, int ms);
+void cb_analog_record_preroll(void* v, int ok, int ms);
 void cb_tg_hold(void* v, int ok, int tg);
 void cb_hangtime(void* v, int ok, double s);
 void cb_slot_pref(void* v, int ok, int p);

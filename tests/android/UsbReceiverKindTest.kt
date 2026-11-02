@@ -97,6 +97,11 @@ private fun anotherOptionsOperandIsNoInput() {
         of("-i", "rtl", "-P", "--analog-record-max-gap-ms", "2000") == "usb" &&
             of("-i", "rtl", "-P", "--analog-record-max-gap-ms=2000") == "usb"
     ) { "a start with the NFM max gap keeps its RTL-SDR" }
+    // #668: the NFM pre-roll, separate or attached.
+    check(
+        of("-i", "rtl", "-P", "--analog-record-preroll-ms", "200") == "usb" &&
+            of("-i", "rtl", "-P", "--analog-record-preroll-ms=200") == "usb"
+    ) { "a start with the NFM pre-roll keeps its RTL-SDR" }
     // #668: the NFM rdio-scanner options' values are no input.
     check(
         of("-i", "rtl", "--rdio-analog-system-id", "9", "--rdio-analog-talkgroup", "-iudp") == "usb"

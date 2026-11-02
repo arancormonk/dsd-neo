@@ -1960,6 +1960,27 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--analog-record-preroll-ms") == 0) {                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--analog-record-preroll-ms requires a millisecond value\n");                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--analog-record-preroll-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0,                 \
+                                           DSD_ANALOG_RECORD_PREROLL_MAX_MS, &opts->analog_record_preroll_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--analog-record-preroll-ms=", 27) == 0) {                                                \
+            if (!cli_parse_ms_range_option("--analog-record-preroll-ms", argv[i] + 27, 0,                              \
+                                           DSD_ANALOG_RECORD_PREROLL_MAX_MS, &opts->analog_record_preroll_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
             opts->dmr_debug_burst = 1;                                                                                 \
             continue;                                                                                                  \

@@ -231,6 +231,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_analog_talkgroup = 0;
     cfg->unknown_talkgroups_only = 0;
     cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
+    cfg->analog_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
 
     // DSP defaults (match runtime defaults)
     cfg->iq_balance = 0;
@@ -1210,6 +1211,7 @@ render_recording_section(FILE* out, const dsdneoUserConfig* cfg) {
     }
     DSD_FPRINTF(out, "unknown_talkgroups_only = %s\n", ini_bool(cfg->unknown_talkgroups_only));
     DSD_FPRINTF(out, "analog_max_gap_ms = %d\n", cfg->analog_max_gap_ms);
+    DSD_FPRINTF(out, "analog_preroll_ms = %d\n", cfg->analog_preroll_ms);
     DSD_FPRINTF(out, "rdio_mode = \"%s\"\n", dsd_rdio_mode_to_string(cfg->rdio_mode));
     if (cfg->rdio_system_id > 0) {
         DSD_FPRINTF(out, "rdio_system_id = %d\n", cfg->rdio_system_id);
@@ -1846,6 +1848,7 @@ apply_recording_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->rdio_analog_talkgroup = cfg->rdio_analog_talkgroup;
     opts->record_unknown_only = cfg->unknown_talkgroups_only ? 1 : 0;
     opts->analog_record_max_gap_ms = cfg->analog_max_gap_ms;
+    opts->analog_record_preroll_ms = cfg->analog_preroll_ms;
 
     if (cfg->rdio_api_url[0]) {
         DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", cfg->rdio_api_url);
@@ -2226,6 +2229,7 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rdio_analog_talkgroup = opts->rdio_analog_talkgroup;
     cfg->unknown_talkgroups_only = opts->record_unknown_only ? 1 : 0;
     cfg->analog_max_gap_ms = opts->analog_record_max_gap_ms;
+    cfg->analog_preroll_ms = opts->analog_record_preroll_ms;
 }
 
 static void

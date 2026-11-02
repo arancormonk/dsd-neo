@@ -87,6 +87,7 @@ internal object UsbReceiverKind {
         "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block", "--nac-allow", "--nac-block",
         "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name", "--tone-block", "--calc-lcn",
         "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn", "--analog-record-max-gap-ms",
+        "--analog-record-preroll-ms",
     )
 
     /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
@@ -121,6 +122,7 @@ internal object UsbReceiverKind {
         "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=", "--dcc-allow=",
         "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
         "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=", "--analog-record-max-gap-ms=",
+        "--analog-record-preroll-ms=",
     )
 
     /**

@@ -273,6 +273,7 @@ Main Menu
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
 │   │   ├── NFM pause hold... [Off]              (one NFM recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
+│   │   ├── NFM pre-roll... [200 ms]             (each new NFM recording starts with up to N ms heard just before the call; 0 is off; works only while per-call recording is on)
 │   │   ├── Static WAV file...
 │   │   └── Raw input WAV file...
 │   ├── Event log

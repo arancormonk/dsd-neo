@@ -7,6 +7,7 @@
  * Unit tests for config template generation.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,6 +213,14 @@ test_template_contains_keys(void) {
     }
     if (!strstr(content, "200 or less is off")) {
         DSD_FPRINTF(stderr, "FAIL: template does not say analog_max_gap_ms of 200 or less is off\n");
+        rc = 1;
+    }
+    /* [recording] (issue #668): the NFM pre-roll's range and its default, and that 0 turns it off. */
+    char preroll[96];
+    DSD_SNPRINTF(preroll, sizeof preroll, "# Range: 0 to 1000\n# analog_preroll_ms = %d\n",
+                 DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS);
+    if (!strstr(content, preroll) || !strstr(content, "tone filter allows; 0 is off")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing analog_preroll_ms range hint, default or off value\n");
         rc = 1;
     }
     /* [recording] (issue #668): the NFM rdio-scanner keys, their ranges and their 0 defaults. */

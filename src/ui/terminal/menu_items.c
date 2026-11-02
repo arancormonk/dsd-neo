@@ -934,6 +934,11 @@ static const NcMenuItem REC_WAV_ITEMS[] = {
              "(0..10000); the pause is saved as silence. 200 or less is off: a pause over 200 ms starts a new "
              "recording.",
      .on_select = act_analog_record_max_gap},
+    {.id = "wav.analog_preroll",
+     .label_fn = lbl_analog_record_preroll,
+     .help = "Start each new NFM recording with up to this many ms of what was heard just before the call (0..1000), "
+             "so its first word is not cut off. 0 is off. Only audio the tone filter allows is kept.",
+     .on_select = act_analog_record_preroll},
     {.id = "wav.static",
      .label = "Static WAV file...",
      .help = "Append all decoded audio to one WAV file.",

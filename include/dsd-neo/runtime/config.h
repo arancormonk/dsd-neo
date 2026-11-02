@@ -678,6 +678,9 @@ typedef struct dsdneoUserConfig {
     /* The longest pause in ms one NFM call and its recording survive (opts->analog_record_max_gap_ms; issue #756):
        0..10000, 200 or less is off. The loader refuses a value outside the range and keeps the one it had. */
     int analog_max_gap_ms;
+    /* The NFM per-call recording's pre-roll in ms (opts->analog_record_preroll_ms; issue #668): 0..1000, 0 is off. The
+       loader refuses a value outside the range and keeps the one it had. */
+    int analog_preroll_ms;
 
     /* [dsp] */
     int has_dsp;

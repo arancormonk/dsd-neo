@@ -669,7 +669,7 @@ apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     cfg->analog_max_gap_ms = ms;
 }
 
-/* Issue #668: the NFM rdio-scanner keys are refused, never clamped: a value outside @p min_value..@p max_value, or not a
+/* Issue #668: the NFM pre-roll and rdio-scanner keys are refused, never clamped: a value outside @p min_value..@p max_value, or not a
    whole number, is reported and the one already loaded stays. --validate-config reports it as an error. */
 static void
 apply_recording_refused_range(const char* key, const char* val, int min_value, int max_value, int* out_value) {
@@ -702,6 +702,9 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
         }
     } else if (strcmp(key_lc, "analog_max_gap_ms") == 0) {
         apply_recording_analog_max_gap(cfg, val);
+    } else if (strcmp(key_lc, "analog_preroll_ms") == 0) {
+        apply_recording_refused_range("analog_preroll_ms", val, 0, DSD_ANALOG_RECORD_PREROLL_MAX_MS,
+                                      &cfg->analog_preroll_ms);
     } else {
         return 0;
     }

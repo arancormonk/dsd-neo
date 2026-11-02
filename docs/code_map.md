@@ -1360,7 +1360,11 @@ suite runs under this compiler.
   until a view built after it shows its outcome with the mode it left (a dropped one shows at once). `unknown_only` is
   `opts->record_unknown_only`; `analog_max_gap_ms` is `opts->analog_record_max_gap_ms` (issue #756, set live by
   `DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, a recording command in the deferred list that refuses a value outside
-  0..10000 and only stores the value: the analog call takes it at its next block or tick, below); `journal_state` is
+  0..10000 and only stores the value: the analog call takes it at its next block or tick, below); `analog_preroll_ms`
+  is `opts->analog_record_preroll_ms` (issue #668, set live by `DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, a recording
+  command in the deferred list that refuses a value outside 0..1000 and calls `dsd_engine_analog_call_preroll_changed()`
+  at its apply, even for the value in force; a config apply calls it when its `[recording]` changes the value, in
+  `apply_cfg_recording()`, whatever the recording transition does); `journal_state` is
   the recording journal's (below); `journal_named` is whether the run names one at all (the Qt app names one exactly
   when it has a folder to record into). `pending_switch_id` names the latest switch (start, stop, toggle, static open,
   a config's [recording]) that no published view shows yet, apart from `command_id`, which a setting sent behind it
@@ -11867,8 +11871,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     tick with no call on a moved epoch, `dsd_engine_analog_call_stop_recording()` (every recording transition that
     commits: P, p, a menu or config change, a folder change, file open or not; a transition that fails never calls it),
     and `dsd_engine_analog_call_preroll_changed()` (the setting applied, at once, so `200 -> 0 -> 200` inside one drain
-    drops it too). Release, on a RECEPTION block that heard its carrier (`qualified_carrier`): a new recording (a new
-    call, or a new segment after a stop or folder change) writes the ring, then the block from `heard` (no ramp-in);
+    drops it too: `DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, API `analog_record_preroll_set`, the terminal's Recording &
+    logs > WAV files > `NFM pre-roll...` row, or a config whose `[recording] analog_preroll_ms` changes it).
+    Release, on a RECEPTION block that heard its carrier (`qualified_carrier`): a new recording (a new call, or a new
+    segment after a stop or folder change) writes the ring, then the block from `heard` (no ramp-in);
     an opening block that is not clean drops the ring instead and the file starts at its `eligible_from`, the silenced
     start trimmed, and the start stamp counts from there. A held call resumed into the file that spans its pause, with
     the lane unbroken since the hold began (`hold_buffering`), writes `held_frames` (what the lane made of the held
@@ -11924,8 +11930,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     work while off, no memory), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its first block,
     moved back by its pre-roll or to an unclean opening's eligible point), `APP_CONTROL_RECORDING` (a stop while held
     ends the call, a folder change keeps it; no hold without per-call recording; the max gap command's states,
-    refusals, and raising, lowering and turning it off while held; the pre-roll dropped by a folder change, P and p in
-    one drain, a config apply and the setting undone at apply, kept by a failed transition),
+    refusals, and raising, lowering and turning it off while held; the pre-roll command's states and refusals; the
+    pre-roll dropped by a folder change, P and p in one drain, a config apply, the setting undone inside one drain by
+    its command or by configs, and its command with the value in force, kept by a failed transition and by a config
+    that changes nothing),
     `APP_COMMAND_QUEUE` (the command waits while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`,
     `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`; end to end through the real engine,
     `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and rows per max gap; a call still held when the input ends
