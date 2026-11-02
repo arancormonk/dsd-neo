@@ -55,6 +55,9 @@ struct SessionArgPrefs {
     /* Issue #756: the longest pause one analog NFM call recording keeps going through, in ms, sent with -P
        (--analog-record-max-gap-ms); 200 or less is off, the decoder's default. */
     int analogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
+    /* Issue #668: how much of what was heard just before an NFM call each recording starts with, in ms, sent with -P
+       (--analog-record-preroll-ms); 0 is off. */
+    int analogPrerollMs = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
     QString recordingFolder;
     /* The store was asked for a folder and had none (no storage available): an extra -P is refused, since it would
        record outside any folder the app manages. False for a validation-only build, which asks for none. */
@@ -133,6 +136,12 @@ SessionArgsError session_args_recording_extra_error(const QString& tokens, bool 
  * value ("--api-token --analog-record-max-gap-ms") and anything after a "--" that is no value set nothing.
  */
 bool session_args_extra_sets_pause_hold(const QString& tokens);
+
+/**
+ * @brief Whether the extra options @p tokens set the NFM pre-roll themselves (--analog-record-preroll-ms, issue #668),
+ * in either option form, read as session_args_extra_sets_pause_hold() reads the pause hold.
+ */
+bool session_args_extra_sets_preroll(const QString& tokens);
 
 /** Every Unicode space (QChar::isSpace(): NBSP and the rest included), '-' and ':' grouping removed, then a leading
  * 0x or 0X stripped, uppercase hex. Only for hex material (session_args_key_type_hex() types and the profile model's
@@ -220,6 +229,8 @@ class SessionArgsBuilder : public QObject {
     /** @brief Whether the app-wide Extra decoder arguments the builder starts every session with set the NFM pause
      *  hold themselves, so Settings' row changes nothing (issue #756); see session_args_extra_sets_pause_hold(). */
     Q_PROPERTY(bool extraArgsSetPauseHold READ extraArgsSetPauseHold NOTIFY extraArgsSetPauseHoldChanged)
+    /** @brief The same for the NFM pre-roll (issue #668); see session_args_extra_sets_preroll(). */
+    Q_PROPERTY(bool extraArgsSetPreroll READ extraArgsSetPreroll NOTIFY extraArgsSetPrerollChanged)
 
   public:
     explicit SessionArgsBuilder(const AppPrefs* prefs, QObject* parent = nullptr);
@@ -286,9 +297,11 @@ class SessionArgsBuilder : public QObject {
                                  const QString& protocol = QString()) const;
 
     bool extraArgsSetPauseHold() const;
+    bool extraArgsSetPreroll() const;
 
   Q_SIGNALS:
     void extraArgsSetPauseHoldChanged();
+    void extraArgsSetPrerollChanged();
 
   private:
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,

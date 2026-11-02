@@ -615,6 +615,9 @@ void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, voi
 /* Call @p hook(dev, @p ctx) inside rtl_device_usb_recovery_finish(), between the request's move to idle and the close
  * of the restarted reader's hand-off (on the controller's thread); NULL removes it. */
 void rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) inside a USB rtl_device_stop_async() once its stop latched, before it takes the lifecycle
+ * lock and clears run (on the stopping thread); NULL removes it. */
+void rtl_device_test_set_stop_latched_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 /* Call @p hook(dev, @p ctx) on the progress monitor's thread once samples decided it clears the reset obligation its
  * watch holds (#782), before it clears it; NULL removes it. */

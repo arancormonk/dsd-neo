@@ -464,6 +464,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `wav_raw_open` | `{value:path, <=1023 bytes}` |
 | `record_unknown_only_set` | `{value:0\|1}` |
 | `analog_record_max_gap_set` | `{value:ms 0..10000, <=200 off}` |
+| `analog_record_preroll_set` | `{value:ms 0..1000, 0 off}` |
 | `dsp_out_set` | `{value:filename, <=255 bytes}` |
 | `symcap_open` | `{value:path, <=1023 bytes}` |
 | `symbol_in_open` | `{value:path, <=1023 bytes}` |
@@ -618,6 +619,14 @@ field, and the decoder refuses the rest when it applies the command.
   pause takes the new value right away: lowered below the pause so far, or turned
   off, the call ends at its last audio. Like `record_unknown_only_set` it waits
   while the decoder holds a carrier and is refused while Signal search runs.
+* **`analog_record_preroll_set`**: how much of the audio heard just before a
+  conventional NFM call, in ms, each new recording of it starts with
+  (`--analog-record-preroll-ms`, see [docs/cli.md](cli.md)). `0` turns it off;
+  a value outside `0..1000` is refused. It works only while per-call recording
+  (`-P`) is on. Applying it drops the audio held so far, even when the value
+  does not change, so the next recording starts with audio heard after it.
+  Like `record_unknown_only_set` it waits while the decoder holds a carrier
+  and is refused while Signal search runs.
 * **Row token (`tg_listen_set`, `tg_row_set`, `tg_row_remove`)**: the optional
   `table_index` names one row of the list: its 0-based position in the
   effective list (file order, then rows added at run time). The row there must

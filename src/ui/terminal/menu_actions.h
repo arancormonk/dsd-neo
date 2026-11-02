@@ -26,6 +26,7 @@ void act_event_log_disable(void* v);
 void act_static_wav(void* v);
 void act_raw_wav(void* v);
 void act_analog_record_max_gap(void* v);
+void act_analog_record_preroll(void* v);
 void act_dsp_out(void* v);
 
 // ---- Config actions ----

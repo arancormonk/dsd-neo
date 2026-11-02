@@ -399,13 +399,17 @@ dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
 }
 
 /**
- * Whether @p name is a published conventional NFM per-call recording, `<date>_<time>_<5 digits>_NFM[_SVC_<service>].wav`
- * (issue #637): no talkgroup, source or call type. @p service is the sanitized service component, or NULL for none.
+ * Whether @p name is a published conventional analog per-call recording of mode word @p mode,
+ * `<date>_<time>_<5 digits>_<mode>_<freq Hz | FREQ_UNKNOWN>[_<tone>][_SVC_<service>].wav` (issues #637, #668): no
+ * talkgroup, source or call type. @p freq is the frequency's digits, or NULL for FREQ_UNKNOWN. @p tone is the tone part
+ * without its leading '_' (`CTCSS_141.3`, `DCS_D023N`), or NULL for none. @p service is the sanitized service
+ * component, or NULL for none.
  */
 static inline int
-dsd_test_nfm_recording_name_is(const char* name, const char* service) {
-    static const char shape[] = "dddddddd_dddddd_ddddd_NFM";
-    if (!name) {
+dsd_test_analog_recording_name_is(const char* name, const char* mode, const char* freq, const char* tone,
+                                  const char* service) {
+    static const char shape[] = "dddddddd_dddddd_ddddd_";
+    if (!name || !mode) {
         return 0;
     }
     for (size_t i = 0; i < sizeof shape - 1U; i++) {
@@ -415,15 +419,26 @@ dsd_test_nfm_recording_name_is(const char* name, const char* service) {
         }
     }
     const char* rest = name + sizeof shape - 1U;
-    if (service) {
-        static const char svc[] = "_SVC_";
-        const size_t length = strlen(service);
-        if (strncmp(rest, svc, sizeof svc - 1U) != 0 || strncmp(rest + sizeof svc - 1U, service, length) != 0) {
+    const char* parts[4] = {mode, freq ? freq : "FREQ_UNKNOWN", tone, service};
+    const char* const lead[4] = {"", "_", "_", "_SVC_"};
+    for (int i = 0; i < 4; i++) {
+        if (!parts[i]) {
+            continue;
+        }
+        const size_t lead_length = strlen(lead[i]);
+        const size_t length = strlen(parts[i]);
+        if (strncmp(rest, lead[i], lead_length) != 0 || strncmp(rest + lead_length, parts[i], length) != 0) {
             return 0;
         }
-        rest += sizeof svc - 1U + length;
+        rest += lead_length + length;
     }
     return strcmp(rest, ".wav") == 0;
+}
+
+/** dsd_test_analog_recording_name_is() for the NFM mode word. */
+static inline int
+dsd_test_nfm_recording_name_is(const char* name, const char* freq, const char* tone, const char* service) {
+    return dsd_test_analog_recording_name_is(name, "NFM", freq, tone, service);
 }
 
 #ifdef __cplusplus

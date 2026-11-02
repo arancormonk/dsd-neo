@@ -75,8 +75,9 @@ internal object UsbReceiverKind {
         "--airspy-linearity-gain", "--airspy-lna-gain", "--airspy-mixer-gain", "--airspy-vga-gain", "--airspy-lna-agc",
         "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
         "--p25-sm-log", "--wav-journal", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
-        "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--dmr-baofeng-pc5", "--dmr-csi-ee72",
-        "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv", "--p25-bandplan-export",
+        "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--rdio-analog-system-id", "--rdio-analog-talkgroup",
+        "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv",
+        "--p25-bandplan-export",
         "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",
         "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
         "--p25-grant-voice-timeout", "--p25-mac-hold", "--p25-cc-grace", "--p25-force-release-extra",
@@ -86,6 +87,7 @@ internal object UsbReceiverKind {
         "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block", "--nac-allow", "--nac-block",
         "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name", "--tone-block", "--calc-lcn",
         "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn", "--analog-record-max-gap-ms",
+        "--analog-record-preroll-ms",
     )
 
     /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
@@ -120,6 +122,7 @@ internal object UsbReceiverKind {
         "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=", "--dcc-allow=",
         "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
         "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=", "--analog-record-max-gap-ms=",
+        "--analog-record-preroll-ms=",
     )
 
     /**

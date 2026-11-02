@@ -32,7 +32,7 @@ enum {
 };
 
 /** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set, NFM max gap
- *  set, or a config carrying [recording], whose outcome is its recording's); values are stable. */
+ *  or pre-roll set, or a config carrying [recording], whose outcome is its recording's); values are stable. */
 enum {
     DSD_APP_RECORDING_COMMAND_NONE = 0,    /**< none submitted in this process */
     DSD_APP_RECORDING_COMMAND_PENDING = 1, /**< submitted, not applied yet */
@@ -67,6 +67,9 @@ typedef struct {
     /** the longest pause, in ms, one NFM call and its recording survive (opts->analog_record_max_gap_ms, issue #756);
      *  200 or less is off */
     int32_t analog_max_gap_ms;
+    /** the audio, in ms, heard just before an NFM call that each new recording starts with
+     *  (opts->analog_record_preroll_ms, issue #668); 0 is off */
+    int32_t analog_preroll_ms;
     /** the latest recording switch submitted (WAV start, stop, toggle, static open, or a config carrying [recording])
      *  while no published view shows its outcome yet: what records once the queue applies it, while @c mode still
      *  shows the state before it; 0 for none. Set by dsd_app_recording_view_get() only, and kept apart from

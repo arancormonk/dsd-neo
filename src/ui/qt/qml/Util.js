@@ -777,7 +777,20 @@ function pauseHoldText(ms) {
     var value = Number(ms) || 0
     if (!pauseHoldOn(value))
         return qsTr("Off")
-    return value === 1000 ? qsTr("1 second") : qsTr("%1 seconds").arg(value / 1000)
+    return secondsSpelledText(value)
+}
+
+// Issue #668: the NFM pre-roll, in ms, as Settings shows it: "Off" at 0 (or
+// less), else seconds spelled out as the pause hold is: "0.2 seconds",
+// "1 second". 1000 (the largest value) is DSD_ANALOG_RECORD_PREROLL_MAX_MS.
+function prerollText(ms) {
+    var value = Number(ms) || 0
+    return value > 0 ? secondsSpelledText(value) : qsTr("Off")
+}
+
+// A positive length in ms as seconds spelled out, as exact as the value.
+function secondsSpelledText(ms) {
+    return ms === 1000 ? qsTr("1 second") : qsTr("%1 seconds").arg(ms / 1000)
 }
 
 // Whether a pause hold of `ms` is on: 200 or less is off, the decoder's rule.

@@ -330,6 +330,7 @@ static int
 core_track_carrier(dsd_analog_rx_core* core, const float* block, int count, int rate_hz, int squelch_open,
                    int* out_carrier_now) {
     *out_carrier_now = 0;
+    core->carrier_now = 0;
     if (rate_hz != core->fe.in_rate_hz) {
         core_configure(core, rate_hz);
     }
@@ -340,6 +341,7 @@ core_track_carrier(dsd_analog_rx_core* core, const float* block, int count, int 
        (issue #526), whether or not the detectors can hear anything below the voice band there. */
     *out_carrier_now = squelch_open == DSD_ANALOG_RX_SQUELCH_CARRIER
                        || (squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE);
+    core->carrier_now = *out_carrier_now;
     return core_update_carrier(core, *out_carrier_now, count);
 }
 
@@ -531,16 +533,35 @@ typedef struct {
     int pcm_sq_held;
     int pcm_sq_logged_state;
     int pcm_sq_logged_native_hz;
+    /** The monitor block being assembled, as the NFM call takes it (issue #668): the first sample from which the tone
+        gate in force has stayed OFF or ALLOWED, ANALOG_RX_NOT_ELIGIBLE while it does not pass, and whether a read
+        starting there or later found the carrier itself (not only its hangover). */
+    unsigned int block_eligible_from;
+    int block_qualified;
+    /** Whether the per-sample squelch's gate was open at the last read's last sample (issue #668), a read the tap
+        dropped or skipped included: a read that starts open after a read that ended closed opens the gate at its first
+        sample. Closed at every reset (analog_rx_forget()). */
+    int read_ended_open;
 } analog_rx_session;
+
+/* No sample of the monitor block is eligible: the tone gate in force does not pass (issue #668). */
+#define ANALOG_RX_NOT_ELIGIBLE (~0U)
 
 #ifdef DSD_NEO_TEST_HOOKS
 static uint64_t (*g_analog_rx_test_clock)(void) = NULL;
+static int (*g_analog_rx_test_gate)(int published) = NULL;
 
 /* Test-hook entry point (declared in analog_rx_internal.h): replace the clock the stream-pause
    check and the backlog skip read; NULL restores the monotonic clock. */
 void
 dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void)) {
     g_analog_rx_test_clock = now_ms;
+}
+
+/* Test-hook entry point (declared in analog_rx_internal.h): replace each published verdict. */
+void
+dsd_analog_rx_test_set_gate(int (*gate)(int published)) {
+    g_analog_rx_test_gate = gate;
 }
 #endif
 
@@ -632,6 +653,79 @@ analog_rx_read_samples(int rate_hz) {
     return samples > 0U ? (unsigned int)samples : 1U;
 }
 
+/* The monitor block starts under the tone gate in force now (issue #668): wholly eligible when it passes, else nothing
+   is until a read publishes a verdict that does. No read has found the carrier in it yet. */
+static void
+analog_rx_block_eligibility_begin(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session) {
+    session->block_eligible_from =
+        dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state)) ? 0U : ANALOG_RX_NOT_ELIGIBLE;
+    session->block_qualified = 0;
+}
+
+/* Whether the gate opens inside the read [@p start, @p end) of @p flags: a closed sample, or the last read's end
+   (@p was_open 0), followed by an open one. */
+static int
+analog_rx_read_opens_gate(const dsd_opts* opts, const dsd_state* state, int was_open, const uint8_t* flags,
+                          unsigned int start, unsigned int end) {
+    for (unsigned int i = start; i < end; i++) {
+        const int open = dsd_squelch_gate_open(opts, state, flags[i]);
+        if (open && !was_open) {
+            return 1;
+        }
+        was_open = open;
+    }
+    return 0;
+}
+
+/* Whether the read [@p start, @p end) found the carrier itself (B1, issue #668), noting where its gate ended. Under a
+   per-sample squelch (@p flags) the read must end open or open the gate inside it. The squelch keeps its own 20 ms
+   grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio input, whose noise squelch starts with
+   the stream's second sample), so a read can carry an already open gate a few samples to its close: that is the
+   carrier going, which leaves its hangover, not a carrier found. A carrier that opens inside the read counts, however
+   soon the squelch closes again. The gate noted is the squelch's own at the read's last sample, a read the tap dropped
+   at a boundary (retune, stream pause, rate move) or skipped as backlog included, so a drop never makes a closed gate
+   of one the squelch kept open; where the squelch starts over on such a path its next flags are closed anyway. A tap
+   that stopped running has forgotten the reception (analog_rx_forget()), and its gate stays closed. A read without
+   per-sample flags has only its own decision (@p carrier_now). */
+static int
+analog_rx_read_found_carrier(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session,
+                             const uint8_t* flags, unsigned int start, unsigned int end, int carrier_now) {
+    if (!flags || !dsd_squelch_dynamic_in_force(opts, state)) {
+        session->read_ended_open = carrier_now;
+        return carrier_now;
+    }
+    if (!dsd_analog_monitor_tap_active(opts)) {
+        session->read_ended_open = 0;
+        return 0;
+    }
+    const int was_open = session->read_ended_open;
+    const int ends_open = dsd_squelch_gate_open(opts, state, flags[end - 1U]);
+    session->read_ended_open = ends_open;
+    return carrier_now && (ends_open || analog_rx_read_opens_gate(opts, state, was_open, flags, start, end));
+}
+
+/* A read of the monitor block from sample @p start to @p end has published its verdict (issue #668), which describes
+   the read's samples: a verdict that does not pass makes nothing of the block eligible yet, and the first one that
+   passes after it makes the block eligible from the read's start. A read that found the carrier itself
+   (analog_rx_read_found_carrier(), @p flags NULL for none) while the block is eligible qualifies it. */
+static void
+analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session, unsigned int start,
+                          unsigned int end, const uint8_t* flags, int carrier_now) {
+    const int found = analog_rx_read_found_carrier(opts, state, session, flags, start, end, carrier_now);
+    if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
+        session->block_eligible_from = ANALOG_RX_NOT_ELIGIBLE;
+        session->block_qualified = 0;
+        return;
+    }
+    if (session->block_eligible_from == ANALOG_RX_NOT_ELIGIBLE) {
+        session->block_eligible_from = start;
+        session->block_qualified = 0;
+    }
+    if (found) {
+        session->block_qualified = 1;
+    }
+}
+
 static analog_rx_session*
 analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     analog_rx_session* session = (analog_rx_session*)calloc(1, sizeof(*session));
@@ -650,6 +744,7 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     dsd_analog_tone_policy_init(&session->policy_logged);
     session->policy_generation = session->core.resets;
     analog_rx_note_generations(opts, session);
+    analog_rx_block_eligibility_begin(opts, state, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
         return NULL;
@@ -768,6 +863,11 @@ analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_sessi
         session->rejected_ended = 0;
     }
     state->analog_rx.gate = dsd_analog_tone_policy_step(&session->policy, &state->analog_rx, samples, rate_hz);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_analog_rx_test_gate) {
+        state->analog_rx.gate = g_analog_rx_test_gate(state->analog_rx.gate);
+    }
+#endif
     state->analog_rx.gate_no_tone = session->policy.no_tone;
     state->analog_rx.gate_rejected_ended = session->rejected_ended;
     analog_rx_policy_log(session);
@@ -1060,6 +1160,7 @@ analog_rx_forget(dsd_state* state) {
     }
     dsd_analog_rx_core_reset(&session->core);
     session->stale_after_ms = 0;
+    session->read_ended_open = 0;
     analog_rx_publish_core(session, state);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
        unusable rate the next read publishes UNAVAILABLE again. */
@@ -1171,8 +1272,9 @@ analog_rx_note_detecting(const dsd_opts* opts, analog_rx_session* session) {
 }
 
 /* Hand the tap @p count consecutive raw samples of the monitor block: the carrier and the boundaries on the analog
-   monitor of either kind, and the detectors on the FM monitor. */
-static void
+   monitor of either kind, and the detectors on the FM monitor. Returns 1 when the read found the carrier itself, not
+   only its hangover; 0 for a read dropped at a boundary, skipped as backlog or not taken at all. */
+static int
 analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, const uint8_t* flags, unsigned int count) {
     /* The same question the scanners' carrier and the monitor output ask (runtime/analog_tones.h), and on the FM
        monitor every frontend's row, so the row is on screen exactly while the detectors listen. */
@@ -1185,24 +1287,24 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, con
             state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
             state->analog_rx.gate_no_tone = 0;
         }
-        return;
+        return 0;
     }
     analog_rx_session* session = analog_rx_session_get(state);
     const int rate_hz = analog_rx_rate_hz(opts);
     if (!session) {
         session = analog_rx_session_start(opts, state);
         if (!session) {
-            return;
+            return 0;
         }
     } else {
         analog_rx_note_detecting(opts, session);
         if (analog_rx_boundary_dropped(opts, state, session, count, rate_hz)) {
-            return;
+            return 0;
         }
     }
     if (analog_rx_backlog_skipped(opts, session, count, rate_hz)) {
         analog_rx_publish_skipped(opts, state, session, rate_hz);
-        return;
+        return 0;
     }
     const int squelch_open = analog_rx_squelch_open(opts, state, samples, flags, count);
     /* This read is of the channel the boundaries now name, whatever it finds there. */
@@ -1218,6 +1320,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, con
         session->unusable_rate_logged = 0;
     }
     analog_rx_publish(opts, state, session, count, rate_hz);
+    return session->core.carrier_now;
 }
 
 /* Where the tap's next read starts in a block now holding @p filled samples: after what it has
@@ -1268,8 +1371,9 @@ dsd_analog_rx_tap_partial_flags(const dsd_opts* opts, dsd_state* state, const fl
     if (filled - start < analog_rx_read_samples(analog_rx_rate_hz(opts))) {
         return;
     }
-    analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, filled - start);
+    const int carrier_now = analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, filled - start);
     session->block_taken = filled;
+    analog_rx_block_note_read(opts, state, session, start, filled, flags, carrier_now);
 }
 
 void
@@ -1290,8 +1394,43 @@ dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* blo
         session->block_taken = 0U;
     }
     if (start < count) {
-        analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, count - start);
+        const int carrier_now = analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, count - start);
+        /* The read may have started the session. */
+        session = analog_rx_session_get(state);
+        if (session) {
+            analog_rx_block_note_read(opts, state, session, start, count, flags, carrier_now);
+        }
     }
+}
+
+void
+dsd_analog_rx_block_begin(const dsd_opts* opts, const dsd_state* state) {
+    analog_rx_session* session = (opts && state) ? analog_rx_session_get(state) : NULL;
+    if (session) {
+        analog_rx_block_eligibility_begin(opts, state, session);
+    }
+}
+
+unsigned int
+dsd_analog_rx_block_eligible_from(const dsd_opts* opts, const dsd_state* state, unsigned int count) {
+    if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
+        return count;
+    }
+    const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    if (!session) {
+        /* No read has published a verdict: the gate in force, which passes, holds for the whole block. */
+        return 0U;
+    }
+    return session->block_eligible_from < count ? session->block_eligible_from : count;
+}
+
+int
+dsd_analog_rx_block_qualified_carrier(const dsd_opts* opts, const dsd_state* state) {
+    if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
+        return 0;
+    }
+    const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    return session && session->block_eligible_from != ANALOG_RX_NOT_ELIGIBLE && session->block_qualified;
 }
 
 /* --------------------------------------------------------------------------------------------- the PCM noise squelch */

@@ -4616,6 +4616,7 @@ static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
     DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET,
+    DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET,
     /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
     DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
@@ -4869,6 +4870,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, sizeof(int32_t)},
     {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, sizeof(uint64_t)},
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
@@ -8087,6 +8089,30 @@ ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const 
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The NFM pre-roll (issue #668): unlike the max gap, the engine takes it here, not at its next block, and drops the
+   audio it holds even for the value in force, so a change undone inside one drain (200 -> 0 -> 200) still starts the
+   pre-roll afresh. A value out of range is refused as typed, never clamped, as the CLI and INI refuse it. */
+static int
+ui_cmd_handle_analog_record_preroll_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t ms = 0;
+    if (!ui_cmd_parse_i32_payload(c, &ms)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (ms < 0 || ms > DSD_ANALOG_RECORD_PREROLL_MAX_MS) {
+        ui_set_toast(state, 5, "Refused: NFM pre-roll must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_PREROLL_MAX_MS,
+                     (long)ms);
+        return UI_CMD_APPLY_FAILED;
+    }
+    opts->analog_record_preroll_ms = (int)ms;
+    dsd_engine_analog_call_preroll_changed(opts, state);
+    if (ms > 0) {
+        ui_set_toast(state, 3, "Applied: NFM pre-roll -> %d ms", (int)ms);
+    } else {
+        ui_set_toast(state, 3, "Applied: NFM pre-roll -> Off");
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 /* Stop replay: a playback (a WAV or raw file, a symbol file) ends with a switch to the configured Pulse input (issue
    #634). The terminal reads its keys from stdin, so there is no switch to stdin. A Pulse input that does not open
    leaves the playback running, as any failed switch leaves the input it had. */
@@ -8122,6 +8148,7 @@ apply_cmd_capture_playback(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback},
         {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, ui_cmd_handle_record_unknown_only_set},
         {DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ui_cmd_handle_analog_record_max_gap_set},
+        {DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, ui_cmd_handle_analog_record_preroll_set},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -9122,6 +9149,7 @@ typedef struct {
     char dir[sizeof(((dsd_opts*)0)->wav_out_dir)];
     char wav_out_file[sizeof(((dsd_opts*)0)->wav_out_file)];
     char raw_path[sizeof(((dsd_opts*)0)->wav_out_file_raw)];
+    int preroll_ms;
 } cfg_recording;
 
 static void
@@ -9131,6 +9159,7 @@ cfg_recording_of(const dsd_opts* opts, cfg_recording* out) {
     DSD_SNPRINTF(out->dir, sizeof out->dir, "%s", opts->wav_out_dir);
     DSD_SNPRINTF(out->wav_out_file, sizeof out->wav_out_file, "%s", opts->wav_out_file);
     DSD_SNPRINTF(out->raw_path, sizeof out->raw_path, "%s", opts->wav_out_file_raw);
+    out->preroll_ms = opts->analog_record_preroll_ms;
 }
 
 /*
@@ -9149,6 +9178,10 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", before->dir);
     DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", before->wav_out_file);
     DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", before->raw_path);
+    /* A changed NFM pre-roll (issue #668) takes effect here, as its command does, whatever the transition does. */
+    if (opts->analog_record_preroll_ms != before->preroll_ms) {
+        dsd_engine_analog_call_preroll_changed(opts, state);
+    }
     char failed[sizeof target.dir + 32];
     if (svc_recording_transition(opts, state, &target, failed, sizeof failed) != 0) {
         // The reason before the file: a long path is cut at the toast's end, never the words that say what failed.
@@ -10237,6 +10270,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_WAV_RAW_OPEN,
     DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET,
+    DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET,
     DSD_APP_CMD_DSP_OUT_SET,
     DSD_APP_CMD_SYMCAP_SAVE,
     DSD_APP_CMD_SYMCAP_STOP,

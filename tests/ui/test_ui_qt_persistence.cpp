@@ -42,6 +42,7 @@
 #include <sys/types.h>
 #endif
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
@@ -652,6 +653,58 @@ test_analog_max_gap_pref() {
     stored.remove(key);
 }
 
+/* Issue #668: the NFM pre-roll. The decoder's default unless chosen; any value the decoder takes (0..1000 ms) is kept
+ * as it is, offered or not; anything else reads and writes as the default. */
+void
+test_analog_preroll_pref() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString key = QStringLiteral("recording/analogPrerollMs");
+    const int fallback = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::analogPrerollMsChanged, &prefs, [&changes] { ++changes; });
+        expect("the pre-roll is the decoder's default", prefs.analogPrerollMs() == fallback && !stored.contains(key));
+        expect("the pre-rolls Settings offers",
+               AppPrefs::analogPrerollChoices() == QVariantList({0, 100, 200, 300, 500, 1000}));
+        prefs.setAnalogPrerollMs(300);
+        expect("a choice is saved", prefs.analogPrerollMs() == 300 && stored.value(key).toInt() == 300 && changes == 1);
+        prefs.setAnalogPrerollMs(300);
+        expect("a repeated pre-roll does not notify", changes == 1);
+        prefs.setAnalogPrerollMs(250);
+        expect("a value not offered is kept as it is", prefs.analogPrerollMs() == 250 && changes == 2);
+        prefs.setAnalogPrerollMs(1000);
+        expect("the largest is kept", prefs.analogPrerollMs() == 1000 && changes == 3);
+        prefs.setAnalogPrerollMs(0);
+        expect("0 is kept (off)", prefs.analogPrerollMs() == 0 && stored.value(key).toInt() == 0 && changes == 4);
+        prefs.setAnalogPrerollMs(500);
+        prefs.setAnalogPrerollMs(1001);
+        expect("one past the range is written as the default",
+               prefs.analogPrerollMs() == fallback && stored.value(key).toInt() == fallback && changes == 6);
+        prefs.setAnalogPrerollMs(500);
+        prefs.setAnalogPrerollMs(-1);
+        expect("a negative pre-roll is written as the default", prefs.analogPrerollMs() == fallback && changes == 8);
+        prefs.setAnalogPrerollMs(100);
+    }
+    {
+        AppPrefs reloaded;
+        expect("the pre-roll persists", reloaded.analogPrerollMs() == 100);
+        stored.setValue(key, 5000);
+        expect("a stored pre-roll past the range reads as the default", reloaded.analogPrerollMs() == fallback);
+        stored.setValue(key, QStringLiteral("abc"));
+        expect("an unparsable stored pre-roll reads as the default", reloaded.analogPrerollMs() == fallback);
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::analogPrerollMsChanged, &reloaded, [&changes] { ++changes; });
+        reloaded.setAnalogPrerollMs(fallback);
+        expect("a corrective pre-roll write replaces the damage",
+               stored.value(key).toString() == QString::number(fallback) && changes == 1);
+        stored.setValue(key, 750);
+        expect("a stored custom pre-roll reads as itself", reloaded.analogPrerollMs() == 750);
+    }
+    stored.remove(key);
+}
+
 /* An integer preference read wide: a backup keeps a large JSON number as a 64-bit integer (or a double), and the ini
  * file hands it back as text, and QVariant::toInt() takes either one's low 32 bits and reports success. A value past
  * int's range reads as the preference's default, never as its low bits, and a write of those low bits replaces it. */
@@ -674,6 +727,13 @@ const WideIntPref kWideIntPrefs[] = {
     {"search/port", &AppPrefs::searchPort, &AppPrefs::setSearchPort, 1234, 80},
     {"recording/limitMb", &AppPrefs::recordingLimitMb, &AppPrefs::setRecordingLimitMb, 1000, 2000},
     {"recording/analogMaxGapMs", &AppPrefs::analogMaxGapMs, &AppPrefs::setAnalogMaxGapMs, 200, 2000},
+    {
+        "recording/analogPrerollMs",
+        &AppPrefs::analogPrerollMs,
+        &AppPrefs::setAnalogPrerollMs,
+        DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS,
+        500,
+    },
 };
 
 /* @p wide as a restored backup holds it (a JSON integer, a JSON number too big for one), or as the file reads back. */
@@ -1075,6 +1135,7 @@ test_prefs_key_table(void) {
         {"recordUnknownOnly", true, "recording/recordUnknownOnly"},
         {"recordingLimitMb", 5000, "recording/limitMb"},
         {"analogMaxGapMs", 2000, "recording/analogMaxGapMs"},
+        {"analogPrerollMs", 500, "recording/analogPrerollMs"},
         {"acceptedStartKind", QStringLiteral("scan"), "listen/acceptedStartKind"},
         {"acceptedStartUid", QStringLiteral("uid-2"), "listen/acceptedStartUid"},
     };
@@ -1174,7 +1235,8 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("recording/recordCalls"))
                && portable.contains(QStringLiteral("recording/recordUnknownOnly"))
                && portable.contains(QStringLiteral("recording/limitMb"))
-               && portable.contains(QStringLiteral("recording/analogMaxGapMs")));
+               && portable.contains(QStringLiteral("recording/analogMaxGapMs"))
+               && portable.contains(QStringLiteral("recording/analogPrerollMs")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys",
@@ -1318,6 +1380,7 @@ main(int argc, char** argv) {
     test_screen_policy_prefs();
     test_recording_prefs();
     test_analog_max_gap_pref();
+    test_analog_preroll_pref();
     test_prefs_past_int_range();
     test_units_preference();
     test_migration_write_failure();

@@ -3287,6 +3287,8 @@ static RtlTestHook<struct rtl_device*> g_test_recovery_take_hook;
 /* rtl_device_test_set_recovery_finish_hook(): called inside rtl_device_usb_recovery_finish(), between the request's
  * move to idle and the hand-off's close, the window a restarted reader's return must not fall through. */
 static RtlTestHook<struct rtl_device*> g_test_recovery_finish_hook;
+/* rtl_device_test_set_stop_latched_hook(): called by a USB stop once it latched, before it takes the lifecycle lock. */
+static RtlTestHook<struct rtl_device*> g_test_stop_latched_hook;
 /* rtl_device_test_set_owed_clear_hook(): called by the progress monitor once samples decided it clears the reset
  * obligation its watch holds, before it clears it. */
 static RtlTestHook<const struct rtl_device*> g_test_owed_clear_hook;
@@ -3338,6 +3340,11 @@ rtl_device_test_set_recovery_take_ms(uint32_t take_ms) {
 extern "C" void
 rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx) {
     g_test_recovery_finish_hook.set(hook, ctx);
+}
+
+extern "C" void
+rtl_device_test_set_stop_latched_hook(void (*hook)(struct rtl_device*, void*), void* ctx) {
+    g_test_stop_latched_hook.set(hook, ctx);
 }
 
 extern "C" void
@@ -3627,11 +3634,13 @@ rtl_device_recovery_supersedes(const struct rtl_device* s, uint32_t epoch) {
 }
 
 /* Whether a verdict made at @p epoch, when the receiver's progress stood at @p verdict_progress, no longer ends the
- * session: a stop, an exit request, samples since, or a stall recovery that took the receiver over. */
+ * session: a stop, an exit request, samples since, or a stall recovery that took the receiver over. A USB stop counts
+ * from its latch: it clears run only once it holds the lifecycle lock, which a recovery it cancels may still hold. */
 static int
 rtl_device_verdict_dropped(const struct rtl_device* s, uint64_t verdict_progress, uint32_t epoch) {
-    return !s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
-           || rtl_device_receiver_progressed_since(s, verdict_progress) || rtl_device_recovery_supersedes(s, epoch);
+    return !s->run.load(std::memory_order_acquire) || s->stop_requested.load(std::memory_order_acquire)
+           || dsd_exitflag_load() || rtl_device_receiver_progressed_since(s, verdict_progress)
+           || rtl_device_recovery_supersedes(s, epoch);
 }
 
 /* The one path that ends a session for its receiver: an RTL-SDR, Airspy or SoapySDR receiver stopped delivering, and unless a stop or an exit
@@ -11074,6 +11083,9 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
 static int
 rtl_usb_stop_async(struct rtl_device* dev) {
     dev->stop_requested.store(1, std::memory_order_release);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_stop_latched_hook.invoke(dev);
+#endif
     rtl_usb_lifecycle_lock(dev);
     const int stopped = (dev->thread_started || dev->progress_monitor_started) ? 1 : 0;
     rtl_usb_reader_stop(dev);

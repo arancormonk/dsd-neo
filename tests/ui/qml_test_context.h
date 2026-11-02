@@ -734,13 +734,15 @@ class CommandRecorder : public QObject {
     }
 
     /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on} (and
-     * unknownOnly and analogMaxGapMs for Record calls); issue #756's NFM pause hold as {kind, ms}. */
+     * unknownOnly, analogMaxGapMs and analogPrerollMs for Record calls); issue #756's NFM pause hold and issue #668's
+     * NFM pre-roll as {kind, ms}. */
     Q_INVOKABLE bool
-    setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) {
+    setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs, int analogPrerollMs) {
         m_recording_requests.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")},
                                                 {QStringLiteral("on"), on},
                                                 {QStringLiteral("unknownOnly"), unknownOnly},
-                                                {QStringLiteral("analogMaxGapMs"), analogMaxGapMs}});
+                                                {QStringLiteral("analogMaxGapMs"), analogMaxGapMs},
+                                                {QStringLiteral("analogPrerollMs"), analogPrerollMs}});
         return recordingAnswer();
     }
 
@@ -748,6 +750,13 @@ class CommandRecorder : public QObject {
     setAnalogRecordMaxGap(int ms) {
         m_recording_requests.append(
             QVariantMap{{QStringLiteral("kind"), QStringLiteral("analogMaxGap")}, {QStringLiteral("ms"), ms}});
+        return recordingAnswer();
+    }
+
+    Q_INVOKABLE bool
+    setAnalogRecordPreroll(int ms) {
+        m_recording_requests.append(
+            QVariantMap{{QStringLiteral("kind"), QStringLiteral("analogPreroll")}, {QStringLiteral("ms"), ms}});
         return recordingAnswer();
     }
 
@@ -4133,6 +4142,9 @@ class Setup : public QObject {
         /* Issue #756: the NFM pause hold off, as AppPrefs' default, with its choices. */
         prefs[QStringLiteral("analogMaxGapMs")] = 200;
         prefs[QStringLiteral("analogMaxGapChoices")] = QVariantList({200, 500, 1000, 2000, 3000, 5000, 10000});
+        /* Issue #668: the NFM pre-roll at AppPrefs' default, with its choices. */
+        prefs[QStringLiteral("analogPrerollMs")] = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
+        prefs[QStringLiteral("analogPrerollChoices")] = QVariantList({0, 100, 200, 300, 500, 1000});
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -4490,6 +4502,7 @@ class Setup : public QObject {
         recording[QStringLiteral("slotFiles")] = 0;
         recording[QStringLiteral("unknownOnly")] = false;
         recording[QStringLiteral("analogMaxGapMs")] = 200;
+        recording[QStringLiteral("analogPrerollMs")] = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
         recording[QStringLiteral("staticWav")] = false;
         recording[QStringLiteral("storageNamed")] = true;
         recording[QStringLiteral("journal")] = QStringLiteral("on");

@@ -8921,7 +8921,9 @@ test_hold_does_not_override_stream_off(void) {
 }
 
 // Recordings the talkgroup policy never gates are never judged for the export either: a conventional NFM call (no
-// talkgroup) under the allow list, which would miss on every call, still exports.
+// talkgroup) under the allow list, which would miss on every call, is not blocked, and its staged row is exported by
+// the real exporter under the frequency's kHz (issue #668), with the row's own target still 0. Its recording belongs
+// to the NFM call (engine/analog_call.c), so the call's end rotates no slot file.
 static int
 test_unjudged_recordings_export(void) {
     static dsd_opts opts;
@@ -8930,8 +8932,36 @@ test_unjudged_recordings_export(void) {
     static max_align_t wav_sentinel;
     stream_fixture(&opts, &state, event_history, &wav_sentinel);
     opts.trunk_use_allow_list = 1;
-    const int closes = run_stream_call(&opts, &state, 0U, DSD_SYNC_ANALOG, DSD_CALL_KIND_VOICE, 0U, 0U, 0U);
-    const int rc = expect_stream_close("NFM call under the allow list", closes, 1, 0U);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 154437500U;
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_nfm")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the NFM export test\n");
+        return 1;
+    }
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    int rc = expect_int("NFM call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    /* The NFM recording closes against the call's staged row, before the call's end commits it. */
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("NFM call under the allow list: not blocked from the export", (int)staged->stream_blocked, 0);
+    close_wav_capture capture;
+    DSD_MEMSET(&capture, 0, sizeof capture);
+    close_wav_export_sidecar(&opts, &event_history[0], 0, 0, &capture);
+    rc |= expect_has_substr("NFM call exported under its frequency in kHz", capture.sidecar, "\"talkgroup\": 154437,");
+    rc |= expect_u64("the export id is not stored on the row", staged->target_id, 0U);
+    const int closes = g_close_wav_capture_count;
+    rc |= expect_int("NFM call end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("NFM call end: no slot recording closes", g_close_wav_capture_count - closes, 0);
+    (void)dsd_test_rmdir(g_close_wav_export_dir);
+    g_close_wav_export_dir[0] = '\0';
     dsd_state_ext_free_all(&state);
     return rc;
 }

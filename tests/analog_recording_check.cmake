@@ -12,10 +12,19 @@
 #   - the host printed FILES "ANALOG CALL ROW:" lines: one history row a file.
 #
 #   - each published recording's journal duration_ms, in publication order, is
-#     within one 20 ms block of its DURATIONS_MS entry.
+#     within one 20 ms block of its DURATIONS_MS entry, when the case names
+#     them.
 #
-# Expected -D inputs: HOST_BIN, MODE, WORK_DIR, FILES, DURATIONS_MS (a
-# comma-separated list of FILES expected lengths in ms). Optional:
+# A MODE that names an --analog-scene (issue #668) also has the host find each
+# recording in the scene after the run and hold it to the case's
+# --analog-record-* bounds; a recording outside them makes the host exit 1.
+#
+# Expected -D inputs: HOST_BIN, MODE, WORK_DIR, FILES. Optional:
+#   DURATIONS_MS  a comma-separated list of FILES expected lengths in ms.
+#   SIDECAR       a comma-separated list of key=value pairs every recording's
+#                 rdio-scanner DirWatch sidecar (<name>.json beside it) must
+#                 hold as whole fields: a number, true, false or [] as it is,
+#                 any other value as a JSON string.
 #   RATES         a comma-separated list of at least two --iq-replay-rate
 #                 values, one leg each (one leg without the option when
 #                 unset). Every leg after the first
@@ -29,14 +38,7 @@
 #                 audible audio (the host's total_ms and last_audible_ms), so
 #                 the run's last call was still held through a pause when the
 #                 input ended and the engine's normal teardown closed it.
-foreach(
-    _var
-    HOST_BIN
-    MODE
-    WORK_DIR
-    FILES
-    DURATIONS_MS
-)
+foreach(_var HOST_BIN MODE WORK_DIR FILES)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "analog_recording_check: missing -D${_var}")
     endif()
@@ -44,13 +46,19 @@ endforeach()
 if(NOT "${FILES}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "analog_recording_check: FILES must be a count")
 endif()
-string(REPLACE "," ";" _expected_durations "${DURATIONS_MS}")
-list(LENGTH _expected_durations _expected_duration_count)
-if(NOT _expected_duration_count EQUAL FILES)
-    message(
-        FATAL_ERROR
-        "analog_recording_check: DURATIONS_MS names ${_expected_duration_count} lengths for ${FILES} recordings"
-    )
+if(DEFINED DURATIONS_MS)
+    string(REPLACE "," ";" _expected_durations "${DURATIONS_MS}")
+    list(LENGTH _expected_durations _expected_duration_count)
+    if(NOT _expected_duration_count EQUAL FILES)
+        message(
+            FATAL_ERROR
+            "analog_recording_check: DURATIONS_MS names ${_expected_duration_count} lengths for ${FILES} recordings"
+        )
+    endif()
+endif()
+set(_sidecar_pairs "")
+if(DEFINED SIDECAR)
+    string(REPLACE "," ";" _sidecar_pairs "${SIDECAR}")
 endif()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
@@ -207,16 +215,48 @@ function(_analog_recording_leg leg rate out_files out_summary)
     endif()
     # The journal keeps time: a burst alone is the burst and the hangover, and a joined call adds its pauses, each at
     # block precision (20 ms).
-    foreach(_got _want IN ZIP_LISTS _durations _expected_durations)
-        math(EXPR _off "${_got} - ${_want}")
-        if(_off GREATER 20 OR _off LESS -20)
-            string(REPLACE ";" "," _got_text "${_durations}")
-            message(
-                FATAL_ERROR
-                "analog_recording_check: ${leg}: journal durations ${_got_text} ms, expected ${DURATIONS_MS} (+/-20 ms each)"
-            )
-        endif()
-    endforeach()
+    if(DEFINED DURATIONS_MS)
+        foreach(_got _want IN ZIP_LISTS _durations _expected_durations)
+            math(EXPR _off "${_got} - ${_want}")
+            if(_off GREATER 20 OR _off LESS -20)
+                string(REPLACE ";" "," _got_text "${_durations}")
+                message(
+                    FATAL_ERROR
+                    "analog_recording_check: ${leg}: journal durations ${_got_text} ms, expected ${DURATIONS_MS} (+/-20 ms each)"
+                )
+            endif()
+        endforeach()
+    endif()
+    # Each recording's DirWatch sidecar holds what the case names (issue #668).
+    if(_sidecar_pairs)
+        foreach(_wav IN LISTS _ordered)
+            string(REGEX REPLACE "\\.wav$" ".json" _sidecar "${_wav}")
+            if(NOT EXISTS "${_sidecar}")
+                message(
+                    FATAL_ERROR
+                    "analog_recording_check: ${leg}: ${_wav} has no sidecar"
+                )
+            endif()
+            file(READ "${_sidecar}" _json)
+            foreach(_pair IN LISTS _sidecar_pairs)
+                string(REGEX MATCH "^([^=]+)=(.*)$" _unused "${_pair}")
+                set(_key "${CMAKE_MATCH_1}")
+                set(_value "${CMAKE_MATCH_2}")
+                if(NOT _value MATCHES "^(-?[0-9]+|true|false|\\[\\])$")
+                    set(_value "\"${_value}\"")
+                endif()
+                # The value ends the field: a comma or the line's end follows it.
+                string(FIND "${_json}" "\"${_key}\": ${_value}," _at)
+                string(FIND "${_json}" "\"${_key}\": ${_value}\n" _at_end)
+                if(_at LESS 0 AND _at_end LESS 0)
+                    message(
+                        FATAL_ERROR
+                        "analog_recording_check: ${leg}: ${_sidecar} lacks \"${_key}\": ${_value}\n${_json}"
+                    )
+                endif()
+            endforeach()
+        endforeach()
+    endif()
     foreach(_id IN LISTS _published)
         list(FIND _linked "${_id}" _at)
         list(REMOVE_ITEM _linked "${_id}")

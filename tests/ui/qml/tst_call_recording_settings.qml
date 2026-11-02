@@ -54,6 +54,7 @@ Item {
             prefs.recordUnknownOnly = false;
             prefs.recordingLimitMb = 1000;
             prefs.analogMaxGapMs = 200;
+            prefs.analogPrerollMs = 0;
             prefs.extraArgs = "";
             commands.setRecordingAccepted(true);
         }
@@ -63,6 +64,7 @@ Item {
             prefs.recordUnknownOnly = false;
             prefs.recordingLimitMb = 1000;
             prefs.analogMaxGapMs = 200;
+            prefs.analogPrerollMs = 0;
             prefs.extraArgs = "";
             testContext.setLifecyclePhase(0);
             testContext.useLifecycleHost(false);
@@ -91,6 +93,16 @@ Item {
             // Under the switches, above the session's lines and Storage limit.
             verify(hold.mapToItem(null, 0, 0).y > unknown.mapToItem(null, 0, 0).y);
             verify(hold.mapToItem(null, 0, 0).y < item("recordingLimitRow").mapToItem(null, 0, 0).y);
+            // Issue #668: the NFM pre-roll right under the pause hold, waiting for Record calls as it does.
+            var preroll = item("analogPrerollRow");
+            compare(preroll.title, "NFM pre-roll");
+            compare(preroll.subtitle, "Off · Recordings may miss a call's first word");
+            compare(preroll.accessibleDescription, preroll.subtitle, "a screen reader reads what the row shows");
+            verify(!preroll.enabled, "the pre-roll waits for Record calls");
+            verify(!preroll.showCaret, "and goes nowhere until then");
+            verify(preroll.mapToItem(null, 0, 0).y > hold.mapToItem(null, 0, 0).y);
+            verify(preroll.mapToItem(null, 0, 0).y < item("recordingLimitRow").mapToItem(null, 0, 0).y);
+            verify(hold.showDivider, "the pre-roll row follows the pause hold row");
             compare(item("recordingLimitRow").subtitle, "1 GB · Oldest recordings are removed first");
             compare(item("manageCallRecordingsRow").subtitle, "No recordings yet");
             verify(!item("recordingNotices").visible);
@@ -119,6 +131,7 @@ Item {
             compare(lastRequest().on, true);
             compare(lastRequest().unknownOnly, false);
             compare(lastRequest().analogMaxGapMs, 200, "the saved pause hold goes with it");
+            compare(lastRequest().analogPrerollMs, 0, "and so does the saved pre-roll");
             item("recordUnknownOnlyToggle").activate();
             compare(lastRequest().kind, "recordUnknownOnly");
             compare(lastRequest().on, true);
@@ -406,9 +419,12 @@ Item {
             compare(notices(), ["Applying…"]);
             compare(row.subtitle, "10 seconds · Pauses up to this long stay in one recording");
             verify(item("recordingNotices").visible);
-            verify(!row.showDivider, "the lines close the row");
+            // The pre-roll row comes between the hold and the lines (issue #668), so the hold keeps its divider and
+            // the lines close the pre-roll row.
+            verify(row.showDivider, "the pre-roll row follows the hold");
+            verify(!item("analogPrerollRow").showDivider, "the lines close the last row above them");
             testContext.setRecordingStatus("commandState", "applied");
-            verify(row.showDivider);
+            verify(item("analogPrerollRow").showDivider);
             // A change the queue would not take is saved, and said.
             commands.setRecordingAccepted(false);
             row.activate();
@@ -469,6 +485,172 @@ Item {
             prefs.extraArgs = "";
             verify(row.enabled);
             verify(!note.visible);
+        }
+
+        // Issue #668: the NFM pre-roll, a choice like the pause hold, saved while nothing runs.
+        function test_analog_preroll_choice() {
+            openScreen();
+            item("recordCallsToggle").activate();
+            var row = item("analogPrerollRow");
+            verify(row.enabled);
+            verify(row.showCaret);
+            row.activate();
+            var sheet = item("screenChoices");
+            verify(sheet.visible);
+            compare(sheet.accessibleName, "NFM pre-roll");
+            compare(sheet.choices, ["Off", "0.1 seconds", "0.2 seconds", "0.3 seconds", "0.5 seconds", "1 second"]);
+            findChild(sheet, "screenChoice2").activate();
+            compare(prefs.analogPrerollMs, 200);
+            compare(row.subtitle, "0.2 seconds · Recordings start up to this much early");
+            row.activate();
+            findChild(sheet, "screenChoice5").activate();
+            compare(prefs.analogPrerollMs, 1000);
+            compare(row.subtitle, "1 second · Recordings start up to this much early");
+            row.activate();
+            findChild(sheet, "screenChoice0").activate();
+            compare(prefs.analogPrerollMs, 0);
+            compare(row.subtitle, "Off · Recordings may miss a call's first word");
+            compare(commands.recordingRequests().length, 0, "nothing runs, nothing is sent");
+        }
+
+        // A value Settings does not offer (a restored backup) reads as itself; only 0 is off.
+        function test_analog_preroll_custom_value_data() {
+            return [
+                {tag: "0.25 s", ms: 250, text: "0.25 seconds · Recordings start up to this much early"},
+                {tag: "1 ms", ms: 1, text: "0.001 seconds · Recordings start up to this much early"},
+                {tag: "0", ms: 0, text: "Off · Recordings may miss a call's first word"}
+            ];
+        }
+        function test_analog_preroll_custom_value(data) {
+            prefs.analogPrerollMs = data.ms;
+            openScreen();
+            compare(item("analogPrerollRow").subtitle, data.text);
+        }
+
+        // A running session takes a new pre-roll at once; it travels with Record calls, as the pause hold does.
+        function test_analog_preroll_live() {
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            var row = item("analogPrerollRow");
+            row.activate();
+            compare(commands.recordingRequests().length, 0, "a disabled row opens nothing");
+            verify(!item("screenChoices").visible);
+            screenLoader.item.setAnalogPreroll(300);
+            compare(prefs.analogPrerollMs, 300);
+            compare(commands.recordingRequests().length, 0, "with Record calls off it is saved, not sent");
+            item("recordCallsToggle").activate();
+            compare(lastRequest().kind, "recordCalls");
+            compare(lastRequest().analogPrerollMs, 300, "and travels with the next Record calls on");
+            row.activate();
+            findChild(item("screenChoices"), "screenChoice4").activate();
+            compare(lastRequest().kind, "analogPreroll");
+            compare(lastRequest().ms, 500);
+            compare(prefs.analogPrerollMs, 500);
+            testContext.setRecordingStatus("commandState", "pending");
+            compare(notices(), ["Applying…"]);
+            compare(row.subtitle, "0.5 seconds · Recordings start up to this much early");
+            verify(!row.showDivider, "the lines close the row");
+            testContext.setRecordingStatus("commandState", "applied");
+            verify(row.showDivider);
+            commands.setRecordingAccepted(false);
+            row.activate();
+            findChild(item("screenChoices"), "screenChoice0").activate();
+            compare(prefs.analogPrerollMs, 0);
+            compare(notices(), ["Couldn't change the running session. Applies at the next start."]);
+        }
+
+        // The row shows the preference, whatever pre-roll the running session has.
+        function test_analog_preroll_shows_the_preference() {
+            prefs.recordCalls = true;
+            prefs.analogPrerollMs = 300;
+            testContext.setRecordingStatus("perCall", true);
+            testContext.setRecordingStatus("analogPrerollMs", 700);
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            compare(item("analogPrerollRow").subtitle, "0.3 seconds · Recordings start up to this much early");
+        }
+
+        // A pre-roll in Extra decoder arguments wins at every start: the row is shut and says so, and Record calls on
+        // sends no pre-roll (-1). Read as the decoder reads the options, as the pause hold is; neither option shuts
+        // the other's row.
+        function test_analog_preroll_in_extra_arguments_data() {
+            return [
+                {tag: "spaced", extra: "-Z --analog-record-preroll-ms 700", set: true},
+                {tag: "equals", extra: "--analog-record-preroll-ms=0", set: true},
+                {tag: "after a value", extra: "--api-token secret --analog-record-preroll-ms 700", set: true},
+                {tag: "other option", extra: "--analog-record-preroll-msx 1", set: false},
+                {tag: "after --", extra: "-- --analog-record-preroll-ms 700", set: false},
+                {tag: "a value", extra: "--api-token --analog-record-preroll-ms", set: false},
+                {tag: "the pause hold", extra: "--analog-record-max-gap-ms 7500", set: false}
+            ];
+        }
+        function test_analog_preroll_in_extra_arguments(data) {
+            prefs.recordCalls = true;
+            prefs.analogPrerollMs = 300;
+            prefs.extraArgs = data.extra;
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            var row = item("analogPrerollRow");
+            var note = item("analogPrerollExtrasNote");
+            compare(row.subtitle, "0.3 seconds · Recordings start up to this much early", "the preference still shows");
+            compare(row.enabled, !data.set);
+            compare(note.visible, data.set);
+            compare(item("analogMaxGapRow").enabled, data.tag !== "the pause hold", "the pause hold row follows its own option");
+            if (data.set) {
+                compare(note.notices.map(function (n) { return n.text; }), ["Extra decoder arguments set the pre-roll (--analog-record-preroll-ms) for every session, so this setting is not used."]);
+                verify(!row.showDivider, "the note closes the row");
+                row.activate();
+                verify(!item("screenChoices").visible, "a shut row opens nothing");
+            }
+            item("recordCallsToggle").activate();
+            item("recordCallsToggle").activate();
+            compare(lastRequest().kind, "recordCalls");
+            compare(lastRequest().on, true);
+            compare(lastRequest().analogPrerollMs, data.set ? -1 : 300);
+            prefs.extraArgs = "";
+            verify(row.enabled);
+            verify(!note.visible);
+        }
+
+        // The pause hold's extras note sits between its row and the pre-roll row, which stays open: the note closes the
+        // hold row, and the pre-roll row follows the note.
+        function test_analog_max_gap_note_comes_before_the_preroll() {
+            prefs.recordCalls = true;
+            prefs.extraArgs = "--analog-record-max-gap-ms 7500";
+            openScreen();
+            var hold = item("analogMaxGapRow");
+            var note = item("analogMaxGapExtrasNote");
+            var preroll = item("analogPrerollRow");
+            verify(!hold.enabled);
+            verify(!hold.showDivider, "the note closes the hold row");
+            verify(note.visible);
+            verify(preroll.enabled, "the pre-roll row follows its own option");
+            verify(!item("analogPrerollExtrasNote").visible);
+            verify(note.mapToItem(null, 0, 0).y > hold.mapToItem(null, 0, 0).y);
+            verify(preroll.mapToItem(null, 0, 0).y > note.mapToItem(null, 0, 0).y);
+            prefs.extraArgs = "";
+        }
+
+        // Both options in Extra decoder arguments: both rows are shut, each with its note, and Record calls on sends
+        // neither setting (-1 for both), so the session keeps what its extra options set.
+        function test_analog_hold_and_preroll_both_in_extra_arguments() {
+            prefs.recordCalls = true;
+            prefs.analogMaxGapMs = 2000;
+            prefs.analogPrerollMs = 300;
+            prefs.extraArgs = "--analog-record-max-gap-ms 7500 --analog-record-preroll-ms=700";
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            verify(!item("analogMaxGapRow").enabled);
+            verify(!item("analogPrerollRow").enabled);
+            verify(item("analogMaxGapExtrasNote").visible);
+            verify(item("analogPrerollExtrasNote").visible);
+            item("recordCallsToggle").activate();
+            item("recordCallsToggle").activate();
+            compare(lastRequest().kind, "recordCalls");
+            compare(lastRequest().on, true);
+            compare(lastRequest().analogMaxGapMs, -1);
+            compare(lastRequest().analogPrerollMs, -1);
+            prefs.extraArgs = "";
         }
 
         function test_manage_row_opens_the_screen() {

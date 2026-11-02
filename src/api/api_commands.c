@@ -968,6 +968,8 @@ static const api_command_desc k_commands[] = {
     API_I32_RANGE("record_unknown_only_set", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0, 1, "{value:0|1}"),
     API_I32_RANGE("analog_record_max_gap_set", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0,
                   DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, "{value:ms 0..10000, <=200 off}"),
+    API_I32_RANGE("analog_record_preroll_set", DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0,
+                  DSD_ANALOG_RECORD_PREROLL_MAX_MS, "{value:ms 0..1000, 0 off}"),
     API_STR("dsp_out_set", DSD_APP_CMD_DSP_OUT_SET, 255, "{value:filename, <=255 bytes}"),
     API_STR("symcap_open", DSD_APP_CMD_SYMCAP_OPEN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("symbol_in_open", DSD_APP_CMD_SYMBOL_IN_OPEN, 1023, "{value:path, <=1023 bytes}"),

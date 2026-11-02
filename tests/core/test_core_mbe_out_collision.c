@@ -14,9 +14,11 @@
 #include <assert.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <sndfile.h>
@@ -210,6 +212,60 @@ test_call_wav_publication_never_replaces_a_recording(void) {
     remove_dir_tree(dir);
 }
 
+/* An NFM recording whose final name (frequency and tone included) is taken is published under another number. */
+static void
+test_nfm_wav_publication_never_replaces_a_recording(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_collision") != NULL);
+    char datestr[9];
+    char timestr[7];
+    decode_stamp(datestr, timestr);
+    char temp[DSD_TEST_PATH_MAX * 2];
+    char taken[DSD_TEST_PATH_MAX * 2];
+    char fresh[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(temp, sizeof temp, "%s/TEMP_nfm.wav", dir);
+    DSD_SNPRINTF(taken, sizeof taken, "%s/%s_%s_%05u_NFM_154430000_CTCSS_100.0_SVC_Fire.wav", dir, datestr, timestr,
+                 0x1234U);
+    DSD_SNPRINTF(fresh, sizeof fresh, "%s/%s_%s_%05u_NFM_154430000_CTCSS_100.0_SVC_Fire.wav", dir, datestr, timestr,
+                 0x5678U);
+    write_text(taken, "keep");
+
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    info.samplerate = 48000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(temp, SFM_WRITE, &info);
+    assert(wav != NULL);
+    short samples[160];
+    for (int i = 0; i < 160; i++) {
+        samples[i] = (short)(i * 10);
+    }
+    assert(sf_write_short(wav, samples, 160) == 160);
+
+    static Event_History_I history;
+    DSD_MEMSET(&history, 0, sizeof history);
+    Event_History* row = &history.Event_History_Items[0];
+    row->systype = DSD_SYNC_ANALOG;
+    row->freq_hz = 154430000;
+    row->receive_identity.kind = DSD_RECEIVE_CTCSS;
+    row->receive_identity.known = 1;
+    row->receive_identity.value = 1000;
+    DSD_SNPRINTF(row->sysid_string, sizeof row->sysid_string, "%s", "NFM");
+    DSD_SNPRINTF(row->service_label, sizeof row->service_label, "%s", "Fire");
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    const uint16_t nonces[] = {0x1234U, 0x5678U};
+    script_nonces(nonces, 2);
+    assert(close_and_rename_wav_file_ex(wav, &opts, temp, dir, &history, 0, 0, NULL) == NULL);
+
+    assert(text_is(taken, "keep"));
+    assert(size_of(fresh) > 44);
+    assert(size_of(temp) < 0);
+    remove_dir_tree(dir);
+}
+
 /* Two per-call WAV temp files opened in the same second, whatever the nonce, never share a name: libsndfile's
    SFM_RDWR would append the second call to the first. */
 static void
@@ -233,6 +289,7 @@ int
 main(void) {
     test_capture_never_truncates_an_existing_file();
     test_call_wav_publication_never_replaces_a_recording();
+    test_nfm_wav_publication_never_replaces_a_recording();
     test_call_wav_temp_names_never_repeat();
     printf("CORE_MBE_OUT_COLLISION: OK\n");
     return 0;

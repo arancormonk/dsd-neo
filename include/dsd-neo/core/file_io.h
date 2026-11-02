@@ -14,6 +14,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_FILE_IO_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -148,10 +149,29 @@ SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, c
 SNDFILE* close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
                                     const char* wav_out_filename, const char* dir, time_t opened);
 /**
- * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
- * own end) and publish it under the NFM name, without a service name or an rdio export.
+ * As close_and_publish_call_wav(), for a recorder that stamps its recording's first sample itself (the NFM call, issue
+ * #668): @p started, that decode time, is the start the journal and the rdio-scanner sidecar record (0 when unknown:
+ * then as close_and_publish_call_wav(); see dsd_rdio_recording_start()).
  */
-SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir);
+SNDFILE* close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                       const char* wav_out_filename, const char* dir, time_t opened, time_t started);
+
+/** What names a conventional NFM call's recording when it closes without its history row (issue #668): the row's
+    frequency in Hz (0 unknown), received tone and service label, as the call last wrote the file under them. */
+typedef struct {
+    int64_t freq_hz;
+    dsd_receive_identity identity;
+    char service[DSD_SERVICE_LABEL_SIZE];
+} dsd_analog_wav_name;
+
+/**
+ * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
+ * own end) and publish it under the NFM name @p name gives it (NULL: `NFM_FREQ_UNKNOWN`, no tone or service), as the
+ * row would have named it, without an rdio export or a journal line. The call's own end exports it (issue #668,
+ * close_and_publish_call_wav_ex()).
+ */
+SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir,
+                                          const dsd_analog_wav_name* name);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);

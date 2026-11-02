@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "analog_call_test_support.h"
 #include "commands_internal.h"
 #include "edacs_internal.h"
 #include "test_support.h"
@@ -484,7 +485,7 @@ nfm_block(dsd_opts* opts, dsd_state* state) {
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
 }
 
 /* B4: a stop closes and publishes a conventional NFM call's recording at once, under the call's row, and the call goes
@@ -749,14 +750,15 @@ test_close_failure_keeps_the_temp_file(int writer) {
     const dir_count c = count_dir(r.dir);
     DSD_SNPRINTF(tag, sizeof tag, "%s: nothing published", writer_name(writer));
     rc |= expect_int(tag, c.published, 0);
-    /* A stop closes both slot files, and both keep their temp names. An NFM call's end closes its own recording, and
-       its commit rotates slot 1: that close fails too, and a new slot 1 file opens beside slot 2's. */
+    /* A stop closes both slot files, and both keep their temp names. An NFM call's end closes only its own
+       recording (it leaves the slot files open), so that one close fails and its temp name stays beside the two slot
+       files. */
     DSD_SNPRINTF(tag, sizeof tag, "%s: the recordings keep their temp names", writer_name(writer));
-    rc |= expect_int(tag, c.temp, writer == WRITER_NFM ? 4 : 2);
+    rc |= expect_int(tag, c.temp, writer == WRITER_NFM ? 3 : 2);
     dsd_wav_recording_status status;
     dsd_wav_recording_status_get(&status);
     DSD_SNPRINTF(tag, sizeof tag, "%s: each close failure counted", writer_name(writer));
-    rc |= expect_int(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE], 2);
+    rc |= expect_int(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE], writer == WRITER_NFM ? 1 : 2);
     DSD_SNPRINTF(tag, sizeof tag, "%s: the last error is the close", writer_name(writer));
     rc |= expect_int(tag, status.last_error, DSD_WAV_RECORDING_ERROR_CLOSE);
     DSD_SNPRINTF(tag, sizeof tag, "%s: one close warning", writer_name(writer));
@@ -800,6 +802,35 @@ test_failed_reopen_retries_at_the_next_call_end(void) {
     dsd_wav_test_fail_opens_after(-1);
     end_p25_call(&r, 102U);
     rc |= expect_true("slot 1 records again", r.opts->wav_out_f != NULL);
+    rc |= expect_int("nothing waits to reopen", r.opts->wav_out_reopen & 1, 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* B2: an NFM call's end leaves the slot files alone, and a slot whose reopen failed still retries at the next digital
+   call end. Main rotated slot 1's empty file at every NFM call end. */
+static int
+test_nfm_end_skips_the_slot_rotation(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_rotate");
+    setup_nfm(r.opts, r.state);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    SNDFILE* const slot_file = r.opts->wav_out_f;
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_true("the NFM end kept slot 1's file", r.opts->wav_out_f == slot_file);
+    rc |= expect_int("one recording published, two slot files open", count_dir(r.dir).files, 3);
+    dsd_wav_test_fail_opens_after(0);
+    end_p25_call(&r, 100U);
+    rc |= expect_true("a digital end rotates slot 1 (the reopen fails)", r.opts->wav_out_f == NULL);
+    rc |= expect_int("slot 1 waits to reopen", r.opts->wav_out_reopen & 1, 1);
+    dsd_wav_test_fail_opens_after(-1);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_true("an NFM end does not retry the slot", r.opts->wav_out_f == NULL);
+    end_p25_call(&r, 101U);
+    rc |= expect_true("the next digital end retries it", r.opts->wav_out_f != NULL);
     rc |= expect_int("nothing waits to reopen", r.opts->wav_out_reopen & 1, 0);
     rig_close(&r);
     return rc;
@@ -1364,7 +1395,7 @@ nfm_hold(rig* r, int blocks) {
     static const float closed[960] = {0};
     r->state->analog_rx.carrier_open = 0;
     for (int i = 0; i < blocks; i++) {
-        dsd_engine_analog_call_block(r->opts, r->state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+        dsd_test_analog_call_feed(r->opts, r->state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
     }
     r->state->analog_rx.carrier_open = 1;
 }
@@ -1416,6 +1447,8 @@ test_stop_and_start_while_nfm_held(void) {
     int rc = rig_open(&r, "dsdneo_rec_nfm_held");
     setup_nfm(r.opts, r.state);
     r.opts->analog_record_max_gap_ms = 1000;
+    /* The hold alone: a pre-roll (issue #668) would open the new recording with the held blocks heard before it. */
+    r.opts->analog_record_preroll_ms = 0;
     submit(DSD_APP_CMD_WAV_START);
     (void)drain(&r);
     nfm_block(r.opts, r.state);
@@ -1488,8 +1521,10 @@ test_folder_change_while_nfm_held(void) {
         cfg.has_recording = 1;
         cfg.per_call_wav = 1;
         DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", other);
-        /* A [recording] applies its max gap too, so the config keeps the session's: only the folder changes. */
+        /* A [recording] applies its max gap and pre-roll too, so the config keeps the session's: only the folder
+           changes. */
         cfg.analog_max_gap_ms = 1000;
+        cfg.analog_preroll_ms = r.opts->analog_record_preroll_ms;
         dsd_wav_test_fail_opens_after(fail ? 0 : -1);
         (void)dsd_app_command_apply_config(&cfg);
         (void)drain(&r);
@@ -1507,6 +1542,123 @@ test_folder_change_while_nfm_held(void) {
         rc |= expect_int(tag, take_nfm_frames(r.dir), fail ? 960 + 7 * 960 + 960 : 960);
         DSD_SNPRINTF(tag, sizeof tag, "%s: the new folder's recording", fail ? "failed" : "moved");
         rc |= expect_int(tag, fail ? count_dir(other).published : take_nfm_frames(other), fail ? 0 : 960);
+        rig_close(&r);
+        remove_folder(other);
+    }
+    return rc;
+}
+
+/* Issue #668: @p blocks clean blocks after the NFM carrier went, its tone allowed, with no call running: they fill the
+   pre-roll. */
+static void
+nfm_quiet(rig* r, int blocks) {
+    static float heard[960];
+    for (int i = 0; i < 960; i++) {
+        heard[i] = 777.0f;
+    }
+    r->state->analog_rx.carrier_open = 0;
+    for (int i = 0; i < blocks; i++) {
+        dsd_test_analog_call_feed(r->opts, r->state, heard, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+    }
+    r->state->analog_rx.carrier_open = 1;
+}
+
+/* What happens between the pre-roll filling and the reception after it. */
+enum {
+    PREROLL_NOTHING,
+    PREROLL_FOLDER_MOVED,   /* a config moves the per-call folder */
+    PREROLL_STOP_START,     /* P then p, drained together */
+    PREROLL_CONFIG_OFF_ON,  /* a config turns per-call recording off, a start turns it back on, drained together */
+    PREROLL_SETTING_UNDONE, /* its command sets the pre-roll to 0 and back to 200, drained together */
+    PREROLL_SETTING_SAME,   /* its command sets the pre-roll it has */
+    PREROLL_CONFIG_UNDONE,  /* a config sets the pre-roll to 0 and another back to 200, drained together */
+    PREROLL_FOLDER_FAILED,  /* a config whose new folder does not open */
+    PREROLL_CONFIG_SAME,    /* a config that changes nothing: the same folder and pre-roll */
+    PREROLL_FOLDER_FAILED_CHANGED, /* a config whose new folder does not open, with another pre-roll */
+    PREROLL_CASES,
+};
+
+/* Queue a config whose [recording] records per call to @p dir (off for @p per_call 0) with a @p preroll_ms pre-roll. */
+static void
+preroll_config(const char* dir, int per_call, int preroll_ms) {
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)calloc(1, sizeof *cfg);
+    if (!cfg) {
+        return;
+    }
+    cfg->has_recording = 1;
+    cfg->per_call_wav = per_call;
+    cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
+    cfg->analog_preroll_ms = preroll_ms;
+    DSD_SNPRINTF(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, "%s", dir);
+    (void)dsd_app_command_apply_config(cfg);
+    free(cfg);
+}
+
+static void
+preroll_transition(rig* r, int what, const char* other) {
+    if (what == PREROLL_FOLDER_MOVED || what == PREROLL_FOLDER_FAILED || what == PREROLL_FOLDER_FAILED_CHANGED) {
+        dsd_wav_test_fail_opens_after(what == PREROLL_FOLDER_MOVED ? -1 : 0);
+        preroll_config(other, 1, what == PREROLL_FOLDER_FAILED_CHANGED ? 300 : 200);
+    }
+    if (what == PREROLL_CONFIG_OFF_ON) {
+        preroll_config(r->dir, 0, 200);
+    }
+    if (what == PREROLL_CONFIG_UNDONE) {
+        preroll_config(r->dir, 1, 0);
+        preroll_config(r->dir, 1, 200);
+    }
+    if (what == PREROLL_CONFIG_SAME) {
+        preroll_config(r->dir, 1, 200);
+    }
+    if (what == PREROLL_STOP_START) {
+        submit(DSD_APP_CMD_WAV_STOP);
+    }
+    if (what == PREROLL_STOP_START || what == PREROLL_CONFIG_OFF_ON) {
+        submit(DSD_APP_CMD_WAV_START);
+    }
+    if (what == PREROLL_SETTING_UNDONE) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0);
+    }
+    if (what == PREROLL_SETTING_UNDONE || what == PREROLL_SETTING_SAME) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 200);
+    }
+    (void)drain(r);
+    dsd_wav_test_fail_opens_after(-1);
+}
+
+/* Issue #668: every recording transition that commits drops the pre-roll, with no recording open: a folder change, a
+   stop and start inside one drain (per-call recording is on again by the next block, with the same pre-roll), a
+   config apply, and the setting turned off and on at apply, by its command or by configs. Its command drops it even
+   for the value in force. The next reception's recording holds it alone. A transition that fails changes nothing, nor
+   does a config that leaves recording and the pre-roll as they were, so the pre-roll stays and opens that recording.
+   A config whose folder fails but whose pre-roll differs still applies the pre-roll, which drops what the ring held,
+   and the recording goes on in the folder it had. */
+static int
+test_preroll_across_recording_transitions(void) {
+    int rc = 0;
+    for (int what = 0; what < PREROLL_CASES; what++) {
+        rig r;
+        char other[DSD_TEST_PATH_MAX];
+        char tag[96];
+        rc |= rig_open(&r, "dsdneo_rec_preroll");
+        rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_preroll_b") != NULL);
+        setup_nfm(r.opts, r.state);
+        r.opts->analog_record_preroll_ms = 200;
+        submit(DSD_APP_CMD_WAV_START);
+        (void)drain(&r);
+        nfm_quiet(&r, 3);
+        preroll_transition(&r, what, other);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: per-call recording on", what);
+        rc |= expect_int(tag, r.opts->dmr_stereo_wav, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the pre-roll in force", what);
+        rc |= expect_int(tag, r.opts->analog_record_preroll_ms, what == PREROLL_FOLDER_FAILED_CHANGED ? 300 : 200);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the folder", what);
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, what == PREROLL_FOLDER_MOVED ? other : r.dir) == 0);
+        nfm_block(r.opts, r.state);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        const int kept = what == PREROLL_NOTHING || what == PREROLL_FOLDER_FAILED || what == PREROLL_CONFIG_SAME;
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the recording", what);
+        rc |= expect_int(tag, take_nfm_frames(what == PREROLL_FOLDER_MOVED ? other : r.dir), kept ? 4 * 960 : 960);
         rig_close(&r);
         remove_folder(other);
     }
@@ -1571,6 +1723,68 @@ test_max_gap_set_applies_and_reports(void) {
     rc |= expect_int("0 applies", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
     rc |= expect_int("0 is stored", r.opts->analog_record_max_gap_ms, 0);
     rc |= expect_int("the view shows 0", v.analog_max_gap_ms, 0);
+    rig_close(&r);
+    return rc;
+}
+
+static int
+set_preroll(rig* r, int32_t ms) {
+    const int queued = dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, ms);
+    (void)drain(r);
+    return queued;
+}
+
+/* The NFM pre-roll command (issue #668) is a recording command, as the max gap's is: pending until the view that shows
+   it applied; a value outside 0..1000 fails, says why and changes nothing. */
+static int
+test_preroll_set_applies_and_reports(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_preroll_set");
+    if (rc != 0) {
+        rig_close(&r);
+        return rc;
+    }
+    rc |= expect_int("the default", r.opts->analog_record_preroll_ms, DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS);
+    rc |= expect_int("pre-roll queued", dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 300),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("pre-roll pends", v.command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    rc |= expect_int("pending pre-roll named", v.command_id, DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET);
+    rc |= expect_int("a setting is no pending switch", v.pending_switch_id, 0);
+    rc |= expect_int("not applied before the drain", r.opts->analog_record_preroll_ms,
+                     DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS);
+    rc |= expect_int("pre-roll drained", drain(&r), 1);
+    v = view_now();
+    rc |= expect_int("pre-roll applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the pre-roll is set", r.opts->analog_record_preroll_ms, 300);
+    rc |= expect_int("the view shows it", v.analog_preroll_ms, 300);
+    rc |= expect_true("the toast names the value", strstr(r.state->ui_msg, "NFM pre-roll -> 300 ms") != NULL);
+    rc |= expect_int("recording itself stays off", v.mode, DSD_APP_RECORDING_MODE_OFF);
+
+    static const int32_t k_refused[] = {-1, 1001, INT32_MIN, INT32_MAX};
+    for (size_t i = 0; i < sizeof k_refused / sizeof k_refused[0]; i++) {
+        char tag[64];
+        r.state->ui_msg[0] = '\0';
+        (void)set_preroll(&r, k_refused[i]);
+        v = view_now();
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll %ld fails", (long)k_refused[i]);
+        rc |= expect_int(tag, v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll %ld changes nothing", (long)k_refused[i]);
+        rc |= expect_int(tag, r.opts->analog_record_preroll_ms, 300);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll %ld says why", (long)k_refused[i]);
+        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused: NFM pre-roll must be 0..1000 ms") != NULL);
+    }
+    rc |= expect_int("the view still shows it", view_now().analog_preroll_ms, 300);
+
+    /* The range's ends apply; 0 is off. */
+    (void)set_preroll(&r, 1000);
+    rc |= expect_int("1000 applies", r.opts->analog_record_preroll_ms, 1000);
+    (void)set_preroll(&r, 0);
+    v = view_now();
+    rc |= expect_int("0 applies", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("0 is stored", r.opts->analog_record_preroll_ms, 0);
+    rc |= expect_int("the view shows 0", v.analog_preroll_ms, 0);
+    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "NFM pre-roll -> Off") != NULL);
     rig_close(&r);
     return rc;
 }
@@ -1893,6 +2107,7 @@ main(void) {
         rc |= test_close_failure_keeps_the_temp_file(writer);
     }
     rc |= test_failed_reopen_retries_at_the_next_call_end();
+    rc |= test_nfm_end_skips_the_slot_rotation();
     rc |= test_failed_static_open_keeps_the_running_recording();
     rc |= test_failed_raw_open_keeps_the_running_raw_wav();
     rc |= test_start_closes_handles_the_mode_does_not_cover();
@@ -1910,7 +2125,9 @@ main(void) {
     rc |= test_stop_and_start_while_nfm_held();
     rc |= test_nfm_hold_off_without_recording();
     rc |= test_folder_change_while_nfm_held();
+    rc |= test_preroll_across_recording_transitions();
     rc |= test_max_gap_set_applies_and_reports();
+    rc |= test_preroll_set_applies_and_reports();
     rc |= test_max_gap_set_while_nfm_held();
     rc |= test_full_segment_table_is_reported_once_per_run();
     rc |= test_recording_transition_table();

@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -364,7 +365,7 @@ analog_stall_step(dsd_opts* opts, dsd_state* state) {
         opts->audio_in_type = AUDIO_IN_UDP;
         state->analog_rx.carrier_open = 1;
         const float samples[2] = {1000.0f, 1000.0f};
-        dsd_engine_analog_call_block(opts, state, samples, 2, 48000, 1);
+        dsd_test_analog_call_feed(opts, state, samples, 2, 48000, 1);
         expect("NFM reception starts a call", dsd_engine_analog_call_active(state));
         state->analog_rx.stale_after_ms = 1U;
         state->input_interrupted = 1; /* An idle read yields, with no replacement input. */

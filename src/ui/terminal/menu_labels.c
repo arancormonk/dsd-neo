@@ -1233,6 +1233,19 @@ lbl_analog_record_max_gap(const void* vctx, char* b, size_t n) {
     return b;
 }
 
+/* The NFM pre-roll (issue #668): Off at 0. */
+const char*
+lbl_analog_record_preroll(const void* vctx, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)vctx;
+    const int ms = (c && c->opts) ? c->opts->analog_record_preroll_ms : 0;
+    if (ms > 0) {
+        DSD_SNPRINTF(b, n, "NFM pre-roll... [%d ms]", ms);
+    } else {
+        DSD_SNPRINTF(b, n, "NFM pre-roll... [Off]");
+    }
+    return b;
+}
+
 const char*
 lbl_event_log(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;

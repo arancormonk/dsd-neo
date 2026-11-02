@@ -109,6 +109,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/protocol/tetra/tetra_confirm.h"
 #include "../../src/protocol/tetra/tetra_state.h"
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -9159,6 +9160,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "per-call WAV start", DSD_APP_CMD_WAV_START, 0},
         {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
         {&value, sizeof value, "NFM max gap", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0},
+        {&value, sizeof value, "NFM pre-roll", DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -11519,7 +11521,7 @@ start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f;
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
     rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
     return rc;
 }

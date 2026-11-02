@@ -273,6 +273,7 @@ Main Menu
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
 │   │   ├── NFM pause hold... [Off]              (one NFM recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
+│   │   ├── NFM pre-roll... [200 ms]             (each new NFM recording starts with up to N ms heard just before the call; 0 is off; works only while per-call recording is on)
 │   │   ├── Static WAV file...
 │   │   └── Raw input WAV file...
 │   ├── Event log
@@ -637,7 +638,8 @@ Its `Service names...` row edits a naming table using options
 such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed
-history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone.
+history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone, and an NFM recording's file name
+carries the frequency and that tone.
 The single-slot DMR decoder (`-fr`, `-nm`) shows every call in its `SLOT 1` block, its one
 lane; a `--slot-name` there names the over-the-air slot the call was proven on, as the `-J`
 slot field does.
