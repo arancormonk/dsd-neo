@@ -21313,6 +21313,71 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_platform
 )
 add_test(NAME IO_AIRSPY_SOURCE COMMAND dsd-neo_test_io_airspy_source)
+
+# A terminal menu callback named like a libairspy call shadows the SDK in the desktop CLI (#806).
+# The compile-time unit runs wherever the terminal UI and libairspy build. The runtime check builds
+# the SDK double as a shared library and relies on ELF/Mach-O symbol interposition order (an
+# executable symbol beats a library's), so it is skipped on Windows, where a link against an import
+# library cannot reproduce the clash; the compile-time unit covers that platform.
+if(DSD_HAS_AIRSPY AND DSD_ENABLE_TERMINAL_UI)
+    add_executable(
+        dsd-neo_test_ui_airspy_symbol_clash
+        ui/test_ui_airspy_symbol_clash.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_airspy_symbol_clash
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_airspy_symbol_clash
+        PRIVATE Airspy::Airspy
+    )
+    add_test(
+        NAME UI_AIRSPY_SYMBOL_CLASH
+        COMMAND dsd-neo_test_ui_airspy_symbol_clash
+    )
+
+    if(NOT WIN32)
+        add_library(
+            dsd-neo_test_airspy_sdk_double_shared
+            SHARED
+            io/airspy_sdk_double.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_airspy_sdk_double_shared
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_link_libraries(
+            dsd-neo_test_airspy_sdk_double_shared
+            PRIVATE dsd-neo_platform
+        )
+        add_executable(
+            dsd-neo_test_ui_airspy_menu_shadow
+            ui/test_ui_airspy_menu_shadow.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_airspy_menu_shadow
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/io/radio
+                ${_AIRSPY_TEST_SDK}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io
+        )
+        # The double comes first so its definitions precede libairspy's in the lookup order.
+        target_link_libraries(
+            dsd-neo_test_ui_airspy_menu_shadow
+            PRIVATE
+                dsd-neo_test_airspy_sdk_double_shared
+                dsd-neo_ui_terminal
+                dsd-neo_io_radio
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(
+            NAME UI_AIRSPY_MENU_SHADOW
+            COMMAND dsd-neo_test_ui_airspy_menu_shadow
+        )
+    endif()
+endif()
 add_executable(
     dsd-neo_test_runtime_airspy_config
     runtime/test_runtime_airspy_config.cpp

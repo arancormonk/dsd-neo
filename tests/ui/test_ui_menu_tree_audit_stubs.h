@@ -193,17 +193,17 @@
 
 #define AUDIT_ACTIONS_RADIO(X)                                                                                         \
     X(switch_to_airspy)                                                                                                \
-    X(airspy_set_serial)                                                                                               \
-    X(airspy_set_sample_rate)                                                                                          \
-    X(airspy_set_gain_mode)                                                                                            \
-    X(airspy_set_sensitivity_gain)                                                                                     \
-    X(airspy_set_linearity_gain)                                                                                       \
-    X(airspy_set_lna_gain)                                                                                             \
-    X(airspy_set_mixer_gain)                                                                                           \
-    X(airspy_set_vga_gain)                                                                                             \
-    X(airspy_set_lna_agc)                                                                                              \
-    X(airspy_set_mixer_agc)                                                                                            \
-    X(airspy_set_bias_tee)                                                                                             \
+    X(ui_airspy_set_serial)                                                                                            \
+    X(ui_airspy_set_sample_rate)                                                                                       \
+    X(ui_airspy_set_gain_mode)                                                                                         \
+    X(ui_airspy_set_sensitivity_gain)                                                                                  \
+    X(ui_airspy_set_linearity_gain)                                                                                    \
+    X(ui_airspy_set_lna_gain)                                                                                          \
+    X(ui_airspy_set_mixer_gain)                                                                                        \
+    X(ui_airspy_set_vga_gain)                                                                                          \
+    X(ui_airspy_set_lna_agc)                                                                                           \
+    X(ui_airspy_set_mixer_agc)                                                                                         \
+    X(ui_airspy_set_bias_tee)                                                                                          \
     X(act_iq_dc_k_prompt)                                                                                              \
     X(act_ted_gain_prompt)                                                                                             \
     X(act_toggle_cq)                                                                                                   \

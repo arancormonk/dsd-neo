@@ -1952,7 +1952,7 @@ is_non_airspy_input(const void* v) {
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
-airspy_set_serial(void* v) {
+ui_airspy_set_serial(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%s", c->opts->airspy.serial);
@@ -1961,7 +1961,7 @@ airspy_set_serial(void* v) {
 }
 
 void
-airspy_set_sample_rate(void* v) {
+ui_airspy_set_sample_rate(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%u", c->opts->airspy.sample_rate);
@@ -1970,7 +1970,7 @@ airspy_set_sample_rate(void* v) {
 }
 
 void
-airspy_set_gain_mode(void* v) {
+ui_airspy_set_gain_mode(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     const char* modes[] = {"sensitivity", "linearity", "manual"};
@@ -1981,7 +1981,7 @@ airspy_set_gain_mode(void* v) {
 }
 
 void
-airspy_set_sensitivity_gain(void* v) {
+ui_airspy_set_sensitivity_gain(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.sensitivity_gain);
@@ -1990,7 +1990,7 @@ airspy_set_sensitivity_gain(void* v) {
 }
 
 void
-airspy_set_linearity_gain(void* v) {
+ui_airspy_set_linearity_gain(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.linearity_gain);
@@ -1999,7 +1999,7 @@ airspy_set_linearity_gain(void* v) {
 }
 
 void
-airspy_set_lna_gain(void* v) {
+ui_airspy_set_lna_gain(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_gain);
@@ -2007,7 +2007,7 @@ airspy_set_lna_gain(void* v) {
 }
 
 void
-airspy_set_mixer_gain(void* v) {
+ui_airspy_set_mixer_gain(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_gain);
@@ -2015,7 +2015,7 @@ airspy_set_mixer_gain(void* v) {
 }
 
 void
-airspy_set_vga_gain(void* v) {
+ui_airspy_set_vga_gain(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.vga_gain);
@@ -2023,7 +2023,7 @@ airspy_set_vga_gain(void* v) {
 }
 
 void
-airspy_set_lna_agc(void* v) {
+ui_airspy_set_lna_agc(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_agc);
@@ -2031,7 +2031,7 @@ airspy_set_lna_agc(void* v) {
 }
 
 void
-airspy_set_mixer_agc(void* v) {
+ui_airspy_set_mixer_agc(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_agc);
@@ -2040,7 +2040,7 @@ airspy_set_mixer_agc(void* v) {
 }
 
 void
-airspy_set_bias_tee(void* v) {
+ui_airspy_set_bias_tee(void* v) {
     const UiCtx* c = (const UiCtx*)v;
     char current[40];
     DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.bias_tee);
