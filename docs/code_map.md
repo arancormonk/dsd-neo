@@ -4302,15 +4302,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   point by the verdict it published, positioned at the read's start (the verdict describes that read's samples), so
   `dsd_analog_rx_block_eligible_from()` is the first sample from which the gate stayed OFF or ALLOWED to the block's
   end, or the block's length when the gate in force at its end does not pass. `dsd_analog_rx_block_qualified_carrier()`
-  says whether a read starting at or after that point found the carrier itself (`dsd_analog_rx_core::carrier_now`, the
-  auto or noise squelch's flags, open at the read's last sample, or the level squelch above the floor), never only the
-  hangover. A per-sample squelch keeps its own 20 ms grid, which a block need not share (44.1 kHz input; at 48 kHz the
-  PCM noise squelch starts with the stream's second sample, so its decisions land one sample into each block), so a
-  read that starts with the last of a carrier the squelch closed on is that carrier going, not one found. The finalizer splits a block
-  that ends under a passing gate at that point where the chain's runs are chosen (`symbol_process_unsynced_audio()`
-  and `symbol_process_unsynced_audio_runs()`): the start is a run that does not play, so the AGC neither adapts to nor
-  plays it, and it is silence in `analog_out_f` before every sink and the hook; the sink gate ramps in from silence
-  after it. The `-6` WAV and the filters' history are untouched. At 48 kHz, with one read per block, no block is split.
+  says whether a read starting at or after that point found the carrier itself (`dsd_analog_rx_core::carrier_now`: the
+  level squelch above the floor, or the auto or noise squelch's flags with the gate open at the read's last sample or
+  opening inside the read), never only the hangover. A per-sample squelch keeps its own 20 ms grid, which a block need
+  not share (44.1 kHz input; at 48 kHz the PCM noise squelch starts with the stream's second sample, so its decisions
+  land one sample into each block), so a read that only carries an open gate to its close is that carrier going, not
+  one found. A gate that opens inside a read counts however soon it closes again (a flicker on a real carrier's first
+  read, a short kerchunk): the session keeps whether the last read ended open (`read_ended_open`, closed again by
+  every reset and by a dropped read), so a read that starts open after a closed one opens at its first sample. The
+  finalizer splits a block that ends under a passing gate at that point where the chain's runs are chosen
+  (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run that does not play,
+  so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink and the hook; the
+  sink gate ramps in from silence after it. The `-6` WAV and the filters' history are untouched. At 48 kHz, with one
+  read per block, no block is split.
   `DSP_SYMBOL_REPLAY` scripts the verdicts inside 8192 Hz blocks (`dsd_analog_rx_test_set_gate()`, a test-hook-build
   seam) and runs the real AGC over the chain's runs. The
   block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the

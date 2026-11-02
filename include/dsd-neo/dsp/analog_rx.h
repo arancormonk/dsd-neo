@@ -380,9 +380,9 @@ unsigned int dsd_analog_rx_block_eligible_from(const dsd_opts* opts, const dsd_s
 /**
  * @brief Whether a read of the monitor block starting at or after its eligible point
  * (dsd_analog_rx_block_eligible_from()) found the carrier itself (issue #668): the receiver's own per-read decision, a
- * read the auto or noise squelch's flags open and still open at its last sample, or one the level squelch passes above
- * the level floor, never only the carrier's hangover, the whole block's level or the playback gate. 0 when nothing of
- * the block is eligible. Read-only.
+ * read the auto or noise squelch's flags open at its last sample or open inside it, or one the level squelch passes
+ * above the level floor, never only the carrier's hangover, the whole block's level or the playback gate. 0 when
+ * nothing of the block is eligible. Read-only.
  */
 int dsd_analog_rx_block_qualified_carrier(const dsd_opts* opts, const dsd_state* state);
 

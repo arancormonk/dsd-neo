@@ -19276,9 +19276,11 @@ dsd_neo_add_analog_record_start_test(
 )
 # A tone filter: a recording starts at the verdict (about 0.3 s into the burst), with
 # no audio from before it, and the pre-roll adds none of the audio still being checked.
+# Each tone case's bound sits about 10 ms under its measured start, so a recording one
+# 20 ms tap read early fails.
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_START_TONE
-    "--analog-scene onsets-ctcss --analog-pcm-tap 48000 -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+    "--analog-scene onsets-ctcss --analog-pcm-tap 48000 -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 306 --analog-record-min-audio-ms 306"
     4
 )
 # B1 on audio input under the noise squelch, at 48 kHz and at 44.1 kHz: the squelch keeps
@@ -19286,16 +19288,16 @@ dsd_neo_add_analog_record_start_test(
 # carrier the squelch closed on. That read leaves no recording and no row; the 0.6 s
 # burst records from its verdict.
 set(_pcm_record_tone_short_mode
-    "--analog-scene ctcss-short -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+    "--analog-scene ctcss-short -fA --squelch noise+6 --tone-allow 100.0"
 )
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_TONE_SHORT
-    "${_pcm_record_tone_short_mode} --analog-pcm-tap 48000"
+    "${_pcm_record_tone_short_mode} --analog-pcm-tap 48000 --analog-record-min-start-ms 312 --analog-record-min-audio-ms 312"
     1
 )
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_TONE_SHORT_44K
-    "${_pcm_record_tone_short_mode} --analog-pcm-tap 44100"
+    "${_pcm_record_tone_short_mode} --analog-pcm-tap 44100 --analog-record-min-start-ms 306 --analog-record-min-audio-ms 306"
     1
 )
 # B1 at 8192 Hz: carriers of 0.10 to 0.22 s whose tone is passed only after they end,
@@ -19303,7 +19305,7 @@ dsd_neo_add_analog_record_start_test(
 # the verdict, the block's earlier part left out (B6).
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_TONE_SHORT_8K
-    "--analog-scene level-ctcss-short --analog-pcm-tap 8192 -fA --squelch -40 --tone-allow 100.0 --analog-record-min-start-ms 250 --analog-record-min-audio-ms 250"
+    "--analog-scene level-ctcss-short --analog-pcm-tap 8192 -fA --squelch -40 --tone-allow 100.0 --analog-record-min-start-ms 275 --analog-record-min-audio-ms 275"
     1
 )
 # A 40 ms burst inside a 117 ms block at 8192 Hz opens the level squelch in one tap
@@ -19359,14 +19361,14 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_analog_record_start_test(
         DECODE_IQ_ANALOG_RECORD_START_TONE
-        "--analog-scene onsets-ctcss -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+        "--analog-scene onsets-ctcss -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 301 --analog-record-min-audio-ms 301"
         4
     )
     # B1: CTCSS carriers of 0.26 to 0.30 s under the noise squelch, whose tone is passed
     # only in the hangover, leave no recording and no row; the 0.6 s burst records.
     dsd_neo_add_analog_record_start_test(
         DECODE_IQ_ANALOG_RECORD_TONE_SHORT
-        "--analog-scene ctcss-short -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 280 --analog-record-min-audio-ms 280"
+        "--analog-scene ctcss-short -fA --squelch noise+6 --tone-allow 100.0 --analog-record-min-start-ms 312 --analog-record-min-audio-ms 312"
         1
     )
     # A replay knows its frequency: the talkgroup is it in kHz, the label names it,

@@ -59,8 +59,8 @@ typedef struct {
         0. */
     size_t eligible_from;
     /** 1 when some tap read starting at or after @c eligible_from found the carrier itself, not only its hangover:
-        the receiver's own per-read decision (under a per-sample squelch, open at the read's last sample), never the
-        level of the whole block or the playback gate. */
+        the receiver's own per-read decision (under a per-sample squelch, open at the read's end or opening inside it),
+        never the level of the whole block or the playback gate. */
     int qualified_carrier;
     /** The decode-domain wall time at the block's end (dsd_decode_now_realtime_s()), read before the block's raw WAV
         write; 0 while per-call recording (-P) is off. */

@@ -86,9 +86,10 @@
  * bursts of voice-band noise that never repeats, as I/Q, as audio input at --analog-pcm-tap's rate, or sent live over
  * UDP. With -P and --wav-journal, once the engine has stopped, the host finds every published recording in the scene
  * and prints one "ANALOG RECORDING:" line for it: where its first sample, and its first sample that is not 0, fell
- * against its burst's start. --analog-record-{min,max}-{start,audio}-ms bound those. --analog-keep-output keeps the
- * session's own output settings instead of capturing the monitor (-o null stays muted, as engine setup leaves it),
- * prints one "ANALOG OUTPUT:" line and fails unless the output is off and nothing reached it.
+ * against its burst's start. --analog-record-{min,max}-{start,audio}-ms bound those. A scene's run prints "ANALOG AUDIO
+ * OK" only after its recordings were checked. --analog-keep-output keeps the session's own output settings instead of
+ * capturing the monitor (-o null stays muted, as engine setup leaves it), prints one "ANALOG OUTPUT:" line and fails
+ * unless the output is off and nothing reached it.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -256,6 +257,8 @@ static analog_limit g_record_min_audio_ms;
 static analog_limit g_record_max_audio_ms;
 /* The session's own output settings stay (--analog-keep-output, issue #668): -o null stays muted, nothing captured. */
 static int g_keep_output;
+/* The stop hook reported the run's live checks (analog_report()). */
+static int g_reported;
 /* The option that names a scene (--analog-scene, issue #668) and the one that takes no value. */
 static const char k_scene_arg[] = "--analog-scene";
 static const char k_keep_output_arg[] = "--analog-keep-output";
@@ -2485,6 +2488,14 @@ analog_oracle_run(const dsd_opts* opts) {
     DSD_FPRINTF(stderr, "ANALOG RECORDINGS: %d\n", n);
 }
 
+/* The verdict of a scene's run, after its recordings were checked: only when the stop hook reported (analog_report()). */
+static void
+analog_report_scene(void) {
+    if (g_scene.scene != NULL && g_reported && !g_failed) {
+        DSD_FPRINTF(stderr, "ANALOG AUDIO OK\n");
+    }
+}
+
 /* ---- report --------------------------------------------------------------------------------------------------- */
 
 static void
@@ -2747,7 +2758,10 @@ analog_report(void) {
     analog_report_probes(&ctx, 0);
     analog_note_resolution();
     analog_check_limits(&ctx);
-    if (!g_failed) {
+    /* A scene's recordings are checked once the engine has stopped (analog_oracle_run()), and the verdict waits for
+       them. */
+    g_reported = 1;
+    if (!g_failed && g_scene.scene == NULL) {
         DSD_FPRINTF(stderr, "ANALOG AUDIO OK\n");
     }
 }
@@ -2939,6 +2953,7 @@ main(int argc, char** argv) {
                 g_scene.feeding = 0;
             }
             analog_oracle_run(opts);
+            analog_report_scene();
             if (rc == 0 && g_failed) {
                 rc = 1;
             }

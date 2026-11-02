@@ -5965,26 +5965,46 @@ test_qualified_carrier_needs_an_eligible_read_of_the_carrier(void) {
     }
 }
 
-/* qualified_carrier (B1, issue #668): a read finds the carrier itself only when the carrier is still there at its end.
-   A per-sample squelch keeps its own 20 ms grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio
-   input, whose noise squelch never sees the stream's first sample), so a read can start with a sliver of a carrier the
-   squelch then closed on: that is the carrier going, which leaves its hangover, not a carrier found. */
+/* Flags for one 960-sample block: the gate closed over [@p closed_from, @p closed_to) and over [@p closed2_from, 960),
+   open elsewhere. */
 static void
-test_qualified_carrier_is_open_at_the_end_of_its_read(void) {
+fill_gate_runs(uint8_t* flags, unsigned int closed_from, unsigned int closed_to, unsigned int closed2_from) {
+    for (unsigned int i = 0; i < 960U; i++) {
+        const int closed = (i >= closed_from && i < closed_to) || i >= closed2_from;
+        flags[i] = closed ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+}
+
+/* qualified_carrier (B1, issue #668): under a per-sample squelch a read finds the carrier itself when the gate is open
+   at its end or opens inside it (a closed sample, or the last read's closed end, before an open one). A per-sample
+   squelch keeps its own 20 ms grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio input, whose
+   noise squelch never sees the stream's first sample), so a read can carry an open gate a few samples to its close:
+   that is the carrier going, which leaves its hangover, not a carrier found. A flicker that opens and closes inside
+   one read is a carrier found. */
+static void
+test_qualified_carrier_ends_open_or_opens_in_its_read(void) {
     static dsd_opts opts;
     static dsd_state state;
 
+    enum { OPEN = 960, NONE = 960 };
+
+    /* Each case: the block before (closed over [prev_from, 960), OPEN for none), whether a reset comes between, the
+       read's closed runs (fill_gate_runs()), and the verdict. */
     static const struct {
-        unsigned int open1;
-        unsigned int reopen;
+        unsigned int prev_from;
+        int reset;
+        unsigned int c1, c2, c3;
         int qualified;
     } cases[] = {
-        {1U, 960U, 0},   /* open on the first sample only: the squelch closed one sample in */
-        {240U, 960U, 0}, /* open for 5 ms, then closed */
-        {0U, 1U, 1},     /* closed on the first sample only: the squelch opened one sample in */
-        {0U, 600U, 1},   /* opened part-way through */
-        {300U, 600U, 1}, /* closed in the middle, open again at the end */
-        {960U, 960U, 1}, /* open throughout */
+        {OPEN, 0, 1U, 960U, NONE, 0},   /* open at sample 0 only, after an open read: the squelch closed one in */
+        {OPEN, 0, 240U, 960U, NONE, 0}, /* open for 5 ms after an open read, then closed */
+        {0U, 0, 1U, 960U, NONE, 1},     /* open at sample 0 only after a closed read: it opened at the first sample */
+        {OPEN, 1, 1U, 960U, NONE, 1},   /* the same after a reset, which leaves the gate closed */
+        {0U, 0, 0U, 300U, 600U, 1},     /* a flicker: opens at 300, closes at 600, all inside the read */
+        {OPEN, 0, 200U, 300U, 600U, 1}, /* open, closed, open again, closed: it opened inside */
+        {0U, 0, 0U, 1U, NONE, 1},       /* closed at sample 0 only: the squelch opened one in */
+        {OPEN, 0, 300U, 600U, NONE, 1}, /* closed in the middle, open at the end */
+        {OPEN, 0, NONE, NONE, NONE, 1}, /* open throughout */
     };
 
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
@@ -6000,16 +6020,84 @@ test_qualified_carrier_is_open_at_the_end_of_its_read(void) {
         start_call_capture();
         feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
         assert(last_call_block()->carrier_open == 0);
-        feed_flagged_block(&opts, &state, 1000.0f, cases[c].open1, cases[c].reopen);
+        feed_flagged_block(&opts, &state, 1000.0f, cases[c].prev_from, 960U);
+        if (cases[c].reset) {
+            dsd_analog_rx_reset(&state);
+        }
+        float block[960];
+        uint8_t flags[960];
+        for (int i = 0; i < 960; i++) {
+            block[i] = 1000.0f;
+        }
+        fill_gate_runs(flags, cases[c].c1, cases[c].c2, cases[c].c3);
+        assert(dsd_symbol_test_finalize_unsynced_analog_block_flags(&opts, &state, block, flags, 960U) == 960U);
         const call_block_seen* seen = last_call_block();
         if (seen->input != DSD_ANALOG_CALL_RECEPTION || seen->qualified_carrier != cases[c].qualified) {
-            DSD_FPRINTF(stderr,
-                        "FAIL: qualified carrier, open over [0, %u) and from %u: input %d, qualified %d, want %d\n",
-                        cases[c].open1, cases[c].reopen, (int)seen->input, seen->qualified_carrier, cases[c].qualified);
+            DSD_FPRINTF(stderr, "FAIL: qualified carrier, case %zu: input %d, qualified %d, want %d\n", c,
+                        (int)seen->input, seen->qualified_carrier, cases[c].qualified);
             assert(0);
         }
         stop_call_capture();
         dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+/* The same rule where a block is read in parts (dsd_analog_rx_tap_partial_flags()): 44.1 kHz audio input under the
+   PCM noise squelch, whose 960-sample block is read as its first 882 samples (20 ms) and, when it is finalized, the
+   rest. Each part is judged on its own last flag, and the gate where the first part ended is the second's start. */
+static void
+test_qualified_carrier_across_the_reads_of_a_block(void) {
+    enum { RATE = 44100, PART = 882, OPEN = 960 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Each case: the block before (closed over [prev_from, 960)), this block's closed runs, the verdict. */
+    static const struct {
+        unsigned int prev_from;
+        unsigned int c1, c2, c3;
+        int qualified;
+    } cases[] = {
+        {OPEN, 882U, 960U, OPEN, 1}, /* the first part ends open on its last sample, 881 */
+        {OPEN, 881U, 960U, OPEN, 0}, /* closed from 881: neither part ends open or opens */
+        {OPEN, 870U, 882U, 900U, 1}, /* the first part ends closed, the second opens on its first sample, 882 */
+        {OPEN, 900U, 960U, OPEN, 1}, /* the first part ends open; the second only closes */
+        {OPEN, 0U, 0U, 100U, 0},     /* the open gate carried 100 samples to its close: the carrier going */
+        {950U, 0U, 0U, 100U, 1},     /* the same after a block that ended closed: it opened at sample 0 */
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        init_analog_monitor_fixture(&opts, &state);
+        opts.wav_sample_rate = RATE;
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+        state.squelch_noise_state = (uint8_t)DSD_SQUELCH_NOISE_STATE_KNOWN;
+        assert(dsd_squelch_dynamic_in_force(&opts, &state));
+        static float block[960];
+        static uint8_t flags[960];
+        for (int i = 0; i < 960; i++) {
+            block[i] = 1000.0f;
+        }
+        /* The session starts at the first sample, so the first block is read whole from there. */
+        fill_gate_runs(flags, OPEN, OPEN, OPEN);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_partial_flags(&opts, &state, block, flags, 1U);
+        dsd_analog_rx_tap_partial_flags(&opts, &state, block, flags, PART);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        fill_gate_runs(flags, cases[c].prev_from, 960U, OPEN);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_partial_flags(&opts, &state, block, flags, PART);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        fill_gate_runs(flags, cases[c].c1, cases[c].c2, cases[c].c3);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_partial_flags(&opts, &state, block, flags, PART);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        const int qualified = dsd_analog_rx_block_qualified_carrier(&opts, &state);
+        if (qualified != cases[c].qualified) {
+            DSD_FPRINTF(stderr, "FAIL: qualified carrier over two reads, case %zu: %d, want %d\n", c, qualified,
+                        cases[c].qualified);
+            assert(0);
+        }
         dsd_state_ext_free_all(&state);
     }
 }
@@ -6409,7 +6497,8 @@ main(void) {
     test_tone_verdict_inside_a_block_splits_the_chain_runs();
     test_tone_rejected_start_leaves_the_agc_alone();
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
-    test_qualified_carrier_is_open_at_the_end_of_its_read();
+    test_qualified_carrier_ends_open_or_opens_in_its_read();
+    test_qualified_carrier_across_the_reads_of_a_block();
     test_call_block_descriptor_follows_the_recording_not_the_speaker();
     test_call_block_wall_time_is_read_before_the_raw_wav();
     test_sink_generation_moves_at_every_break();

@@ -538,6 +538,10 @@ typedef struct {
         starting there or later found the carrier itself (not only its hangover). */
     unsigned int block_eligible_from;
     int block_qualified;
+    /** Whether the per-sample squelch's gate was open at the last read's last sample (issue #668): a read that starts
+        open after a read that ended closed opens the gate at its first sample. Closed after a dropped read and at
+        every reset (analog_rx_forget()). */
+    int read_ended_open;
 } analog_rx_session;
 
 /* No sample of the monitor block is eligible: the tone gate in force does not pass (issue #668). */
@@ -658,27 +662,48 @@ analog_rx_block_eligibility_begin(const dsd_opts* opts, const dsd_state* state, 
     session->block_qualified = 0;
 }
 
-/* Whether a read that found the carrier (@p carrier_now) still has it at its last sample, @p flags[@p last] (B1, issue
-   #668). A per-sample squelch keeps its own 20 ms grid, which a monitor block need not share (44.1 kHz input, or 48 kHz
-   audio input, whose noise squelch starts with the stream's second sample), so a read can start with the last of a
-   carrier the squelch then closed on: that is the carrier going, which leaves its hangover, not a carrier found. A read
-   without per-sample flags has only its own decision. */
+/* Whether the gate opens inside the read [@p start, @p end) of @p flags: a closed sample, or the last read's end
+   (@p was_open 0), followed by an open one. */
 static int
-analog_rx_read_ends_on_carrier(const dsd_opts* opts, const dsd_state* state, const uint8_t* flags, unsigned int last,
-                               int carrier_now) {
-    if (!carrier_now || !flags || !dsd_squelch_dynamic_in_force(opts, state)) {
+analog_rx_read_opens_gate(const dsd_opts* opts, const dsd_state* state, int was_open, const uint8_t* flags,
+                          unsigned int start, unsigned int end) {
+    for (unsigned int i = start; i < end; i++) {
+        const int open = dsd_squelch_gate_open(opts, state, flags[i]);
+        if (open && !was_open) {
+            return 1;
+        }
+        was_open = open;
+    }
+    return 0;
+}
+
+/* Whether the read [@p start, @p end) found the carrier itself (B1, issue #668), noting where its gate ended. Under a
+   per-sample squelch (@p flags) the read must end open or open the gate inside it. The squelch keeps its own 20 ms
+   grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio input, whose noise squelch starts with
+   the stream's second sample), so a read can carry an already open gate a few samples to its close: that is the
+   carrier going, which leaves its hangover, not a carrier found. A carrier that opens inside the read counts, however
+   soon the squelch closes again. A read without per-sample flags has only its own decision (@p carrier_now). */
+static int
+analog_rx_read_found_carrier(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session,
+                             const uint8_t* flags, unsigned int start, unsigned int end, int carrier_now) {
+    if (!flags || !dsd_squelch_dynamic_in_force(opts, state)) {
+        session->read_ended_open = carrier_now;
         return carrier_now;
     }
-    return dsd_squelch_gate_open(opts, state, flags[last]);
+    const int was_open = session->read_ended_open;
+    const int ends_open = carrier_now && dsd_squelch_gate_open(opts, state, flags[end - 1U]);
+    session->read_ended_open = ends_open;
+    return carrier_now && (ends_open || analog_rx_read_opens_gate(opts, state, was_open, flags, start, end));
 }
 
 /* A read of the monitor block from sample @p start to @p end has published its verdict (issue #668), which describes
    the read's samples: a verdict that does not pass makes nothing of the block eligible yet, and the first one that
-   passes after it makes the block eligible from the read's start. A read that found the carrier itself (@p
-   carrier_now) and still has it at its end (@p flags, NULL for none) while the block is eligible qualifies it. */
+   passes after it makes the block eligible from the read's start. A read that found the carrier itself
+   (analog_rx_read_found_carrier(), @p flags NULL for none) while the block is eligible qualifies it. */
 static void
 analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session, unsigned int start,
                           unsigned int end, const uint8_t* flags, int carrier_now) {
+    const int found = analog_rx_read_found_carrier(opts, state, session, flags, start, end, carrier_now);
     if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
         session->block_eligible_from = ANALOG_RX_NOT_ELIGIBLE;
         session->block_qualified = 0;
@@ -688,7 +713,7 @@ analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_r
         session->block_eligible_from = start;
         session->block_qualified = 0;
     }
-    if (analog_rx_read_ends_on_carrier(opts, state, flags, end - 1U, carrier_now)) {
+    if (found) {
         session->block_qualified = 1;
     }
 }
@@ -1127,6 +1152,7 @@ analog_rx_forget(dsd_state* state) {
     }
     dsd_analog_rx_core_reset(&session->core);
     session->stale_after_ms = 0;
+    session->read_ended_open = 0;
     analog_rx_publish_core(session, state);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
        unusable rate the next read publishes UNAVAILABLE again. */
