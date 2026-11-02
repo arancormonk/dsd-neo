@@ -250,6 +250,8 @@ Windows console runs:
   history and rdio-scanner metadata keep them as received. A recording whose write falls short (a full disk) ends there and is published with what it holds;
   one that does not close cleanly keeps its `TEMP_` name. A slot file that fails to open opens again at the slot's
   next call end. Each kind of failure (open, write, close, rename) is logged the first time in a run and counted after.
+  Conventional NFM calls are recorded too, at 48 kHz, by default each starting a moment before the call was picked up
+  (see [Where an NFM recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms)).
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
@@ -269,26 +271,31 @@ Windows console runs:
   its `TEMP_` name (`error`), and `link`/`unlink` lines for a recording closed before its call's history row
   (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
   the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
-  torn line gets a newline first. A journal that cannot be opened or written is turned off for the rest of the run
-  with one error in the log; decoding and recording go on. A run with a journal keeps every file it uploads: while
-  the journal is set, `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes
-  nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
-  keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
-  `docs/code_map.md` ("Recording journal").
+  torn line gets a newline first. A record's `start` is when the call started, or when the recording opened if that
+  was later (recording switched on mid-call); an NFM recording's is its own first sample, the pre-roll included. A
+  journal that cannot be opened or written is turned off for the rest of the run with one error in the log; decoding and
+  recording go on. A run with a journal keeps every file it uploads: while the journal is set,
+  `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes nothing, with one warning in
+  the log, because the journal's owner manages the recordings' retention. The option keeps its value, so a config saved
+  from the run (the exit's autosave included) still has it. The record format is in `docs/code_map.md` ("Recording
+  journal").
 - `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional NFM call in one
   recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
-  (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence, so the
-  recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one.
-  200 or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0
-  to 10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted,
-  and the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as
+  heard, with the pre-roll below), so the recording keeps time. A longer pause ends the call at its last audio, and the
+  next transmission starts a new one. 200 or less turns it off, the default: a call then ends 200 ms after its carrier
+  drops, as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI: `[recording]
+  analog_max_gap_ms`. How pauses are counted, and the limits, are under [Pauses in an NFM
+  recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 - `--analog-record-preroll-ms <ms>` (or `--analog-record-preroll-ms=<ms>`) Start each new conventional NFM recording
   with up to `<ms>` of the audio heard just before the call, so its first word is not cut off. It works only with
   per-call recording on (`-P`). Only audio the tone filter allows is kept: audio it is still checking or has rejected
   never is. In a recording that resumes after a pause (`--analog-record-max-gap-ms`), the last `<ms>` of the pause
   is saved as heard rather than as silence, the same way. 200 is the default; 0 turns it off, and recordings then
-  start as before. A value outside 0 to 1000 is refused. A change in a running session drops the audio held so far,
-  even when the value is the same. INI: `[recording] analog_preroll_ms`.
+  start as before. A value outside 0 to 1000 is refused. Setting it in a running session (the API, the terminal menu,
+  the app) drops the audio held so far, even when the value is the same; a config applied in a running session drops
+  it only when it changes the value. INI: `[recording] analog_preroll_ms`. What it holds, and the limits, are under
+  [Where an NFM recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls
   and conventional NFM calls ([NFM calls in rdio-scanner](#nfm-calls-in-rdio-scanner))
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
@@ -1653,9 +1660,46 @@ include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source
 (`20261021_142839_51828_NFM_154430000_CTCSS_141.3_SVC_20R_Traveler.wav`). The tone is the received `CTCSS_<Hz>`
 or `DCS_D<code><N|I>` (the standard code, as `DCS_D023N`); it is left out when no tone was received or it was not
 confirmed. A call with no known frequency (an audio input) has `FREQ_UNKNOWN` in place of the frequency.
+By default each new recording starts with up to 200 ms of what was heard just before the call
+([below](#where-an-nfm-recording-starts---analog-record-preroll-ms)).
 With `--rdio-mode`, NFM recordings are exported to rdio-scanner too, named or not
 ([below](#nfm-calls-in-rdio-scanner)). See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
+
+#### Where an NFM recording starts (`--analog-record-preroll-ms`)
+
+An NFM call begins when the squelch finds the carrier. The squelch needs a moment to decide, about 30 to 50 ms with
+the noise squelch, so a recording that started there would miss the start of the first word. So each new recording
+starts with up to `--analog-record-preroll-ms` (INI `[recording] analog_preroll_ms`, 200 ms by default) of the audio
+heard just before the call, and then the call itself. 0 turns it off: a recording then starts where the call is
+picked up, as before.
+
+- It works only while per-call recording is on (`-P`). With it off, nothing is held.
+- The pre-roll is whatever the input sent before the call. With an open squelch on the radio, or an SDR, that is
+  mostly noise, so a long pre-roll puts a short hiss at the start of each recording. From a radio that squelches
+  itself, it is silence.
+- It holds only audio heard since the last call ended, and since the last break in the input (a retune, a scan step,
+  an input switch, a stream that paused or reconnected). Audio from before such a break never reaches a recording.
+- Under a tone filter, only audio the filter has allowed is held. Audio it is still checking, or has rejected, is
+  never saved, so a recording under a tone filter starts when the tone is confirmed, usually with no pre-roll. The
+  filter's verdict counts in steps of about 20 ms (see the
+  [tone filter](#tone-filter-ctcssdcs-receive-policy), "What is muted").
+- A call begins only on the carrier itself, not on the 200 ms the squelch holds open after the carrier drops. So a
+  short burst whose tone is confirmed only after its carrier has gone leaves no recording and no history row.
+- On radio input, a carrier of at most about 40 ms that comes on just as a stalled input resumes begins no call: the
+  first moment of input after a stall is set aside, as it may hold audio from before the stall.
+- Someone who keys up again within 200 ms of letting go is not a new call: the call goes on, and the start of their
+  first word stays as the squelch left it.
+- When a call held through a pause (`--analog-record-max-gap-ms`, below) resumes, the end of the pause is saved as
+  heard rather than as silence, up to the pre-roll. Anything that breaks the audio during the pause, such as a tone
+  check when the carrier comes back, makes the whole pause silence, as before.
+- The recording's start time is its first sample, the pre-roll included, so the `--wav-journal` record's `start` and
+  the rdio-scanner export's `start_time` can be a second earlier than the call's history row. Both are whole seconds.
+- These drop the audio held so far, so the next recording may start without it: turning per-call recording off or
+  on, a new recording folder, a new pre-roll value, and setting the pre-roll in a running session through the API,
+  the terminal menu or the app, even to the value it already has. A config applied in a running session that changes
+  none of these keeps it.
+- AM (`-fM`) calls have no per-call recording yet, so no pre-roll either. Digital calls are not affected.
 
 #### NFM calls in rdio-scanner
 
@@ -1683,7 +1727,9 @@ both. rdio-scanner needs a talkgroup number, and an NFM call has none, so dsd-ne
 
 Limits:
 
-- Calls on one frequency share one talkgroup, whatever their tone, and frequencies less than 1 kHz apart share one.
+- Calls on one frequency share one talkgroup, whatever their tone. The kHz are rounded down, so all frequencies in one
+  whole kHz share one too: 154.4370 and 154.4379 MHz are both `154437`, while 154.4379 and 154.4381 MHz, closer
+  together, are not.
 - rdio-scanner drops a call it takes for a duplicate: same system and talkgroup, starting within its duplicate
   detection time frame (500 ms by default; `duplicateDetectionTimeFrame` and `disableDuplicateDetection` in its
   options). The sidecar's `start_time` is in whole seconds, so two transmissions on one channel that start in the same
@@ -1706,8 +1752,9 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   silence under the noise or auto squelch, the input itself under a level squelch. Nothing more is saved while the
   carrier is away.
 - When the carrier comes back within the limit, the rest of the pause is saved as silence just before the new audio,
-  so the recording keeps time. A pause exactly as long as the limit is still joined. A longer one ends the call at its
-  last audio; the next transmission starts a new call and a new recording.
+  so the recording keeps time. With the pre-roll on, the last part of it, up to the pre-roll, is saved as heard instead,
+  unless something broke the audio during the pause (a tone check does). A pause exactly as long as the limit is still
+  joined. A longer one ends the call at its last audio; the next transmission starts a new call and a new recording.
 - 200 or less turns it off, the default. The largest value is 10000 (10 seconds). A change in a running session
   applies from the next block of audio: a lower limit, or off, ends a call already paused longer than that, and a
   higher one lets it wait longer. A call that already ended stays ended.
@@ -1782,12 +1829,14 @@ setting, shown apart from what is received, and it is off by default: then the o
   keeps it rejected and becomes its reason, so a rejection for want of a tone that later hears an unlisted tone reads
   `muted: not allowed` and logs that tone. The next transmission starts over, and so does the one on air when the policy
   itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
-- What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
-  ahead of every gate, squelch and tone filter included, and keeps everything.
+- What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. A per-call recording (`-P`)
+  never holds audio the filter is still checking or has rejected either, its pre-roll included. The `-6` raw WAV is a
+  capture ahead of every gate, squelch and tone filter included, and keeps everything.
 - A verdict counts from the 20 ms of audio it was reached on. The monitor works in blocks of audio, and on PCM input at
   rates other than 48 kHz a block holds several 20 ms pieces (a block is about 117 ms at 8192 Hz). When the filter lets
-  traffic through part-way through a block, the part before is silence: it is not played, not saved in a per-call
-  recording, and the automatic gain does not follow it. At 48 kHz and on radio input a block is one piece, so a verdict
+  traffic through part-way through a block, the part before is silence: it is not played, and the automatic gain does
+  not follow it. A per-call recording that starts in that block starts at the verdict; one already running keeps the
+  part as silence, so it keeps time. At 48 kHz and on radio input a block is one piece, so a verdict
   covers the whole block.
 - Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target while its carrier lasts, with
   the stay reason `Tone check` and no countdown while the check runs (800 ms, or to 1,600 ms as above); a `-Y` pass

@@ -478,7 +478,9 @@ longer than that. The hold works only while `per_call_wav` is on; with it off, N
 are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
 `analog_preroll_ms` outside 0 to 1000, or not a whole number, is refused with a warning, and the value already loaded
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a running
-session that changes it drops the audio held so far at once. It works only while `per_call_wav` is on.
+session that changes it drops the audio held so far at once; one that leaves it and the recording as they were keeps
+that audio. It works only while `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an
+NFM recording starts".
 `rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
 warning, and the value already loaded stays; `--validate-config` reports them as errors. An NFM call with a frequency
 is exported under it in kHz; how NFM calls are exported, and the limits, are in `docs/cli.md`, "NFM calls in
