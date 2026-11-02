@@ -899,6 +899,39 @@ rr_commit_record(rr_parse_ctx* ctx) {
 }
 
 /**
+ * @brief Read a siteFreqs `use` value as its one-letter mark.
+ *
+ * RadioReference documents lowercase 'd' and 'a', but the WSDL types `use` as a
+ * free string and a live site carries an uppercase 'D', so the letter is read
+ * case-blind with surrounding spaces ignored.
+ *
+ * @param use The `use` text.
+ * @return 'd', 'a', or 0 when it is neither.
+ */
+static char
+rr_use_mark(const char* use) {
+    const char* p = use;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    const char letter = *p;
+    if (letter == '\0') {
+        return 0;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p != '\0') {
+        return 0;
+    }
+    if (letter == 'd' || letter == 'D') {
+        return 'd';
+    }
+    return (letter == 'a' || letter == 'A') ? 'a' : 0;
+}
+
+/**
  * @brief Append the finished sub-record to the record that contains it.
  *
  * @param ctx Parse context.
@@ -908,8 +941,9 @@ static int
 rr_commit_sub(rr_parse_ctx* ctx) {
     if (ctx->shape == RR_SHAPE_SITE_LIST) {
         /* 'd' is the primary control channel, 'a' an alternate; anything else is voice. */
-        ctx->freq.is_control = (strcmp(ctx->freq.use, "d") == 0) ? 1 : 0;
-        ctx->freq.is_alt_control = (strcmp(ctx->freq.use, "a") == 0) ? 1 : 0;
+        const char mark = rr_use_mark(ctx->freq.use);
+        ctx->freq.is_control = (mark == 'd') ? 1 : 0;
+        ctx->freq.is_alt_control = (mark == 'a') ? 1 : 0;
 
         if (rr_array_reserve((void**)&ctx->site.freqs, &ctx->site_freq_cap, ctx->site.freq_count + 1U,
                              sizeof(dsd_rr_site_freq))

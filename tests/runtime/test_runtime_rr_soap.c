@@ -1083,6 +1083,41 @@ test_list_free_contract(void) {
     }
 }
 
+/**
+ * @brief Regression: the control-channel mark is read case- and space-blind.
+ *
+ * RadioReference documents lowercase 'd'/'a', but the WSDL types `use` as a free
+ * string and a live TETRA site (IRIS, sid 2169) carries an uppercase 'D'. The old
+ * exact compare dropped that mark, so the site read as having no control channel.
+ */
+static void
+test_control_marks_ignore_case_and_spaces(void) {
+    static const char k_sites[] = "<?xml version=\"1.0\"?><Envelope><Body><getTrsSitesResponse><return>"
+                                  "<item><siteId>1</siteId><siteFreqs>"
+                                  "<item><freq>851.0125</freq><use>D</use></item>"
+                                  "<item><freq>851.0250</freq><use> a </use></item>"
+                                  "<item><freq>851.0375</freq><use>d </use></item>"
+                                  "<item><freq>851.0500</freq><use>da</use></item>"
+                                  "<item><freq>851.0625</freq><use></use></item>"
+                                  "</siteFreqs></item></return></getTrsSitesResponse></Body></Envelope>";
+    dsd_rr_site_list sites;
+    dsd_rr_error err;
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    DSD_MEMSET(&err, 0, sizeof(err));
+    const int rc = rr_soap_parse(k_sites, sizeof(k_sites) - 1U, RR_SHAPE_SITE_LIST, &sites, &err, NULL);
+    expect("marked site parses", rc == 0 && sites.count == 1U && sites.items[0].freq_count == 5U);
+    if (rc == 0 && sites.count == 1U && sites.items[0].freq_count == 5U) {
+        const dsd_rr_site_freq* f = sites.items[0].freqs;
+        expect("uppercase D is the control channel", f[0].is_control == 1 && f[0].is_alt_control == 0);
+        expect("a padded a is an alternate", f[1].is_alt_control == 1 && f[1].is_control == 0);
+        expect("a trailing space does not hide d", f[2].is_control == 1);
+        expect("two letters are not a mark", f[3].is_control == 0 && f[3].is_alt_control == 0);
+        expect("an empty use is voice", f[4].is_control == 0 && f[4].is_alt_control == 0);
+        expect_str("the raw use text is kept", f[0].use, "D");
+    }
+    dsd_rr_site_list_free(&sites);
+}
+
 static void
 test_warning_list(void) {
     dsd_rr_warning_list warnings;
@@ -1118,6 +1153,7 @@ main(void) {
     test_talkgroups();
     test_talkgroup_categories();
     test_tetra_system();
+    test_control_marks_ignore_case_and_spaces();
     test_fault_classification();
     test_hostile_and_malformed_input();
     test_unknown_elements_are_ignored();
