@@ -13329,6 +13329,23 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_bench_tetra_viterbi PRIVATE dsd-neo_proto_tetra)
 
+# What a TETRA trunking session does per burst for the move to the main carrier (opt-in, not a test).
+add_executable(
+    dsd-neo_bench_tetra_sysinfo_move
+    EXCLUDE_FROM_ALL
+    protocol/tetra/bench_tetra_sysinfo_move.c
+)
+target_include_directories(
+    dsd-neo_bench_tetra_sysinfo_move
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_bench_tetra_sysinfo_move
+    PRIVATE dsd-neo_proto_tetra dsd-neo_test_support
+)
+
 # The air signalling test encrypts its blocks with the TEA, TB5 and TA61 wrappers.
 target_link_libraries(dsd-neo_test_tetra_air_signalling PRIVATE dsd-neo_crypto)
 

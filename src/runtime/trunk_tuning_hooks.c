@@ -41,6 +41,9 @@ typedef struct {
     int owner_ready;
     /* The owner let go of it (dsd_trunk_tuning_request_disown()): a failure has nothing to roll back. */
     int disowned;
+    /* Its owner completed it as failed or deferred before the backend took it: it moved nothing
+       (dsd_trunk_tuning_retuned_since()). */
+    int refused;
 } dsd_trunk_tuning_request_record;
 
 static dsd_trunk_tuning_request_record g_trunk_tuning_requests[DSD_TRUNK_TUNING_REQUEST_HISTORY] = {{0}};
@@ -150,6 +153,25 @@ dsd_trunk_tuning_last_request(void) {
     return dsd_atomic_u64_load_acquire(&g_trunk_tuning_next_request);
 }
 
+int
+dsd_trunk_tuning_retuned_since(uint64_t request_id) {
+    const uint64_t newest = dsd_trunk_tuning_last_request();
+    if (newest <= request_id) {
+        return 0;
+    }
+    uint64_t refused = 0U;
+    dsd_trunk_tuning_requests_lock();
+    for (int i = 0; i < DSD_TRUNK_TUNING_REQUEST_HISTORY; i++) {
+        const dsd_trunk_tuning_request_record* record = &g_trunk_tuning_requests[i];
+        if (record->state != DSD_TRUNK_TUNING_REQUEST_FREE && record->refused && record->request_id > request_id
+            && record->request_id <= newest) {
+            refused++;
+        }
+    }
+    dsd_trunk_tuning_requests_unlock();
+    return refused != newest - request_id;
+}
+
 uint64_t
 dsd_trunk_tuning_request_begin(void) {
     uint64_t request_id = 0U;
@@ -172,6 +194,7 @@ dsd_trunk_tuning_request_begin(void) {
     record->backend_complete = 0;
     record->owner_ready = 0;
     record->disowned = 0;
+    record->refused = 0;
     if (!inherited_failure_gate) {
         (void)atomic_fetch_add(&g_trunk_tuning_unresolved_count, 1);
     }
@@ -280,6 +303,8 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
         dsd_trunk_tuning_requests_unlock();
         return;
     }
+    /* Neither the owner's readiness nor the backend's answer came first: the request was answered where it was made. */
+    const int answered_at_once = !record->owner_ready && !record->backend_complete;
     record->owner_ready = 1;
     if (record->state == DSD_TRUNK_TUNING_REQUEST_FAILED_GATED) {
         /* A backend failure raced the owner return. Only an owner rollback can
@@ -298,6 +323,7 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
         if (dsd_trunk_tune_result_is_complete(result)) {
             dsd_trunk_tuning_finish_success_locked(record);
         } else {
+            record->refused = answered_at_once;
             dsd_trunk_tuning_finish_rolled_back_locked(record);
         }
         dsd_trunk_tuning_requests_unlock();
@@ -457,6 +483,11 @@ dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq
             request_id, g_trunk_tuning_hooks.tune_to_cc_request(opts, state, freq, ted_sps, request_id));
     }
     return dsd_trunk_tuning_note_result(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+}
+
+int
+dsd_trunk_tuning_hook_tuner_free(const dsd_opts* opts, const dsd_state* state) {
+    return g_trunk_tuning_hooks.tuner_free_for_protocol ? g_trunk_tuning_hooks.tuner_free_for_protocol(opts, state) : 1;
 }
 
 dsd_trunk_tune_result

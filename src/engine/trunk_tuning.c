@@ -41,6 +41,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/trunk_scan_hooks.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
+#include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
 
 static int DSD_ATTR_USED
@@ -1112,6 +1113,12 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
         dsd_engine_apply_cc_symbol_timing(opts, state);
     }
     return tune_result;
+}
+
+int
+dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state) {
+    return !dsd_engine_manual_tune_noted() && dsd_trunk_tuning_pending_request() == 0U
+           && !dsd_trunk_scan_owns_tuner(opts, state) && !dsd_channel_scan_owns_tuner(opts, state);
 }
 
 dsd_trunk_tune_result

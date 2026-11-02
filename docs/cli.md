@@ -666,7 +666,18 @@ Android session whose saved extra arguments carry one refuses to start the same 
   signalling (the transmission grant), or from three ACCESS-ASSIGN PDUs in a row carrying its usage marker on its
   traffic channel, until three without it or 18 frames without one (EN 300 392-2 clause 23.8.2.3.2). A call followed
   onto another carrier plays that way, its traffic slot carrying no signalling of it (direct mode speech always
-  plays). Without `-T` one
+  plays). Calls are set up on the cell's main carrier, the one its SYSINFO names (every carrier of the cell sends that
+  SYSINFO). A `-T` session started on another carrier of the cell (a secondary carrier, a rounded or wrong start
+  frequency) moves there once a block whose CRC passed has proved the carrier it is on: it logs `[TETRA SM] on a
+  secondary carrier (X Hz); moving to the main carrier Y Hz` and counts as on the control channel only once that main
+  carrier's own SYSINFO is heard. The move needs a radio it can tune: a live RTL-SDR, rtl_tcp, SoapySDR or Airspy
+  stream, or a rigctl peer (`-U`) behind an audio input; an I/Q replay or a symbol capture stays where it is. It waits
+  while a manual tune is still pending or a scan owns the tuner. A move the radio refuses or fails is tried again after
+  5 seconds, then 15, then every 60; one it defers after 2 seconds. Each main carrier is moved to once, so a cell whose
+  carriers name each other is not followed back and forth, until an import, another radio or input, or trunking turned
+  off and on again starts over. Nothing moves back to the carrier the session started on: when the main carrier cannot be
+  received there, it logs `[TETRA SM] no SYSINFO on main carrier Y Hz after 10 s` once; start on a carrier this receiver
+  hears, or leave trunking off. To monitor one traffic carrier on purpose, run without `-T`. Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.

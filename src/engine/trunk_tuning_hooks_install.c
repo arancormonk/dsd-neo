@@ -42,6 +42,7 @@ dsd_engine_trunk_tuning_hooks_install(void) {
     hooks.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request;
     hooks.tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request;
     hooks.return_to_cc_request = dsd_engine_return_to_cc_request;
+    hooks.tuner_free_for_protocol = dsd_engine_tuner_free_for_protocol;
     dsd_trunk_tuning_hooks_set(hooks);
 #ifdef USE_RADIO
     rtl_stream_register_tune_completion_callback(dsd_engine_rtl_tune_completion, NULL);

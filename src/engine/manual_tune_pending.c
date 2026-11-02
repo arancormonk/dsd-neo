@@ -236,6 +236,11 @@ dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
 }
 
 int
+dsd_engine_manual_tune_noted(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
+}
+
+int
 dsd_engine_manual_tune_settled_ready(void) {
     if (g_displaced_unreported) {
         return 1;

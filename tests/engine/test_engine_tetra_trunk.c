@@ -4,7 +4,8 @@
  * (dsd_engine_tetra_trunk_tick_locked()) settles a tune the backend reports in flight -- committing a completion,
  * putting a failure back and opening the frame gate either way -- and runs the hangtime; a carrier boundary drops the
  * followed call without tuning and forgets the carrier while the TETRA state stays allocated; the no-carrier pass
- * forgets the carrier's evidence.
+ * forgets the carrier's evidence. A session on a secondary carrier moves to the main carrier through the engine's own
+ * return and the engine's tuner-free answer.
  */
 
 #include <assert.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -24,6 +26,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#ifndef _WIN32
+#include <pthread.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -34,6 +43,7 @@ enum {
     CC_HZ = 380012500,
     VC_HZ = 390012500,
     P25_CC_HZ = 851012500,
+    OTHER_FREQ_HZ = 395012500,
 };
 
 static int g_failures;
@@ -545,6 +555,211 @@ test_failed_tune_puts_the_receiver_back(void) {
     session_close(&s);
 }
 
+/* One burst on the carrier the receiver is on whose SYSINFO names main carrier @p main_hz, as the MAC and tetra.c take
+ * it: the control channel set, the state machine told, the block noted as evidence, the burst's end. */
+static void
+sysinfo_burst(session* s, long main_hz) {
+    tetra_confirm_burst_begin(s->state);
+    s->state->trunk_cc_freq = main_hz;
+    tetra_sm_on_cc_sync(s->opts, s->state);
+    tetra_confirm_note_signalling(s->state);
+    (void)tetra_confirm_burst_end(s->state);
+    tetra_sm_after_burst(s->opts, s->state);
+}
+
+/* A session on a live RTL stream tuned to a secondary carrier (VC_HZ) of a cell whose main carrier is CC_HZ, proved by a
+ * CRC-passed block, its tuner backend the stand-ins that cache a target as dsd_engine_tune_rtl() does, and the engine's
+ * own tuner-free answer. */
+static session
+secondary_open(void) {
+    session s = session_open();
+    tetra_sm_init(s.opts, s.state);
+    s.state->trunk_cc_freq = 0;
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = VC_HZ;
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = rtl_tune_hook;
+    hooks.return_to_cc_request = rtl_return_hook;
+    hooks.tuner_free_for_protocol = dsd_engine_tuner_free_for_protocol;
+    dsd_trunk_tuning_hooks_set(hooks);
+    return s;
+}
+
+/* The engine's tuner-free answer holds the move back while anything else decides where the receiver goes: a manual tune
+ * of any kind still pending, a correlated tune in flight, trunk scan owning the tuner, -Y scanning. Once that is over,
+ * the next SYSINFO moves (regression: main never moved off a secondary carrier). */
+static void
+test_engine_holds_the_move_while_the_tuner_is_busy(void) {
+    for (int how = 0; how < 5; how++) {
+        session s = secondary_open();
+        uint64_t other = 0U;
+        if (how == 1) {
+            dsd_engine_manual_tune_note_pending(s.state, DSD_MANUAL_TUNE_ENTRY, 77U, (uint32_t)OTHER_FREQ_HZ,
+                                                (uint32_t)VC_HZ, -1, 0U, 0U);
+        } else if (how == 2) {
+            other = dsd_trunk_tuning_request_begin();
+            dsd_trunk_tuning_request_mark_ready(other);
+        } else if (how == 3) {
+            s.opts->trunk_scan_enabled = 1;
+        } else if (how == 4) {
+            s.opts->scanner_mode = 1;
+        }
+        sysinfo_burst(&s, CC_HZ);
+        expect(g_returns == (how == 0 ? 1 : 0), how == 0 ? "busy: a free tuner moves" : "busy: no move");
+        if (how == 0) {
+            expect(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && g_cached_hz == CC_HZ
+                       && s.opts->rtlsdr_center_freq == CC_HZ,
+                   "busy: the move goes to the main carrier");
+        } else {
+            expect(tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.opts->rtlsdr_center_freq == VC_HZ,
+                   "busy: the machine stays where it is");
+            if (how == 1) {
+                dsd_engine_manual_tune_supersede(s.state);
+                (void)dsd_engine_manual_tune_poll(s.opts, s.state);
+            } else if (how == 2) {
+                dsd_trunk_tuning_request_publish(other, DSD_TRUNK_TUNE_RESULT_OK);
+            } else {
+                s.opts->trunk_scan_enabled = 0;
+                s.opts->scanner_mode = 0;
+            }
+            sysinfo_burst(&s, CC_HZ);
+            expect(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING,
+                   "busy: once the tuner is free the next SYSINFO moves");
+        }
+        session_close(&s);
+    }
+}
+
+/* ACQUIRING owns the receiver's way back: the no-carrier pass ticks the machine rather than take a return of its own, a
+ * tune elsewhere (a carrier boundary) lets go of it and keeps the history of moves, and another radio source or input
+ * forgets that history, so the main carrier may be moved to again. */
+static void
+test_engine_acquiring_ownership_and_resets(void) {
+    static const dsd_carrier_boundary_kind kinds[] = {
+        DSD_CARRIER_BOUNDARY_TUNE,
+        DSD_CARRIER_BOUNDARY_SOURCE,
+        DSD_CARRIER_BOUNDARY_INPUT_SWITCH,
+    };
+    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        session s = secondary_open();
+        sysinfo_burst(&s, CC_HZ);
+        expect(g_returns == 1 && tetra_sm_owns_return(s.state), "acquiring: the move owns the return");
+        at_seconds(2010.0);
+        noCarrier(s.opts, s.state);
+        expect(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING,
+               "acquiring: the no-carrier pass takes no return of its own");
+        dsd_engine_carrier_boundary(s.opts, s.state, kinds[i], 0);
+        expect(!tetra_sm_owns_return(s.state) && tetra_sm_get_state(s.state) != TETRA_SM_ACQUIRING,
+               "acquiring: a carrier boundary lets go of it");
+        s.opts->rtlsdr_center_freq = VC_HZ;
+        tetra_confirm_note_signalling(s.state);
+        sysinfo_burst(&s, CC_HZ);
+        const int forgets = kinds[i] != DSD_CARRIER_BOUNDARY_TUNE;
+        expect(g_returns == 1 + forgets,
+               forgets ? "acquiring: another source or input forgets the moves" : "acquiring: a tune keeps them");
+        session_close(&s);
+    }
+}
+
+#ifndef _WIN32
+/* A rigctl peer on the far end of a socket pair: it answers a passband reading with FM at 12.5 kHz, every other request
+ * with RPRT 0, and keeps the frequencies it was sent. */
+typedef struct {
+    int fd;
+    pthread_mutex_t lock;
+    char sent[512];
+    size_t sent_len;
+} rigctl_peer;
+
+static void*
+rigctl_peer_run(void* arg) {
+    rigctl_peer* const peer = (rigctl_peer*)arg;
+    char buf[256];
+    for (;;) {
+        const ssize_t n = recv(peer->fd, buf, sizeof buf - 1U, 0);
+        if (n <= 0) {
+            break;
+        }
+        buf[n] = '\0';
+        if (buf[0] == 'F') {
+            pthread_mutex_lock(&peer->lock);
+            const size_t room = sizeof peer->sent - 1U - peer->sent_len;
+            const size_t take = (size_t)n < room ? (size_t)n : room;
+            DSD_MEMCPY(peer->sent + peer->sent_len, buf, take);
+            peer->sent_len += take;
+            peer->sent[peer->sent_len] = '\0';
+            pthread_mutex_unlock(&peer->lock);
+        }
+        const char* const reply = buf[0] == 'm' ? "FM\n12500\n" : "RPRT 0\n";
+        if (send(peer->fd, reply, strlen(reply), 0) < 0) {
+            break;
+        }
+    }
+    return NULL;
+}
+
+static int
+rigctl_peer_was_sent(rigctl_peer* peer, const char* line) {
+    pthread_mutex_lock(&peer->lock);
+    const int found = strstr(peer->sent, line) != NULL;
+    pthread_mutex_unlock(&peer->lock);
+    return found;
+}
+
+/* Through the engine's own return (dsd_engine_return_to_cc_request()) on an audio input behind a rigctl peer: the move
+ * goes to the main carrier SYSINFO named, not to a stale P25 alias, which it clears as a release's return does; the
+ * engine's control-channel stamp is taken back. The decoder cannot read where the peer is, so the move's own completion
+ * says it is on the main carrier, whose next SYSINFO makes the machine ON_CC. */
+static void
+test_engine_move_through_rigctl(void) {
+    int fds[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        expect(0, "rigctl: socket pair");
+        return;
+    }
+    rigctl_peer peer;
+    DSD_MEMSET(&peer, 0, sizeof peer);
+    peer.fd = fds[1];
+    pthread_mutex_init(&peer.lock, NULL);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, rigctl_peer_run, &peer) != 0) {
+        expect(0, "rigctl: peer thread");
+        close(fds[0]);
+        close(fds[1]);
+        pthread_mutex_destroy(&peer.lock);
+        return;
+    }
+
+    session s = session_open();
+    tetra_sm_init(s.opts, s.state);
+    s.state->trunk_cc_freq = 0;
+    s.opts->use_rigctl = 1;
+    s.opts->rigctl_sockfd = fds[0];
+    s.state->p25_cc_freq = P25_CC_HZ;
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tune_hook;
+    hooks.return_to_cc_request = engine_return_hook;
+    hooks.tuner_free_for_protocol = dsd_engine_tuner_free_for_protocol;
+    dsd_trunk_tuning_hooks_set(hooks);
+    const time_t cc_sync = s.state->last_cc_sync_time;
+
+    sysinfo_burst(&s, CC_HZ);
+    expect(g_returns == 1 && rigctl_peer_was_sent(&peer, "F 380012500\n"), "rigctl: the peer is sent the main carrier");
+    expect(!rigctl_peer_was_sent(&peer, "F 851012500\n") && s.state->p25_cc_freq == 0,
+           "rigctl: not the stale P25 alias, which the move cleared");
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && s.state->last_cc_sync_time == cc_sync,
+           "rigctl: ACQUIRING, with no control-channel sync stamped");
+    sysinfo_burst(&s, CC_HZ);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1, "rigctl: the main carrier's SYSINFO");
+
+    session_close(&s);
+    close(fds[0]);
+    pthread_join(thread, NULL);
+    close(fds[1]);
+    pthread_mutex_destroy(&peer.lock);
+}
+#endif
+
 int
 main(void) {
     dsd_decode_clock_use_test(2000ULL * 1000000000ULL);
@@ -559,6 +774,11 @@ main(void) {
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();
     test_failed_tune_puts_the_receiver_back();
+    test_engine_holds_the_move_while_the_tuner_is_busy();
+    test_engine_acquiring_ownership_and_resets();
+#ifndef _WIN32
+    test_engine_move_through_rigctl();
+#endif
     dsd_decode_clock_use_system();
     if (g_failures == 0) {
         DSD_FPRINTF(stdout, "ENGINE_TETRA_TRUNK: OK\n");

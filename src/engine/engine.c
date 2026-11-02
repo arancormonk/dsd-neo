@@ -3132,6 +3132,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
            (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
         dsd_trunk_tuning_requests_reset();
     }
+    if (kind == DSD_CARRIER_BOUNDARY_SOURCE || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH) {
+        /* Another receiver: the main carriers the TETRA machine moved the last one to say nothing about this one. */
+        tetra_sm_forget_moves(state);
+    }
     /* What the carrier left sent is not the next one's identity: the received identity starts over, and so does the
        DMR RAS evidence. */
     dsd_rxid_reset(state);

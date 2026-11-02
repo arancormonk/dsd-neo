@@ -6529,6 +6529,7 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
     nxdn_cc_hunt_note_system_replaced(state);
     dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // an XPT site the old system was is not the new one
+    tetra_sm_forget_moves(state);                  // the main carriers the TETRA machine moved to were the old system's
     /* An owner the new decode mode no longer decodes proves nothing about the new system and would keep its startup
        hunt from running (P25 or DMR before an NXDN import, say). */
     if ((state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25 && !opts->frame_p25p1 && !opts->frame_p25p2)

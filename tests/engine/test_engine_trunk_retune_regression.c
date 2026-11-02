@@ -54,6 +54,7 @@
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/platform/threading.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
+#include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -602,6 +603,12 @@ void
 dsd_engine_manual_tune_supersede(dsd_state* state) {
     (void)state;
     g_manual_tune_supersedes++;
+}
+
+/* No manual tune is ever noted here (dsd_engine_tuner_free_for_protocol()). */
+int
+dsd_engine_manual_tune_noted(void) {
+    return 0;
 }
 
 int

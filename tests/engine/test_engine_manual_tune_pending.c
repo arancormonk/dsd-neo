@@ -111,6 +111,13 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
+int
+dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 1;
+}
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;

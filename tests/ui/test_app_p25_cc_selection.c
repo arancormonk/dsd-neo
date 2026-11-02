@@ -139,7 +139,7 @@ try_setup(dsd_opts* opts, dsd_state* state) {
     early_completion_delay_ns = 0U;
     cc_calls = vc_calls = return_calls = 0;
     dsd_trunk_tuning_requests_reset();
-    const dsd_trunk_tuning_hooks hooks = {vc_tune, cc_tune, return_cc};
+    const dsd_trunk_tuning_hooks hooks = {vc_tune, cc_tune, return_cc, NULL};
     dsd_trunk_tuning_hooks_set(hooks);
     return 0;
 }

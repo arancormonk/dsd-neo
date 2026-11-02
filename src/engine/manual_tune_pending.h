@@ -40,6 +40,10 @@ void dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out);
    and one atomic load while nothing is noted. Decoder thread. */
 int dsd_engine_manual_tune_settled_ready(void);
 
+/* Whether a manual tune of any kind is noted and its completion still awaited: it decides where the receiver goes, so
+   no state machine moves the tuner meanwhile (dsd_engine_tuner_free_for_protocol()). Decoder thread. */
+int dsd_engine_manual_tune_noted(void);
+
 /* Store the completion of the manual tune @p id (an rtl_stream_tune_result) for the decoder's next poll. Called on
    the RTL controller thread, or on the thread stopping the stream; never blocks. */
 void dsd_engine_manual_tune_completion(uint64_t id, int result);
