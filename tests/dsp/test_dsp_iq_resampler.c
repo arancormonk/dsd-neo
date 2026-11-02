@@ -1467,7 +1467,9 @@ test_ratio_refusals(void) {
         {78125, 64, "stop 0", 384, 625, 0, 21600, 0, DSD_IQ_RESAMPLER_ERR_ARGS},
         {78125, 0, "max_in 0", 384, 625, 0, 21600, 26400, DSD_IQ_RESAMPLER_ERR_ARGS},
         {78125, 64, "no transition band", 384, 625, 0, 21600, 21600, DSD_IQ_RESAMPLER_ERR_BAND},
-        {78125, 64, "stopband past the output less P", 384, 625, 0, 21600, 26401, DSD_IQ_RESAMPLER_ERR_BAND},
+        {78125, 64, "stopband 20.8 ppm past the output less P", 384, 625, 0, 21600, 26401, DSD_IQ_RESAMPLER_ERR_BAND},
+        /* 1,536,367 Hz over 2^5 at 4095/4096 leaves at 47,999.747 Hz, 5.27 ppm under 48 kHz: past the slack. */
+        {1536367, 64, "output 5.27 ppm under S + P", 4095, 4096, 5, 21600, 26400, DSD_IQ_RESAMPLER_ERR_BAND},
         {78125, 64, "protect past 0.45 of the input", 1, 1, 0, 35157, 42968, DSD_IQ_RESAMPLER_ERR_BAND},
         {48000, 64, "stopband past the input less P", 3, 2, 0, 21000, 27001, DSD_IQ_RESAMPLER_ERR_BAND},
         {78125, 64, "1 Hz of transition", 576, 625, 0, 32400, 32401, DSD_IQ_RESAMPLER_ERR_TAPS},
@@ -1476,6 +1478,10 @@ test_ratio_refusals(void) {
         {78125, 64, "stopband at the output less P", 384, 625, 0, 21600, 26400, DSD_IQ_RESAMPLER_OK},
         {78125, 64, "protect at 0.45 of the input, S + P at the input", 1, 1, 0, 35156, 42969, DSD_IQ_RESAMPLER_OK},
         {48000, 64, "stopband at the input less P", 3, 2, 0, 21000, 27000, DSD_IQ_RESAMPLER_OK},
+        /* A read-back of 1,536,370 Hz at 48 kHz: 48,011.5625 Hz after 5 passes, whose best convergent within 4096 is
+           4095/4096 at -3.31 ppm, and 1,536,368 Hz at -4.62 ppm: both inside the planner's bound, so both design. */
+        {1536370, 64, "4095/4096, output 3.31 ppm under S + P", 4095, 4096, 5, 21600, 26400, DSD_IQ_RESAMPLER_OK},
+        {1536368, 64, "4095/4096, output 4.62 ppm under S + P", 4095, 4096, 5, 21600, 26400, DSD_IQ_RESAMPLER_OK},
         {72000, 64, "1/1", 1, 1, 0, 21600, 26400, DSD_IQ_RESAMPLER_OK},
     };
     dsd_iq_resampler r;

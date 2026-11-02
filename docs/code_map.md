@@ -4768,8 +4768,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     caller chose (lowest terms, each at most 4096), the input rate as an exact fraction (a whole-Hz numerator over
     2^shift, kept in lowest terms in `in_rate_num`/`in_rate_shift`, so 2.5 MS/s after six half-band passes is
     39,062.5 Hz) and the protected and stopband edges as given. It refuses edges with no transition band, a protected
-    band past 0.45 of the input rate, or a stopband edge past the input or output rate less the protected band,
-    compared exactly. The design is configure()'s: with the step's edges (0.45 x D and D less that) it matches
+    band past 0.45 of the input rate, or a stopband edge past the input rate less the protected band, compared
+    exactly, or past the output rate less the protected band by more than `DSD_IQ_RESAMPLER_MAX_APPROX_PPM` (5 ppm,
+    the planner's bound for an approximated L/M, so a convergent a few ppm under the target still designs). The design is configure()'s: with the step's edges (0.45 x D and D less that) it matches
     `configure()` at the rates scaled by 2^shift bit for bit, and `dsd_iq_resampler_group_delay_seconds()` and
     `dsd_iq_resampler_in_rate_hz()` report the real fractional rate. `in_hz`/`out_hz` stay whole-Hz fields and read 0
     when the rate is not whole. `configure()` keeps its release-first contract for replay.

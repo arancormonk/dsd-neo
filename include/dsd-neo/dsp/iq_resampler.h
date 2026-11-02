@@ -66,6 +66,10 @@ extern "C" {
 #define DSD_IQ_RESAMPLER_MAX_RATIO_TERM     4096
 /** The largest power-of-two shift of the input rate dsd_iq_resampler_configure_ratio() takes. */
 #define DSD_IQ_RESAMPLER_MAX_RATE_SHIFT     30
+/** How far, in ppm, an approximated L/M may leave the output rate under the target. The live rate planner accepts a
+    convergent this close when the exact terms pass DSD_IQ_RESAMPLER_MAX_RATIO_TERM, and configure_ratio() lets the
+    output fall this far short of its stopband edge plus the protected band. */
+#define DSD_IQ_RESAMPLER_MAX_APPROX_PPM     5.0
 
 /** Why dsd_iq_resampler_configure() or dsd_iq_resampler_configure_ratio() refused. */
 typedef enum {
@@ -78,7 +82,8 @@ typedef enum {
     DSD_IQ_RESAMPLER_ERR_RATIO = -2,
     /** The protected band leaves no transition band: the stopband edge is at or below the passband edge. For
         configure_ratio(), also a protected band past DSD_IQ_RESAMPLER_MAX_PASS_FRACTION of the input rate, or a
-        stopband edge past the input or output rate less the protected band. */
+        stopband edge past the input rate less the protected band, or past the output rate less the protected band by
+        more than DSD_IQ_RESAMPLER_MAX_APPROX_PPM. */
     DSD_IQ_RESAMPLER_ERR_BAND = -3,
     /** The transition band is too narrow: the design needs more than DSD_IQ_RESAMPLER_MAX_TAPS_PER_PHASE taps per
         phase, or more than DSD_IQ_RESAMPLER_MAX_BANK_TAPS in all. */
@@ -132,7 +137,9 @@ int dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int p
  * The filter is designed as configure()'s is, from these edges as given: the passband edge is @p protect_hz and the
  * stopband edge @p stop_hz. The edges must leave a transition band, the protected band must stay within
  * DSD_IQ_RESAMPLER_MAX_PASS_FRACTION of the input rate, and @p stop_hz + @p protect_hz must not pass the input rate
- * (the input's first image) or the output rate (where content folds into the protected band). The live step passes
+ * (the input's first image) or the output rate (where content folds into the protected band), except that the output
+ * may fall short by DSD_IQ_RESAMPLER_MAX_APPROX_PPM, so an approximated L/M a few ppm under the target still designs:
+ * the stopband edge then folds a fraction of a Hz into the protected band, still 60 dB down. The live step passes
  * 0.45 x D and D - 0.45 x D for a DSP rate D, the same edges configure(in, D, 0.45 x D) picks when decimating, so at
  * a whole input rate the two designs match bit for bit, and at a fractional one the design matches configure() at the
  * rates scaled by 2^@p in_rate_shift.

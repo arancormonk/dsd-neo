@@ -75,7 +75,7 @@ dsd_iq_resampler_status_text(int status) {
         case DSD_IQ_RESAMPLER_OK: return "ok";
         case DSD_IQ_RESAMPLER_ERR_ARGS: return "invalid rates, ratio or sizes";
         case DSD_IQ_RESAMPLER_ERR_RATIO: return "no rational ratio within 250 ppm for these rates";
-        case DSD_IQ_RESAMPLER_ERR_BAND: return "the protected band leaves no transition band";
+        case DSD_IQ_RESAMPLER_ERR_BAND: return "the band edges do not fit these rates";
         case DSD_IQ_RESAMPLER_ERR_TAPS: return "the transition band needs more than 256 taps per phase";
         case DSD_IQ_RESAMPLER_ERR_ALLOC: return "out of memory for the filter";
         default: return "unknown resampler error";
@@ -251,20 +251,23 @@ iq_resampler_ratio_args_ok(int L, int M, int64_t num, unsigned shift, int protec
     return terms_ok && rate_ok && protect_hz > 0 && stop_hz > 0;
 }
 
-/* The band rules (see the header), compared exactly: P + S and the rates are whole numbers below 2^44, so every product
-   here, scaled by a power of two, is exact in a double. */
+/* The band rules (see the header). P, S and the rates are whole numbers below 2^44, so every product here, scaled by a
+   power of two, is exact in a double, and the first three rules compare exactly. */
 static int
 iq_resampler_ratio_band_ok(int L, int M, int64_t num, unsigned shift, int protect_hz, int stop_hz) {
     if (stop_hz <= protect_hz) {
         return 0;
     }
-    const double in = ldexp((double)num, -(int)shift);
-    if (!((double)protect_hz <= DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in)) {
+    /* P <= DSD_IQ_RESAMPLER_MAX_PASS_FRACTION x in, with that fraction as 9 / 20: 20 x P x 2^shift <= 9 x num. */
+    if (!(ldexp(20.0 * (double)protect_hz, (int)shift) <= 9.0 * (double)num)) {
         return 0;
     }
-    /* (P + S) x 2^shift against the input rate's numerator, and against the output rate's, num x L / M. */
+    /* (P + S) x 2^shift against the input rate's numerator, and against the output rate's, num x L / M. The output may
+       fall short of P + S by the planner's approximation bound: a convergent L/M a few ppm under the target folds a
+       fraction of a Hz of the stopband edge into the protected band, still DSD_IQ_RESAMPLER_STOPBAND_DB down. */
     const double edges = ldexp((double)protect_hz + (double)stop_hz, (int)shift);
-    return edges <= (double)num && edges * (double)M <= (double)num * (double)L;
+    const double out_floor = edges * (double)M * (1.0 - DSD_IQ_RESAMPLER_MAX_APPROX_PPM * 1e-6);
+    return edges <= (double)num && out_floor <= (double)num * (double)L;
 }
 
 /* Puts num / 2^shift in lowest terms, so equal rates compare equal. */
@@ -464,6 +467,8 @@ dsd_iq_resampler_group_delay_seconds(const dsd_iq_resampler* r) {
     if (!r || !r->configured) {
         return 0.0;
     }
+    /* One division by 2 x L x in, as configure() always did: its designs keep their bits, and a fractional rate's delay
+       is exactly the scaled design's times 2^shift. */
     return ((double)r->L * (double)r->taps_per_phase - 1.0) / (2.0 * (double)r->L * dsd_iq_resampler_in_rate_hz(r));
 }
 
