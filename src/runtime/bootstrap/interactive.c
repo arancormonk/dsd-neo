@@ -270,7 +270,7 @@ interactive_prompt_decode_mode(void) {
     DSD_FPRINTF(stderr, " 12) M17\n");
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
     DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
-    DSD_FPRINTF(stderr, " 15) AM receiver (IQ inputs)\n");
+    DSD_FPRINTF(stderr, " 15) AM receiver (I/Q inputs)\n");
     DSD_FPRINTF(stderr, " 16) TETRA (pi/4-DQPSK, 18 kHz)\n");
     return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_TETRA);
 }

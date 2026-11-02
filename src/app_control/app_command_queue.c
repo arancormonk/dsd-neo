@@ -9748,7 +9748,7 @@ apply_cmd_note_tetra_on_pcm(const dsd_opts* opts, dsd_state* state) {
     }
     g_tetra_on_pcm_noted = 1;
     LOG_WARN("WARNING: %s. Nothing decodes on this input.\n", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
-    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an I/Q radio input or a symbol capture");
 }
 
 /* The configured width of each analog kind (dsd_scan_mode_configured_analog_width()). */

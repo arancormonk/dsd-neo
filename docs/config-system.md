@@ -712,7 +712,7 @@ replay is resampled to one), or a symbol capture; on a PCM input `tetra` stays t
 that nothing decodes there.
 `am` is native AM (CLI `-fM`), which needs an I/Q radio input: RTL-SDR,
 rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
-`AM demodulation needs an IQ radio input; monitor externally demodulated AM
+`AM demodulation needs an I/Q radio input; monitor externally demodulated AM
 audio with -fA`, runs the Analog monitor instead, and turns autosave off so
 the saved `decode = "am"` is kept; a toast says so in the terminal and the
 Qt/Android app, since no other change the session makes is saved either. A

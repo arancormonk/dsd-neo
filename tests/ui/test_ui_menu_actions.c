@@ -2153,7 +2153,7 @@ test_signal_chain_rows(void) {
     g_chooser.on_done(g_chooser.user, 16);
     rc |= expect_int("decode mode on pcm AM posts nothing", g_cmd.calls, 0);
     rc |= expect_str("decode mode on pcm AM gives the reason", g_status,
-                     "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA");
+                     "AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA");
     g_chooser.on_done(g_chooser.user, 15);
     rc |= expect_int("decode mode on pcm analog still posts",
                      g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == 14, 1);
@@ -2165,7 +2165,7 @@ test_signal_chain_rows(void) {
     g_chooser.on_done(g_chooser.user, 14);
     rc |= expect_int("decode mode on pcm TETRA posts nothing", g_cmd.calls, 0);
     rc |= expect_str("decode mode on pcm TETRA gives the reason", g_status,
-                     "TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from "
+                     "TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from "
                      "demodulated audio");
     reset_capture();
     dsd_test_scan_labels_input_type(AUDIO_IN_SYMBOL_BIN);

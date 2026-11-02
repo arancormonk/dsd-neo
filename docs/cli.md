@@ -647,7 +647,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
   `.sym`, holds them as the CQPSK demodulator recovered them, outer levels ±3 and inner ±1, and TETRA reads them as
   they are, where the other modes scale a float symbol file by 10000): discriminator audio has lost the
   phase steps of its pi/4-DQPSK, so `-fT` on a PCM input (Pulse, a WAV file, stdin, TCP or UDP audio) stops at startup
-  with `-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
+  with `-fT: TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
   audio`, as `-fM` does. A config whose `[mode] decode = tetra` meets such an input keeps the mode and logs that nothing
   decodes there. A switch to TETRA on one (terminal picker, Qt chip, API) is refused with that reason; the terminal
   picker's entry reads `TETRA (needs an I/Q radio input)` there and the Qt setup wizard greys its chip out (it offers it
@@ -1253,7 +1253,7 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   1`). A DSP bandwidth asked for (a config `[input]` `rtl_bw_khz`) re-plans such a replay with `post_downsample` 1.
   PCM inputs (Pulse, WAV and
   other files, stdin, symbol files, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup
-  with `AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`. That is the
+  with `AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA`. That is the
   existing contract for such audio: `-fA` plays PCM input as it arrives, whatever demodulated it (an SDR program's AM
   output over TCP, say). A config whose `[mode] decode = am` meets a PCM input logs the same text and runs the Analog
   monitor for that session instead, with autosave off so the saved `decode = am` is kept; a toast says so, since

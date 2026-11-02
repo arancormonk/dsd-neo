@@ -7307,7 +7307,7 @@ test_f_am_refused_on_pcm_input(void) {
             return 1;
         }
         if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1
-            || !strstr(run.err, "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio "
+            || !strstr(run.err, "AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio "
                                 "with -fA")) {
             DSD_FPRINTF(stderr, "-fM on %s: rc=%d exit_rc=%d\n%s\n", inputs[i] ? inputs[i] : "(default input)", run.rc,
                         run.exit_rc, run.err);
@@ -7353,8 +7353,9 @@ test_f_tetra_needs_iq_or_symbols(void) {
             return 1;
         }
         if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1
-            || !strstr(run.err, "-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot "
-                                "be read from demodulated audio")) {
+            || !strstr(run.err,
+                       "-fT: TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot "
+                       "be read from demodulated audio")) {
             DSD_FPRINTF(stderr, "-fT on %s: rc=%d exit_rc=%d\n%s\n", refused[i] ? refused[i] : "(default input)",
                         run.rc, run.exit_rc, run.err);
             test_rc = 1;
@@ -7387,7 +7388,7 @@ test_f_tetra_needs_iq_or_symbols(void) {
     run.rc =
         parse_args_capture_stderr(3, argv, run.opts, run.state, &argc_effective, &run.exit_rc, run.err, sizeof run.err);
     if (run.rc != DSD_PARSE_CONTINUE || run.opts->frame_tetra != 1
-        || !strstr(run.err, "WARNING: [mode] decode = tetra: TETRA needs an IQ radio input or a symbol capture")
+        || !strstr(run.err, "WARNING: [mode] decode = tetra: TETRA needs an I/Q radio input or a symbol capture")
         || !strstr(run.err, "Nothing decodes on this input.")) {
         DSD_FPRINTF(stderr, "config TETRA on TCP audio: rc=%d frame_tetra=%d\n%s\n", run.rc, run.opts->frame_tetra,
                     run.err);
@@ -7862,7 +7863,7 @@ test_config_am_on_pcm_input_falls_back(void) {
     /* Autosave off stops every other change the session makes from being saved, so the frontends are told too. */
     if (run.rc != DSD_PARSE_CONTINUE || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_ANALOG
         || run.opts->analog_demod != DSD_ANALOG_DEMOD_FM || run.state->config_autosave_enabled != 0
-        || !strstr(run.err, "AM demodulation needs an IQ radio input")
+        || !strstr(run.err, "AM demodulation needs an I/Q radio input")
         || !strstr(run.state->ui_msg, "Autosave is off this session to keep decode = am")
         || run.state->ui_msg_expire <= time(NULL)) {
         DSD_FPRINTF(stderr, "config AM on PCM: rc=%d mode=%d autosave=%d\n%s\n", run.rc,
