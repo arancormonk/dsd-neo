@@ -2012,7 +2012,7 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_dcs_synth_023i` | synthetic, seed 5231023 | the same with D023 in inverted polarity, the signal of D047N |
 | `nfm_dcs_synth_noisy` | synthetic, seed 5232023 | the same with D023N's word two bits wrong in every repetition: no code |
 | `nfm_dcs_synth_drop` | synthetic, seed 5233023 | 2 s: D023N that stops at 1.2 s, with no turn-off tone, while the carrier and voice carry on |
-| `nfm_burst_synth` | synthetic, seed 5311 | 0.75 s: complex noise at 3 LSB a component, the 1 kHz test tone at 3 kHz deviation keyed from 0.30 to 0.55 s (2 ms ramps) 16 dB over the noise across 48 kHz, unnormalised so a +10 dB copy stays within the cu8 rails (auto squelch) |
+| `nfm_burst_synth` | synthetic, seed 5311 | 0.75 s: complex noise at 3 LSB a component, the 1 kHz test tone at 3 kHz deviation keyed from 0.30 to 0.55 s (2 ms ramps) 16 dB over the noise across 48 kHz, unnormalised so a +10 dB copy stays within the cu8 rails (auto squelch; the #667 kerchunk case) |
 | `am_burst_synth` | synthetic, seed 5312 | the same with 1 kHz at 50% AM depth on a carrier 12 dB over the noise |
 
 `tools/build_iq_fixtures.py` pins each zip's SHA-256, reads the WAV members sample-exact (u8 centred on 127.5),
@@ -2572,6 +2572,30 @@ signals clear, so the payloads match those of the open squelch they ran at befor
 `DECODE_*_ANALOG_RECORD_GAP_*` cases run `--squelch noise+6`. Its `nfm-default-squelch` and `am-default-squelch` cases
 pin the pause itself: at the default, no row, no recording, and the notice once, with `--tone-allow` among the remedies
 on NFM only. Audio input (`DECODE_PCM_*`, PCM taps) is never paused and needs nothing.
+
+#### Analog rows in the event history (issue #667)
+
+These cases replay a committed fixture through `iq_decode_check.cmake` with `-J` and check the analog rows it
+publishes. `EVENT_EXPECTED` must match the event history, and `EVENT_COUNT_REGEX` must match it exactly `EVENT_COUNT`
+times, 0 included. Here the count regex is ` ANALOG`, so each case pins how many analog rows the run published, and a
+case expecting a row pins that it is the only one. A `.` stands for each `;` of a row, which an `add_test` argument
+would split at.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_ANALOG_CTCSS_1000_ROW` | `nfm_ctcss_synth_1000` under `-fA --squelch -60`: one row, `ANALOG NFM; FREQ: 851.375000 MHz; CTCSS 100.0 Hz;` |
+| `DECODE_IQ_ANALOG_DCS_023N_ROW` | `nfm_dcs_synth_023n`, the same: one row, `... DCS D023N / D047I;` (both spellings, normal first) |
+| `DECODE_IQ_ANALOG_AM_ROW` | `am_tone_synth` under `-fM --squelch -60`: one row, `ANALOG AM; FREQ: 851.375000 MHz;`, no tone token |
+| `DECODE_IQ_ANALOG_KERCHUNK_NO_ROW` | `nfm_burst_synth` under `-fA --squelch -28`: the whole capture replays (`end of capture after 36000 samples`) and the history the run starts holds no analog row. The squelch passes the 250 ms burst as 13 blocks of 20 ms (`DECODE_IQ_ANALOG_SQL_LEVEL_NFM_DETERMINISM` pins that gate), 460 ms with the hangover, under the 500 ms minimum. |
+| `DECODE_IQ_ANALOG_NO_CALL_ALERT` | `tests/analog_alert_output_check.py` (POSIX, Python): `nfm_ctcss_synth_1000` with one analog row in `-J`, replayed to `-o -` with and without `-a`, writes the same stdout bytes, and to `-o udp:127.0.0.1:<base>` sends every byte to `<base>+2` and none to `<base>`, with and without `-a` (A1). The script drains both ports on a thread while the replay runs, so the receive buffer never drops a datagram. |
+
+Before issue #667 each case failed: the row cases on the old row text (`ANALOG NFM; FREQ: 851.375000 MHz;`
+with no tone; no AM row at all), the kerchunk on its row, and the alert case with 3840 bytes more on stdout and 3840
+bytes on the digital port. The row counts of the real capture (`nfm_ctcss_real`: two rows, both `CTCSS 151.4 Hz;`) and
+of the AM excerpt (`am_airband_real`: one row) are in `DECODE_IQ_RECEIVE_POLICY`.
+
+No fixture is added: the kerchunk is `nfm_burst_synth`, whose carrier is keyed for 250 ms, so the analog fixture budget
+above stays at 4,992,000 bytes.
 
 #### Tone and code labels
 

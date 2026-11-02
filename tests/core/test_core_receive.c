@@ -3111,6 +3111,57 @@ test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
     assert(dsd_test_rmdir(directory) == 0);
 }
 
+/* Issue #667 B6: under --rdio-mode an analog call's recording stays local, through real publication, NFM and AM
+   alike. Its row has no talkgroup to name an export by, so the WAV is published in the recording folder under its mode
+   and linked to its row in the journal, and nothing goes to rdio-scanner: no DirWatch sidecar beside it (the folder
+   holds the WAV alone), no upload queued (the journal's "rdio" is false) and no export warning. */
+static void
+test_analog_recordings_stay_local(void) {
+    static const struct {
+        int demod;
+        const char* mode;
+    } cases[] = {
+        {DSD_ANALOG_DEMOD_FM, "NFM"},
+        {DSD_ANALOG_DEMOD_AM, "AM"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        hold_rig r;
+        hold_journal j;
+        hold_open(&r, "dsdneo_analog_local", 0);
+        hold_journal_open(&j);
+        r.opts->audio_in_type = AUDIO_IN_RTL;
+        r.opts->analog_demod = cases[i].demod;
+        r.opts->rtlsdr_center_freq = 154430000U;
+        set_radio_squelch(r.opts);
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        g_rdio_warnings = 0;
+        g_rdio_failed = 0;
+        hold_expect_a_call(&r, cases[i].mode);
+        assert(r.history[0].Event_History_Items[1].analog_mode
+               == (cases[i].demod == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_MODE_AM : DSD_ANALOG_MODE_NFM));
+        assert(g_rdio_warnings == 0 && g_rdio_failed == 0);
+        /* Published pending its row, then linked to it: the link names the publish line's id. */
+        char line[4096];
+        char link[4096];
+        assert(hold_journal_count(&j, "publish") == 1 && hold_journal_count(&j, "link") == 1);
+        assert(hold_journal_count(&j, NULL) == 2);
+        assert(hold_journal_line(&j, "publish", 0, line, sizeof line));
+        assert(hold_journal_line(&j, "link", 0, link, sizeof link));
+        assert(strstr(line, "\"rdio\":false") != NULL && strstr(line, "\"failed\":false") != NULL);
+        assert(strstr(line, "\"pending\":true") != NULL);
+        const char* id = strstr(line, "\"id\":\"");
+        assert(id != NULL);
+        const char* id_end = strchr(id + 6, '"');
+        assert(id_end != NULL);
+        char want_id[128];
+        DSD_SNPRINTF(want_id, sizeof want_id, "%.*s", (int)(id_end + 1 - id), id);
+        assert(strstr(link, want_id) != NULL && strstr(link, "\"row\":") != NULL);
+        hold_journal_close(&j);
+        hold_close(&r);
+    }
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -3164,6 +3215,7 @@ main(void) {
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog_rdio_skip_is_quiet(opts, state);
     dsd_state_ext_free_all(state);
+    test_analog_recordings_stay_local();
     test_analog_hold();
     free(history);
     free(state);

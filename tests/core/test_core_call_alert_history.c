@@ -8996,8 +8996,10 @@ test_hold_does_not_override_stream_off(void) {
     return rc;
 }
 
-// Recordings the talkgroup policy never gates are never judged for the export either: a conventional NFM call (no
-// talkgroup) under the allow list, which would miss on every call, still exports.
+// Recordings the talkgroup policy never gates are never judged for the export either: a conventional analog call (no
+// talkgroup) under the allow list, which would miss on every call, keeps the event layer's stream verdict on. This
+// pins only that verdict, on a stubbed close. The WAV close then exports no analog recording, which has no talkgroup to
+// name an upload by: CORE_RECEIVE's test_analog_recordings_stay_local pins that, NFM and AM, through real publication.
 static int
 test_unjudged_recordings_export(void) {
     static dsd_opts opts;

@@ -18265,6 +18265,95 @@ if(DSD_HAS_RADIO)
         PROPERTIES LABELS "iq-decode;analog"
     )
 
+    # Analog receptions in the event history (issue #667): each replay writes -J, which must hold exactly event_count
+    # analog rows. A case with one names its mode, the fixture's frequency and the received tone or code (no tone on
+    # AM), and that row is the only one. A radio input makes analog calls only under a squelch above the startup
+    # default (D2), so each sets one its fixture clears. A "." stands for each ";" of the row, which an add_test
+    # argument would split at.
+    function(
+        dsd_neo_add_iq_analog_row_test
+        test_name
+        fixture
+        mode
+        expected
+        event_expected
+        event_count
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}" "-DEVENT_EXPECTED=${event_expected}"
+                "-DEVENT_COUNT_REGEX= ANALOG" "-DEVENT_COUNT=${event_count}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/${test_name}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_ROW
+        nfm_ctcss_synth_1000
+        "-fA --squelch -60"
+        "Received tone: CTCSS 100\\.0 Hz"
+        " ANALOG NFM. FREQ: 851\\.375000 MHz. CTCSS 100\\.0 Hz.  *\n"
+        1
+    )
+    # Both spellings of the code, normal first, as the log names it.
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_DCS_023N_ROW
+        nfm_dcs_synth_023n
+        "-fA --squelch -60"
+        "Received tone: DCS D023N / D047I"
+        " ANALOG NFM. FREQ: 851\\.375000 MHz. DCS D023N / D047I.  *\n"
+        1
+    )
+    # AM (D8): the mode and the frequency, and no tone token, since dsd-neo detects none on AM.
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_AM_ROW
+        am_tone_synth
+        "-fM --squelch -60"
+        "IQ replay: end of capture after 72000 samples"
+        " ANALOG AM. FREQ: 851\\.375000 MHz.  *\n"
+        1
+    )
+    # A kerchunk (D1): nfm_burst_synth keys its carrier for 250 ms, which the -28 dB level squelch passes as 13 blocks
+    # of 20 ms (DECODE_IQ_ANALOG_SQL_LEVEL_NFM_DETERMINISM pins that gate). With the 200 ms hangover that is 460 ms,
+    # under the 500 ms a reception needs to be a call, so the whole capture replays and the event history, which the
+    # run starts, holds no analog row. Earlier versions logged one.
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
+        nfm_burst_synth
+        "-fA --squelch -28"
+        "IQ replay: end of capture after 36000 samples"
+        "Event History Initialized"
+        0
+    )
+
+    # Analog calls sound no call alert (issue #667 A1): with -a, stdout carries the same analog monitor bytes, and over
+    # UDP every byte goes to the analog port (base+2), none to the digital base port. POSIX, as the stdout cases are.
+    if(UNIX)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test(
+                NAME DECODE_IQ_ANALOG_NO_CALL_ALERT
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/analog_alert_output_check.py
+                    $<TARGET_FILE:dsd-neo>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}/nfm_ctcss_synth_1000.iq.json
+            )
+            set_tests_properties(
+                DECODE_IQ_ANALOG_NO_CALL_ALERT
+                PROPERTIES LABELS "iq-decode;analog" TIMEOUT 240
+            )
+        endif()
+    endif()
+
     # MBE capture (-d), issue #661: tests/iq_mbe_capture_check.cmake replays a fixture with -d <dir>/caps (no
     # trailing separator) and checks the files it leaves: inside the folder, each headed by its own extension and
     # holding whole records, at least one, as a capture created by its first frame does. Frame counts are lower bounds:
