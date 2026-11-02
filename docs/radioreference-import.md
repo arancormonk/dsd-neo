@@ -200,8 +200,12 @@ Selecting a system offers three actions:
 
 "Use this system" is possible because each generated file's sidecar now records *how* the import was
 applied — the protocol, the start frequency, and the trunking, scanning, simulcast and ESK answers — next
-to the *where it came from* provenance a refresh already uses. A session started with `--trunk-scan`
-manages its own channel maps, so the decoder refuses the apply and reports it, the same as a fresh import.
+to the *where it came from* provenance a refresh already uses. Both actions check the session first, as the
+wizard does, and post nothing when it cannot take them; the status line says why. **Use this system** is
+checked for the stored system's own decode mode (see [Receiver requirements](#receiver-requirements)), a
+running trunk scan, and a trunk scan waiting for the next start. **Load these files** leaves the decode mode
+alone, so it is checked only for a running trunk scan and, when it loads a channel map, a trunk scan waiting
+for the next start.
 
 ### Picking a CSV to import
 
@@ -264,8 +268,12 @@ one.
 Limits worth knowing:
 
 - Applying is asynchronous and its outcome is reported by a status message from the decoder, not by the
-  wizard. A session started with `--trunk-scan` manages its own channel maps: the wizard refuses the import
-  before writing anything, and the decoder-thread handler refuses the apply again if one ever reaches it.
+  wizard: the wizard's `Imported <site>.` means the files were written and the apply was sent. Before it writes
+  anything, the wizard checks the session the way the decoder will, and the preview shows `Blocked:` with the
+  reason: the receiver for the system's decode mode (see [Receiver requirements](#receiver-requirements)), a
+  running trunk scan (it manages its own channel maps), and a trunk scan waiting for the next start beside the
+  channel map or the `-Y` scanner the import would set. The decoder checks again when the apply arrives; only
+  it can see a SoapySDR device's rate.
 - The decoder checks everything it can before it changes anything: the receiver (see
   [Receiver requirements](#receiver-requirements)), a trunk scan waiting for the next start, the width an AM
   or Analog mode needs, whether a running I/Q replay can run the mode, and each CSV file. A refused import

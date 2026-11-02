@@ -22,6 +22,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -59,10 +60,12 @@ dsd_app_get_latest_opts_snapshot(void) {
 }
 
 /* The state half of the published pair, which dsd_app_rr_apply_block_reason() (rr_import_apply.c) reads for the
- * next-start rule: nothing published here. */
+ * next-start rule. Heap-allocated by the case that publishes it: a dsd_state is multi-megabyte. */
+static dsd_state* g_stub_state = NULL;
+
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
-    return NULL;
+    return g_stub_state;
 }
 
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
@@ -2180,7 +2183,8 @@ test_import_now_hard_collision(void) {
     imp_case_close(&ic);
 }
 
-static const char k_trunk_scan_reason[] = "Stop trunk-scan first; it manages its own channel maps.";
+/* app-control's reason (dsd_app_rr_receiver_verdict()) as the panel frames it: a sentence. */
+static const char k_trunk_scan_reason[] = "Stop the trunk scan first; it keeps its own channel maps.";
 
 /*
  * A trunk-scan session refuses the apply on the decoder thread, and the command
@@ -2252,6 +2256,184 @@ test_import_now_rechecks_the_session_gate(void) {
 
     g_stub_opts_published = 0;
     imp_case_close(&ic);
+}
+
+/* ---- The session gate, as app-control decides it (issue #803) ----------- */
+
+static const char k_next_start_map_reason[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled.";
+static const char k_tetra_on_audio_reason[] = "TETRA needs an IQ radio input or a symbol capture.";
+
+/* Publish a session on @p type / @p dev, with nothing else set. Zeroed rather than initOpts(): dsd_init.c would
+ * drag the vocoder libraries into this target. */
+static void
+publish_session(int type, const char* dev) {
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    g_stub_opts.audio_in_type = type;
+    (void)DSD_SNPRINTF(g_stub_opts.audio_in_dev, sizeof(g_stub_opts.audio_in_dev), "%s", dev);
+    g_stub_opts_published = 1;
+}
+
+/* A trunk scan a config left for the next start (issue #671), with the state half of the snapshot pair. */
+static int
+publish_next_start_trunk_scan(void) {
+    g_stub_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    g_stub_opts.next_start.trunk_scan_enabled = 1;
+    (void)DSD_SNPRINTF(g_stub_opts.next_start.trunk_scan_targets_csv,
+                       sizeof(g_stub_opts.next_start.trunk_scan_targets_csv), "%s", "targets.csv");
+    /* Zeroed, like the options: the rule reads no state the session would have set. */
+    g_stub_state = (dsd_state*)calloc(1U, sizeof(*g_stub_state));
+    if (g_stub_state == NULL) {
+        expect("state snapshot allocated", 0);
+        return 0;
+    }
+    return 1;
+}
+
+static void
+unpublish_session(void) {
+    g_stub_opts_published = 0;
+    if (g_stub_state != NULL) {
+        free(g_stub_state);
+        g_stub_state = NULL;
+    }
+}
+
+/*
+ * Regression (issue #803 T2): a trunk scan a config left for the next start
+ * makes the decoder refuse an import that loads a channel map, and the gate
+ * asked only about a RUNNING trunk scan - so the wizard wrote both files, said
+ * "Imported", and the decoder then refused the apply. The gate now asks the same
+ * rule with the outputs the plan will write, before any file exists.
+ */
+static void
+test_next_start_blocks_the_import(void) {
+    static imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(ic.c.core);
+    expect("next-start: the plan writes a channel map", plan != NULL && plan->ok == 1 && plan->chan_csv_text != NULL);
+    publish_session(AUDIO_IN_RTL, "rtl");
+    if (!publish_next_start_trunk_scan()) {
+        unpublish_session();
+        imp_case_close(&ic);
+        return;
+    }
+
+    rr_wizard_core_cycle_option(ic.c.core, 0); /* any mutator re-runs the rebuild and the gate */
+    plan = rr_wizard_core_plan(ic.c.core);
+    expect("next-start: preview refuses", plan != NULL && plan->ok == 0);
+    expect("next-start: preview reason", plan != NULL && strcmp(plan->blocked_reason, k_next_start_map_reason) == 0);
+
+    expect("next-start: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("next-start: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    expect("next-start: the rule is the message",
+           strcmp(rr_wizard_core_error_text(ic.c.core), k_next_start_map_reason) == 0);
+    dsd_stat_t st;
+    expect("next-start: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
+    expect("next-start: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("next-start: apply never called", g_hook_apply_count, 0);
+
+    unpublish_session();
+    imp_case_close(&ic);
+}
+
+/*
+ * The gate asks the receiver verdict for the plan's decode mode (new with
+ * TETRA): a session that cannot decode the import refuses it before a file is
+ * written, and the reason is app-control's, framed as a sentence.
+ */
+static void
+test_tetra_receiver_blocks_the_plan(void) {
+    static wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(scratch, sizeof(scratch), "dsdneo_rr_tetra_gate") == NULL) {
+        expect("tetra gate: scratch dir created", 0);
+        return;
+    }
+    if (!wiz_case_open(&c)) {
+        (void)dsd_test_rmdir(scratch);
+        return;
+    }
+    g_hook_apply_count = 0;
+    if (!drive_sid_to_system(&c, "10880")) {
+        expect("tetra gate: reached the system stage", 0);
+        wiz_case_close(&c);
+        (void)dsd_test_rmdir(scratch);
+        return;
+    }
+    rr_wizard_core_set_imports_dir_for_test(c.core, scratch);
+
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    rr_wizard_core_cycle_option(c.core, 0);
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: a TETRA plan", plan != NULL && plan->protocol == DSD_RR_PROTO_TETRA);
+    expect("tetra gate: audio input refused", plan != NULL && plan->ok == 0);
+    expect("tetra gate: audio reason", plan != NULL && strcmp(plan->blocked_reason, k_tetra_on_audio_reason) == 0);
+
+    publish_session(AUDIO_IN_RTL, "rtl");
+    g_stub_opts.rtl_dsp_bw_khz = 48;
+    rr_wizard_core_cycle_option(c.core, 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: rtl at 48 kHz reason",
+           plan != NULL
+               && strcmp(plan->blocked_reason, "TETRA needs 72 kHz DSP bandwidth; set it and import again.") == 0);
+
+    g_stub_opts.rtl_dsp_bw_khz = 72;
+    rr_wizard_core_cycle_option(c.core, 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: rtl at 72 kHz passes", plan != NULL && plan->ok == 1 && plan->blocked_reason[0] == '\0');
+
+    /* Enter re-checks: the session went back to audio after the last rebuild. */
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    expect("tetra gate: import refused", rr_wizard_core_import_now(c.core) == -1);
+    expect("tetra gate: the reason is the message",
+           strcmp(rr_wizard_core_error_text(c.core), k_tetra_on_audio_reason) == 0);
+    expect_ll("tetra gate: apply never called", g_hook_apply_count, 0);
+
+    unpublish_session();
+    wiz_case_close(&c);
+    expect_scratch_removed(scratch);
+}
+
+/*
+ * The Imported Systems browser's two pre-checks: "Use this system" is checked
+ * for the stored recipe's own decode mode, and "Load these files" only for what
+ * loading the files meets - a running trunk scan, and the next-start rule for
+ * a channel map - never for a decode mode it leaves alone.
+ */
+static void
+test_browser_gates(void) {
+    dsd_rr_recipe recipe;
+    DSD_MEMSET(&recipe, 0, sizeof(recipe));
+    recipe.present = 1;
+    recipe.protocol = DSD_RR_PROTO_TETRA;
+    recipe.tune_hz = 858087500LL;
+    recipe.trunking = 1;
+    dsd_rr_import_plan plan;
+    expect("browser: the recipe rebuilds a plan", dsd_rr_recipe_to_plan(&recipe, 1, &plan) == 0);
+
+    char why[256];
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    expect_ll("browser: TETRA recipe on audio refused",
+              rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 1);
+    expect("browser: TETRA recipe reason", strcmp(why, k_tetra_on_audio_reason) == 0);
+    expect_ll("browser: files alone pass on audio", rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)),
+              0);
+
+    if (publish_next_start_trunk_scan()) {
+        expect_ll("browser: a channel map beside the next start refused",
+                  rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)), 1);
+        expect("browser: next-start reason", strcmp(why, k_next_start_map_reason) == 0);
+        expect_ll("browser: a group list alone passes", rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 0);
+    }
+    g_stub_opts.trunk_scan_enabled = 1;
+    expect_ll("browser: files refused while a trunk scan runs",
+              rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 1);
+    expect("browser: trunk-scan reason", strcmp(why, k_trunk_scan_reason) == 0);
+
+    unpublish_session();
+    expect_ll("browser: nothing published passes", rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 0);
 }
 
 /* Write 1 is the group sidecar, so the group CSV has already landed when the
@@ -3084,6 +3266,9 @@ main(void) {
     test_import_now_hard_collision();
     test_trunk_scan_blocks_the_preview();
     test_import_now_rechecks_the_session_gate();
+    test_next_start_blocks_the_import();
+    test_tetra_receiver_blocks_the_plan();
+    test_browser_gates();
     test_import_now_unwinds_a_failed_write();
     test_import_now_keeps_files_when_apply_is_rejected();
     test_refresh_needs_a_sidecar();

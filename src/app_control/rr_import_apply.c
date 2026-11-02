@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stddef.h>
@@ -16,6 +17,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "next_start_check.h"
 #include "rr_apply_verdict.h"
 
 /**
@@ -112,6 +114,43 @@ dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, 
     const dsd_state* snap = dsd_app_get_latest_snapshot();
     if (snap != NULL && rr_apply_next_start_refusal(osnap, snap, &facts, p->chan_path, why, why_size) != 0) {
         /* The rule without its advice, as the decoder's refusal names it. */
+        if (why && why_size > 0U) {
+            why[strcspn(why, ";")] = '\0';
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* Loading a channel map on its own, as svc_import_channel_map() asks the next-start rule: only the map changes. */
+static void
+rr_files_next_start_change(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
+}
+
+int
+dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
+    if (osnap == NULL) {
+        return 0;
+    }
+    /* The verdict with no decode mode asks only what refuses any import: a running trunk scan. */
+    dsd_app_rr_apply_payload keep_mode;
+    DSD_MEMSET(&keep_mode, 0, sizeof keep_mode);
+    keep_mode.decode_mode = (int32_t)DSDCFG_MODE_UNSET;
+    dsd_app_rr_receiver_facts facts;
+    rr_apply_receiver_facts_fill(osnap, &keep_mode, 0, 0, 0U, &facts);
+    if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
+        return 1;
+    }
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    if (chan_path == NULL || chan_path[0] == '\0' || snap == NULL) {
+        return 0;
+    }
+    if (app_check_next_start(osnap, snap, rr_files_next_start_change, chan_path, why, why_size) != 0) {
         if (why && why_size > 0U) {
             why[strcspn(why, ";")] = '\0';
         }

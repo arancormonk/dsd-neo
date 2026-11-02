@@ -285,22 +285,45 @@ const char* rr_wizard_core_last_chan_path(const RrWizardCore* w);
 int rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path);
 
 /**
- * @brief Why this session refuses an RR apply, if it does.
+ * @brief Why this session refuses an RR apply of @p plan, if it does.
  *
- * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses the whole apply while a
- * trunk-scan session is running, and that refusal can never reach the caller:
- * dsd_app_drain_cmds() discards the handler's return value and the submit call
- * only reports whether the command was QUEUED. Any path that posts an apply must
- * pre-check with this, or the user is told it worked and is then contradicted by
- * a decoder-thread toast. Reads only the published snapshot; the live dsd_opts
- * belongs to the decoder thread. Core-free, so a presenter can call it before it
- * has one.
+ * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses an apply the session cannot
+ * take, and that refusal can never reach the caller: dsd_app_drain_cmds()
+ * discards the handler's return value and the submit call only reports whether
+ * the command was QUEUED. Any path that posts an apply must pre-check with this,
+ * or the user is told it worked and is then contradicted by a decoder-thread
+ * toast. It asks dsd_app_rr_apply_block_reason() - the receiver verdict for the
+ * plan's decode mode, a running trunk scan, and a trunk scan waiting for the
+ * next start - over the published snapshots only; the live dsd_opts belongs to
+ * the decoder thread. Core-free, so a presenter can call it before it has one.
  *
- * @param out    Destination for the reason text; written only when blocked.
- * @param out_sz Destination size.
+ * @param plan      The plan the apply would carry; a plan still awaiting its
+ *                  selection is checked for its decode mode and tuner owner.
+ * @param has_group 1 when the apply loads a group list. The wizard passes what
+ *                  its plan generated, before any file exists.
+ * @param has_chan  1 when the apply loads a channel map.
+ * @param out       Destination for the reason, as a sentence; written only when
+ *                  blocked.
+ * @param out_sz    Destination size.
  * @return 1 and fills @p out when blocked, 0 otherwise.
  */
-int rr_wizard_core_session_block_reason(char* out, size_t out_sz);
+int rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
+                                      size_t out_sz);
+
+/**
+ * @brief Why this session refuses loading an import's files alone, if it does.
+ *
+ * The Imported Systems browser's "Load these files" leaves the decode mode and
+ * the tuner owner alone, so only the checks that loading the files meets on the
+ * decoder thread apply (dsd_app_rr_files_block_reason()).
+ *
+ * @param chan_path The channel map it loads, or NULL when there is none.
+ * @param out       Destination for the reason, as a sentence; written only when
+ *                  blocked.
+ * @param out_sz    Destination size.
+ * @return 1 and fills @p out when blocked, 0 otherwise.
+ */
+int rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */

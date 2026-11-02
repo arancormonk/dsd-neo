@@ -355,6 +355,49 @@ test_block_reason(void) {
     return rc;
 }
 
+/* Loading an import's files alone keeps the decode mode: only a running trunk scan, and the next-start rule for a
+   channel map, refuse it. */
+static int
+test_files_block_reason(void) {
+    int rc = 0;
+    char why[DSD_APP_RR_VERDICT_WHY_MAX];
+    g_opts_published = 0;
+    g_state_published = 0;
+    rc |=
+        expect_int("files: nothing published passes", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why), 0);
+
+    initOpts(&g_snap_opts);
+    initState(&g_snap_state);
+    g_opts_published = 1;
+    set_input(&g_snap_opts, AUDIO_IN_PULSE, "pulse");
+    rc |= expect_int("files: no decode mode is checked", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why),
+                     0);
+    rc |= expect_str("files: no reason", why, "");
+
+    g_snap_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    g_snap_opts.next_start.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_targets_csv, sizeof g_snap_opts.next_start.trunk_scan_targets_csv,
+                 "%s", "targets.csv");
+    rc |= expect_int("files: no state snapshot, no rule", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why),
+                     0);
+    g_state_published = 1;
+    rc |= expect_int("files: a map beside the next start",
+                     dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why), 1);
+    rc |= expect_str("files: the rule without its advice", why,
+                     "trunking.chan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("files: a group list alone passes", dsd_app_rr_files_block_reason(NULL, why, sizeof why), 0);
+    rc |= expect_int("files: an empty map path passes", dsd_app_rr_files_block_reason("", why, sizeof why), 0);
+
+    g_snap_opts.trunk_scan_enabled = 1;
+    rc |= expect_int("files: a running trunk scan", dsd_app_rr_files_block_reason(NULL, why, sizeof why), 1);
+    rc |= expect_str("files: trunk scan reason", why, "stop the trunk scan first; it keeps its own channel maps");
+    rc |= expect_int("files: null why", dsd_app_rr_files_block_reason(NULL, NULL, 0U), 1);
+    freeState(&g_snap_state);
+    g_opts_published = 0;
+    g_state_published = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -363,6 +406,7 @@ main(void) {
     rc |= test_facts_fill();
     rc |= test_next_start();
     rc |= test_block_reason();
+    rc |= test_files_block_reason();
     if (rc == 0) {
         printf("APP_CONTROL_RR_VERDICT: OK\n");
     }

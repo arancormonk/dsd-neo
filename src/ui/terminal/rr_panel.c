@@ -289,7 +289,38 @@ rr_browse_ctx_free(RrBrowseCtx* ctx) {
     free(ctx);
 }
 
-/* Post the stored system to the decoder, exactly as a fresh import would. */
+/* Re-apply the stored system from its recipe, exactly as a fresh import would. */
+static void
+rr_browse_adopt(const RrLibrarySystem* s, const char* named, const char* chan, const char* group) {
+    dsd_rr_import_plan plan;
+    dsd_app_rr_apply_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    if (dsd_rr_recipe_to_plan(&s->recipe, s->partial_enc_as_de, &plan) != 0
+        || dsd_app_rr_fill_apply_payload(&plan, chan, group, &payload) != 0) {
+        ui_statusf("Saved settings unreadable; try Refresh from RadioReference.");
+        return;
+    }
+    /* The pre-check the wizard runs before its own apply, for this recipe's
+       decode mode: only now is the kind known. */
+    char blocked[256];
+    if (rr_wizard_core_apply_block_reason(&plan, s->has_group, s->has_chan, blocked, sizeof blocked) != 0) {
+        ui_statusf("%s", blocked);
+        return;
+    }
+    const int rc = dsd_app_command_set_rr_apply(&payload);
+    /* Names are clipped so the wording always fits one status row
+       (the menu offers ~39 columns after "Status: "); a failure
+       drops the name entirely - it was the title of the list the
+       user just left - and keeps the cause and the way out. */
+    if (rc > 0) {
+        ui_statusf("Applying %.*s to this session.", RR_STATUS_NAME_MAX, named);
+    } else {
+        ui_statusf("The decoder is not accepting commands; nothing was applied.");
+    }
+}
+
+/* Post the stored system to the decoder: its recipe when it has one, else its
+   files alone. */
 static void
 rr_browse_apply(const RrLibrarySystem* s) {
     const char* chan = s->has_chan ? s->chan_path : NULL;
@@ -299,43 +330,22 @@ rr_browse_apply(const RrLibrarySystem* s) {
     char named[RR_BROWSE_TITLE_MAX];
     rr_library_display_name(s, named, sizeof named);
 
-    /* The same pre-check the wizard runs before its own apply, and ahead of BOTH
-       branches: svc_import_channel_map() refuses outright during a trunk-scan
-       session and dsd_app_drain_cmds() discards the handler's return value, so
-       the files-only path would otherwise read "Loaded <system> files" for a
-       command the decoder silently threw away. */
-    char blocked[256];
-    blocked[0] = '\0';
-    if (rr_wizard_core_session_block_reason(blocked, sizeof blocked) != 0) {
-        ui_statusf("%s", blocked);
-        return;
-    }
-
     if (s->recipe.present) {
-        dsd_rr_import_plan plan;
-        if (dsd_rr_recipe_to_plan(&s->recipe, s->partial_enc_as_de, &plan) == 0) {
-            dsd_app_rr_apply_payload payload;
-            DSD_MEMSET(&payload, 0, sizeof payload);
-            if (dsd_app_rr_fill_apply_payload(&plan, chan, group, &payload) == 0) {
-                const int rc = dsd_app_command_set_rr_apply(&payload);
-                /* Names are clipped so the wording always fits one status row
-                   (the menu offers ~39 columns after "Status: "); a failure
-                   drops the name entirely - it was the title of the list the
-                   user just left - and keeps the cause and the way out. */
-                if (rc > 0) {
-                    ui_statusf("Applying %.*s to this session.", RR_STATUS_NAME_MAX, named);
-                } else {
-                    ui_statusf("The decoder is not accepting commands; nothing was applied.");
-                }
-                return;
-            }
-        }
-        ui_statusf("Saved settings unreadable; try Refresh from RadioReference.");
+        rr_browse_adopt(s, named, chan, group);
         return;
     }
 
     /* No recipe (an older sidecar, or a system a newer build wrote): load the
-       files by path and leave the decode mode alone. */
+       files by path and leave the decode mode alone. Checked first all the same:
+       svc_import_channel_map() refuses during a trunk-scan session, or beside
+       one a config left for the next start, and dsd_app_drain_cmds() discards
+       the handler's return value, so this would otherwise read "Loaded <system>
+       files" for a command the decoder threw away. */
+    char blocked[256];
+    if (rr_wizard_core_files_block_reason(chan, blocked, sizeof blocked) != 0) {
+        ui_statusf("%s", blocked);
+        return;
+    }
     int loaded = 0;
     if (chan != NULL) {
         loaded |= (dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, chan) > 0) ? 1 : 0;

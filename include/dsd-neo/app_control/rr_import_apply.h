@@ -125,6 +125,21 @@ int dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* wh
 int dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, int has_chan, char* why,
                                   size_t why_size);
 
+/**
+ * @brief A frontend's advisory pre-check of loading an import's files alone, which keeps the decode mode and the tuner
+ *        owner (the Imported Systems browser's "Load these files", for an import with no saved settings).
+ *
+ * Reads only the published snapshots, like dsd_app_rr_apply_block_reason(), and asks what loading the files asks on
+ * the decoder thread: no running trunk scan, and a channel map that the next-start rule allows beside a trunk scan
+ * waiting for the next start. A group list has no session rule.
+ *
+ * @param chan_path The channel map to load, or NULL/"" when there is none.
+ * @param why       Receives the reason as a phrase, or "" when nothing blocks; may be NULL.
+ * @param why_size  Size of @p why; DSD_APP_RR_VERDICT_WHY_MAX holds every text.
+ * @return 1 when loading is blocked, 0 otherwise (also before the first publish).
+ */
+int dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

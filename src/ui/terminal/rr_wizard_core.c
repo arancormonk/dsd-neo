@@ -130,10 +130,6 @@ static const char* const k_status_counties = "Loading counties...";
 static const char* const k_status_systems = "Loading systems...";
 static const char* const k_status_system = "Loading the system...";
 
-/* Stage 8. No Qt equivalent to port: the Android app has neither a trunk-scan
- * session nor a shared imports folder. File-scope so the test can assert on the
- * same storage. */
-static const char k_rr_blocked_trunk_scan[] = "Stop trunk-scan first; it manages its own channel maps.";
 static const char k_rr_err_name_taken[] = "A different system is already imported under this name.";
 static const char k_rr_err_no_imports_dir[] =
 #ifdef _WIN32
@@ -1670,42 +1666,114 @@ rr_preselect(RrWizardCore* w) {
 /*
  * A refusal that belongs to the session rather than to the plan.
  *
- * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses the whole apply while a
- * trunk-scan session is running, and that refusal can never reach this core:
- * dsd_app_drain_cmds() discards the handler's return value and the submit call
- * only reports whether the command was QUEUED. Without a pre-check the user
- * would finish the wizard, be told "imported", and then get a decoder-thread
- * toast saying it was refused - with orphan files already on disk. So the same
- * check runs twice: once at the tail of every plan rebuild, so the preview
- * already says no, and once inside rr_wizard_core_import_now(), because the
- * snapshot can change in between.
+ * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses an apply the session cannot
+ * take - a running trunk scan, a trunk scan waiting for the next start beside a
+ * channel map or the -Y scanner, a decode mode the receiver cannot run - and
+ * that refusal can never reach this core: dsd_app_drain_cmds() discards the
+ * handler's return value and the submit call only reports whether the command
+ * was QUEUED. Without a pre-check the user would finish the wizard, be told
+ * "imported", and then get a decoder-thread toast saying it was refused - with
+ * orphan files already on disk. So the same check runs twice: once at the tail
+ * of every plan rebuild, so the preview already says no, and once inside
+ * rr_wizard_core_import_now(), because the snapshot can change in between.
  *
- * Only the PUBLISHED snapshot is read here; the live dsd_opts belongs to the
- * decoder thread.
+ * Only the PUBLISHED snapshots are read here; the live dsd_opts belongs to the
+ * decoder thread. The checks themselves are app-control's
+ * (dsd_app_rr_apply_block_reason()), so this gate, the Imported Systems browser
+ * and the decoder thread cannot drift apart.
  */
+
+/**
+ * @brief Turn app-control's reason phrase into a sentence of the panel's own.
+ *
+ * The phrase is written to follow "Failed: RR import -> ", so it starts in
+ * lower case and has no full stop. A phrase that starts with a config key
+ * ("trunking.chan_csv cannot ...") keeps the key as it is spelled.
+ */
+static void
+rr_block_sentence(const char* why, char* out, size_t out_sz) {
+    const size_t word = strcspn(why, " ");
+    const int is_key = strcspn(why, "._") < word;
+    const int n = DSD_SNPRINTF(out, out_sz, "%s.", why);
+    if (!is_key && n > 0 && out[0] >= 'a' && out[0] <= 'z') {
+        out[0] = (char)(out[0] - 'a' + 'A');
+    }
+}
+
+/**
+ * @brief The payload the gate asks about: the plan's own, before any file exists.
+ *
+ * A plan still waiting for its selection is not ok and has no payload yet, but
+ * its decode mode and tuner owner are already known, and a session that cannot
+ * take them should say so before the user picks sites.
+ *
+ * @return 0 when @p out holds the plan's decode mode, -1 when it has none.
+ */
+static int
+rr_gate_payload(const dsd_rr_import_plan* plan, dsd_app_rr_apply_payload* out) {
+    if (dsd_app_rr_fill_apply_payload(plan, NULL, NULL, out) == 0) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    int mode = 0;
+    if (dsd_rr_protocol_decode_mode(plan->protocol, &mode) != 0) {
+        return -1;
+    }
+    out->decode_mode = (int32_t)mode;
+    out->trunking = plan->trunking ? 1U : 0U;
+    out->scanner = (!plan->trunking && plan->scan_list) ? 1U : 0U;
+    return 0;
+}
 
 /* Exported, not static: the Imported Systems browser posts the same
  * DSD_APP_CMD_RR_APPLY_IMPORT from rr_panel.c and needs the identical pre-check
  * and the identical wording, rather than a second copy that can drift. */
 int
-rr_wizard_core_session_block_reason(char* out, size_t out_sz) {
-    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
-    if (osnap == NULL) {
-        return 0; /* nothing published yet: no evidence of a trunk-scan session */
+rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
+                                  size_t out_sz) {
+    if (plan == NULL) {
+        return 0;
     }
-    if (osnap->trunk_scan_enabled == 1) {
-        (void)DSD_SNPRINTF(out, out_sz, "%s", k_rr_blocked_trunk_scan);
-        return 1;
+    char why[DSD_APP_RR_VERDICT_WHY_MAX];
+    dsd_app_rr_apply_payload payload;
+    int blocked = 0;
+    if (rr_gate_payload(plan, &payload) == 0) {
+        blocked = dsd_app_rr_apply_block_reason(&payload, has_group, has_chan, why, sizeof(why));
+    } else {
+        /* No decode mode (a protocol the planner refuses anyway): what refuses any import still does. */
+        blocked = dsd_app_rr_files_block_reason(NULL, why, sizeof(why));
     }
-    return 0;
+    if (blocked) {
+        rr_block_sentence(why, out, out_sz);
+    }
+    return blocked;
+}
+
+int
+rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz) {
+    char why[DSD_APP_RR_VERDICT_WHY_MAX];
+    if (dsd_app_rr_files_block_reason(chan_path, why, sizeof(why)) == 0) {
+        return 0;
+    }
+    rr_block_sentence(why, out, out_sz);
+    return 1;
+}
+
+/* The outputs the plan generated, which the files will be once written. */
+static int
+rr_core_session_block_reason(const RrWizardCore* w, char* out, size_t out_sz) {
+    return rr_wizard_core_apply_block_reason(&w->plan, w->plan.group_csv_text != NULL, w->plan.chan_csv_text != NULL,
+                                             out, out_sz);
 }
 
 static void
 rr_core_apply_session_gate(RrWizardCore* w) {
     char reason[256];
     reason[0] = '\0';
-    if (rr_wizard_core_session_block_reason(reason, sizeof(reason)) != 0) {
+    if (rr_core_session_block_reason(w, reason, sizeof(reason)) != 0) {
         w->plan.ok = 0;
+        /* A refusal, not a question: the preview styles it as one ("Blocked: ..."). */
+        w->plan.awaiting_selection = 0;
         (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof(w->plan.blocked_reason), "%s", reason);
     }
 }
@@ -2805,7 +2873,7 @@ rr_import_check_ready(RrWizardCore* w) {
     reason[0] = '\0';
     /* Re-run rather than trust the plan: the snapshot may have changed since
      * the last rebuild. */
-    if (rr_wizard_core_session_block_reason(reason, sizeof(reason)) != 0) {
+    if (rr_core_session_block_reason(w, reason, sizeof(reason)) != 0) {
         rr_core_fail(w, reason);
         return -1;
     }
