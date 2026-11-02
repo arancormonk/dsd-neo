@@ -306,8 +306,9 @@ sm_forget_moves(tetra_state_t* ts) {
 }
 
 /* Trunking turned on again starts the moves to the main carrier over: the operator may have fixed what stopped them.
- * Every entry point notes trunking before anything else, a request in flight included; the trunk commands forget the
- * moves themselves when they turn trunking on (tetra_sm_forget_moves()), so a toggle no entry point sees counts too. */
+ * The tick, the SYSINFO entry and the burst's end note trunking before anything else, a request in flight included;
+ * the trunk commands forget the moves themselves when they turn trunking on (tetra_sm_forget_moves()), so a toggle
+ * none of those sees counts too. */
 static void
 sm_note_trunking(const dsd_opts* opts, tetra_state_t* ts) {
     if (opts->trunk_enable != 1) {

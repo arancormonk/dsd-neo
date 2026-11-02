@@ -416,6 +416,33 @@ multi-select list, sorted by name, showing each repeater's frequency and colour 
 The repeater's **colour code is shown but never written to a file**. `dsd_opts` has no colour-code
 field, because DMR reads it off the air; it is in the list only to help you recognise a repeater.
 
+## TETRA systems
+
+A TETRA import sets `-fT` with trunking on and writes at most one file, the talkgroup list. RadioReference's
+decimal talkgroup ID is the group's TETRA ID, so the list works as it is. There is no channel map: every carrier of
+a TETRA cell says where the cell's control channel is, so the decoder learns that from the air. Many TETRA systems
+on RadioReference list no talkgroups at all; such an import writes no file (see
+[What applying does](#what-applying-does-and-what-a-save-keeps)).
+
+- **The start frequency.** As for every trunked system, the session starts on the frequency RadioReference marks
+  as the site's control channel, else on the first frequency it lists, with a warning. Many TETRA sites mark none.
+  The start frequency should be one the cell sends on (its downlink). RadioReference does not always list that:
+  some systems list the frequencies the radios send on (the uplink), some list rounded values, and some list
+  carrier numbers instead of frequencies. dsd-neo skips a value that is not a frequency it can tune, but it does
+  not correct the others: check the frequency against the system's own listing.
+- **Moving to the main carrier.** Calls are set up on the cell's main carrier. A session that starts on another
+  carrier of the same cell moves to the main carrier by itself, once it has decoded a block there whose CRC
+  passed. That needs a radio dsd-neo can tune (an I/Q replay stays where it is), and it only works from a carrier
+  dsd-neo can already decode. dsd-neo does not search for a control channel: a start frequency that is silent,
+  an uplink, or another system's stays where it is, and so does a session whose main carrier it cannot receive.
+  Tune the cell's downlink yourself (in the app, edit the saved system's frequency), or pick another site. The
+  TETRA entry under "Modes & Decoders" in `docs/cli.md` gives the details and the log lines.
+- **The receiver.** See [Receiver requirements](#receiver-requirements). An Airspy cannot decode TETRA yet.
+- **Tetrapol.** Some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo cannot decode.
+  Nothing in RadioReference's data tells the two apart, so such a system imports like any other and then decodes
+  nothing.
+- **Trunk scan.** TETRA is not a `--trunk-scan` target type; follow one site at a time.
+
 ## Refreshing
 
 A generated file remembers where it came from — the system ID, the selected sites, and which kind of

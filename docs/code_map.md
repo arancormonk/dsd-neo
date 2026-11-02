@@ -8047,15 +8047,16 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   where the control channel is, not where the receiver is. `tetra_sm_on_cc_sync()` (from `apply_sysinfo()` in
   `tetra_mac.c`, only for a valid main carrier) makes IDLE or ACQUIRING ON_CC, adds the control-channel candidate and
   stamps its sync only on the main carrier (`sm_on_main_carrier()`: `tetra_sm_receiver_freq()` equal to it; with no
-  frequency known, an audio input, yes unless the machine can move the receiver, a rigctl peer, when the frequency last
-  sent to the peer, `opts->rigctl_sent_freq_hz`, or its own completed move says so). Off it (`sm_off_main_carrier()`),
-  ON_CC, which a tune elsewhere rests in, and a landed ACQUIRING, whose carrier is now heard, drop to IDLE, so ON_CC is
-  never claimed on a carrier that is not the control channel, and it stages a move there (`tetra_sm_acquire`: `staged_hz` and the carrier evidence epoch), but only when a
-  CRC-passed downlink block proved the carrier before the SYSINFO's own block (`tetra_confirm_downlink_proven()`,
-  read during MAC parsing, before `tetra.c` notes the block), so a SYSINFO never vouches for itself. The burst's end
-  runs it (`tetra_frame_leave()` reads `staged_hz`, the only per-burst cost, and calls `tetra_sm_after_burst()`): only
-  with the epoch unchanged (no carrier reset in the burst), trunking on a downlink, a receiver the machine can move (a
-  live radio stream, not an I/Q replay, or a connected rigctl peer behind an audio input; a symbol capture neither),
+  frequency known, an audio input, yes unless the machine can move the receiver, a rigctl peer, when the frequency
+  last sent to the peer, `opts->rigctl_sent_freq_hz`, or its own completed move says so). Off it
+  (`sm_off_main_carrier()`), ON_CC, which a tune elsewhere rests in, and a landed ACQUIRING, whose carrier is now
+  heard, drop to IDLE, so ON_CC is never claimed on a carrier that is not the control channel, and it stages a move
+  there (`tetra_sm_acquire`: `staged_hz` and the carrier evidence epoch), but only when a CRC-passed downlink block
+  proved the carrier before the SYSINFO's own block (`tetra_confirm_downlink_proven()`, read during MAC parsing,
+  before `tetra.c` notes the block), so a SYSINFO never vouches for itself. The burst's end runs it
+  (`tetra_frame_leave()` reads `staged_hz`, the only per-burst cost, and calls `tetra_sm_after_burst()`): only with
+  the epoch unchanged (no carrier reset in the burst), trunking on a downlink, a receiver the machine can move (a live
+  radio stream, not an I/Q replay, or a connected rigctl peer behind an audio input; a symbol capture neither),
   nothing followed and no request of its own in flight, the receiver off the main carrier, which is still
   `trunk_cc_freq`, and the engine's `tuner_free_for_protocol()` saying free. The move is `sm_request_cc_return()`, as
   a release's return (the P25 alias cleared, rigctl routing as any trunk tune), with `sm_capture()` before it and
@@ -8063,21 +8064,21 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   (`dsd_engine_trunk_tune_to_cc_request()`) is put back, since only the main carrier's own SYSINFO proves it. An
   accepted move enters ACQUIRING (narrated "on a secondary carrier (X Hz); moving to the main carrier Y Hz"); its
   completion forgets the carrier left (`tetra_forget_carrier()`), and the next SYSINFO naming it makes ON_CC. A valid
-  BSCH there without SYSINFO does not. A SYSINFO there naming another main carrier (a shared or umbrella channel, Annex
-  S, or a changed cell) is one more move under the same rules. The history (`tetra_sm_acquire::moves`,
-  `TETRA_SM_MOVES` = 8 entries {main carrier, consumed, failures, next allowed}) makes each main carrier a target once:
-  a completed move consumes it (so Y, Z, Y stops at the second Y, IDLE on Z, saying once that Y was moved to already);
-  a refused or failed one waits 5 s, 15 s, then 60 s at most (decode clock, counted across the carrier resets of other
-  hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S` and counts as none, its entry reusable once the hold is over; a
-  table of consumed and failed entries moves to nothing new (said once) and gives no entry up. `tetra_sm_init()`, a
-  decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` at every entry point,
-  before a request in flight is settled, and the trunk toggle and set commands, `trunk_enable_on()` in
-  `actions_trunk.c`, for a toggle no entry point sees), another radio
-  source or input (`dsd_engine_carrier_boundary()` for `DSD_CARRIER_BOUNDARY_SOURCE` and `_INPUT_SWITCH`) and an
-  applied RadioReference import (`rr_apply_reacquire()`) forget it (`tetra_sm_forget_moves()`); a tune elsewhere does
-  not. ACQUIRING owns the return (`tetra_sm_owns_return()`), so the no-carrier pass ticks the machine instead of a
-  generic return, and an external return or carrier boundary lets go of it and of its request in flight, whose late
-  completion is ignored. Nothing moves back to the carrier left: on the main carrier with no SYSINFO at all for
+  BSCH there without SYSINFO does not. A SYSINFO there naming another main carrier (a shared or umbrella channel,
+  Annex S, or a changed cell) is one more move under the same rules. The history (`tetra_sm_acquire::moves`,
+  `TETRA_SM_MOVES` = 8 entries {main carrier, consumed, failures, next allowed}) makes each main carrier a target
+  once: a completed move consumes it (so Y, Z, Y stops at the second Y, IDLE on Z, saying once that Y was moved to
+  already); a refused or failed one waits 5 s, 15 s, then 60 s at most (decode clock, counted across the carrier
+  resets of other hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S` and counts as none, its entry reusable once the
+  hold is over; a table of consumed and failed entries moves to nothing new (said once) and gives no entry up.
+  `tetra_sm_init()`, a decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` in
+  the tick, the SYSINFO entry and the burst's end, before a request in flight is settled, and the trunk toggle and set
+  commands, `trunk_enable_on()` in `actions_trunk.c`, for a toggle none of them sees), another radio source or input
+  (`dsd_engine_carrier_boundary()` for `DSD_CARRIER_BOUNDARY_SOURCE` and `_INPUT_SWITCH`) and an applied
+  RadioReference import (`rr_apply_reacquire()`) forget it (`tetra_sm_forget_moves()`); a tune elsewhere does not.
+  ACQUIRING owns the return (`tetra_sm_owns_return()`), so the no-carrier pass ticks the machine instead of a generic
+  return, and an external return or carrier boundary lets go of it and of its request in flight, whose late completion
+  is ignored. Nothing moves back to the carrier left: on the main carrier with no SYSINFO at all for
   `TETRA_SM_MOVE_SILENT_S` (10 s) the tick says so once (a documented reception limit; the cell may run D-CTT/MCCH
   sharing, minimum mode or another cell's shared channel, clauses 4.11.2, 19.3.3, Annex S). Deliberate monitoring of a
   traffic carrier runs with trunking off. Tests: `TETRA_TRUNK_SM` (SYSINFO through the MAC, the burst's end as
@@ -8121,13 +8122,13 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`),
-  and the receiver as the decoder reads it (`tetra_sm_receiver_snapshot`): the tuned centre `opts->rtlsdr_center_freq`,
-  which an RTL tune that timed out has already set to its target (`dsd_engine_tune_rtl()`), and the P25 alias
-  `p25_cc_freq` a return cleared, both as they were before the request and as it left them. A failure puts each back
-  only when no correlated tune begun since may have moved the receiver (`dsd_trunk_tuning_retuned_since()`: one refused
-  or deferred where it was asked for moved nothing) and the value is still
-  the one the request left (`sm_restore_receiver()`): a tune begun since, or a centre or alias written since by another
-  owner, decides where the receiver is. Without this a failed grant's target stayed cached, so
+  and the receiver as the decoder reads it (`tetra_sm_receiver_snapshot`): the tuned centre
+  `opts->rtlsdr_center_freq`, which an RTL tune that timed out has already set to its target
+  (`dsd_engine_tune_rtl()`), and the P25 alias `p25_cc_freq` a return cleared, both as they were before the request
+  and as it left them. A failure puts each back only when no correlated tune begun since may have moved the receiver
+  (`dsd_trunk_tuning_retuned_since()`: one refused or deferred where it was asked for moved nothing) and the value is
+  still the one the request left (`sm_restore_receiver()`): a tune begun since, or a centre or alias written since by
+  another owner, decides where the receiver is. Without this a failed grant's target stayed cached, so
   `tetra_sm_receiver_freq()` named a carrier the receiver never reached and the same grant was then followed without a
   retune. Both fields are `dsd_opts`/`dsd_state` fields protocol code already reads and writes, so no runtime hook is
   involved; the engine reconciles the centre with the stream itself only when no trunking owner is active
