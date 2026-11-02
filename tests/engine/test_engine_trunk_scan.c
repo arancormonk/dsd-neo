@@ -18409,6 +18409,73 @@ test_lists_long_file_names_keep_their_stem(void) {
     return test_rc;
 }
 
+/* A park that failed beside an alternate whose switch keeps failing to prepare (its keys never allocate): the retry in
+ * place must not keep waiting for the rotation, whose every walk finds nothing it can try. b's retune fails and so
+ * does the fallback onto a, leaving a unparked and cooling; from then on b's preparation fails at every attempt. a is
+ * tuned again in place once its cooldown has run, within about 2.5 s, at the dwells of @p dwell_ms. */
+static int
+run_failed_park_beside_an_unprepared_alternate(int dwell_ms) {
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body,
+                 "a,p25-trunk,851000000,,%d,,,\n"
+                 "b,p25-trunk,852000000,,%d,,,-K keys.csv\n",
+                 dwell_ms, dwell_ms);
+    const char* names[] = {"targets"};
+    const char* bodies[] = {body};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX] = "";
+    if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 1) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "failed park beside an unprepared alternate init: %s\n", err);
+        test_rc = 1;
+    } else {
+        const double failed_m = (double)dwell_ms / 1000.0;
+        g_counting_tune_to_cc_failures_remaining = 2;
+        tick_at(&opts, &state, failed_m);
+        g_counting_tune_to_cc_failures_remaining = 0;
+        dsd_key_set_test_alloc_fail_after(0);
+        g_counting_tune_to_cc_calls = 0;
+        double reparked_m = -1.0;
+        for (int i = 1; i <= 64 && reparked_m < 0.0; i++) {
+            const int before = g_counting_tune_to_cc_calls;
+            tick_at(&opts, &state, failed_m + (0.0625 * i));
+            if (g_counting_tune_to_cc_calls != before && g_counting_tune_to_cc_freq == 851000000L) {
+                reparked_m = failed_m + (0.0625 * i);
+            }
+        }
+        dsd_key_set_test_alloc_fail_after(-1);
+        if (reparked_m < 0.0 || reparked_m > failed_m + 2.5) {
+            DSD_FPRINTF(stderr,
+                        "dwell %d ms: a failed park beside an unprepared alternate was tuned again at %.2f, "
+                        "want by %.2f\n",
+                        dwell_ms, reparked_m, failed_m + 2.5);
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(keys);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+static int
+test_failed_park_beside_an_unprepared_alternate_is_retried(void) {
+    return run_failed_park_beside_an_unprepared_alternate(250) | run_failed_park_beside_an_unprepared_alternate(300);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -18454,6 +18521,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_departure_waits_for_the_soonest_cooldown);
     rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
+    rc |= run_with_default_tune_hook(test_failed_park_beside_an_unprepared_alternate_is_retried);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
     rc |= test_parser_reads_spreadsheet_quoted_labels();

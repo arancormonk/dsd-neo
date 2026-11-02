@@ -3580,6 +3580,10 @@ trunk_scan_advance_walk(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
          * never left, so there is nothing to restore. Re-arm the dwell rather than
          * re-running this walk on every tick until something changes. */
         coord->targets[original_active].idle_since_m = now_m;
+        /* Nor was anything tried (none eligible, or none whose switch could be prepared): a retry in place that waited
+           for this rotation is owed at its due time, not a re-check later, or it could keep waiting in step with an
+           alternate whose preparation fails at every attempt. */
+        coord->targets[original_active].retry_recheck_m = 0.0;
         trunk_scan_publish_active_target(state, coord);
         dsd_scan_key_change_clear(&rollback);
         return 0;
