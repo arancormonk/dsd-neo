@@ -371,6 +371,15 @@ Item {
                    "the per-site button touches the search field: " + each.y + " < " + (search.y + search.height + 10))
             compare(each.x, search.x, "the per-site button is not inset like the search field")
             compare(each.width, search.width, "the per-site button is not as wide as the search field")
+            // A site row is the card's full width; its divider stays inside the
+            // card's content padding, edge to edge with the search field.
+            var divider = findChild(tc.screen, "radioReferenceSiteDivider")
+            verify(divider !== null, "the site divider has no name to find it by")
+            var left = divider.mapToItem(search.parent, 0, 0).x
+            var right = divider.mapToItem(search.parent, divider.width, 0).x
+            compare(left, search.x, "the site divider does not start at the content padding")
+            verify(right <= search.x + search.width,
+                   "the site divider runs past the content padding: " + right + " > " + (search.x + search.width))
 
             testContext.setRadioReference("conventional", true)
             testContext.setRadioReference("trunked", false)

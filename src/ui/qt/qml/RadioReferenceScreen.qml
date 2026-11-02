@@ -1335,11 +1335,18 @@ Item {
                                 border.color: siteRow.chosen ? Theme.cyan : Theme.controlBorder
                             }
 
+                            // Inset on both sides to the card's content: the
+                            // row is the card's full width, and a divider run to
+                            // its right edge met the card's border.
                             Rectangle {
+                                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                                objectName: "radioReferenceSiteDivider"
+
                                 anchors.bottom: parent.bottom
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.leftMargin: Theme.cardPadding
+                                anchors.rightMargin: Theme.cardPadding
                                 height: 1
                                 color: Theme.divider
                             }
