@@ -211,6 +211,36 @@ Item {
             sheet.visible = false
         }
 
+        // Issue #667: a recent analog row reads as the log's does: its tone in
+        // the access code's place, the frequency last; the details name the tone
+        // alone and what the call was heard in.
+        function test_03l_analog_rows_data() {
+            return [
+                {tag: "nfm-ctcss", name: "Fire", mode: "NFM", tone: "CTCSS 100.0 Hz", channel: "Fire Dispatch", freq: 154430000,
+                    meta: "CTCSS 100.0 Hz · 0:04 · Fire Dispatch · 154.4300 MHz", kind: "Analog NFM"},
+                {tag: "nfm-dcs", name: "NFM", mode: "NFM", tone: "DCS D023N / D047I", channel: "", freq: 154445000,
+                    meta: "DCS D023N / D047I · 0:04 · 154.4450 MHz", kind: "Analog NFM"},
+                {tag: "am", name: "AM", mode: "AM", tone: "", channel: "", freq: 119100000,
+                    meta: "0:04 · 119.1000 MHz", kind: "Analog AM"},
+                {tag: "unknown-mode", name: "Analog", mode: "", tone: "", channel: "", freq: 0,
+                    meta: "0:04", kind: "Analog"}
+            ]
+        }
+
+        function test_03l_analog_rows(data) {
+            var name = callHistory.pushAnalog(data.name, data.mode, data.tone, data.channel, data.freq)
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the analog row is not on top")
+            compare(row.metaText, data.meta)
+            var sheet = tc.openNewest(name)
+            compare(sheet.detailLines[7], data.tone)
+            compare(sheet.detailLines[11], data.kind)
+            verify(sheet.detailLines.indexOf("Unencrypted") < 0, "an analog call reads as unencrypted: " + sheet.detailLines)
+            sheet.visible = false
+        }
+
         function test_03k_details_follow_row_update() {
             var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
             var uid = callHistory.newestUid()

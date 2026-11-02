@@ -14,10 +14,17 @@ ModalSheet {
     readonly property bool singleSystemSession: metrics.scanKind === 0 && !metrics.operatorTuned
     readonly property bool canHold: decoderHost.running && metrics.optionsKnown && singleSystemSession && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
+    // Issue #667: an analog reception has no access code. Its tone ("CTCSS
+    // 100.0 Hz") takes the code's line, and what it was heard in ("Analog
+    // NFM", "Analog AM", "Analog" when not known) the Encrypted line's.
+    readonly property bool analogRow: sheet.record.analog === true
+    readonly property string codeLine: analogRow ? (sheet.record.receivedTone || "") : (sheet.record.accessCodeText || "")
+    readonly property string kindLine: analogRow ? (sheet.record.analogMode ? qsTr("Analog %1").arg(sheet.record.analogMode) : qsTr("Analog")) : sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted")
     // Issue #799: the line after "Frequency" names the site and channel the
     // call was heard on, in the Monitor site row's words ("DMR · LPCN 12").
+    // Every line keeps its place, shown or not, so the site's is fixed.
     readonly property int siteLineIndex: 9
-    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.record.accessCodeText || "", sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.siteText || "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || "", sheet.record.receivedTone ? qsTr("Received tone %1").arg(sheet.record.receivedTone) : ""]
+    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.codeLine, sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.siteText || "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.kindLine, sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || ""]
     // Issue #708: the row's call recordings, read again by its uid whenever the
     // log changes, so a part folded into the call or a recording deleted shows
     // while the sheet is open.

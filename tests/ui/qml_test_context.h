@@ -1486,10 +1486,14 @@ class CallLogStore : public QAbstractListModel {
         qint64 freqHz = 0;
         QString accessCode;
         QString accessCodeText;
-        /* The decoded service name, the received tone ("100.0 Hz") and the site line (issue #799), each empty without. */
+        /* The decoded service name, the received tone ("CTCSS 100.0 Hz") and the site line (issue #799), each empty
+         * without. */
         QString serviceName;
         QString receivedTone;
         QString siteText;
+        /* Issue #667: an analog reception, and its mode ("NFM", "AM"; empty when not known). */
+        bool analog = false;
+        QString analogMode;
         /* Issue #708: the stable row identity and the row's call recordings (the provider's maps), oldest first. */
         qint64 uid = 0;
         QVariantList recordings;
@@ -1605,6 +1609,8 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::ServiceNameRole: return row.serviceName;
             case CallHistoryModel::ReceivedToneRole: return row.receivedTone;
             case CallHistoryModel::SiteTextRole: return row.siteText;
+            case CallHistoryModel::AnalogRole: return row.analog;
+            case CallHistoryModel::AnalogModeRole: return row.analogMode;
             case CallHistoryModel::UidRole: return row.uid;
             case CallHistoryModel::RecordingsRole: return row.recordings;
             case CallHistoryModel::HasRecordingRole: return !row.recordings.isEmpty();
@@ -1636,6 +1642,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::ServiceNameRole, "serviceName"},
                 {CallHistoryModel::ReceivedToneRole, "receivedTone"},
                 {CallHistoryModel::SiteTextRole, "siteText"},
+                {CallHistoryModel::AnalogRole, "analog"},
+                {CallHistoryModel::AnalogModeRole, "analogMode"},
                 {CallHistoryModel::UidRole, "uid"},
                 {CallHistoryModel::RecordingsRole, "recordings"},
                 {CallHistoryModel::HasRecordingRole, "hasRecording"}};
@@ -1685,6 +1693,8 @@ class CallLogStore : public QAbstractListModel {
             {"serviceName", CallHistoryModel::ServiceNameRole},
             {"receivedTone", CallHistoryModel::ReceivedToneRole},
             {"siteText", CallHistoryModel::SiteTextRole},
+            {"analog", CallHistoryModel::AnalogRole},
+            {"analogMode", CallHistoryModel::AnalogModeRole},
         };
 
         bool parsed = false;
@@ -1703,8 +1713,8 @@ class CallLogStore : public QAbstractListModel {
 
     /**
      * @brief Change the row with @p uid in place, as a fragment folded into it does: each of @p fields (by role name:
-     * name, srcName, durationSecs, freqHz, serviceName, receivedTone, siteText) is set, then one dataChanged on that
-     * row names the roles set. False when no row has @p uid or a field is not one of those.
+     * name, srcName, durationSecs, freqHz, serviceName, receivedTone, siteText, analogMode) is set, then one
+     * dataChanged on that row names the roles set. False when no row has @p uid or a field is not one of those.
      */
     Q_INVOKABLE bool
     updateRow(qint64 uid, const QVariantMap& fields) {
@@ -1878,6 +1888,29 @@ class CallLogStore : public QAbstractListModel {
     }
 
     /**
+     * @brief Prepend a conventional analog reception (issue #667) as the model logs one: no ids and no access code,
+     * heard in @p analogMode ("NFM", "AM", or empty when not known) with @p receivedTone ("CTCSS 100.0 Hz", or
+     * empty), named @p name, on @p channel at @p freqHz.
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushAnalog(const QString& name, const QString& analogMode, const QString& receivedTone, const QString& channel,
+               qint64 freqHz) {
+        push(QStringLiteral("TODAY"));
+        StoreRow& row = m_rows[0];
+        row.name = name;
+        row.analog = true;
+        row.analogMode = analogMode;
+        row.receivedTone = receivedTone;
+        tuneNewest(0, 0, channel, freqHz, QString(), QString());
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::NameRole, CallHistoryModel::AnalogRole, CallHistoryModel::AnalogModeRole,
+                            CallHistoryModel::ReceivedToneRole});
+        return name;
+    }
+
+    /**
      * @brief Prepend a call that decoded no talkgroup, named by the scan channel it
      * was heard on — encrypted traffic on a conventional list looks like this.
      * @return The row's name (the channel).
@@ -1969,6 +2002,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::ServiceNameRole: row.serviceName = value.toString(); return true;
             case CallHistoryModel::ReceivedToneRole: row.receivedTone = value.toString(); return true;
             case CallHistoryModel::SiteTextRole: row.siteText = value.toString(); return true;
+            case CallHistoryModel::AnalogModeRole: row.analogMode = value.toString(); return true;
             default: return false;
         }
     }
