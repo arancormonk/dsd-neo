@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -97,9 +98,17 @@ static char g_status[256];
 static dsdneoRuntimeConfig g_cfg;
 static int g_cfg_valid = 1;
 static const char* g_default_config_path = "/tmp/default.toml";
-static int g_save_atomic_rc;
-static int g_snapshot_calls;
+/* The config file services the actions call (issue #672, B18): what each was asked. The actions read and write no
+   file themselves: this test defines no dsd_user_config_* reader or writer, so an action that called one would not
+   link. */
+static int g_save_rc;
+static int g_save_calls;
+static char g_save_path[1024];
+static const dsd_opts* g_save_opts;
+static const dsd_state* g_save_state;
+static int g_save_adopt;
 static int g_list_profiles_rc;
+static char g_list_profiles_path[1024];
 static char g_env_name[128];
 static char g_env_value[128];
 static int g_env_int_value = 77;
@@ -108,8 +117,6 @@ static int g_reparse_calls;
 static int g_audio_enum_rc;
 static dsd_audio_device g_audio_inputs[2];
 static dsd_audio_device g_audio_outputs[2];
-static dsd_app_config_metadata_payload g_config_metadata;
-static int g_config_metadata_calls;
 static char g_help[256];
 static int g_help_calls;
 /* The frequency row's predicate lives in menu_labels.c (UI_MENU_LABELS pins it); here the '=' opener's branch on it,
@@ -126,9 +133,14 @@ reset_capture(void) {
     DSD_MEMSET(&g_cfg, 0, sizeof g_cfg);
     g_cfg_valid = 1;
     g_default_config_path = "/tmp/default.toml";
-    g_save_atomic_rc = 0;
-    g_snapshot_calls = 0;
+    g_save_rc = 0;
+    g_save_calls = 0;
+    DSD_MEMSET(g_save_path, 0, sizeof g_save_path);
+    g_save_opts = NULL;
+    g_save_state = NULL;
+    g_save_adopt = -1;
     g_list_profiles_rc = 0;
+    DSD_MEMSET(g_list_profiles_path, 0, sizeof g_list_profiles_path);
     DSD_MEMSET(g_env_name, 0, sizeof g_env_name);
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
     g_env_int_value = 77;
@@ -137,8 +149,6 @@ reset_capture(void) {
     g_audio_enum_rc = 0;
     DSD_MEMSET(g_audio_inputs, 0, sizeof g_audio_inputs);
     DSD_MEMSET(g_audio_outputs, 0, sizeof g_audio_outputs);
-    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
-    g_config_metadata_calls = 0;
     DSD_MEMSET(g_help, 0, sizeof g_help);
     g_help_calls = 0;
     g_freq_offered = 1;
@@ -390,16 +400,6 @@ dsd_app_command_set_tone_filter_mode(int32_t mode) {
     return capture_command(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
 }
 
-int
-dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
-    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
-    if (payload) {
-        g_config_metadata = *payload;
-    }
-    g_config_metadata_calls++;
-    return capture_command(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
-}
-
 /* The picker opens on the mode in effect, so the readback is stubbed too. */
 static dsdneoUserDecodeMode g_infer_mode = DSDCFG_MODE_AUTO;
 
@@ -554,26 +554,19 @@ dsd_user_imports_dir(void) {
 }
 
 int
-dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
-    (void)path;
-    (void)cfg;
-    return g_save_atomic_rc;
-}
-
-void
-dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    assert(opts == dsd_app_get_latest_opts_snapshot());
-    assert(state == dsd_app_get_latest_snapshot());
-    if (cfg) {
-        DSD_MEMSET(cfg, 0, sizeof *cfg);
-    }
-    g_snapshot_calls++;
+dsd_app_config_save(const char* path, const dsd_opts* opts, const dsd_state* state, int adopt_autosave) {
+    g_save_calls++;
+    DSD_SNPRINTF(g_save_path, sizeof g_save_path, "%s", path ? path : "");
+    g_save_opts = opts;
+    g_save_state = state;
+    g_save_adopt = adopt_autosave;
+    return g_save_rc;
 }
 
 int
-dsd_user_config_list_profiles(const char* path, const char** names, char* names_buf, size_t names_buf_size,
-                              int max_names) {
-    (void)path;
+dsd_app_config_list_profiles(const char* path, const char** names, char* names_buf, size_t names_buf_size,
+                             int max_names) {
+    DSD_SNPRINTF(g_list_profiles_path, sizeof g_list_profiles_path, "%s", path ? path : "");
     if (g_list_profiles_rc <= 0) {
         return g_list_profiles_rc;
     }
@@ -1225,14 +1218,21 @@ test_config_profile_and_env_actions(void) {
     act_config_load(&ctx);
     rc |= expect_str("config load uses autosave", g_prompt.prefill, "/tmp/current.toml");
 
+    /* Issue #672 (B18): the service writes the published snapshot pair to the session's autosave file, which stays
+       the autosave (no metadata change). */
     reset_capture();
     act_config_save_current(&ctx);
-    rc |= expect_int("save current snapshots", g_snapshot_calls, 1);
+    rc |= expect_int("save current asks the service once", g_save_calls, 1);
+    rc |= expect_str("save current path", g_save_path, "/tmp/current.toml");
+    rc |= expect_int("save current writes the published options", g_save_opts == dsd_app_get_latest_opts_snapshot(), 1);
+    rc |= expect_int("save current writes the published state", g_save_state == dsd_app_get_latest_snapshot(), 1);
+    rc |= expect_int("save current keeps the autosave", g_save_adopt, 0);
     rc |= expect_str("save current status", g_status, "Config saved to /tmp/current.toml");
 
     reset_capture();
     g_list_profiles_rc = 2;
     act_config_load_profile(&ctx);
+    rc |= expect_str("profile list reads the autosave file", g_list_profiles_path, "/tmp/current.toml");
     rc |= expect_str("profile chooser title", g_chooser.title, "Load Profile");
     rc |= expect_int("profile chooser count", g_chooser.n, 2);
     rc |= expect_str("profile label zero", g_chooser.labels[0], "base");
@@ -2216,22 +2216,30 @@ test_config_and_pulse_failure_variants(void) {
     rc |= expect_str("config load default path", g_prompt.prefill, "/tmp/default.toml");
 
     reset_capture();
-    g_save_atomic_rc = -1;
+    g_save_rc = -1;
     act_config_save_current(&ctx);
-    rc |= expect_int("save current failure snapshots", g_snapshot_calls, 1);
+    rc |= expect_int("save current failure asks the service", g_save_calls, 1);
+    rc |= expect_str("save current failure path", g_save_path, "/tmp/default.toml");
     rc |= expect_str("save current failure status", g_status, "Failed to save config to /tmp/default.toml");
 
+    /* The default file becomes the autosave once written (the service submits the metadata; APP_CONTROL_CONFIG_FILES
+       pins it). */
     reset_capture();
     act_config_save_default(&ctx);
-    rc |= expect_int("save default metadata command", g_cmd.id, DSD_APP_CMD_CONFIG_METADATA_SET);
-    rc |= expect_int("save default metadata count", g_config_metadata_calls, 1);
-    rc |= expect_int("save default autosave enabled", g_config_metadata.autosave_enabled, 1);
-    rc |= expect_str("save default autosave path", g_config_metadata.path, "/tmp/default.toml");
+    rc |= expect_int("save default asks the service once", g_save_calls, 1);
+    rc |= expect_str("save default path", g_save_path, "/tmp/default.toml");
+    rc |= expect_int("save default adopts the file as the autosave", g_save_adopt, 1);
     rc |= expect_str("save default status", g_status, "Config saved to /tmp/default.toml");
+
+    reset_capture();
+    g_save_rc = -1;
+    act_config_save_default(&ctx);
+    rc |= expect_str("save default failure status", g_status, "Failed to save config to /tmp/default.toml");
 
     reset_capture();
     g_default_config_path = "";
     act_config_save_default(&ctx);
+    rc |= expect_int("save default missing writes nothing", g_save_calls, 0);
     rc |= expect_str("save default missing status", g_status, "No default config path; nothing saved");
 
     reset_capture();

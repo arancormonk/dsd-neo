@@ -10,6 +10,7 @@
 
 #include "menu_callbacks.h"
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
@@ -252,31 +253,6 @@ cb_keys_hex(void* v, const char* p) {
 
 // ---- Config callbacks ----
 
-static void
-ui_submit_config_metadata(int autosave_enabled, const char* path) {
-    dsd_app_config_metadata_payload payload;
-    DSD_MEMSET(&payload, 0, sizeof payload);
-    payload.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
-    payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
-}
-
-/* A loaded file's apply (dsd_app_config_load_payload): the autosave it brings (@p autosave_enabled, @p path) is adopted
-   by the decoder only once the config stays applied, so a refused load leaves the autosave where it was. Heap: the
-   config is tens of KB. */
-static dsd_app_config_load_payload*
-ui_new_config_load(int autosave_enabled, const char* path, const char* profile) {
-    dsd_app_config_load_payload* load = (dsd_app_config_load_payload*)calloc(1, sizeof *load);
-    if (!load) {
-        return NULL;
-    }
-    load->autosave.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(load->autosave.path, sizeof load->autosave.path, "%s", path ? path : "");
-    DSD_SNPRINTF(load->profile, sizeof load->profile, "%s", profile ? profile : "");
-    return load;
-}
-
 void
 cb_config_load(void* v, const char* path) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
@@ -287,20 +263,10 @@ cb_config_load(void* v, const char* path) {
         ui_statusf("Config load canceled");
         return;
     }
-
-    dsd_app_config_load_payload* load = ui_new_config_load(1, path, "");
-    if (!load) {
-        ui_statusf("Failed to load config from %s", path);
-        return;
-    }
-    if (dsd_user_config_load(path, &load->config) != 0) {
-        ui_statusf("Failed to load config from %s", path);
-        free(load);
-        return;
-    }
     /* The decoder says whether it loaded: "Config loaded from ..." or "Config not applied: ...". */
-    (void)dsd_app_command_load_config(load);
-    free(load);
+    if (dsd_app_config_load_submit(path) != 0) {
+        ui_statusf("Failed to load config from %s", path);
+    }
 }
 
 static void
@@ -327,14 +293,10 @@ chooser_done_config_profile(void* u, int sel) {
 
     if (sel >= 0 && sel < pctx->n && pctx->names && pctx->names[sel] && pctx->path[0] != '\0') {
         const char* profile = pctx->names[sel];
-        dsd_app_config_load_payload* load = ui_new_config_load(0, pctx->path, profile);
-        if (!load || dsd_user_config_load_profile(pctx->path, profile, &load->config) != 0) {
+        /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
+        if (dsd_app_config_load_profile_submit(pctx->path, profile) != 0) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
-        } else {
-            /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
-            (void)dsd_app_command_load_config(load);
         }
-        free(load);
     }
 
     config_profile_free_context(pctx);
@@ -356,10 +318,7 @@ cb_config_save_as(void* v, const char* path) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
-        ui_submit_config_metadata(1, path);
+    if (dsd_app_config_save(path, opts_snapshot, snapshot, 1) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);

@@ -1127,6 +1127,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_avoid_view.h
   CXX
 )
+# Issue #672: the config file reads and writes a frontend asks for.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_config_files
+  HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES
+  dsd-neo/app_control/config_files.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_config_files_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES_CXX
+  dsd-neo/app_control/config_files.h
+  CXX
+)
 # Issue #671: which scan the session has, running or paused.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_state_view
@@ -3283,6 +3296,21 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_SCAN_AVOID_VIEW
     COMMAND dsd-neo_test_app_control_scan_avoid_view
+)
+
+# Issue #672: the config file reads and writes the terminal menu asks app-control for, on real files.
+add_executable(
+    dsd-neo_test_app_control_config_files
+    ui/test_app_control_config_files.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/config_files.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_config_files
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_CONFIG_FILES
+    COMMAND dsd-neo_test_app_control_config_files
 )
 
 # Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.

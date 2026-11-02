@@ -11,6 +11,7 @@
 #include "menu_actions.h"
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -136,16 +137,6 @@ act_dsp_out(void* v) {
 
 // ---- Config actions ----
 
-static void
-ui_submit_config_metadata(int autosave_enabled, const char* path) {
-    dsd_app_config_metadata_payload payload;
-    DSD_MEMSET(&payload, 0, sizeof payload);
-    payload.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
-    payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
-}
-
 void
 act_config_load(void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -264,7 +255,7 @@ act_config_load_profile(void* v) {
     const char* names[32];
     char names_buf[1024];
     int count =
-        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
+        dsd_app_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
     if (count < 0) {
         ui_statusf("Failed to read profiles from %s", path);
         return;
@@ -308,9 +299,7 @@ act_config_save_current(void* v) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+    if (dsd_app_config_save(path, opts_snapshot, snapshot, 0) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
@@ -335,10 +324,7 @@ act_config_save_default(void* v) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
-        ui_submit_config_metadata(1, path);
+    if (dsd_app_config_save(path, opts_snapshot, snapshot, 1) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);

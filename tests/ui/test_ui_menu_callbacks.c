@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
@@ -77,9 +78,21 @@ static const char* g_env_get_value;
 static int g_config_load_rc;
 static int g_profile_load_rc;
 static int g_config_save_rc;
-static int g_snapshot_calls;
 static dsd_app_config_metadata_payload g_config_metadata;
 static int g_config_metadata_calls;
+
+/* The config file services the callbacks call (issue #672, B11/B18): what each was asked. The callbacks read and write
+   no file themselves: this test defines no dsd_user_config_* function, so a callback that called one would not link. */
+static struct {
+    int load_calls;
+    int profile_calls;
+    int save_calls;
+    char path[1024];
+    char profile[64];
+    const dsd_opts* opts;
+    const dsd_state* state;
+    int adopt_autosave;
+} g_cfg_svc;
 
 static int
 capture_command(int cmd_id, const void* payload, size_t payload_sz) {
@@ -302,28 +315,27 @@ dsd_env_copy(const char* name, char* buf, size_t cap) {
 }
 
 int
-dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
-    (void)path;
-    if (cfg) {
-        DSD_MEMSET(cfg, 0, sizeof *cfg);
-    }
+dsd_app_config_load_submit(const char* path) {
+    g_cfg_svc.load_calls++;
+    DSD_SNPRINTF(g_cfg_svc.path, sizeof g_cfg_svc.path, "%s", path ? path : "");
     return g_config_load_rc;
 }
 
 int
-dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoUserConfig* cfg) {
-    (void)path;
-    (void)profile_name;
-    if (cfg) {
-        DSD_MEMSET(cfg, 0, sizeof *cfg);
-    }
+dsd_app_config_load_profile_submit(const char* path, const char* profile) {
+    g_cfg_svc.profile_calls++;
+    DSD_SNPRINTF(g_cfg_svc.path, sizeof g_cfg_svc.path, "%s", path ? path : "");
+    DSD_SNPRINTF(g_cfg_svc.profile, sizeof g_cfg_svc.profile, "%s", profile ? profile : "");
     return g_profile_load_rc;
 }
 
 int
-dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
-    (void)path;
-    (void)cfg;
+dsd_app_config_save(const char* path, const dsd_opts* opts, const dsd_state* state, int adopt_autosave) {
+    g_cfg_svc.save_calls++;
+    DSD_SNPRINTF(g_cfg_svc.path, sizeof g_cfg_svc.path, "%s", path ? path : "");
+    g_cfg_svc.opts = opts;
+    g_cfg_svc.state = state;
+    g_cfg_svc.adopt_autosave = adopt_autosave;
     return g_config_save_rc;
 }
 
@@ -337,16 +349,6 @@ const dsd_state*
 dsd_app_get_latest_snapshot(void) {
     static dsd_state snapshot;
     return &snapshot;
-}
-
-void
-dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    assert(opts == dsd_app_get_latest_opts_snapshot());
-    assert(state == dsd_app_get_latest_snapshot());
-    if (cfg) {
-        DSD_MEMSET(cfg, 0, sizeof *cfg);
-    }
-    g_snapshot_calls++;
 }
 
 static void
@@ -371,7 +373,7 @@ reset_capture(void) {
     g_config_load_rc = 0;
     g_profile_load_rc = 0;
     g_config_save_rc = 0;
-    g_snapshot_calls = 0;
+    DSD_MEMSET(&g_cfg_svc, 0, sizeof g_cfg_svc);
     DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
     g_config_metadata_calls = 0;
 }
@@ -584,73 +586,65 @@ test_config_callbacks_apply_and_report_failures(void) {
     reset_capture();
     cb_config_load(&ctx, "");
     rc |= expect_str("config load cancel status", g_status, "Config load canceled");
+    rc |= expect_int("config load cancel reads nothing", g_cfg_svc.load_calls, 0);
     rc |= expect_int("config load cancel no command", g_cmd.calls, 0);
 
     reset_capture();
     g_config_load_rc = -1;
     cb_config_load(&ctx, "/tmp/bad.toml");
+    rc |= expect_int("config load failure asks the service", g_cfg_svc.load_calls, 1);
     rc |= expect_str("config load failure", g_status, "Failed to load config from /tmp/bad.toml");
-    rc |= expect_int("config load failure no command", g_cmd.calls, 0);
 
-    /* Issue #671 (round 4): one command carries the config and the autosave it brings, which the decoder adopts only
-       when the config stays applied, and the decoder, not this callback, says whether it loaded. */
-    static dsd_app_config_load_payload load;
+    /* Issue #672 (B11/B18): the service reads the file and submits it with the autosave it brings
+       (APP_CONTROL_CONFIG_FILES pins the payload); the decoder, not this callback, says whether it loaded. */
     reset_capture();
     cb_config_load(&ctx, "/tmp/good.toml");
-    rc |= expect_int("config load command count", g_cmd.calls, 1);
-    rc |= expect_int("config load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("config load carries its autosave", (int)g_cmd.n, (int)sizeof load);
-    DSD_MEMCPY(&load, g_cmd.data, sizeof load);
+    rc |= expect_int("config load asks the service once", g_cfg_svc.load_calls, 1);
+    rc |= expect_str("config load path", g_cfg_svc.path, "/tmp/good.toml");
     rc |= expect_int("config load sets no autosave of its own", g_config_metadata_calls, 0);
-    rc |= expect_int("config load autosave enabled", load.autosave.autosave_enabled, 1);
-    rc |= expect_str("config load autosave path", load.autosave.path, "/tmp/good.toml");
-    rc |= expect_str("config load is the whole file", load.profile, "");
     rc |= expect_int("config load claims nothing", g_status_calls, 0);
 
     reset_capture();
     cb_config_save_as(&ctx, NULL);
     rc |= expect_str("config save cancel status", g_status, "Config save canceled");
-    rc |= expect_int("config save cancel no snapshot", g_snapshot_calls, 0);
+    rc |= expect_int("config save cancel writes nothing", g_cfg_svc.save_calls, 0);
 
     reset_capture();
     cb_config_save_as(&ctx, "/tmp/save.toml");
-    rc |= expect_int("config save snapshots", g_snapshot_calls, 1);
-    rc |= expect_int("config save metadata command", g_cmd.id, DSD_APP_CMD_CONFIG_METADATA_SET);
-    rc |= expect_int("config save metadata count", g_config_metadata_calls, 1);
-    rc |= expect_int("config save autosave enabled", g_config_metadata.autosave_enabled, 1);
-    rc |= expect_str("config save autosave path", g_config_metadata.path, "/tmp/save.toml");
+    rc |= expect_int("config save asks the service once", g_cfg_svc.save_calls, 1);
+    rc |= expect_str("config save path", g_cfg_svc.path, "/tmp/save.toml");
+    rc |=
+        expect_int("config save writes the published options", g_cfg_svc.opts == dsd_app_get_latest_opts_snapshot(), 1);
+    rc |= expect_int("config save writes the published state", g_cfg_svc.state == dsd_app_get_latest_snapshot(), 1);
+    rc |= expect_int("config save adopts the file as the autosave", g_cfg_svc.adopt_autosave, 1);
     rc |= expect_str("config save success status", g_status, "Config saved to /tmp/save.toml");
 
     reset_capture();
     g_config_save_rc = -1;
     cb_config_save_as(&ctx, "/tmp/save-fail.toml");
-    rc |= expect_int("config save failure snapshots", g_snapshot_calls, 1);
+    rc |= expect_int("config save failure asks the service", g_cfg_svc.save_calls, 1);
     rc |= expect_str("config save failure status", g_status, "Failed to save config to /tmp/save-fail.toml");
 
     reset_capture();
     ProfileSelCtx* pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "mobile");
     chooser_done_config_profile(pctx, 0);
-    rc |= expect_int("profile load command count", g_cmd.calls, 1);
-    rc |= expect_int("profile load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("profile load carries its autosave", (int)g_cmd.n, (int)sizeof load);
-    DSD_MEMCPY(&load, g_cmd.data, sizeof load);
+    rc |= expect_int("profile load asks the service once", g_cfg_svc.profile_calls, 1);
+    rc |= expect_str("profile load path", g_cfg_svc.path, "/tmp/profiles.toml");
+    rc |= expect_str("profile load names the profile", g_cfg_svc.profile, "mobile");
     rc |= expect_int("profile load sets no autosave of its own", g_config_metadata_calls, 0);
-    rc |= expect_int("profile load disables autosave", load.autosave.autosave_enabled, 0);
-    rc |= expect_str("profile load path", load.autosave.path, "/tmp/profiles.toml");
-    rc |= expect_str("profile load names the profile", load.profile, "mobile");
     rc |= expect_int("profile load claims nothing", g_status_calls, 0);
 
     reset_capture();
     pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "field");
     g_profile_load_rc = -1;
     chooser_done_config_profile(pctx, 0);
-    rc |= expect_int("profile failure no command", g_cmd.calls, 0);
+    rc |= expect_int("profile failure asks the service", g_cfg_svc.profile_calls, 1);
     rc |= expect_str("profile load failure", g_status, "Failed to load profile field from /tmp/profiles.toml");
 
     reset_capture();
     pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "base");
     chooser_done_config_profile(pctx, -1);
-    rc |= expect_int("profile cancel no command", g_cmd.calls, 0);
+    rc |= expect_int("profile cancel reads nothing", g_cfg_svc.profile_calls, 0);
     rc |= expect_int("profile cancel no status", g_status_calls, 0);
 
     return rc;

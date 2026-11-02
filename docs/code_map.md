@@ -371,7 +371,8 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   session's save breaks already, kept or fixed, does not. The same check holds the channel-map and band-plan imports
   (`SVC_REFUSED_FOR_NEXT_START`), the scanner toggle's start and a RadioReference import (its preflight) while a trunk
   scan waits for the next start. A loaded file's apply (`dsd_app_config_load_payload`, terminal Config > Load and
-  profile load) carries its autosave setting, adopted only when the config stays applied
+  profile load, read and submitted by `dsd_app_config_load_submit()` / `dsd_app_config_load_profile_submit()` in
+  `<dsd-neo/app_control/config_files.h>`) carries its autosave setting, adopted only when the config stays applied
   (`cfg_adopt_loaded_autosave()`), so a refused or rolled-back load leaves the exit autosave where it was. The apply
   toasts what waits (`Config applied; restart to use the new trunk scan list`, `cfg_note_restart_required()`), kept
   beside any other message the apply leaves, and logs it once it has applied (`cfg_keep_restart_note()`), an apply that
@@ -4078,6 +4079,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   is `dsd_app_scan_avoid_remove_payload`: LCN `(instance, list_rev, row, frequency_hz)`, trunk scan
   `(session, target_id)`. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the
+  user config file's reads and writes the terminal's Config menu asks for, so menu callbacks and actions do no file
+  I/O: `dsd_app_config_load_submit()` reads a file and submits it as a loaded file's apply (autosave on, to that
+  file), `dsd_app_config_load_profile_submit()` reads the base config with `[profile.NAME]` on top (autosave off),
+  `dsd_app_config_list_profiles()` lists the profiles, and `dsd_app_config_save()` writes the config a snapshot pair
+  holds (`dsd_snapshot_opts_to_user_config()`, atomic save) and, when asked, makes the written file the autosave
+  (`DSD_APP_CMD_CONFIG_METADATA_SET`). They run on the caller's (UI) thread; the menu keeps the prompts, the default
+  path and every status message. Tests: `APP_CONTROL_CONFIG_FILES` (real files), `UI_MENU_CALLBACKS`,
+  `UI_MENU_ACTIONS` (neither defines a `dsd_user_config_*` reader or writer, so a menu file access would not link),
+  `HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
   scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`

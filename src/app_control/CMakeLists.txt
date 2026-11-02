@@ -16,6 +16,7 @@ target_sources(
         app_command_queue.c
         key_commands.c
         call_view.c
+        config_files.c
         crc_policy_view.c
         dmr_ras_view.c
         p25_network.c # WP-F2
