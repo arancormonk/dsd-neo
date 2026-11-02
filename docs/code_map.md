@@ -3862,7 +3862,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `dsd_synctype_to_string()`, with its frame-type and family names spelled as the protocol: `X2-TDMA`, `ProVoice`,
   `EDACS`, `D-STAR`, `M17`; empty for analog and the generic digital sync), crypto and service
   metadata, with the 3 s ended hold. An analog call no service or channel names is named by its `analog_mode`
-  (`NFM`, `AM`, or `Analog` when unknown on audio input; issue #667), NFM and AM calls alike. An epoch with no
+  (`NFM`, `AM`, or `Analog` when unknown on audio input; issue #667), every analog call alike. An epoch with no
   identity reads idle, except on the
   protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
   call only from a CRC-checked carrier and publishes speech no D-SETUP named, and a direct mode DM-2-C call (whose
@@ -11891,7 +11891,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the call, which cannot be
   re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored, and the runtime
   config's snapshot comparison includes `no_signal_handlers_*`.
-- `engine/analog_call.c` owns conventional NFM and AM call/recording lifecycle in the engine scan-owner extension.
+- `engine/analog_call.c` owns the conventional analog call/recording lifecycle (NFM, AM and analog audio input) in
+  the engine scan-owner extension.
   Runtime's frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each with its input
   (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, `_PENDING`, see `dsd_symbol.c` above); a RECEPTION block
   continues or begins the reception, and a BREAK ends it. The state splits the logical reception (`active` for a

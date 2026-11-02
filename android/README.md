@@ -268,7 +268,7 @@ file could not be written) is reported under the switches.
 
 ### Pauses in analog calls
 
-An analog call (NFM or AM) ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
+An analog call ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
 and a new History row. **Analog pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10
 seconds: one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved
 as silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose

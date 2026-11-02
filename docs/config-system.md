@@ -449,12 +449,12 @@ audio input) sound no alert.
 **[recording] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `per_call_wav` | BOOL | Enable per-call WAV output: decoded voice, and conventional analog (NFM or AM) calls | `false` |
+| `per_call_wav` | BOOL | Enable per-call WAV output: decoded voice, and conventional analog calls | `false` |
 | `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
-| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog (NFM or AM) call in one recording and one history row; the pause is saved as silence; 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
+| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence; 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
@@ -1040,7 +1040,7 @@ The following can be changed without restarting:
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
 - The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
-- The analog (NFM or AM) recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
+- The analog recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
 - TCP/UDP connection parameters
 - File input path
 

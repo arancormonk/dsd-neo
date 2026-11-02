@@ -615,7 +615,7 @@ field, and the decoder refuses the rest when it applies the command.
   call the list lets record. Like the WAV commands it waits while the decoder
   holds a carrier and is refused while Signal search runs.
 * **`analog_record_max_gap_set`**: the longest pause, in ms, that keeps a
-  conventional analog (NFM or AM) call in one recording and one history row
+  conventional analog call in one recording and one history row
   (`--analog-record-max-gap-ms`, see [docs/cli.md](cli.md)). `200` or less
   turns it off; a value outside `0..10000` is refused. It works only while
   per-call recording (`-P`) is on; with it off, calls end as before. A call held through a

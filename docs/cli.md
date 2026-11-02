@@ -286,7 +286,7 @@ Windows console runs:
   nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
   keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
   `docs/code_map.md` ("Recording journal").
-- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call (NFM or AM)
+- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call
   in one recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
   (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence, so the
   recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one. 200
@@ -586,9 +586,9 @@ Notes
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
   plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output. Analog (NFM and
-  AM) calls sound no alert: the beep would land in the analog audio on `-o -` (on UDP output an alert goes to the digital
-  port, never the analog one).
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output. Conventional
+  analog calls sound no alert: the beep would land in the analog audio on `-o -` (on UDP output an alert goes to the
+  digital port, never the analog one).
 
 ## Modes & Decoders (`-f`)
 
@@ -1661,7 +1661,8 @@ A policy change ends only an active call it now rejects; a call it still admits,
 name edit relabels it. Completed history retains its service
 identity and label, and different confirmed identifiers do not merge into one call.
 
-`-P` also records conventional NFM and AM (`-fM`) transmissions, independently of speaker muting or null playback.
+`-P` also records conventional analog transmissions, NFM (`-fA`) and AM (`-fM`) on a radio input and analog audio
+input, independently of speaker muting or null playback.
 History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions. AM carries no
 CTCSS or DCS that dsd-neo detects, so an AM call names no tone. Earlier versions made no AM calls at all: no history
 row, `-J` line or recording.
@@ -1708,7 +1709,7 @@ changes.
 
 #### Pauses in an analog recording (`--analog-record-max-gap-ms`)
 
-By default an analog call (NFM or AM) ends 200 ms after its carrier drops (the carrier hangover). Every longer pause
+By default an analog call ends 200 ms after its carrier drops (the carrier hangover). Every longer pause
 starts a new call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
 analog_max_gap_ms`) keeps the call going through a pause of up to `<ms>`, so one exchange stays one row and one
 recording. It changes nothing else: the hangover, the squelch, the scan and the tone filter work as before.

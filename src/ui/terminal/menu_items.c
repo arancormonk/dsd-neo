@@ -930,10 +930,9 @@ static const NcMenuItem REC_WAV_ITEMS[] = {
      .on_select = io_enable_per_call_wav},
     {.id = "wav.analog_gap",
      .label_fn = lbl_analog_record_max_gap,
-     .help =
-         "Keep an analog call (NFM or AM) in one recording and one history row through a pause of up to this many ms "
-         "(0..10000); the pause is saved as silence. 200 or less is off: a pause over 200 ms starts a new "
-         "recording.",
+     .help = "Keep an analog call in one recording and one history row through a pause of up to this many ms "
+             "(0..10000); the pause is saved as silence. 200 or less is off: a pause over 200 ms starts a new "
+             "recording.",
      .on_select = act_analog_record_max_gap},
     {.id = "wav.static",
      .label = "Static WAV file...",
