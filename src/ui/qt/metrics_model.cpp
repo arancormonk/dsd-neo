@@ -1390,8 +1390,14 @@ MetricsModel::scanAvoidLabel(const dsd_app_scan_avoid_raw_entry& entry) const {
     if (entry.identity.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) {
         const QString channel = m_channelNames.value(
             ScanAvoidListModel::fieldText(entry.identity.target_id, sizeof entry.identity.target_id));
-        const QByteArray name =
+        QByteArray name =
             (channel.isEmpty() ? ScanAvoidListModel::fieldText(entry.name, sizeof entry.name) : channel).toUtf8();
+        /* A name longer than the id field holds is cut before the character that does not fit, not inside it. */
+        qsizetype fits = qMin(name.size(), static_cast<qsizetype>(sizeof shown.identity.target_id) - 1);
+        while (fits > 0 && fits < name.size() && (static_cast<unsigned char>(name.at(fits)) & 0xC0U) == 0x80U) {
+            --fits;
+        }
+        name.truncate(fits);
         if (!name.isEmpty()) {
             DSD_SNPRINTF(shown.identity.target_id, sizeof shown.identity.target_id, "%s", name.constData());
             shown.name[0] = '\0';

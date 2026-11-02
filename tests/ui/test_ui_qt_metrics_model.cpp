@@ -407,6 +407,19 @@ test_scan_avoids() {
            list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
                == QStringLiteral("#1  Fire Dispatch  851.012500 MHz"));
     expect("only that row is relabelled", log.take() == QStringLiteral("=0"));
+    /* A channel name longer than a target id holds is cut on a character boundary, never inside one: 32 two-byte
+       characters (64 bytes) keep 31, with no replacement character in the row or in Put back's spoken name. */
+    model.setChannelNames({{"t1", QString(32, QChar(0x00E9))}});
+    model.refresh(&opts, &state);
+    {
+        const QString label = list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString();
+        expect("a long channel name is cut between characters",
+               label == QStringLiteral("#1  ") + QString(31, QChar(0x00E9)) + QStringLiteral("  851.012500 MHz")
+                   && !label.contains(QChar(0xFFFD)));
+    }
+    model.setChannelNames({{"t1", "Fire Dispatch"}});
+    model.refresh(&opts, &state);
+    log.take();
     {
         dsd_trunk_scan_avoid_entry labelled[2] = {};
         for (uint32_t i = 0; i < 2U; ++i) {

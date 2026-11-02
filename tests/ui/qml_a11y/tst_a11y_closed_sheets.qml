@@ -253,6 +253,23 @@ Item {
             verify(putBackFor(list, "b") === null && putBackFor(list, "d") !== null, "the membership did not change");
             var shows = testContext.accessibilityCountWithin(sheet, "ObjectShow");
             verify(shows <= 3, "the new row raised " + shows + " shows: " + JSON.stringify(counts.chains));
+            // The row whose entry left is gone at once (no remove transition holds it): nothing a press or a swipe
+            // can reach still names it.
+            var stale = testContext.accessibleNodesUnder(sheet).filter(function (node) {
+                return String(node.name).indexOf("  b  ") >= 0;
+            });
+            compare(stale.length, 0, "a removed row is still reachable: " + JSON.stringify(stale.map(function (node) {
+                return node.objectName + " " + node.name;
+            })));
+            // The sheet's buttons are named for what they act on.
+            var names = {scanAvoidPutAllBack: "Put all avoided channels back", scanAvoidDone: "Done"};
+            for (var objectName in names) {
+                var button = findChild(sheet, objectName);
+                verify(button !== null, objectName + " is missing");
+                var node = testContext.accessibleNode(button);
+                verify(node.inTree && node.focusable, objectName + " is a swipe stop");
+                compare(node.name, names[objectName], objectName);
+            }
             sheet.visible = false;
             tryCompare(list, "count", 0);
             testContext.setScanAvoids([]);

@@ -89,6 +89,7 @@ Item {
                 {tag: "360@1.3", width: 360, scale: 1.3},
                 {tag: "360@1.6", width: 360, scale: 1.6},
                 {tag: "320@1", width: 320, scale: 1},
+                {tag: "320@1.3", width: 320, scale: 1.3},
                 {tag: "320@1.6", width: 320, scale: 1.6}
             ];
         }

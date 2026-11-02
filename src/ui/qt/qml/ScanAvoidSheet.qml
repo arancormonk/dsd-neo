@@ -102,9 +102,8 @@ ModalSheet {
             required property int index
             required property string key
             required property string label
-            // A row being removed has index -1 for an instant: it takes no
-            // press and says nothing.
-            readonly property bool live: index >= 0
+            // No remove transition, so a row whose entry left is destroyed at
+            // once: no held row is left for a press or a swipe to reach.
             // The label beside its button while both fit on one line, else
             // the button under it.
             readonly property bool stacked: labelMetrics.advanceWidth + 12 + putBack.implicitWidth > width
@@ -136,12 +135,12 @@ ModalSheet {
                 x: entryRow.stacked ? 0 : entryRow.width - width
                 y: entryRow.stacked ? entryLabel.height + 8 : Math.round((entryRow.height - height) / 2)
                 text: qsTr("Put back")
-                accessibleName: entryRow.live ? qsTr("Put back %1").arg(entryRow.label) : ""
-                enabled: entryRow.live && sheet.available && sheet.sessionRunning
+                accessibleName: qsTr("Put back %1").arg(entryRow.label)
+                enabled: sheet.available && sheet.sessionRunning
                 onClicked: commands.restoreScanAvoid(entryRow.key)
                 // Tabbed to below the fold, the row scrolls into view.
                 onActiveFocusChanged: {
-                    if (activeFocus && entryRow.live)
+                    if (activeFocus)
                         list.positionViewAtIndex(entryRow.index, ListView.Contain);
                 }
             }

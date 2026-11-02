@@ -10364,12 +10364,12 @@ Qt Quick frontend (`src/ui/qt`):
   `OutlineButton` size, 8 px apart (B-Qt1, B-Qt2). Show opens `qml/ScanAvoidSheet.qml`, a live-apply `ModalSheet`:
   "Avoided channels (N)", a `ListView` of bounded height (at most 55% of the panel, so Put all back and Done stay in
   view) that gets its model only while the sheet is open and on top (a ListView's delegates stay in the accessibility
-  tree under a covering sheet), a row per entry with Put back ("Put back <label>"; disabled and unnamed while its row is
-  being removed) beside its label or, when both do not fit, under it, "No avoided channels." or, unavailable, "List not
-  ready yet. Put all back still works.", then Put all back (`clearScanAvoids()`) and Done. No row leaves before the
-  decoder's next snapshot drops it. It closes when the avoids stop being manageable, when the session stops and with the
-  screen. Tests: `UI_QT_METRICS_MODEL` (`test_scan_avoid_list_model_diff`, `test_scan_avoids`,
-  `test_scan_avoids_large_list`), `UI_QT_CONTROLLER` (`test_scan_avoid_identity_parse`,
+  tree under a covering sheet), a row per entry with Put back ("Put back <label>"; no remove transition, so a removed
+  row leaves at once) beside its label or, when both do not fit, under it, "No avoided channels." or, unavailable, "List
+  not ready yet. Put all back still works.", then Put all back ("Put all avoided channels back", `clearScanAvoids()`)
+  and Done. No row leaves before the decoder's next snapshot drops it. It closes when the avoids stop being manageable,
+  when the session stops and with the screen. Tests: `UI_QT_METRICS_MODEL` (`test_scan_avoid_list_model_diff`,
+  `test_scan_avoids`, `test_scan_avoids_large_list`), `UI_QT_CONTROLLER` (`test_scan_avoid_identity_parse`,
   `test_scan_avoid_restore_bridge`), `tst_monitor_scan_avoids.qml`, `tst_monitor_recent_calls.qml` (`test_03c`,
   `test_03d`), `tst_a11y_closed_sheets.qml` (`test_scan_avoid_sheet_rows`), `tst_a11y_monitor_controls.qml`,
   `tst_a11y_text_reach.qml`.
