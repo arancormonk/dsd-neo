@@ -170,7 +170,7 @@ test_numbered_keys_load_and_roundtrip() {
     static const int on[] = {0};
     CHECK(lists_are(opts->trunk_scan_lists, opts->trunk_scan_list_count, just_a, on, 1));
 
-    /* Eight lists need no terminator, and a save with no lists writes no list key at all. */
+    /* Eight lists need no terminator. */
     auto eight = std::make_unique<dsdneoUserConfig>();
     for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
         DSD_SNPRINTF(eight->trunk_scan_lists[i].path, sizeof eight->trunk_scan_lists[i].path, "/l%d.csv", i + 1);
@@ -180,10 +180,21 @@ test_numbered_keys_load_and_roundtrip() {
     const std::string eight_text = render(*eight);
     CHECK(eight_text.find("targets_csv_8 = \"/l8.csv\"\n") != std::string::npos);
     CHECK(eight_text.find("targets_csv_9") == std::string::npos);
+    /* A save with no lists says so (an empty targets_csv and lists_off), so loading it over a session with lists,
+       one of them off, leaves none (review round 2). */
     auto none = std::make_unique<dsdneoUserConfig>();
     none->has_trunk_scan = 1;
     const std::string none_text = render(*none);
-    CHECK(none_text.find("targets_csv") == std::string::npos && none_text.find("lists_off") == std::string::npos);
+    CHECK(none_text.find("targets_csv = \"\"\nlists_off = \"\"\n") != std::string::npos);
+    CHECK(none_text.find("targets_csv_") == std::string::npos);
+    auto none_saved = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(none_text, nullptr, none_saved.get()) == 0);
+    opts->trunk_scan_lists[0].start_off = 1U; /* opts holds [a] from above: make it [a off, y] */
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", "/lists/y.csv");
+    opts->trunk_scan_list_count = 2;
+    dsd_apply_user_config_to_opts(none_saved.get(), opts.get(), state.get());
+    CHECK(opts->trunk_scan_list_count == 0 && opts->trunk_scan_lists[0].path[0] == '\0'
+          && opts->trunk_scan_lists[0].start_off == 0U);
 }
 
 bool
@@ -429,6 +440,30 @@ test_apply_composes_over_the_session() {
     dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
     static const char* const first_only[] = {"/c.csv"};
     CHECK(lists_are(opts->trunk_scan_lists, opts->trunk_scan_list_count, first_only, first_off, 1));
+
+    /* An empty key removes the session's later lists with their off states when the config names no lists_off, so
+       shrinking a session whose removed list started off is no off state past the last list (review round 2). */
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", "/d.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[2].path, sizeof opts->trunk_scan_lists[2].path, "%s", "/e.csv");
+    opts->trunk_scan_lists[0].start_off = 0U;
+    opts->trunk_scan_lists[2].start_off = 1U;
+    opts->trunk_scan_list_count = 3;
+    CHECK(load_ini("[trunk_scan]\ntargets_csv_3 = \"\"\n", nullptr, cfg.get()) == 0);
+    dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
+    static const char* const shrunk[] = {"/c.csv", "/d.csv"};
+    static const int none_off[] = {0, 0};
+    CHECK(lists_are(opts->trunk_scan_lists, opts->trunk_scan_list_count, shrunk, none_off, 2));
+    char why[160];
+    CHECK(dsd_trunk_scan_lists_describe_fault(opts->trunk_scan_lists, opts->trunk_scan_list_count, why, sizeof why)
+          == 0);
+    /* Naming lists_off beside it keeps what lists_off says. */
+    opts->trunk_scan_lists[2].start_off = 0U;
+    DSD_SNPRINTF(opts->trunk_scan_lists[2].path, sizeof opts->trunk_scan_lists[2].path, "%s", "/e.csv");
+    opts->trunk_scan_list_count = 3;
+    CHECK(load_ini("[trunk_scan]\ntargets_csv_3 = \"\"\nlists_off = 3\n", nullptr, cfg.get()) == 0);
+    dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
+    CHECK(opts->trunk_scan_list_count == 3 && opts->trunk_scan_lists[2].path[0] == '\0'
+          && opts->trunk_scan_lists[2].start_off == 1U);
 
     /* An empty targets_csv now clears the lists (it used to be taken as "not set"). */
     CHECK(load_ini("[trunk_scan]\ntargets_csv = \"\"\nlists_off = \"\"\n", nullptr, cfg.get()) == 0);

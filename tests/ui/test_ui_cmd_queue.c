@@ -23451,6 +23451,60 @@ test_config_load_of_a_one_list_save_replaces_waiting_lists(void) {
     return rc;
 }
 
+/* Issue #697 (review round 2): a saved config with no lists (an empty targets_csv and lists_off, the scan off) loaded
+   over a session whose three lists wait for the next start leaves no list waiting; and an empty targets_csv_3 alone
+   over a running set whose list 3 starts off is accepted, list 3 going with its off state. */
+static int
+test_config_empty_list_keys_remove_lists_with_their_off_states(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    set_trunk_scan_list(opts.trunk_scan_lists, 0, "a.csv", 0);
+    opts.trunk_scan_list_count = 1;
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 0, "x.csv", 1);
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 1, "y.csv", 0);
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 2, "z.csv", 0);
+    opts.next_start.trunk_scan_list_count = 3;
+    opts.next_start.pending |= DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    dsd_user_config_init(&cfg);
+    int keyed = dsd_user_config_apply_key(&cfg, "trunk_scan", "enabled", "false");
+    keyed &= dsd_user_config_apply_key(&cfg, "trunk_scan", "targets_csv", "");
+    keyed &= dsd_user_config_apply_key(&cfg, "trunk_scan", "lists_off", "");
+    rc |= expect_true("zero-list save keys taken", keyed == 1);
+    cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+    cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: zero-list save");
+    rc |= expect_int("zero-list save: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("zero-list save: no list waits", saved.trunk_scan_list_count, 0);
+    rc |= expect_int("zero-list save: no off state", saved.trunk_scan_lists[0].start_off, 0);
+    rc |= expect_str("zero-list save: the running list stays", opts.trunk_scan_lists[0].path, "a.csv");
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    set_trunk_scan_list(opts.trunk_scan_lists, 0, "a.csv", 0);
+    set_trunk_scan_list(opts.trunk_scan_lists, 1, "b.csv", 0);
+    set_trunk_scan_list(opts.trunk_scan_lists, 2, "c.csv", 1);
+    opts.trunk_scan_list_count = 3;
+    dsd_user_config_init(&cfg);
+    keyed = dsd_user_config_apply_key(&cfg, "trunk_scan", "targets_csv_3", "");
+    rc |= expect_true("shrink key taken", keyed == 1);
+    cfg.trunk_scan_enabled = 1;
+    cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+    cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: shrink with an off list");
+    rc |= expect_int("shrink: applied, not refused", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_trunk_scan_spec("shrink: a save writes two lists, none off", saved.trunk_scan_lists,
+                                 saved.trunk_scan_list_count, "a.csv", 0, "b.csv", 0);
+    rc |= expect_int("shrink: list 3's off state is gone", saved.trunk_scan_lists[2].start_off, 0);
+    freeState(&state);
+    return rc;
+}
+
 /* Issue #697: a config whose lists the next start refuses (every list off, a gap) is refused whole, as one that names
    no list is. */
 static int
@@ -25473,6 +25527,7 @@ main(void) {
     rc |= test_config_defers_the_trunk_scan_list_spec_whole();
     rc |= test_config_refuses_trunk_scan_lists_the_next_start_refuses();
     rc |= test_config_load_of_a_one_list_save_replaces_waiting_lists();
+    rc |= test_config_empty_list_keys_remove_lists_with_their_off_states();
     rc |= test_config_restart_required_says_what_waits();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

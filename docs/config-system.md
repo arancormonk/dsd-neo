@@ -864,9 +864,11 @@ When `[trunk_scan] enabled = true`:
   leaves out `lists_off` keeps the off states it inherits. An empty `targets_csv_N = ""` clears list N and every later
   list an included file, or the file under a profile, left, off states included; a list the same file or profile sets
   itself stays, so `targets_csv_2 = ""` beside `targets_csv_3 = "..."` is a gap and is refused. An empty
-  `lists_off = ""` switches every list on. A list switched on or off while the session runs is never saved: a save
-  writes the configured lists, an empty key after the last one (`targets_csv_3 = ""` after two lists) and `lists_off`
-  (`""` when every list starts on), so loading the save over a session with more lists gives exactly the saved set.
+  `lists_off = ""` switches every list on. A config loaded into a running session follows the same rule: an empty
+  `targets_csv_N` removes the session's list N and every later one, with their off states. A list switched on or off
+  while the session runs is never saved: a save writes the configured lists, an empty key after the last one
+  (`targets_csv_3 = ""` after two lists, `targets_csv = ""` when there are none) and `lists_off` (`""` when every
+  list starts on), so loading the save over a session with other lists gives exactly the saved set, none included.
 - A path that cannot be expanded, or whose expansion does not fit its key (1024 bytes, 512 for
   `[recording] per_call_wav_dir`, NUL included), is refused with a warning and the key keeps its earlier value (for
   every path key), never cut short to another file's name; `--validate-config` reports it as an error.

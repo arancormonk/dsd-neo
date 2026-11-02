@@ -981,7 +981,8 @@ int dsd_user_config_names_trunk_scan_lists(const dsdneoUserConfig* cfg);
  * @brief Put the trunk-scan lists @p cfg names over @p lists, as applying it does (issue #697).
  *
  * Key by key, as includes and profiles compose: each list path the config names (its targets_csv key, or a path
- * filled in) replaces that list's, an empty one clearing that list and every later one; its start states replace
+ * filled in) replaces that list's, an empty one clearing that list and every later one, off states included, unless
+ * the config names lists_off; its start states replace
  * every start state when it names lists_off (or marks a list off). What it omits stays, so a config naming lists_off
  * alone keeps the paths it is put over. Slots past @p count are cleared first; @p count becomes the span
  * (dsd_trunk_scan_lists_span()).
