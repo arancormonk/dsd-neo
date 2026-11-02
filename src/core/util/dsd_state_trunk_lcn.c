@@ -568,7 +568,6 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     dsd_key_set_free(&state->scan_keys_baseline);
     dsd_key_set_free(&state->scan_keys_active);
     state->scan_keys_active_set = 0;
-    dsd_state_trunk_scan_avoids_free(state);
 }
 
 int

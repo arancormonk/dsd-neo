@@ -29,6 +29,7 @@ make_state(void) {
 static void
 free_state(dsd_state* st) {
     dsd_state_trunk_lcn_free(st);
+    dsd_state_trunk_scan_avoids_free(st);
     free(st);
 }
 
@@ -444,10 +445,14 @@ test_trunk_scan_avoids_set_copies_and_free_releases(void) {
     assert(dsd_state_trunk_scan_avoids_set(st, entries, 2U) == 0);
     dsd_state_trunk_scan_avoids_free(st);
     assert(st->trunk_scan_avoids == NULL && st->trunk_scan_avoid_count == 0U && st->trunk_scan_avoid_capacity == 0U);
-    /* The umbrella free covers it, so every teardown that frees the scan-list stores frees this one. */
+    /* The LCN umbrella free leaves the list as it is: emptying it is the coordinator's (with a new revision) or
+       initState()'s/freeState()'s (with a new instance), so a revision-gated snapshot copy never keeps stale targets. */
     assert(dsd_state_trunk_scan_avoids_set(st, entries, 2U) == 0);
+    const dsd_trunk_scan_avoid_entry* kept = st->trunk_scan_avoids;
     dsd_state_trunk_lcn_free(st);
-    assert(st->trunk_scan_avoids == NULL && st->trunk_scan_avoid_count == 0U);
+    assert(st->trunk_scan_avoids == kept && st->trunk_scan_avoid_count == 2U);
+    assert(memcmp(st->trunk_scan_avoids, entries, 2U * sizeof(entries[0])) == 0);
+    dsd_state_trunk_scan_avoids_free(st);
     dsd_state_trunk_scan_avoids_free(NULL);
     free(st);
 }

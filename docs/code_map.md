@@ -1130,11 +1130,21 @@ suite runs under this compiler.
   `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
   `_avoid_free()`, the snapshot copies and the trunk-scan list's `dsd_state_trunk_scan_avoids_reserve()`/`_set()`/
   `_free()`) stamp nothing. The published trunk-scan list (`dsd_trunk_scan_avoid_entry`: ordinal, frequency, id,
-  label) sits in the uncopied heap gap beside the LCN stores; `dsd_state_trunk_lcn_free()` releases it, a failed
-  `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from `initState()`) says whether the coordinator's last
-  rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`, `CORE_INIT_STATE`, `P25_USER_LIST_SEED`,
-  `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the reserve helpers through
-  `dsd_state_trunk_lcn_test_alloc_fail_after()`.
+  label) sits in the uncopied heap gap beside the LCN stores; `initState()` and `freeState()` release it (the LCN
+  umbrella `dsd_state_trunk_lcn_free()` leaves it alone, so a live list only changes with a new
+  `trunk_scan_avoid_rev` or `state_instance`), a failed `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from
+  `initState()`) says whether the coordinator's last rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
+  `CORE_INIT_STATE`, `P25_USER_LIST_SEED`, `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the
+  reserve helpers through `dsd_state_trunk_lcn_test_alloc_fail_after()`.
+- Invariant (snapshot completeness, issue #672; `src/app_control/ui_snapshot.c`): each scan-list deep copy (LCN tail,
+  names, avoid flags, trunk-scan avoid list) reports success, and each snapshot (published, consumer) keeps per store
+  the `(state_instance, revision, valid)` it holds, `valid` = the source's copy was whole and this copy allocated all it
+  needed. The sparse channel map (keyed on `trunk_chan_map_seq`, which `initState()` restarts) and the trunk-scan list
+  (keyed on `trunk_scan_avoid_rev`) are copied only when that key moved or the copy held is not whole. After the scalar
+  range, `scan_avoids_complete` (1 on a live state) becomes the source's value AND every LCN and trunk-scan copy at
+  this hop being whole, so a short copy at either hop reads as incomplete and the next whole copy restores it; the
+  avoid counts stay the decoder's. The consumer read copies again while it holds a store that is not whole, without
+  waiting for a new publication. Test: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - Invariant (`initState()` allocation failures, issue #672): a failed rolling dibit, DMR payload or audio output
   buffer, or vocoder parameter set, sets `dsd_state::init_failed`; no cursor is built over a failed buffer and
   `freeState()` releases a partial state. The DMR soft-metric buffer and the event history ring are optional (their

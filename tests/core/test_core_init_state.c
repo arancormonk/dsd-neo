@@ -198,18 +198,27 @@ test_init_state_stamps_a_new_instance(void) {
         || b->lcn_list_rev == first_list) {
         DSD_FPRINTF(stderr, "initState did not draw a distinct instance and list revision per state\n");
         rc = 51;
-    } else if (a->trunk_scan_avoids_ok != 1U || a->lcn_avoid_total != 0U || a->trunk_scan_avoid_count != 0U
-               || a->init_failed != 0U) {
+    } else if (a->trunk_scan_avoids_ok != 1U || a->scan_avoids_complete != 1U || a->lcn_avoid_total != 0U
+               || a->trunk_scan_avoid_count != 0U || a->init_failed != 0U) {
         DSD_FPRINTF(stderr, "initState did not start the avoid stores empty and publishable\n");
         rc = 52;
     }
-    /* What a previous run left on the state: its buffers freed, but a published list and spent flags still there. */
-    freeState(a);
+    /* freeState() releases the published list itself: the LCN umbrella free leaves it to its owner. */
     const dsd_trunk_scan_avoid_entry entry = {.ordinal = 2U, .frequency_hz = 851012500U, .id = "B"};
     if (rc == 0 && dsd_state_trunk_scan_avoids_set(a, &entry, 1U) != 0) {
         rc = 53;
     }
+    freeState(a);
+    if (rc == 0 && (a->trunk_scan_avoids != NULL || a->trunk_scan_avoid_count != 0U)) {
+        DSD_FPRINTF(stderr, "freeState left the published trunk-scan avoid list\n");
+        rc = 56;
+    }
+    /* What a previous run left on the state: its buffers freed, but a published list and spent flags still there. */
+    if (rc == 0 && dsd_state_trunk_scan_avoids_set(a, &entry, 1U) != 0) {
+        rc = 53;
+    }
     a->trunk_scan_avoids_ok = 0U;
+    a->scan_avoids_complete = 0U;
     a->lcn_avoid_total = 3U;
     initState(a);
     if (rc == 0
@@ -218,7 +227,7 @@ test_init_state_stamps_a_new_instance(void) {
         rc = 54;
     } else if (rc == 0
                && (a->trunk_scan_avoids != NULL || a->trunk_scan_avoid_count != 0U || a->trunk_scan_avoids_ok != 1U
-                   || a->lcn_avoid_total != 0U)) {
+                   || a->scan_avoids_complete != 1U || a->lcn_avoid_total != 0U)) {
         DSD_FPRINTF(stderr, "a re-initialised state kept the previous run's avoid list\n");
         rc = 55;
     }

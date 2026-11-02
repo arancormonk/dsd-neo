@@ -1173,13 +1173,13 @@ init_state_p25p1_nid_learning(dsd_state* state) {
     DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 
-/* Trunk-scan publication for the frontends. Reset here so a re-initialised state
- * cannot keep advertising the target the previous run was parked on. */
 /* A new decoder state and a new, empty LCN list (issue #672): fresh stamps from the process-wide counter, so nothing a
  * frontend copied from an earlier state -- one this state replaces, or this one before a re-init -- reads as current.
- * The trunk-scan avoid list starts empty and publishable; its revision moves only at the coordinator's rebuilds. */
+ * The trunk-scan avoid list starts empty and publishable; its revision moves only at the coordinator's rebuilds. It is
+ * released here rather than by the LCN umbrella free, so no other path empties it without a new revision. */
 static void
 init_state_scan_avoid_identity(dsd_state* state) {
+    dsd_state_trunk_scan_avoids_free(state);
     state->state_instance = dsd_state_rev_next();
     state->lcn_list_rev = dsd_state_rev_next();
     state->lcn_avoid_rev = dsd_state_rev_next();
@@ -1187,8 +1187,11 @@ init_state_scan_avoid_identity(dsd_state* state) {
     state->trunk_scan_avoid_rev = 0;
     state->trunk_scan_session = 0;
     state->trunk_scan_avoids_ok = 1U;
+    state->scan_avoids_complete = 1U;
 }
 
+/* Trunk-scan publication for the frontends. Reset here so a re-initialised state
+ * cannot keep advertising the target the previous run was parked on. */
 static void
 init_state_trunk_scan_publication(dsd_state* state) {
     DSD_MEMSET(state->trunk_scan_active_id, 0, sizeof(state->trunk_scan_active_id));
@@ -1582,6 +1585,7 @@ freeState(dsd_state* state) {
 
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

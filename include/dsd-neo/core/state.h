@@ -1069,7 +1069,9 @@ struct dsd_state {
     uint8_t scan_keys_active_set;
     /* The avoided --trunk-scan targets the coordinator published (issue #672), trunk_scan_avoid_count entries in a heap
      * store of trunk_scan_avoid_capacity; NULL until the first publication. Only the coordinator fills it (through
-     * dsd_state_trunk_scan_avoids_set(), stamping trunk_scan_avoid_rev); dsd_state_trunk_lcn_free() releases it. Never
+     * dsd_state_trunk_scan_avoids_set(), stamping trunk_scan_avoid_rev); initState() and freeState() release it. The
+     * LCN umbrella free (dsd_state_trunk_lcn_free()) leaves it alone: a live state's list changes only with a new
+     * trunk_scan_avoid_rev or, at initState(), a new state_instance, which the snapshot's gated copy keys on. Never
      * inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as the stores above. */
     dsd_trunk_scan_avoid_entry* trunk_scan_avoids;
     size_t trunk_scan_avoid_count;
@@ -2578,7 +2580,10 @@ struct dsd_state {
      * rebuild of trunk_scan_avoids and at its detach, and at nothing else (no target hop, pause or resume).
      * trunk_scan_session: the coordinator's session, a trunk-scan identity's other half, kept while paused (unlike
      * scan_row_session). trunk_scan_avoids_ok: 1 unless the coordinator could not allocate the list it last tried to
-     * publish. The storage helpers (reserves, frees, snapshot copies) stamp none of them. */
+     * publish. The storage helpers (reserves, frees, snapshot copies) stamp none of them. scan_avoids_complete: 1 on a
+     * live state (initState()); on a UI snapshot, 1 only when every copy of the LCN tail, names and avoid flags and of
+     * trunk_scan_avoids, at this hop and the one before it, held all the source had (ui_snapshot.c), so a frontend
+     * never takes a list a failed allocation cut short for the whole list. */
     uint64_t state_instance;
     uint64_t lcn_list_rev;
     uint64_t lcn_avoid_rev;
@@ -2586,6 +2591,7 @@ struct dsd_state {
     uint64_t trunk_scan_avoid_rev;
     uint32_t trunk_scan_session;
     uint8_t trunk_scan_avoids_ok;
+    uint8_t scan_avoids_complete;
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
      * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
      * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the
@@ -2894,11 +2900,12 @@ dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
 int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
 
 /**
- * Free the scan-list heap tail, the per-row name, avoid and key stores, the
- * scan key swap state and the published trunk-scan avoid list, and zero their
- * pointers/capacities and the list's count. The embedded DSD_TRUNK_LCN_EMBEDDED
- * slots are part of dsd_state and need no release. A storage helper: it stamps
- * no revision.
+ * Free the scan-list heap tail, the per-row name, avoid and key stores and the
+ * scan key swap state, and zero their pointers/capacities. The embedded
+ * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release. The
+ * published trunk-scan avoid list is not an LCN store and is left alone: only
+ * its owner empties it, with a new revision (dsd_state_trunk_scan_avoids_free()
+ * from initState()/freeState()). A storage helper: it stamps no revision.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
 
