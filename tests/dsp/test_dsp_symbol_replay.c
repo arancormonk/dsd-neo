@@ -2410,8 +2410,9 @@ fake_tcp_close(tcp_input_ctx* ctx) {
 }
 
 static int
-fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
     (void)ctx;
+    (void)timeout_ms;
     if (g_tcp_drops_left > 0) {
         g_tcp_drops_left--;
         g_fake_now_ms += 300U;
@@ -2470,7 +2471,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 1;
@@ -4508,7 +4509,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 0;
@@ -4564,7 +4565,7 @@ tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = drops;

@@ -5,8 +5,7 @@
  * The buffered PCM16LE reader the stdin and TCP inputs share (issue #667 D12), on a real pipe (POSIX pipe(), a Windows
  * anonymous pipe through PeekNamedPipe()), a real loopback socket and a regular file: a part of a sample is kept
  * across reads, buffered samples come back without a wait, an empty stream times out after the bound, the end and a
- * part-sample end are the end, and a socket whose receive timeout runs out is a timeout to the bounded read (B7) but
- * the end to the blocking one, as it always was.
+ * part-sample end are the end, and a socket whose receive timeout runs out is a timeout, never the end (B7).
  */
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -104,15 +103,14 @@ test_pipe(void) {
     }
     check(got == DSD_PCM_STREAM_END, "the end, half a sample left");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_END, "the end stays");
-    check(dsd_pcm_stream_read(stream, &s) == 0, "the blocking read sees the end too");
     check(!dsd_pcm_stream_failed(stream), "an end is no failure");
     dsd_pcm_stream_close(stream);
     (void)dsd_close(fds[0]);
 }
 
-/* The blocking read on a pipe: every sample, then the end. */
+/* A writer that sends and closes at once: every sample, then the end. */
 static void
-test_pipe_blocking(void) {
+test_pipe_samples_then_end(void) {
     int fds[2] = {-1, -1};
     if (make_pipe(fds) != 0) {
         check(0, "pipe");
@@ -123,9 +121,9 @@ test_pipe_blocking(void) {
     put_bytes(fds[1], bytes, sizeof bytes);
     (void)dsd_close(fds[1]);
     int16_t s = 0;
-    check(dsd_pcm_stream_read(stream, &s) == 1 && s == 1, "blocking sample 1");
-    check(dsd_pcm_stream_read(stream, &s) == 1 && s == -2, "blocking sample 2");
-    check(dsd_pcm_stream_read(stream, &s) == 0, "blocking read: the end");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 1, "sample 1");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == -2, "sample 2");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_END, "then the end");
     dsd_pcm_stream_close(stream);
     (void)dsd_close(fds[0]);
 }
@@ -226,30 +224,11 @@ test_socket_idle_then_close(void) {
     socket_pair_close(&pair);
 }
 
-/* The blocking read keeps its contract (EDACS, the M17 encoder): a receive timeout ends it. */
-static void
-test_socket_blocking_read_times_out(void) {
-    socket_pair pair;
-    check(socket_pair_open(&pair) == 0, "loopback connection");
-    (void)dsd_socket_set_recv_timeout(pair.client, 100U);
-    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
-    const uint8_t sample[] = {0x02U, 0x00U, 0x03U};
-    check(dsd_socket_send(pair.server, sample, sizeof sample, 0) == (int)sizeof sample, "send");
-    int16_t s = 0;
-    check(dsd_pcm_stream_read(stream, &s) == 1 && s == 2, "blocking read on the socket");
-    check(dsd_pcm_stream_read(stream, &s) == 0, "the receive timeout ends a blocking read");
-    check(dsd_pcm_stream_failed(stream), "as a read error");
-    check(dsd_pcm_stream_read_wait(stream, &s, 100U) == DSD_PCM_STREAM_END, "and the stream with it");
-    dsd_pcm_stream_close(stream);
-    socket_pair_close(&pair);
-}
-
 static void
 test_no_stream(void) {
     int16_t s = 7;
     check(dsd_pcm_stream_open_fd(-1) == NULL, "no reader on a negative descriptor");
     check(dsd_pcm_stream_open_socket(DSD_INVALID_SOCKET) == NULL, "no reader on no socket");
-    check(dsd_pcm_stream_read(NULL, &s) == 0 && s == 7, "a NULL blocking read");
     check(dsd_pcm_stream_read_wait(NULL, &s, 0U) == DSD_PCM_STREAM_END && s == 7, "a NULL bounded read");
     check(!dsd_pcm_stream_failed(NULL), "NULL never failed");
     dsd_pcm_stream_close(NULL);
@@ -263,10 +242,9 @@ main(void) {
     }
     test_no_stream();
     test_pipe();
-    test_pipe_blocking();
+    test_pipe_samples_then_end();
     test_regular_file();
     test_socket_idle_then_close();
-    test_socket_blocking_read_times_out();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

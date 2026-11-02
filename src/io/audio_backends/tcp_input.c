@@ -7,8 +7,8 @@
  * @file
  * @brief TCP PCM16LE audio input backend implementation.
  *
- * The socket is read through one buffered PCM reader (<dsd-neo/platform/pcm_stream.h>), shared by the blocking read
- * (EDACS, the M17 encoder) and the bounded read (the symbol path), so neither loses bytes the other buffered.
+ * The socket is read through one buffered PCM reader (<dsd-neo/platform/pcm_stream.h>) in bounded waits, which the
+ * symbol path, EDACS and the M17 encoder share, so none loses bytes another buffered.
  */
 
 #include <dsd-neo/io/tcp_input.h>
@@ -56,18 +56,6 @@ tcp_input_close(tcp_input_ctx* ctx) {
     ctx->stream = NULL;
     ctx->valid = 0;
     free(ctx);
-}
-
-int
-tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out) {
-    if (!ctx || !ctx->valid || !out) {
-        return 0;
-    }
-    if (dsd_pcm_stream_read(ctx->stream, out) != 1) {
-        ctx->valid = 0;
-        return 0;
-    }
-    return 1;
 }
 
 int

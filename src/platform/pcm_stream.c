@@ -159,28 +159,6 @@ pcm_stream_fill(dsd_pcm_stream* stream) {
     }
 }
 
-int
-dsd_pcm_stream_read(dsd_pcm_stream* stream, int16_t* out) {
-    if (stream == NULL || out == NULL) {
-        return 0;
-    }
-    while (!pcm_stream_take(stream, out)) {
-        if (stream->ended != PCM_STREAM_OPEN) {
-            return 0;
-        }
-        const int filled = pcm_stream_fill(stream);
-        if (filled == 0) {
-            /* A socket's receive timeout ran out: the end of the stream to a blocking read, as it always was. */
-            stream->ended = PCM_STREAM_FAILED;
-            return 0;
-        }
-        if (filled < 0) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 /* Whether the stream can be read without blocking within @p timeout_ms: 1, 0 on timeout, -1 on failure. */
 static int
 pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {

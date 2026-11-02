@@ -44,9 +44,12 @@ fake_tcp_close(tcp_input_ctx* ctx) {
     g_last_tcp_ctx = ctx;
 }
 
+static unsigned int g_last_timeout_ms;
+
 static int
-fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+fake_tcp_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
     g_tcp_read_calls++;
+    g_last_timeout_ms = timeout_ms;
     if (ctx) {
         ((unsigned char*)ctx)[0] = 0U;
     }
@@ -108,7 +111,7 @@ main(void) {
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     assert(dsd_net_audio_input_hook_tcp_open((dsd_socket_t)1, 48000) == NULL);
     dsd_net_audio_input_hook_tcp_close(NULL);
-    assert(dsd_net_audio_input_hook_tcp_read_sample(NULL, NULL) == 0);
+    assert(dsd_net_audio_input_hook_tcp_read_sample_wait(NULL, NULL, 100U) == 0);
     assert(dsd_net_audio_input_hook_udp_start(NULL, "127.0.0.1", 7355, 48000) == -1);
     dsd_net_audio_input_hook_udp_stop(NULL);
     assert(dsd_net_audio_input_hook_udp_read_sample(NULL, NULL) == 0);
@@ -116,7 +119,7 @@ main(void) {
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){
         .tcp_open = fake_tcp_open,
         .tcp_close = fake_tcp_close,
-        .tcp_read_sample = fake_tcp_read_sample,
+        .tcp_read_sample_wait = fake_tcp_read_sample_wait,
         .udp_start = fake_udp_start,
         .udp_stop = fake_udp_stop,
         .udp_read_sample = fake_udp_read_sample,
@@ -135,8 +138,8 @@ main(void) {
     assert(g_last_tcp_ctx == ctx);
 
     int16_t s = 0;
-    assert(dsd_net_audio_input_hook_tcp_read_sample(ctx, &s) == 1);
-    assert(g_tcp_read_calls == 1);
+    assert(dsd_net_audio_input_hook_tcp_read_sample_wait(ctx, &s, 250U) == 1);
+    assert(g_tcp_read_calls == 1 && g_last_timeout_ms == 250U);
     assert(g_last_tcp_ctx == ctx);
     assert(g_last_out == &s);
     assert(s == (int16_t)123);

@@ -926,10 +926,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
   - Buffered PCM input (issue #667 D12): `dsd_pcm_stream` in `include/dsd-neo/platform/pcm_stream.h`
     (`src/platform/pcm_stream.c`) reads raw PCM16LE mono from a descriptor (stdin) or a socket (TCP audio). One reader
-    per stream serves every consumer, so the stdin input and the TCP input each have exactly one buffer. The blocking
-    read (`dsd_pcm_stream_read()`) waits as long as the stream does, and a socket's receive timeout ends it, as
-    libsndfile's read did. The bounded read (`dsd_pcm_stream_read_wait()`) returns SAMPLE, TIMEOUT or END, keeps a part
-    sample for the next call, and checks readiness only when the buffer runs dry, refilling it at most once per wait. On
+    per stream serves every consumer, so the stdin input and the TCP input each have exactly one buffer. Every read is
+    bounded (`dsd_pcm_stream_read_wait()`): it returns SAMPLE, TIMEOUT or END, keeps a part sample for the next call,
+    and checks readiness only when the buffer runs dry, refilling it at most once per wait. A socket's receive timeout
+    is never the end: the read waits for readiness first, and a read that would block is a TIMEOUT. On
     sockets it waits with `dsd_socket_wait()`. On descriptors it waits with `dsd_fd_wait_readable()` (`file_compat.h`):
     `poll()` on POSIX, and on Windows `PeekNamedPipe()` in 5 ms sleeps for an anonymous pipe. A Windows console or
     regular file reports ready at once and its read blocks. `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
@@ -6708,17 +6708,21 @@ Notes:
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
   apply a queued command while the input is silent (issue #634). `tcp_input.c` reads its socket through one
-  `dsd_pcm_stream` (platform). The blocking `tcp_input_read_sample()` keeps its contract for EDACS and the M17 encoder,
-  where any failed read, a receive timeout included, ends the connection. The bounded `tcp_input_read_sample_wait()`
-  (issue #667 D12) times out and keeps the connection, so only a real close or socket error reconnects (B7).
+  `dsd_pcm_stream` (platform). Its one read, `tcp_input_read_sample_wait()` (issue #667 D12), times out and keeps the
+  connection, so only a real close or socket error is a lost connection (B7): the symbol path reconnects, and EDACS
+  analog voice and the M17 encoder close the input and shut down, as they did. EDACS plays a quiet spell as
+  closed-squelch silence paced by real time (`edacs_tcp_quiet_pay()`, as a missing RTL stream's
+  `edacs_no_stream_pay()`), so the call ends on its own squelch count or watchdog; the M17 encoder reads TCP, UDP and
+  stdin through one wait (`m17_str_wait_sample()`), which gives the block up for a queued command after a stream
+  pause and stops at shutdown. There is no blocking TCP hook (`PROTOCOL_TCP_QUIET_SENDER`).
   `ConnectBounded()` (`dsd_rigctl.c`) connects within
   `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
   the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
   startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine
   installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`). The
   stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0 (`dsd_opts::audio_in_stdin`,
-  raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share and an input switch holds and
-  closes like the other handles.
+  raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share, both in bounded waits, and an
+  input switch holds and closes like the other handles.
 - M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
   `include/dsd-neo/io/m17_udp.h`.
 

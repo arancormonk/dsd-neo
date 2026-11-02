@@ -44,18 +44,6 @@ tcp_input_ctx* tcp_input_open(dsd_socket_t sockfd, int samplerate);
 void tcp_input_close(tcp_input_ctx* ctx);
 
 /**
- * @brief Read one PCM16 sample from TCP input.
- *
- * Blocking read; returns when a sample is available or on error/EOF. A read the
- * socket's receive timeout ends counts as a disconnect, as it always has.
- *
- * @param ctx TCP input context.
- * @param out [out] Receives one sample.
- * @return 1 on success, 0 on EOF/error/disconnect.
- */
-int tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out);
-
-/**
  * @brief Read one PCM16 sample from TCP input, waiting at most @p timeout_ms.
  *
  * A sender that is quiet (a squelched network audio source) is no disconnect:

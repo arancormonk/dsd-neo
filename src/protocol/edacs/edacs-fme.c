@@ -202,20 +202,72 @@ edacs_fill_analog_block_pulse(dsd_opts* opts, short* block) {
     }
 }
 
-/* One TCP sample, with the input volume; 0 when the connection dropped, which closes it and asks for shutdown. */
+/* An analog call starts with nothing owed from an earlier one's outage or quiet spell. */
+static void
+edacs_no_stream_reset(dsd_state* state) {
+    state->edacs_no_stream_active = 0U;
+    state->edacs_no_stream_seen = 0U;
+    state->edacs_no_stream_owed = 0U;
+    state->edacs_no_stream_paid = 0U;
+}
+
+/* How long one TCP wait lasts before the time it took is paid as silence: the decoder's input wait slice. */
+enum { EDACS_TCP_WAIT_SLICE_MS = 100 };
+
+/* A TCP sender that went quiet (a squelched network audio source sends nothing, issue #667 D12): the time since the
+   quiet spell began, @p since_ms on its first wait, comes out as silent samples at the rate the input is read at, as a
+   missing RTL stream's does (edacs_no_stream_pay()). Their triplets have no power and every sample closed, so the call
+   ends on its own squelch count, release marker or no-squelch watchdog, and the decoder goes back to the control
+   channel. */
+static void
+edacs_tcp_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
+    if (!state->edacs_no_stream_active) {
+        state->edacs_no_stream_active = 1U;
+        state->edacs_no_stream_since_ms = since_ms;
+        state->edacs_no_stream_paid = 0U;
+    }
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    const uint64_t elapsed_ms =
+        now_ms > state->edacs_no_stream_since_ms ? now_ms - state->edacs_no_stream_since_ms : 0U;
+    const uint64_t due = (elapsed_ms * (uint64_t)edacs_analog_input_rate_hz(opts)) / 1000U;
+    if (due > state->edacs_no_stream_paid) {
+        state->edacs_no_stream_owed += due - state->edacs_no_stream_paid;
+        state->edacs_no_stream_paid = due;
+    }
+}
+
+/* One TCP sample, with the input volume. A quiet spell plays as silence (edacs_tcp_quiet_pay()); 0 when the connection
+   closed or failed, which closes it and asks for shutdown, as before, or when shutdown was asked for meanwhile. */
 static inline int
 edacs_read_sample_tcp(dsd_opts* opts, dsd_state* state, short* out) {
-    short sample = 0;
-    if (dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&sample) == 0) {
-        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-        opts->tcp_in_ctx = NULL;
-        DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
-        DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-        dsd_request_shutdown(opts, state);
-        return 0;
+    for (;;) {
+        if (state->edacs_no_stream_owed > 0U) {
+            state->edacs_no_stream_owed--;
+            *out = 0;
+            return 1;
+        }
+        const uint64_t wait_from_ms = dsd_realtime_mono_ms();
+        int16_t sample = 0;
+        const int got =
+            dsd_net_audio_input_hook_tcp_read_sample_wait(opts->tcp_in_ctx, &sample, EDACS_TCP_WAIT_SLICE_MS);
+        if (got > 0) {
+            state->edacs_no_stream_active = 0U;
+            *out = edacs_apply_input_volume(opts, sample);
+            return 1;
+        }
+        if (got == 0) {
+            dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+            opts->tcp_in_ctx = NULL;
+            DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
+            DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
+            dsd_request_shutdown(opts, state);
+            return 0;
+        }
+        if (dsd_exitflag_load() == 1) {
+            return 0;
+        }
+        edacs_tcp_quiet_pay(opts, state, wait_from_ms);
     }
-    *out = edacs_apply_input_volume(opts, sample);
-    return 1;
 }
 
 /* One UDP sample, with the input volume; 0 when the input stopped, which asks for shutdown. */
@@ -271,15 +323,6 @@ edacs_no_stream_pay(const dsd_opts* opts, dsd_state* state) {
         state->edacs_no_stream_owed += due - state->edacs_no_stream_paid;
         state->edacs_no_stream_paid = due;
     }
-}
-
-/* An analog call starts with nothing owed from an earlier one's outage. */
-static void
-edacs_no_stream_reset(dsd_state* state) {
-    state->edacs_no_stream_active = 0U;
-    state->edacs_no_stream_seen = 0U;
-    state->edacs_no_stream_owed = 0U;
-    state->edacs_no_stream_paid = 0U;
 }
 
 /* One sample of the RTL stream, with its squelch flag into @p flag (or NULL); 0 when it ended, which asks for
@@ -1312,9 +1355,7 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
     call.start = now;
     call.first_of_call = 1;
     dsd_rate_converter_init(&call.conv);
-#ifdef USE_RADIO
     edacs_no_stream_reset(state);
-#endif
     double pwr = call.sql + 1e-3; // small offset for initial loop phase
 
     DSD_FPRINTF(stderr, "\n");

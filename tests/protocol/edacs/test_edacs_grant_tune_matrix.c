@@ -368,8 +368,9 @@ edacs_dotting_sample(int index, int rate_hz) {
 }
 
 static int
-edacs_fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+edacs_fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
     (void)ctx;
+    (void)timeout_ms;
     const int index = g_tcp_read_count++;
     if (out == NULL || (g_tcp_fail_at >= 0 && index == g_tcp_fail_at)) {
         return 0;
@@ -417,7 +418,7 @@ edacs_fake_udp_read_sample(dsd_opts* opts, int16_t* out) {
 static void
 edacs_install_net_audio_hooks(void) {
     dsd_net_audio_input_hooks hooks = {0};
-    hooks.tcp_read_sample = edacs_fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = edacs_fake_tcp_read_sample;
     hooks.tcp_close = edacs_fake_tcp_close;
     hooks.udp_read_sample = edacs_fake_udp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);

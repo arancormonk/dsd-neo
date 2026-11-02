@@ -2138,10 +2138,10 @@ struct dsd_state {
     float rtl_gap_held_sample;
     uint32_t rtl_gap_held_generation;
     /* The EDACS analog call loop's reads while the RTL device has no stream (issue #518 D4: DSD_RTL_READ_NO_STREAM),
-       which it plays as closed squelch at the stream's rate for the time that passes: whether such a run is on (the
-       stream delivered nothing since it began), when it began (realtime ms), the silent samples that time has paid for
-       so far and those still owed, and whether the triplet being collected took any (it then has no RF power).
-       Decoder-thread owned. */
+       or while a TCP sender is quiet (issue #667 D12), which it plays as closed squelch at the input's rate for the
+       time that passes: whether such a run is on (the input delivered nothing since it began), when it began (realtime
+       ms), the silent samples that time has paid for so far and those still owed, and whether the triplet being
+       collected took any from a missing RTL stream (it then has no RF power). Decoder-thread owned. */
     uint8_t edacs_no_stream_active;
     uint8_t edacs_no_stream_seen;
     uint64_t edacs_no_stream_since_ms;
