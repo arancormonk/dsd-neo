@@ -1341,8 +1341,10 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
 
 /* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
    (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
-   upload. A row the event layer never judged allows it. A conventional NFM row has no talkgroup to name an upload by, so
-   it is simply not exported: no warning, and no failure line. A digital row without one still warns. */
+   upload. A row the event layer never judged allows it. A conventional NFM row is exported under its frequency in kHz,
+   or the user's --rdio-analog-talkgroup when it has none (issue #668, dsd_rdio_analog_talkgroup()); with neither it is
+   not exported, said once a run while rdio export is on, with no failure line. A digital row without a talkgroup
+   still warns. */
 static int
 wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
                       const char* path, time_t opened, time_t started) {
@@ -1350,7 +1352,12 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
     if (event_item != NULL && event_item->stream_blocked != 0U) {
         return 0;
     }
-    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG && event_item->target_id == 0U) {
+    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG
+        && dsd_rdio_analog_talkgroup(opts, event_item) == 0U) {
+        if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_analog_rdio_skip_first_this_run()) {
+            LOG_WARN("Rdio export: NFM calls with no known frequency (audio input) are not exported; set "
+                     "--rdio-analog-talkgroup to export them under one talkgroup\n");
+        }
         return 0;
     }
     if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, started, &rdio_queued) != 0) {

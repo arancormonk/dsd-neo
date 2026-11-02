@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -339,8 +340,10 @@ dsd_rdio_upload_holds(const char* path) {
     return held;
 }
 
+/* @p system_id is the call's own system (dsd_rdio_call_system_id()), resolved before the settings are validated: an
+   analog override uploads even when the base system is 0. */
 static void
-dsd_rdio_copy_api_config(dsd_rdio_api_config* out, const dsd_opts* opts) {
+dsd_rdio_copy_api_config(dsd_rdio_api_config* out, const dsd_opts* opts, int system_id) {
     if (!out) {
         return;
     }
@@ -350,7 +353,7 @@ dsd_rdio_copy_api_config(dsd_rdio_api_config* out, const dsd_opts* opts) {
         return;
     }
 
-    out->system_id = opts->rdio_system_id;
+    out->system_id = system_id;
     out->upload_timeout_ms = opts->rdio_upload_timeout_ms;
     out->upload_retries = opts->rdio_upload_retries;
     DSD_SNPRINTF(out->api_url, sizeof(out->api_url), "%s",
@@ -448,14 +451,14 @@ dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
 }
 
 static int
-dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const char* meta_path,
+dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                             int remove_meta_on_success, int remove_wav_on_success) {
     if (!opts || !wav_path || !meta_path) {
         return -1;
     }
 
     dsd_rdio_api_config api;
-    dsd_rdio_copy_api_config(&api, opts);
+    dsd_rdio_copy_api_config(&api, opts, system_id);
     if (dsd_rdio_validate_api_config(&api) != 0) {
         return -1;
     }
@@ -687,10 +690,43 @@ typedef struct {
     uint32_t talkgroup;
     uint32_t source;
     uint32_t freq_hz;
+    int system_id;
     int encrypted;
     const char* talkgroup_tag;
     const char* short_name;
+    char analog_tag[64]; /* an analog call's frequency tag, when talkgroup_tag names it */
 } dsd_rdio_meta_fields;
+
+/* The row a recording is exported from: the slot's staged row, or none. */
+static const Event_History*
+dsd_rdio_staged_row(const Event_History_I* event_struct) {
+    return event_struct ? &event_struct->Event_History_Items[0] : NULL;
+}
+
+uint32_t
+dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event) {
+    if (!event || event->systype != DSD_SYNC_ANALOG) {
+        return 0U;
+    }
+    // rdio-scanner's own convention for a conventional channel: its frequency in kHz. A frequency under 1 kHz names
+    // no channel, and one whose kHz do not fit the field is as unknown as none.
+    const int64_t khz = event->freq_hz / 1000;
+    if (khz > 0 && khz <= (int64_t)UINT32_MAX) {
+        return (uint32_t)khz;
+    }
+    return (opts && opts->rdio_analog_talkgroup > 0) ? (uint32_t)opts->rdio_analog_talkgroup : 0U;
+}
+
+int
+dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event) {
+    if (!opts) {
+        return 0;
+    }
+    if (event && event->systype == DSD_SYNC_ANALOG && opts->rdio_analog_system_id > 0) {
+        return opts->rdio_analog_system_id;
+    }
+    return opts->rdio_system_id;
+}
 
 time_t
 dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t started) {
@@ -714,8 +750,32 @@ dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t start
     return dsd_decode_time();
 }
 
+/* A conventional analog call (issue #668): a kHz talkgroup, or the user's for a call with no frequency, labelled by the
+   channel's name, else by its frequency, else by the mode alone. Never by the per-tone service name: rdio-scanner can
+   relabel a talkgroup with each call's tag, and the services on one frequency share its talkgroup. No radio, never
+   encrypted. */
 static void
-dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, time_t started, dsd_rdio_meta_fields* out) {
+dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, dsd_rdio_meta_fields* out) {
+    out->talkgroup = dsd_rdio_analog_talkgroup(opts, event);
+    out->source = 0U;
+    out->encrypted = 0;
+    const char* mode = event->sysid_string[0] != '\0' ? event->sysid_string : "NFM";
+    if (event->channel_label[0] != '\0') {
+        out->talkgroup_tag = event->channel_label;
+    } else if (event->freq_hz > 0) {
+        // Whole 100 Hz, rounded: 4 decimals of MHz.
+        const int64_t units = event->freq_hz / 100 + (event->freq_hz % 100 >= 50 ? 1 : 0);
+        DSD_SNPRINTF(out->analog_tag, sizeof out->analog_tag, "%s %lld.%04lld MHz", mode, (long long)(units / 10000),
+                     (long long)(units % 10000));
+        out->talkgroup_tag = out->analog_tag;
+    } else {
+        out->talkgroup_tag = mode;
+    }
+}
+
+static void
+dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event, time_t opened, time_t started,
+                                dsd_rdio_meta_fields* out) {
     if (!out) {
         return;
     }
@@ -723,21 +783,27 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, time_
     out->talkgroup = 0;
     out->source = 0;
     out->freq_hz = 0;
+    out->system_id = dsd_rdio_call_system_id(opts, event);
     out->encrypted = 0;
     out->talkgroup_tag = "";
     out->short_name = "";
+    out->analog_tag[0] = '\0';
 
     if (!event) {
         return;
     }
     out->start_time = dsd_rdio_recording_start(event, opened, started);
-    out->talkgroup = event->target_id;
-    out->source = event->source_id;
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
     // an LCN or a dPMR colour code, not Hz. A frequency the sidecar's field cannot hold is unknown.
     out->freq_hz = (event->freq_hz > 0 && event->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)event->freq_hz : 0U;
-    out->encrypted = event->enc ? 1 : 0;
     out->short_name = event->sysid_string;
+    if (event->systype == DSD_SYNC_ANALOG) {
+        dsd_rdio_analog_meta_fields(opts, event, out);
+        return;
+    }
+    out->talkgroup = event->target_id;
+    out->source = event->source_id;
+    out->encrypted = event->enc ? 1 : 0;
 
     if (event->service_label[0] != '\0') {
         out->talkgroup_tag = event->service_label;
@@ -751,9 +817,14 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, time_
         // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
         // dsd_rdio_write_trunk_recorder_meta() skips those outright.
         out->talkgroup_tag = event->channel_label;
-    } else {
-        out->talkgroup_tag = event->gi ? "PRIVATE" : "GROUP";
+    } else if (event->gi == 1) {
+        out->talkgroup_tag = "PRIVATE";
+    } else if (event->gi == 0) {
+        out->talkgroup_tag = "GROUP";
     }
+    // A call of no known kind (gi -1: NXDN's other call types, EDACS without a group or individual flag, TETRA before
+    // its setup, X2-TDMA) keeps an empty tag, which rdio-scanner ignores as a label: it names the talkgroup by its
+    // number rather than calling every such call private.
 }
 
 static int
@@ -790,7 +861,7 @@ dsd_rdio_write_meta_json(FILE* fp, const dsd_opts* opts, const dsd_rdio_meta_fie
     }
     DSD_FPRINTF(fp, "],\n");
     DSD_FPRINTF(fp, "  \"freq\": %u,\n", fields->freq_hz > 1000000U ? fields->freq_hz : 0U);
-    DSD_FPRINTF(fp, "  \"system\": %d,\n", opts->rdio_system_id > 0 ? opts->rdio_system_id : 0);
+    DSD_FPRINTF(fp, "  \"system\": %d,\n", fields->system_id > 0 ? fields->system_id : 0);
     DSD_FPRINTF(fp, "  \"short_name\": \"");
     dsd_rdio_json_write_escaped(fp, fields->short_name);
     DSD_FPRINTF(fp, "\",\n");
@@ -847,9 +918,9 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
         return -1;
     }
 
-    const Event_History* event = event_struct ? &event_struct->Event_History_Items[0] : NULL;
+    const Event_History* event = dsd_rdio_staged_row(event_struct);
     dsd_rdio_meta_fields fields;
-    dsd_rdio_meta_fields_from_event(event, opened, started, &fields);
+    dsd_rdio_meta_fields_from_event(opts, event, opened, started, &fields);
     if (fields.talkgroup == 0U) {
         LOG_WARN("Rdio export: skipped %s (missing talkgroup/target ID)\n", wav_path);
         return -1;
@@ -1179,7 +1250,8 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
             && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
             LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
         }
-        if (dsd_rdio_enqueue_api_upload(opts, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
+        if (dsd_rdio_enqueue_api_upload(opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)),
+                                        wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
             != 0) {
             return -1;
         }

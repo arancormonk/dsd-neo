@@ -227,6 +227,8 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_upload_timeout_ms = 5000;
     cfg->rdio_upload_retries = 1;
     cfg->rdio_api_delete_after_upload = 0;
+    cfg->rdio_analog_system_id = 0;
+    cfg->rdio_analog_talkgroup = 0;
     cfg->unknown_talkgroups_only = 0;
     cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
 
@@ -1225,6 +1227,12 @@ render_recording_section(FILE* out, const dsdneoUserConfig* cfg) {
         DSD_FPRINTF(out, "rdio_upload_retries = %d\n", cfg->rdio_upload_retries);
     }
     DSD_FPRINTF(out, "rdio_api_delete_after_upload = %s\n", ini_bool(cfg->rdio_api_delete_after_upload));
+    if (cfg->rdio_analog_system_id > 0) {
+        DSD_FPRINTF(out, "rdio_analog_system_id = %d\n", cfg->rdio_analog_system_id);
+    }
+    if (cfg->rdio_analog_talkgroup > 0) {
+        DSD_FPRINTF(out, "rdio_analog_talkgroup = %d\n", cfg->rdio_analog_talkgroup);
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1834,6 +1842,8 @@ apply_recording_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->rdio_upload_timeout_ms = cfg->rdio_upload_timeout_ms;
     opts->rdio_upload_retries = cfg->rdio_upload_retries;
     opts->rdio_api_delete_after_upload = cfg->rdio_api_delete_after_upload;
+    opts->rdio_analog_system_id = cfg->rdio_analog_system_id;
+    opts->rdio_analog_talkgroup = cfg->rdio_analog_talkgroup;
     opts->record_unknown_only = cfg->unknown_talkgroups_only ? 1 : 0;
     opts->analog_record_max_gap_ms = cfg->analog_max_gap_ms;
 
@@ -2212,6 +2222,8 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rdio_upload_timeout_ms = opts->rdio_upload_timeout_ms;
     cfg->rdio_upload_retries = opts->rdio_upload_retries;
     cfg->rdio_api_delete_after_upload = opts->rdio_api_delete_after_upload ? 1 : 0;
+    cfg->rdio_analog_system_id = opts->rdio_analog_system_id;
+    cfg->rdio_analog_talkgroup = opts->rdio_analog_talkgroup;
     cfg->unknown_talkgroups_only = opts->record_unknown_only ? 1 : 0;
     cfg->analog_max_gap_ms = opts->analog_record_max_gap_ms;
 }

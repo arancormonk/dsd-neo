@@ -175,6 +175,11 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"recording", "rdio_upload_retries", "rdio API upload attempts per call", "1", NULL, DSDCFG_TYPE_INT, 0, 10},
     {"recording", "rdio_api_delete_after_upload", "Delete per-call WAV after successful API-only upload", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"recording", "rdio_analog_system_id", "rdio-scanner system ID for NFM calls; 0 uses rdio_system_id", "0", NULL,
+     DSDCFG_TYPE_INT, 0, 65535},
+    {"recording", "rdio_analog_talkgroup",
+     "rdio-scanner talkgroup for NFM calls with no known frequency (audio input); 0 leaves them unexported", "0", NULL,
+     DSDCFG_TYPE_INT, 0, 2147483647},
 
     /* [dsp] section */
     {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},

@@ -282,8 +282,15 @@ Windows console runs:
   200 or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0
   to 10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted,
   and the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
-- `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
+- `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls
+  and conventional NFM calls ([NFM calls in rdio-scanner](#nfm-calls-in-rdio-scanner))
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
+- `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
+  `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:
+  `[recording] rdio_analog_system_id`.
+- `--rdio-analog-talkgroup <N>` rdio-scanner talkgroup for NFM calls heard with no known frequency (an audio input),
+  0 to 2147483647. 0, the default, leaves those calls unexported. A call with a frequency always uses the frequency in
+  kHz. INI: `[recording] rdio_analog_talkgroup`. Both values are refused outside their range, never clamped.
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
@@ -291,7 +298,7 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
   `--wav-journal` is set
 - A call whose talkgroup or radio policy row has `stream=off` is recorded but not exported (no sidecar, no upload);
-  see `docs/csv-formats.md`.
+  see `docs/csv-formats.md`. An NFM call has no talkgroup or radio, so no row's `stream` applies to it.
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by
@@ -1636,10 +1643,44 @@ Carrier end (200 ms after the carrier drops, or after a longer pause with `--ana
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
 include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
-`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
-while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
-named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
+`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. With `--rdio-mode`, NFM recordings are exported to
+rdio-scanner too, named or not ([below](#nfm-calls-in-rdio-scanner)). See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
+
+#### NFM calls in rdio-scanner
+
+With `--rdio-mode` set, each NFM recording is exported like a digital call's: a DirWatch sidecar, an API upload, or
+both. rdio-scanner needs a talkgroup number, and an NFM call has none, so dsd-neo gives it one:
+
+- The talkgroup is the frequency the call was heard on, in kHz, rounded down: 154.4375 MHz is talkgroup `154437`.
+  This is rdio-scanner's own way of numbering conventional channels. The number is used only for the export; the call
+  history, the journal and the app still show no talkgroup.
+- On an audio input (PulseAudio, UDP, TCP or a WAV file, even with rigctl) the frequency is not known. Those calls are
+  exported under `--rdio-analog-talkgroup <n>` when it is set, and are not exported otherwise. The first time that
+  happens in a run, one log line says so.
+- The talkgroup label (`talkgroup_tag`) is the channel's name from a `-Y` channel map or a `--trunk-scan` row, else
+  the frequency (`NFM 154.4375 MHz`), else `NFM`. It is never a tone's service name: rdio-scanner can rename a
+  talkgroup after each call's label, and every service on one frequency shares that frequency's talkgroup. The
+  service name stays in the file name and the call history.
+- The sidecar lists no radio (`srcList` is empty), is never encrypted, has `short_name` `NFM`, and its `freq` is the
+  call's frequency (0 below 1 MHz or when it is not known).
+- `--rdio-analog-system-id <n>` sends NFM calls to their own rdio-scanner system: the sidecar's `system` and the API
+  upload's `system` field use it. In DirWatch mode rdio-scanner ignores the sidecar's `system`. rdio-scanner 6 files
+  every call in a watched folder under that folder's system, so to keep NFM calls apart there, run them in a separate
+  dsd-neo session that writes to a second folder. rdio-scanner 7 picks the system by `short_name`, which is already
+  `NFM`.
+- An NFM call has no talkgroup or radio list row, so `stream=off` never applies to it.
+
+Limits:
+
+- Calls on one frequency share one talkgroup, whatever their tone, and frequencies less than 1 kHz apart share one.
+- rdio-scanner drops a call it takes for a duplicate: same system and talkgroup, starting within its duplicate
+  detection time frame (500 ms by default; `duplicateDetectionTimeFrame` and `disableDuplicateDetection` in its
+  options). The sidecar's `start_time` is in whole seconds, so two transmissions on one channel that start in the same
+  second can be dropped by the server. Shorten or turn off the duplicate detection if that happens. trunk-recorder
+  sends whole seconds too.
+- rdio-scanner 7 (not released yet) ignores the sidecar's top-level `freq` and files a call at the time it arrives,
+  not at its `start_time`. dsd-neo does not work around that.
 
 #### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
 

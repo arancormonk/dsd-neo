@@ -225,6 +225,8 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_upload_timeout_ms = 5000;
     opts->rdio_upload_retries = 1;
     opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_analog_system_id = 0;
+    opts->rdio_analog_talkgroup = 0;
     opts->record_unknown_only = 0;
     opts->analog_record_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     opts->analog_record_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;

@@ -97,6 +97,8 @@ static const char* const k_skip_exact_next_any[] = {
     "--rdio-api-key",
     "--rdio-upload-timeout-ms",
     "--rdio-upload-retries",
+    "--rdio-analog-system-id",
+    "--rdio-analog-talkgroup",
     "--analog-record-max-gap-ms",
     "--dmr-baofeng-pc5",
     "--dmr-csi-ee72",

@@ -1669,6 +1669,113 @@ test_error_failed_and_rdio_shapes(void) {
     return rc;
 }
 
+/* The sidecar beside the published recording @p pub names, read into @p body ("" when there is none). */
+static void
+read_published_sidecar(const rig* r, const char* pub, char* body, size_t body_size) {
+    body[0] = '\0';
+    char sidecar[DSD_TEST_PATH_MAX * 2];
+    if (!pub || dsd_test_path_join(sidecar, sizeof sidecar, r->dir, field_s(pub, "file")) != 0
+        || strlen(sidecar) <= 4) {
+        return;
+    }
+    const size_t stem = strlen(sidecar) - 4; /* the ".wav" the sidecar's ".json" replaces */
+    DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
+    FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+    if (f) {
+        const size_t n = fread(body, 1, body_size - 1, f);
+        body[n] = '\0';
+        (void)fclose(f);
+    }
+}
+
+/* Issue #668 and the #708 contract for NFM: an NFM call's recording is exported through the real closer, and the
+   journal's publish record says whether its API upload was queued, which the exporter decides before the record is
+   written. A radio input's call goes up under its frequency in kHz to the analog system, its sidecar beside it, and
+   the journal's target stays empty (the row has none). An audio input's call is not exported without
+   --rdio-analog-talkgroup, and is with it. */
+static int
+test_nfm_rdio_export_is_journaled(void) {
+    static const struct {
+        const char* label;
+        int radio;
+        int mode;
+        int fallback;
+        const char* talkgroup; /* NULL: no sidecar */
+        int queued;
+    } cases[] = {
+        {"nfm on a radio input", 1, DSD_RDIO_MODE_BOTH, 0, "\"talkgroup\": 154437,", 1},
+        {"nfm on an audio input", 0, DSD_RDIO_MODE_DIRWATCH, 0, NULL, 0},
+        {"nfm on an audio input with a fallback", 0, DSD_RDIO_MODE_DIRWATCH, 4242, "\"talkgroup\": 4242,", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_nfm_rdio");
+        setup_nfm(r.opts, r.state);
+        r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+        if (cases[i].radio) {
+            r.opts->audio_in_type = AUDIO_IN_RTL;
+            r.opts->rtlsdr_center_freq = 154437500U;
+        }
+        r.opts->rdio_mode = cases[i].mode;
+        r.opts->rdio_system_id = 7;
+        r.opts->rdio_analog_system_id = 9;
+        r.opts->rdio_analog_talkgroup = cases[i].fallback;
+        r.opts->rdio_upload_timeout_ms = 100;
+        r.opts->rdio_upload_retries = 1;
+        r.opts->rdio_api_delete_after_upload = 1;
+        DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+        DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+        submit(&r, DSD_APP_CMD_WAV_START);
+        clock_at(k_t0 + 60);
+        nfm_block(r.opts, r.state);
+        nfm_block(r.opts, r.state);
+        clock_at(k_t0 + 61);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        dsd_rdio_upload_shutdown();
+        reload(&r);
+        const char* pub = NULL;
+        for (int k = 0; (pub = record(&g_j, "publish", k)) != NULL; k++) {
+            if (field_ll(pub, "rate") == 48000) {
+                break;
+            }
+        }
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: published", cases[i].label);
+        rc |= expect_true(tag, pub != NULL);
+#ifdef USE_CURL
+        const char* want_rdio = cases[i].queued ? "true" : "false";
+#else
+        const char* want_rdio = "false";
+#endif
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the journal says whether an upload was queued", cases[i].label);
+        rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", want_rdio);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: no target on the row", cases[i].label);
+        rc |= expect_str(tag, pub ? field_s(pub, "target") : "?", "");
+        char body[4096];
+        read_published_sidecar(&r, pub, body, sizeof body);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: sidecar", cases[i].label);
+        if (cases[i].talkgroup == NULL) {
+            rc |= expect_str(tag, body, "");
+        } else {
+            rc |= expect_true(tag, strstr(body, cases[i].talkgroup) != NULL && strstr(body, "\"system\": 9,") != NULL);
+        }
+        char path[DSD_TEST_PATH_MAX * 2];
+        FILE* kept = (pub && dsd_test_path_join(path, sizeof path, r.dir, field_s(pub, "file")) == 0)
+                         ? dsd_fopen_existing_regular_file(path, "rb")
+                         : NULL;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the recording is kept", cases[i].label);
+        rc |= expect_true(tag, kept != NULL);
+        if (kept) {
+            (void)fclose(kept);
+        }
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
 /* A radio list change applied after the call's last render, then WAV_STOP before the next render, as one command drain
    delivers them: the stop's close follows the policy in force (issue #773 D7). A radio row turned stream=off keeps the
    recording local (no DirWatch sidecar); with stream on the sidecar is written. */
@@ -1826,6 +1933,7 @@ main(void) {
     rc |= test_strings_are_escaped();
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_nfm_rdio_export_is_journaled();
     rc |= test_wav_stop_follows_a_fresh_stream_verdict();
     rc |= test_path_forms();
     rc |= test_temp_token_is_the_names_token();

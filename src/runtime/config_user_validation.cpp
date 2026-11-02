@@ -223,20 +223,27 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
     return 1;
 }
 
-/* The NFM max gap (issue #756) outside the schema's range is an error rather than the schema walk's warning: the loader
-   refuses it and keeps the value it had, as it does an analog width. Text that is no integer is left to the schema
-   walk's integer check, which is an error already. */
+/* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756) and
+   the NFM rdio-scanner keys (issue #668). */
 static int
-validate_analog_max_gap_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
-                              int line_num, const char* diag_section, const char* diag_key) {
-    int ms = 0;
-    if (strcmp(entry->section, "recording") != 0 || strcmp(entry->key, "analog_max_gap_ms") != 0
-        || user_config_parse_int_value(val, &ms) != 0) {
+recording_key_is_refused_out_of_range(const char* key) {
+    return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "rdio_analog_system_id") == 0
+           || strcmp(key, "rdio_analog_talkgroup") == 0;
+}
+
+/* A refused key (above) outside the schema's range is an error rather than the schema walk's warning, as an analog
+   width is. Text that is no integer is left to the schema walk's integer check, which is an error already. */
+static int
+validate_refused_range_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                             int line_num, const char* diag_section, const char* diag_key) {
+    int value = 0;
+    if (strcmp(entry->section, "recording") != 0 || !recording_key_is_refused_out_of_range(entry->key)
+        || user_config_parse_int_value(val, &value) != 0) {
         return 0;
     }
-    if (ms < entry->min_val || ms > entry->max_val) {
+    if (value < entry->min_val || value > entry->max_val) {
         char msg[128];
-        DSD_SNPRINTF(msg, sizeof msg, "Value %d is out of range [%d, %d] and is refused, not clamped", ms,
+        DSD_SNPRINTF(msg, sizeof msg, "Value %d is out of range [%d, %d] and is refused, not clamped", value,
                      entry->min_val, entry->max_val);
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
     }
@@ -252,7 +259,7 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_analog_max_gap_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "receive") == 0) {

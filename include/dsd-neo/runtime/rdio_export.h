@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 
+#include <stdint.h>
 #include <time.h>
 
 #ifdef __cplusplus
@@ -83,6 +84,20 @@ int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_s
  * to the decode clock.
  */
 time_t dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t started);
+
+/**
+ * The rdio-scanner talkgroup a conventional analog call (a DSD_SYNC_ANALOG row, issue #668) is exported under: the
+ * frequency it was heard on in kHz, rounded down (rdio-scanner's convention for conventional channels), else, for a
+ * call with no frequency (audio input), @p opts->rdio_analog_talkgroup. 0 when it has neither, and for any other row.
+ * Worked out at export time only, never stored on the row: Event_History::target_id stays 0 for analog calls.
+ */
+uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event);
+
+/**
+ * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p
+ * opts->rdio_analog_system_id for an analog row when it is set, else @p opts->rdio_system_id. 0 for a NULL @p opts.
+ */
+int dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event);
 
 /**
  * Whether the rdio API upload queue still owns the per-call WAV at @p path: a job naming it is queued or in flight (from

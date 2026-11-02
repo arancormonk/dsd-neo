@@ -122,7 +122,9 @@ typedef struct {
 static int
 check_recording(const char* name, void* user) {
     recording_check* check = user;
-    assert(strstr(name, ".wav")); /* NFM's zero target must not fabricate an Rdio sidecar. */
+    /* Rdio export is on, but an audio input's call has no frequency and no --rdio-analog-talkgroup gives it a
+       talkgroup: it is not exported, so no sidecar sits beside it (issue #668). */
+    assert(strstr(name, ".wav"));
     assert(!strstr(name, "TEMP"));
     /* The NFM name: no talkgroup, source or call type, and the sanitized service last (issue #637). */
     const int traveler = dsd_test_nfm_recording_name_is(name, "Traveler__West_");
@@ -416,6 +418,7 @@ test_events(dsd_opts* opts, dsd_state* state) {
 
 static void
 test_analog(dsd_opts* opts, dsd_state* state) {
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
     opts->audio_out = 0;
@@ -497,6 +500,7 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     /* With no history row left it is published as an unnamed NFM recording, not under the digital name. */
     assert(teardown.files == 1 && teardown.temp == 0 && teardown.unnamed == 1);
     assert(dsd_test_rmdir(directory) == 0);
+    opts->rdio_mode = DSD_RDIO_MODE_OFF;
 }
 
 typedef struct {
@@ -1797,6 +1801,7 @@ static int g_hold_short_at = -1;
 static int g_hold_write_warnings;
 static int g_rdio_warnings;
 static int g_rdio_failed;
+static int g_rdio_analog_skips;
 static int g_preroll_warnings;
 
 static long long
@@ -1817,6 +1822,7 @@ count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (level == LOG_LEVEL_WARN && text && strstr(text, "Rdio export") != NULL) {
         g_rdio_warnings++;
         g_rdio_failed += strstr(text, "Rdio export failed") != NULL;
+        g_rdio_analog_skips += strstr(text, "--rdio-analog-talkgroup") != NULL;
     }
 }
 
@@ -2636,31 +2642,124 @@ remove_recording(const char* name, void* user) {
     return 0;
 }
 
-/* With --rdio-mode set, a conventional NFM recording has no talkgroup and is simply not exported: no "skipped" warning
-   and no "export failed" line. A digital row with no talkgroup keeps both (issue #756). */
+typedef struct {
+    const char* dir;
+    int wavs;
+    int sidecars;
+    char sidecar[4096];
+} rdio_files;
+
+/* Count the folder's recordings and sidecars, keep the last sidecar's text, and remove them all. */
+static int
+collect_rdio_files(const char* name, void* user) {
+    rdio_files* found = user;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
+    const size_t len = strlen(name);
+    if (len > 5 && strcmp(name + len - 5, ".json") == 0) {
+        FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+        assert(f != NULL);
+        const size_t n = fread(found->sidecar, 1U, sizeof found->sidecar - 1U, f);
+        found->sidecar[n] = '\0';
+        (void)fclose(f);
+        found->sidecars++;
+    } else {
+        found->wavs++;
+    }
+    assert(remove(path) == 0);
+    return 0;
+}
+
+/* One NFM call from its first block to its end, then the folder's files, collected and removed. */
+static rdio_files
+nfm_call_files(dsd_opts* opts, dsd_state* state, const char* directory) {
+    float block[960];
+    for (int i = 0; i < 960; ++i) {
+        block[i] = 2000.0f;
+    }
+    dsd_analog_sink_block_begin(state);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    /* The export id is worked out at export time only: the row never carries it. */
+    assert(state->event_history_s[0].Event_History_Items[0].target_id == 0);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+    rdio_files found;
+    DSD_MEMSET(&found, 0, sizeof found);
+    found.dir = directory;
+    assert(dsd_dir_list(directory, collect_rdio_files, &found) == 0);
+    return found;
+}
+
+/* Issue #668: with --rdio-mode set, an NFM recording is exported under its frequency in kHz (a radio input), or under
+   --rdio-analog-talkgroup when it has none (an audio input). With neither it is not exported: one log line a decoder
+   run says so, and no "export failed" line. A digital row with no talkgroup still warns twice (issue #756). */
 static void
-test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
+test_analog_rdio_export(dsd_opts* opts, dsd_state* state) {
     char directory[DSD_TEST_PATH_MAX];
     assert(dsd_test_mkdtemp(directory, sizeof directory, "dsdneo_receive_rdio"));
     DSD_MEMSET(opts->wav_out_dir, 0, sizeof opts->wav_out_dir);
     DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", directory);
     opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 7;
     opts->dmr_stereo_wav = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
     state->analog_rx.carrier_open = 1;
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
-    float block[960];
-    for (int i = 0; i < 960; ++i) {
-        block[i] = 2000.0f;
-    }
     g_rdio_warnings = 0;
+    g_rdio_failed = 0;
+    g_rdio_analog_skips = 0;
+
+    /* An audio input, no fallback: two calls, recorded, not exported, said once. */
     dsd_wav_recording_session_reset();
-    dsd_analog_sink_block_begin(state);
-    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
-    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 0);
-    assert(!dsd_engine_analog_call_active(state));
-    assert(g_rdio_warnings == 0 && g_rdio_failed == 0);
+    rdio_files found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    assert(g_rdio_warnings == 1 && g_rdio_analog_skips == 1 && g_rdio_failed == 0);
+    /* A new decoder run says it again, once. */
+    dsd_wav_recording_session_reset();
+    for (int i = 0; i < 2; i++) {
+        found = nfm_call_files(opts, state, directory);
+        assert(found.wavs == 1 && found.sidecars == 0);
+    }
+    assert(g_rdio_warnings == 2 && g_rdio_analog_skips == 2 && g_rdio_failed == 0);
+    /* With rdio export off there is nothing to say. */
+    dsd_wav_recording_session_reset();
+    opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 0 && g_rdio_warnings == 2);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+
+    /* The fallback talkgroup exports the audio input's calls, labelled by the mode alone. */
+    opts->rdio_analog_talkgroup = 4242;
+    found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 1);
+    assert(strstr(found.sidecar, "\"talkgroup\": 4242,") && strstr(found.sidecar, "\"talkgroup_tag\": \"NFM\","));
+    assert(strstr(found.sidecar, "\"freq\": 0,") && strstr(found.sidecar, "\"short_name\": \"NFM\","));
+
+    /* A radio input's call is exported under its frequency in kHz, over the fallback, to the analog system. */
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 154437500U;
+    opts->rdio_analog_system_id = 9;
+    found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 1);
+    assert(strstr(found.sidecar, "\"talkgroup\": 154437,"));
+    assert(strstr(found.sidecar, "\"talkgroup_tag\": \"NFM 154.4375 MHz\","));
+    assert(strstr(found.sidecar, "\"freq\": 154437500,") && strstr(found.sidecar, "\"system\": 9,"));
+    assert(strstr(found.sidecar, "\"srcList\": [],") && strstr(found.sidecar, "\"encrypted\": false"));
+    /* And with no fallback too: the frequency is enough. */
+    opts->rdio_analog_talkgroup = 0;
+    found = nfm_call_files(opts, state, directory);
+    assert(found.wavs == 1 && found.sidecars == 1 && strstr(found.sidecar, "\"talkgroup\": 154437,"));
+    assert(g_rdio_warnings == 2 && g_rdio_failed == 0);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->rtlsdr_center_freq = 0U;
+    opts->rdio_analog_system_id = 0;
 
     /* The same close for a digital row with no talkgroup still warns, twice: the skip and the failure. */
+    g_rdio_warnings = 0;
+    g_rdio_failed = 0;
     char wav_path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(wav_path, sizeof wav_path, directory, "digital.wav") == 0);
     SF_INFO info = {0};
@@ -2679,6 +2778,7 @@ test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
     assert(close_and_rename_wav_file_ex(wav, opts, wav_path, directory, &row, 0, 1, &owner) == NULL);
     assert(g_rdio_warnings == 2 && g_rdio_failed == 1);
     opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    opts->rdio_system_id = 0;
     assert(dsd_dir_list(directory, remove_recording, directory) == 0);
     assert(dsd_test_rmdir(directory) == 0);
 }
@@ -2725,7 +2825,7 @@ main(void) {
     state->event_history_s = history;
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
-    test_analog_rdio_skip_is_quiet(opts, state);
+    test_analog_rdio_export(opts, state);
     dsd_state_ext_free_all(state);
     test_analog_hold();
     test_analog_preroll();

@@ -202,6 +202,12 @@ struct dsd_opts {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
+    /* The rdio-scanner system a conventional analog (NFM) call is exported to, 0..65535 (issue #668); 0 uses
+       rdio_system_id. */
+    int rdio_analog_system_id;
+    /* The rdio-scanner talkgroup of an NFM call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
+       leaves such calls unexported. A call with a frequency is exported under it in kHz. */
+    int rdio_analog_talkgroup;
     int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
     /* The longest pause, in ms, one conventional NFM call (its history row and per-call WAV) survives (issue #756);
        the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the

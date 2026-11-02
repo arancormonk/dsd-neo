@@ -278,6 +278,26 @@ test_analog_record_max_gap_long_opts_are_removed(void) {
     return 0;
 }
 
+/* Issue #668: the NFM rdio-scanner options leave the pre-getopt pass with their values, so a bare value is never read
+   as a positional argument. */
+static int
+test_rdio_analog_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rdio-analog-system-id";
+    char arg2[] = "9";
+    char arg3[] = "--rdio-analog-talkgroup";
+    char arg4[] = "4242";
+    char arg5[] = "-fA";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int new_argc = dsd_cli_compact_args(6, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fA") != 0) {
+        DSD_FPRINTF(stderr, "expected only -fA to remain, got %d args\n", new_argc);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_dmr_debug_burst_long_option_is_removed(void) {
     char arg0[] = "dsd-neo";
@@ -679,6 +699,8 @@ test_option_arity_matches_the_parser(void) {
         {"--input-level-warn-db", DSD_CLI_LONG_NEXT},
         {"--analog-record-max-gap-ms", DSD_CLI_LONG_NEXT},
         {"--analog-record-max-gap-ms=2000", DSD_CLI_LONG_ALONE},
+        {"--rdio-analog-system-id", DSD_CLI_LONG_NEXT},
+        {"--rdio-analog-talkgroup", DSD_CLI_LONG_NEXT},
         {"--iq-replay", DSD_CLI_LONG_NEXT},
         {"--api-token", DSD_CLI_LONG_NEXT},
         {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
@@ -743,6 +765,7 @@ main(void) {
     rc |= test_scan_max_visit_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();
     rc |= test_analog_record_max_gap_long_opts_are_removed();
+    rc |= test_rdio_analog_long_opts_are_removed();
     rc |= test_option_arity_matches_the_parser();
     return rc;
 }

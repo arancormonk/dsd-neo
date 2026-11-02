@@ -669,7 +669,12 @@ typedef struct dsdneoUserConfig {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; /* bool */
-    int unknown_talkgroups_only;      /* bool: record only talkgroups without a row (opts->record_unknown_only) */
+    /* NFM calls' rdio-scanner system, 0..65535 (0: rdio_system_id), and the talkgroup of one with no frequency,
+       0..2147483647 (0: not exported) (issue #668). The loader refuses a value outside the range and keeps the one it
+       had. */
+    int rdio_analog_system_id;
+    int rdio_analog_talkgroup;
+    int unknown_talkgroups_only; /* bool: record only talkgroups without a row (opts->record_unknown_only) */
     /* The longest pause in ms one NFM call and its recording survive (opts->analog_record_max_gap_ms; issue #756):
        0..10000, 200 or less is off. The loader refuses a value outside the range and keeps the one it had. */
     int analog_max_gap_ms;

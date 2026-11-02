@@ -97,6 +97,10 @@ private fun anotherOptionsOperandIsNoInput() {
         of("-i", "rtl", "-P", "--analog-record-max-gap-ms", "2000") == "usb" &&
             of("-i", "rtl", "-P", "--analog-record-max-gap-ms=2000") == "usb"
     ) { "a start with the NFM max gap keeps its RTL-SDR" }
+    // #668: the NFM rdio-scanner options' values are no input.
+    check(
+        of("-i", "rtl", "--rdio-analog-system-id", "9", "--rdio-analog-talkgroup", "-iudp") == "usb"
+    ) { "a start with the NFM rdio-scanner options keeps its RTL-SDR" }
     check(of("-i", "udp:0.0.0.0:7355", "--wav-journal", "-irtl") == "") { "the journal path is no input" }
 }
 

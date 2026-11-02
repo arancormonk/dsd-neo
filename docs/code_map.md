@@ -1283,7 +1283,15 @@ suite runs under this compiler.
   its field positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own
   `channel` and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env).
   The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
-  before. Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
+  before. Its `talkgroup_tag` is the row's first name (service, talkgroup name, target string, channel label), else
+  `PRIVATE` for a private call (`gi` 1), `GROUP` for a group call (`gi` 0), and empty for a call of no known kind
+  (`gi` -1; issue #668 B3, which rdio-scanner ignores as a label). A conventional analog row (`DSD_SYNC_ANALOG`, issue
+  #668) takes its own branch in `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the
+  frequency in kHz, rounded down, else `opts->rdio_analog_talkgroup`), worked out at export time only and never
+  stored in `Event_History::target_id`; tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz`, else
+  the mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's,
+  is `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
   carries a per-process random token and a sequence number (`open_wav_file()`), so libsndfile's `SFM_RDWR` never
@@ -1473,8 +1481,14 @@ suite runs under this compiler.
   staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
   (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
   row, a trunk-scan target's empty row), exports as before. Conventional analog calls, M17 and identities wider than
-  32 bits are never judged. Neither field is shown, persisted or part of the control API's row fingerprint; exports
-  already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`,
+  32 bits are never judged. An analog row also needs an export talkgroup (issue #668): `wav_close_export_rdio()`
+  exports it when `dsd_rdio_analog_talkgroup()` gives one (its frequency in kHz, or `--rdio-analog-talkgroup`), and
+  otherwise skips it with no failure line, logging one LOG_WARN per decoder run while `--rdio-mode` is on
+  (`wav_recording_analog_rdio_skip_first_this_run()`, reset by `dsd_wav_recording_session_reset()` at engine start).
+  A digital row without a talkgroup still warns ("skipped", then "export failed"). An NFM export keeps the #708
+  contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file,
+  and a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
+  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`,
   `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
@@ -2749,6 +2763,9 @@ suite runs under this compiler.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
+    Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
+    (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
+    copied into the job, so an analog system with a base system of 0 still uploads.
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
@@ -2774,8 +2791,10 @@ suite runs under this compiler.
     warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
     `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
     during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
-    rule under POSIX and Windows rules on every host),
-    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    rule under POSIX and Windows rules on every host; analog sidecar fields, kHz and fallback talkgroups, stable tags,
+    the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
+    BOTH mode and holds), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip
+    line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -11917,7 +11936,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     diagnostic raw capture. An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup,
     source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer
     has the row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no
-    rdio export), so it is never left under its temp name nor given the digital shape.
+    rdio export), so it is never left under its temp name nor given the digital shape. The call's own close exports it
+    to rdio-scanner under its frequency in kHz (issue #668; Core, "rdio-scanner export verdict").
   - A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
     freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data
@@ -11929,7 +11949,7 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   destination per prompt chain. Global defaults live in `[receive]`; `scan_mode` restores them after row overrides.
   Recording publication makes the service, system, target and source name components file-safe on the name's copies
   only (Core, `wav_rename_sanitize_component()`); Rdio uses its supported talkgroup label without changing the numeric
-  target.
+  target. An NFM call's rdio label is the channel's, never the service name (issue #668).
 - A service name only rejected traffic could carry (`dsd_receive_names_unreachable()`: an enabled filter of its kind, or
   the analog tone filter for a CTCSS/DCS name, rejects its identifier) is kept and reported, never refused, so a service
   can be blocked for a while. `dsd_scan_option_unreachable_names()` judges a row's options over the configured policies

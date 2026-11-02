@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -391,6 +392,8 @@ typedef struct {
     char response[512];
     // The upload's "meta" part (the sidecar JSON), or "" when the request carried none.
     char meta[4096];
+    // The upload's "system" part, or "" when the request carried none.
+    char system[32];
 } rdio_test_http_server;
 
 // Find @p needle in the first @p hay_len bytes of @p hay. The request is not a string: the WAV in its "audio" part,
@@ -409,11 +412,11 @@ rdio_test_find_bytes(const char* hay, size_t hay_len, const char* needle) {
     return NULL;
 }
 
-// Copy the body of the request's "meta" multipart part into server->meta.
+// Copy the body of the request's multipart part named by @p name_attr (`name="meta"`) into @p out.
 static void
-rdio_test_capture_meta_part(rdio_test_http_server* server, const char* request, size_t used) {
-    server->meta[0] = '\0';
-    const char* part = rdio_test_find_bytes(request, used, "name=\"meta\"");
+rdio_test_capture_part(const char* request, size_t used, const char* name_attr, char* out, size_t out_size) {
+    out[0] = '\0';
+    const char* part = rdio_test_find_bytes(request, used, name_attr);
     if (!part) {
         return;
     }
@@ -429,11 +432,11 @@ rdio_test_capture_meta_part(rdio_test_http_server* server, const char* request, 
         return;
     }
     size_t len = (size_t)(end - body);
-    if (len >= sizeof(server->meta)) {
-        len = sizeof(server->meta) - 1U;
+    if (len >= out_size) {
+        len = out_size - 1U;
     }
-    DSD_MEMCPY(server->meta, body, len);
-    server->meta[len] = '\0';
+    DSD_MEMCPY(out, body, len);
+    out[len] = '\0';
 }
 
 static int
@@ -491,7 +494,8 @@ rdio_test_http_serve_one(rdio_test_http_server* server, dsd_socket_t client) {
             break;
         }
     }
-    rdio_test_capture_meta_part(server, request, used);
+    rdio_test_capture_part(request, used, "name=\"meta\"", server->meta, sizeof(server->meta));
+    rdio_test_capture_part(request, used, "name=\"system\"", server->system, sizeof(server->system));
 
     const char default_response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
     const char* response = server->response[0] ? server->response : default_response;
@@ -1468,12 +1472,13 @@ test_sidecar_channel_label_fallback(void) {
     return rc;
 }
 
-// Export one row's sidecar into a fresh directory and return the sidecar's body in @p body, or -1. The recording is an
-// 8 kHz WAV @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was
-// opened at decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
+// Export one row's sidecar into a fresh directory under @p with_opts (NULL: DirWatch, no system) and return the sidecar's
+// body in @p body, or -1 when the export was refused (-2 if it left a sidecar anyway). The recording is an 8 kHz WAV
+// @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at
+// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
 static int
-export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened, time_t started, char* body,
-                    size_t body_size) {
+export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
+                         time_t started, char* body, size_t body_size) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1495,14 +1500,28 @@ export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened,
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     int rc = 0;
-    if (dsd_rdio_export_call_ex(&opts, hist, wav_path, opened, started, NULL) != 0
+    if (dsd_rdio_export_call_ex(with_opts ? with_opts : &opts, hist, wav_path, opened, started, NULL) != 0
         || read_file(json_path, body, body_size) != 0) {
-        DSD_FPRINTF(stderr, "export failed for frequency sidecar\n");
         rc = -1;
+    }
+    // A refused export leaves no sidecar behind.
+    if (rc != 0 && file_exists(json_path)) {
+        DSD_FPRINTF(stderr, "a refused export left a sidecar\n");
+        rc = -2;
     }
     (void)remove(json_path);
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened, time_t started, char* body,
+                    size_t body_size) {
+    const int rc = export_sidecar_body_with(NULL, hist, wav_seconds, opened, started, body, body_size);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "export failed for frequency sidecar\n");
+    }
     return rc;
 }
 
@@ -1630,6 +1649,274 @@ test_sidecar_start_time_sources(void) {
         }
     }
     dsd_decode_clock_use_system();
+    return rc;
+}
+
+// A conventional analog (NFM) row as the event layer stages it (issue #668): no talkgroup, no kind, the mode as its
+// system string; heard on @p freq_hz (0: an audio input's unknown frequency).
+static void
+analog_row(Event_History_I* hist, int64_t freq_hz) {
+    DSD_MEMSET(hist, 0, sizeof(*hist));
+    Event_History* item = &hist->Event_History_Items[0];
+    item->systype = DSD_SYNC_ANALOG;
+    item->gi = -1;
+    item->event_start_time = (time_t)1700001000;
+    item->event_time = (time_t)1700001002;
+    item->freq_hz = freq_hz;
+    DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "NFM");
+}
+
+static int
+expect_body_has(const char* label, const char* body, const char* want) {
+    if (!strstr(body, want)) {
+        DSD_FPRINTF(stderr, "%s: sidecar missing %s\n%s\n", label, want, body);
+        return 1;
+    }
+    return 0;
+}
+
+// Issue #668 D3/D6: an NFM call is exported under its frequency in kHz, rounded down, labelled by that frequency, with
+// no radio, never encrypted, under the row's system string and frequency. Its per-tone service name is not the tag, and
+// nothing is written back to the row: Event_History::target_id stays 0.
+static int
+test_analog_sidecar_fields(void) {
+    static Event_History_I hist;
+    analog_row(&hist, 154437500);
+    Event_History* item = &hist.Event_History_Items[0];
+    item->source_id = 99U; /* never an analog row's, and still not exported as one */
+    item->enc = 1;
+    DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Fire North");
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 7;
+    char body[4096];
+    if (export_sidecar_body_with(&opts, &hist, 2, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "analog sidecar: export failed\n");
+        return 1;
+    }
+    int rc = 0;
+    rc |= expect_body_has("analog sidecar", body, "\"talkgroup\": 154437,");
+    rc |= expect_body_has("analog sidecar", body, "\"talkgroup_tag\": \"NFM 154.4375 MHz\",");
+    rc |= expect_body_has("analog sidecar", body, "\"srcList\": [],");
+    rc |= expect_body_has("analog sidecar", body, "\"freq\": 154437500,");
+    rc |= expect_body_has("analog sidecar", body, "\"system\": 7,");
+    rc |= expect_body_has("analog sidecar", body, "\"short_name\": \"NFM\",");
+    rc |= expect_body_has("analog sidecar", body, "\"encrypted\": false");
+    rc |= expect_sidecar_times("analog sidecar", body, 1700001000LL, 1700001002LL);
+    if (item->target_id != 0U) {
+        DSD_FPRINTF(stderr, "analog sidecar: the export id was stored on the row (%u)\n", (unsigned)item->target_id);
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #668 D3/D5: the talkgroup comes from the frequency, in whole kHz; a call with none (audio input) takes
+// --rdio-analog-talkgroup, and with neither it is not exported. The frequency wins over the fallback. Below 1 MHz the
+// sidecar's freq is 0 but the call is still exported under its kHz; a frequency past 32 bits still names its kHz.
+static int
+test_analog_talkgroup_sources(void) {
+    static const struct {
+        const char* label;
+        int64_t freq_hz;
+        int fallback;
+        int exported;
+        const char* talkgroup;
+        const char* freq;
+        const char* tag;
+    } cases[] = {
+        {"frequency", 154437500, 0, 1, "\"talkgroup\": 154437,", "\"freq\": 154437500,", "NFM 154.4375 MHz"},
+        {"frequency over the fallback", 154437500, 9000, 1, "\"talkgroup\": 154437,", "\"freq\": 154437500,",
+         "NFM 154.4375 MHz"},
+        {"no frequency: the fallback", 0, 9000, 1, "\"talkgroup\": 9000,", "\"freq\": 0,", "NFM"},
+        {"the largest fallback", 0, 2147483647, 1, "\"talkgroup\": 2147483647,", "\"freq\": 0,", "NFM"},
+        {"below the 1 MHz floor", 530000, 0, 1, "\"talkgroup\": 530,", "\"freq\": 0,", "NFM 0.5300 MHz"},
+        {"past 32 bits", INT64_C(5000000000), 0, 1, "\"talkgroup\": 5000000,", "\"freq\": 0,", "NFM 5000.0000 MHz"},
+        {"no frequency, no fallback", 0, 0, 0, NULL, NULL, NULL},
+        {"under 1 kHz, no fallback", 999, 0, 0, NULL, NULL, NULL},
+        {"negative frequency, no fallback", -154437500, 0, 0, NULL, NULL, NULL},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        analog_row(&hist, cases[i].freq_hz);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_analog_talkgroup = cases[i].fallback;
+        char body[4096];
+        const int got = export_sidecar_body_with(&opts, &hist, 1, 0, 0, body, sizeof body);
+        const uint32_t id = dsd_rdio_analog_talkgroup(&opts, &hist.Event_History_Items[0]);
+        if (!cases[i].exported) {
+            if (got != -1 || id != 0U) {
+                DSD_FPRINTF(stderr, "%s: exported (%d) under %u, want no export\n", cases[i].label, got, (unsigned)id);
+                rc = 1;
+            }
+            continue;
+        }
+        if (got != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "\"talkgroup_tag\": \"%s\",", cases[i].tag);
+        rc |= expect_body_has(cases[i].label, body, cases[i].talkgroup);
+        rc |= expect_body_has(cases[i].label, body, cases[i].freq);
+        rc |= expect_body_has(cases[i].label, body, tag);
+    }
+    // Only an analog row has one: a digital row with no talkgroup is never given the fallback.
+    analog_row(&hist, 154437500);
+    hist.Event_History_Items[0].systype = DSD_SYNC_P25P1_POS;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.rdio_analog_talkgroup = 9000;
+    if (dsd_rdio_analog_talkgroup(&opts, &hist.Event_History_Items[0]) != 0U
+        || dsd_rdio_analog_talkgroup(&opts, NULL) != 0U) {
+        DSD_FPRINTF(stderr, "a digital row (or none) has no analog talkgroup\n");
+        rc = 1;
+    }
+    analog_row(&hist, 0);
+    if (dsd_rdio_analog_talkgroup(NULL, &hist.Event_History_Items[0]) != 0U) {
+        DSD_FPRINTF(stderr, "no options, no fallback\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #668 D6: the tag is the channel's name (a -Y or trunk-scan row's label), else the frequency to 4 decimals of
+// MHz after the row's mode word, else the mode word alone; never the service a tone named, which would relabel the
+// talkgroup the services on one frequency share. The same call always gets the same tag.
+static int
+test_analog_tag_is_stable(void) {
+    static const struct {
+        const char* label;
+        int64_t freq_hz;
+        const char* channel;
+        const char* sysid;
+        const char* want;
+    } cases[] = {
+        {"channel label", 154437500, "County Fire", "NFM", "County Fire"},
+        {"channel label, no frequency", 0, "County Fire", "NFM", "County Fire"},
+        {"frequency", 154430000, "", "NFM", "NFM 154.4300 MHz"},
+        {"frequency rounded to 100 Hz", 462562550, "", "NFM", "NFM 462.5626 MHz"},
+        {"the row's mode word", 121500000, "", "AM", "AM 121.5000 MHz"},
+        {"nothing: the mode word", 0, "", "NFM", "NFM"},
+        {"no mode word on the row", 0, "", "", "NFM"},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int service = 0; service <= 1; service++) {
+            analog_row(&hist, cases[i].freq_hz);
+            Event_History* item = &hist.Event_History_Items[0];
+            DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+            DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
+            if (service) {
+                DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Fire North");
+            }
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+            opts.rdio_analog_talkgroup = 9000;
+            char body[4096];
+            char want[96];
+            DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want);
+            if (export_sidecar_body_with(&opts, &hist, 1, 0, 0, body, sizeof body) != 0) {
+                DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+                rc = 1;
+                continue;
+            }
+            rc |= expect_body_has(cases[i].label, body, want);
+        }
+    }
+    return rc;
+}
+
+// Issue #668 D4: --rdio-analog-system-id files an analog call under its own system in the sidecar, over the base one
+// and without it; 0 keeps the base. A digital row always keeps the base.
+static int
+test_analog_system_id(void) {
+    static const struct {
+        const char* label;
+        int analog;
+        int base;
+        int override;
+        int want;
+    } cases[] = {
+        {"analog, no override", 1, 7, 0, 7}, {"analog override", 1, 7, 9, 9}, {"analog override, base 0", 1, 0, 9, 9},
+        {"analog, neither", 1, 0, 0, 0},     {"digital row", 0, 7, 9, 7},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        analog_row(&hist, 154437500);
+        if (!cases[i].analog) {
+            hist.Event_History_Items[0].systype = DSD_SYNC_P25P1_POS;
+            hist.Event_History_Items[0].target_id = 1201U;
+        }
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = cases[i].base;
+        opts.rdio_analog_system_id = cases[i].override;
+        char body[4096];
+        char want[48];
+        DSD_SNPRINTF(want, sizeof want, "\"system\": %d,", cases[i].want);
+        if (export_sidecar_body_with(&opts, &hist, 1, 0, 0, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, want);
+        if (dsd_rdio_call_system_id(&opts, &hist.Event_History_Items[0]) != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: the upload's system differs from the sidecar's\n", cases[i].label);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_call_system_id(NULL, &hist.Event_History_Items[0]) != 0) {
+        DSD_FPRINTF(stderr, "no options: system 0\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// B3 (issue #668): with no name to show, the tag says PRIVATE only for a private call and GROUP only for a group call;
+// a call of no known kind (gi -1: NXDN's other call types, EDACS without a flag, TETRA before setup, X2-TDMA) gets an
+// empty tag, which rdio-scanner ignores as a label. A name, when the row has one, still wins.
+static int
+test_sidecar_tag_of_unknown_kind_is_empty(void) {
+    static const struct {
+        const char* label;
+        int gi;
+        const char* t_name;
+        const char* want;
+    } cases[] = {
+        {"unknown kind", -1, "", "\"talkgroup_tag\": \"\","},
+        {"group call", 0, "", "\"talkgroup_tag\": \"GROUP\","},
+        {"private call", 1, "", "\"talkgroup_tag\": \"PRIVATE\","},
+        {"unknown kind with a name", -1, "Ops", "\"talkgroup_tag\": \"Ops\","},
+    };
+
+    static Event_History_I hist;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        Event_History* item = &hist.Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->event_time = (time_t)1700001100;
+        item->target_id = 77U;
+        item->gi = (int8_t)cases[i].gi;
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
+        char body[4096];
+        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, cases[i].want);
+    }
     return rc;
 }
 
@@ -2533,6 +2820,172 @@ test_api_upload_holds_until_the_delete_is_over(void) {
 #endif
 }
 
+// Issue #668 and the #708 contract, for an NFM call's upload. One analog call with no base system (0) and an analog
+// system of 5, delete-after-upload on, against a server that answers @p fail ? 500 : 200: the upload is not refused
+// for the missing base system, its form "system" part and its meta part both name system 5 and the kHz talkgroup, and
+// with DirWatch on the meta part is the sidecar left on disk. The WAV is deleted only after a successful API-only
+// upload in a run with no journal; a journal's owner keeps it, a failed upload keeps it, and DirWatch keeps it.
+// Afterwards nothing is held.
+static int
+analog_api_upload(const char* label, int mode, int journaled, int fail, int want_wav_kept) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    (void)label;
+    (void)mode;
+    (void)journaled;
+    (void)fail;
+    (void)want_wav_kept;
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_export_analog_api")
+        || dsd_test_path_join(wav_path, sizeof(wav_path), dir, "nfm_api.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir, "nfm_api.json") != 0
+        || write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        DSD_FPRINTF(stderr, "%s: setup failed\n", label);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    const char* response =
+        fail ? "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" : NULL;
+    if (!opts || !hist || rdio_test_http_server_start_ex(&server, api_url, sizeof(api_url), response, 0, 5000U) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = mode;
+    opts->rdio_system_id = 0;
+    opts->rdio_analog_system_id = 5;
+    if (journaled) {
+        (void)dsd_test_path_join(opts->wav_journal_file, sizeof(opts->wav_journal_file), dir, "recordings.jsonl");
+    }
+    analog_row(hist, 154437500);
+
+    int rc = 0;
+    int queued = 0;
+    if (dsd_rdio_export_call_ex(opts, hist, wav_path, 0, 0, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "%s: the upload was not queued\n", label);
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "%s: the server did not receive a complete upload\n", label);
+        rc = 1;
+    }
+    if (strcmp(server.system, "5") != 0) {
+        DSD_FPRINTF(stderr, "%s: form system part '%s', want 5\n", label, server.system);
+        rc = 1;
+    }
+    rc |= expect_body_has(label, server.meta, "\"system\": 5,");
+    rc |= expect_body_has(label, server.meta, "\"talkgroup\": 154437,");
+    rc |= expect_body_has(label, server.meta, "\"talkgroup_tag\": \"NFM 154.4375 MHz\",");
+    if (mode == DSD_RDIO_MODE_BOTH) {
+        char body[4096];
+        if (read_file(json_path, body, sizeof(body)) != 0 || strcmp(body, server.meta) != 0) {
+            DSD_FPRINTF(stderr, "%s: the meta part is not the DirWatch sidecar\n", label);
+            rc = 1;
+        }
+    } else if (file_exists(json_path) == !fail) {
+        DSD_FPRINTF(stderr, "%s: an API-only sidecar is removed after a successful upload only\n", label);
+        rc = 1;
+    }
+    if (file_exists(wav_path) != want_wav_kept) {
+        DSD_FPRINTF(stderr, "%s: WAV %s\n", label, want_wav_kept ? "deleted" : "kept");
+        rc = 1;
+    }
+    if (dsd_rdio_upload_holds(wav_path) != 0) {
+        DSD_FPRINTF(stderr, "%s: held after the session\n", label);
+        rc = 1;
+    }
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+static int
+test_analog_api_upload_contract(void) {
+    int rc = 0;
+    rc |= analog_api_upload("NFM API upload, no journal", DSD_RDIO_MODE_API, 0, 0, 0);
+    rc |= analog_api_upload("NFM API upload, journaled", DSD_RDIO_MODE_API, 1, 0, 1);
+    rc |= analog_api_upload("NFM API upload failed", DSD_RDIO_MODE_API, 0, 1, 1);
+    rc |= analog_api_upload("NFM upload beside DirWatch", DSD_RDIO_MODE_BOTH, 0, 0, 1);
+    return rc;
+}
+
+// Issue #668 and #708: an NFM call's upload holds its WAV from the queue on, as a digital call's does: against a
+// stalled endpoint the one in flight and the one queued behind it are both held, and after the user's Stop neither is,
+// and both files are kept.
+static int
+test_analog_api_upload_holds(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[2][DSD_TEST_PATH_MAX];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0
+        || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_analog_holds")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    analog_row(hist, 154437500);
+    int rc = 0;
+    for (int i = 0; i < 2 && rc == 0; i++) {
+        char leaf[32];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "nfm_hold_%d.wav", i);
+        int queued = 0;
+        if (dsd_test_path_join(wav[i], sizeof(wav[i]), dir, leaf) != 0 || write_pcm16_mono_wav(wav[i], 8000, 1) != 0
+            || dsd_rdio_export_call_ex(opts, hist, wav[i], 0, 0, &queued) != 0 || !queued) {
+            DSD_FPRINTF(stderr, "analog holds: NFM upload %d not queued\n", i);
+            rc = 1;
+        }
+        if (rc == 0 && i == 0 && rdio_test_wait_for_connection(stalled, 5000U) <= 0) {
+            DSD_FPRINTF(stderr, "analog holds: the first upload never started\n");
+            rc = 1;
+        }
+    }
+    if (rc == 0 && (dsd_rdio_upload_holds(wav[0]) != 1 || dsd_rdio_upload_holds(wav[1]) != 1)) {
+        DSD_FPRINTF(stderr, "analog holds: the uploads in flight and queued are not held\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    for (int i = 0; i < 2 && rc == 0; i++) {
+        if (dsd_rdio_upload_holds(wav[i]) != 0 || !file_exists(wav[i])) {
+            DSD_FPRINTF(stderr, "analog holds: NFM upload %d after the Stop: held or deleted\n", i);
+            rc = 1;
+        }
+        char json[DSD_TEST_PATH_MAX];
+        DSD_SNPRINTF(json, sizeof(json), "%.*s.json", (int)(strlen(wav[i]) - 4U), wav[i]);
+        (void)remove(wav[i]);
+        (void)remove(json);
+    }
+    remove_empty_dir(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2551,6 +3004,11 @@ main(void) {
     rc |= test_sidecar_channel_label_fallback();
     rc |= test_sidecar_freq_comes_from_the_row_frequency();
     rc |= test_sidecar_start_time_sources();
+    rc |= test_analog_sidecar_fields();
+    rc |= test_analog_talkgroup_sources();
+    rc |= test_analog_tag_is_stable();
+    rc |= test_analog_system_id();
+    rc |= test_sidecar_tag_of_unknown_kind_is_empty();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_journaled_upload_keeps_the_wav();
@@ -2563,5 +3021,7 @@ main(void) {
     rc |= test_upload_holds_name_rule();
     rc |= test_api_upload_holds_queued_and_in_flight_files();
     rc |= test_api_upload_holds_until_the_delete_is_over();
+    rc |= test_analog_api_upload_contract();
+    rc |= test_analog_api_upload_holds();
     return rc;
 }
