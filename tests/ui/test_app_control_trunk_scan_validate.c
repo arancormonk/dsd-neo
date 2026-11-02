@@ -464,6 +464,38 @@ test_quoted_options_cells(void) {
     assert(dsd_test_remove_temp_dir(dir, files) == 0);
 }
 
+/* --- Issue #697: a target file a spreadsheet saved as "CSV UTF-8" --- */
+
+/* A UTF-8 byte order mark before the header: the bundle check takes the file, the companion inspector finds the key
+ * file its column names, and a companion rewrite keeps the mark and leaves a file the bundle check still takes. */
+static void
+test_bom_target_file_bundle(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "trunk-scan-bom-"));
+    write_file_in(dir, "old keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "targets.csv",
+                  "\xEF\xBB\xBF"
+                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+                  "Mall,dmr-conventional,464125000,,500,,,old keys.csv\n");
+    char path[DSD_TEST_PATH_MAX];
+    int count = 0;
+    char err[256] = {0};
+    DSD_SNPRINTF(path, sizeof path, "%s/targets.csv", dir);
+    assert(dsd_app_trunk_scan_validate_bundle(path, &count, NULL, err, sizeof err) == 0 && count == 1);
+
+    check_quoted_rewrite(dir, "targets.csv", 0, "old keys.csv", "targets2.csv", ",,,keys.csv\n");
+    char text[1024];
+    read_file_in(dir, "targets2.csv", text, sizeof text);
+    static const char bom[] = "\xEF\xBB\xBF";
+    assert(strncmp(text, bom, sizeof bom - 1U) == 0 && strncmp(text + sizeof bom - 1U, "id,", 3) == 0);
+    DSD_SNPRINTF(path, sizeof path, "%s/targets2.csv", dir);
+    assert(dsd_app_trunk_scan_validate_bundle(path, &count, NULL, err, sizeof err) == 0 && count == 1);
+
+    const char* const files[] = {"old keys.csv", "keys.csv", "targets.csv", "targets2.csv", NULL};
+    assert(dsd_test_remove_temp_dir(dir, files) == 0);
+}
+
 /* --- Issue #637: previews note service names the filters reject --- */
 
 typedef struct {
@@ -568,6 +600,7 @@ main(void) {
     test_trunk_scan_examples_validate();
     test_bundle_checks_each_file_once();
     test_quoted_options_cells();
+    test_bom_target_file_bundle();
     test_previews_note_unreachable_names();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");

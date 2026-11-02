@@ -540,6 +540,9 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 ```
 
 - Optional columns are allowed after `notes`; recognized optional columns are matched by header name.
+- A UTF-8 byte order mark before the header (a spreadsheet's "CSV UTF-8" export) is accepted.
+- The header and each data row are read up to 4096 bytes, including the line ending (and any byte order mark) and the
+  terminating NUL; a longer line, the header included, rejects the file (`row N is too long`).
 - Every data row must contain the first seven fields, even when optional values are empty. Missing trailing optional
   fields are treated as empty.
 - Blank data rows are skipped.

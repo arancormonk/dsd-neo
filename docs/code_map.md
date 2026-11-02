@@ -3059,6 +3059,12 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
+  - One candidate filter, `trunk_scan_alternate_is_candidate()` (not avoided, not cooling down from a failed retune, not
+    an analog target `trunk_scan_target_width_skipped()` refuses at the published DSP rate), serves the advance walk,
+    the per-visit cap's somewhere-to-go test (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection
+    alternate, so neither the cap nor a rejection releases the target on air toward a target the walk passes over. With
+    no such alternate, a failed park is retried in place after its cooldown (`trunk_scan_retry_active_if_due()`), as a
+    single or held target's is; the walk names the widths a changed rate leaves unfit, since it no longer retunes them.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
@@ -3075,10 +3081,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
   active target, clear avoids, advance now, retreat now); answers "unavailable" when trunk scan is not installed and
   "paused" while it is paused (`src/app_control/app_command_queue.c`)
-  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided and cooling
-    targets skipped), the original last in both directions, so the fallback and rollback are shared. Avoid and every
-    automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on the target
-    a step or avoid lands on.
+  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided, cooling and
+    width-skipped targets skipped), the original last in both directions, so the fallback and rollback are shared.
+    Avoid and every automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on
+    the target a step or avoid lands on.
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
     stayed advance or retreat toasts the outcome only ("Staying on target #<ordinal> <label>", the id without a label);

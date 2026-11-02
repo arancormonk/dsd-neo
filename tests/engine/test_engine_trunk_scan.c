@@ -209,6 +209,9 @@ static int g_scan_tune_to_freq_failures_remaining = 0;
    dsd_engine_scan_tune_to_freq() does, counting each refusal. */
 static int g_scan_tune_refuses_unfit_width = 0;
 static int g_scan_tune_width_refusals = 0;
+/* Issue #697: how many times the coordinator asked to tune g_scan_tune_watch_hz, whatever the answer. */
+static long int g_scan_tune_watch_hz = 0;
+static int g_scan_tune_watch_calls = 0;
 /* Issue #526: leave each scan tune in flight, as an RTL retune the controller has not landed yet: the request stays
    pending until the test completes it. */
 static int g_scan_tune_to_freq_pending = 0;
@@ -474,6 +477,9 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     g_scan_tune_to_freq_ted_sps = ted_sps;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (freq == g_scan_tune_watch_hz) {
+        g_scan_tune_watch_calls++;
     }
     g_scan_tune_to_freq_analog_only = opts->analog_only;
     g_scan_tune_to_freq_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
@@ -781,6 +787,88 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
 
     dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* A spreadsheet's "CSV UTF-8" export starts the file with a UTF-8 byte order mark. The header after it is read as it
+ * would be without one: the file loads the same targets, its optional columns found by name. */
+static int
+test_parser_skips_a_utf8_bom_before_the_header(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "\xEF\xBB\xBF"
+                                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "p25,p25-trunk,851000000,,500,,primary,County\n"
+                                       "conv,dmr-conventional,461000000,,750,1500,simplex,Tower\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    const int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || list.count != 2) {
+        DSD_FPRINTF(stderr, "BOM header rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    } else if (strcmp(list.targets[0].id, "p25") != 0 || list.targets[0].type != DSD_TRUNK_SCAN_TARGET_P25_TRUNK
+               || list.targets[0].frequency_hz != 851000000U || list.targets[0].dwell_ms != 500
+               || strcmp(list.targets[0].label, "County") != 0 || strcmp(list.targets[1].id, "conv") != 0
+               || list.targets[1].activity_hold_ms != 1500 || strcmp(list.targets[1].label, "Tower") != 0) {
+        DSD_FPRINTF(stderr, "BOM header targets differ: '%s' %u '%s', '%s' '%s'\n", list.targets[0].id,
+                    list.targets[0].frequency_hz, list.targets[0].label, list.targets[1].id, list.targets[1].label);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A header line longer than the reader's line buffer is refused, as a data row that long is, rather than read as the
+ * part that fits: the rest of the line would then be read as the first data row. Here that rest is a valid target. */
+static int
+test_parser_refuses_an_over_long_header(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    /* The required columns, then one unknown column name that fills the 4096-byte line buffer, so the remainder of
+     * the physical header line is exactly a target row. */
+    static const char required[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,";
+    static const char remainder[] = "a,dmr-conventional,461000000,,250,,\n";
+    static char content[8192];
+    size_t used = sizeof required - 1U;
+    DSD_MEMCPY(content, required, used);
+    DSD_MEMSET(content + used, 'x', 4095U - used);
+    used = 4095U;
+    DSD_SNPRINTF(content + used, sizeof content - used, "%s%s", remainder, "b,dmr-conventional,462000000,,250,,\n");
+    char target_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(target_path, sizeof target_path, dir, "targets.csv") != 0
+        || write_text_file(target_path, content) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    const int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc == 0 || list.count != 0 || strcmp(err, "row 1 is too long") != 0) {
+        DSD_FPRINTF(stderr, "over-long header rc=%d count=%zu err='%s'\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -8032,6 +8120,111 @@ test_scan_hold_retries_the_held_target_after_a_pending_retune_fails(void) {
     return test_rc;
 }
 
+/* Fail @p stage's park of target b, left pending at request @p pending_id, then tick for half a minute: with a avoided
+ * the rotation has nowhere else to go, so b is retried in place once its cooldown ends, and the retry parks it. */
+static int
+expect_failed_park_retried_with_no_alternate(dsd_opts* opts, dsd_state* state, const char* stage, uint64_t pending_id,
+                                             double now_s) {
+    int test_rc = 0;
+    if (g_counting_tune_to_cc_calls != 1 || pending_id == 0U) {
+        DSD_FPRINTF(stderr, "%s did not leave a pending park calls=%d id=%llu\n", stage, g_counting_tune_to_cc_calls,
+                    (unsigned long long)pending_id);
+        test_rc = 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_request_publish(pending_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    trunk_scan_test_set_now(now_s + 0.1);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "%s: the failed park was retried before its cooldown calls=%d\n", stage,
+                    g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 59; tick++) {
+        trunk_scan_test_set_now(now_s + 0.6 + (0.5 * tick));
+        dsd_engine_trunk_scan_tick(opts, state);
+    }
+    test_rc |= expect_active_target(state, stage, 1U);
+    /* One retry, once the cooldown ran out: it landed, so nothing is owed after it. */
+    if (g_counting_tune_to_cc_calls != 2 || g_counting_tune_to_cc_parked_freq != 462000000L) {
+        DSD_FPRINTF(stderr, "%s: the failed park was not retried in place calls=%d parked=%ld\n", stage,
+                    g_counting_tune_to_cc_calls, g_counting_tune_to_cc_parked_freq);
+        test_rc = 1;
+    }
+    test_rc |= expect_scan_control_publication(state, stage, 0U, 0U, 1U);
+    return test_rc;
+}
+
+/* A park that fails asynchronously moves the scan on, and with nowhere to move to (every other target avoided) the
+ * target is retried in place after the cooldown, as a single or held target is: without that the receiver would stay
+ * wherever the failed tune left it, under the target's keys and policy, with no further tune at all. */
+static int
+test_scan_retries_a_failed_park_when_every_alternate_is_avoided(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_trunk_tuning_requests_reset();
+    if (scan_control_init("a,dmr-trunk,461000000,,250,,\n"
+                          "b,dmr-trunk,462000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_parked_freq = 0;
+    trunk_scan_test_set_now(1.0);
+    int test_rc =
+        expect_control_rc("avoid a, park b pending",
+                          dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a, park b pending", 1U);
+    test_rc |= expect_failed_park_retried_with_no_alternate(&opts, &state, "avoided alternate",
+                                                            g_counting_tune_to_cc_last_request_id, 1.0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The same after a resume (issue #671): the resume re-parks the target the scan paused at, and when that park fails
+ * asynchronously with every other target avoided it is retried in place after the cooldown. */
+static int
+test_scan_retries_a_failed_resume_park_when_every_alternate_is_avoided(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_trunk_tuning_requests_reset();
+    if (scan_control_init("a,dmr-trunk,461000000,,250,,\n"
+                          "b,dmr-trunk,462000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_control_rc(
+        "avoid a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a", 1U);
+    test_rc |= expect_control_rc("pause at b",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE), 0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_parked_freq = 0;
+    trunk_scan_test_set_now(2.0);
+    test_rc |= expect_control_rc("resume pending", dsd_engine_trunk_scan_resume_locked(&opts, &state), 1);
+    test_rc |= expect_failed_park_retried_with_no_alternate(&opts, &state, "resume with avoided alternate",
+                                                            g_counting_tune_to_cc_last_request_id, 2.0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_scan_shutdown_clears_hold_and_avoid_publication(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13763,8 +13956,9 @@ test_nfm_target_width_rechecked_when_the_dsp_rate_changes(void) {
 
 /* The two warnings keep their own schedules: an nfm target's open squelch is named once when the scan starts, before an
  * RTL stream has published a DSP rate and never again as that rate changes, while its width is named for each new rate.
- * A width the rate cannot fit is then refused at every visit, before any backend moves, and the coordinator adds no
- * "retune failed" line of its own each time the rotation reaches it. */
+ * A target whose width the rate cannot fit is then passed over at every visit without a retune, so no backend moves and
+ * the coordinator adds no "retune failed" line of its own each time the rotation reaches it; a rate that fits the
+ * width brings it back into the rotation. */
 static int
 test_nfm_target_refused_width_skipped_quietly(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13795,12 +13989,23 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    g_scan_tune_watch_hz = 154430000L;
+    g_scan_tune_watch_calls = 0;
+    int unfit_tunes = 0;
+    int fit_tunes = 0;
     /* 16 kHz for many rotations (past the refused target's retry cooldown), 24 kHz, then 16 kHz again. */
     for (int i = 0; i < 40; i++) {
         g_scan_dsp_rate_hz = (i >= 24 && i < 28) ? 24000 : 16000;
+        const int tunes_before = g_scan_tune_watch_calls;
         trunk_scan_test_set_now(0.26 * (double)(i + 1));
         dsd_engine_trunk_scan_tick(&opts, &state);
+        if (g_scan_dsp_rate_hz == 16000) {
+            unfit_tunes += g_scan_tune_watch_calls - tunes_before;
+        } else {
+            fit_tunes += g_scan_tune_watch_calls - tunes_before;
+        }
     }
+    g_scan_tune_watch_hz = 0;
     const int refusals = g_scan_tune_width_refusals;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     (void)dsd_test_capture_stderr_end(&cap);
@@ -13813,11 +14018,13 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     const int width =
         count_text(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
     const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
-    if (rc != 0 || open_squelch_lines != 1 || width != 2 || refusals < 2 || failed != 0) {
+    if (rc != 0 || open_squelch_lines != 1 || width != 2 || refusals != 0 || unfit_tunes != 0 || fit_tunes < 1
+        || failed != 0) {
         DSD_FPRINTF(
             stderr,
-            "refused nfm target (rc=%d %s): squelch named %d, width named %d, refused %d, retune-failed %d\n%s\n", rc,
-            err, open_squelch_lines, width, refusals, failed, buf);
+            "refused nfm target (rc=%d %s): squelch named %d, width named %d, refused %d, tuned %d unfit and %d "
+            "fit, retune-failed %d\n%s\n",
+            rc, err, open_squelch_lines, width, refusals, unfit_tunes, fit_tunes, failed, buf);
         return 1;
     }
     return 0;
@@ -13825,8 +14032,9 @@ test_nfm_target_refused_width_skipped_quietly(void) {
 
 /* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
  * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
- * status line, then refused at every visit before any backend moves, with no "retune failed" line of the
- * coordinator's own, although the DSP rate fits the width. */
+ * status line. The front end refuses the scan start's park of it before any backend moves, and the rotation then
+ * passes it over at every visit without a retune, with no "retune failed" line of the coordinator's own, although the
+ * DSP rate fits the width. */
 static int
 test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13860,10 +14068,14 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     char status[sizeof state.ui_msg];
     DSD_SNPRINTF(status, sizeof status, "%s", state.ui_msg);
+    g_scan_tune_watch_hz = 154430000L;
+    g_scan_tune_watch_calls = 0;
     for (int i = 0; i < 24; i++) {
         trunk_scan_test_set_now(0.26 * (double)(i + 1));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
+    const int later_tunes = g_scan_tune_watch_calls;
+    g_scan_tune_watch_hz = 0;
     const int refusals = g_scan_tune_width_refusals;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     (void)dsd_test_capture_stderr_end(&cap);
@@ -13880,19 +14092,105 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     const int status_named = strcmp(status, "Skipped at every visit: Trunk scan target 'fire': NFM 12.5 kHz needs the "
                                             "filter DSD_NEO_CHANNEL_LPF=0 turns off")
                              == 0;
-    if (rc != 0 || width != 1 || refusals < 2 || failed != 0 || !status_named) {
+    if (rc != 0 || width != 1 || refusals != 1 || later_tunes != 0 || failed != 0 || !status_named) {
         DSD_FPRINTF(stderr,
-                    "lpf-off nfm target (rc=%d %s): width named %d, refused %d, retune-failed %d, status '%s'\n%s\n",
-                    rc, err, width, refusals, failed, status, buf);
+                    "lpf-off nfm target (rc=%d %s): width named %d, refused %d, tuned %d times after the start, "
+                    "retune-failed %d, status '%s'\n%s\n",
+                    rc, err, width, refusals, later_tunes, failed, status, buf);
         return 1;
     }
     return 0;
 }
 
+/* A target skipped at every visit for its width is no alternate for the per-visit cap or the dwell rotation either.
+ * With the cap at 1 s and a carrier held on the one target the DSP rate can filter, the cap never fires: the reception
+ * on air stays one, with no release and no re-park, instead of being cut, failing on the refused target and parked
+ * again every few seconds. Once the carrier ends the idle dwell runs out without re-parking the target. */
+static int
+test_visit_cap_with_a_width_skipped_alternate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,2000,,--nfm-bandwidth-hz 12500\n"
+                                          "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        g_scan_tune_refuses_unfit_width = 0;
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.scan_max_visit_ms = 1000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscancapwidth") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        g_scan_tune_refuses_unfit_width = 0;
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    trunk_scan_test_set_now(0.0);
+    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = expect_active_target(&state, "the receivable target parked", 0U);
+    const uint32_t generation = state.analog_rx.generation;
+    const int refusals = g_scan_tune_width_refusals;
+    for (int tick = 0; tick < 80; tick++) {
+        state.analog_rx.carrier_open = 1;
+        trunk_scan_test_set_now(0.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a held carrier with a width-skipped alternate", 0U);
+    const uint32_t held_generation = state.analog_rx.generation;
+    const int held_refusals = g_scan_tune_width_refusals;
+    /* The carrier ends: the activity hold, then many dwells, run out with nowhere to go. */
+    state.analog_rx.carrier_open = 0;
+    for (int tick = 0; tick < 40; tick++) {
+        trunk_scan_test_set_now(20.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "idle with a width-skipped alternate", 0U);
+    const uint32_t idle_generation = state.analog_rx.generation;
+    const int idle_refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int cap_notices = count_text(buf, "reached its 1000 ms visit limit");
+    if (init_rc != 0 || cap_notices != 0 || held_generation != generation || held_refusals != refusals) {
+        DSD_FPRINTF(stderr,
+                    "held carrier, width-skipped alternate (rc=%d %s): %d visit-limit notices, generation %u -> %u, "
+                    "refusals %d -> %d\n",
+                    init_rc, err, cap_notices, generation, held_generation, refusals, held_refusals);
+        test_rc = 1;
+    }
+    if (idle_generation != held_generation || idle_refusals != held_refusals) {
+        DSD_FPRINTF(stderr, "idle dwells re-parked the target: generation %u -> %u, refusals %d -> %d\n",
+                    held_generation, idle_generation, held_refusals, idle_refusals);
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
 /* An nfm target that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
  * digital session. A rate that cannot filter it is named with that width when the scan starts, and the width again
- * whenever it changes (the width command, a config apply); the retune then refuses the target at every visit, before
- * any backend moves, with no "retune failed" line of the coordinator's own, until the configured width fits. */
+ * whenever it changes (the width command, a config apply). The front end refuses the scan start's park of it before any
+ * backend moves, and the rotation then passes it over at every visit without a retune, with no "retune failed" line of
+ * the coordinator's own, until the configured width fits, when the rotation tunes it again. */
 static int
 test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13932,11 +14230,15 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
         } else if (i == 24) {
             (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 12500);
             refused_at_12_5 = g_scan_tune_width_refusals;
+            g_scan_tune_watch_hz = 154430000L;
+            g_scan_tune_watch_calls = 0;
         }
         trunk_scan_test_set_now(0.26 * (double)(i + 1));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     const int refused_after = g_scan_tune_width_refusals - refused_at_12_5;
+    const int fit_tunes = g_scan_tune_watch_calls;
+    g_scan_tune_watch_hz = 0;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
@@ -13952,13 +14254,13 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
                                           "every visit");
     const int named_12_5 = count_text(buf, "configured NFM bandwidth 12.5 kHz");
     const int failed = count_text(buf, "Trunk scan target 'plain' retune failed");
-    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_fix != 2 || named_12_5 != 0 || refused_at_16 < 1
-        || refused_at_12_5 <= refused_at_16 || refused_after != 0 || failed != 0) {
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_fix != 2 || named_12_5 != 0 || refused_at_16 != 1
+        || refused_at_12_5 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
         DSD_FPRINTF(stderr,
                     "inherited nfm width (rc=%d %s): named 16 kHz %d, 20 kHz %d, fix %d, 12.5 kHz %d; refused %d/%d/"
-                    "%d after; retune-failed %d\n%s\n",
+                    "%d after; tuned %d once it fit; retune-failed %d\n%s\n",
                     rc, err, named_16, named_20, named_fix, named_12_5, refused_at_16, refused_at_12_5, refused_after,
-                    failed, buf);
+                    fit_tunes, failed, buf);
         return 1;
     }
     return 0;
@@ -13967,7 +14269,8 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
 /* An am-conventional target that sets no width of its own runs the configured AM width, held to the DSP rate as an
  * nfm target's configured NFM width is: a rate that cannot filter it is named with that width when the scan starts,
  * and again whenever the configured AM width changes -- never when only the NFM width does, which it does not run --
- * and the retune refuses the target at every visit, with no "retune failed" line, until the configured width fits. */
+ * and after the front end refuses the scan start's park of it the rotation passes it over at every visit without a
+ * retune, with no "retune failed" line, until the configured width fits, when the rotation tunes it again. */
 static int
 test_am_target_configured_width_held_to_the_dsp_rate(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -14010,11 +14313,15 @@ test_am_target_configured_width_held_to_the_dsp_rate(void) {
         } else if (i == 36) {
             (void)dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000);
             refused_at_10 = g_scan_tune_width_refusals;
+            g_scan_tune_watch_hz = 118300000L;
+            g_scan_tune_watch_calls = 0;
         }
         trunk_scan_test_set_now(0.26 * (double)(i + 1));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     const int refused_after = g_scan_tune_width_refusals - refused_at_10;
+    const int fit_tunes = g_scan_tune_watch_calls;
+    g_scan_tune_watch_hz = 0;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
@@ -14029,13 +14336,13 @@ test_am_target_configured_width_held_to_the_dsp_rate(void) {
     const int named_nfm = count_text(buf, "Trunk scan target 'tower': it sets no NFM width");
     const int named_10 = count_text(buf, "configured AM bandwidth 10 kHz");
     const int failed = count_text(buf, "Trunk scan target 'tower' retune failed");
-    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_nfm != 0 || named_10 != 0 || refused_at_16 < 1
-        || refused_at_10 <= refused_at_16 || refused_after != 0 || failed != 0) {
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_nfm != 0 || named_10 != 0 || refused_at_16 != 1
+        || refused_at_10 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
         DSD_FPRINTF(stderr,
                     "inherited am width (rc=%d %s): named 16 kHz %d, 20 kHz %d, NFM %d, 10 kHz %d; refused %d/%d/%d "
-                    "after; retune-failed %d\n%s\n",
+                    "after; tuned %d once it fit; retune-failed %d\n%s\n",
                     rc, err, named_16, named_20, named_nfm, named_10, refused_at_16, refused_at_10, refused_after,
-                    failed, buf);
+                    fit_tunes, failed, buf);
         return 1;
     }
     return 0;
@@ -16531,6 +16838,8 @@ int
 main(void) {
     int rc = 0;
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
+    rc |= run_with_default_tune_hook(test_parser_skips_a_utf8_bom_before_the_header);
+    rc |= run_with_default_tune_hook(test_parser_refuses_an_over_long_header);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
     rc |= run_with_default_tune_hook(test_parser_keeps_gain_after_receive_options);
@@ -16639,6 +16948,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_controls_on_a_single_target);
     rc |= run_with_default_tune_hook(test_scan_controls_report_busy_while_p25_guard_held);
     rc |= run_with_default_tune_hook(test_scan_hold_retries_the_held_target_after_a_pending_retune_fails);
+    rc |= run_with_default_tune_hook(test_scan_retries_a_failed_park_when_every_alternate_is_avoided);
+    rc |= run_with_default_tune_hook(test_scan_retries_a_failed_resume_park_when_every_alternate_is_avoided);
     rc |= run_with_default_tune_hook(test_scan_shutdown_clears_hold_and_avoid_publication);
     rc |= run_with_default_tune_hook(test_single_target_retune_failure_retries_after_cooldown);
     rc |= run_with_default_tune_hook(test_retune_failure_cooldown);
@@ -16732,6 +17043,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_off_value_tone_waits_for_the_window);
     rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
+    rc |= run_with_default_tune_hook(test_visit_cap_with_a_width_skipped_alternate);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_weighs_an_am_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
