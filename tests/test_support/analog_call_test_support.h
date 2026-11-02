@@ -18,6 +18,7 @@ dsd_test_analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples
         .count = count,
         .sample_rate = sample_rate,
         .input = input,
+        .ramp_end = 0,
         .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
     };
     dsd_engine_analog_call_block(opts, state, &block);

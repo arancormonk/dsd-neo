@@ -19300,6 +19300,16 @@ dsd_neo_add_analog_record_start_test(
     "${_pcm_record_tone_short_mode} --analog-pcm-tap 44100 --analog-record-min-start-ms 306 --analog-record-min-audio-ms 306"
     1
 )
+# The 44.1 kHz tap under the noise squelch, which opens a few samples before a block ends:
+# the sink gate's 5 ms ramp-in runs on into the next block, which the recording takes as
+# heard until the ramp is done, so no 2.5 ms window of a burst's first 300 ms falls under
+# half the recording's level there (0.62 at the lowest; 0.32 to 0.44 when the next block
+# went in faded).
+dsd_neo_add_analog_record_start_test(
+    DECODE_PCM_ANALOG_RECORD_LEVEL_44K
+    "--analog-scene onsets-late --analog-pcm-tap 44100 -fA --squelch noise+6 --analog-record-max-start-ms -120 --analog-record-min-level 0.5"
+    5
+)
 # B1 at 8192 Hz: carriers of 0.10 to 0.22 s whose tone is passed only after they end,
 # in the 200 ms hangover, leave no recording and no row; the 0.6 s burst records from
 # the verdict, the block's earlier part left out (B6).

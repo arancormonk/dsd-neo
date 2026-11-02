@@ -18,6 +18,7 @@
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -200,14 +201,14 @@ typedef struct {
     const char* dir;
     int files;
     int temp;
-    int unnamed;
+    int named;
 } teardown_check;
 
 static int
 check_teardown_recording(const char* name, void* user) {
     teardown_check* check = user;
     check->temp += strstr(name, "TEMP") != NULL;
-    check->unnamed += dsd_test_nfm_recording_name_is(name, NULL, NULL, NULL);
+    check->named += dsd_test_nfm_recording_name_is(name, "154437500", "CTCSS_141.3", "Traveler__West_");
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -492,13 +493,22 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     assert(dsd_dir_list(directory, count_recording_frames, &tolerated) == 0);
     assert(tolerated.files == 1 && tolerated.frames == 960);
     /* A teardown that skips the engine's finalize still publishes the open recording, never leaving its TEMP_ file. */
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 154437500U;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1413;
     dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     dsd_state_ext_free_all(state);
     teardown_check teardown = {.dir = directory};
     assert(dsd_dir_list(directory, check_teardown_recording, &teardown) == 0);
-    /* With no history row left it is published as an unnamed NFM recording, not under the digital name. */
-    assert(teardown.files == 1 && teardown.temp == 0 && teardown.unnamed == 1);
+    /* With no history row left it is published under the NFM name the row gave it (issue #668): its frequency, tone and
+       service, never FREQ_UNKNOWN for a call whose frequency was known, nor the digital name. */
+    assert(teardown.files == 1 && teardown.temp == 0 && teardown.named == 1);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->rtlsdr_center_freq = 0U;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
     assert(dsd_test_rmdir(directory) == 0);
     opts->rdio_mode = DSD_RDIO_MODE_OFF;
 }
@@ -742,6 +752,7 @@ hold_feed_qualified(hold_rig* r, int input, int value, int qualified) {
         .count = HOLD_BLOCK,
         .sample_rate = r->rate,
         .input = input,
+        .ramp_end = 0,
         .qualified_carrier = qualified,
     };
     dsd_engine_analog_call_block(r->opts, r->state, &call);
@@ -1902,14 +1913,16 @@ test_hold_largest_silence_write(void) {
 enum { PRE_MS = 200, PRE_CAP = PRE_MS * 48, PRE_MAX_BLOCKS = 24 };
 
 /* One block a pre-roll test feeds: what it is to the call, its samples as heard before the sink gate and as the gate
-   left them (each a constant, silent before @p eligible_from, as B6 leaves a block), and whether a tap read past the
-   eligible point found the carrier. */
+   left them (each a constant, silent before @p eligible_from, as B6 leaves a block), whether a tap read past the
+   eligible point found the carrier, and how far the gate's ramp-in from the block before ran on into it (@p ramp_end:
+   its written samples there are a quarter of the rest, still fading in). */
 typedef struct {
     int input;
     short heard;
     short written;
     size_t eligible_from;
     int qualified;
+    size_t ramp_end;
 } pre_block;
 
 static void
@@ -1926,6 +1939,9 @@ pre_feed(hold_rig* r, const pre_block* b) {
     static float written[HOLD_BLOCK];
     pre_fill(heard, b->heard, b->eligible_from);
     pre_fill(written, b->written, b->eligible_from);
+    for (size_t i = 0; i < b->ramp_end && i < HOLD_BLOCK; i++) {
+        written[i] = 0.25f * (float)b->written;
+    }
     r->state->analog_rx.carrier_open = b->input == DSD_ANALOG_CALL_RECEPTION || b->eligible_from != 0;
     dsd_analog_sink_block_begin(r->state);
     r->now_ns += (uint64_t)HOLD_BLOCK * 1000000000ULL / (uint64_t)r->rate;
@@ -1937,6 +1953,7 @@ pre_feed(hold_rig* r, const pre_block* b) {
         .sample_rate = r->rate,
         .input = b->input,
         .eligible_from = b->eligible_from,
+        .ramp_end = b->ramp_end,
         .qualified_carrier = b->qualified,
         .wall_end_s = dsd_decode_now_realtime_s(),
     };
@@ -1946,21 +1963,21 @@ pre_feed(hold_rig* r, const pre_block* b) {
 /* A clean block after the carrier went, its tone allowed: what fills the pre-roll. */
 static void
 pre_quiet(hold_rig* r, short heard) {
-    const pre_block b = {DSD_ANALOG_CALL_HOLDABLE, heard, 0, 0, 0};
+    const pre_block b = {DSD_ANALOG_CALL_HOLDABLE, heard, 0, 0, 0, 0};
     pre_feed(r, &b);
 }
 
 /* A carrier whose tone is still being checked: a HOLDABLE block that is not clean. */
 static void
 pre_pending(hold_rig* r) {
-    const pre_block b = {DSD_ANALOG_CALL_HOLDABLE, 0, 0, HOLD_BLOCK, 0};
+    const pre_block b = {DSD_ANALOG_CALL_HOLDABLE, 0, 0, HOLD_BLOCK, 0, 0};
     pre_feed(r, &b);
 }
 
 /* A reception that heard its carrier, @p heard before the sink gate and @p written after it. */
 static void
 pre_receive(hold_rig* r, short heard, short written) {
-    const pre_block b = {DSD_ANALOG_CALL_RECEPTION, heard, written, 0, 1};
+    const pre_block b = {DSD_ANALOG_CALL_RECEPTION, heard, written, 0, 1, 0};
     pre_feed(r, &b);
 }
 
@@ -2222,7 +2239,7 @@ pre_run_broken_hold(int rate, int preroll_ms, int event, hold_files* found) {
         pre_quiet(&r, (short)(13 + k));
     }
     const pre_block resumed = {
-        DSD_ANALOG_CALL_RECEPTION, 2000, 2000, event == PRE_HOLD_UNCLEAN ? 400U : 0U, event != PRE_HOLD_UNHEARD,
+        DSD_ANALOG_CALL_RECEPTION, 2000, 2000, event == PRE_HOLD_UNCLEAN ? 400U : 0U, event != PRE_HOLD_UNHEARD, 0,
     };
     pre_feed(&r, &resumed);
     pre_receive(&r, 2000, 2000);
@@ -2270,7 +2287,7 @@ test_preroll_drops_across_a_break_in_the_lane(void) {
         if (c == 0) {
             pre_pending(&r);
         } else if (c == 1) {
-            const pre_block turned = {DSD_ANALOG_CALL_HOLDABLE, 79, 0, 300, 0};
+            const pre_block turned = {DSD_ANALOG_CALL_HOLDABLE, 79, 0, 300, 0, 0};
             pre_feed(&r, &turned);
         } else {
             dsd_analog_sink_break(r.state);
@@ -2305,7 +2322,7 @@ pre_event_epoch(hold_rig* r) {
 
 static void
 pre_event_hangover(hold_rig* r) {
-    const pre_block b = {DSD_ANALOG_CALL_RECEPTION, 99, 0, 0, 0};
+    const pre_block b = {DSD_ANALOG_CALL_RECEPTION, 99, 0, 0, 0, 0};
     pre_feed(r, &b);
 }
 
@@ -2532,7 +2549,7 @@ test_preroll_trims_an_unclean_opening(void) {
         hold_rig r;
         pre_open(&r, "dsdneo_preroll_trim", 0, PRE_MS, rates[i]);
         pre_quiet(&r, 77);
-        const pre_block opening = {DSD_ANALOG_CALL_RECEPTION, 1000, 1000, 328, 1};
+        const pre_block opening = {DSD_ANALOG_CALL_RECEPTION, 1000, 1000, 328, 1, 0};
         pre_feed(&r, &opening);
         pre_receive(&r, 2000, 2000);
         dsd_engine_analog_call_end(r.opts, r.state);
@@ -2602,6 +2619,154 @@ test_preroll_without_memory(void) {
     hold_close(&r);
 }
 
+/* Final review I1: the sink gate's ramp-in that began in a block written as heard (a new recording's opening block, or
+   a resumed one) runs on into the next block, whose written samples are still fading in. That block goes on as heard
+   up to its ramp_end, then as the gate left it, so the file's level runs on across the seam: one conversion of the
+   blocks as heard, at 48 kHz and 44.1 kHz. A ramp that runs through a whole block carries on into the one after; a
+   ramp in a block that went on from written samples is the file's own and stays. */
+static void
+test_preroll_heard_runs_on_through_the_ramp(void) {
+    static const int rates[] = {48000, 44100};
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        for (int resume = 0; resume < 2; resume++) {
+            hold_rig r;
+            pre_open(&r, "dsdneo_preroll_ramp", resume ? 1000 : 0, PRE_MS, rates[i]);
+            pre_ref_block blocks[10];
+            int n = 0;
+            if (resume) {
+                pre_receive(&r, 900, 900);
+                pre_receive(&r, 900, 900);
+                blocks[n++] = (pre_ref_block){900, HOLD_BLOCK};
+                blocks[n++] = (pre_ref_block){900, HOLD_BLOCK};
+            }
+            pre_quiet(&r, 11);
+            pre_quiet(&r, 12);
+            blocks[n++] = (pre_ref_block){11, HOLD_BLOCK};
+            blocks[n++] = (pre_ref_block){12, HOLD_BLOCK};
+            /* The squelch opened on the block's last samples: written silent, heard whole. */
+            const pre_block feed[] = {
+                {DSD_ANALOG_CALL_RECEPTION, 1000, 0, 0, 1, 0},
+                {DSD_ANALOG_CALL_RECEPTION, 2000, 2000, 0, 1, HOLD_BLOCK},
+                {DSD_ANALOG_CALL_RECEPTION, 3000, 3000, 0, 1, 30},
+                {DSD_ANALOG_CALL_RECEPTION, 4000, 4000, 0, 1, 30},
+            };
+            for (size_t k = 0; k < sizeof feed / sizeof feed[0]; k++) {
+                pre_feed(&r, &feed[k]);
+            }
+            blocks[n++] = (pre_ref_block){1000, HOLD_BLOCK};
+            blocks[n++] = (pre_ref_block){2000, HOLD_BLOCK};
+            blocks[n++] = (pre_ref_block){3000, HOLD_BLOCK};
+            blocks[n++] = (pre_ref_block){1000, 30};
+            blocks[n++] = (pre_ref_block){4000, HOLD_BLOCK - 30};
+            dsd_engine_analog_call_end(r.opts, r.state);
+            hold_files found;
+            hold_take(&r, &found, 1);
+            pre_ref ref;
+            pre_reference(&ref, rates[i], blocks, n);
+            char what[96];
+            DSD_SNPRINTF(what, sizeof what, "the %s block's ramp runs on as heard at %d Hz",
+                         resume ? "resumed" : "opening", rates[i]);
+            pre_expect(what, &found, 0, ref.samples, ref.frames);
+            free(ref.samples);
+            hold_release(&found);
+            hold_close(&r);
+        }
+    }
+}
+
+/* Final review M1: a change of the pre-roll setting while a call records on, not held, leaves the file's conversion
+   unbroken: at 44.1 kHz, applied by its command or seen by the next block (a config rolled back), raised, lowered or
+   turned off and on, the file is one conversion of the receptions. The ring only empties: a hold after it resumes with
+   the owed silence. */
+static void
+test_preroll_change_mid_call_keeps_the_conversion(void) {
+    static const int changes[][2] = {{PRE_MS, 300}, {PRE_MS, 0}, {0, PRE_MS}};
+    for (size_t c = 0; c < sizeof changes / sizeof changes[0]; c++) {
+        for (int by_command = 0; by_command < 2; by_command++) {
+            hold_rig r;
+            pre_open(&r, "dsdneo_preroll_change", 0, changes[c][0], 44100);
+            pre_receive(&r, 1000, 1000);
+            pre_receive(&r, 2000, 2000);
+            r.opts->analog_record_preroll_ms = changes[c][1];
+            if (by_command) {
+                dsd_engine_analog_call_preroll_changed(r.opts, r.state);
+            }
+            pre_receive(&r, 3000, 3000);
+            dsd_engine_analog_call_end(r.opts, r.state);
+            hold_files found;
+            hold_take(&r, &found, 1);
+            const pre_ref_block blocks[] = {{1000, HOLD_BLOCK}, {2000, HOLD_BLOCK}, {3000, HOLD_BLOCK}};
+            pre_ref ref;
+            pre_reference(&ref, 44100, blocks, 3);
+            char what[96];
+            DSD_SNPRINTF(what, sizeof what, "pre-roll %d -> %d mid-call%s", changes[c][0], changes[c][1],
+                         by_command ? " by its command" : "");
+            pre_expect(what, &found, 0, ref.samples, ref.frames);
+            free(ref.samples);
+            hold_release(&found);
+            hold_close(&r);
+        }
+    }
+}
+
+/* Final review M4: with -P on, no ring is allocated where no block can be an NFM call's reception: a digital mode, the
+   AM monitor, trunking. The FM monitor allocates one at its first block. */
+static void
+test_preroll_only_where_a_call_can_be(void) {
+    for (int c = 0; c < 4; c++) {
+        hold_rig r;
+        pre_open(&r, "dsdneo_preroll_mode", 0, PRE_MS, 48000);
+        r.opts->analog_only = c == 1 ? 0 : 1;
+        r.opts->analog_demod = c == 2 ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+        r.opts->trunk_enable = c == 3;
+        g_preroll_warnings = 0;
+        analog_preroll_test_fail_alloc(1);
+        hold_feed(&r, DSD_ANALOG_CALL_BREAK, 0);
+        hold_feed(&r, DSD_ANALOG_CALL_BREAK, 0);
+        analog_preroll_test_fail_alloc(0);
+        if (g_preroll_warnings != (c == 0)) {
+            DSD_FPRINTF(stderr, "FAIL: pre-roll mode case %d: %d allocations tried\n", c, g_preroll_warnings);
+            assert(0);
+        }
+        hold_close(&r);
+    }
+}
+
+/* Task 10 review: a new recording whose opening block turned allowed inside it begins at the block's eligible point at
+   pre-roll 0 too, its silenced start trimmed and the lane started over at the cut, at 48 kHz and 8192 Hz; its start is
+   stamped from the kept span. A segment opened after a stop, on a block of a call already recording, is trimmed the
+   same way. */
+static void
+test_preroll_zero_trims_an_unclean_opening(void) {
+    static const int rates[] = {48000, 8192};
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        for (int restart = 0; restart < 2; restart++) {
+            hold_rig r;
+            pre_open(&r, "dsdneo_preroll_zero_trim", 0, 0, rates[i]);
+            if (restart) {
+                pre_receive(&r, 500, 500);
+                dsd_engine_analog_call_stop_recording(r.opts, r.state);
+            } else {
+                pre_pending(&r);
+            }
+            const pre_block opening = {DSD_ANALOG_CALL_RECEPTION, 1000, 1000, 328, 1, 0};
+            pre_feed(&r, &opening);
+            pre_receive(&r, 2000, 2000);
+            dsd_engine_analog_call_end(r.opts, r.state);
+            hold_files found;
+            hold_take(&r, &found, restart ? 2 : 1);
+            const pre_ref_block blocks[] = {{1000, HOLD_BLOCK - 328}, {2000, HOLD_BLOCK}};
+            pre_ref ref;
+            pre_reference(&ref, rates[i], blocks, 2);
+            const int file = restart ? pre_file_with(&found, ref.frames) : 0;
+            pre_expect("pre-roll 0 trims an unclean opening", &found, file, ref.samples, ref.frames);
+            free(ref.samples);
+            hold_release(&found);
+            hold_close(&r);
+        }
+    }
+}
+
 static void
 test_analog_preroll(void) {
     test_preroll_opens_a_new_recording();
@@ -2613,6 +2778,10 @@ test_analog_preroll(void) {
     test_preroll_tick_with_no_call();
     test_preroll_after_every_end();
     test_preroll_trims_an_unclean_opening();
+    test_preroll_zero_trims_an_unclean_opening();
+    test_preroll_heard_runs_on_through_the_ramp();
+    test_preroll_change_mid_call_keeps_the_conversion();
+    test_preroll_only_where_a_call_can_be();
     test_preroll_off_does_no_work();
     test_preroll_without_memory();
 }

@@ -2345,6 +2345,7 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
 typedef struct {
     size_t count;
     size_t eligible_from;
+    size_t ramp_end;
     double wall_end_s;
     int input;
     uint32_t boundaries;
@@ -2376,6 +2377,7 @@ capture_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block
         seen->count = block->count;
         seen->sample_rate = block->sample_rate;
         seen->eligible_from = block->eligible_from;
+        seen->ramp_end = block->ramp_end;
         seen->qualified_carrier = block->qualified_carrier;
         seen->wall_end_s = block->wall_end_s;
         seen->has_heard = block->heard != NULL;
@@ -5880,6 +5882,18 @@ test_tone_verdict_inside_a_block_splits_the_chain_runs(void) {
     }
 }
 
+/* The level path's ramp-in after a block's ineligible start (issue #668), on @p x from @p from to @p end: the gain the
+   sink gate's 5 ms ramp gives each sample at 8192 Hz, from silence, added up as the DSP adds it. */
+static void
+level_ramp_in(float* x, size_t from, size_t end) {
+    const float up = (float)(1.0 / ((double)B6_RATE * 0.005));
+    float gain = 0.0f;
+    for (size_t i = from; i < end && gain < 1.0f; i++) {
+        gain = fminf(1.0f, gain + up);
+        x[i] *= gain;
+    }
+}
+
 /* B6 at the gain stage, through the real AGC: a loud start the tone policy rejected, then quiet speech it allowed, in
    one block. The AGC holds over the rejected start, so the speech comes out exactly as from an AGC that was never handed
    the loud start as playing audio -- not pulled down by it. */
@@ -5911,6 +5925,8 @@ test_tone_rejected_start_leaves_the_agc_alone(void) {
     }
     dsd_voice_agc_process(&reference, ref, prefix, 0);
     dsd_voice_agc_process(&reference, ref + prefix, 960U - prefix, 1);
+    /* After the gain stage the speech ramps in from silence over 5 ms (issue #668), as under the auto squelch. */
+    level_ramp_in(ref, prefix, 960U);
     for (size_t i = prefix; i < 960U; i++) {
         if (!sample_near(seen->samples[i], ref[i])) {
             DSD_FPRINTF(stderr, "FAIL: AGC after a rejected start: sample %zu is %f, held reference %f\n", i,
@@ -5920,6 +5936,185 @@ test_tone_rejected_start_leaves_the_agc_alone(void) {
     }
     assert(call_block_silent_before(seen, prefix));
     finish_b6_case(&opts, &state);
+}
+
+/* How many samples a ramp-in at @p up per sample that stands at @p gain still takes to reach full level: the sink gate's
+   ramp, added up as the DSP adds it. */
+static size_t
+ramp_left(float gain, float up) {
+    size_t n = 0;
+    while (gain < 1.0f) {
+        gain = fminf(1.0f, gain + up);
+        n++;
+    }
+    return n;
+}
+
+/* Final review I1: the sink gate's ramp-in runs on into the block after the one it began in, and the NFM call is told
+   how far (ramp_end): the block's samples are still fading in there (below the block as heard), and from ramp_end on
+   they are the block as heard exactly. A block that begins at full gain or from silence has none, and a gate that
+   closes before the ramp is done ends it there. */
+static void
+test_sink_gate_ramp_end_follows_the_ramp(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0;
+    opts.dmr_stereo_wav = 1;
+    opts.analog_record_preroll_ms = 200;
+    g_chain_removes_tone = 0;
+    dsd_trunk_tuning_requests_reset();
+    start_call_capture();
+    const float up = (float)(1.0 / (48000.0 * 0.005));
+    float gain = 0.0f;
+    for (int i = 0; i < 5; i++) {
+        gain = fminf(1.0f, gain + up);
+    }
+    const size_t want = ramp_left(gain, up);
+    for (int closes = 0; closes < 2; closes++) {
+        feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+        feed_flagged_block(&opts, &state, 1000.0f, 0U, 955U); /* the gate opens on the block's last 5 samples */
+        assert(last_call_block()->has_heard && last_call_block()->ramp_end == 0U);
+        feed_flagged_block(&opts, &state, 1000.0f, closes ? 10U : 960U, 960U);
+        const call_block_seen* seen = last_call_block();
+        const size_t end = closes ? 10U : want;
+        if (seen->ramp_end != end) {
+            DSD_FPRINTF(stderr, "FAIL: ramp_end %zu, want %zu\n", seen->ramp_end, end);
+            assert(0);
+        }
+        /* Fading in up to the ramp's last sample, which reaches full level. */
+        for (size_t i = 0; i + (closes ? 0U : 1U) < end; i++) {
+            assert(fabsf(seen->samples[i]) < fabsf(seen->heard[i]));
+        }
+        for (size_t i = end; !closes && i < 960U; i++) {
+            assert(sample_near(seen->samples[i], seen->heard[i]));
+        }
+        if (!closes) {
+            feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+            assert(last_call_block()->ramp_end == 0U);
+        }
+    }
+    stop_call_capture();
+    opts.dmr_stereo_wav = 0;
+    g_chain_removes_tone = 1;
+    install_fake_rtl_hooks(0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* Final review M2: on the level path a tone verdict part-way through a block ramps the audio in from silence after the
+   block's ineligible start, over the sink gate's 5 ms, as under the auto squelch, instead of stepping from silence to
+   full level, for the speaker and the NFM call's samples alike; the call is handed the block before the ramp as heard.
+   The ramp began in this block, so the block has no ramp_end. */
+static void
+test_level_path_ramps_in_after_a_mid_block_verdict(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED };
+
+    static const int gates[B6_READS] = {P, P, A, A, A, A};
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    const size_t prefix = B6_AT_READ2;
+    for (int preroll = 0; preroll < 2; preroll++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        start_b6_case(&opts, &state);
+        start_monitor_capture(&opts);
+        opts.dmr_stereo_wav = preroll;
+        opts.analog_record_preroll_ms = preroll ? 200 : 0;
+        (void)push_gated_block(&opts, &state, P, 3000.0, 0);
+        const call_block_seen* seen = push_scripted_block(&opts, &state, gates, loud, 0);
+        assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->eligible_from == prefix && seen->ramp_end == 0U);
+        static float want[960];
+        for (size_t i = 0; i < 960U; i++) {
+            want[i] = i < prefix ? 0.0f : b6_sample((int)i, 3000.0);
+        }
+        level_ramp_in(want, prefix, 960U);
+        for (size_t i = 0; i < 960U; i++) {
+            if (!sample_near(seen->samples[i], want[i])) {
+                DSD_FPRINTF(stderr, "FAIL: level ramp-in, sample %zu is %f, want %f\n", i, (double)seen->samples[i],
+                            (double)want[i]);
+                assert(0);
+            }
+        }
+        assert(fabsf(seen->samples[prefix]) < 100.0f && played_silent_over_prefix(prefix));
+        assert(seen->has_heard == preroll);
+        for (size_t i = prefix; preroll && i < 960U; i++) {
+            assert(sample_near(seen->heard[i], b6_sample((int)i, 3000.0)));
+        }
+        /* The ramp is done inside the block: the next block plays whole. */
+        seen = push_gated_block(&opts, &state, A, 3000.0, 0);
+        assert(seen->ramp_end == 0U && sample_near(seen->samples[0], b6_sample(0, 3000.0)));
+        finish_b6_case(&opts, &state);
+    }
+}
+
+/* The same at 44.1 kHz, where a 960-sample block's last tap read is only its last 78 samples: a verdict on that read
+   starts the ramp there, and it runs on into the next block, which plays as heard from its ramp_end. */
+static void
+test_level_path_ramp_runs_on_into_the_next_block(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED, RATE = 44100, READ = 882 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    start_b6_case(&opts, &state);
+    opts.wav_sample_rate = RATE;
+    opts.dmr_stereo_wav = 1;
+    opts.analog_record_preroll_ms = 200;
+    const int gates[3][2] = {{P, P}, {P, A}, {A, A}};
+    const call_block_seen* seen = NULL;
+    for (int b = 0; b < 3; b++) {
+        for (int i = 0; i < 960; i++) {
+            g_scripted_gate = gates[b][i < READ ? 0 : 1];
+            dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, 3000.0f);
+        }
+        g_scripted_gate = -1;
+        seen = last_call_block();
+        if (b == 1) {
+            assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->eligible_from == READ && seen->ramp_end == 0U);
+        }
+    }
+    const float up = (float)(1.0 / ((double)RATE * 0.005));
+    float gain = 0.0f;
+    for (int i = READ; i < 960; i++) {
+        gain = fminf(1.0f, gain + up);
+    }
+    const size_t end = ramp_left(gain, up);
+    if (seen->ramp_end != end) {
+        DSD_FPRINTF(stderr, "FAIL: level ramp_end %zu, want %zu\n", seen->ramp_end, end);
+        assert(0);
+    }
+    assert(seen->has_heard && seen->ramp_end > 0U);
+    for (size_t i = 0; i < 960U; i++) {
+        assert(sample_near(seen->heard[i], 3000.0f));
+        assert(i + 1U < end ? seen->samples[i] < 3000.0f : sample_near(seen->samples[i], 3000.0f));
+    }
+    finish_b6_case(&opts, &state);
+}
+
+/* Final review M4: the NFM call is handed `heard` only where a block can be its reception, -P and a pre-roll on all the
+   same: the FM monitor without trunking, not the AM monitor nor with trunking on. */
+static void
+test_call_heard_only_where_a_call_can_be(void) {
+    for (int c = 0; c < 3; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        start_b6_case(&opts, &state);
+        opts.dmr_stereo_wav = 1;
+        opts.analog_record_preroll_ms = 200;
+        opts.analog_demod = c == 1 ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+        opts.trunk_enable = c == 2;
+        const call_block_seen* seen = push_gated_block(&opts, &state, DSD_ANALOG_TONE_GATE_OFF, 3000.0, 0);
+        if (seen->has_heard != (c == 0)) {
+            DSD_FPRINTF(stderr, "FAIL: heard handed in case %d: %d\n", c, seen->has_heard);
+            assert(0);
+        }
+        opts.trunk_enable = 0;
+        opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        finish_b6_case(&opts, &state);
+    }
 }
 
 /* qualified_carrier: some read at or after the eligible point found the carrier itself. Not the carrier's hangover (a
@@ -6552,6 +6747,10 @@ main(void) {
     test_tone_verdict_inside_a_block_cuts_its_ineligible_start();
     test_tone_verdict_inside_a_block_splits_the_chain_runs();
     test_tone_rejected_start_leaves_the_agc_alone();
+    test_sink_gate_ramp_end_follows_the_ramp();
+    test_level_path_ramps_in_after_a_mid_block_verdict();
+    test_level_path_ramp_runs_on_into_the_next_block();
+    test_call_heard_only_where_a_call_can_be();
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
     test_qualified_carrier_ends_open_or_opens_in_its_read();
     test_qualified_carrier_across_the_reads_of_a_block();

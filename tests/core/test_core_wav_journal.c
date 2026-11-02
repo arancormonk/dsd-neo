@@ -1194,6 +1194,7 @@ nfm_block_heard_now(dsd_opts* opts, dsd_state* state) {
         .count = 960,
         .sample_rate = 48000,
         .input = DSD_ANALOG_CALL_RECEPTION,
+        .ramp_end = 0,
         .qualified_carrier = 1,
         .wall_end_s = dsd_decode_now_realtime_s(),
     };
@@ -1275,6 +1276,7 @@ nfm_block_ending_now(dsd_opts* opts, dsd_state* state, int input, size_t eligibl
         .sample_rate = 48000,
         .input = input,
         .eligible_from = eligible_from,
+        .ramp_end = 0,
         .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
         .wall_end_s = dsd_decode_now_realtime_s(),
     };
@@ -1306,9 +1308,18 @@ test_nfm_start_moves_back_by_its_preroll(void) {
     nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 480);
     clock_at(k_t0 + 51);
     dsd_engine_analog_call_end(r.opts, r.state);
+    /* At pre-roll 0 an unclean opening is trimmed the same way, and stamped from its eligible point too. */
+    r.opts->analog_record_preroll_ms = 0;
+    clock_at_ms(k_t0 + 59, 990);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    clock_at_ms(k_t0 + 60, 15);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 480);
+    clock_at(k_t0 + 61);
+    dsd_engine_analog_call_end(r.opts, r.state);
     reload(&r);
     rc |= expect_int("the pre-roll's first sample", nfm_start(0), (long long)k_t0 + 39);
     rc |= expect_int("an unclean opening's eligible point", nfm_start(1), (long long)k_t0 + 50);
+    rc |= expect_int("an unclean opening's eligible point at pre-roll 0", nfm_start(2), (long long)k_t0 + 60);
     rig_close(&r);
     return rc;
 }

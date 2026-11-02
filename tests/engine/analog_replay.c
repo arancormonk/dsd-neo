@@ -255,6 +255,9 @@ static analog_limit g_record_min_start_ms;
 static analog_limit g_record_max_start_ms;
 static analog_limit g_record_min_audio_ms;
 static analog_limit g_record_max_audio_ms;
+/* The lowest level each recording may keep over its burst's first 300 ms, against its median there
+   (--analog-record-min-level, issue #668); unset checks nothing. */
+static analog_limit g_record_min_level;
 /* The session's own output settings stay (--analog-keep-output, issue #668): -o null stays muted, nothing captured. */
 static int g_keep_output;
 /* The stop hook reported the run's live checks (analog_report()). */
@@ -303,6 +306,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-record-max-start-ms", &g_record_max_start_ms, -1e5, 1e5},
     {"--analog-record-min-audio-ms", &g_record_min_audio_ms, -1e5, 1e5},
     {"--analog-record-max-audio-ms", &g_record_max_audio_ms, -1e5, 1e5},
+    {"--analog-record-min-level", &g_record_min_level, 0.0, 1.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -1405,6 +1409,17 @@ static const analog_scene k_scenes[] = {
         .ctcss = 1,
         .bursts = 4,
     },
+    /* Five 0.6 s bursts 3.2 s apart, 160 noise-squelch windows at 44.1 kHz, so the squelch's own 20 ms grid falls on
+       the 960-sample blocks the same way for each, give or take 0.5 ms more per burst: the squelch opens a few
+       samples before a block ends, and its 5 ms ramp-in runs on into the next block (issue #668). */
+    {
+        .name = "onsets-late",
+        .total_s = 19.2,
+        .onset_s = {4.6355, 7.8360, 11.0365, 14.2370, 17.4375},
+        .len_s = {0.6, 0.6, 0.6, 0.6, 0.6},
+        .kind = ANALOG_SCENE_IQ,
+        .bursts = 5,
+    },
     /* Carriers a tone filter does not pass while they are on the air (B1, issue #668), then one it does. */
     {
         .name = "ctcss-short",
@@ -2312,14 +2327,17 @@ analog_raw_wav_remove(void) {
  * of their own: a recording that holds one starts before the burst after it. A recording that matches no burst
  * (score under 0.5) fails, and so does one outside the --analog-record-* bounds. The CTCSS tone is not in the voice the
  * recording is compared with, and the voice filters take it out of the recording. */
-#define ANALOG_ORACLE_RATE        48000
-#define ANALOG_ORACLE_STEP        6
-#define ANALOG_ORACLE_WINDOW      2400 /* 50 ms */
-#define ANALOG_ORACLE_BEFORE_S    0.6  /* how far before a burst's start a recording may begin */
-#define ANALOG_ORACLE_AFTER_S     0.3  /* ... and its matched piece end after the burst does */
-#define ANALOG_ORACLE_MIN_SCORE   0.5
-#define ANALOG_ORACLE_GOOD_SCORE  0.7 /* a match this good ends the search */
-#define ANALOG_ORACLE_JOURNAL_MAX (1L << 22)
+#define ANALOG_ORACLE_RATE         48000
+#define ANALOG_ORACLE_STEP         6
+#define ANALOG_ORACLE_WINDOW       2400 /* 50 ms */
+#define ANALOG_ORACLE_BEFORE_S     0.6  /* how far before a burst's start a recording may begin */
+#define ANALOG_ORACLE_AFTER_S      0.3  /* ... and its matched piece end after the burst does */
+#define ANALOG_ORACLE_MIN_SCORE    0.5
+#define ANALOG_ORACLE_GOOD_SCORE   0.7 /* a match this good ends the search */
+#define ANALOG_ORACLE_JOURNAL_MAX  (1L << 22)
+#define ANALOG_ORACLE_LEVEL_WINDOW 120 /* 2.5 ms */
+#define ANALOG_ORACLE_LEVEL_SPAN_S 0.3
+#define ANALOG_ORACLE_LEVEL_MAX    120 /* windows in the span */
 
 typedef struct {
     double score;
@@ -2401,6 +2419,50 @@ analog_oracle_loudest(const short* x, size_t frames) {
     return at;
 }
 
+static int
+analog_oracle_compare_double(const void* a, const void* b) {
+    const double x = *(const double*)a;
+    const double y = *(const double*)b;
+    return (x > y) - (x < y);
+}
+
+/* How far the recording's level dips over its burst's first 300 ms (issue #668): in 2.5 ms windows from the burst's
+   second window on (or the recording's first after it), the RMS of the recording over the RMS of the voice it holds
+   there, the smallest of them against their median. About 1 for a recording that keeps its level; a sink-gate ramp
+   written into it after a start written as heard takes a window to about 0.3. 1 with no window to compare. */
+static double
+analog_oracle_level_floor(const short* x, size_t frames, long start, long onset) {
+    double ratio[ANALOG_ORACLE_LEVEL_MAX];
+    int n = 0;
+    long from = onset + ANALOG_ORACLE_LEVEL_WINDOW - start;
+    from = from > 0 ? from : 0;
+    const long to = onset + lround(ANALOG_ORACLE_LEVEL_SPAN_S * ANALOG_ORACLE_RATE) - start;
+    for (long k = from; k + ANALOG_ORACLE_LEVEL_WINDOW <= to && k + ANALOG_ORACLE_LEVEL_WINDOW <= (long)frames
+                        && start + k + ANALOG_ORACLE_LEVEL_WINDOW <= (long)g_scene.n && n < ANALOG_ORACLE_LEVEL_MAX;
+         k += ANALOG_ORACLE_LEVEL_WINDOW) {
+        double xx = 0.0;
+        double vv = 0.0;
+        for (long i = k; i < k + ANALOG_ORACLE_LEVEL_WINDOW; i++) {
+            const double v = (double)g_scene.voice[start + i];
+            xx += (double)x[i] * (double)x[i];
+            vv += v * v;
+        }
+        if (vv > 0.0) {
+            ratio[n++] = sqrt(xx / vv);
+        }
+    }
+    if (n == 0) {
+        return 1.0;
+    }
+    double low = ratio[0];
+    for (int i = 1; i < n; i++) {
+        low = ratio[i] < low ? ratio[i] : low;
+    }
+    qsort(ratio, (size_t)n, sizeof(ratio[0]), analog_oracle_compare_double);
+    const double median = ratio[n / 2];
+    return median > 0.0 ? low / median : 0.0;
+}
+
 /* Finds recording @p n (@p frames samples at 48 kHz) in the scene, prints its line and checks its bounds. */
 static void
 analog_oracle_recording(int n, const short* x, size_t frames) {
@@ -2435,6 +2497,15 @@ analog_oracle_recording(int n, const short* x, size_t frames) {
                 best.burst, best.score, start_ms, audio_ms, (double)frames * 1000.0 / ANALOG_ORACLE_RATE);
     analog_oracle_check("starts at", n, start_ms, &g_record_min_start_ms, &g_record_max_start_ms);
     analog_oracle_check("has audio from", n, audio_ms, &g_record_min_audio_ms, &g_record_max_audio_ms);
+    if (g_record_min_level.set) {
+        const double level = analog_oracle_level_floor(x, frames, best.start, onset);
+        DSD_FPRINTF(stderr, "ANALOG LEVEL: n=%d min=%.3f\n", n, level);
+        if (level < g_record_min_level.value) {
+            DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: recording %d dips to %.3f of its level (limit %.3f)\n", n, level,
+                        g_record_min_level.value);
+            g_failed = 1;
+        }
+    }
 }
 
 /* Reads recording @p n, the file @p name in @p folder, and checks it; 0, or -1 when it cannot be read as a mono 48 kHz

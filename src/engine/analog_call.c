@@ -38,6 +38,12 @@ typedef struct {
     /* The open file was written: a pause that begins now lies inside it, so it is owed the pause's silence (issue
        #756). A file opened later starts with no silence for a pause it did not span. */
     int spans_pause;
+    /* The last block went into the file as heard before the sink gate (a new recording's opening block, or a resumed
+       one, issue #668): the next goes on as heard while the gate's ramp-in that began there runs (its ramp_end). */
+    int follows_heard;
+    /* What names the file should it close without its row (a teardown, analog_call_free()): the row's frequency, tone
+       and service as of the file's last write (issue #668). */
+    dsd_analog_wav_name name;
 } analog_call_recording;
 
 typedef struct {
@@ -72,7 +78,7 @@ static void
 analog_call_free(void* ptr) {
     analog_call* call = (analog_call*)ptr;
     if (call->rec.wav) {
-        call->rec.wav = close_and_rename_analog_wav_file(call->rec.wav, call->rec.path, call->rec.dir);
+        call->rec.wav = close_and_rename_analog_wav_file(call->rec.wav, call->rec.path, call->rec.dir, &call->rec.name);
     }
     analog_preroll_resize(&call->preroll, 0);
     free(call);
@@ -94,6 +100,7 @@ analog_call_close_recording(const dsd_opts* opts, dsd_state* state, analog_call*
         call->rec.path[0] = '\0';
     }
     call->rec.spans_pause = 0;
+    call->rec.follows_heard = 0;
 }
 
 int
@@ -131,10 +138,26 @@ analog_call_preroll_invalidate(const dsd_state* state, analog_call* call) {
     dsd_analog_sink_end_call(state);
 }
 
-/* The pre-roll in ms the options ask for: none while per-call recording is off. */
+/* The ring goes for a change of the setting. The lane starts over only where the ring or a hold could carry audio
+   across the change: a call recording on, not held, has an empty ring (each reception consumed it), so its file's
+   conversion runs on unbroken; the ring then claims no lane generation, so a hold that follows buffers nothing and its
+   resume writes the owed silence. */
+static void
+analog_call_preroll_drop(const dsd_state* state, analog_call* call) {
+    if (call->active && !call->held) {
+        analog_preroll_clear(&call->preroll);
+        return;
+    }
+    analog_call_preroll_invalidate(state, call);
+}
+
+/* The pre-roll in ms the options ask for: none while per-call recording is off, or in a mode no block of which can be
+   the call's reception (the FM monitor alone, without trunking; the DSP hands `heard` under the same rule). */
 static int
 analog_call_preroll_ms(const dsd_opts* opts) {
-    return opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0 ? opts->analog_record_preroll_ms : 0;
+    const int wanted = opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0 && opts->trunk_enable == 0
+                       && dsd_analog_tone_detection_active(opts);
+    return wanted ? opts->analog_record_preroll_ms : 0;
 }
 
 /* The ring follows the options: allocated at the first block that needs one, freed with per-call recording or the
@@ -145,7 +168,7 @@ analog_call_preroll_sync(const dsd_opts* opts, const dsd_state* state, analog_ca
     if (ms == call->preroll.ms) {
         return;
     }
-    analog_call_preroll_invalidate(state, call);
+    analog_call_preroll_drop(state, call);
     analog_preroll_resize(&call->preroll, ms);
 }
 
@@ -302,7 +325,7 @@ dsd_engine_analog_call_preroll_changed(const dsd_opts* opts, const dsd_state* st
     if (!call) {
         return;
     }
-    analog_call_preroll_invalidate(state, call);
+    analog_call_preroll_drop(state, call);
     analog_call_preroll_sync(opts, state, call);
 }
 
@@ -329,20 +352,30 @@ analog_call_heard(const dsd_analog_call_block* block) {
     return block->heard ? block->heard : block->samples;
 }
 
-/* What of a block its recording gets. */
+/* What of a block its recording gets: @c as_heard when it is the block as heard before the sink gate. */
 typedef struct {
     const float* samples;
     size_t count;
+    int as_heard;
 } analog_call_audio;
 
 /* Issue #668: a new recording opens with the pre-roll, then the block as heard before the sink gate (no ramp-in where
-   the squelch opened), so it starts before the squelch did. A block that is not clean is not contiguous with the
-   allowed audio before it: the ring goes, and the file starts at the block's eligible point instead of with its
-   silenced start. A failed open, a block that did not hear the carrier itself (it only goes on with a call), or a lane
-   that broke since the ring filled drops the ring. With no ring, the block goes in whole as the sink gate left it.
-   Returns the 48 kHz samples written before the block. */
+   the squelch opened), so it starts before the squelch did. A block that is not clean is not contiguous with anything
+   before it: the file starts at the block's eligible point, its silenced start trimmed, whatever the pre-roll (B6); the
+   ring goes, and the lane starts over at the cut, so the file's first sample is converted from silence. A failed open,
+   a block that did not hear the carrier itself (it only goes on with a call), or a lane that broke since the ring
+   filled drops the ring. With no ring, the block goes in as the sink gate left it. Returns the 48 kHz samples written
+   before the block. */
 static size_t
 analog_call_release(dsd_state* state, analog_call* call, const dsd_analog_call_block* block, analog_call_audio* audio) {
+    const size_t from = block->eligible_from < block->count ? block->eligible_from : block->count;
+    audio->samples = block->samples + from;
+    audio->count = block->count - from;
+    if (from > 0) {
+        call->hold_buffering = 0;
+        analog_preroll_clear(&call->preroll);
+        dsd_analog_sink_end_call(state);
+    }
     const analog_preroll* ring = &call->preroll;
     if (!analog_preroll_active(ring)) {
         return 0;
@@ -351,12 +384,11 @@ analog_call_release(dsd_state* state, analog_call* call, const dsd_analog_call_b
         analog_call_preroll_invalidate(state, call);
         return 0;
     }
-    const size_t from = block->eligible_from < block->count ? block->eligible_from : block->count;
-    if (from > 0 || analog_preroll_lane_moved(state, ring)) {
+    if (analog_preroll_lane_moved(state, ring)) {
         analog_call_preroll_invalidate(state, call);
     }
     audio->samples = analog_call_heard(block) + from;
-    audio->count = block->count - from;
+    audio->as_heard = block->heard != NULL;
     const size_t released = ring->len;
     const analog_call_sink sink = {call->rec.wav};
     analog_preroll_take(ring, released, analog_call_write, &sink);
@@ -377,13 +409,50 @@ analog_call_open(dsd_opts* opts, dsd_state* state, analog_call* call, const dsd_
     rec->spans_pause = 0;
 }
 
+/* The row's name parts, kept for a close that no longer has the row (issue #668). */
+static void
+analog_call_note_name(const dsd_state* state, analog_call_recording* rec) {
+    if (!state->event_history_s) {
+        return;
+    }
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+    rec->name.freq_hz = row->freq_hz;
+    rec->name.identity = row->receive_identity;
+    DSD_MEMCPY(rec->name.service, row->service_label, sizeof(rec->name.service));
+}
+
+/* Write @p audio of @p block into the open file through the CALL_WAV lane. A block that goes on from one written as
+   heard (issue #668) is written as heard too while the sink gate's ramp-in that began there runs, then as the gate left
+   it, so the file's level runs on across the seam; a ramp that runs to the block's end carries on to the next. */
+static void
+analog_call_write_block(const dsd_opts* opts, dsd_state* state, analog_call_recording* rec,
+                        const dsd_analog_call_block* block, const analog_call_audio* audio) {
+    const analog_call_sink sink = {rec->wav};
+    size_t heard = 0;
+    if (!audio->as_heard && rec->follows_heard && block->heard && audio->samples == block->samples) {
+        heard = block->ramp_end < block->count ? block->ramp_end : block->count;
+    }
+    if (heard > 0) {
+        (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, block->heard, heard, 1.0, block->sample_rate,
+                                    48000, analog_call_write, &sink);
+    }
+    (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, audio->samples + heard, audio->count - heard,
+                                1.0, block->sample_rate, 48000, analog_call_write, &sink);
+    rec->follows_heard = audio->as_heard || (heard > 0 && heard == block->count);
+    rec->spans_pause = 1;
+}
+
 /* @p resumed: the block goes on with a held call whose pause was just written from the pre-roll, so it continues that
    audio as heard before the sink gate. */
 static void
 analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const dsd_analog_call_block* block,
                    int resumed) {
     analog_call_recording* rec = &call->rec;
-    analog_call_audio audio = {resumed ? analog_call_heard(block) : block->samples, block->count};
+    analog_call_audio audio = {block->samples, block->count, 0};
+    if (resumed) {
+        audio.samples = analog_call_heard(block);
+        audio.as_heard = block->heard != NULL;
+    }
     if (!opts->dmr_stereo_wav) {
         rec->attempted = 0;
     }
@@ -394,10 +463,8 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const ds
         analog_call_close_recording(opts, state, call);
     }
     if (rec->wav) {
-        const analog_call_sink sink = {rec->wav};
-        (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, audio.samples, audio.count, 1.0,
-                                    block->sample_rate, 48000, analog_call_write, &sink);
-        rec->spans_pause = 1;
+        analog_call_write_block(opts, state, rec, block, &audio);
+        analog_call_note_name(state, rec);
     }
     /* The reception follows on from whatever the ring held: the lane's history is the file's now (issue #668). */
     if (analog_preroll_active(&call->preroll)) {
@@ -462,6 +529,7 @@ analog_call_hold(dsd_opts* opts, dsd_state* state, analog_call* call, size_t cou
     if (!call->held) {
         analog_call_release_hold(call);
         call->held = 1;
+        call->rec.follows_heard = 0;
         call->credited = !state->analog_rx.carrier_open;
         call->age48 = call->credited ? (uint64_t)DSD_ANALOG_CARRIER_HANGOVER_MS * 48U : 0U;
         call->hold_buffering = analog_preroll_active(&call->preroll) && call->preroll.has_generation;

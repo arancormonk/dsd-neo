@@ -1735,32 +1735,46 @@ symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsig
     }
 }
 
+/* The sink gate's ramp-in up to 1 (5 ms at the block rate), per sample. */
+static float
+symbol_sink_ramp_step(const dsd_opts* opts) {
+    return (float)(1.0 / ((double)symbol_analog_audio_rate_hz(opts) * 0.005));
+}
+
 /* The monitor sink under the auto squelch: after every filter, each sample's gain ramps toward 1 while it is heard and
    toward 0 while not (5 ms up, 10 ms down, in samples), so a closed stretch is exact silence and no edge clicks. The
    block's ineligible @p prefix (issue #668), already silence, is the block gate's: the samples after it ramp in from
-   silence. Returns 1 when any sample of the block is heard at all, which the block is written for. */
+   silence. @p ramp_end is how far a ramp-in carried from the block before ran on into this one
+   (dsd_analog_call_block::ramp_end). Returns 1 when any sample of the block is heard at all, which the block is written
+   for. */
 static int
 symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed,
-                       unsigned int prefix) {
+                       unsigned int prefix, size_t* ramp_end) {
+    *ramp_end = 0U;
     if (!allowed) {
         /* The block gate rejected the whole block (a muted output, digital sync, a retune still landing, the tone
            policy): none of it plays, not even a fade, as under a level squelch, and the next open sample ramps in. */
         state->analog_sink_gain = 0.0f;
         return 0;
     }
-    const double rate = (double)symbol_analog_audio_rate_hz(opts);
-    const float up = (float)(1.0 / (rate * 0.005));
-    const float down = (float)(1.0 / (rate * 0.010));
+    const float up = symbol_sink_ramp_step(opts);
+    const float down = (float)(1.0 / ((double)symbol_analog_audio_rate_hz(opts) * 0.010));
     float gain = prefix > 0U ? 0.0f : state->analog_sink_gain;
+    int carried = gain > 0.0f && gain < 1.0f;
     int any = 0;
     for (unsigned int i = prefix; i < analog_block; i++) {
-        if (symbol_sample_heard(opts, state, i, allowed, prefix)) {
+        const int heard = symbol_sample_heard(opts, state, i, allowed, prefix);
+        if (heard) {
             gain = fminf(1.0f, gain + up);
         } else {
             gain = fmaxf(0.0f, gain - down);
         }
         state->analog_out_f[i] *= gain;
         any |= gain > 0.0f;
+        if (carried) {
+            *ramp_end = heard ? i + 1U : i;
+            carried = heard && gain < 1.0f;
+        }
     }
     state->analog_sink_gain = gain;
     return any;
@@ -1889,10 +1903,12 @@ symbol_silence_ineligible_prefix(dsd_state* state, unsigned int prefix) {
     }
 }
 
-/* Whether the NFM call wants each block before the sink gate too: -P records with a pre-roll (issue #668). */
+/* Whether the NFM call wants each block before the sink gate too: -P records with a pre-roll (issue #668), in a mode
+   where a block can be the call's reception at all (the FM monitor, no trunking), as the engine's ring follows. */
 static inline int
 symbol_call_wants_heard(const dsd_opts* opts) {
-    return opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0;
+    return opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0 && opts->trunk_enable == 0
+           && dsd_analog_tone_detection_active(opts);
 }
 
 /* The flags path (the auto squelch, or the PCM noise squelch): the chain per run, the sink gate per sample, then the
@@ -1906,14 +1922,52 @@ symbol_finish_flagged_block(dsd_opts* opts, dsd_state* state, unsigned int analo
         DSD_MEMCPY(state->analog_heard_f, state->analog_out_f, (size_t)analog_block * sizeof(state->analog_out_f[0]));
         call->heard = state->analog_heard_f;
     }
-    const int heard = symbol_apply_sink_gate(opts, state, analog_block, plan->processing, plan->prefix);
+    const int heard =
+        symbol_apply_sink_gate(opts, state, analog_block, plan->processing, plan->prefix, &call->ramp_end);
+    /* The level path's ramp is its own: it does not run on into a level block after a squelch change. */
+    state->analog_level_ramp = 0U;
     dsd_frame_sync_hook_analog_call_block(opts, state, call);
     symbol_apply_speaker_ramp(opts, state, analog_block, plan->allowed, plan->processing);
     symbol_output_unsynced_analog(opts, state, analog_block, heard && plan->allowed, plan->block_hz);
 }
 
-/* The level path: the chain over the block, then the NFM call and the monitor sink. No sink gate runs, so the block
-   before it is the block itself. */
+/* Whether the level path ramps the block in (issue #668): a block that plays or records, after a tone verdict part-way
+   through it or one before it whose ramp has not reached full level yet. */
+static inline int
+symbol_level_ramp_runs(const dsd_state* state, const symbol_analog_block_plan* plan) {
+    return plan->processing && !plan->discard && (plan->prefix > 0U || state->analog_level_ramp);
+}
+
+/* The level path's ramp-in after a block's ineligible start (issue #668): the samples after it ramp up from silence
+   over the sink gate's 5 ms, as under the auto squelch, so the speaker and a recording that goes on through the block
+   do not step from silence to full level; a ramp still running at the block's end runs on into the next. A block that
+   neither plays nor records, or is dropped, ends it. Returns how far a ramp the block before began ran on into this one
+   (dsd_analog_call_block::ramp_end). */
+static size_t
+symbol_apply_level_ramp(const dsd_opts* opts, dsd_state* state, unsigned int analog_block,
+                        const symbol_analog_block_plan* plan) {
+    if (!symbol_level_ramp_runs(state, plan)) {
+        state->analog_level_ramp = 0U;
+        return 0U;
+    }
+    if (plan->prefix > 0U) {
+        state->analog_level_gain = 0.0f;
+    }
+    const float up = symbol_sink_ramp_step(opts);
+    float gain = state->analog_level_gain;
+    unsigned int i = plan->prefix;
+    for (; i < analog_block && gain < 1.0f; i++) {
+        gain = fminf(1.0f, gain + up);
+        state->analog_out_f[i] *= gain;
+    }
+    state->analog_level_gain = gain;
+    state->analog_level_ramp = gain < 1.0f ? 1U : 0U;
+    return plan->prefix > 0U ? 0U : i;
+}
+
+/* The level path: the chain over the block, its ramp-in after a tone verdict inside it, then the NFM call and the
+   monitor sink. No sink gate runs, so the block before it is the block itself, unless the ramp runs: then a copy from
+   before the ramp. */
 static void
 symbol_finish_level_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block,
                           const symbol_analog_block_plan* plan, dsd_analog_call_block* call) {
@@ -1921,7 +1975,13 @@ symbol_finish_level_block(dsd_opts* opts, dsd_state* state, unsigned int analog_
     symbol_silence_ineligible_prefix(state, plan->prefix);
     if (symbol_call_wants_heard(opts)) {
         call->heard = state->analog_out_f;
+        if (symbol_level_ramp_runs(state, plan)) {
+            DSD_MEMCPY(state->analog_heard_f, state->analog_out_f,
+                       (size_t)analog_block * sizeof(state->analog_out_f[0]));
+            call->heard = state->analog_heard_f;
+        }
     }
+    call->ramp_end = symbol_apply_level_ramp(opts, state, analog_block, plan);
     dsd_frame_sync_hook_analog_call_block(opts, state, call);
     symbol_output_unsynced_analog(opts, state, analog_block, plan->allowed, plan->block_hz);
 }
@@ -1961,6 +2021,7 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
         .sample_rate = plan.block_hz,
         .input = symbol_analog_call_input(opts, state, plan.discard, reception),
         .eligible_from = eligible_from,
+        .ramp_end = 0U,
         .qualified_carrier = dsd_analog_rx_block_qualified_carrier(opts, state),
         .wall_end_s = wall_end_s,
     };

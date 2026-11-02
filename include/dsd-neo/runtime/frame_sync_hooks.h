@@ -58,6 +58,11 @@ typedef struct {
         in @c samples and @c heard, and were neither played nor taken by the gain stage. A block is clean when it is
         0. */
     size_t eligible_from;
+    /** The block's first samples, from its start, over which the sink gate was still ramping @c samples in from a ramp
+        the block before began (a gain below 1 on samples the gate hears, until it reaches 1 or the gate closes); 0
+        when the block began at full gain or from silence. @c heard holds them at full level, so a recording that took
+        the block before as heard goes on as heard up to here, and from @c samples after, with no dip at the seam. */
+    size_t ramp_end;
     /** 1 when some tap read starting at or after @c eligible_from found the carrier itself, not only its hangover:
         the receiver's own per-read decision (under a per-sample squelch, open at the read's end or opening inside it),
         never the level of the whole block or the playback gate. */
