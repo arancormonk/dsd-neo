@@ -5611,20 +5611,8 @@ tcp_connect_host(const char* host, int port, struct rtl_device* dev) {
     }
     /* Best-effort: enable TCP keepalive to detect half-open links */
     {
-        int opt = 1;
-        (void)dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
-#if defined(TCP_KEEPIDLE)
-        int idle = 15; /* seconds before starting keepalive probes */
-        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
-#endif
-#if defined(TCP_KEEPCNT)
-        int cnt = 4; /* number of probes */
-        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
-#endif
-#if defined(TCP_KEEPINTVL)
-        int intvl = 5; /* seconds between probes */
-        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-#endif
+        (void)dsd_socket_set_keepalive(sockfd, DSD_SOCKET_KEEPALIVE_IDLE_S, DSD_SOCKET_KEEPALIVE_INTERVAL_S,
+                                       DSD_SOCKET_KEEPALIVE_COUNT);
 #if defined(TCP_USER_TIMEOUT)
         /* Optional fail-fast if ACKs are not received within timeout (ms) */
         int uto = 20000; /* 20s */

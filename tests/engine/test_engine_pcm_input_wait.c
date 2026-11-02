@@ -7,7 +7,9 @@
  * connection, and only a real close reconnects. A reconnect resets analog reception, which clears the stale deadline
  * and moves the boundaries epoch; that move under a running call or candidate is a wake of its own, so a hunt read on
  * a new connection that stays silent, or sends a part of a sample, gives way to the engine's tick, which ends the
- * reception the reconnect cut. Nothing is queued meanwhile. With no reception running the read waits on.
+ * reception the reconnect cut. Nothing is queued meanwhile. With no reception running the read waits on. Since a quiet
+ * sender keeps its connection, keepalive is what finds one that vanished without closing (a half-open link): every
+ * TCP audio connection, the startup Connect() and the switch's and reconnect's ConnectBounded(), runs with it.
  *
  * Real: getSymbol(), the TCP reader and connect (the engine's net-audio hooks), the engine's frame-sync hooks (the
  * decoder-ticks wake) and the analog call tracker. Simulated: the TCP server, a thread on a loopback socket.
@@ -41,6 +43,7 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #endif
 
@@ -301,6 +304,57 @@ test_an_idle_connection_is_kept(void) {
     return rc;
 }
 
+/* One integer socket option of @p sock, or -1 when it cannot be read. */
+static int
+sockopt_int(dsd_socket_t sock, int level, int name) {
+    int value = 0;
+    int len = (int)sizeof value;
+    return dsd_socket_getsockopt(sock, level, name, &value, &len) == 0 ? value : -1;
+}
+
+/* Keepalive on @p sock with the half-open bound (DSD_SOCKET_KEEPALIVE_*), as far as the platform sets it per socket.
+   Windows reports SO_KEEPALIVE only: its timing may come from an ioctl getsockopt() does not read back. */
+static int
+expect_keepalive(dsd_socket_t sock, const char* label) {
+    int rc = expect(sockopt_int(sock, SOL_SOCKET, SO_KEEPALIVE) > 0, label);
+#if !DSD_PLATFORM_WIN_NATIVE
+#if defined(TCP_KEEPIDLE)
+    rc |= expect(sockopt_int(sock, IPPROTO_TCP, TCP_KEEPIDLE) == (int)DSD_SOCKET_KEEPALIVE_IDLE_S, label);
+#elif defined(TCP_KEEPALIVE)
+    rc |= expect(sockopt_int(sock, IPPROTO_TCP, TCP_KEEPALIVE) == (int)DSD_SOCKET_KEEPALIVE_IDLE_S, label);
+#endif
+#if defined(TCP_KEEPINTVL)
+    rc |= expect(sockopt_int(sock, IPPROTO_TCP, TCP_KEEPINTVL) == (int)DSD_SOCKET_KEEPALIVE_INTERVAL_S, label);
+#endif
+#if defined(TCP_KEEPCNT)
+    rc |= expect(sockopt_int(sock, IPPROTO_TCP, TCP_KEEPCNT) == (int)DSD_SOCKET_KEEPALIVE_COUNT, label);
+#endif
+#endif
+    return rc;
+}
+
+/* A quiet sender keeps its connection (B7), so a sender that vanished without a FIN or RST is found only by
+   keepalive, which then fails the read and the reconnect runs. A real half-open peer cannot be made on loopback: the
+   options are what is checked, on the switch's (and reconnect's) connection and on the startup one. */
+static int
+test_connections_run_with_keepalive(void) {
+    session s;
+    if (expect(session_open(&s, SERVE_SILENT, SERVE_SILENT) == 0, "session opens")) {
+        session_close(&s);
+        return 1;
+    }
+    int rc = expect_keepalive(s.opts->tcp_sockfd, "a bounded connect (switch, reconnect) runs with keepalive");
+    char host[] = "127.0.0.1";
+    const dsd_socket_t startup = Connect(host, s.opts->tcp_portno);
+    rc |= expect(startup != DSD_INVALID_SOCKET, "the startup connect connects");
+    if (startup != DSD_INVALID_SOCKET) {
+        rc |= expect_keepalive(startup, "the startup connect runs with keepalive");
+        (void)dsd_socket_close(startup);
+    }
+    session_close(&s);
+    return rc;
+}
+
 /* The connection ends under a running reception (a call after @p blocks RECEPTION blocks, or a candidate), and the
    new one stays silent or sends half a sample: the hunt read leaves for the engine's tick with nothing queued, the
    reconnect's reset having cleared the stale deadline, and the tick ends the reception. */
@@ -369,6 +423,7 @@ main(void) {
     dsd_engine_frame_sync_hooks_install();
     int rc = 0;
     rc |= test_an_idle_connection_is_kept();
+    rc |= test_connections_run_with_keepalive();
     rc |= run_reconnect_ends_the_reception(SERVE_SILENT, 30, "a call, reconnected to silence");
     rc |= run_reconnect_ends_the_reception(SERVE_ONE_BYTE, 30, "a call, reconnected to one byte");
     rc |= run_reconnect_ends_the_reception(SERVE_SILENT, 5, "a candidate, reconnected to silence");

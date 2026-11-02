@@ -9,6 +9,8 @@
 #if DSD_PLATFORM_WIN_NATIVE
 
 #include <errno.h>
+#include <limits.h>
+#include <mstcpip.h>
 
 /* Winsock initialization tracking */
 static int s_wsa_initialized = 0;
@@ -250,6 +252,54 @@ dsd_socket_set_send_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
     /* Windows uses DWORD (milliseconds) for socket timeouts */
     DWORD tv = timeout_ms;
     return setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+}
+
+/* Seconds as the milliseconds SIO_KEEPALIVE_VALS takes, a value past it clamped. */
+static ULONG
+keepalive_ms(unsigned int seconds) {
+    return seconds > ULONG_MAX / 1000UL ? ULONG_MAX : (ULONG)seconds * 1000UL;
+}
+
+/* The idle time and probe interval through the ioctl every Windows version has. */
+static int
+keepalive_vals(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s) {
+    struct tcp_keepalive vals;
+    DSD_MEMSET(&vals, 0, sizeof(vals));
+    vals.onoff = 1;
+    vals.keepalivetime = keepalive_ms(idle_s);
+    vals.keepaliveinterval = keepalive_ms(interval_s);
+    DWORD returned = 0;
+    return WSAIoctl(sock, SIO_KEEPALIVE_VALS, &vals, sizeof(vals), NULL, 0, &returned, NULL, NULL) == 0 ? 0 : -1;
+}
+
+int
+dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s, unsigned int count) {
+    const BOOL on = TRUE;
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (const char*)&on, sizeof(on)) != 0) {
+        return -1;
+    }
+    int rc = 0;
+#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL)
+    /* Windows 10 1709 and later take the timing as socket options (DWORD seconds); older ones refuse them. */
+    const DWORD idle = idle_s;
+    const DWORD interval = interval_s;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, (const char*)&idle, sizeof(idle)) != 0
+        || setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, (const char*)&interval, sizeof(interval)) != 0) {
+        rc = keepalive_vals(sock, idle_s, interval_s);
+    }
+#else
+    rc = keepalive_vals(sock, idle_s, interval_s);
+#endif
+#if defined(TCP_KEEPCNT)
+    /* Windows 10 1703 and later; before it the count is fixed at 10, which only lengthens the bound. */
+    const DWORD probes = count;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, (const char*)&probes, sizeof(probes)) != 0) {
+        rc = -1;
+    }
+#else
+    (void)count;
+#endif
+    return rc;
 }
 
 int

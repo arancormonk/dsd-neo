@@ -60,6 +60,12 @@ static dsd_socket_t g_closed_sock;
 static int g_recv_timeout_count;
 static unsigned int g_last_timeout_ms;
 static int g_setsockopt_count;
+/* Keepalive (dsd_socket_set_keepalive()): the calls, the socket and timing of the last one. */
+static int g_keepalive_count;
+static dsd_socket_t g_keepalive_sock;
+static unsigned int g_keepalive_idle_s;
+static unsigned int g_keepalive_interval_s;
+static unsigned int g_keepalive_probes;
 static int g_last_setsockopt_level;
 static int g_last_setsockopt_name;
 #ifdef SO_NOSIGPIPE
@@ -102,6 +108,11 @@ reset_stubs(void) {
     g_recv_timeout_count = 0;
     g_last_timeout_ms = 0;
     g_setsockopt_count = 0;
+    g_keepalive_count = 0;
+    g_keepalive_sock = DSD_INVALID_SOCKET;
+    g_keepalive_idle_s = 0U;
+    g_keepalive_interval_s = 0U;
+    g_keepalive_probes = 0U;
     g_last_setsockopt_level = 0;
     g_last_setsockopt_name = 0;
 #ifdef SO_NOSIGPIPE
@@ -237,6 +248,26 @@ dsd_socket_set_recv_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
 }
 
 int
+dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s, unsigned int count) {
+    g_keepalive_count++;
+    g_keepalive_sock = sock;
+    g_keepalive_idle_s = idle_s;
+    g_keepalive_interval_s = interval_s;
+    g_keepalive_probes = count;
+    return 0;
+}
+
+/* One keepalive call on @p sock, with the half-open bound the rtl_tcp link runs with. */
+static void
+assert_keepalive_on(dsd_socket_t sock) {
+    assert(g_keepalive_count == 1);
+    assert(g_keepalive_sock == sock);
+    assert(g_keepalive_idle_s == DSD_SOCKET_KEEPALIVE_IDLE_S);
+    assert(g_keepalive_interval_s == DSD_SOCKET_KEEPALIVE_INTERVAL_S);
+    assert(g_keepalive_probes == DSD_SOCKET_KEEPALIVE_COUNT);
+}
+
+int
 dsd_socket_setsockopt(dsd_socket_t sock, int level, int optname, const void* optval, int optlen) {
     (void)sock;
     (void)optval;
@@ -332,6 +363,8 @@ test_connect_success_uses_rigctl_timeout(void) {
 #endif
     assert(g_last_setsockopt_level == IPPROTO_TCP);
     assert(g_last_setsockopt_name == TCP_NODELAY);
+    /* A receive timeout keeps the connection, so keepalive is what finds a peer that vanished without closing. */
+    assert_keepalive_on(79);
     return 0;
 }
 
@@ -379,6 +412,8 @@ test_connect_bounded_resolves_once_and_bounds_the_connect(void) {
 #ifdef SO_NOSIGPIPE
     assert(g_no_sigpipe_count == 1);
 #endif
+    /* A quiet TCP audio sender keeps its connection, so only keepalive finds one that vanished (issue #667 B7). */
+    assert_keepalive_on(81);
     ConnectKeepTcpAudioAddress("audio.example", 7356); /* the switch took it */
 
     /* A reconnect to the same host and port reuses the address. */

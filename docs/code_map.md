@@ -924,6 +924,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - TCP keepalive: `dsd_socket_set_keepalive()` turns on SO_KEEPALIVE with the idle time, probe interval and probe
+    count each platform lets a socket set (TCP_KEEPIDLE, or macOS's TCP_KEEPALIVE; TCP_KEEPINTVL; TCP_KEEPCNT; on
+    Windows those options, else `SIO_KEEPALIVE_VALS`), each guarded where a platform lacks it.
+    `DSD_SOCKET_KEEPALIVE_*` (15 s idle, 5 s apart, 4 probes, about 35 s) is the half-open bound the rtl_tcp link and
+    every `Connect()`/`ConnectBounded()` connection (TCP audio, rigctl) run with
   - Buffered PCM input (issue #667 D12): `dsd_pcm_stream` in `include/dsd-neo/platform/pcm_stream.h`
     (`src/platform/pcm_stream.c`) reads raw PCM16LE mono from a descriptor (stdin) or a socket (TCP audio). One reader
     per stream serves every consumer, so the stdin input and the TCP input each have exactly one buffer. Every read is
@@ -6730,7 +6735,10 @@ Notes:
   There is no blocking TCP hook (`PROTOCOL_NET_QUIET_SENDER`). `ConnectBounded()` (`dsd_rigctl.c`) connects within
   `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
   the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
-  startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine
+  startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. Both connect
+  with keepalive on (`connect_apply_options()`, `DSD_SOCKET_KEEPALIVE_*`): since a receive timeout keeps the
+  connection, it is what fails a read on a sender that vanished without a FIN or RST, so the reconnect runs within
+  about 35 s (`IO_RIGCTL_CONTROL` asserts the call, `ENGINE_PCM_INPUT_WAIT` the options on real connections). The engine
   installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`). The
   stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0 (`dsd_opts::audio_in_stdin`,
   raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share, both in bounded waits, and an
