@@ -210,8 +210,8 @@ bool __real_SetFreq(dsd_socket_t sockfd, long int freq);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 int __real_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
-int __real_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
-int __wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
+int __real_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
+int __wrap_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
@@ -291,7 +291,7 @@ __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host,
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the real service does: rigctl
    on over a new socket to the requested endpoint. */
 int
-__wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port) {
+__wrap_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port) {
     if (!g_rigctl_connect_stub_armed) {
         return __real_svc_rigctl_connect(opts, state, host, port);
     }

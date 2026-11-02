@@ -22,7 +22,7 @@ rigctl_connection_live(const dsd_opts* opts) {
 }
 
 int
-svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port) {
+svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port) {
     if (!opts || !host || port <= 0) {
         return -1;
     }

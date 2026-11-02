@@ -32,11 +32,13 @@
 
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
-/** No landing is in force: the record lives in the scan owner, not in @p state itself. */
+/** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. */
 static inline void
-dsd_engine_scan_landing_forget(const dsd_state* state) {
-    dsd_engine_scan_owner* owner =
-        state ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+dsd_engine_scan_landing_forget(dsd_state* state) {
+    if (!state || !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN)) {
+        return;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
         owner->landing = (dsd_engine_scan_landing){0};
     }

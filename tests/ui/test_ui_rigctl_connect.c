@@ -107,7 +107,7 @@ dsd_engine_rigctl_tune_cache_forget(void) {
 }
 
 void
-dsd_engine_rigctl_landing_forget(const dsd_state* state) {
+dsd_engine_rigctl_landing_forget(dsd_state* state) {
     note_call('L');
     g_landing_state = state;
 }

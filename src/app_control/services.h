@@ -120,17 +120,18 @@ int svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, in
  * The new socket opens while the old one is still open and takes what the old one knew of its peer
  * (RigctlRebindPeer(): the same peer for the same host, ignoring case, and port). The old socket is then closed, sent
  * nothing, so a peer a scan changed keeps what it last set once another endpoint replaces it. The engine's legacy tune
- * cache is forgotten, and so is the frequency a scan landed the peer on (dsd_engine_rigctl_landing_forget(), issue
- * #667 D9). A connect that fails while rigctl is on changes nothing: the connection in use stays. Without one, a
- * failure records @p host and @p port for the next attempt and leaves rigctl off, the landing forgotten too. The connection is replaced
- * under the P25 SM tick guard (the watchdog's retunes use it), so a caller must not hold that guard. A peer that
+ * cache is forgotten, and so is the frequency a scan landed the peer on, which @p state's engine scan state holds
+ * (dsd_engine_rigctl_landing_forget(), issue #667 D9). A connect that fails while rigctl is on changes nothing: the
+ * connection in use stays. Without one, a failure records @p host and @p port for the next attempt and leaves rigctl
+ * off, the landing forgotten too. The connection is replaced under the P25 SM tick guard (the watchdog's retunes use
+ * it), so a caller must not hold that guard. A peer that
  * demodulates audio input is then asked, under the same hold, for the width the session's analog monitor runs
  * (dsd_engine_rigctl_ask_session_passband(), issue #621): a new peer was asked nothing, and on the same endpoint the
  * record taken over is unconfirmed, so a restarted peer gets the request again. @p state, the decoder state where the
  * caller has one (NULL otherwise), tells a scan's request from the session's there: an untyped -Y list's is the
  * session's, a typed list's or a trunk scan's a row's.
  */
-int svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
+int svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
 /**
  * @brief The request a rigctl peer that demodulates audio input is to run now (issue #621): the demodulator and
  * passband dsd_rigctl_passband_of() gives for the options in force and the scan row whose scope is in force
