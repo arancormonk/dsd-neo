@@ -22,6 +22,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -4589,6 +4590,7 @@ tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
     opts.tcp_in_ctx = NULL;
     g_connect_socket = DSD_INVALID_SOCKET;
     dsd_analog_rx_test_set_clock(NULL);
+    dsd_resampler_reset(&opts.input_resampler); /* the next call's fixture clears opts */
     dsd_state_ext_free_all(&state);
     dsd_socket_cleanup();
 }
