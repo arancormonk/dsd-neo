@@ -222,6 +222,15 @@ ui_overlay_pop_one(void) {
     }
 }
 
+/* A submenu whose every row went away while it was open (Clear avoids empties Trunking > Avoids outside a running scan,
+   issue #672) closes back to its parent, whose row for it the same rule now hides; the root keeps its rows. */
+static void
+ui_menu_pop_emptied_frames(const UiCtx* ctx) {
+    while (g_depth > 1 && !ui_submenu_has_visible(g_stack[g_depth - 1].items, g_stack[g_depth - 1].n, ctx)) {
+        ui_overlay_pop_one();
+    }
+}
+
 static int
 ui_menu_modal_handle_key(int ch) {
     if (ui_prompt_active()) {
@@ -532,6 +541,7 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     rr_panel_tick(opts, state);
     /* The RR panel's tick can end it: a modal-only overlay that held nothing else closes now, not after an empty frame. */
     ui_menu_close_if_modal_done();
+    ui_menu_pop_emptied_frames(ctx);
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }

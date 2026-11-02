@@ -230,6 +230,29 @@ static const NcMenuItem JUMP_GUARD_ITEMS[] = {
     {.id = "jump2", .label = "Jump 2", .on_select = act_kind2, .no_jump = true},
 };
 
+/* A submenu whose rows all go away while it is open, as Clear avoids empties Trunking > Avoids (issue #672). */
+static bool g_emptiable_rows_on = true;
+
+static bool
+emptiable_row_on(const void* ctx) {
+    (void)ctx;
+    return g_emptiable_rows_on;
+}
+
+static const NcMenuItem EMPTIABLE_ITEMS[] = {
+    {.id = "gone0", .label = "Gone 0", .is_enabled = emptiable_row_on, .on_select = act_sub0},
+    {.id = "gone.sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "gone1", .label = "Gone 1", .is_enabled = emptiable_row_on, .on_select = act_sub1},
+};
+
+static const NcMenuItem EMPTIABLE_ROOT_ITEMS[] = {
+    {.id = "emptiable",
+     .label = "Emptiable",
+     .submenu = EMPTIABLE_ITEMS,
+     .submenu_len = sizeof EMPTIABLE_ITEMS / sizeof EMPTIABLE_ITEMS[0]},
+    {.id = "root6", .label = "Root 6", .on_select = act_root6},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -315,6 +338,9 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
     } else if (g_fixture == 4) {
         items = JUMP_GUARD_ITEMS;
         n = sizeof JUMP_GUARD_ITEMS / sizeof JUMP_GUARD_ITEMS[0];
+    } else if (g_fixture == 5) {
+        items = EMPTIABLE_ROOT_ITEMS;
+        n = sizeof EMPTIABLE_ROOT_ITEMS / sizeof EMPTIABLE_ROOT_ITEMS[0];
     }
     if (out_items) {
         *out_items = items;
@@ -460,8 +486,9 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
     }
+    /* Selectable, as menu_render.c counts: a separator alone keeps no submenu on screen. */
     for (size_t i = 0; i < n; i++) {
-        if (ui_is_enabled(&items[i], ctx)) {
+        if (ui_is_selectable(&items[i], ctx)) {
             return 1;
         }
     }
@@ -1021,6 +1048,29 @@ main(void) {
     assert(ui_menu_is_open() == 0);
 
     test_overlays_shutdown_and_restart(opts, state);
+
+    /* A submenu emptied while open (issue #672: Clear avoids outside a running scan hides all three Avoids rows) goes
+       back to its parent at the next tick, rather than drawing a frame with only its separator and nothing to rest
+       on; the parent's highlight moves off the row that now hides. */
+    g_fixture = 5;
+    g_emptiable_rows_on = true;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    ui_menu_tick(opts, state);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("sub0");
+    g_emptiable_rows_on = false;
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 1);
+    reset_capture();
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("root6");
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+    g_emptiable_rows_on = true;
+    g_fixture = 0;
 
     free(next_state);
     free(next_opts);

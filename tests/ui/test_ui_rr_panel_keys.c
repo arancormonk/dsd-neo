@@ -679,6 +679,16 @@ ui_is_selectable(const NcMenuItem* it, const void* ctx) {
 }
 
 int
+ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
+    for (size_t i = 0; items != NULL && i < n; i++) {
+        if (ui_is_selectable(&items[i], ctx)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
 ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     (void)items;
     (void)n;
