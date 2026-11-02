@@ -4308,8 +4308,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   not share (44.1 kHz input; at 48 kHz the PCM noise squelch starts with the stream's second sample, so its decisions
   land one sample into each block), so a read that only carries an open gate to its close is that carrier going, not
   one found. A gate that opens inside a read counts however soon it closes again (a flicker on a real carrier's first
-  read, a short kerchunk): the session keeps whether the last read ended open (`read_ended_open`, closed again by
-  every reset and by a dropped read), so a read that starts open after a closed one opens at its first sample. The
+  read, a short kerchunk): the session keeps whether the last read ended open (`read_ended_open`: the squelch's own
+  gate at the last read's last sample, a read the tap dropped at a boundary or skipped as backlog included, so a drop
+  never turns a gate the squelch kept open into an edge; closed again by every reset and while the tap is not
+  running), so a read that starts open after a closed one opens at its first sample. The
   finalizer splits a block that ends under a passing gate at that point where the chain's runs are chosen
   (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run that does not play,
   so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink and the hook; the

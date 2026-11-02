@@ -6102,6 +6102,62 @@ test_qualified_carrier_across_the_reads_of_a_block(void) {
     }
 }
 
+/* The same rule across a read the tap drops at a boundary (here the input rate moving, as a retune, a stream pause or
+   the backlog skip drop one): the gate the tap remembers is where the squelch's own gate stood at the dropped read's
+   last sample, never a closed gate the drop made up. So a read that starts with the open gate the squelch carried
+   through the drop and closes it is the carrier going, and one that opens after a closed drop opens it. */
+static void
+test_qualified_carrier_across_a_dropped_read(void) {
+    enum { OPEN = 960 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Each case: where the gate closes in the block before and in the dropped one, this block's closed runs, the
+       verdict. */
+    static const struct {
+        unsigned int prev_from;
+        unsigned int dropped_from;
+        unsigned int c1, c2, c3;
+        int qualified;
+    } cases[] = {
+        {OPEN, OPEN, 0U, 0U, 100U, 0}, /* open through the drop, then carried 100 samples to its close */
+        {0U, 0U, 0U, 0U, 100U, 1},     /* closed through the drop, then open from sample 0: it opened */
+        {0U, 0U, 0U, 300U, 600U, 1},   /* closed through the drop, then a flicker inside the read */
+        {OPEN, 0U, 0U, 0U, 100U, 1},   /* the gate closed during the dropped read, then opened at sample 0 */
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        init_analog_monitor_fixture(&opts, &state);
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+        state.squelch_noise_state = (uint8_t)DSD_SQUELCH_NOISE_STATE_KNOWN;
+        static float block[960];
+        static uint8_t flags[960];
+        for (int i = 0; i < 960; i++) {
+            block[i] = 1000.0f;
+        }
+        fill_gate_runs(flags, cases[c].prev_from, 960U, OPEN);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        /* The rate moves: the tap drops its next read. */
+        opts.wav_sample_rate = 44100;
+        fill_gate_runs(flags, cases[c].dropped_from, 960U, OPEN);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        assert(dsd_analog_rx_block_qualified_carrier(&opts, &state) == 0);
+        fill_gate_runs(flags, cases[c].c1, cases[c].c2, cases[c].c3);
+        dsd_analog_rx_block_begin(&opts, &state);
+        dsd_analog_rx_tap_flags(&opts, &state, block, flags, 960U);
+        const int qualified = dsd_analog_rx_block_qualified_carrier(&opts, &state);
+        if (qualified != cases[c].qualified) {
+            DSD_FPRINTF(stderr, "FAIL: qualified carrier after a dropped read, case %zu: %d, want %d\n", c, qualified,
+                        cases[c].qualified);
+            assert(0);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 /* The descriptor the NFM call is handed: the block after the sink gate as before, and -- only while -P records with a
    pre-roll -- the same block before the gate, which reads the same whether the speaker plays, is muted or is the null
    output. The wall-time stamp only while -P records. */
@@ -6499,6 +6555,7 @@ main(void) {
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
     test_qualified_carrier_ends_open_or_opens_in_its_read();
     test_qualified_carrier_across_the_reads_of_a_block();
+    test_qualified_carrier_across_a_dropped_read();
     test_call_block_descriptor_follows_the_recording_not_the_speaker();
     test_call_block_wall_time_is_read_before_the_raw_wav();
     test_sink_generation_moves_at_every_break();

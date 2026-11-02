@@ -538,9 +538,9 @@ typedef struct {
         starting there or later found the carrier itself (not only its hangover). */
     unsigned int block_eligible_from;
     int block_qualified;
-    /** Whether the per-sample squelch's gate was open at the last read's last sample (issue #668): a read that starts
-        open after a read that ended closed opens the gate at its first sample. Closed after a dropped read and at
-        every reset (analog_rx_forget()). */
+    /** Whether the per-sample squelch's gate was open at the last read's last sample (issue #668), a read the tap
+        dropped or skipped included: a read that starts open after a read that ended closed opens the gate at its first
+        sample. Closed at every reset (analog_rx_forget()). */
     int read_ended_open;
 } analog_rx_session;
 
@@ -682,7 +682,11 @@ analog_rx_read_opens_gate(const dsd_opts* opts, const dsd_state* state, int was_
    grid, which a monitor block need not share (44.1 kHz input, or 48 kHz audio input, whose noise squelch starts with
    the stream's second sample), so a read can carry an already open gate a few samples to its close: that is the
    carrier going, which leaves its hangover, not a carrier found. A carrier that opens inside the read counts, however
-   soon the squelch closes again. A read without per-sample flags has only its own decision (@p carrier_now). */
+   soon the squelch closes again. The gate noted is the squelch's own at the read's last sample, a read the tap dropped
+   at a boundary (retune, stream pause, rate move) or skipped as backlog included, so a drop never makes a closed gate
+   of one the squelch kept open; where the squelch starts over on such a path its next flags are closed anyway. A tap
+   that stopped running has forgotten the reception (analog_rx_forget()), and its gate stays closed. A read without
+   per-sample flags has only its own decision (@p carrier_now). */
 static int
 analog_rx_read_found_carrier(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session,
                              const uint8_t* flags, unsigned int start, unsigned int end, int carrier_now) {
@@ -690,8 +694,12 @@ analog_rx_read_found_carrier(const dsd_opts* opts, const dsd_state* state, analo
         session->read_ended_open = carrier_now;
         return carrier_now;
     }
+    if (!dsd_analog_monitor_tap_active(opts)) {
+        session->read_ended_open = 0;
+        return 0;
+    }
     const int was_open = session->read_ended_open;
-    const int ends_open = carrier_now && dsd_squelch_gate_open(opts, state, flags[end - 1U]);
+    const int ends_open = dsd_squelch_gate_open(opts, state, flags[end - 1U]);
     session->read_ended_open = ends_open;
     return carrier_now && (ends_open || analog_rx_read_opens_gate(opts, state, was_open, flags, start, end));
 }

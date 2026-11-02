@@ -19324,6 +19324,15 @@ dsd_neo_add_analog_record_start_test(
     "--analog-keep-output --analog-scene udp-pause --analog-pcm-tap 8192 -fA --squelch -40 --analog-record-min-start-ms 0"
     1
 )
+# The noise squelch on a live UDP input, open when the stream stops (the burst runs to
+# the stop) and noise alone after it: the one recording is the burst's, and nothing
+# from before the stop opens another (the squelch starts over closed, and the tap
+# keeps the gate the squelch really had).
+dsd_neo_add_analog_record_start_test(
+    DECODE_UDP_ANALOG_RECORD_NOISE_PAUSE
+    "--analog-keep-output --analog-scene udp-tap-pause --analog-pcm-tap 48000 -fA --squelch noise+6 --analog-record-max-start-ms -120"
+    1
+)
 # rdio-scanner DirWatch (issue #668): an audio input's calls have no frequency, so they
 # go under --rdio-analog-talkgroup, labelled NFM, in --rdio-system-id's system.
 dsd_neo_add_analog_record_start_test(

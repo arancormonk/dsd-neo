@@ -1347,6 +1347,7 @@ analog_replay_synth(char** args, int* count) {
  *    tone left in at -26 dBFS), -60 dBFS of noise between bursts. What the level squelch is for.
  *  - udp: the pcm kind sent live to `-i udp` at --analog-pcm-tap's rate in 20 ms datagrams, paced in real time, with
  *    the sender stopping for a second before the sample pause_s names: a stream pause part-way through a monitor block.
+ *  - udp-tap: the iq kind's discriminator tap sent the same way, for the noise squelch on a live input.
  * Every burst is keyed with 2 ms raised-cosine ramps. */
 #define ANALOG_SCENE_MAX_BURSTS  8
 #define ANALOG_SCENE_SEED        668U
@@ -1365,7 +1366,7 @@ analog_replay_synth(char** args, int* count) {
 /* The udp scene's monitor blocks are 960 samples (symbol_analog_block_size()); at 8192 Hz each is 117 ms. */
 #define ANALOG_SCENE_UDP_RATE    8192.0
 
-typedef enum { ANALOG_SCENE_IQ = 0, ANALOG_SCENE_PCM, ANALOG_SCENE_UDP } analog_scene_kind;
+typedef enum { ANALOG_SCENE_IQ = 0, ANALOG_SCENE_PCM, ANALOG_SCENE_UDP, ANALOG_SCENE_UDP_TAP } analog_scene_kind;
 
 typedef struct {
     const char* name;
@@ -1451,6 +1452,16 @@ static const analog_scene k_scenes[] = {
         .kind = ANALOG_SCENE_UDP,
         .bursts = 2,
         .old_bursts = 1,
+    },
+    /* The noise squelch open when the stream stops (the burst runs to the stop), then noise alone (issue #668). */
+    {
+        .name = "udp-tap-pause",
+        .total_s = 5.0,
+        .pause_s = 2.503,
+        .onset_s = {1.503},
+        .len_s = {1.0},
+        .kind = ANALOG_SCENE_UDP_TAP,
+        .bursts = 1,
     },
 };
 
@@ -1662,10 +1673,9 @@ analog_scene_free_port(void) {
     return port;
 }
 
-/* The udp kind: the audio in memory for the sender, and a free port for `-i udp`; 0, or -1. */
+/* The udp kinds: the audio the sender sends is in g_scene.pcm; a free port and the arguments for `-i udp`; 0, or -1. */
 static int
-analog_scene_prepare_udp(const analog_scene* scene, long rate_hz) {
-    g_scene.pcm = analog_scene_audio(scene, rate_hz, &g_scene.pcm_n);
+analog_scene_listen(long rate_hz) {
     g_scene.pcm_rate = (int)rate_hz;
     g_scene.port = analog_scene_free_port();
     if (g_scene.pcm == NULL || g_scene.port <= 0) {
@@ -1674,6 +1684,27 @@ analog_scene_prepare_udp(const analog_scene* scene, long rate_hz) {
     (void)DSD_SNPRINTF(g_scene.input_arg, sizeof(g_scene.input_arg), "udp:127.0.0.1:%d", g_scene.port);
     (void)DSD_SNPRINTF(g_scene.rate_arg, sizeof(g_scene.rate_arg), "%ld", rate_hz);
     return 0;
+}
+
+/* The udp-tap kind's audio: the tap WAV analog_tap_write() made, read back for the sender; 0, or -1. */
+static int
+analog_scene_read_tap(void) {
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(g_tap_arg, SFM_READ, &info);
+    if (wav == NULL) {
+        return -1;
+    }
+    int rc = -1;
+    if (info.channels == 1 && info.frames > 0) {
+        g_scene.pcm = (int16_t*)malloc((size_t)info.frames * sizeof(int16_t));
+    }
+    if (g_scene.pcm != NULL && sf_read_short(wav, g_scene.pcm, info.frames) == info.frames) {
+        g_scene.pcm_n = (size_t)info.frames;
+        rc = 0;
+    }
+    sf_close(wav);
+    return rc;
 }
 
 /* Waits until @p due_ms on the real-time clock. */
@@ -1746,7 +1777,12 @@ analog_replay_scene(char** args, int* count) {
         || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_scene") == NULL) {
         g_scaled_dir[0] = '\0';
     } else if (scene->kind == ANALOG_SCENE_UDP) {
-        rc = analog_scene_prepare_udp(scene, rate_hz);
+        g_scene.pcm = analog_scene_audio(scene, rate_hz, &g_scene.pcm_n);
+        rc = analog_scene_listen(rate_hz);
+    } else if (scene->kind == ANALOG_SCENE_UDP_TAP) {
+        rc = (analog_scene_capture(&cap, scene) == 0 && analog_tap_write(&cap) == 0 && analog_scene_read_tap() == 0)
+                 ? analog_scene_listen(rate_hz)
+                 : -1;
     } else if (scene->kind == ANALOG_SCENE_PCM) {
         rc = analog_scene_write_audio(scene, rate_hz);
     } else if (analog_scene_capture(&cap, scene) == 0) {
@@ -1757,7 +1793,7 @@ analog_replay_scene(char** args, int* count) {
         DSD_FPRINTF(stderr, "analog replay: --analog-scene %s cannot make its input\n", scene->name);
         return -1;
     }
-    if (scene->kind == ANALOG_SCENE_UDP) {
+    if (scene->kind == ANALOG_SCENE_UDP || scene->kind == ANALOG_SCENE_UDP_TAP) {
         args[(*count)++] = k_input_flag;
         args[(*count)++] = g_scene.input_arg;
         args[(*count)++] = k_rate_flag;
