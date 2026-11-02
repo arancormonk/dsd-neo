@@ -7260,13 +7260,19 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   playout takes the calls' verdicts, the calls end as on a sync loss, the DMR confirmation restarts
   (`dmr_confidence_reset()`: candidate, lock, voice gate, without the colour code
   `dsd_engine_forget_carrier_codes()` would take with it), `dsd_engine_forget_carrier_decoding()` runs, and the
-  carrier count moves with the carrier change noted. The codes, the received identity, the followed voice channel and
-  trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes the tick guard as a tune
-  does. A cut frame unwinds before the boundary runs, outside its tick guard and before any scan or trunk tick; a
-  gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which makes `noCarrier()`
-  return early) never skips it. An older symbol cache is dropped when a direct reader has already acknowledged its
-  gap, without moving the consumed count backwards. Tests:
-  `ENGINE_STREAM_GAP`.
+  carrier count moves with the carrier change noted. An analog call ends at its last accepted block, a candidate
+  unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
+  (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
+  issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
+  followed voice channel and trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes
+  the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
+  scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which
+  makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a direct reader has already
+  acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone (samples dropped, as a
+  driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP` (the analog side on a
+  replay's clock and a live input's: a toned call's row, the next reception's own tone or none, two short receptions
+  that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined captures, fast
+  and paced).
 
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
@@ -11834,7 +11840,24 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   `spans_pause`), which a stop or folder change closes while the reception goes on. Its observations carry the
   call's mode (`analog_call_mode()`, issue #667): the analog demodulator in force on a radio input
   (`dsd_opts_input_is_radio()`: NFM, or AM for `DSD_ANALOG_DEMOD_AM`), unknown on audio input, taken with the
-  frequency at the reception's first block.
+  frequency at the reception's first block (`analog_call_frequency_hz()`: the tuned one, else a scan's confirmed
+  landing, below), and never rewritten.
+  - Confirmed landing (issue #667 D9, `engine/scan_landing.h`, kept in `dsd_engine_scan_owner::landing`). On audio
+    input `dsd_opts_tuned_freq_hz()` is 0, so an analog call heard through a rigctl peer takes the frequency a scan
+    confirmed it landed the peer on: a -Y row's (`dsd_engine_scan_landing_note_row()`, at the typed commit's end in
+    `channel_scan_commit()` and in `untyped_install_row()` for an untyped step, pending ones once they land) or a
+    trunk-scan conventional target's (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's
+    control channel). It is forgotten before every row start (`channel_scan_start_row()`, the untyped steps), every
+    target switch after its preparation, at every carrier boundary but a stream gap (a manual tune among them) and at
+    the -Y release (a leave, a pause, a trunk-scan pause or stop); a placeholder row, a failed or pending tune and a
+    rollback note none. `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing
+    once the scan session or channel map (`trunk_chan_map_seq`, a map replacement) moved. Analog rows only: digital rows
+    on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS`,
+    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps).
+  - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
+    discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
+    preparation fails leaves either running, and a rollback or a revisit restores neither; the carrier boundary a
+    Signal search pause or failure runs discards a candidate.
   - AM (issue #667 D8). The tracker follows the analog monitor's tap, FM or AM (`analog_call_follows()`:
     `dsd_analog_monitor_tap_active()` with trunking off), not FM tone detection, in the block path and the tick; so do
     `symbol_analog_call_input()`, the RTL idle-read yield and the zero-sample acceptance (IO and DSP below). The tone

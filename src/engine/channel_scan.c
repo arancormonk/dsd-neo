@@ -47,6 +47,7 @@
 
 #include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 
 /* One row's session edit (issue #518). */
@@ -374,6 +375,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->request = 0;
     scan->needs_commit = 0;
     dsd_engine_channel_scan_resume_landed(opts, state);
+    /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9). */
+    dsd_engine_scan_landing_note_row(state, *dsd_state_trunk_lcn_slot(state, scan->row));
     return 1;
 }
 
@@ -1052,6 +1055,9 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     if (row < 0 || row >= state->lcn_freq_count) {
         return 0;
     }
+    /* Whatever this start comes to, the receiver is no longer known to be on the row last landed: a placeholder row
+       tunes nothing, and a tune that fails or is still pending lands nothing (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     const long freq = *dsd_state_trunk_lcn_slot(state, row);
     if (!freq) {
         state->lcn_freq_roll = row + 1;
@@ -1337,6 +1343,8 @@ dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
 static int
 channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
+    /* The scan no longer says where the receiver is (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     channel_scan* scan = channel_scan_get(state);
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
     const int active =

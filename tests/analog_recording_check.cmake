@@ -31,6 +31,8 @@
 #                 audible audio (the host's total_ms and last_audible_ms), so
 #                 the run's last call was still held through a pause when the
 #                 input ended and the engine's normal teardown closed it.
+#   ROWS_EXPECTED a regex the host's "ANALOG CALL ROW:" lines, oldest first and
+#                 one a line, must match (the tone each row names, issue #667).
 foreach(
     _var
     HOST_BIN
@@ -250,6 +252,15 @@ function(_analog_recording_leg leg rate out_files out_summary)
         )
     endif()
     list(APPEND _summary ${_rows})
+    if(DEFINED ROWS_EXPECTED)
+        string(REPLACE ";" "\n" _row_text "${_rows}")
+        if(NOT "${_row_text}" MATCHES "${ROWS_EXPECTED}")
+            message(
+                FATAL_ERROR
+                "analog_recording_check: ${leg}: rows do not match '${ROWS_EXPECTED}':\n${_row_text}"
+            )
+        endif()
+    endif()
 
     if(DEFINED HELD_AT_END_MS)
         if(

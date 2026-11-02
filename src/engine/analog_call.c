@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include "scan_landing.h"
 #include "scan_owner.h"
 
 /* The call's per-call recording. A stop or a folder change closes it and the call's next block opens another, so it
@@ -54,7 +55,7 @@ typedef struct {
     double start_wall;    /* the same instant in decode-clock wall seconds, never truncated */
     uint64_t qual48;      /* the candidate's RECEPTION and lead-in spans in 48 kHz samples (held spans do not count) */
     uint64_t qual_rem48;  /* the part of a 48 kHz sample carried from one of those spans to the next */
-    int64_t frequency_hz; /* the tuned frequency at the reception's first block */
+    int64_t frequency_hz; /* the frequency at the reception's first block (analog_call_frequency_hz()) */
     /* Issue #756: the call waits through a pause the max gap may still join. It stays active meanwhile (its row too),
        and is decided on sample time alone: the blocks that arrive, never a clock. A candidate past its first RECEPTION
        block is held the same way. */
@@ -454,6 +455,14 @@ analog_call_mode(const dsd_opts* opts) {
     return opts->analog_demod == DSD_ANALOG_DEMOD_AM ? (uint8_t)DSD_ANALOG_MODE_AM : (uint8_t)DSD_ANALOG_MODE_NFM;
 }
 
+/* The frequency a reception is heard on (issue #667 D9): the tuned one, or on audio input, which tunes nothing, the one
+   a scan confirmed it landed its rigctl peer on (scan_landing.h); 0 when neither says. */
+static int64_t
+analog_call_frequency_hz(const dsd_opts* opts, const dsd_state* state) {
+    const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
+    return (int64_t)(tuned_hz != 0U ? tuned_hz : dsd_engine_scan_landing_hz(opts, state));
+}
+
 /* A confirmed new identity (D4) ends the running reception before this block, which begins the next: a call at its
    last reception before its CONTINUE would split it inside the call state, a candidate unpublished (issue #667). An
    identity confirmed only now, or one still acquiring, changes nothing. */
@@ -466,8 +475,9 @@ analog_call_identity_boundary(dsd_opts* opts, dsd_state* state, analog_call* cal
 }
 
 /* A block of a reception that is not a call yet (issue #667 D1), stamped @p now_m: the first begins the candidate, whose
-   reception starts at the block's first sample and whose mode and frequency are taken here; each counts its span
-   toward the minimum. The candidate keeps the last identity confirmed on it for its BEGIN. */
+   reception starts at the block's first sample and whose mode and frequency are taken here, once (a later landing
+   never rewrites them); each counts its span toward the minimum. The candidate keeps the last identity confirmed on it
+   for its BEGIN. */
 static void
 analog_call_admit(const dsd_opts* opts, const dsd_state* state, analog_call* call, const dsd_receive_identity* identity,
                   size_t count, int sample_rate, double now_m) {
@@ -477,7 +487,7 @@ analog_call_admit(const dsd_opts* opts, const dsd_state* state, analog_call* cal
         call->start_wall = analog_call_wall_at(call->start_m);
         call->identity = *identity;
         call->mode = analog_call_mode(opts);
-        call->frequency_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
+        call->frequency_hz = analog_call_frequency_hz(opts, state);
         call->boundaries_seen = state->analog_rx.boundaries;
     } else if (identity->known) {
         call->identity = *identity;

@@ -8,13 +8,23 @@
 #define DSD_NEO_ENGINE_SCAN_OWNER_H
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 #include <stdlib.h>
+
+/** The frequency a scan last landed on (issue #667 D9; scan_landing.h): 0 Hz for none. */
+typedef struct {
+    uint32_t hz;
+    uint8_t by;       /**< the scan that landed it (DSD_ENGINE_SCAN_LANDING_*) */
+    uint32_t session; /**< -Y: dsd_state::lcn_scan_session at the landing */
+    uint64_t map_seq; /**< -Y: dsd_state::trunk_chan_map_seq at the landing */
+} dsd_engine_scan_landing;
 
 typedef struct {
     void* trunk;
     void* search;
     void* analog_call;
     dsd_state_ext_cleanup_fn trunk_free, search_free, analog_call_free;
+    dsd_engine_scan_landing landing;
 } dsd_engine_scan_owner;
 
 static inline void
@@ -39,6 +49,23 @@ dsd_engine_scan_owned(const dsd_state* state, int search) {
     return p ? (search == 2 ? p->analog_call : (search ? p->search : p->trunk)) : NULL;
 }
 
+/* The owner, made on first use; NULL when it cannot be. */
+static inline dsd_engine_scan_owner*
+dsd_engine_scan_owner_ensure(dsd_state* state) {
+    dsd_engine_scan_owner* p = DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    if (!p) {
+        p = (dsd_engine_scan_owner*)calloc(1, sizeof(*p));
+        if (!p) {
+            return NULL;
+        }
+        if (dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, p, dsd_engine_scan_owner_free)) {
+            free(p);
+            return NULL;
+        }
+    }
+    return p;
+}
+
 static inline int
 dsd_engine_scan_own(dsd_state* state, int search, void* value, dsd_state_ext_cleanup_fn cleanup) {
     dsd_engine_scan_owner* p = DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
@@ -46,12 +73,8 @@ dsd_engine_scan_own(dsd_state* state, int search, void* value, dsd_state_ext_cle
         if (!value) {
             return 0;
         }
-        p = (dsd_engine_scan_owner*)calloc(1, sizeof(*p));
+        p = dsd_engine_scan_owner_ensure(state);
         if (!p) {
-            return -1;
-        }
-        if (dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, p, dsd_engine_scan_owner_free)) {
-            free(p);
             return -1;
         }
     }

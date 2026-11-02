@@ -7541,6 +7541,38 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_INPUT_BOUNDARY
         COMMAND dsd-neo_test_engine_input_boundary
     )
+    # The scanners and the analog call tracker together (issue #667): -Y and trunk-scan departures
+    # end an analog call or discard a candidate, and a scan's confirmed landing names an analog
+    # call's frequency on audio input (D9). A rigctl peer on audio input, which radio-off builds
+    # have too, stood in for by --wrap.
+    add_executable(
+        dsd-neo_test_engine_analog_scan_calls
+        engine/test_engine_analog_scan_calls.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_analog_scan_calls
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_analog_scan_calls
+        PRIVATE
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RestoreScanModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=dsd_scan_key_change_prepare"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_ANALOG_SCAN_CALLS
+        COMMAND dsd-neo_test_engine_analog_scan_calls
+    )
     # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
     # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
     # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
@@ -19148,6 +19180,63 @@ if(DSD_HAS_RADIO)
         "2580,680,680"
         "fast,realtime"
         1000
+    )
+    # A gap in the radio stream (issue #667 A3), as a capture records a USB recovery: the host
+    # joins two committed captures across a 2 s gap (--analog-gap-join; no fixture is committed)
+    # and the stream-gap boundary ends the analog reception at its last block and starts analog
+    # reception over. A call on CTCSS 100.0 Hz before the gap makes its own row and recording
+    # (980 ms of its 1 s), and the reception after it is a call of its own with its own tone, 67.0
+    # Hz or none (1960 ms of 2 s); two 350 ms receptions, one each side, are two candidates too
+    # short for a row. Fast and paced legs record the same.
+    function(
+        dsd_neo_add_analog_stream_gap_test
+        test_name
+        join
+        files
+        durations
+        rows
+        min_realtime_s
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch -60 --iq-replay ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_ctcss_synth_1000.iq.json --analog-gap-join ${join}"
+                "-DFILES=${files}" "-DDURATIONS_MS=${durations}"
+                "-DROWS_EXPECTED=${rows}" "-DRATES=fast,realtime"
+                "-DMIN_REALTIME_S=${min_realtime_s}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/${test_name}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_NEW_TONE
+        "1000:2000:nfm_ctcss_synth_670:2000"
+        2
+        "980,1960"
+        "^ANALOG CALL ROW: [^\n]* tone=CTCSS 100[.]0 Hz\nANALOG CALL ROW: [^\n]* tone=CTCSS 67[.]0 Hz$"
+        4
+    )
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_NO_TONE
+        "1000:2000:nfm_notone_synth:2000"
+        2
+        "980,1960"
+        "^ANALOG CALL ROW: [^\n]* tone=CTCSS 100[.]0 Hz\nANALOG CALL ROW: [^\n]* tone=none$"
+        4
+    )
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_SHORT_BURSTS
+        "350:2000:nfm_ctcss_synth_1000:350"
+        0
+        ""
+        "^$"
+        2
     )
 endif()
 

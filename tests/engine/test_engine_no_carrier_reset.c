@@ -84,6 +84,7 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #endif
 
@@ -1583,6 +1584,8 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed timeout leaves outgoing mode", pending != 0 && opts->frame_nxdn48
                                                                 && state->lcn_freq_roll == 1
                                                                 && dsd_engine_channel_scan_pending(opts, state));
+    /* Issue #667 D9: a tune still pending lands nothing, and its landing names the row. */
+    rc |= expect_true("typed pending hop names no landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     dsd_call_snapshot pending_call;
     rc |= expect_true("typed pending hop keeps outgoing call", dsd_call_state_get(state, 0, &pending_call) == 1);
     rc |= expect_true("typed pending hop avoids premature sync loss", pending_call.phase == DSD_CALL_PHASE_ACTIVE);
@@ -1591,6 +1594,8 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed async completion commits",
                       !dsd_engine_channel_scan_pending(opts, state) && opts->frame_p25p1 && opts->frame_p25p2
                           && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
+    rc |=
+        expect_true("typed async completion names its landing", dsd_engine_scan_landing_hz(opts, state) == 941012500U);
     dsd_call_snapshot ended;
     rc |= expect_true("typed pending hop retains call", dsd_call_state_get(state, 0, &ended) == 1);
     rc |= expect_true("typed pending hop ends explicitly", ended.end_reason == DSD_CALL_END_EXPLICIT);
@@ -2121,27 +2126,37 @@ test_untyped_find_and_enter_row(void) {
     rc |= expect_true("enter-row-failed",
                       dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_FAILED
                           && state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL);
+    /* Issue #667 D9: the landing each step confirms, and none for a failed, placeholder or pending one. */
+    rc |= expect_true("enter-row-failed-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     uint32_t carrier_seq = state->carrier_seq;
     rc |= expect_true("enter-row-ok", dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_OK);
     rc |=
         expect_true("enter-row-ok-commits", state->lcn_freq_roll == 1 && state->rkey_array[9] == 999ULL
                                                 && state->carrier_seq != carrier_seq && g_rtl_tune_freq == 992012500U);
+    rc |= expect_true("enter-row-ok-names-its-landing", dsd_engine_scan_landing_hz(opts, state) == 992012500U);
     carrier_seq = state->carrier_seq;
     rc |= expect_true("enter-row-placeholder-parks",
                       dsd_engine_scan_untyped_enter_row(opts, state, 2, now) == DSD_UNTYPED_STEP_OK
                           && state->lcn_freq_roll == 3 && state->carrier_seq == carrier_seq
                           && state->rkey_array[9] == 999ULL);
+    rc |= expect_true("enter-row-placeholder-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
+    rc |=
+        expect_true("enter-row-ok-again", dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_OK
+                                              && dsd_engine_scan_landing_hz(opts, state) == 992012500U);
+    state->lcn_freq_roll = 3;
     g_rtl_timeout_outstanding = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rc |= expect_true("enter-row-pending",
                       dsd_engine_scan_untyped_enter_row(opts, state, 3, now) == DSD_UNTYPED_STEP_PENDING
                           && state->lcn_freq_roll == 3 && state->rkey_array[9] == 999ULL);
+    rc |= expect_true("enter-row-pending-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                                      && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
+    rc |= expect_true("enter-row-pending-landing-names-its-row", dsd_engine_scan_landing_hz(opts, state) == 994012500U);
     free_test_runtime(opts, state);
     return rc;
 }

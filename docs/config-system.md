@@ -1039,7 +1039,7 @@ The following can be changed without restarting:
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
 - The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
-- The NFM recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
+- The analog (NFM or AM) recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
 - TCP/UDP connection parameters
 - File input path
 
