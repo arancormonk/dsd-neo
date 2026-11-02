@@ -26,8 +26,8 @@
 /* The reasons, as phrases a toast puts after "Failed: RR import -> " (and a frontend frames as it likes). Each fits an
    80-column status line with that prefix. */
 static const char k_rr_why_trunk_scan[] = "stop the trunk scan first; it keeps its own channel maps";
-static const char k_rr_why_am_audio[] = "AM needs an IQ radio input";
-static const char k_rr_why_tetra_audio[] = "TETRA needs an IQ radio input or a symbol capture";
+static const char k_rr_why_am_audio[] = "AM needs an I/Q radio input";
+static const char k_rr_why_tetra_audio[] = "TETRA needs an I/Q radio input or a symbol capture";
 static const char k_rr_why_tetra_uplink[] = "TETRA uplink session; restart without --tetra-uplink";
 static const char k_rr_why_tetra_airspy[] = "an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp";
 static const char k_rr_why_tetra_rtl_bw[] = "TETRA needs 72 kHz DSP bandwidth; set it and import again";

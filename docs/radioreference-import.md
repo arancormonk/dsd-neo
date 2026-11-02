@@ -317,7 +317,7 @@ Limits worth knowing:
 
 #### Receiver requirements
 
-AM needs an IQ radio input. TETRA needs a receiver that can decode it; when the session has none, the import
+AM needs an I/Q radio input. TETRA needs a receiver that can decode it; when the session has none, the import
 is refused with the reason:
 
 | Input | TETRA import |
@@ -328,7 +328,7 @@ is refused with the reason:
 | Airspy | Refused: no Airspy rate decodes TETRA yet |
 | I/Q replay | Accepted; the replay is re-planned to a TETRA rate, or the import is refused when the capture cannot be resampled to one |
 | Symbol capture (`.bin`, `.raw`, `.sym`) | Accepted |
-| PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an IQ radio input or a symbol capture |
+| PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an I/Q radio input or a symbol capture |
 | A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
 
 In the Android and Qt app, a saved TETRA system is checked when it starts, as an AM one is. It starts on a USB

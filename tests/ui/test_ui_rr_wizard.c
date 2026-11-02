@@ -2294,7 +2294,7 @@ test_import_now_rechecks_the_session_gate(void) {
 /* ---- The session gate, as app-control decides it (issue #803) ----------- */
 
 static const char k_next_start_map_reason[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled.";
-static const char k_tetra_on_audio_reason[] = "TETRA needs an IQ radio input or a symbol capture.";
+static const char k_tetra_on_audio_reason[] = "TETRA needs an I/Q radio input or a symbol capture.";
 
 /* Publish a session on @p type / @p dev, with nothing else set. Zeroed rather than initOpts(): dsd_init.c would
  * drag the vocoder libraries into this target. */

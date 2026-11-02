@@ -700,7 +700,7 @@ test_apply_am_bounds(void) {
     state.ui_msg[0] = '\0';
     rc |= expect_int("am on pcm queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("am on pcm drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("am on pcm refused", state.ui_msg, "Failed: RR import -> AM needs an IQ radio input");
+    rc |= expect_str("am on pcm refused", state.ui_msg, "Failed: RR import -> AM needs an I/Q radio input");
     rc |= expect_int("am on pcm leaves the mode", opts.analog_only, 0);
     rc |= expect_int("am on pcm leaves the kind", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     freeState(&state);
@@ -874,7 +874,7 @@ test_apply_tetra_receiver_refusals(void) {
     init_test_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_PULSE;
     rc |= expect_refused_import("tetra on pcm", &opts, &state, &p,
-                                "Failed: RR import -> TETRA needs an IQ radio input or a symbol capture");
+                                "Failed: RR import -> TETRA needs an I/Q radio input or a symbol capture");
     freeState(&state);
     (void)remove(k_tetra_group_csv);
     return rc;

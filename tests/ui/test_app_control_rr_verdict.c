@@ -130,7 +130,7 @@ test_verdict_tetra_table(void) {
     f = facts_for(tetra, DSD_APP_RR_INPUT_SYMBOLS);
     rc |= expect_verdict("symbol capture", &f, NULL, 0);
     f = facts_for(tetra, DSD_APP_RR_INPUT_AUDIO);
-    rc |= expect_verdict("audio", &f, "TETRA needs an IQ radio input or a symbol capture", 1);
+    rc |= expect_verdict("audio", &f, "TETRA needs an I/Q radio input or a symbol capture", 1);
 
     f = facts_for(tetra, DSD_APP_RR_INPUT_RTL);
     f.rtl_dsp_bw_khz = 72;
@@ -140,7 +140,7 @@ test_verdict_tetra_table(void) {
     rc |= expect_verdict("uplink symbol capture", &f, "TETRA uplink session; restart without --tetra-uplink", 1);
     /* Audio is refused for what it is, whatever the uplink flag says. */
     f.input_kind = DSD_APP_RR_INPUT_AUDIO;
-    rc |= expect_verdict("uplink audio", &f, "TETRA needs an IQ radio input or a symbol capture", 1);
+    rc |= expect_verdict("uplink audio", &f, "TETRA needs an I/Q radio input or a symbol capture", 1);
     return rc;
 }
 
@@ -148,9 +148,9 @@ static int
 test_verdict_other_modes(void) {
     int rc = 0;
     dsd_app_rr_receiver_facts f = facts_for((int32_t)DSDCFG_MODE_AM, DSD_APP_RR_INPUT_AUDIO);
-    rc |= expect_verdict("am on audio", &f, "AM needs an IQ radio input", 1);
+    rc |= expect_verdict("am on audio", &f, "AM needs an I/Q radio input", 1);
     f.input_kind = DSD_APP_RR_INPUT_SYMBOLS;
-    rc |= expect_verdict("am on symbols", &f, "AM needs an IQ radio input", 1);
+    rc |= expect_verdict("am on symbols", &f, "AM needs an I/Q radio input", 1);
     const int iq_inputs[] = {
         DSD_APP_RR_INPUT_RTL,
         DSD_APP_RR_INPUT_SOAPY,
@@ -329,7 +329,7 @@ test_block_reason(void) {
     rc |= expect_int("airspy blocked", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
     set_input(&g_snap_opts, AUDIO_IN_PULSE, "pulse");
     rc |= expect_int("pulse blocked", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
-    rc |= expect_str("pulse reason", why, "TETRA needs an IQ radio input or a symbol capture");
+    rc |= expect_str("pulse reason", why, "TETRA needs an I/Q radio input or a symbol capture");
 
     /* The next-start rule needs the state snapshot as well, and takes the plan's outputs before any file exists. */
     p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;

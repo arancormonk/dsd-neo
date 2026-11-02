@@ -316,7 +316,7 @@ main(void) {
     dsd_json_free(resp);
 
     check_rr_apply_tetra_refusal("on PulseAudio", AUDIO_IN_PULSE, "pulse", 48,
-                                 "Failed: RR import -> TETRA needs an IQ radio input or a symbol capture");
+                                 "Failed: RR import -> TETRA needs an I/Q radio input or a symbol capture");
     check_rr_apply_tetra_refusal("on an Airspy", AUDIO_IN_RTL, "airspy", 48,
                                  "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
     check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
