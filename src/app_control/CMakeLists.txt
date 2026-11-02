@@ -25,6 +25,7 @@ target_sources(
         trunk_scan_document.cpp
         frontend.c
         frontend_snr.c
+        import_files.c
         menu_services.c
         next_start_check.c
         notification_status.c

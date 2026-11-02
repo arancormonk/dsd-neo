@@ -4084,7 +4084,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `(session, target_id)`. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
-  config file's reads and writes the terminal's Config menu asks for, so menu callbacks and actions do no file I/O:
+  config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
+  callbacks and actions do no file I/O):
   `dsd_app_config_load_submit()` reads a file and submits it as a loaded file's apply (autosave on, to that file),
   `dsd_app_config_load_profile_submit()` reads the base config with `[profile.NAME]` on top (autosave off),
   `dsd_app_config_list_profiles()` lists the profiles, `dsd_app_config_save()` writes the config a snapshot pair holds
@@ -4094,6 +4095,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   thread; the menu keeps the prompts, the default path and every status message. Tests: `APP_CONTROL_CONFIG_FILES` (real
   files), `UI_MENU_CALLBACKS`, `UI_MENU_ACTIONS` (neither defines a `dsd_user_config_*` reader or writer, so a menu file
   access would not link), `HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/import_files.h` and `src/app_control/import_files.c` (issue #672, B18) are the imports
+  directory's reads and writes the terminal's CSV picker, Imported Systems browser and RadioReference wizard ask for:
+  `dsd_app_imports_list()` walks a directory and hands a visitor each `.csv` with a readable provenance sidecar (0
+  walked or stopped, 1 missing, the first-run state, -1 unreadable), `dsd_app_imports_dir_create()` makes the imports
+  directory, `dsd_app_import_remove()` deletes a CSV and its `.rr` sidecar, `dsd_app_import_write()` writes an
+  import's text through a synced private temp sibling and replaces the file, `dsd_app_import_replace_checked()` stages
+  a refresh, validates it (`dsd_csv_validate_*_file()`, at least one accepted row) and only then swaps it in (-1 not
+  written, -2 not valid; the stored file kept), `dsd_app_import_provenance_read()`/`_write()` read and write a sidecar,
+  and `dsd_app_import_path_conflicts()` says whether a path holds anything but this import (a hand-made file, another
+  system, other sites). They run on the caller's (UI) thread and touch no decoder struct; the terminal keeps the
+  grouping, sorting, prompts and every status message. `UI_TERMINAL_FILE_IO_AUDIT`
+  (`cmake/terminal_file_io_audit.cmake`) refuses any direct file or directory call under `src/ui/terminal/` (comments
+  and strings aside), except the null-device stderr redirect `dsd_terminal_open()` makes while curses owns the screen,
+  which is terminal lifecycle, not menu code. Tests: `APP_CONTROL_IMPORT_FILES` (a real scratch directory),
+  `UI_RR_LIBRARY`, `UI_CSV_PICKER`, `UI_RR_PANEL_KEYS`, `UI_RR_WIZARD`, `HEADERS_PUBLIC_APP_CONTROL_IMPORT_FILES[_CXX]`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
   scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`
@@ -9304,7 +9320,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     fake `tests/ui/curses.h`, which has no button 5: the row is hidden), `UI_MOUSE_PTY` (real ncurses on a pty,
     `docs/testing.md`), `UI_PROMPT_VALIDATION`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
-    driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
+    driven by the `RrWizardHooks` table; it writes, refreshes and unwinds an import's files and sidecars through
+    `<dsd-neo/app_control/import_files.h>`) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
     `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`). The system view's text
     comes from the pure formatters in `rr_panel_format.{h,c}` (`UI_RR_PANEL`), the TETRA note under the site list
@@ -9325,8 +9342,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
     **Imported Systems** browser. `csv_picker.{h,c}` offers the same directory's files of one `kind` to the
     "Import channel map/group list CSV..." menu items, with an "Enter a path..." row falling back to the plain
-    prompt. Both headers are terminal-private, both modules are filesystem-only (no curses, no app-control),
-    and both are tested headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
+    prompt. Both headers are terminal-private, and neither module does file I/O: each folds or filters what
+    `dsd_app_imports_list()` hands it, and the browser's Delete calls `dsd_app_import_remove()`. Both are tested
+    headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
   - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and
     `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
     integrations.
@@ -10870,7 +10888,8 @@ Key public headers:
   `*_RADIO` list.
 - Keep UI/business logic separate:
   - Do not perform device or file operations directly in menu callbacks. Use services instead to make behavior
-    testable and reusable across command entry points.
+    testable and reusable across command entry points. File I/O goes through app-control's `config_files.h` and
+    `import_files.h`; `UI_TERMINAL_FILE_IO_AUDIT` fails on a direct file or directory call under `src/ui/terminal/`.
 - Prompts and exit:
   - Use the nonblocking prompt overlays provided by the menu core (string/int/double/confirm equivalents handled
     asynchronously). Handlers can set `exitflag` to request immediate exit; the loop will return.

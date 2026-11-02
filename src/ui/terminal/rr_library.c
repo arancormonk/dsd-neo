@@ -10,9 +10,9 @@
 
 #include "rr_library.h"
 
+#include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
@@ -204,33 +204,11 @@ rr_library_add(RrLibrary* lib, const char* csv_path, const dsd_rr_provenance* pr
     return 0;
 }
 
-typedef struct {
-    RrLibrary* lib;
-    char dir[1024];
-} RrLibraryScanCtx;
-
-/** @brief dsd_dir_list callback: fold every ".csv" that has a readable sidecar. */
+/** @brief dsd_app_imports_list() visitor: fold every listed import in. */
 static int
-rr_library_scan_entry(const char* name, void* user) {
-    RrLibraryScanCtx* ctx = (RrLibraryScanCtx*)user;
-    const size_t len = (name != NULL) ? strlen(name) : 0U;
-    if (len < 5U || strcmp(name + (len - 4U), ".csv") != 0) {
-        return 0;
-    }
-
-    char path[1024];
-    const int n = DSD_SNPRINTF(path, sizeof path, "%s%c%s", ctx->dir, RR_LIB_PATH_SEP, name);
-    if (n <= 0 || (size_t)n >= sizeof path) {
-        /* A truncated path would name a different file; skip rather than guess. */
-        return 0;
-    }
-
-    dsd_rr_provenance prov;
-    DSD_MEMSET(&prov, 0, sizeof prov);
-    if (dsd_rr_provenance_read(path, &prov) != 0) {
-        return 0; /* no sidecar: not a managed import */
-    }
-    (void)rr_library_add(ctx->lib, path, &prov);
+rr_library_scan_entry(const char* path, const char* name, const dsd_rr_provenance* prov, void* user) {
+    (void)name;
+    (void)rr_library_add((RrLibrary*)user, path, prov);
     return 0;
 }
 
@@ -240,28 +218,15 @@ rr_library_scan(RrLibrary* lib, const char* dir) {
         return -1;
     }
     rr_library_init(lib);
-    if (dir == NULL || dir[0] == '\0') {
+    if (dir == NULL || dir[0] == '\0' || strlen(dir) >= DSD_APP_IMPORT_PATH_MAX) {
         return -1;
     }
-
-    RrLibraryScanCtx ctx;
-    ctx.lib = lib;
-    const int n = DSD_SNPRINTF(ctx.dir, sizeof ctx.dir, "%s", dir);
-    if (n <= 0 || (size_t)n >= sizeof ctx.dir) {
-        return -1;
-    }
-    if (dsd_dir_list(dir, rr_library_scan_entry, &ctx) != 0) {
-        /* An imports directory that does not exist yet is the first-run state,
-           not a fault: dsd_user_imports_dir() only resolves a path (it does no
-           I/O), and nothing creates it until the first import completes. Report
-           it as an empty library so the caller says "no imports found" rather
-           than "could not read", which is what the file-per-row chooser this
-           replaced did by ignoring the walk's result outright. A directory that
-           IS there and still could not be walked is a real fault. */
-        dsd_stat_t st;
-        if (dsd_stat_path(dir, &st) != 0) {
-            return 0;
-        }
+    /* The walk and the sidecar reads are app-control's (dsd_app_imports_list()); this only folds what it lists. An
+       imports directory that does not exist yet is the first-run state, not a fault: nothing creates it until the first
+       import completes. Report it as an empty library so the caller says "no imports found" rather than "could not
+       read", which is what the file-per-row chooser this replaced did by ignoring the walk's result outright. A
+       directory that IS there and still could not be walked is a real fault. */
+    if (dsd_app_imports_list(dir, rr_library_scan_entry, lib) < 0) {
         return -1;
     }
     return lib->count;

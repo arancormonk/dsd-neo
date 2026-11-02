@@ -10,52 +10,30 @@
 
 #include "csv_picker.h"
 
+#include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#define CSV_PICKER_PATH_SEP '\\'
-#else
-#define CSV_PICKER_PATH_SEP '/'
-#endif
-
 typedef struct {
     const char* kind;
-    const char* dir;
     char (*paths)[CSV_PICKER_PATH_MAX];
     char (*labels)[CSV_PICKER_LABEL_MAX];
     int max;
     int count;
 } CsvCollectCtx;
 
+/* dsd_app_imports_list() visitor: keep the imports of the kind asked for. */
 static int
-csv_collect_entry(const char* name, void* user) {
+csv_collect_entry(const char* path, const char* name, const dsd_rr_provenance* prov, void* user) {
     CsvCollectCtx* ctx = (CsvCollectCtx*)user;
     if (ctx->count >= ctx->max) {
         return 1; /* full; stop the walk */
     }
-    const size_t len = (name != NULL) ? strlen(name) : 0U;
-    if (len < 5U || strcmp(name + (len - 4U), ".csv") != 0) {
-        return 0;
-    }
-
-    char path[CSV_PICKER_PATH_MAX];
-    const int n = DSD_SNPRINTF(path, sizeof path, "%s%c%s", ctx->dir, CSV_PICKER_PATH_SEP, name);
-    if (n <= 0 || (size_t)n >= sizeof path) {
-        return 0; /* a truncated path would name a different file */
-    }
-
-    dsd_rr_provenance prov;
-    DSD_MEMSET(&prov, 0, sizeof prov);
-    if (dsd_rr_provenance_read(path, &prov) != 0) {
-        return 0; /* no sidecar: kind unknown, not offered */
-    }
-    if (strcmp(prov.kind, ctx->kind) != 0) {
+    if (strcmp(prov->kind, ctx->kind) != 0) {
         return 0;
     }
     (void)DSD_SNPRINTF(ctx->paths[ctx->count], CSV_PICKER_PATH_MAX, "%s", path);
@@ -107,14 +85,13 @@ ui_csv_picker_collect(const char* dir, const char* kind, char paths[][CSV_PICKER
     }
     CsvCollectCtx ctx;
     ctx.kind = kind;
-    ctx.dir = dir;
     ctx.paths = paths;
     ctx.labels = labels;
     ctx.max = max;
     ctx.count = 0;
-    if (dsd_dir_list(dir, csv_collect_entry, &ctx) != 0 && ctx.count == 0) {
-        return 0;
-    }
+    /* The walk and the sidecar reads are app-control's; a directory missing or unreadable part-way keeps what it
+       listed. */
+    (void)dsd_app_imports_list(dir, csv_collect_entry, &ctx);
     csv_rows_sort(paths, labels, ctx.count);
     return ctx.count;
 }

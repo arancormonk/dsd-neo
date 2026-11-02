@@ -471,6 +471,14 @@ add_test(
         ${PROJECT_SOURCE_DIR}/cmake/terminal_snapshot_audit.cmake
 )
 
+# Issue #672 (B18): the terminal UI does file I/O only through app-control services, never itself.
+add_test(
+    NAME UI_TERMINAL_FILE_IO_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/terminal_file_io_audit.cmake
+)
+
 add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
@@ -1146,6 +1154,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_config_files_cxx
   HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES_CXX
   dsd-neo/app_control/config_files.h
+  CXX
+)
+# Issue #672: the imports directory reads and writes a frontend asks for.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_import_files
+  HEADERS_PUBLIC_APP_CONTROL_IMPORT_FILES
+  dsd-neo/app_control/import_files.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_import_files_cxx
+  HEADERS_PUBLIC_APP_CONTROL_IMPORT_FILES_CXX
+  dsd-neo/app_control/import_files.h
   CXX
 )
 # Issue #671: which scan the session has, running or paused.
@@ -2962,6 +2983,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
@@ -2979,14 +3001,22 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_panel_keys
-        PRIVATE dsd-neo_runtime dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+            ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
 
+    # The library folds what app-control's imports listing hands it (issue #672); the listing is compiled in, and
+    # dsd-neo_core + dsd-neo_proto_dmr resolve its replace-checked validation (dsd_csv_validate_*).
     add_executable(
         dsd-neo_test_ui_rr_library
         ui/test_ui_rr_library.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_library
@@ -3000,7 +3030,11 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_library
-        PRIVATE dsd-neo_runtime dsd-neo_test_support
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
     )
     add_test(NAME UI_RR_LIBRARY COMMAND dsd-neo_test_ui_rr_library)
 
@@ -3009,6 +3043,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_csv_picker
         ui/test_ui_csv_picker.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
@@ -3025,7 +3060,12 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_csv_picker
-        PRIVATE dsd-neo_runtime dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+            ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_CSV_PICKER COMMAND dsd-neo_test_ui_csv_picker)
 
@@ -3333,6 +3373,22 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_CONFIG_FILES
     COMMAND dsd-neo_test_app_control_config_files
+)
+
+# Issue #672: the imports directory reads and writes the terminal's CSV picker, Imported Systems browser and
+# RadioReference wizard ask app-control for, on a real scratch directory.
+add_executable(
+    dsd-neo_test_app_control_import_files
+    ui/test_app_control_import_files.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_import_files
+    PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_IMPORT_FILES
+    COMMAND dsd-neo_test_app_control_import_files
 )
 
 # Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.
@@ -5690,7 +5746,8 @@ if(DSD_HAS_EXPAT)
     # links ${CURSES_LIBRARIES} PRIVATE, which a static library still propagates
     # as $<LINK_ONLY:>, and the target does not exist at all under
     # -DDSD_ENABLE_TERMINAL_UI=OFF. Same reasoning for
-    # src/app_control/rr_import_apply.c: dsd-neo_app_control drags dsd-neo_engine
+    # src/app_control/rr_import_apply.c and import_files.c (the imports
+    # directory's file I/O, issue #672): dsd-neo_app_control drags dsd-neo_engine
     # and every io backend into what is a headless unit test. dsd-neo_core +
     # dsd-neo_proto_dmr are here because the test round-trips the written CSVs
     # through dsd_csv_validate_*, and dsd_import.c calls
@@ -5703,6 +5760,7 @@ if(DSD_HAS_EXPAT)
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
         ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard

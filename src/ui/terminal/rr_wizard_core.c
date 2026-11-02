@@ -14,15 +14,14 @@
 #include "rr_wizard_core.h"
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -32,7 +31,6 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <limits.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -485,7 +483,7 @@ rr_core_release_search(RrWizardCore* w) {
  * whatever the user just asked for drops a refresh still in flight, rather than
  * letting a later assembly rewrite a file they have moved on from. Nothing to
  * clean up on disk - the staging temp is created and removed inside
- * rr_refresh_stage_and_replace(), which never yields.
+ * dsd_app_import_replace_checked(), which never yields.
  */
 static void
 rr_refresh_abandon(RrWizardCore* w) {
@@ -1392,90 +1390,6 @@ rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_c
 }
 
 /**
- * @brief Write @p text into a private staging sibling of @p path.
- *
- * Split out of rr_refresh_stage_and_replace() so both stay inside
- * tools/lizard.sh --strict's CCN 15; inlining it puts the pair at 17.
- *
- * The I/O sequence mirrors rr_import_write_text() exactly, including the "wb":
- * a text-mode write turns the generator's '\n' into CRLF on Windows and a
- * refreshed file would stop matching the imported one byte for byte. The helper
- * picks the ".tmp.XXXXXX" name itself and refuses with ENAMETOOLONG if it does
- * not fit, which is the same ceiling an import already lives under.
- *
- * @param tmp_out [out] Receives the staging path the helper picked.
- * @return 0 on success, -1 otherwise, with the staging file removed.
- */
-static int
-rr_refresh_write_staging(const char* path, const char* text, size_t len, char* tmp_out, size_t tmp_out_sz) {
-    FILE* fp = dsd_fopen_private_temp_for_replace(path, tmp_out, tmp_out_sz, "wb");
-    if (fp == NULL) {
-        return -1;
-    }
-    int bad = (len > 0U && fwrite(text, 1U, len, fp) != len) ? 1 : 0;
-    if (!bad && fflush(fp) != 0) {
-        bad = 1;
-    }
-    const int fd = dsd_fileno(fp);
-    if (!bad && fd >= 0 && dsd_fsync(fd) != 0) {
-        bad = 1;
-    }
-    if (fclose(fp) != 0) {
-        bad = 1;
-    }
-    if (bad) {
-        (void)remove(tmp_out);
-        return -1;
-    }
-    return 0;
-}
-
-/**
- * @brief Stage the regenerated text, validate it, then replace the stored file.
- *
- * Never a bare fopen or rename: semgrep dsd-neo.no-raw-file-open bans
- * fopen/open/mkstemp anywhere under src/, and a bare rename() fails on Windows
- * whenever the destination exists - which is every refresh.
- *
- * The guard is "rc == 0 AND accepted > 0", not "rc == 0": a header-only channel
- * map validates cleanly with zero accepted rows, because chan_import_stats()
- * (src/core/file/dsd_import.c) skips row 1 as the label line. That differs from
- * svc_import_channel_map()'s own check only for channel-0 rows and repeated
- * channel numbers, neither of which a generated RR map emits.
- *
- * @return 0 on success, -1 when the staging file could not be written, -2 when
- *         it was written but did not validate. The stored file is untouched in
- *         both failure cases.
- */
-static int
-rr_refresh_stage_and_replace(const char* path, const char* text, size_t len, int is_chan) {
-    char tmp[RR_WIZ_PATH_MAX];
-    dsd_csv_validation counts = {0U, 0U, 0U};
-
-    if (path == NULL || text == NULL) {
-        return -1;
-    }
-    tmp[0] = '\0';
-    if (rr_refresh_write_staging(path, text, len, tmp, sizeof(tmp)) != 0) {
-        return -1;
-    }
-
-    /* dsd_csv_validate_*_file() allocate a throwaway heap dsd_state internally
-     * and free its extensions before free() - never hand-roll one here, and
-     * never declare an automatic dsd_opts/dsd_state. */
-    const int rc = is_chan ? dsd_csv_validate_chan_file(tmp, &counts) : dsd_csv_validate_group_file(tmp, &counts);
-    if (rc != 0 || counts.accepted == 0U) {
-        (void)remove(tmp);
-        return -2;
-    }
-    if (dsd_replace_file_with_temp(tmp, path) != 0) {
-        (void)remove(tmp);
-        return -1;
-    }
-    return 0;
-}
-
-/**
  * @brief Bump the sidecar's timestamp after a successful replace.
  *
  * The stored site ids are deliberately NOT rewritten to the surviving subset: a
@@ -1488,7 +1402,7 @@ static void
 rr_refresh_touch_provenance(const RrWizardCore* w) {
     dsd_rr_provenance prov;
     DSD_MEMSET(&prov, 0, sizeof prov);
-    if (dsd_rr_provenance_read(w->refresh.path, &prov) != 0) {
+    if (dsd_app_import_provenance_read(w->refresh.path, &prov) != 0) {
         return;
     }
     DSD_STRNCPY(prov.system_name, w->info.name, sizeof prov.system_name - 1U);
@@ -1500,7 +1414,7 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
     DSD_STRNCPY(prov.site_label, w->refresh.site_label, sizeof prov.site_label - 1U);
     prov.site_label[sizeof prov.site_label - 1U] = '\0';
     prov.imported_at = (long long)dsd_realtime_time();
-    (void)dsd_rr_provenance_write(w->refresh.path, &prov);
+    (void)dsd_app_import_provenance_write(w->refresh.path, &prov);
 }
 
 /**
@@ -1609,7 +1523,8 @@ rr_refresh_complete(RrWizardCore* w) {
         return;
     }
 
-    const int stage_rc = rr_refresh_stage_and_replace(w->refresh.path, text, len, is_chan);
+    /* Staged, validated, then swapped in: -1 not written, -2 written but not valid; the stored file is kept on both. */
+    const int stage_rc = dsd_app_import_replace_checked(w->refresh.path, text, len, is_chan);
     free(text);
     if (stage_rc == -1) {
         rr_refresh_fail(w, "The refreshed file could not be written.");
@@ -2580,40 +2495,6 @@ rr_wizard_core_session_blocked(const RrWizardCore* w) {
 
 /* ---- Stage 8: committing the import -------------------------------------- */
 
-/**
- * @brief Write @p text to @p final_path through a private temp file.
- *
- * fopen/open/creat/mkstemp are all ERROR-level dsd-neo.no-raw-file-open hits
- * under src/, and a bare rename() fails on Windows whenever the destination
- * exists - which is every re-import. The helper picks the temp name itself;
- * never construct one here.
- */
-static int
-rr_import_write_text(const char* final_path, const char* text, size_t len) {
-    char tmp[RR_WIZ_PATH_MAX];
-    tmp[0] = '\0';
-    FILE* fp = dsd_fopen_private_temp_for_replace(final_path, tmp, sizeof(tmp), "wb");
-    if (fp == NULL) {
-        return -1;
-    }
-    int bad = (len > 0U && text != NULL && fwrite(text, 1U, len, fp) != len) ? 1 : 0;
-    if (!bad && fflush(fp) != 0) {
-        bad = 1;
-    }
-    const int fd = dsd_fileno(fp);
-    if (!bad && fd >= 0 && dsd_fsync(fd) != 0) {
-        bad = 1;
-    }
-    if (fclose(fp) != 0) {
-        bad = 1;
-    }
-    if (bad || dsd_replace_file_with_temp(tmp, final_path) != 0) {
-        (void)remove(tmp);
-        return -1;
-    }
-    return 0;
-}
-
 /** @brief Fill the sidecar for one emitted CSV. @p kind is "group" or "chan". */
 static void
 rr_import_fill_provenance(const RrWizardCore* w, const char* kind, dsd_rr_provenance* p) {
@@ -2643,7 +2524,7 @@ rr_import_emit(RrWizardCore* w, const char* path, const char* text, size_t len, 
         return -1;
     }
 #endif
-    if (rr_import_write_text(path, text, len) != 0) {
+    if (dsd_app_import_write(path, text, len) != 0) {
         return -1;
     }
     if (w->written_count < (sizeof(w->written) / sizeof(w->written[0]))) {
@@ -2657,7 +2538,7 @@ rr_import_emit(RrWizardCore* w, const char* path, const char* text, size_t len, 
 #endif
     dsd_rr_provenance prov;
     rr_import_fill_provenance(w, kind, &prov);
-    return dsd_rr_provenance_write(path, &prov);
+    return dsd_app_import_provenance_write(path, &prov);
 }
 
 /** @brief Emit whichever halves the plan produced, in group-then-chan order. */
@@ -2693,11 +2574,7 @@ rr_import_emit_pair(RrWizardCore* w, const char* group_path, const char* chan_pa
 static void
 rr_import_unwind(RrWizardCore* w) {
     for (size_t i = 0; i < w->written_count; i++) {
-        char side[RR_WIZ_PATH_MAX + 8];
-        (void)remove(w->written[i]);
-        if (DSD_SNPRINTF(side, sizeof(side), "%s.rr", w->written[i]) > 0) {
-            (void)remove(side);
-        }
+        (void)dsd_app_import_remove(w->written[i]);
     }
     w->written_count = 0;
 }
@@ -2736,35 +2613,6 @@ rr_import_stem_paths(const char* dir, const char* stem, char* group_out, size_t 
     }
     n = DSD_SNPRINTF(chan_out, chan_sz, "%s%c%s chan.csv", dir, RR_PATH_SEP, stem);
     return (n < 0 || (size_t)n >= chan_sz) ? -1 : 0;
-}
-
-/**
- * @brief Whether @p path is already spoken for.
- *
- * Both halves of the identity are compared. The sid alone is not enough: one
- * system is stored once per site, so a path belonging to the SAME system but a
- * DIFFERENT site is another stored import, and overwriting it would silently
- * destroy the county the user imported yesterday.
- *
- * @param path     Candidate CSV path.
- * @param sid      RadioReference system id of the import being written.
- * @param site_ids The import's dsd_rr_import_plan::site_ids.
- * @return 0 when @p path is free or holds this same import, 1 otherwise.
- */
-static int
-rr_import_path_conflicts(const char* path, int sid, const char* site_ids) {
-    dsd_stat_t st;
-    if (dsd_stat_path(path, &st) != 0) {
-        return 0; /* nothing there; an orphan ".rr" with no CSV is not a conflict */
-    }
-    dsd_rr_provenance prov;
-    DSD_MEMSET(&prov, 0, sizeof(prov));
-    if (dsd_rr_provenance_read(path, &prov) != 0) {
-        return 1; /* no readable sidecar: a hand-made user file, never overwritten */
-    }
-    /* Same system AND same sites: a re-import of this very file, which
-       overwrites in place so a config reference keeps pointing at it. */
-    return (prov.sid == sid && strcmp(prov.site_ids, site_ids) == 0) ? 0 : 1;
 }
 
 /*
@@ -2845,8 +2693,9 @@ rr_import_resolve_stem(const RrWizardCore* w, const char* dir, char* stem, size_
         if (rr_import_stem_paths(dir, stem, group_path, sizeof(group_path), chan_path, sizeof(chan_path)) != 0) {
             return -1;
         }
-        if (rr_import_path_conflicts(group_path, w->sid, w->plan.site_ids) == 0
-            && rr_import_path_conflicts(chan_path, w->sid, w->plan.site_ids) == 0) {
+        /* A path holding another site of the same system is another stored import: never overwritten. */
+        if (dsd_app_import_path_conflicts(group_path, w->sid, w->plan.site_ids) == 0
+            && dsd_app_import_path_conflicts(chan_path, w->sid, w->plan.site_ids) == 0) {
             return 0;
         }
     }
@@ -2868,14 +2717,14 @@ rr_import_resolve_dir(RrWizardCore* w, char* out, size_t out_sz) {
         return -1;
     }
     /* Copied before the create call, not after: dsd_user_imports_dir() hands
-     * back an internal static buffer that dsd_user_imports_dir_create()
+     * back an internal static buffer that dsd_app_imports_dir_create()
      * recomputes when it calls the same resolver. */
     const int n = DSD_SNPRINTF(out, out_sz, "%s", dir);
     if (n < 0 || (size_t)n >= out_sz) {
         rr_core_fail(w, k_rr_err_no_imports_dir);
         return -1;
     }
-    if (dsd_user_imports_dir_create() != 0) {
+    if (dsd_app_imports_dir_create() != 0) {
         rr_core_fail(w, k_rr_err_mkdir);
         return -1;
     }
@@ -3096,7 +2945,7 @@ rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path) {
         rr_core_fail(w, k_rr_err_write);
         return -1;
     }
-    if (dsd_rr_provenance_read(csv_path, &prov) != 0 || prov.sid <= 0) {
+    if (dsd_app_import_provenance_read(csv_path, &prov) != 0 || prov.sid <= 0) {
         rr_core_fail(w, k_msg_no_provenance);
         return -1;
     }
@@ -3193,7 +3042,7 @@ rr_wizard_core_stale_drops_for_test(const RrWizardCore* w) {
 
 int
 rr_wizard_core_refresh_stage_replace_for_test(const char* path, const char* text, size_t len, int is_chan) {
-    return rr_refresh_stage_and_replace(path, text, len, is_chan);
+    return dsd_app_import_replace_checked(path, text, len, is_chan);
 }
 
 size_t

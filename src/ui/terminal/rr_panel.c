@@ -21,6 +21,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
@@ -30,7 +31,6 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -412,32 +412,17 @@ rr_browse_apply(const RrLibrarySystem* s) {
     }
 }
 
-/** @brief Remove one stored CSV and its ".rr" sidecar. @return 1 when the CSV went. */
-static int
-rr_browse_delete_one(const char* csv_path) {
-    /* Sized off the field it is built from, not a magic literal, and truncation
-       is rejected rather than shortened: a shortened path names a DIFFERENT file
-       and this hands it straight to remove(). */
-    char side[sizeof(((RrLibrarySystem*)0)->group_path) + 4];
-    const int gone = (remove(csv_path) == 0) ? 1 : 0;
-    const int n = DSD_SNPRINTF(side, sizeof side, "%s.rr", csv_path);
-    if (n > 0 && (size_t)n < sizeof side) {
-        (void)remove(side);
-    }
-    return gone;
-}
-
-/* Remove both halves of a system and their sidecars. */
+/* Remove both halves of a system and their sidecars, through app-control (dsd_app_import_remove()). */
 static void
 rr_browse_delete(const RrLibrarySystem* s) {
     char named[RR_BROWSE_TITLE_MAX];
     rr_library_display_name(s, named, sizeof named);
     int removed = 0;
     if (s->has_group) {
-        removed += rr_browse_delete_one(s->group_path);
+        removed += dsd_app_import_remove(s->group_path);
     }
     if (s->has_chan) {
-        removed += rr_browse_delete_one(s->chan_path);
+        removed += dsd_app_import_remove(s->chan_path);
     }
     if (removed > 0) {
         ui_statusf("Deleted %.*s (%d file%s).", RR_STATUS_NAME_MAX, named, removed, (removed == 1) ? "" : "s");
