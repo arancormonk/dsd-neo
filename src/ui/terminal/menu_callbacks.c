@@ -12,17 +12,13 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -312,13 +308,12 @@ cb_config_save_as(void* v, const char* path) {
         ui_statusf("Config save canceled");
         return;
     }
-    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    if (!opts_snapshot || !snapshot) {
+    /* The frame this answer arrives in (the menu's context), not the one the prompt opened in. */
+    if (!c->opts || !c->state) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    if (dsd_app_config_save(path, opts_snapshot, snapshot, 1) == 0) {
+    if (dsd_app_config_save(path, c->opts, c->state, 1) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);

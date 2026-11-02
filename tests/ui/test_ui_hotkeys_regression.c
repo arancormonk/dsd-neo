@@ -48,7 +48,7 @@
 #endif
 
 /* Function under test (compiled from src/ui/terminal/dsd_ncurses_handler.c). */
-uint8_t dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c);
+uint8_t dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c);
 
 /* --- Stubs for external dependencies referenced by dsd_ncurses_handler.c --- */
 typedef struct {
@@ -166,7 +166,7 @@ ui_menu_is_open(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
-ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_menu_handle_key_calls++;
@@ -175,14 +175,14 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) { // NOLINT(misc-us
 }
 
 void
-ui_menu_open_async(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_menu_open_async_calls++;
 }
 
 void
-ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state,
+ui_menu_open_modal_async(const dsd_opts* opts, const dsd_state* state,
                          nc_action_fn open_modal) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
@@ -262,6 +262,27 @@ main(void) {
     assert(dsd_terminal_handle_input(NULL, state, DSD_KEY_MUTE_LOWER) == 1);
     assert(g_cap.calls == 0);
     assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_MUTE_LOWER) == 1);
+    assert(g_cap.calls == 0);
+
+    /* Issue #672 (B9): before the first publication (no state snapshot) the keys read no decoder struct, and Quit is the
+       one key that still works: Enter opens no menu, '=' no frequency entry, the TG hold keys hold nothing. */
+    cap_reset();
+    g_menu_open = 0;
+    g_menu_open_async_calls = 0;
+    g_modal_open_calls = 0;
+    assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_QUIT) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_QUIT);
+    cap_reset();
+    assert(dsd_terminal_handle_input(NULL, NULL, DSD_KEY_QUIT) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_QUIT);
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_ENTER) == 1);
+    assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_TUNE) == 1);
+    assert(dsd_terminal_handle_input(opts, NULL, DSD_KEY_TG_HOLD1) == 1);
+    assert(g_menu_open_async_calls == 0);
+    assert(g_modal_open_calls == 0);
     assert(g_cap.calls == 0);
 
     /* Open menu overlay should receive keys before hotkeys and keep input consumed. */

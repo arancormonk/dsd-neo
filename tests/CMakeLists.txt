@@ -463,6 +463,14 @@ add_test(
         ${PROJECT_SOURCE_DIR}/cmake/canonical_call_state_audit.cmake
 )
 
+# Issue #672 (B9): the terminal UI acquires the published snapshots once per frame, in ui_frame_acquire() alone.
+add_test(
+    NAME UI_TERMINAL_SNAPSHOT_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/terminal_snapshot_audit.cmake
+)
+
 add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
@@ -4006,6 +4014,21 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_ENV COMMAND dsd-neo_test_ui_menu_env)
+
+    # Issue #672 (B9): the receive editor opens on the frame's published pair and acquires none of its own.
+    add_executable(
+        dsd-neo_test_ui_menu_receive
+        ui/test_ui_menu_receive.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_receive.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_receive
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    add_test(NAME UI_MENU_RECEIVE COMMAND dsd-neo_test_ui_menu_receive)
 
     add_executable(
         dsd-neo_test_ui_chooser_navigation

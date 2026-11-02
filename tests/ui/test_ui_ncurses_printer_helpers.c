@@ -672,7 +672,7 @@ ui_menu_is_open(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }

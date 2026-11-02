@@ -14,7 +14,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -339,18 +338,6 @@ dsd_app_config_save(const char* path, const dsd_opts* opts, const dsd_state* sta
     return g_config_save_rc;
 }
 
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
-    static dsd_opts snapshot;
-    return &snapshot;
-}
-
-const dsd_state*
-dsd_app_get_latest_snapshot(void) {
-    static dsd_state snapshot;
-    return &snapshot;
-}
-
 static void
 reset_capture(void) {
     DSD_MEMSET(&g_cmd, 0, sizeof g_cmd);
@@ -455,10 +442,9 @@ dup_test_string(const char* s) {
 }
 
 static ProfileSelCtx*
-make_profile_ctx(dsd_state* state, const char* path, const char* profile) {
+make_profile_ctx(const char* path, const char* profile) {
     ProfileSelCtx* pctx = (ProfileSelCtx*)calloc(1, sizeof *pctx);
     assert(pctx != NULL);
-    pctx->state = state;
     DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path);
     pctx->n = 1;
     pctx->labels = (const char**)calloc(1, sizeof(char*));
@@ -613,9 +599,10 @@ test_config_callbacks_apply_and_report_failures(void) {
     cb_config_save_as(&ctx, "/tmp/save.toml");
     rc |= expect_int("config save asks the service once", g_cfg_svc.save_calls, 1);
     rc |= expect_str("config save path", g_cfg_svc.path, "/tmp/save.toml");
-    rc |=
-        expect_int("config save writes the published options", g_cfg_svc.opts == dsd_app_get_latest_opts_snapshot(), 1);
-    rc |= expect_int("config save writes the published state", g_cfg_svc.state == dsd_app_get_latest_snapshot(), 1);
+    /* The frame's published pair the menu holds (issue #672, B9). This test defines no snapshot accessor, so a callback
+       that acquired one again would not link. */
+    rc |= expect_int("config save writes the frame's options", g_cfg_svc.opts == &opts, 1);
+    rc |= expect_int("config save writes the frame's state", g_cfg_svc.state == &state, 1);
     rc |= expect_int("config save adopts the file as the autosave", g_cfg_svc.adopt_autosave, 1);
     rc |= expect_str("config save success status", g_status, "Config saved to /tmp/save.toml");
 
@@ -626,7 +613,7 @@ test_config_callbacks_apply_and_report_failures(void) {
     rc |= expect_str("config save failure status", g_status, "Failed to save config to /tmp/save-fail.toml");
 
     reset_capture();
-    ProfileSelCtx* pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "mobile");
+    ProfileSelCtx* pctx = make_profile_ctx("/tmp/profiles.toml", "mobile");
     chooser_done_config_profile(pctx, 0);
     rc |= expect_int("profile load asks the service once", g_cfg_svc.profile_calls, 1);
     rc |= expect_str("profile load path", g_cfg_svc.path, "/tmp/profiles.toml");
@@ -635,14 +622,14 @@ test_config_callbacks_apply_and_report_failures(void) {
     rc |= expect_int("profile load claims nothing", g_status_calls, 0);
 
     reset_capture();
-    pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "field");
+    pctx = make_profile_ctx("/tmp/profiles.toml", "field");
     g_profile_load_rc = -1;
     chooser_done_config_profile(pctx, 0);
     rc |= expect_int("profile failure asks the service", g_cfg_svc.profile_calls, 1);
     rc |= expect_str("profile load failure", g_status, "Failed to load profile field from /tmp/profiles.toml");
 
     reset_capture();
-    pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "base");
+    pctx = make_profile_ctx("/tmp/profiles.toml", "base");
     chooser_done_config_profile(pctx, -1);
     rc |= expect_int("profile cancel reads nothing", g_cfg_svc.profile_calls, 0);
     rc |= expect_int("profile cancel no status", g_status_calls, 0);

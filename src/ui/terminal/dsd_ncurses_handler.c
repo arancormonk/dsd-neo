@@ -135,7 +135,7 @@ ncurses_try_post_simple_cmd(int c) {
 }
 
 static int DSD_ATTR_USED
-ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_escape_or_history(const dsd_opts* opts, const dsd_state* state, int c) {
     (void)opts;
     (void)state;
     if (c == DSD_KEY_ESC) {
@@ -214,7 +214,7 @@ ncurses_key_opens_tune(int c) {
    snapshots whether this input can be tuned, and says why not where it cannot. Not gated on the M17 encoder, which
    only takes plain Enter. */
 static int
-ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_tune_key(const dsd_opts* opts, const dsd_state* state, int c) {
     if (!ncurses_key_opens_tune(c)) {
         return 0;
     }
@@ -223,7 +223,7 @@ ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
 }
 
 static int DSD_ATTR_USED
-ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_encoder_and_lockout_keys(const dsd_opts* opts, const dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
         (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
         return 1;
@@ -243,9 +243,14 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
 }
 
 uint8_t
-dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
 
+    /* Nothing published yet (runtime start publishes before the UI thread exists, so practically never): no key reads
+       the decoder's live structs instead, and Quit still quits. */
     if (!opts || !state) {
+        if (c == DSD_KEY_QUIT) {
+            (void)dsd_app_command_action(DSD_APP_CMD_QUIT);
+        }
         return 1;
     }
 

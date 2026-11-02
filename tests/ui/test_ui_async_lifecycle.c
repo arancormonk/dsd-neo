@@ -75,6 +75,26 @@ static int g_last_ncurses_key = ERR;
 static int g_printer_calls;
 static const dsd_opts* g_printer_opts;
 static const dsd_state* g_printer_state;
+/* Issue #672 (B9): the pair each key-path entry point was handed, and what it read there. */
+static const dsd_opts* g_menu_key_opts;
+static const dsd_state* g_menu_key_state;
+static const dsd_opts* g_menu_tick_opts;
+static const dsd_state* g_menu_tick_state;
+static const dsd_opts* g_input_opts;
+static const dsd_state* g_input_state;
+static uint32_t g_menu_key_tg = UINT32_MAX;
+static uint32_t g_menu_tick_tg = UINT32_MAX;
+static uint32_t g_printer_tg = UINT32_MAX;
+/* The accessors as app-control's are: a single consumer buffer each, refreshed from the published copy when the
+   publication moved (g_consumer_buffers on). g_publish_in_menu_key publishes a new tg_hold from inside the menu's key
+   handling, as a decoder publication landing while a deferred callback runs would. */
+static int g_consumer_buffers;
+static dsd_opts g_consume_opts;
+static dsd_state g_consume_state;
+static unsigned g_pub_seq;
+static unsigned g_consume_seq;
+static dsd_state* g_publish_into;
+static uint32_t g_publish_in_menu_key;
 static int g_redraw_requested;
 static uint64_t g_time_ns;
 
@@ -185,19 +205,26 @@ ui_menu_is_open(void) {
 }
 
 int
-ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     g_menu_handle_calls++;
     g_last_menu_key = ch;
+    g_menu_key_opts = opts;
+    g_menu_key_state = state;
+    g_menu_key_tg = state ? state->tg_hold : UINT32_MAX;
+    if (g_publish_in_menu_key != 0 && g_publish_into != NULL) {
+        g_publish_into->tg_hold = g_publish_in_menu_key;
+        g_pub_seq++;
+        g_publish_in_menu_key = 0;
+    }
     return 0;
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     g_menu_tick_calls++;
+    g_menu_tick_opts = opts;
+    g_menu_tick_state = state;
+    g_menu_tick_tg = state ? state->tg_hold : UINT32_MAX;
 }
 
 void
@@ -207,11 +234,22 @@ ui_commit_frame(void) {
 
 const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
+    if (g_consumer_buffers && g_latest_opts) {
+        DSD_MEMCPY(&g_consume_opts, g_latest_opts, sizeof g_consume_opts);
+        return &g_consume_opts;
+    }
     return g_latest_opts;
 }
 
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
+    if (g_consumer_buffers && g_latest_state) {
+        if (g_consume_seq != g_pub_seq) {
+            DSD_MEMCPY(&g_consume_state, g_latest_state, sizeof g_consume_state);
+            g_consume_seq = g_pub_seq;
+        }
+        return &g_consume_state;
+    }
     return g_latest_state;
 }
 
@@ -247,12 +285,13 @@ dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     g_printer_calls++;
     g_printer_opts = opts;
     g_printer_state = state;
+    g_printer_tg = state ? state->tg_hold : UINT32_MAX;
 }
 
 uint8_t
-dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
-    (void)opts;
-    (void)state;
+dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
+    g_input_opts = opts;
+    g_input_state = state;
     g_ncurses_input_calls++;
     g_last_ncurses_key = c;
     return 0U;
@@ -560,6 +599,9 @@ test_ui_curses_close_uses_opened_state(void) {
     g_ncurses_open_calls = 0;
     g_ncurses_close_calls = 0;
     dsd_neo_ui_async_test_set_context(&opts, &state);
+    /* Curses opens on the frame's options: the published ones (issue #672, B9), here the session's own. */
+    g_latest_opts = &opts;
+    g_latest_state = &state;
 
     int curses_opened = dsd_neo_ui_async_test_open_curses_if_needed();
     opts.frontend_kind = DSD_FRONTEND_NONE;
@@ -631,6 +673,20 @@ reset_frame_counters(void) {
     g_printer_calls = 0;
     g_printer_opts = NULL;
     g_printer_state = NULL;
+    g_menu_key_opts = NULL;
+    g_menu_key_state = NULL;
+    g_menu_tick_opts = NULL;
+    g_menu_tick_state = NULL;
+    g_input_opts = NULL;
+    g_input_state = NULL;
+    g_menu_key_tg = UINT32_MAX;
+    g_menu_tick_tg = UINT32_MAX;
+    g_printer_tg = UINT32_MAX;
+    g_consumer_buffers = 0;
+    g_pub_seq = 0;
+    g_consume_seq = 0;
+    g_publish_into = NULL;
+    g_publish_in_menu_key = 0;
     g_latest_opts = NULL;
     g_latest_state = NULL;
     g_redraw_requested = 0;
@@ -709,7 +765,9 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     g_time_ns = 100U;
     dsd_neo_ui_async_test_draw_if_needed(&opts, &last_draw_ns, 1000U);
     rc |= expect_int("resize dirty draws", g_printer_calls, 1);
-    rc |= expect_ptr("draw fallback state", g_printer_state, &state);
+    /* Issue #672 (B9): before the first publication the draw gets no state (and the printer draws nothing), never the
+       decoder's live one. */
+    rc |= expect_ptr("draw before a publication has no state", g_printer_state, NULL);
     rc |= expect_int("draw context restored", ui_is_thread_context(), 0);
 
     reset_frame_counters();
@@ -736,6 +794,104 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     rc |= expect_ptr("draw uses latest state", g_printer_state, &latest_state);
     rc |= expect_ptr("draw opts", g_printer_opts, &opts);
     rc |= expect_int("draw commit", g_commit_calls, 1);
+    return rc;
+}
+
+/* Issue #672 (B9): the hotkeys, the menu's key handling, its tick and the draw all get the frame's published pair, never
+   the decoder's live structs; before the first publication the hotkeys get no state (they honour Quit alone, pinned by
+   UI_HOTKEYS_REGRESSION) and the draw has nothing to draw. */
+static int
+test_ui_key_path_reads_the_published_pair(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts pub_opts;
+    static dsd_state pub_state;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    DSD_MEMSET(&live_state, 0, sizeof(live_state));
+    DSD_MEMSET(&pub_opts, 0, sizeof(pub_opts));
+    DSD_MEMSET(&pub_state, 0, sizeof(pub_state));
+    live_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    pub_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+
+    reset_frame_counters();
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    uint64_t last_draw_ns = 0U;
+    int rc = 0;
+
+    g_getch_value = 'q';
+    dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_int("unpublished: key delivered", g_ncurses_input_calls, 1);
+    rc |= expect_int("unpublished: the key", g_last_ncurses_key, 'q');
+    rc |= expect_ptr("unpublished: no state", g_input_state, NULL);
+    rc |= expect_int("unpublished: drawn", g_printer_calls, 1);
+    rc |= expect_ptr("unpublished: draw has no state", g_printer_state, NULL);
+
+    g_latest_opts = &pub_opts;
+    g_latest_state = &pub_state;
+    g_getch_value = 'm';
+    dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_ptr("hotkeys: published options", g_input_opts, &pub_opts);
+    rc |= expect_ptr("hotkeys: published state", g_input_state, &pub_state);
+    rc |= expect_ptr("draw: published options", g_printer_opts, &pub_opts);
+    rc |= expect_ptr("draw: published state", g_printer_state, &pub_state);
+
+    g_menu_open = 1;
+    g_getch_value = KEY_DOWN;
+    dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_int("menu: key handled", g_menu_handle_calls, 1);
+    rc |= expect_ptr("menu key: published options", g_menu_key_opts, &pub_opts);
+    rc |= expect_ptr("menu key: published state", g_menu_key_state, &pub_state);
+    rc |= expect_ptr("menu tick: published options", g_menu_tick_opts, &pub_opts);
+    rc |= expect_ptr("menu tick: published state", g_menu_tick_state, &pub_state);
+    rc |= expect_ptr("menu frame draw: published state", g_printer_state, &pub_state);
+    return rc;
+}
+
+/* Issue #672 (B9): a frame reads one publication. One that lands while the menu handles a key (a prompt's or chooser's
+   callback answered in this frame) changes nothing the rest of the frame reads: the menu's tick and the draw read what
+   the key handling read, from the same consumer buffers. The next frame reads it. */
+static int
+test_ui_frame_reads_one_publication(void) {
+    static dsd_opts live_opts;
+    static dsd_state live_state;
+    static dsd_opts pub_opts;
+    static dsd_state pub_state;
+    DSD_MEMSET(&live_opts, 0, sizeof(live_opts));
+    DSD_MEMSET(&live_state, 0, sizeof(live_state));
+    DSD_MEMSET(&pub_opts, 0, sizeof(pub_opts));
+    DSD_MEMSET(&pub_state, 0, sizeof(pub_state));
+    live_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    pub_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    live_state.tg_hold = 999U;
+    pub_state.tg_hold = 100U;
+
+    reset_frame_counters();
+    dsd_neo_ui_async_test_set_context(&live_opts, &live_state);
+    stdscr = (WINDOW*)0x1;
+    g_consumer_buffers = 1;
+    g_latest_opts = &pub_opts;
+    g_latest_state = &pub_state;
+    g_pub_seq = 1U;
+    g_publish_into = &pub_state;
+    g_publish_in_menu_key = 200U;
+    g_menu_open = 1;
+    g_getch_value = KEY_DOWN;
+    uint64_t last_draw_ns = 0U;
+    int rc = 0;
+
+    dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_int("one frame: key read the frame's publication", (int)g_menu_key_tg, 100);
+    rc |= expect_int("one frame: tick read the same", (int)g_menu_tick_tg, 100);
+    rc |= expect_int("one frame: draw read the same", (int)g_printer_tg, 100);
+    rc |= expect_ptr("one frame: tick's buffer is the key's", g_menu_tick_state, g_menu_key_state);
+    rc |= expect_ptr("one frame: draw's buffer is the key's", g_printer_state, g_menu_key_state);
+
+    g_getch_value = ERR;
+    dsd_neo_ui_async_test_run_frame(&last_draw_ns, 0U);
+    rc |= expect_int("next frame: tick reads the new publication", (int)g_menu_tick_tg, 200);
+    rc |= expect_int("next frame: draw reads it too", (int)g_printer_tg, 200);
+    g_consumer_buffers = 0;
     return rc;
 }
 
@@ -1108,6 +1264,8 @@ main(void) {
     rc |= test_ui_curses_close_uses_opened_state();
     rc |= test_ui_thread_takes_the_stop_signal();
     rc |= test_ui_single_frame_snapshot_input_and_draw_helpers();
+    rc |= test_ui_key_path_reads_the_published_pair();
+    rc |= test_ui_frame_reads_one_publication();
 #if UI_KEY_HAVE_WHEEL
     rc |= test_wheel_capture_follows_the_snapshots();
 #if !defined(DSD_USE_PDCURSES)

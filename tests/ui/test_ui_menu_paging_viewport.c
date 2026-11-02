@@ -131,7 +131,7 @@ rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+rr_panel_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }

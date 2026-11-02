@@ -17,6 +17,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RR_IMPORT_APPLY_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RR_IMPORT_APPLY_H_
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -124,11 +126,14 @@ int dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* wh
 /**
  * @brief A frontend's advisory pre-check of an import before it writes files or queues the apply.
  *
- * Reads only the published snapshots (dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot()), so call it
- * from the frontend's snapshot thread. Runs dsd_app_rr_receiver_verdict() with no measured rate (a SoapySDR device
- * passes to the decoder), then the next-start rule the decoder thread applies (a trunk scan waiting for the next start
- * cannot start beside a channel map or the -Y scanner), on the snapshot copies. The decoder thread checks again.
+ * Reads only the published snapshot pair it is handed, never the accessors: the terminal hands the pair its frame
+ * acquired, so a check mid-frame cannot refresh that pair in place. Runs dsd_app_rr_receiver_verdict() with no measured
+ * rate (a SoapySDR device passes to the decoder), then the next-start rule the decoder thread applies (a trunk scan
+ * waiting for the next start cannot start beside a channel map or the -Y scanner), on the snapshot copies. The decoder
+ * thread checks again.
  *
+ * @param opts       The published options snapshot; NULL (nothing published yet) passes.
+ * @param state      The published state snapshot; NULL skips the next-start rule.
  * @param p          The payload the import would queue; its paths may be empty before the files are written.
  * @param has_group  1 when the import will load a group list (from the plan, before any path exists).
  * @param has_chan   1 when the import will load a channel map.
@@ -136,23 +141,26 @@ int dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* wh
  * @param why_size   Size of @p why; DSD_APP_RR_VERDICT_WHY_MAX holds every text.
  * @return 1 when the import is blocked, 0 otherwise (also before the first publish and for NULL @p p).
  */
-int dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, int has_chan, char* why,
-                                  size_t why_size);
+int dsd_app_rr_apply_block_reason(const dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p,
+                                  int has_group, int has_chan, char* why, size_t why_size);
 
 /**
  * @brief A frontend's advisory pre-check of loading an import's files alone, which keeps the decode mode and the tuner
  *        owner (the Imported Systems browser's "Load these files", for an import with no saved settings).
  *
- * Reads only the published snapshots, like dsd_app_rr_apply_block_reason(), and asks what loading the files asks on
- * the decoder thread: no running trunk scan, and a channel map that the next-start rule allows beside a trunk scan
- * waiting for the next start. A group list has no session rule.
+ * Reads only the published snapshot pair it is handed, like dsd_app_rr_apply_block_reason(), and asks what loading the
+ * files asks on the decoder thread: no running trunk scan, and a channel map that the next-start rule allows beside a
+ * trunk scan waiting for the next start. A group list has no session rule.
  *
+ * @param opts      The published options snapshot; NULL (nothing published yet) passes.
+ * @param state     The published state snapshot; NULL skips the next-start rule.
  * @param chan_path The channel map to load, or NULL/"" when there is none.
  * @param why       Receives the reason as a phrase, or "" when nothing blocks; may be NULL.
  * @param why_size  Size of @p why; DSD_APP_RR_VERDICT_WHY_MAX holds every text.
  * @return 1 when loading is blocked, 0 otherwise (also before the first publish).
  */
-int dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size);
+int dsd_app_rr_files_block_reason(const dsd_opts* opts, const dsd_state* state, const char* chan_path, char* why,
+                                  size_t why_size);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -67,6 +67,12 @@ static int g_rr_panel_ends_on_tick = 0;
 static int g_draw_menu_calls = 0; /* frames the tick set out to draw */
 static int g_modal_opener_calls = 0;
 static UiCtx* g_modal_opener_ctx = NULL;
+/* Issue #672 (B9): a prompt answered by a later key runs its callback (g_prompt_answer, with the user its opener gave)
+   from inside that key's handling, as the real prompt does; the callback records the pair it reads. */
+static void (*g_prompt_answer)(void* user) = NULL;
+static void* g_prompt_answer_user = NULL;
+static const dsd_opts* g_answer_opts = NULL;
+static const dsd_state* g_answer_state = NULL;
 
 static void
 capture_action(const char* id) {
@@ -130,6 +136,23 @@ open_prompt_modal(void* ctx) {
     g_modal_opener_calls++;
     g_modal_opener_ctx = (UiCtx*)ctx;
     g_prompt_active = 1;
+}
+
+/* A deferred callback: it reads the menu's context when it runs, the frame's pair at that moment. */
+static void
+record_answer_pair(void* user) {
+    const UiCtx* c = (const UiCtx*)user;
+    g_answer_opts = c ? c->opts : NULL;
+    g_answer_state = c ? c->state : NULL;
+}
+
+static void
+open_answerable_prompt_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_prompt_active = 1;
+    g_prompt_answer = record_answer_pair;
+    g_prompt_answer_user = ctx;
 }
 
 static void
@@ -284,6 +307,13 @@ int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     g_prompt_key_calls++;
+    if (g_prompt_answer) {
+        void (*answer)(void*) = g_prompt_answer;
+        g_prompt_answer = NULL;
+        g_prompt_active = 0;
+        answer(g_prompt_answer_user);
+        return 1;
+    }
     if (g_prompt_closes_on_key || g_prompt_reopens_on_key) {
         g_prompt_active = 0;
     }
@@ -358,7 +388,7 @@ rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+rr_panel_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     if (g_rr_panel_ends_on_tick) {
@@ -833,6 +863,35 @@ main(void) {
     assert(g_draw_menu_calls == 1);
     g_prompt_closes_on_key = 0;
     assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* Issue #672 (B9): the menu reads only the frame's published pair. Before the first publication (no state snapshot)
+       neither the menu nor a prompt-only overlay opens. */
+    reset_capture();
+    reset_modal_capture();
+    g_modal_opener_calls = 0;
+    ui_menu_open_async(opts, NULL);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_async(NULL, state);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_modal_async(opts, NULL, open_prompt_modal);
+    assert(g_modal_opener_calls == 0);
+    assert(ui_menu_is_open() == 0);
+
+    /* A prompt answered frames after it opened, across a publication and a decoder restart, runs its callback with the
+       pair the frame it is answered in handed the menu, never the opener frame's. */
+    static unsigned char next_opts_token;
+    static unsigned char next_state_token;
+    const dsd_opts* next_opts = (const dsd_opts*)&next_opts_token;
+    const dsd_state* next_state = (const dsd_state*)&next_state_token;
+    reset_modal_capture();
+    g_answer_opts = NULL;
+    g_answer_state = NULL;
+    ui_menu_open_modal_async(opts, state, open_answerable_prompt_modal);
+    assert(g_modal_opener_ctx != NULL && g_modal_opener_ctx->opts == opts && g_modal_opener_ctx->state == state);
+    ui_menu_tick(next_opts, next_state);
+    assert(ui_menu_handle_key('\n', next_opts, next_state) == 1);
+    assert(g_answer_opts == next_opts && g_answer_state == next_state);
     assert(ui_menu_is_open() == 0);
 
     printf("UI_MENU_NAVIGATION: OK\n");

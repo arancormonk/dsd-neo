@@ -12,7 +12,6 @@
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -163,6 +162,8 @@ release_prompt_user(void) {
 
 static UiCtx
 make_ctx(dsd_opts* opts, dsd_state* state) {
+    /* The frame's published pair (issue #672, B9): the menu reads nothing else. */
+    dsd_test_scan_labels_frame(opts, state);
     UiCtx ctx;
     ctx.opts = opts;
     ctx.state = state;
@@ -832,13 +833,13 @@ cb_rr_account_key(void* v, const char* text) {
 }
 
 void
-rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
+rr_panel_open_import(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
-rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
+rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
 }
@@ -1218,14 +1219,14 @@ test_config_profile_and_env_actions(void) {
     act_config_load(&ctx);
     rc |= expect_str("config load uses autosave", g_prompt.prefill, "/tmp/current.toml");
 
-    /* Issue #672 (B18): the service writes the published snapshot pair to the session's autosave file, which stays
-       the autosave (no metadata change). */
+    /* Issue #672 (B18): the service writes the frame's published pair (the menu's context, B9) to the session's
+       autosave file, which stays the autosave (no metadata change). */
     reset_capture();
     act_config_save_current(&ctx);
     rc |= expect_int("save current asks the service once", g_save_calls, 1);
     rc |= expect_str("save current path", g_save_path, "/tmp/current.toml");
-    rc |= expect_int("save current writes the published options", g_save_opts == dsd_app_get_latest_opts_snapshot(), 1);
-    rc |= expect_int("save current writes the published state", g_save_state == dsd_app_get_latest_snapshot(), 1);
+    rc |= expect_int("save current writes the frame's options", g_save_opts == &opts, 1);
+    rc |= expect_int("save current writes the frame's state", g_save_state == &state, 1);
     rc |= expect_int("save current keeps the autosave", g_save_adopt, 0);
     rc |= expect_str("save current status", g_status, "Config saved to /tmp/current.toml");
 
@@ -1644,16 +1645,11 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
     rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
 
-    /* '=' (issue #671) opens the same empty prompt where the row is offered, deciding on the published options, never
-       the live ones the menu's key handling passes. */
+    /* '=' (issue #671) opens the same empty prompt where the row is offered, deciding on the frame's published options
+       (the menu's context, issue #672 B9). */
     reset_capture();
-    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published_opts == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
     act_freq_key(&ctx);
-    rc |= expect_int("freq key asks about the published options", g_freq_offered_opts == published_opts, 1);
+    rc |= expect_int("freq key asks about the frame's options", g_freq_offered_opts == &opts, 1);
     rc |= expect_str("freq key prompt title", g_prompt.title, "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)");
     rc |= expect_int("freq key prompt is empty", g_prompt.prefill_null, 1);
     rc |= expect_int("freq key prompt callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
@@ -1669,21 +1665,14 @@ test_additional_prompt_and_toggle_actions(void) {
                      "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).");
     reset_capture();
     g_freq_offered = 0;
-    const int published_in_type = published_opts->audio_in_type;
-    published_opts->audio_in_type = AUDIO_IN_RTL;
-    DSD_SNPRINTF(published_opts->audio_in_dev, sizeof published_opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    const int published_in_type = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     act_freq_key(&ctx);
     rc |= expect_int("freq key replay opens no prompt", g_prompt.calls, 0);
     rc |= expect_str("freq key replay reason", g_help, "An I/Q replay cannot retune: it plays the tuning it recorded.");
-    published_opts->audio_in_dev[0] = '\0';
-    published_opts->audio_in_type = published_in_type;
-    /* Before the decoder's first publication the context's options stand in. */
-    reset_capture();
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
-    act_freq_key(&ctx);
-    rc |= expect_int("freq key before a publication asks about the context", g_freq_offered_opts == &opts, 1);
-    rc |= expect_int("freq key before a publication opens the prompt", g_prompt.calls, 1);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    opts.audio_in_dev[0] = '\0';
+    opts.audio_in_type = published_in_type;
     opts.rtlsdr_center_freq = 0U;
 
     /* The squelch row has to be able to express "off". The prompt offered
@@ -2081,13 +2070,19 @@ test_signal_chain_rows(void) {
     rc |= expect_int("enable lockout saving command", g_cmd.id, DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET);
     rc |= expect_int("enable lockout saving value", cmd_i32(), 1);
 
+    /* The policy context comes from the frame's state snapshot (the menu's context, issue #672 B9). */
+    static dsd_state avoid_state;
+    UiCtx avoid_ctx = make_ctx(&lockout_opts, &avoid_state);
     reset_capture();
     dsd_test_tg_avoids(3, 42);
-    act_tg_session_avoid_clear(NULL);
+    act_tg_session_avoid_clear(&avoid_ctx);
     rc |= expect_int("clear temporary command", g_cmd.id, DSD_APP_CMD_TG_SESSION_AVOID_CLEAR);
     uint64_t avoid_context = 0;
     DSD_MEMCPY(&avoid_context, g_cmd.data, sizeof avoid_context);
     rc |= expect_int("clear captures snapshot context", (int)avoid_context, 42);
+    reset_capture();
+    act_tg_session_avoid_clear(NULL);
+    rc |= expect_int("clear without a frame sends nothing", g_cmd.calls, 0);
     dsd_test_tg_avoids(0, 0);
     reset_capture();
     act_lockout_slot1(NULL);
@@ -2380,15 +2375,15 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     opts.analog_only = 1;
     rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_width_editable(&ctx), 0);
     /* Issue #526: unless that row is an nfm scan row, which runs the width on a digital session. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     rc |= expect_int("nfm row: shown under an nfm scan row on a digital session", is_nfm_width_editable(&ctx), 1);
     /* An am scan row there runs AM: the AM width row is offered and the NFM one is not (no NFM width is set). */
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     rc |= expect_int("am row: shown under an am scan row on a digital session", is_am_width_editable(&ctx), 1);
     rc |= expect_int("nfm row: hidden under an am scan row on a digital session", is_nfm_width_editable(&ctx), 0);
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     dsd_test_scan_labels_configured(NULL);
 
     opts.m17encoder = 1;
@@ -2443,10 +2438,10 @@ test_width_rows_on_rigctl_audio(void) {
     /* An am scan row on a digital session runs AM: the AM row is offered, the NFM one is not. */
     opts.analog_only = 0;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     rc |= expect_int("rigctl audio: am row under an am scan row on a digital session", is_am_width_editable(&ctx), 1);
     rc |= expect_int("rigctl audio: nfm row not under an am scan row", is_nfm_width_editable(&ctx), 0);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     /* An explicit AM width under -fA (NFM): a switch to AM asks the peer for it. */
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
@@ -2598,21 +2593,20 @@ test_tone_filter_editor(void) {
     g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("tone picker cancel posts nothing", g_cmd.calls + g_prompt.calls, 0);
 
-    /* Before the first snapshot: the menu's own options' policy, the one its label reads. */
+    /* The frame's options' policy (issue #672, B9: the menu's context is the frame's published pair, so another frame
+       opens on its own), the one its label reads. */
     static dsd_opts own;
     DSD_MEMSET(&own, 0, sizeof own);
     own.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
     own.analog_tone_set = tone_list("71.9");
     static UiCtx own_ctx;
     own_ctx = make_ctx(&own, &state);
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     reset_capture();
     act_tone_filter(&own_ctx);
-    rc |= expect_int("tone picker before a snapshot opens on the menu's policy", g_chooser.initial_sel,
-                     DSD_TONE_FILTER_ALLOW);
+    rc |= expect_int("tone picker opens on the frame's policy", g_chooser.initial_sel, DSD_TONE_FILTER_ALLOW);
     g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
-    rc |= expect_str("tone prompt before a snapshot offers the menu's list", g_prompt.prefill, "71.9");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    rc |= expect_str("tone prompt offers the frame's list", g_prompt.prefill, "71.9");
+    ctx = make_ctx(&opts, &state);
 
     /* Under an nfm row with its own policy, dsd_opts holds the row's: the editor offers the configured one. */
     dsd_scan_settings configured = {0};
@@ -2727,7 +2721,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_str("no row: the default prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
 
     /* A trunk target (nfm) that sets its own squelch and width, with a squelch edit running. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     const uint32_t editable =
         DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE | DSD_SCAN_ROW_FIELD_GAIN;
     dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 42U, 3, editable,
@@ -2825,7 +2819,7 @@ test_scan_row_scope_chooser(void) {
     act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("an nfm row opens on the noise default", g_prompt.prefill, "noise+12");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     reset_capture();
     act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
@@ -2853,7 +2847,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_str("audio input: this channel squelch prompt", g_prompt.title,
                      "Squelch on this channel (dB -100..0, off, noise[+N])");
     rc |= expect_str("audio input: an am row's noise default opens as off", g_prompt.prefill, "off");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     reset_capture();
     act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
@@ -2869,7 +2863,7 @@ test_scan_row_scope_chooser(void) {
     dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
 
     dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, 0.0);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     dsd_test_scan_labels_row_options(&row);
 
     /* On audio input with a rigctl peer (issue #621) the width is the passband the peer is asked for: the chooser and
@@ -2911,7 +2905,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_int("peer: torn pair: no AM passband in the NFM prompt", g_prompt.initial_int, 16000);
     /* An am row on the AM monitor: the AM words, and a row that follows an unset width opens on the AM default the
        peer is asked for. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     reset_capture();
     act_set_am_bw(&ctx);
     rc |= expect_str("peer: am width scope title", g_chooser.title, "AM passband");
@@ -2919,7 +2913,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_str("peer: this channel am width prompt", g_prompt.title,
                      "AM passband Hz on this channel (5000..20000)");
     rc |= expect_int("peer: an am row following an unset width opens on the AM default", g_prompt.initial_int, 6000);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     dsd_test_scan_labels_analog(0, DSD_ANALOG_DEMOD_FM);
     reset_capture();
     act_set_nfm_bw(&ctx);
@@ -2949,14 +2943,14 @@ test_scan_row_scope_chooser(void) {
     act_set_am_bw(&ctx);
     rc |= expect_int("am width under an nfm row: own prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
     /* The AM width under an am row: the chooser and its prompt in the radio's words. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     reset_capture();
     act_set_am_bw(&ctx);
     rc |= expect_str("am width scope title", g_chooser.title, "AM bandwidth");
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("this channel am width prompt", g_prompt.title, "AM bandwidth Hz on this channel (5000..20000)");
     rc |= expect_int("this channel am width opens on the row's", g_prompt.initial_int, 12500);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
 
     /* The gain: the list sets none, so two rows; the prompt opens on the gain in force. */
     dsd_test_scan_labels_rtl_gain(25);
@@ -3036,7 +3030,7 @@ test_scan_row_scope_chooser(void) {
 
     dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
     dsd_test_scan_labels_row_options(NULL);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
     return rc;
 }

@@ -3509,8 +3509,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     that is no TETRA rate, `--tetra-uplink`); an unknown SoapySDR rate passes. The module-private
     `rr_apply_verdict.h` fills the facts from a `dsd_opts` (a replay is `dsd_opts_input_is_iq_replay()`, never the
     stale-prone `iq_replay_active`) and asks the next-start rule (`rr_apply_next_start_refusal()`); the decoder's
-    preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured
-    rate, no `rtl_stream_*` call) share it. `dsd_app_rr_files_block_reason()` is the files-only form (no decode mode,
+    preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (the published pair it is handed, no
+    measured rate, no `rtl_stream_*` call) share it. `dsd_app_rr_files_block_reason()` is the files-only form (no decode mode,
     the next-start rule for a channel map alone, through the same `app_next_start_load_channel_map()` change
     `svc_import_channel_map()` asks). `dsd_app_rr_fill_apply_mode()` maps a plan's decode mode and one tuner owner
     without needing a finished plan; `dsd_app_rr_fill_apply_payload()` starts from it.
@@ -9125,6 +9125,29 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `initscr()`. Without the terminal frontend the main thread keeps it. POSIX only. Tests:
     `PLATFORM_THREAD_STOP_SIGNAL`, `RUNTIME_CLI_FRONTEND_TERMINAL`, `UI_ASYNC_LIFECYCLE`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
+  - Terminal key path (issue #672, B9): the terminal key and render paths read only the frame's published snapshot pair,
+    never `dsd_opts`/`dsd_state` themselves. `ui_frame_acquire()` (`ui_async.c`) calls
+    `dsd_app_get_latest_opts_snapshot()` and `dsd_app_get_latest_snapshot()` once at the start of each frame
+    (`ui_run_frame()`), and that pair goes to `dsd_terminal_handle_input()`, `ui_menu_handle_key()`, `ui_menu_tick()`
+    and the draw; both accessors refresh the single consumer's buffers in place, so nothing else under
+    `src/ui/terminal/` acquires (labels, predicates, actions, callbacks, the receive editor, the RadioReference panel
+    and wizard read the `UiCtx` pair or a pair handed to them; `UI_TERMINAL_SNAPSHOT_AUDIT`,
+    `cmake/terminal_snapshot_audit.cmake`, allows each accessor once, in that helper). `UiCtx`, the `ui_menu_*` entry
+    points, `dsd_terminal_handle_input()` and `rr_panel_open_import/library/tick()` take const pointers, so no write
+    through them compiles. `menu_core.c`'s one `UiCtx` is updated at every entry point, so a prompt or chooser answered
+    frames later reads the frame it runs in, and contexts that outlive a frame hold owned copies (`ProfileSelCtx` keeps
+    no state pointer; the receive editor copies its policy as it opens). The RadioReference panel keeps the frame's
+    pair it was last handed (`rr_panel_open_*()`, `rr_panel_tick()`) and gives it to the wizard through
+    `RrWizardHooks.session_opts` / `session_state`; the session gate (`rr_wizard_core_apply_block_reason()`,
+    `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. Before the
+    first publication (runtime start publishes before the UI thread exists, so practically never) the frame's state is
+    NULL: only Quit is handled, neither the menu nor the `=` overlay opens, nothing is drawn, and the frame's options
+    fall back to those `ui_start()` was handed, read in `ui_async.c` only to tell whether curses runs and keys are read.
+    Tests: `UI_ASYNC_LIFECYCLE` (the pair each entry point gets; a publication inside the key handling changes nothing
+    the frame's tick and draw read), `UI_HOTKEYS_REGRESSION` (Quit alone without a state), `UI_MENU_NAVIGATION` (no open
+    before a publication; a deferred callback across a publication and a restart), `UI_MENU_RECEIVE`, `UI_MENU_LABELS`,
+    `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_RR_WIZARD`, `UI_RR_PANEL_KEYS` (none of these test targets defines a
+    snapshot accessor), `UI_TERMINAL_SNAPSHOT_AUDIT`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -9141,9 +9164,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens `act_freq_key()` through
     `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which `menu_core.c` closes
     once no prompt, help, chooser or RadioReference panel is left (in the opener's own call, after the modal routing of
-    each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the published options
-    snapshot (the context's before the first publication), not the live pointers the menu's key handling passes, and
-    opens the prompt or one line of help with the reason (an I/Q replay; no connected rigctl peer). The `y` row
+    each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the frame's published
+    options (the menu's context), as the row's predicate does, and opens the prompt or one line of help with the
+    reason (an I/Q replay; no connected rigctl peer). The `y` row
     (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
     resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold,
     avoid and clear avoids (`scan_rotation_active()`) and Next and Previous channel under a trunk scan
@@ -9175,7 +9198,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     each), so every read drains the queue with `getmouse()` and the first notch in it counts; PDCurses has no queue and
     reads `nc_getmouse()` once. `UI_KEY_HAVE_WHEEL` (`KEY_MOUSE`, `BUTTON4_PRESSED` and `BUTTON5_PRESSED` defined)
     builds the wheel in; an ncurses with mouse version 1 builds it out. The frame loop (`ui_async.c`) handles the wheel
-    codes itself: `dsd_terminal_handle_input()` (live decoder pointers) and the menu never see them, and a wheel code
+    codes itself: `dsd_terminal_handle_input()` and the menu never see them, and a wheel code
     read while ineligible is dropped. Capture rule (`ui_mouse.{h,c}`, UI thread only): each frame wants the capture when
     `frontend_terminal_display.mouse_wheel` is on, `dsd_app_scan_state_view_get()` on the frame's opts and state
     snapshots (fetched once per frame; the draw renders the same state snapshot) reports `running` (a paused scan does

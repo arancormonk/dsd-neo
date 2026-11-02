@@ -22,7 +22,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -84,6 +83,12 @@ typedef struct {
        the Fetching box reads while a request is in flight ("Loading counties...",
        "Checking your RadioReference account..."), which can outlast a toast. */
     char stage[128];
+    /* The options of the frame the menu last handed the panel (rr_panel_open_*(), rr_panel_tick()): the published
+       snapshot, whose buffer the next frame refreshes in place before any key reaches the panel, so a key, a
+       chooser answer or the wizard reads the frame it runs in (issue #672, B9). NULL before the first publication. */
+    const dsd_opts* frame_opts;
+    /* The state half of that pair, on the same terms: the session gate's next-start rule reads it. */
+    const dsd_state* frame_state;
 } RrPanel;
 
 static RrPanel g_rr_panel;
@@ -173,6 +178,18 @@ rr_hook_account_changed(void* user, const dsd_app_rr_account_payload* account) {
     return dsd_app_command_set_rr_account(account);
 }
 
+static const dsd_opts*
+rr_hook_session_opts(void* user) {
+    (void)user;
+    return g_rr_panel.frame_opts;
+}
+
+static const dsd_state*
+rr_hook_session_state(void* user) {
+    (void)user;
+    return g_rr_panel.frame_state;
+}
+
 /* ---- Lifecycle ----------------------------------------------------------- */
 
 static RrWizardCore*
@@ -186,6 +203,8 @@ rr_panel_ensure_core(void) {
         .apply = rr_hook_apply,
         .post_import_path = rr_hook_post_import_path,
         .account_changed = rr_hook_account_changed,
+        .session_opts = rr_hook_session_opts,
+        .session_state = rr_hook_session_state,
     };
     if (g_rr_panel.core == NULL) {
         g_rr_panel.core = rr_wizard_core_create(&hooks, &g_rr_panel);
@@ -195,10 +214,10 @@ rr_panel_ensure_core(void) {
            username and no application key and rr_refresh_creds_ready() would
            refuse every refresh with "enter your username, password and
            application key first" - even for an account already in the config.
-           The published snapshot, never the live struct: the decoder thread owns
-           dsd_opts. A NULL snapshot (nothing published yet) simply seeds nothing,
+           The frame's published snapshot, never the live struct: the decoder
+           thread owns dsd_opts. None (nothing published yet) simply seeds nothing,
            and rr_panel_open_import() reseeds from the opts it was handed. */
-        const dsd_opts* snap = dsd_app_get_latest_opts_snapshot();
+        const dsd_opts* snap = g_rr_panel.frame_opts;
         if (g_rr_panel.core != NULL && snap != NULL) {
             rr_wizard_core_set_username(g_rr_panel.core, snap->rr_username);
             rr_wizard_core_set_stored_app_key(g_rr_panel.core, snap->rr_app_key);
@@ -305,7 +324,9 @@ rr_browse_adopt(const RrLibrarySystem* s, const char* named, const char* chan, c
     /* The pre-check the wizard runs before its own apply, for this recipe's
        decode mode: only now is the kind known. */
     char blocked[256];
-    if (rr_wizard_core_apply_block_reason(&plan, s->has_group, s->has_chan, blocked, sizeof blocked) != 0) {
+    if (rr_wizard_core_apply_block_reason(g_rr_panel.frame_opts, g_rr_panel.frame_state, &plan, s->has_group,
+                                          s->has_chan, blocked, sizeof blocked)
+        != 0) {
         ui_statusf("%s", blocked);
         return;
     }
@@ -344,7 +365,8 @@ rr_browse_apply(const RrLibrarySystem* s) {
        the handler's return value, so this would otherwise read "Loaded <system>
        files" for a command the decoder threw away. */
     char blocked[256];
-    if (rr_wizard_core_files_block_reason(chan, blocked, sizeof blocked) != 0) {
+    if (rr_wizard_core_files_block_reason(g_rr_panel.frame_opts, g_rr_panel.frame_state, chan, blocked, sizeof blocked)
+        != 0) {
         ui_statusf("%s", blocked);
         return;
     }
@@ -510,13 +532,11 @@ rr_browse_system_done(void* u, int sel) {
     ui_chooser_start(ctx->title, ctx->action_items, ctx->action_n, rr_browse_action_done, ctx);
 }
 
-/* The rr_panel_open_* pair is frozen non-const to match the nc_action_fn shape the menu glue
-   and the Stage 10/11 bodies share; the panel only ever reads through these pointers, because
-   the UI thread never mutates dsd_opts or dsd_state. */
-// cppcheck-suppress-begin constParameterPointer
+/* The rr_panel_open_* pair takes the frame's published snapshot pair (issue #672, B9); the panel only reads it. */
 void
-rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
-    (void)state;
+rr_panel_open_import(const dsd_opts* opts, const dsd_state* state) {
+    g_rr_panel.frame_opts = opts;
+    g_rr_panel.frame_state = state;
     RrWizardCore* w = rr_panel_ensure_core();
     if (w == NULL) {
         ui_statusf("RadioReference wizard could not be started.");
@@ -533,8 +553,9 @@ rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
-    (void)state;
+rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
+    g_rr_panel.frame_opts = opts;
+    g_rr_panel.frame_state = state;
     /* Copied before anything else runs, the same way rr_import_resolve_dir()
        does: dsd_user_imports_dir() has no latch and rewrites its internal static
        buffer on every call, so the returned pointer is only good until the next
@@ -571,10 +592,10 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     }
     rr_library_sort(&ctx->lib);
 
-    /* In-use marking reads the published snapshot, never the live opts: the
-       decoder thread rewrites chan_in_file / group_in_file under no lock. A NULL
-       snapshot (no session, or one publish behind) simply marks nothing. */
-    const dsd_opts* snap = dsd_app_get_latest_opts_snapshot();
+    /* In-use marking reads the frame's published snapshot, never the live opts:
+       the decoder thread rewrites chan_in_file / group_in_file under no lock. No
+       snapshot (nothing published yet) simply marks nothing. */
+    const dsd_opts* snap = opts;
     const char* chan_in_use = (snap != NULL) ? snap->chan_in_file : NULL;
     const char* group_in_use = (snap != NULL) ? snap->group_in_file : NULL;
 
@@ -613,8 +634,6 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     ui_chooser_start(ctx->title, ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
 }
 
-// cppcheck-suppress-end constParameterPointer
-
 void
 rr_panel_close(void) {
     rr_panel_release_window();
@@ -648,13 +667,12 @@ rr_panel_shutdown(void) {
 /* ---- Tick ---------------------------------------------------------------- */
 
 void
-rr_panel_tick(dsd_opts* opts, dsd_state* state) {
-    /* Called from ui_menu_tick on two cadences (~15 ms input path, ~66 ms base-render path);
-       on the render path these are read-only snapshot pointers. Nothing here reads or writes
-       them - they exist so the call site mirrors ui_menu_tick and a later stage can widen
-       the body without a contract change. */
-    (void)opts;
-    (void)state;
+rr_panel_tick(const dsd_opts* opts, const dsd_state* state) {
+    /* Called from ui_menu_tick on two cadences (~15 ms input path, ~66 ms base-render path), both
+       with the frame's published snapshot pair. The pair is kept for the session checks
+       (rr_hook_session_opts(), rr_hook_session_state()); nothing writes through either pointer. */
+    g_rr_panel.frame_opts = opts;
+    g_rr_panel.frame_state = state;
     if (!g_rr_panel.active || g_rr_panel.core == NULL) {
         return;
     }

@@ -12,7 +12,6 @@
  */
 
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -160,6 +159,7 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_env_double_has_value = 0;
     g_infer_mode = DSDCFG_MODE_AUTO;
     g_history_mode = 1;
+    dsd_test_scan_labels_frame(opts, state);
     ctx->opts = opts;
     ctx->state = state;
 }
@@ -283,24 +283,19 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_P25);
     rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
     /* Issue #526: an nfm row reads as its class, beside the configured digital mode it will return to. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     rc |= expect_str("decode mode on an nfm row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan nfm]");
     /* ...and an am row as its own class, not as NFM. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     rc |= expect_str("decode mode on an am row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan am]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
-    opts.monitor_input_audio = 1;
-    opts.use_cosine_filter = 1;
-    rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
-    rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
-    rc |= expect_str("modulation from live state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    rc |= expect_str("modulation from the frame's state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
     state.rf_mod = 2;
     rc |= expect_str("modulation gfsk", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [GFSK]");
     state.rf_mod = 7;
@@ -325,7 +320,7 @@ test_decoder_labels(void) {
     opts.mod_p25p2_c4fm = 0;
     state.rf_mod = 7;
 
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_P25);
     dsd_scan_settings configured = {0};
     configured.state_rf_mod = 1;
     configured.mod_qpsk = 1;
@@ -342,14 +337,9 @@ test_decoder_labels(void) {
     rc |= expect_str("configured cli p2 lock", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
                      "P25 Phase 2 modulation lock [C4FM]");
     dsd_test_scan_labels_configured(NULL);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    dsd_state* published_state = (dsd_state*)dsd_app_get_latest_snapshot();
-    if (published_state == NULL) {
-        DSD_FPRINTF(stderr, "published state snapshot unavailable\n");
-        return 1;
-    }
-    published_state->rf_mod = 1;
-    rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
+    state.rf_mod = 1;
+    rc |= expect_str("modulation uses the frame's state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
 
     opts.use_lpf = 1;
     opts.use_hpf = 0;
@@ -361,13 +351,7 @@ test_decoder_labels(void) {
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
     /* The M17 row can disable the effective filter while the configured value
      * shown by this toggle remains enabled. */
-    opts.use_cosine_filter = 0;
-    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published_opts == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published_opts->use_cosine_filter = 1;
+    opts.use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -471,9 +455,9 @@ test_trunking_labels(void) {
     opts.trunk_tune_data_calls = 1;
     rc |= expect_str("group calls on", lbl_tune_group(&ctx, b, sizeof(b)), "Group calls [On]");
     rc |= expect_str("private calls off", lbl_tune_priv(&ctx, b, sizeof(b)), "Private calls [Off]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("data calls on", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     opts.reverse_mute = 1;
     opts.p25_prefer_candidates = 1;
     rc |= expect_str("reverse mute on", lbl_rev_mute(&ctx, b, sizeof(b)), "Reverse mute [On]");
@@ -550,12 +534,12 @@ test_encryption_labels(void) {
     opts.unmute_encrypted_p25 = 1;
     rc |= expect_str("muting off", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [Off]");
 
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     opts.trunk_tune_enc_calls = 0;
     rc |= expect_str("enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [On]");
     opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("enc lockout off", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [Off]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("enc lockout clear count", lbl_enc_lockout_clear(&ctx, b, sizeof(b)), "Clear lockouts [0]");
 
     state.M = 1;
@@ -572,13 +556,8 @@ test_encryption_labels(void) {
     configured.scan_voice_hold_ms = 4000;
     configured.trunk_tune_data_calls = 0;
     configured.trunk_tune_enc_calls = 1;
-    dsd_opts* published = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published->trunk_tune_data_calls = 1;
-    published->trunk_tune_enc_calls = 0;
+    opts.trunk_tune_data_calls = 1;
+    opts.trunk_tune_enc_calls = 0;
     dsd_test_scan_labels_configured(&configured);
     rc |= expect_str("muting configured", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [On]");
     rc |= expect_str("force BP configured", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [On]");
@@ -595,8 +574,8 @@ test_encryption_labels(void) {
     rc |= expect_str("data calls baseline matches target", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
     rc |= expect_str("enc lockout baseline matches target", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
                      "Lock out encrypted calls [On]");
-    published->trunk_tune_data_calls = 0;
-    published->trunk_tune_enc_calls = 1;
+    opts.trunk_tune_data_calls = 0;
+    opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("data calls target disabled", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On] (target: Off)");
     rc |= expect_str("enc lockout target disabled", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
                      "Lock out encrypted calls [On] (target: Off)");
@@ -668,13 +647,7 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("output muted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [On]");
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
-    opts.monitor_input_audio = 0;
-    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published_opts == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published_opts->monitor_input_audio = 1;
+    opts.monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=
@@ -840,7 +813,7 @@ test_input_width_labels(void) {
  * Audio > Tone filter... reads the policy the configuration sets, from the shared app-control view the Call Info line
  * and the Qt monitor read: "off", or the mode and its list, and while a scan row's own policy is on air that policy
  * with the configured one it shadows, "(row; default X)". A long list's overflow mark is ASCII here, as every menu
- * label is. Before the first snapshot it reads the menu's own options, the policy its picker opens on, not "off".
+ * label is. It reads the frame's snapshot pair, the pair its picker opens on (issue #672, B9).
  */
 static int
 test_tone_filter_label(void) {
@@ -888,16 +861,7 @@ test_tone_filter_label(void) {
                      1);
     dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
 
-    /* No snapshot yet: the menu's own options, with no state. */
-    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
-    (void)dsd_tone_set_parse("D023N/100", &opts.analog_tone_set, NULL, 0);
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
-    rc |= expect_str("tone filter before snapshots", lbl_tone_filter(&ctx, b, sizeof(b)),
-                     "Tone filter... [allow 100.0 Hz/D023N]");
     rc |= expect_str("tone filter without a context", lbl_tone_filter(NULL, b, sizeof(b)), "Tone filter... [off]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
-    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof(opts.analog_tone_set));
     return rc;
 }
 

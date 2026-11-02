@@ -15,12 +15,12 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -509,6 +509,19 @@ rr_core_panel_changed(const RrWizardCore* w) {
     if (w->hooks.panel_changed != NULL) {
         w->hooks.panel_changed(w->hook_user);
     }
+}
+
+/* The frame's published options the presenter holds (RrWizardHooks.session_opts); NULL without the hook or before the
+   first publication. */
+static const dsd_opts*
+rr_core_session_opts(const RrWizardCore* w) {
+    return w->hooks.session_opts != NULL ? w->hooks.session_opts(w->hook_user) : NULL;
+}
+
+/* The state half of the frame's published pair (RrWizardHooks.session_state), on the same terms. */
+static const dsd_state*
+rr_core_session_state(const RrWizardCore* w) {
+    return w->hooks.session_state != NULL ? w->hooks.session_state(w->hook_user) : NULL;
 }
 
 static void
@@ -1493,9 +1506,10 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
 /**
  * @brief Ask the running session to re-read the file, but only if it is using it.
  *
- * Reads the published snapshot, never the live struct: the decoder thread
- * rewrites opts->chan_in_file / group_in_file under no lock and the terminal UI
- * runs on its own thread. The snapshot may be NULL and may lag one publish
+ * Reads the frame's published snapshot (RrWizardHooks.session_opts), never the
+ * live struct: the decoder thread rewrites opts->chan_in_file / group_in_file
+ * under no lock and the terminal UI runs on its own thread. The snapshot may be
+ * NULL and may lag one publish
  * behind, so a file imported moments ago may not be visible yet - the refresh
  * still succeeds, it just does not push.
  *
@@ -1503,7 +1517,7 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
  */
 static int
 rr_refresh_push_live(RrWizardCore* w, const char* path, int is_chan) {
-    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
+    const dsd_opts* osnap = rr_core_session_opts(w);
     if (osnap == NULL || w->hooks.post_import_path == NULL) {
         return 0;
     }
@@ -1685,8 +1699,9 @@ rr_preselect(RrWizardCore* w) {
  * of every plan rebuild, so the preview already says no, and once inside
  * rr_wizard_core_import_now(), because the snapshot can change in between.
  *
- * Only the PUBLISHED snapshots are read here; the live dsd_opts belongs to the
- * decoder thread. The checks themselves are app-control's
+ * Only the frame's PUBLISHED pair is read here (RrWizardHooks.session_opts and
+ * session_state); the live dsd_opts belongs to the decoder thread. The checks
+ * themselves are app-control's
  * (dsd_app_rr_apply_block_reason()), so this gate, the Imported Systems browser
  * and the decoder thread cannot drift apart.
  */
@@ -1712,8 +1727,8 @@ rr_block_sentence(const char* why, char* out, size_t out_sz) {
  * DSD_APP_CMD_RR_APPLY_IMPORT from rr_panel.c and needs the identical pre-check
  * and the identical wording, rather than a second copy that can drift. */
 int
-rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
-                                  size_t out_sz) {
+rr_wizard_core_apply_block_reason(const dsd_opts* osnap, const dsd_state* snap, const dsd_rr_import_plan* plan,
+                                  int has_group, int has_chan, char* out, size_t out_sz) {
     if (plan == NULL) {
         return 0;
     }
@@ -1725,10 +1740,10 @@ rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group,
     dsd_app_rr_apply_payload payload;
     int blocked = 0;
     if (dsd_app_rr_fill_apply_mode(plan, &payload) == 0) {
-        blocked = dsd_app_rr_apply_block_reason(&payload, has_group, has_chan, why, sizeof(why));
+        blocked = dsd_app_rr_apply_block_reason(osnap, snap, &payload, has_group, has_chan, why, sizeof(why));
     } else {
         /* No decode mode (a protocol the planner refuses anyway): what refuses any import still does. */
-        blocked = dsd_app_rr_files_block_reason(NULL, why, sizeof(why));
+        blocked = dsd_app_rr_files_block_reason(osnap, snap, NULL, why, sizeof(why));
     }
     if (blocked) {
         rr_block_sentence(why, out, out_sz);
@@ -1737,20 +1752,22 @@ rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group,
 }
 
 int
-rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz) {
+rr_wizard_core_files_block_reason(const dsd_opts* osnap, const dsd_state* snap, const char* chan_path, char* out,
+                                  size_t out_sz) {
     char why[DSD_APP_RR_VERDICT_WHY_MAX];
-    if (dsd_app_rr_files_block_reason(chan_path, why, sizeof(why)) == 0) {
+    if (dsd_app_rr_files_block_reason(osnap, snap, chan_path, why, sizeof(why)) == 0) {
         return 0;
     }
     rr_block_sentence(why, out, out_sz);
     return 1;
 }
 
-/* The outputs the plan generated, which the files will be once written. */
+/* The outputs the plan generated, which the files will be once written, over the frame's published pair. */
 static int
 rr_core_session_block_reason(const RrWizardCore* w, char* out, size_t out_sz) {
-    return rr_wizard_core_apply_block_reason(&w->plan, w->plan.group_csv_text != NULL, w->plan.chan_csv_text != NULL,
-                                             out, out_sz);
+    return rr_wizard_core_apply_block_reason(rr_core_session_opts(w), rr_core_session_state(w), &w->plan,
+                                             w->plan.group_csv_text != NULL, w->plan.chan_csv_text != NULL, out,
+                                             out_sz);
 }
 
 /* Show a session refusal in the preview. */

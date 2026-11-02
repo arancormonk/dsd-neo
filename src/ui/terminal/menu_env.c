@@ -16,7 +16,6 @@
 #include <dsd-neo/runtime/log.h>
 #include <float.h> // IWYU pragma: keep
 #include <limits.h>
-#include <stddef.h>
 #include "dsd-neo/core/safe_api.h"
 
 // IWYU pragma: no_include <__float_float.h>

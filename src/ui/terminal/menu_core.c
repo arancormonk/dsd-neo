@@ -45,7 +45,7 @@ static UiCtx g_ctx;
 static int g_modal_only = 0;
 
 static UiCtx*
-ui_menu_stable_ctx(dsd_opts* opts, dsd_state* state) {
+ui_menu_stable_ctx(const dsd_opts* opts, const dsd_state* state) {
     g_ctx.opts = opts;
     g_ctx.state = state;
     return &g_ctx;
@@ -411,7 +411,10 @@ ui_menu_is_activate_key(int ch) {
 }
 
 void
-ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
+ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return; /* nothing published yet: the menu reads only the frame's snapshot pair */
+    }
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     const NcMenuItem* items = NULL;
     size_t n = 0;
@@ -442,8 +445,8 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
 
 /* No "No default config" hint: nothing shows a menu toast here, and the entry is not the menu. */
 void
-ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state, nc_action_fn open_modal) {
-    if (!open_modal) {
+ui_menu_open_modal_async(const dsd_opts* opts, const dsd_state* state, nc_action_fn open_modal) {
+    if (!open_modal || !opts || !state) {
         return;
     }
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
@@ -461,7 +464,7 @@ ui_menu_is_open(void) {
 }
 
 int
-ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
+ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     if (!g_overlay_open || g_depth <= 0) {
         return 0;
@@ -504,7 +507,7 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) {
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     const UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     /* A modal closed outside the key handling never leaves a prompt-only overlay's empty frame to draw. */
     ui_menu_close_if_modal_done();

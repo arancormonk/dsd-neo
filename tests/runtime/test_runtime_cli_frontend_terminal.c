@@ -39,7 +39,7 @@ stop_blocked_here(void) {
 }
 
 int
-ui_start(dsd_opts* opts, dsd_state* state) {
+ui_start(dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     g_ui_start_calls++;

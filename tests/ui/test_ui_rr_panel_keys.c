@@ -25,9 +25,11 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -206,11 +208,17 @@ static int g_apply_gate_has_chan = -1;
 static int g_files_gate_calls = 0;
 static int g_files_gate_blocks = 0;
 static char g_files_gate_chan[1024];
+/* The pair the gate was handed last. The browser must pass the frame's published pair it was opened with, never
+   acquire one itself (issue #672, B9). */
+static const dsd_opts* g_gate_opts = NULL;
+static const dsd_state* g_gate_state = NULL;
 
 int
-rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
-                                  size_t out_sz) {
+rr_wizard_core_apply_block_reason(const dsd_opts* osnap, const dsd_state* snap, const dsd_rr_import_plan* plan,
+                                  int has_group, int has_chan, char* out, size_t out_sz) {
     g_apply_gate_calls++;
+    g_gate_opts = osnap;
+    g_gate_state = snap;
     g_apply_gate_protocol = plan->protocol;
     g_apply_gate_has_group = has_group;
     g_apply_gate_has_chan = has_chan;
@@ -221,8 +229,11 @@ rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group,
 }
 
 int
-rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz) {
+rr_wizard_core_files_block_reason(const dsd_opts* osnap, const dsd_state* snap, const char* chan_path, char* out,
+                                  size_t out_sz) {
     g_files_gate_calls++;
+    g_gate_opts = osnap;
+    g_gate_state = snap;
     DSD_SNPRINTF(g_files_gate_chan, sizeof g_files_gate_chan, "%s", chan_path != NULL ? chan_path : "(none)");
     if (g_files_gate_blocks) {
         DSD_SNPRINTF(out, out_sz, "%s", k_gate_reason);
@@ -302,11 +313,6 @@ ui_status_clear_if_expired(time_t now) {
 
 void
 dsd_app_request_redraw(void) {}
-
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
-    return NULL;
-}
 
 /* What the browser posted: the IMPORT_* commands by id, and the apply. */
 static int g_import_chan_posts = 0;
@@ -451,6 +457,8 @@ browser_reset(void) {
     g_files_gate_calls = 0;
     g_files_gate_blocks = 0;
     g_files_gate_chan[0] = '\0';
+    g_gate_opts = NULL;
+    g_gate_state = NULL;
     g_import_chan_posts = 0;
     g_import_group_posts = 0;
     g_rr_apply_posts = 0;
@@ -458,11 +466,17 @@ browser_reset(void) {
     g_status[0] = '\0';
 }
 
-/* Open the browser, pick its only system, then its first action, whose label must be @p want_action. */
+/* The frame's published pair the browser is opened with. File-static: a dsd_opts or dsd_state on the stack is ~41 KB
+   and more. Zeroed options mark no file in use. */
+static dsd_opts g_frame_opts;
+static dsd_state g_frame_state;
+
+/* Open the browser on the frame's pair, pick its only system, then its first action, whose label must be
+   @p want_action. */
 static void
 browse_first_action(const char* want_action) {
     g_chooser_done = NULL;
-    rr_panel_open_library(NULL, NULL);
+    rr_panel_open_library(&g_frame_opts, &g_frame_state);
     assert(g_chooser_done != NULL && g_chooser_count == 1);
     ui_chooser_done_fn pick_system = g_chooser_done;
     void* ctx = g_chooser_user;
@@ -485,6 +499,7 @@ test_use_this_system_is_checked_for_its_kind(void) {
     g_apply_gate_blocks = 1;
     browse_first_action("Use this system");
     assert(g_apply_gate_calls == 1);
+    assert(g_gate_opts == &g_frame_opts && g_gate_state == &g_frame_state);
     assert(g_apply_gate_protocol == DSD_RR_PROTO_TETRA);
     assert(g_apply_gate_has_group == 1 && g_apply_gate_has_chan == 0);
     assert(g_files_gate_calls == 0);
@@ -515,6 +530,7 @@ test_load_these_files_is_still_checked(void) {
     g_files_gate_blocks = 1;
     browse_first_action("Load these files");
     assert(g_files_gate_calls == 1);
+    assert(g_gate_opts == &g_frame_opts && g_gate_state == &g_frame_state);
     assert(strcmp(g_files_gate_chan, chan) == 0);
     assert(g_apply_gate_calls == 0);
     assert(g_import_chan_posts == 0 && g_import_group_posts == 0);
