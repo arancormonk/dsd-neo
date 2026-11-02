@@ -2198,8 +2198,7 @@ suite runs under this compiler.
   texts (standard before recognition, Capacity Max after): a merge keeps the one that names Capacity Max
   (`dsd_rxid_site_union()`), the `-J` event line keeps the part (`SITE: Capacity Max Net 1 Site 1;`), and Qt History
   re-reads a row whose text alone changed (its seen digest, Frontends, "Call history site and channel"). Threading:
-  the decoder thread owns the record and is
-  its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
+  the decoder thread owns the record and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
   the watchdog's tick reads the record under that guard (the calls its release ends keep it as
@@ -9745,8 +9744,8 @@ Qt Quick frontend (`src/ui/qt`):
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
     first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`), so it
-    happens once; a store lost alone is reseeded from the rows, each with its text's digest, and re-reads nothing); a row saved by an older build has none and loads with an
-    unknown site and channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its
+    happens once; a store lost alone is reseeded from the rows, each with its text's digest, and re-reads nothing); a
+    row saved by an older build has none and loads with an unknown site and channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its
     field loads as unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
     `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
