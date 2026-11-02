@@ -264,8 +264,9 @@ Item {
         var text = screen.systemName() + "\n" + screen.typeDescr + "\n" + sites + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls."));
         if (screen.isP25)
             text += "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25"));
+        // The radios -Y retunes, as the scan warning in the preview names them.
         if (radioReference.conventional && screen.selectedSites.length > 1)
-            text += qsTr("\nA USB RTL-SDR or RTL-TCP source is required to scan these repeaters.");
+            text += "\n" + qsTr("Scanning these repeaters needs a USB RTL-SDR, rtl_tcp or Airspy radio.");
         var files = [];
         if (screen.planField("groupCsvText", "").length > 0)
             files.push(qsTr("Talkgroup list"));
@@ -1160,9 +1161,9 @@ Item {
                         onTextChanged: screen.siteSearch = text
                     }
                     // Two things a conventional import has to say, because
-                    // neither is guessable from the list itself. The third — that
-                    // scanning needs an RTL-SDR or a rigctl radio — rides in
-                    // plan.warnings with every other warning.
+                    // neither is guessable from the list itself. The third — which
+                    // radios can scan the repeaters — rides in plan.warnings with
+                    // every other warning.
                     OutlineButton {
                         width: parent.width
                         visible: radioReference.trunked

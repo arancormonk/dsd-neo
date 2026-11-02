@@ -275,6 +275,24 @@ Item {
             verify(files.text.indexOf("simply tunes this frequency") >= 0, files.text)
         }
 
+        // Regression (#803 D-B5): the scanning sentence named only a USB
+        // RTL-SDR and rtl_tcp, but -Y scans on an Airspy too, as the shared
+        // import warning shown beside it says.
+        function test_20_the_scanning_note_names_every_radio_that_scans() {
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            loadTwoSiteSystem()
+            tc.screen.toggleSite(0)
+            tc.screen.toggleSite(1)
+            tc.screen.plan = {ok: true, freqMhz: "851.0125", decodeFlag: "-ft -Y", trunking: false,
+                              scanList: true, warnings: []}
+            var review = openReview()
+            var body = reviewBody()
+            for (var radio of ["USB RTL-SDR", "rtl_tcp", "Airspy"])
+                verify(body.text.indexOf(radio) >= 0, "the scanning note does not name " + radio + ": " + body.text)
+            closeReview(review)
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
