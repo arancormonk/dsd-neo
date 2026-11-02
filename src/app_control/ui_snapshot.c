@@ -121,12 +121,13 @@ ui_snapshot_mark_set(ui_snapshot_store_mark* mark, uint64_t instance, uint64_t r
 
 /* Copied only when the map moved. initState() restarts trunk_chan_map_seq, so a later session's map can come back at
  * the sequence and count an earlier one's had: the state instance is part of the key, or the snapshot would keep the
- * old session's channels. */
-static void
+ * old session's channels. The map is fixed-size inline storage, so the copy cannot fail: it returns 0, like the heap
+ * copies below on success. */
+static int
 ui_snapshot_copy_trunk_chan_map(dsd_state* dst, ui_snapshot_store_mark* mark, const dsd_state* src, uint8_t src_valid) {
     if (ui_snapshot_mark_current(mark, src->state_instance, src->trunk_chan_map_seq)
         && dst->trunk_chan_map_used_count == src->trunk_chan_map_used_count) {
-        return;
+        return 0;
     }
 
     uint32_t old_count = dst->trunk_chan_map_used_count;
@@ -160,6 +161,7 @@ ui_snapshot_copy_trunk_chan_map(dsd_state* dst, ui_snapshot_store_mark* mark, co
     }
     dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
     ui_snapshot_mark_set(mark, src->state_instance, src->trunk_chan_map_seq, src_valid);
+    return 0;
 }
 
 /* The heap tail must stay outside every UI_SNAPSHOT_COPY_RANGE: a raw byte copy of the
@@ -350,15 +352,17 @@ ui_snapshot_copy_trunk_lcn_avoid(dsd_state* dst, const dsd_state* src) {
 
 /* The published trunk-scan avoid list changes only with trunk_scan_avoid_rev or a new state instance, so it is copied
  * only then, or while the copy held is not whole, into the destination's own store: a snapshot never aliases the
- * decoder's buffer, and a failed reserve leaves the copy empty rather than stale. */
-static void
+ * decoder's buffer, and a failed reserve leaves the copy empty rather than stale and returns -1. A skipped copy
+ * returns 0: the store it keeps is whole. */
+static int
 ui_snapshot_copy_trunk_scan_avoids(dsd_state* dst, ui_snapshot_store_mark* mark, const dsd_state* src,
                                    uint8_t src_valid) {
     if (ui_snapshot_mark_current(mark, src->state_instance, src->trunk_scan_avoid_rev)) {
-        return;
+        return 0;
     }
-    const int copied = dsd_state_trunk_scan_avoids_set(dst, src->trunk_scan_avoids, src->trunk_scan_avoid_count) == 0;
-    ui_snapshot_mark_set(mark, src->state_instance, src->trunk_scan_avoid_rev, src_valid && copied);
+    const int rc = dsd_state_trunk_scan_avoids_set(dst, src->trunk_scan_avoids, src->trunk_scan_avoid_count);
+    ui_snapshot_mark_set(mark, src->state_instance, src->trunk_scan_avoid_rev, src_valid && rc == 0);
+    return rc;
 }
 
 /* The scan-list stores beside the list (issue #672 B2): a copy that comes out short -- here, or at the hop before --
@@ -370,7 +374,7 @@ ui_snapshot_copy_scan_lists(dsd_state* dst, ui_snapshot_marks* marks, const dsd_
     const int names_ok = ui_snapshot_copy_trunk_lcn_name(dst, src) == 0;
     const int flags_ok = ui_snapshot_copy_trunk_lcn_avoid(dst, src) == 0;
     marks->lcn_valid = (src_marks->lcn_valid && tail_ok && names_ok && flags_ok) ? 1U : 0U;
-    ui_snapshot_copy_trunk_scan_avoids(dst, &marks->trunk_scan_avoids, src, src_marks->trunk_scan_avoids.valid);
+    (void)ui_snapshot_copy_trunk_scan_avoids(dst, &marks->trunk_scan_avoids, src, src_marks->trunk_scan_avoids.valid);
 }
 
 static int
@@ -383,7 +387,7 @@ static void
 ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const dsd_state* src,
                               const ui_snapshot_marks* src_marks) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
-    ui_snapshot_copy_trunk_chan_map(dst, &marks->chan_map, src, src_marks->chan_map.valid);
+    (void)ui_snapshot_copy_trunk_chan_map(dst, &marks->chan_map, src, src_marks->chan_map.valid);
     dst->keyloader = src->keyloader;
     DSD_MEMCPY(dst->key_profile_ref, src->key_profile_ref, sizeof(dst->key_profile_ref));
     dst->key_profile_ref[sizeof(dst->key_profile_ref) - 1U] = '\0';
@@ -448,6 +452,16 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
 }
 #endif
 
+/* Whether the ring the decoder holds is another ring than the one the published copy came from. A restarted decoder's
+ * ring can be allocated at the freed ring's address and reach the revision the copy holds, so the pointer and the
+ * per-slot revision alone would skip the copy and keep the previous session's rows: the ring's identity
+ * (Event_History_I::instance, drawn per initState()) is part of the key. */
+static int
+ui_snapshot_eh_ring_replaced(const Event_History_I* source) {
+    return g_pub_eh_source != source || g_pub_eh[0].instance != source[0].instance
+           || g_pub_eh[1].instance != source[1].instance;
+}
+
 static void
 ui_snapshot_publish(const dsd_state* state) {
     ensure_mu_init();
@@ -457,7 +471,7 @@ ui_snapshot_publish(const dsd_state* state) {
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
-        const int force_copy = !g_have || !g_pub_eh_present || g_pub_eh_source != state->event_history_s;
+        const int force_copy = !g_have || !g_pub_eh_present || ui_snapshot_eh_ring_replaced(state->event_history_s);
         uint8_t copied[2] = {0U, 0U};
         (void)dsd_event_state_copy_snapshot_incremental(&g_pub, state, g_pub_eh, g_pub_eh_source_revision, force_copy,
                                                         copied);
@@ -527,7 +541,8 @@ dsd_app_get_latest_snapshot(void) {
         g_consume_seq = g_pub_seq;
         g_consume_needs_retry = !ui_snapshot_marks_whole(&g_consume_marks);
     }
-    // Deep copy event history only when the published history changed.
+    // Deep copy event history only when the published history changed. g_pub_eh_seq counts this module's own copies
+    // into g_pub_eh and never restarts, so unlike the decoder's revision it needs no ring identity beside it.
     if (g_pub.event_history_s != NULL) {
         for (size_t slot = 0; slot < 2U; slot++) {
             if (g_consume_eh_seq[slot] != g_pub_eh_seq[slot]) {

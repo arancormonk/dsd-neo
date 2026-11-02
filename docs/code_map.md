@@ -1139,8 +1139,12 @@ suite runs under this compiler.
 - Invariant (snapshot completeness, issue #672; `src/app_control/ui_snapshot.c`): each scan-list deep copy (LCN tail,
   names, avoid flags, trunk-scan avoid list) reports success, and each snapshot (published, consumer) keeps per store
   the `(state_instance, revision, valid)` it holds, `valid` = the source's copy was whole and this copy allocated all it
-  needed. The sparse channel map (keyed on `trunk_chan_map_seq`, which `initState()` restarts) and the trunk-scan list
-  (keyed on `trunk_scan_avoid_rev`) are copied only when that key moved or the copy held is not whole. After the scalar
+  needed. The sparse channel map (keyed on `(state_instance, trunk_chan_map_seq)`; `initState()` restarts the sequence)
+  and the trunk-scan list (keyed on `(state_instance, trunk_scan_avoid_rev)`) are copied only when that key moved or the
+  copy held is not whole. The event-history ring's copy into the published snapshot is forced when the ring pointer or
+  its identity (`Event_History_I::instance`) differs from the copy's, so a restarted decoder's ring at a reused address
+  with an equal revision is still copied; the consumer copy keys on the module's own never-restarting copy count
+  (`g_pub_eh_seq`). After the scalar
   range, `scan_avoids_complete` (1 on a live state) becomes the source's value AND every LCN and trunk-scan copy at
   this hop being whole, so a short copy at either hop reads as incomplete and the next whole copy restores it; the
   avoid counts stay the decoder's. The consumer read copies again while it holds a store that is not whole, without

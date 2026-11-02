@@ -503,6 +503,54 @@ test_chan_map_gate_keys_on_the_session(void) {
     free_session_state(first);
 }
 
+/* Issue #672 F1: a restarted decoder's ring can be allocated at the freed ring's address and reach the revision the
+   published copy holds. The ring's identity (Event_History_I::instance, drawn per initState()) keys the copy too, or
+   both hops keep the previous session's rows. */
+static void
+test_history_copy_keys_on_the_ring_instance(void) {
+    dsd_state* st = new_session_state();
+    Event_History_I* ring = (Event_History_I*)calloc(2U, sizeof(*ring));
+    assert(ring != NULL);
+    ring[0].instance = UINT64_C(0x1111);
+    ring[1].instance = UINT64_C(0x1111);
+    ring[0].Event_History_Items[1].source_id = 501U;
+    ring[1].Event_History_Items[1].source_id = 502U;
+    mark_history(&ring[0]);
+    mark_history(&ring[1]);
+    st->event_history_s = ring;
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert_slot_tail(snap, 501U, 502U);
+    assert(snap->event_history_s[0].instance == UINT64_C(0x1111));
+
+    /* The restart: the same address, a new ring identity, other rows, and the revisions the old ring had. */
+    const uint64_t revisions[2] = {ring[0].revision, ring[1].revision};
+    DSD_MEMSET(ring, 0, 2U * sizeof(*ring));
+    ring[0].instance = UINT64_C(0x2222);
+    ring[1].instance = UINT64_C(0x2222);
+    ring[0].Event_History_Items[1].source_id = 601U;
+    ring[1].Event_History_Items[1].source_id = 602U;
+    ring[0].revision = revisions[0];
+    ring[1].revision = revisions[1];
+    st->state_instance = dsd_state_rev_next();
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert_slot_tail(snap, 601U, 602U);
+    assert(snap->event_history_s[0].instance == UINT64_C(0x2222)
+           && snap->event_history_s[1].instance == UINT64_C(0x2222));
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
+
+    /* Same ring, same revisions: nothing is copied again. */
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(st);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 601U, 602U);
+    assert_history_copy_counts(0U, 0U, 0U, 0U);
+    st->event_history_s = NULL;
+    free(ring);
+    free_session_state(st);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -870,6 +918,7 @@ main(void) {
     test_scan_list_completeness_across_hops();
     test_trunk_scan_avoids_gated_copy();
     test_chan_map_gate_keys_on_the_session();
+    test_history_copy_keys_on_the_ring_instance();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);
