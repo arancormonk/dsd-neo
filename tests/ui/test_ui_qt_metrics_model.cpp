@@ -13,6 +13,7 @@
 
 #include <QAbstractItemModel>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QLatin1Char>
 #include <QList>
 #include <QMap>
@@ -28,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utility>
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
@@ -43,6 +45,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 /* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
 extern "C" {
 #include <dsd-neo/core/state.h>
