@@ -70,9 +70,11 @@ void tetra_sm_init(dsd_opts* opts, dsd_state* state);
  * Every carrier of a cell broadcasts the SYSINFO of its main carrier (EN 300 392-2 clauses 3.1, 21.4.4.1), so it says
  * where the control channel is, not where the receiver is. While trunking is on:
  * - On the main carrier (tetra_sm_receiver_freq() equals it; with no frequency known, an audio input, unless the state
- *   machine can move the receiver, when only its own completed move says so), IDLE and ACQUIRING become ON_CC, the
- *   control channel is a trunking candidate and its sync is stamped (dsd_mark_cc_sync()).
- * - Off it, nothing of that happens, and the move there is staged for the end of the burst (tetra_sm_after_burst()),
+ *   machine can move the receiver, a rigctl peer, when the frequency last sent to the peer or its own completed move
+ *   says so), IDLE and ACQUIRING become ON_CC, the control channel is a trunking candidate and its sync is stamped
+ *   (dsd_mark_cc_sync()).
+ * - Off it, nothing of that happens: ON_CC and a landed ACQUIRING drop to IDLE (the carrier is no control channel, and
+ *   a move that reached it is over), and the move there is staged for the end of the burst (tetra_sm_after_burst()),
  *   but only on a carrier a CRC-passed downlink block proved before this SYSINFO's own block, so a SYSINFO never
  *   vouches for itself.
  * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate.
@@ -89,9 +91,10 @@ void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
  * rigctl peer behind an audio input); nothing followed and no request of its own in flight; the receiver not on the main
  * carrier; the main carrier still the control channel; the tuner free (dsd_trunk_tuning_hook_tuner_free(): no manual or
  * correlated tune pending, no scan owning it); and the main carrier's history allowing it. The history keeps
- * TETRA_SM_MOVES main carriers: one moved to is never moved to again (so a move there and back stops), a refused or
- * failed move waits 5 s, 15 s, then 60 s at most before the next to the same carrier, a deferred one
- * TETRA_SM_MOVE_HOLD_S and counts as none, and with every entry taken nothing more is moved to (said once). An accepted
+ * TETRA_SM_MOVES main carriers: one moved to is never moved to again (so a move there and back stops, said once), a
+ * refused or failed move waits 5 s, 15 s, then 60 s at most before the next to the same carrier, a deferred one
+ * TETRA_SM_MOVE_HOLD_S and counts as none (its entry is free again once the hold is over), and with every entry taken
+ * by moves made or failed nothing more is moved to (said once). An accepted
  * move enters ACQUIRING with no control-channel sync stamped (the engine's stamp is taken back); its completion forgets
  * the carrier left (tetra_forget_carrier()) and keeps the history. ACQUIRING becomes ON_CC at the main carrier's own
  * SYSINFO; a SYSINFO there naming another main carrier is one more move. A failure puts back what the request changed,

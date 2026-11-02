@@ -8001,8 +8001,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   where the control channel is, not where the receiver is. `tetra_sm_on_cc_sync()` (from `apply_sysinfo()` in
   `tetra_mac.c`, only for a valid main carrier) makes IDLE or ACQUIRING ON_CC, adds the control-channel candidate and
   stamps its sync only on the main carrier (`sm_on_main_carrier()`: `tetra_sm_receiver_freq()` equal to it; with no
-  frequency known, an audio input, yes unless the machine can move the receiver, when only its own completed move says
-  so). Off it, it stages a move there (`tetra_sm_acquire`: `staged_hz` and the carrier evidence epoch), but only when a
+  frequency known, an audio input, yes unless the machine can move the receiver, a rigctl peer, when the frequency last
+  sent to the peer, `opts->rigctl_sent_freq_hz`, or its own completed move says so). Off it (`sm_off_main_carrier()`),
+  ON_CC, which a tune elsewhere rests in, and a landed ACQUIRING, whose carrier is now heard, drop to IDLE, so ON_CC is
+  never claimed on a carrier that is not the control channel, and it stages a move there (`tetra_sm_acquire`: `staged_hz` and the carrier evidence epoch), but only when a
   CRC-passed downlink block proved the carrier before the SYSINFO's own block (`tetra_confirm_downlink_proven()`,
   read during MAC parsing, before `tetra.c` notes the block), so a SYSINFO never vouches for itself. The burst's end
   runs it (`tetra_frame_leave()` reads `staged_hz`, the only per-burst cost, and calls `tetra_sm_after_burst()`): only
@@ -8018,15 +8020,18 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   BSCH there without SYSINFO does not. A SYSINFO there naming another main carrier (a shared or umbrella channel, Annex
   S, or a changed cell) is one more move under the same rules. The history (`tetra_sm_acquire::moves`,
   `TETRA_SM_MOVES` = 8 entries {main carrier, consumed, failures, next allowed}) makes each main carrier a target once:
-  a completed move consumes it (so Y, Z, Y stops at the second Y); a refused or failed one waits 5 s, 15 s, then 60 s
-  at most (decode clock, counted across the carrier resets of other hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S`
-  and counts as none; a full table moves to nothing new (said once) and gives no entry up. `tetra_sm_init()`, a
-  decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` at the tick), another radio
+  a completed move consumes it (so Y, Z, Y stops at the second Y, IDLE on Z, saying once that Y was moved to already);
+  a refused or failed one waits 5 s, 15 s, then 60 s at most (decode clock, counted across the carrier resets of other
+  hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S` and counts as none, its entry reusable once the hold is over; a
+  table of consumed and failed entries moves to nothing new (said once) and gives no entry up. `tetra_sm_init()`, a
+  decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` at every entry point,
+  before a request in flight is settled, and the trunk toggle and set commands, `trunk_enable_on()` in
+  `actions_trunk.c`, for a toggle no entry point sees), another radio
   source or input (`dsd_engine_carrier_boundary()` for `DSD_CARRIER_BOUNDARY_SOURCE` and `_INPUT_SWITCH`) and an
   applied RadioReference import (`rr_apply_reacquire()`) forget it (`tetra_sm_forget_moves()`); a tune elsewhere does
   not. ACQUIRING owns the return (`tetra_sm_owns_return()`), so the no-carrier pass ticks the machine instead of a
   generic return, and an external return or carrier boundary lets go of it and of its request in flight, whose late
-  completion is ignored. Nothing moves back to the carrier left: on the main carrier with no SYSINFO for
+  completion is ignored. Nothing moves back to the carrier left: on the main carrier with no SYSINFO at all for
   `TETRA_SM_MOVE_SILENT_S` (10 s) the tick says so once (a documented reception limit; the cell may run D-CTT/MCCH
   sharing, minimum mode or another cell's shared channel, clauses 4.11.2, 19.3.3, Annex S). Deliberate monitoring of a
   traffic carrier runs with trunking off. Tests: `TETRA_TRUNK_SM` (SYSINFO through the MAC, the burst's end as

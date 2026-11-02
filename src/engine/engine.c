@@ -2152,9 +2152,10 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
     return active;
 }
 
-/* The TETRA state machine owns the return from the call it follows, and from a return of its own in flight
-   (tetra_sm_owns_return()): its tick times a grant out after TETRA_SM_GRANT_TIMEOUT_S without speech and a call after
-   the hangtime that follows its last speech. The generic recovery below reads last_vc_sync_time against the hangtime
+/* The TETRA state machine owns the return from the call it follows, from a return of its own in flight, and while it
+   moves to or waits on the main carrier (ACQUIRING; tetra_sm_owns_return()): its tick times a grant out after
+   TETRA_SM_GRANT_TIMEOUT_S without speech and a call after the hangtime that follows its last speech, and a move to the
+   main carrier never falls back. The generic recovery below reads last_vc_sync_time against the hangtime
    alone, so it would take the receiver back from a grant still waiting for its first speech, or drop it where no
    control channel is known; while the machine owns the return the pass ticks it instead, as it ticks an active DMR
    state machine, under the tick guard the decode loop runs it under (dsd_engine_tetra_trunk_tick_locked()). */

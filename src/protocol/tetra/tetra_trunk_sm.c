@@ -260,26 +260,41 @@ sm_move_find(tetra_state_t* ts, long hz) {
     return NULL;
 }
 
-/* The history entry of main carrier @p hz, a free one taken for it when it has none, or NULL when every entry is taken:
- * none is ever given up, so a carrier moved to stays consumed and one that failed keeps its backoff. */
+/* An entry that holds nothing a later move needs: free, or only a deferral whose hold is over (a deferred move counts
+ * as none, so it never keeps its entry once its hold ends). */
+static int
+sm_move_reusable(const tetra_sm_move* m, double now_m) {
+    return m->hz == 0 || (!m->consumed && m->failures == 0U && now_m >= m->next_m);
+}
+
+/* The history entry of main carrier @p hz, a reusable one taken for it when it has none, or NULL when none is: an entry
+ * of a carrier moved to stays consumed and one of a failed move keeps its backoff, so neither is ever given up. Only a
+ * table of such entries is full (said once); one some deferral still holds frees itself when the hold ends. */
 static tetra_sm_move*
 sm_move_entry(tetra_state_t* ts, long hz) {
     tetra_sm_move* entry = sm_move_find(ts, hz);
-    if (!entry) {
-        entry = sm_move_find(ts, 0);
-        if (entry) {
-            DSD_MEMSET(entry, 0, sizeof *entry);
-            entry->hz = hz;
-        } else if (!ts->sm.acq.full_noted) {
-            ts->sm.acq.full_noted = 1;
-            if (sm_narrates(ts, 1)) {
-                DSD_FPRINTF(stderr,
-                            "[TETRA SM] not moving to the main carrier %ld Hz: %d main carriers tried already\n", hz,
-                            TETRA_SM_MOVES);
-            }
+    if (entry) {
+        return entry;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    int held = 0;
+    for (int i = 0; i < TETRA_SM_MOVES; i++) {
+        tetra_sm_move* const m = &ts->sm.acq.moves[i];
+        if (sm_move_reusable(m, now_m)) {
+            DSD_MEMSET(m, 0, sizeof *m);
+            m->hz = hz;
+            return m;
+        }
+        held |= !m->consumed && m->failures == 0U;
+    }
+    if (!held && !ts->sm.acq.full_noted) {
+        ts->sm.acq.full_noted = 1;
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] not moving to the main carrier %ld Hz: %d main carriers tried already\n",
+                        hz, TETRA_SM_MOVES);
         }
     }
-    return entry;
+    return NULL;
 }
 
 static void
@@ -287,6 +302,20 @@ sm_forget_moves(tetra_state_t* ts) {
     DSD_MEMSET(ts->sm.acq.moves, 0, sizeof ts->sm.acq.moves);
     ts->sm.acq.staged_hz = 0;
     ts->sm.acq.full_noted = 0;
+    ts->sm.acq.stay_noted = 0;
+}
+
+/* Trunking turned on again starts the moves to the main carrier over: the operator may have fixed what stopped them.
+ * Every entry point notes trunking before anything else, a request in flight included; the trunk commands forget the
+ * moves themselves when they turn trunking on (tetra_sm_forget_moves()), so a toggle no entry point sees counts too. */
+static void
+sm_note_trunking(const dsd_opts* opts, tetra_state_t* ts) {
+    if (opts->trunk_enable != 1) {
+        ts->sm.acq.trunk_off = 1;
+    } else if (ts->sm.acq.trunk_off) {
+        ts->sm.acq.trunk_off = 0;
+        sm_forget_moves(ts);
+    }
 }
 
 /* How long the next move to a main carrier waits after @p failures failed in a row: 5 s, then 15 s, then 60 s. */
@@ -542,8 +571,8 @@ sm_input_tunable(const dsd_opts* opts) {
 }
 
 /* Whether the receiver is on main carrier @p hz: the frequency it is on, when that is known. With none known (an audio
- * input) it is, as far as anything here can tell, unless the state machine can move the receiver: then only its own
- * completed move there says so. */
+ * input) it is, as far as anything here can tell, unless the state machine can move the receiver, a rigctl peer: then
+ * the frequency last sent to the peer says so (opts->rigctl_sent_freq_hz), or the machine's own completed move there. */
 static int
 sm_on_main_carrier(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, long hz) {
     const long rx_hz = tetra_sm_receiver_freq(opts, state);
@@ -551,6 +580,9 @@ sm_on_main_carrier(const dsd_opts* opts, const dsd_state* state, const tetra_sta
         return rx_hz == hz;
     }
     if (!sm_input_tunable(opts)) {
+        return 1;
+    }
+    if (opts->rigctl_sent_freq_hz != 0U && (long)opts->rigctl_sent_freq_hz == hz) {
         return 1;
     }
     return ts->sm.state == (uint8_t)TETRA_SM_ACQUIRING && ts->sm.acq.target_hz == hz && ts->sm.acq.landed_m > 0.0;
@@ -566,6 +598,17 @@ sm_stage_move(const dsd_state* state, tetra_state_t* ts, long hz) {
     }
     ts->sm.acq.staged_hz = hz;
     ts->sm.acq.staged_epoch = tetra_confirm_carrier_epoch(state);
+}
+
+/* A SYSINFO heard off main carrier @p hz: the carrier is no control channel, so ON_CC, which a tune elsewhere rests in,
+ * is not claimed here, and a move that landed is over, its carrier heard (ACQUIRING waits only for a carrier that
+ * sends nothing). The move there is staged. */
+static void
+sm_off_main_carrier(dsd_state* state, tetra_state_t* ts, long hz) {
+    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC || ts->sm.state == (uint8_t)TETRA_SM_ACQUIRING) {
+        sm_set_state(state, ts, TETRA_SM_IDLE, "SYSINFO names another main carrier");
+    }
+    sm_stage_move(state, ts, hz);
 }
 
 /* What a staged move needs at the end of its burst: trunking on a downlink, a receiver the state machine can move,
@@ -619,6 +662,7 @@ sm_move(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, long hz, tetra_sm_m
     ts->sm.acq.target_hz = hz;
     ts->sm.acq.landed_m = 0.0;
     ts->sm.acq.silent_noted = 0;
+    ts->sm.acq.stay_noted = 0;
     sm_set_state(state, ts, TETRA_SM_ACQUIRING, "moving to the main carrier");
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         sm_stage_pending(opts, state, ts, SM_PENDING_ACQUIRE, request_id, &prev);
@@ -627,12 +671,26 @@ sm_move(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, long hz, tetra_sm_m
     sm_move_completed(opts, state, ts, 0.0);
 }
 
+/* A SYSINFO here names main carrier @p hz, which was moved to once already (a cell whose carriers name each other):
+ * the receiver stays where it is. Said once per move made. */
+static void
+sm_note_stay(tetra_state_t* ts, long hz) {
+    if (ts->sm.acq.stay_noted) {
+        return;
+    }
+    ts->sm.acq.stay_noted = 1;
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] main carrier %ld Hz was moved to once already; staying on this carrier\n", hz);
+    }
+}
+
 void
 tetra_sm_after_burst(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!opts || !ts || ts->sm.acq.staged_hz == 0) {
         return;
     }
+    sm_note_trunking(opts, ts);
     const long hz = ts->sm.acq.staged_hz;
     ts->sm.acq.staged_hz = 0;
     /* A carrier reset since the SYSINFO (a tune completed in the burst) leaves it naming nothing about this carrier. */
@@ -640,7 +698,11 @@ tetra_sm_after_burst(dsd_opts* opts, dsd_state* state) {
         return;
     }
     tetra_sm_move* const entry = sm_move_entry(ts, hz);
-    if (!entry || entry->consumed || dsd_decode_now_mono_s() < entry->next_m) {
+    if (entry && entry->consumed) {
+        sm_note_stay(ts, hz);
+        return;
+    }
+    if (!entry || dsd_decode_now_mono_s() < entry->next_m) {
         return;
     }
     sm_move(opts, state, ts, hz, entry);
@@ -698,7 +760,11 @@ tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
         return;
     }
     tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !sm_settle_at_entry(opts, state, ts)) {
+    if (!ts) {
+        return;
+    }
+    sm_note_trunking(opts, ts);
+    if (!sm_settle_at_entry(opts, state, ts)) {
         return;
     }
     const long main_hz = state->trunk_cc_freq;
@@ -707,7 +773,7 @@ tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
     }
     if (ts->sm.state != (uint8_t)TETRA_SM_TUNED && !sm_on_main_carrier(opts, state, ts, main_hz)) {
         /* Not the control channel (regression: main stamped its sync and rested ON_CC here, never moving there). */
-        sm_stage_move(state, ts, main_hz);
+        sm_off_main_carrier(state, ts, main_hz);
         return;
     }
     (void)dsd_trunk_cc_candidates_add(state, main_hz, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
@@ -852,17 +918,6 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     }
 }
 
-/* Trunking turned on again starts the moves to the main carrier over: the operator may have fixed what stopped them. */
-static void
-sm_note_trunking(const dsd_opts* opts, tetra_state_t* ts) {
-    if (opts->trunk_enable != 1) {
-        ts->sm.acq.trunk_off = 1;
-    } else if (ts->sm.acq.trunk_off) {
-        ts->sm.acq.trunk_off = 0;
-        sm_forget_moves(ts);
-    }
-}
-
 /* ACQUIRING on the main carrier: the cell may not transmit it, or not to this receiver. Said once per move; nothing
  * moves back to the carrier left. */
 static void
@@ -880,10 +935,10 @@ sm_tick_acquiring(tetra_state_t* ts) {
 
 static void
 sm_tick(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    sm_note_trunking(opts, ts);
     if (!sm_settle_pending(opts, state, ts)) {
         return;
     }
-    sm_note_trunking(opts, ts);
     const int resting = ts->sm.state == (uint8_t)TETRA_SM_ON_CC || ts->sm.state == (uint8_t)TETRA_SM_ACQUIRING;
     if (resting && sm_rest_state(opts, state) != TETRA_SM_ON_CC) {
         sm_set_state(state, ts, TETRA_SM_IDLE, opts->trunk_enable != 1 ? "trunking off" : "no control channel");

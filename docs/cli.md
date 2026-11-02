@@ -673,9 +673,11 @@ Android session whose saved extra arguments carry one refuses to start the same 
   carrier's own SYSINFO is heard. The move needs a radio it can tune: a live RTL-SDR, rtl_tcp, SoapySDR or Airspy
   stream, or a rigctl peer (`-U`) behind an audio input; an I/Q replay or a symbol capture stays where it is. It waits
   while a manual tune is still pending or a scan owns the tuner. A move the radio refuses or fails is tried again after
-  5 seconds, then 15, then every 60; one it defers after 2 seconds. Each main carrier is moved to once, so a cell whose
-  carriers name each other is not followed back and forth, until an import, another radio or input, or trunking turned
-  off and on again starts over. Nothing moves back to the carrier the session started on: when the main carrier cannot be
+  5 seconds, then 15, then every 60; one it defers after 2 seconds. A rigctl peer is taken to be on the frequency
+  DSD-neo last sent it, so one already on the main carrier is not moved. Each main carrier is moved to once, so a cell
+  whose carriers name each other is not followed back and forth (it logs `[TETRA SM] main carrier Y Hz was moved to once
+  already; staying on this carrier` once), until an import, another radio or input, or trunking turned off and on
+  again starts over. Nothing moves back to the carrier the session started on: when the main carrier cannot be
   received there, it logs `[TETRA SM] no SYSINFO on main carrier Y Hz after 10 s` once; start on a carrier this receiver
   hears, or leave trunking off. To monitor one traffic carrier on purpose, run without `-T`. Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target

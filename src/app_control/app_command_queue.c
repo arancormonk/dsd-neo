@@ -3426,9 +3426,10 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
 
 /* The TETRA trunking state machine likewise, once a manual tune moved the receiver and the calls were ended
    (reset_call_tracking()): it lets go of the call it follows, which its next tick would otherwise release again with a
-   return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
+   return of its own, of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
    leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
-   otherwise put that call and its voice channel back onto the carrier the operator chose. */
+   otherwise put that call and its voice channel back onto the carrier the operator chose, and of a move to the main
+   carrier (ACQUIRING), in flight or landed, whose late completion is then ignored. */
 /* An operator move gives up a call the DMR machine followed, whose release clears the talkgroup policy's followed-call
    ledger: under the P25 SM tick guard, which the watchdog's releases write it under (talkgroup_policy.h). A DMR or
    NXDN trunk's manual retune runs unguarded (p25_sm_owns_trunk()), so the guard is taken here unless held. */

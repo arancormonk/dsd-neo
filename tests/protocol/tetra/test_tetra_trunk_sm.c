@@ -31,7 +31,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
@@ -1241,12 +1243,42 @@ test_external_tune_cancels_acquiring(void) {
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && tetra_sm_owns_return(s.state));
     tetra_sm_abandon_carrier(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_sm_owns_return(s.state));
+    /* The operator tuned back to the secondary carrier: its SYSINFO names the main carrier moved to already, so no move,
+     * and the carrier is no control channel: ON_CC is not claimed there, nor its sync stamped. */
+    s.opts->rtlsdr_center_freq = SECONDARY_HZ;
+    tetra_confirm_note_signalling(s.state);
+    sysinfo_burst(&s, k_main, 4U);
+    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.state->last_cc_sync_time == 0);
+    assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_IDLE && tetra_st_peek(s.state)->sm.acq.stay_noted);
     session_close(&s);
+}
+
+/* @p ticks of the state machine at @p at_s each, with its narration on, and whether it said @p line. */
+static int
+ticks_say(session* s, const double* at_s, int ticks, const char* line) {
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "tetra_sm") == 0;
+    tetra_st(s->state)->log_verbose = 1;
+    for (int i = 0; i < ticks; i++) {
+        at_seconds(at_s[i]);
+        tetra_sm_tick(s->opts, s->state);
+    }
+    tetra_st(s->state)->log_verbose = 0;
+    char log[2048] = "";
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const char* const first = strstr(log, line);
+    assert(!first || !strstr(first + 1, line)); /* never twice */
+    return first != NULL;
 }
 
 /* On the main carrier a SYSINFO naming another main carrier (a shared channel, or a changed cell) is one more move;
  * one naming the first again is not: a main carrier moved to is moved to once. Nothing moves back to the secondary
- * carrier. With no SYSINFO on the main carrier for TETRA_SM_MOVE_SILENT_S the machine says so, once. */
+ * carrier. The carrier reached was heard, so the move is over (IDLE there, no control-channel sync), and nothing says
+ * it sends no SYSINFO (regression: the 10 s line was printed while its SYSINFO was decoded). With no SYSINFO at all on
+ * the carrier reached for TETRA_SM_MOVE_SILENT_S the machine says so, once. */
 static void
 test_main_carrier_naming_another(void) {
     reset_backend();
@@ -1259,15 +1291,94 @@ test_main_carrier_naming_another(void) {
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && move_of(s.state, main_hz(k_main))->consumed);
     tetra_confirm_note_signalling(s.state);
     sysinfo_burst(&s, k_main, 4U);
-    assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && s.state->last_cc_sync_time == 0);
+    assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.state->last_cc_sync_time == 0);
+    assert(tetra_st_peek(s.state)->sm.acq.stay_noted && !tetra_sm_owns_return(s.state));
+    const double later[] = {1000.0 + TETRA_SM_MOVE_SILENT_S, 1000.0 + 3.0 * TETRA_SM_MOVE_SILENT_S};
+    assert(!ticks_say(&s, later, 2, "no SYSINFO on main carrier"));
+    assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    session_close(&s);
 
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
-    at_seconds(1000.0 + TETRA_SM_MOVE_SILENT_S - 0.1);
+    /* Landed where nothing is heard: said once, at TETRA_SM_MOVE_SILENT_S, and the machine stays there. */
+    reset_backend();
+    s = secondary_open(1);
+    sysinfo_burst(&s, k_main, 4U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING);
+    const double early[] = {1000.0 + TETRA_SM_MOVE_SILENT_S - 0.1};
+    assert(!ticks_say(&s, early, 1, "no SYSINFO on main carrier"));
+    const double silent[] = {1000.0 + TETRA_SM_MOVE_SILENT_S, 1000.0 + 3.0 * TETRA_SM_MOVE_SILENT_S};
+    assert(ticks_say(&s, silent, 2, "no SYSINFO on main carrier"));
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && g_returns == 1);
+    session_close(&s);
+}
+
+/* A rigctl peer behind an audio input names no frequency the decoder can read, so the frequency last sent to it says
+ * where it is: on the main carrier no move is made and the SYSINFO is the control channel's; elsewhere it moves. */
+static void
+test_rigctl_peer_on_the_main_carrier(void) {
+    for (int on_main = 1; on_main >= 0; on_main--) {
+        reset_backend();
+        session s = secondary_open(1);
+        s.opts->audio_in_type = AUDIO_IN_PULSE;
+        s.opts->use_rigctl = 1;
+        s.opts->rigctl_sockfd = 7; /* never written: the stand-in hooks tune */
+        s.opts->rigctl_sent_freq_hz = on_main ? (uint32_t)main_hz(k_main) : (uint32_t)SECONDARY_HZ;
+        sysinfo_burst(&s, k_main, 4U);
+        if (on_main) {
+            assert(g_returns == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            assert(s.state->last_cc_sync_time != 0);
+        } else {
+            assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING);
+        }
+        s.opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        session_close(&s);
+    }
+}
+
+/* Trunking turned off and on while a request of the machine's is in flight is seen all the same: the moves start over.
+ * And a deferred move never keeps its entry once its hold is over, so carriers the backend deferred never fill the
+ * history. */
+static void
+test_history_reset_and_deferred_entries(void) {
+    reset_backend();
+    session s = secondary_open(1);
+    sysinfo_burst(&s, k_main, 4U);
+    assert(g_returns == 1 && move_of(s.state, main_hz(k_main))->consumed);
+    tetra_sm_abandon_carrier(s.opts, s.state);
+    s.opts->rtlsdr_center_freq = SECONDARY_HZ;
+    tetra_confirm_note_signalling(s.state);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const uint64_t request = g_request;
+    s.opts->trunk_enable = 0;
     tetra_sm_tick(s.opts, s.state);
-    assert(!ts->sm.acq.silent_noted);
-    at_seconds(1000.0 + TETRA_SM_MOVE_SILENT_S);
+    s.opts->trunk_enable = 1;
     tetra_sm_tick(s.opts, s.state);
-    assert(ts->sm.acq.silent_noted && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && g_returns == 2);
+    assert(dsd_trunk_tuning_pending_request() == request);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(s.opts->rtlsdr_center_freq == SECONDARY_HZ && move_of(s.state, main_hz(k_main)) == NULL);
+    tetra_confirm_note_signalling(s.state);
+    sysinfo_burst(&s, k_main, 4U);
+    assert(g_returns == 2 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING);
+    session_close(&s);
+
+    /* Main carriers away from the secondary carrier's own number (51). */
+    reset_backend();
+    s = secondary_open(1);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    for (uint32_t i = 0; i < TETRA_SM_MOVES; i++) {
+        sysinfo_burst(&s, k_other_main + i, 4U);
+        assert(g_returns == (int)i + 1);
+    }
+    /* Every entry held by a deferral: nothing more now, and no "tried already" either. */
+    sysinfo_burst(&s, k_other_main + TETRA_SM_MOVES, 4U);
+    assert(g_returns == TETRA_SM_MOVES && !tetra_st_peek(s.state)->sm.acq.full_noted);
+    at_seconds(1000.0 + TETRA_SM_MOVE_HOLD_S);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    sysinfo_burst(&s, k_other_main + TETRA_SM_MOVES, 4U);
+    assert(g_returns == TETRA_SM_MOVES + 1 && tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING);
+    assert(move_of(s.state, main_hz(k_other_main + TETRA_SM_MOVES))->consumed);
     session_close(&s);
 }
 
@@ -1302,7 +1413,7 @@ test_move_history_capacity_and_resets(void) {
         s.opts->rtlsdr_center_freq = SECONDARY_HZ;
         tetra_confirm_note_signalling(s.state);
         sysinfo_burst(&s, k_main, 4U);
-        assert(g_returns == 1);
+        assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.state->last_cc_sync_time == 0);
         if (how == 0) {
             tetra_sm_forget_moves(s.state);
         } else if (how == 1) {
@@ -1414,6 +1525,8 @@ main(void) {
     test_main_carrier_naming_another();
     test_move_history_capacity_and_resets();
     test_restore_after_another_owners_request();
+    test_rigctl_peer_on_the_main_carrier();
+    test_history_reset_and_deferred_entries();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
     DSD_FPRINTF(stdout, "TETRA_TRUNK_SM: OK\n");

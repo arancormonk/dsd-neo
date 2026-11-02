@@ -663,7 +663,14 @@ test_engine_acquiring_ownership_and_resets(void) {
 
 #ifndef _WIN32
 /* A rigctl peer on the far end of a socket pair: it answers a passband reading with FM at 12.5 kHz, every other request
- * with RPRT 0, and keeps the frequencies it was sent. */
+ * with RPRT 0, and keeps the frequencies it was sent. A reply to a side already closed fails rather than raise SIGPIPE
+ * (MSG_NOSIGNAL where it exists, SO_NOSIGPIPE on the sockets elsewhere). */
+#ifdef MSG_NOSIGNAL
+#define RIGCTL_PEER_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define RIGCTL_PEER_SEND_FLAGS 0
+#endif
+
 typedef struct {
     int fd;
     pthread_mutex_t lock;
@@ -691,7 +698,7 @@ rigctl_peer_run(void* arg) {
             pthread_mutex_unlock(&peer->lock);
         }
         const char* const reply = buf[0] == 'm' ? "FM\n12500\n" : "RPRT 0\n";
-        if (send(peer->fd, reply, strlen(reply), 0) < 0) {
+        if (send(peer->fd, reply, strlen(reply), RIGCTL_PEER_SEND_FLAGS) < 0) {
             break;
         }
     }
@@ -717,6 +724,11 @@ test_engine_move_through_rigctl(void) {
         expect(0, "rigctl: socket pair");
         return;
     }
+#ifdef SO_NOSIGPIPE
+    const int on = 1;
+    (void)setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
+    (void)setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
+#endif
     rigctl_peer peer;
     DSD_MEMSET(&peer, 0, sizeof peer);
     peer.fd = fds[1];
