@@ -44,8 +44,14 @@ typedef struct {
     /* This block wrote; the previous block did not (the next write starts from silence). */
     int written;
     int gap;
+    /* The call WAV's last write was at the sink rate, past the converter: its history does not follow on from what was
+       written, so its next conversion starts from silence, though the written audio itself is continuous. */
+    int stale;
     int has_reception;
     analog_sink_reception reception;
+    /* Moved by every break in what the lane writes (issue #668), as soon as it is known: a gap marked, or a converter
+       restart no gap announced. */
+    uint32_t generation;
 } analog_sink_lane;
 
 typedef struct {
@@ -124,6 +130,13 @@ analog_sink_reception_equal(const analog_sink_reception* a, const analog_sink_re
            && a->pcm_generation == b->pcm_generation;
 }
 
+/* The lane's next write starts from silence: a break in what it writes, counted at once. */
+static void
+analog_sink_lane_mark_gap(analog_sink_lane* lane) {
+    lane->gap = 1;
+    lane->generation++;
+}
+
 void
 dsd_analog_sink_block_begin(const dsd_state* state) {
     analog_sink_ext* ext = analog_sink_ext_find(state);
@@ -132,7 +145,7 @@ dsd_analog_sink_block_begin(const dsd_state* state) {
     }
     for (int i = 0; i < ANALOG_SINK_COUNT; i++) {
         if (!ext->lane[i].written) {
-            ext->lane[i].gap = 1;
+            analog_sink_lane_mark_gap(&ext->lane[i]);
         }
         ext->lane[i].written = 0;
     }
@@ -145,7 +158,7 @@ dsd_analog_sink_break(const dsd_state* state) {
         return;
     }
     for (int i = 0; i < ANALOG_SINK_COUNT; i++) {
-        ext->lane[i].gap = 1;
+        analog_sink_lane_mark_gap(&ext->lane[i]);
     }
 }
 
@@ -153,8 +166,8 @@ void
 dsd_analog_sink_note_reception(const dsd_state* state) {
     analog_sink_ext* ext = analog_sink_ext_find(state);
     if (ext) {
-        ext->lane[DSD_ANALOG_SINK_MONITOR].gap = 1;
-        ext->lane[DSD_ANALOG_SINK_CALL_WAV].gap = 1;
+        analog_sink_lane_mark_gap(&ext->lane[DSD_ANALOG_SINK_MONITOR]);
+        analog_sink_lane_mark_gap(&ext->lane[DSD_ANALOG_SINK_CALL_WAV]);
     }
 }
 
@@ -162,8 +175,22 @@ void
 dsd_analog_sink_end_call(const dsd_state* state) {
     analog_sink_ext* ext = analog_sink_ext_find(state);
     if (ext) {
-        ext->lane[DSD_ANALOG_SINK_CALL_WAV].gap = 1;
+        analog_sink_lane_mark_gap(&ext->lane[DSD_ANALOG_SINK_CALL_WAV]);
     }
+}
+
+int
+dsd_analog_sink_generation(dsd_state* state, dsd_analog_sink sink, uint32_t* out) {
+    if (!state || !out || (int)sink < 0 || (int)sink >= ANALOG_SINK_COUNT) {
+        return 0;
+    }
+    /* Asked for, the lanes are kept from now on, whatever rate the blocks run at. */
+    const analog_sink_ext* ext = analog_sink_ext_get(state);
+    if (!ext) {
+        return 0;
+    }
+    *out = ext->lane[sink].generation;
+    return 1;
 }
 
 static short
@@ -196,6 +223,7 @@ analog_sink_warn(analog_sink_ext* ext, int block_hz, int sink_hz, int mode) {
 static int
 analog_sink_lane_prepare(const dsd_opts* opts, analog_sink_ext* ext, analog_sink_lane* lane, int block_hz,
                          int sink_hz) {
+    const int reconfigured = !lane->conv.configured || lane->conv.in_hz != block_hz || lane->conv.out_hz != sink_hz;
     const int mode = dsd_rate_converter_configure(&lane->conv, block_hz, sink_hz);
     if (mode == DSD_RATE_CONVERTER_IDENTITY) {
         /* Within the converter's tolerance of the sink rate: the caller writes the block as it is. */
@@ -206,10 +234,17 @@ analog_sink_lane_prepare(const dsd_opts* opts, analog_sink_ext* ext, analog_sink
         return DSD_ANALOG_SINK_MUTED;
     }
     const analog_sink_reception now = analog_sink_reception_now(opts);
-    if (lane->gap || !lane->has_reception || !analog_sink_reception_equal(&lane->reception, &now)) {
+    if (reconfigured || lane->gap || lane->stale || !lane->has_reception
+        || !analog_sink_reception_equal(&lane->reception, &now)) {
         dsd_rate_converter_clear(&lane->conv);
+        if (!lane->gap) {
+            /* A restart no marked gap counted (a new rate, a reception moved, the converter's first block, or history
+               the call WAV's sink-rate writes passed by). */
+            lane->generation++;
+        }
     }
     lane->gap = 0;
+    lane->stale = 0;
     lane->reception = now;
     lane->has_reception = 1;
     return DSD_ANALOG_SINK_WROTE;
@@ -239,7 +274,7 @@ analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf,
 }
 
 static int
-analog_sink_native(dsd_analog_sink sink, const float* buf, size_t n, double gain, int block_hz,
+analog_sink_native(const dsd_state* state, dsd_analog_sink sink, const float* buf, size_t n, double gain, int block_hz,
                    dsd_analog_sink_write_fn write, const void* ctx) {
     if (sink != DSD_ANALOG_SINK_CALL_WAV) {
         return DSD_ANALOG_SINK_NATIVE;
@@ -256,6 +291,15 @@ analog_sink_native(dsd_analog_sink sink, const float* buf, size_t n, double gain
         write(ctx, output, count);
         pos += count;
     }
+    /* The block was written, past the converter: a break marked before it is behind it, and the lane runs on unbroken
+       from here. Its converter starts from silence at its next conversion, as it did when such a block counted as
+       unwritten, which is a break of its own. */
+    analog_sink_ext* ext = analog_sink_ext_find(state);
+    if (ext) {
+        ext->lane[sink].written = 1;
+        ext->lane[sink].gap = 0;
+        ext->lane[sink].stale = 1;
+    }
     return DSD_ANALOG_SINK_WROTE;
 }
 
@@ -263,7 +307,7 @@ int
 dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink sink, const float* buf, size_t n,
                       double gain, int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx) {
     if (block_hz == sink_hz) {
-        return analog_sink_native(sink, buf, n, gain, block_hz, write, ctx);
+        return analog_sink_native(state, sink, buf, n, gain, block_hz, write, ctx);
     }
     if (!opts || !state || !buf || !write || (int)sink < 0 || (int)sink >= ANALOG_SINK_COUNT) {
         return DSD_ANALOG_SINK_MUTED;
@@ -282,7 +326,7 @@ dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink si
     const int prepared = analog_sink_lane_prepare(opts, ext, lane, block_hz, sink_hz);
     if (prepared == DSD_ANALOG_SINK_NATIVE) {
         /* Within the converter's tolerance of the sink rate: as for an equal rate, the call WAV is written here. */
-        return analog_sink_native(sink, buf, n, gain, block_hz, write, ctx);
+        return analog_sink_native(state, sink, buf, n, gain, block_hz, write, ctx);
     }
     if (prepared != DSD_ANALOG_SINK_WROTE) {
         return prepared;

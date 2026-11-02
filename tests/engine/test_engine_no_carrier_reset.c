@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -5541,6 +5542,19 @@ replay_leave_find_recording(const char* name, void* user) {
     return 0;
 }
 
+/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
+static void
+analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
+    const dsd_analog_call_block block = {
+        .samples = samples,
+        .count = count,
+        .sample_rate = sample_rate,
+        .input = input,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+    };
+    dsd_engine_analog_call_block(opts, state, &block);
+}
+
 /*
  * Issue #637: leaving a replay mid-run closes an NFM call's per-call recording with the call, against the row it is
  * committing and on the capture's clock. Left open, the next carrier boundary closed it against the slot's emptied
@@ -5577,13 +5591,13 @@ test_replay_leave_closes_the_nfm_recording(void) {
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
 
     /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */
     dsd_engine_decode_clock_leave_replay(opts, state);
     rc |= expect_true("replay leave nfm: the call ended with the replay", !dsd_engine_analog_call_active(state));
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
     rc |= expect_true("replay leave nfm: the row is committed on the capture's clock and named",
                       row->event_start_time == capture_s && strcmp(row->service_label, "Traveler") == 0);

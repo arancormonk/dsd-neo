@@ -38,6 +38,34 @@ enum {
     DSD_ANALOG_CALL_HOLDABLE = 2,
 };
 
+/** One processed conventional NFM monitor block as the analog_call_block hook hands it to the engine's call (issues
+ * #756, #668). Every pointer is borrowed for the synchronous call only. */
+typedef struct {
+    /** The block after the voice band-pass and gain stage and the sink gate: what the per-call recording writes. */
+    const float* samples;
+    /** The same samples before the sink gate, or NULL: filled only while per-call recording (-P) is on with a pre-roll
+        (opts->analog_record_preroll_ms > 0), so the pre-roll and the opening block hold the same audio whatever the
+        speaker does. */
+    const float* heard;
+    size_t count;
+    /** The rate the block ran at; 0 for a block that mixed two rates. */
+    int sample_rate;
+    /** What the block is to the call, DSD_ANALOG_CALL_*. */
+    int input;
+    /** The first sample from which the tone gate stayed OFF or ALLOWED to the block's end, at tap-read precision (a
+        verdict published after a read describes that read's samples, from its start); @c count when the block ends
+        under a gate that does not pass. In a block that ends under a passing gate the samples before it are silence
+        in @c samples and @c heard, and were neither played nor taken by the gain stage. A block is clean when it is
+        0. */
+    size_t eligible_from;
+    /** 1 when some tap read starting at or after @c eligible_from found the carrier itself, not only its hangover:
+        the receiver's own per-read decision, never the level of the whole block or the playback gate. */
+    int qualified_carrier;
+    /** The decode-domain wall time at the block's end (dsd_decode_now_realtime_s()), read before the block's raw WAV
+        write; 0 while per-call recording (-P) is off. */
+    double wall_end_s;
+} dsd_analog_call_block;
+
 typedef struct {
     void (*p25_sm_try_tick)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_release)(dsd_opts* opts, dsd_state* state);
@@ -47,8 +75,7 @@ typedef struct {
     void (*no_carrier)(dsd_opts* opts, dsd_state* state);
     int (*scan_visit_should_yield)(const dsd_opts* opts, dsd_state* state);
     int (*signal_search_should_yield)(const dsd_opts* opts, dsd_state* state);
-    void (*analog_call_block)(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate,
-                              int input);
+    void (*analog_call_block)(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block* block);
     void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
@@ -58,9 +85,8 @@ typedef struct {
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
- * block is to the call (@p input, DSD_ANALOG_CALL_*). */
-void dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count,
-                                           int rate, int input);
+ * block is to the call (@p block, its input DSD_ANALOG_CALL_*). */
+void dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block* block);
 /** The effective receive policy has just changed (issue #637); @p filters_were_enabled says whether any filter was on
  * before. */
 void dsd_frame_sync_hook_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled);

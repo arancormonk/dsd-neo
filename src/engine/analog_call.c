@@ -350,11 +350,14 @@ analog_call_breaks(const dsd_opts* opts, const dsd_state* state, const analog_ca
 }
 
 void
-dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
-                             int input) {
-    if (!opts || !state) {
+dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block* block) {
+    if (!opts || !state || !block) {
         return;
     }
+    const float* samples = block->samples;
+    const size_t count = block->count;
+    const int sample_rate = block->sample_rate;
+    const int input = block->input;
     /* A RECEPTION block's one decode-clock read, before any of its file work on any path: the reconciliation's end, a
        new identity's end and a resumed call's pause all close or write a recording before the block begins or goes on
        with a call, and the time a slow disk takes for that is not the call's. The stamp is where the call starts or

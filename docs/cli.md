@@ -1733,6 +1733,11 @@ setting, shown apart from what is received, and it is off by default: then the o
   itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
+- A verdict counts from the 20 ms of audio it was reached on. The monitor works in blocks of audio, and on PCM input at
+  rates other than 48 kHz a block holds several 20 ms pieces (a block is about 117 ms at 8192 Hz). When the filter lets
+  traffic through part-way through a block, the part before is silence: it is not played, not saved in a per-call
+  recording, and the automatic gain does not follow it. At 48 kHz and on radio input a block is one piece, so a verdict
+  covers the whole block.
 - Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target while its carrier lasts, with
   the stay reason `Tone check` and no countdown while the check runs (800 ms, or to 1,600 ms as above); a `-Y` pass
   keeps the row then even when `-t` has run out. Only traffic the policy passes counts as activity, though. The check

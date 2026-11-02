@@ -20,6 +20,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
+#include <dsd-neo/dsp/analog_sink.h>
+#include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -31,6 +33,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
@@ -135,6 +138,8 @@ static unsigned int g_chain_run_flags[64];
 static int g_chain_runs = 0;
 static int g_chain_last_source = -1;
 static int g_chain_last_rate_hz = 0;
+/* When set, the real AGC runs over each call's samples with its playing flag, as the gain stage does (issue #668). */
+static dsd_voice_agc* g_chain_agc = NULL;
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -162,6 +167,9 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
     g_chain_seen_len = (int)keep;
     if (g_chain_removes_tone) {
         DSD_MEMSET(buf, 0, n * sizeof(float));
+    }
+    if (g_chain_agc && (flags & DSD_ANALOG_AUDIO_DISCARD) == 0U) {
+        dsd_voice_agc_process(g_chain_agc, buf, n, (flags & DSD_ANALOG_AUDIO_PLAYING) ? 1 : 0);
     }
     return 0;
 }
@@ -2331,13 +2339,23 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
 
 /* --- Issue #756: what the NFM call is handed for each block, recorded through the frame-sync hook --- */
 
-/* What the NFM call's hook was handed for one block: its input (DSD_ANALOG_CALL_*) and the publication as it stood. */
+/* What the NFM call's hook was handed for one block: its input (DSD_ANALOG_CALL_*), the publication as it stood, and the
+   block's descriptor (issue #668): its samples and those before the sink gate (when handed), its rate, the eligible
+   point, whether a read found the carrier itself, and its wall-time stamp. */
 typedef struct {
+    size_t count;
+    size_t eligible_from;
+    double wall_end_s;
     int input;
     uint32_t boundaries;
     uint32_t generation;
     int carrier_open;
     int gate;
+    int sample_rate;
+    int qualified_carrier;
+    int has_heard;
+    float samples[960];
+    float heard[960];
 } call_block_seen;
 
 enum { CALL_CAPTURE_MAX = 128 };
@@ -2346,18 +2364,28 @@ static call_block_seen g_call_seen[CALL_CAPTURE_MAX];
 static int g_call_blocks = 0;
 
 static void
-capture_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate, int input) {
+capture_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block* block) {
     (void)opts;
-    (void)samples;
-    (void)count;
-    (void)rate;
     if (g_call_blocks < CALL_CAPTURE_MAX) {
         call_block_seen* seen = &g_call_seen[g_call_blocks];
-        seen->input = input;
+        seen->input = block->input;
         seen->boundaries = state->analog_rx.boundaries;
         seen->generation = state->analog_rx.generation;
         seen->carrier_open = state->analog_rx.carrier_open;
         seen->gate = state->analog_rx.gate;
+        seen->count = block->count;
+        seen->sample_rate = block->sample_rate;
+        seen->eligible_from = block->eligible_from;
+        seen->qualified_carrier = block->qualified_carrier;
+        seen->wall_end_s = block->wall_end_s;
+        seen->has_heard = block->heard != NULL;
+        const size_t keep = block->count < 960U ? block->count : 960U;
+        if (block->samples) {
+            DSD_MEMCPY(seen->samples, block->samples, keep * sizeof(float));
+        }
+        if (block->heard) {
+            DSD_MEMCPY(seen->heard, block->heard, keep * sizeof(float));
+        }
     }
     g_call_blocks++;
 }
@@ -2530,10 +2558,17 @@ feed_burst_block(dsd_opts* opts, dsd_state* state, double hz, int b, int burst_b
    on the disk. */
 static uint64_t g_raw_wav_sync_stall_ms = 0U;
 static char g_raw_wav_stall_path[DSD_TEST_PATH_MAX];
+/* The decode clock's TEST value, which the stall moves on too while a test runs it (nonzero), as a sync to disk takes
+   wall time (issue #668). */
+static uint64_t g_raw_wav_stall_decode_ns = 0U;
 
 static void
 stall_raw_wav_sync(void) {
     g_fake_now_ms += g_raw_wav_sync_stall_ms;
+    if (g_raw_wav_stall_decode_ns != 0U) {
+        g_raw_wav_stall_decode_ns += g_raw_wav_sync_stall_ms * 1000000U;
+        dsd_decode_clock_test_set_ns(g_raw_wav_stall_decode_ns);
+    }
 }
 
 static void
@@ -5599,6 +5634,564 @@ test_call_input_epoch_moves_at_a_stream_pause(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* --- Issue #668: the NFM call's block descriptor, tone eligibility inside a block (B6), the sink lanes' generation --- */
+
+/* Floating-point closeness for samples the stub chain passes through or the real AGC computes the same way twice. */
+static int
+sample_near(float got, float want) {
+    return fabsf(got - want) <= 1e-3f;
+}
+
+/* The verdict each publication of the tap is replaced with while a test scripts it (DSD_ANALOG_TONE_GATE_*), or -1 for
+   the policy's own (dsd_analog_rx_test_set_gate()). */
+static int g_scripted_gate = -1;
+
+static int
+scripted_gate(int published) {
+    return g_scripted_gate >= 0 ? g_scripted_gate : published;
+}
+
+/* 8192 Hz input: a 960-sample monitor block is about 117 ms, read by the tap every 164 samples (20 ms), its sixth read
+   (140 samples, from 820) taken by the finalize step. B6_AT_READn is where read n starts. */
+enum {
+    B6_RATE = 8192,
+    B6_READ = 164,
+    B6_READS = 6,
+    B6_AT_READ2 = 2 * B6_READ,
+    B6_AT_READ3 = 3 * B6_READ,
+    B6_AT_READ5 = 5 * B6_READ,
+};
+
+/* Sample @p n of a 1 kHz tone of @p amp at 8192 Hz: voice-band audio the stub chain passes as it is. */
+static float
+b6_sample(int n, double amp) {
+    return (float)(amp * sin(2.0 * M_PI * 1000.0 * (double)n / (double)B6_RATE));
+}
+
+/* One 960-sample block at 8192 Hz, sample by sample as the symbol reader takes it, auto-squelch flags open when
+   @p flagged: read r carries @p amps[r] of tone (0: silence) and publishes @p gates[r]. Returns what the NFM call was
+   handed. */
+static const call_block_seen*
+push_scripted_block(dsd_opts* opts, dsd_state* state, const int* gates, const double* amps, int flagged) {
+    const int before = g_call_blocks;
+    assert(state->analog_sample_counter == 0);
+    for (int i = 0; i < 960; i++) {
+        const int read = i / B6_READ;
+        g_scripted_gate = gates[read];
+        if (flagged) {
+            dsd_symbol_test_push_unsynced_analog_sample_flag(opts, state, b6_sample(i, amps[read]), 0U);
+        } else {
+            dsd_symbol_test_push_unsynced_analog_sample(opts, state, b6_sample(i, amps[read]));
+        }
+    }
+    g_scripted_gate = -1;
+    assert(g_call_blocks == before + 1);
+    return last_call_block();
+}
+
+/* A block whose every read publishes @p gate, @p amp of tone throughout: the gate the next block begins under. */
+static const call_block_seen*
+push_gated_block(dsd_opts* opts, dsd_state* state, int gate, double amp, int flagged) {
+    const int gates[B6_READS] = {gate, gate, gate, gate, gate, gate};
+    const double amps[B6_READS] = {amp, amp, amp, amp, amp, amp};
+    return push_scripted_block(opts, state, gates, amps, flagged);
+}
+
+/* The FM monitor on 8192 Hz PCM under the level squelch (open over any audio), the stub chain passing audio as it is,
+   the verdicts scripted and the NFM call's blocks captured. */
+static void
+start_b6_case(dsd_opts* opts, dsd_state* state) {
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(opts, state);
+    opts->wav_sample_rate = B6_RATE;
+    g_chain_removes_tone = 0;
+    dsd_analog_rx_test_set_gate(scripted_gate);
+    start_call_capture();
+}
+
+/* The same on the RTL monitor at 8192 Hz under the auto squelch, whose per-sample flags gate each run. */
+static void
+start_b6_flagged_case(dsd_opts* opts, dsd_state* state) {
+    start_b6_case(opts, state);
+    install_fake_rtl_hooks(1);
+    g_fake_rtl_rate_hz = B6_RATE;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts->rtl_squelch_margin_db = 10;
+    opts->rtl_squelch_level = 2.0; /* above rtl_pwr: only the flags open it */
+    dsd_trunk_tuning_requests_reset();
+}
+
+static void
+finish_b6_case(dsd_opts* opts, dsd_state* state) {
+    stop_call_capture();
+    dsd_analog_rx_test_set_gate(NULL);
+    g_scripted_gate = -1;
+    g_chain_removes_tone = 1;
+    g_chain_agc = NULL;
+    g_fake_rtl_rate_hz = 48000U;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    install_fake_rtl_hooks(0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(state);
+}
+
+/* Every sample of @p seen before @p end is silence. */
+static int
+call_block_silent_before(const call_block_seen* seen, size_t end) {
+    for (size_t i = 0; i < end && i < seen->count; i++) {
+        if (!sample_near(seen->samples[i], 0.0f)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The 48 kHz speaker output of an 8192 Hz block whose first @p prefix samples are silence: silent over the converted
+   prefix (past the converter's history of the block before, which may still ring into its first outputs), and
+   sounding after it. */
+static int
+played_silent_over_prefix(size_t prefix) {
+    const size_t played = g_played_len / sizeof(short);
+    const size_t out_prefix = (prefix * 48000U) / (size_t)B6_RATE;
+    static short out[64U * 960U];
+    DSD_MEMCPY(out, g_played, g_played_len);
+    if (played <= out_prefix + 96U) {
+        return 0;
+    }
+    for (size_t i = out_prefix / 2U; i + 48U < out_prefix; i++) {
+        if (out[i] != 0) {
+            return 0;
+        }
+    }
+    int sounding = 0;
+    for (size_t i = out_prefix + 96U; i < played; i++) {
+        sounding |= abs(out[i]) > 100;
+    }
+    return sounding;
+}
+
+typedef struct {
+    const char* what;
+    size_t eligible_from;
+    int entry;
+    int input;
+    int gates[B6_READS];
+} b6_case;
+
+/* B6: a block whose tone verdict changes while it fills. Each verdict a read publishes describes that read's samples
+   (from the read's start), so the block is eligible from the start of the read after which the gate stayed OFF or
+   ALLOWED; the gate the block began under covers it only until its first read. The samples before that point are
+   silence in what the NFM call is handed and in what the speaker plays; the rest plays and records as before. A block
+   that ends PENDING is not eligible at all (eligible_from = count) and stays as the call's holdable block was. */
+static void
+test_tone_verdict_inside_a_block_cuts_its_ineligible_start(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED, R = DSD_ANALOG_TONE_GATE_REJECTED };
+
+    static const b6_case cases[] = {
+        {"pending from block entry, allowed at read 2", B6_AT_READ2, P, DSD_ANALOG_CALL_RECEPTION, {P, P, A, A, A, A}},
+        {"pending from block entry, allowed at read 0", 0, P, DSD_ANALOG_CALL_RECEPTION, {A, A, A, A, A, A}},
+        {"rejected, then allowed at read 3", B6_AT_READ3, R, DSD_ANALOG_CALL_RECEPTION, {R, R, R, A, A, A}},
+        {"allowed, tone lost, allowed again", B6_AT_READ3, A, DSD_ANALOG_CALL_RECEPTION, {A, P, P, A, A, A}},
+        {"allowed only at the finalize read", B6_AT_READ5, P, DSD_ANALOG_CALL_RECEPTION, {P, P, P, P, P, A}},
+        {"allowed throughout", 0, A, DSD_ANALOG_CALL_RECEPTION, {A, A, A, A, A, A}},
+        {"tone lost at the last read", 960, A, DSD_ANALOG_CALL_HOLDABLE, {A, A, A, A, A, P}},
+    };
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const b6_case* tc = &cases[c];
+        static dsd_opts opts;
+        static dsd_state state;
+        start_b6_case(&opts, &state);
+        start_monitor_capture(&opts);
+        (void)push_gated_block(&opts, &state, tc->entry, 3000.0, 0);
+        g_played_len = 0;
+        const call_block_seen* seen = push_scripted_block(&opts, &state, tc->gates, loud, 0);
+        int ok = seen->input == tc->input && seen->eligible_from == tc->eligible_from && seen->count == 960U
+                 && seen->sample_rate == B6_RATE;
+        if (tc->input == DSD_ANALOG_CALL_RECEPTION) {
+            ok = ok && call_block_silent_before(seen, tc->eligible_from) && seen->qualified_carrier == 1;
+            ok = ok && sample_near(seen->samples[959], b6_sample(959, 3000.0));
+            ok = ok && (tc->eligible_from == 0U || played_silent_over_prefix(tc->eligible_from));
+        } else {
+            /* Not eligible at all: nothing plays, and the block is handed on as it was. */
+            ok = ok && g_played_len == 0U && seen->qualified_carrier == 0
+                 && sample_near(seen->samples[100], b6_sample(100, 3000.0));
+        }
+        if (!ok) {
+            DSD_FPRINTF(stderr, "FAIL: B6 %s: input %d eligible_from %zu qualified %d played %zu\n", tc->what,
+                        seen->input, seen->eligible_from, seen->qualified_carrier, g_played_len);
+        }
+        assert(ok);
+        finish_b6_case(&opts, &state);
+    }
+}
+
+/* B6 where the chain's runs are chosen: the ineligible start goes through the chain as a run that does not play, on
+   the level path and per sample under the auto squelch, with or without the speaker; the rest keeps its own rules. The
+   start is silence in the NFM call's block even when nothing plays or records. */
+static void
+test_tone_verdict_inside_a_block_splits_the_chain_runs(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED };
+
+    static const int gates[B6_READS] = {P, P, A, A, A, A};
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    const size_t prefix = B6_AT_READ2;
+    for (int flagged = 0; flagged <= 1; flagged++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        if (flagged) {
+            start_b6_flagged_case(&opts, &state);
+        } else {
+            start_b6_case(&opts, &state);
+        }
+        start_monitor_capture(&opts);
+        (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
+        g_chain_runs = 0;
+        const call_block_seen* seen = push_scripted_block(&opts, &state, gates, loud, flagged);
+        assert(g_chain_runs == 2);
+        assert(g_chain_run_len[0] == prefix && g_chain_run_flags[0] == 0U);
+        assert(g_chain_run_len[1] == 960U - prefix && g_chain_run_flags[1] == DSD_ANALOG_AUDIO_PLAYING);
+        assert(seen->input == DSD_ANALOG_CALL_RECEPTION && call_block_silent_before(seen, prefix));
+        if (flagged) {
+            /* The sink gate ramps in from silence at the eligible point (5 ms), not from the gain before it. */
+            assert(fabsf(seen->samples[prefix]) < 100.0f && fabsf(seen->samples[prefix + 41U]) > 0.0f);
+        }
+
+        /* Muted, -P recording: the same runs. Muted with nothing recording: nothing plays, one run, and the start is
+           still silence for the call. */
+        opts.audio_out = 0;
+        opts.dmr_stereo_wav = 1;
+        (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
+        g_chain_runs = 0;
+        seen = push_scripted_block(&opts, &state, gates, loud, flagged);
+        assert(g_chain_runs == 2 && g_chain_run_len[0] == prefix && g_chain_run_flags[0] == 0U);
+        assert(g_chain_run_flags[1] == DSD_ANALOG_AUDIO_PLAYING && call_block_silent_before(seen, prefix));
+        opts.dmr_stereo_wav = 0;
+        (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
+        g_chain_runs = 0;
+        seen = push_scripted_block(&opts, &state, gates, loud, flagged);
+        for (int r = 0; r < g_chain_runs; r++) {
+            assert(g_chain_run_flags[r] == 0U);
+        }
+        assert(seen->input == DSD_ANALOG_CALL_RECEPTION && call_block_silent_before(seen, prefix));
+        assert(sample_near(seen->samples[959], b6_sample(959, 3000.0)));
+        finish_b6_case(&opts, &state);
+    }
+}
+
+/* B6 at the gain stage, through the real AGC: a loud start the tone policy rejected, then quiet speech it allowed, in
+   one block. The AGC holds over the rejected start, so the speech comes out exactly as from an AGC that was never handed
+   the loud start as playing audio -- not pulled down by it. */
+static void
+test_tone_rejected_start_leaves_the_agc_alone(void) {
+    enum { R = DSD_ANALOG_TONE_GATE_REJECTED, A = DSD_ANALOG_TONE_GATE_ALLOWED };
+
+    static const int gates[B6_READS] = {R, R, R, A, A, A};
+    static const double amps[B6_READS] = {20000.0, 20000.0, 20000.0, 300.0, 300.0, 300.0};
+    const size_t prefix = B6_AT_READ3;
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_voice_agc agc;
+    static dsd_voice_agc reference;
+    assert(dsd_voice_agc_init(&agc, B6_RATE, 1.0) == 0 && dsd_voice_agc_init(&reference, B6_RATE, 1.0) == 0);
+    start_b6_case(&opts, &state);
+    start_monitor_capture(&opts);
+    g_chain_agc = &agc;
+    (void)push_gated_block(&opts, &state, R, 0.0, 0);
+    const call_block_seen* seen = push_scripted_block(&opts, &state, gates, amps, 0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->eligible_from == prefix);
+
+    /* The reference: the same input, the rejected block and start held, the allowed speech playing. */
+    static float ref[960];
+    DSD_MEMSET(ref, 0, sizeof(ref));
+    dsd_voice_agc_process(&reference, ref, 960U, 0);
+    for (int i = 0; i < 960; i++) {
+        ref[i] = b6_sample(i, amps[i / B6_READ]);
+    }
+    dsd_voice_agc_process(&reference, ref, prefix, 0);
+    dsd_voice_agc_process(&reference, ref + prefix, 960U - prefix, 1);
+    for (size_t i = prefix; i < 960U; i++) {
+        if (!sample_near(seen->samples[i], ref[i])) {
+            DSD_FPRINTF(stderr, "FAIL: AGC after a rejected start: sample %zu is %f, held reference %f\n", i,
+                        (double)seen->samples[i], (double)ref[i]);
+            assert(0);
+        }
+    }
+    assert(call_block_silent_before(seen, prefix));
+    finish_b6_case(&opts, &state);
+}
+
+/* qualified_carrier: some read at or after the eligible point found the carrier itself. Not the carrier's hangover (a
+   RECEPTION block after the carrier went), not a carrier heard only before the eligible point, but a carrier found
+   part-way through the eligible span or only on the block's last read. */
+static void
+test_qualified_carrier_needs_an_eligible_read_of_the_carrier(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int allowed[B6_READS] = {A, A, A, A, A, A};
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    static const double silent[B6_READS] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    start_b6_case(&opts, &state);
+    const call_block_seen* seen = push_scripted_block(&opts, &state, allowed, loud, 0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->qualified_carrier == 1 && seen->eligible_from == 0U);
+    seen = push_scripted_block(&opts, &state, allowed, silent, 0);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->carrier_open == 1);
+    assert(seen->qualified_carrier == 0);
+    finish_b6_case(&opts, &state);
+
+    static const struct {
+        int gates[B6_READS];
+        double amps[B6_READS];
+        size_t eligible_from;
+        int qualified;
+    } cases[] = {
+        {{P, P, P, A, A, A}, {3000.0, 3000.0, 3000.0, 0.0, 0.0, 0.0}, B6_AT_READ3, 0},
+        {{P, P, A, A, A, A}, {0.0, 0.0, 3000.0, 0.0, 0.0, 0.0}, B6_AT_READ2, 1},
+        {{P, P, P, P, P, A}, {0.0, 0.0, 0.0, 0.0, 0.0, 3000.0}, B6_AT_READ5, 1},
+        {{P, P, A, A, A, A}, {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0}, B6_AT_READ2, 1},
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        start_b6_case(&opts, &state);
+        (void)push_gated_block(&opts, &state, P, 3000.0, 0);
+        seen = push_scripted_block(&opts, &state, cases[c].gates, cases[c].amps, 0);
+        assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->eligible_from == cases[c].eligible_from);
+        assert(seen->qualified_carrier == cases[c].qualified);
+        finish_b6_case(&opts, &state);
+    }
+}
+
+/* The descriptor the NFM call is handed: the block after the sink gate as before, and -- only while -P records with a
+   pre-roll -- the same block before the gate, which reads the same whether the speaker plays, is muted or is the null
+   output. The wall-time stamp only while -P records. */
+static void
+run_descriptor_mode(dsd_opts* opts, dsd_state* state, int mode, float* samples_out, float* heard_out) {
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts->rtl_squelch_margin_db = 10;
+    opts->rtl_squelch_level = 2.0;
+    opts->dmr_stereo_wav = 1;
+    opts->analog_record_preroll_ms = 200;
+    g_chain_removes_tone = 0;
+    dsd_trunk_tuning_requests_reset();
+    start_monitor_capture(opts);
+    opts->audio_out = mode == 0 ? 1 : 0;
+    opts->audio_out_type = mode == 2 ? 9 : 8;
+    start_call_capture();
+    feed_flagged_block(opts, state, 1000.0f, 960U, 960U);
+    feed_flagged_block(opts, state, 1000.0f, 240U, 960U);
+    const call_block_seen* seen = last_call_block();
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->count == 960U && seen->sample_rate == 48000);
+    assert(seen->eligible_from == 0U && seen->qualified_carrier == 1 && seen->has_heard == 1);
+    assert(fabs(seen->wall_end_s - 1700000000.25) < 1e-6);
+    for (int i = 0; i < 960; i++) {
+        assert(sample_near(seen->heard[i], 1000.0f));
+    }
+    /* The sink gate closed the recording's samples 10 ms after the flags did. */
+    assert(sample_near(seen->samples[100], 1000.0f) && sample_near(seen->samples[800], 0.0f));
+    DSD_MEMCPY(samples_out, seen->samples, sizeof(seen->samples));
+    DSD_MEMCPY(heard_out, seen->heard, sizeof(seen->heard));
+    stop_call_capture();
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(state);
+}
+
+static void
+test_call_block_descriptor_follows_the_recording_not_the_speaker(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static float samples[3][960];
+    static float heard[3][960];
+    dsd_decode_clock_use_test(1700000000250000000ULL);
+    for (int mode = 0; mode < 3; mode++) {
+        run_descriptor_mode(&opts, &state, mode, samples[mode], heard[mode]);
+    }
+    for (int mode = 1; mode < 3; mode++) {
+        for (int i = 0; i < 960; i++) {
+            assert(sample_near(samples[mode][i], samples[0][i]) && sample_near(heard[mode][i], heard[0][i]));
+        }
+    }
+
+    /* No pre-roll, or no -P: no copy before the gate; no -P: no wall-time read either. */
+    for (int variant = 0; variant < 2; variant++) {
+        install_fake_rtl_hooks(0);
+        init_analog_monitor_fixture(&opts, &state);
+        opts.dmr_stereo_wav = variant == 0 ? 1 : 0;
+        opts.analog_record_preroll_ms = variant == 0 ? 0 : 200;
+        start_call_capture();
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION && last_call_block()->has_heard == 0);
+        assert(variant == 0 ? fabs(last_call_block()->wall_end_s - 1700000000.25) < 1e-6
+                            : fabs(last_call_block()->wall_end_s) < 1e-9);
+        stop_call_capture();
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* The level path runs no sink gate: what is handed before it is the block itself. */
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.dmr_stereo_wav = 1;
+    opts.analog_record_preroll_ms = 200;
+    g_chain_removes_tone = 0;
+    start_call_capture();
+    feed_hz_blocks(&opts, &state, 1, 1000.0);
+    const call_block_seen* seen = last_call_block();
+    assert(seen->has_heard == 1);
+    for (int i = 0; i < 960; i++) {
+        assert(sample_near(seen->heard[i], seen->samples[i]));
+    }
+    stop_call_capture();
+    g_chain_removes_tone = 1;
+    dsd_state_ext_free_all(&state);
+    dsd_decode_clock_use_system();
+}
+
+/* The block's wall-time stamp is read before the -6 raw WAV's write and its sync to disk, which can hold the decoder:
+   a sync that takes 3 s of the decode clock's time moves the next block's stamp, never the stamp of the block it
+   followed. */
+static void
+test_call_block_wall_time_is_read_before_the_raw_wav(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint64_t start_ns = 1700000000000000000ULL;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.dmr_stereo_wav = 1;
+    dsd_decode_clock_use_test(start_ns);
+    g_raw_wav_stall_decode_ns = start_ns;
+    raw_wav_stall_begin(&opts, 3000U);
+    start_call_capture();
+    feed_hz_blocks(&opts, &state, 1, 1000.0);
+    assert(fabs(last_call_block()->wall_end_s - 1700000000.0) < 1e-6);
+    assert(fabs(dsd_decode_now_realtime_s() - 1700000003.0) < 1e-6);
+    feed_hz_blocks(&opts, &state, 1, 1000.0);
+    assert(fabs(last_call_block()->wall_end_s - 1700000003.0) < 1e-6);
+    stop_call_capture();
+    raw_wav_stall_end(&opts);
+    g_raw_wav_stall_decode_ns = 0U;
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+}
+
+/* What the per-call WAV lane was handed. */
+static size_t g_call_lane_samples = 0U;
+
+static void
+count_call_lane_write(const void* ctx, const short* samples, size_t count) {
+    (void)ctx;
+    (void)samples;
+    g_call_lane_samples += count;
+}
+
+static uint32_t
+call_lane_generation(dsd_state* state, dsd_analog_sink sink) {
+    uint32_t generation = 0U;
+    assert(dsd_analog_sink_generation(state, sink, &generation) == 1);
+    return generation;
+}
+
+/* The per-call WAV lane is handed a block at @p rate_hz. */
+static void
+call_lane_write(dsd_opts* opts, dsd_state* state, int rate_hz) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 1000.0f;
+    }
+    (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, block, 960U, 1.0, rate_hz, 48000,
+                                count_call_lane_write, NULL);
+}
+
+/* A block starts, and the per-call WAV lane is handed it. */
+static void
+call_lane_block(dsd_opts* opts, dsd_state* state, int rate_hz) {
+    dsd_analog_sink_block_begin(state);
+    call_lane_write(opts, state, rate_hz);
+}
+
+/* The sink lanes' continuity generation (issue #668) moves at every break in what a lane writes, as soon as it is
+   known, and never while the lane runs on unbroken -- at the sink rate, where the per-call WAV is written past the
+   converter, as at any other. */
+static void
+test_sink_generation_moves_at_every_break(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    dsd_analog_sink_test_fail_alloc(1);
+    uint32_t unused = 0U;
+    assert(dsd_analog_sink_generation(&state, DSD_ANALOG_SINK_CALL_WAV, &unused) == 0);
+    dsd_analog_sink_test_fail_alloc(0);
+    assert(dsd_analog_sink_generation(NULL, DSD_ANALOG_SINK_CALL_WAV, &unused) == 0);
+
+    uint32_t call = call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV);
+    /* Written at the sink rate, block after block: unbroken. */
+    for (int b = 0; b < 3; b++) {
+        call_lane_block(&opts, &state, 48000);
+    }
+    assert(g_call_lane_samples == (size_t)3U * 960U && call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    /* A block the lane did not write: the next block's start marks the break at once, before any conversion. */
+    dsd_analog_sink_block_begin(&state);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    dsd_analog_sink_block_begin(&state);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    call_lane_write(&opts, &state, 48000);
+    dsd_analog_sink_block_begin(&state);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    uint32_t monitor = call_lane_generation(&state, DSD_ANALOG_SINK_MONITOR);
+    uint32_t raw = call_lane_generation(&state, DSD_ANALOG_SINK_RAW_WAV);
+
+    dsd_analog_sink_break(&state);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    monitor++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_MONITOR) == monitor);
+    raw++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_RAW_WAV) == raw);
+    dsd_symbol_analog_block_reset(&state);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    dsd_analog_sink_note_reception(&state);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_MONITOR) == monitor + 2U);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_RAW_WAV) == raw + 1U);
+    monitor = call_lane_generation(&state, DSD_ANALOG_SINK_MONITOR);
+    dsd_analog_sink_end_call(&state);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_MONITOR) == monitor);
+
+    /* Converted: the first conversion after the sink rate's writes starts the converter over, inside the write. */
+    call_lane_block(&opts, &state, 48000);
+    call = call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV);
+    call_lane_block(&opts, &state, 44100);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    for (int b = 0; b < 3; b++) {
+        call_lane_block(&opts, &state, 44100);
+    }
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    /* A new PCM input stream, then a new rate: each restarts the converter. */
+    opts.pcm_input_generation++;
+    call_lane_block(&opts, &state, 44100);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    call_lane_block(&opts, &state, 32000);
+    call++;
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    call_lane_block(&opts, &state, 32000);
+    assert(call_lane_generation(&state, DSD_ANALOG_SINK_CALL_WAV) == call);
+    g_call_lane_samples = 0U;
+    dsd_state_ext_free_all(&state);
+}
+
 #ifdef USE_RADIO
 /* With the demod resampler overridden (DSD_NEO_RESAMP), the RTL monitor runs at the demod rate: 24 kHz blocks of 480
    go out as 960 samples at 48 kHz, not as 480. */
@@ -5762,6 +6355,13 @@ main(void) {
     test_call_input_breaks_at_a_hard_boundary();
     test_call_input_breaks_at_an_rtl_profile_change();
     test_call_input_epoch_moves_at_a_stream_pause();
+    test_tone_verdict_inside_a_block_cuts_its_ineligible_start();
+    test_tone_verdict_inside_a_block_splits_the_chain_runs();
+    test_tone_rejected_start_leaves_the_agc_alone();
+    test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
+    test_call_block_descriptor_follows_the_recording_not_the_speaker();
+    test_call_block_wall_time_is_read_before_the_raw_wav();
+    test_sink_generation_moves_at_every_break();
 #ifdef USE_RADIO
     test_rtl_monitor_rate_override_is_converted();
     test_rtl_rate_round_trip_block_is_mixed();

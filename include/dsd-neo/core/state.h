@@ -1097,6 +1097,9 @@ struct dsd_state {
     /* The auto squelch's gate flag for each sample of analog_out_f (DSD_SQUELCH_FLAG_CLOSED, 0 open), as the RTL stream
        read it with the sample, and the monitor sink's gain, which ramps between closed and open samples. */
     uint8_t analog_out_flags[960];
+    /* The block before the monitor sink gate, handed to the NFM call while -P records with a pre-roll (issue #668,
+       dsd_analog_call_block::heard): a scratch the block is copied into, never allocated per block. */
+    float analog_heard_f[960];
     float analog_sink_gain;
     /* The speaker's own fade-in after blocks the monitor processed only for a per-transmission NFM recording (issue
        #637): the sink gain kept running for the recording, so the speaker ramps in from analog_speaker_gain when it

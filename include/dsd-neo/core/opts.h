@@ -96,6 +96,10 @@ typedef struct {
 #define DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS 200
 #define DSD_ANALOG_RECORD_MAX_GAP_MAX_MS     10000
 
+/* The NFM recording pre-roll in ms (dsd_opts.analog_record_preroll_ms, issue #668): how much of the allowed audio just
+   before a reception a new per-call recording opens with. 0 is off. */
+#define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 0
+
 struct dsd_opts {
 #ifdef __cplusplus
     dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -203,6 +207,9 @@ struct dsd_opts {
        the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the
        call ends when the carrier's hangover does. */
     int analog_record_max_gap_ms;
+    /* The NFM per-call recording's pre-roll in ms (issue #668); 0 is off. While it and -P are on, the monitor hands the
+       engine each block before its sink gate too (dsd_analog_call_block::heard). */
+    int analog_record_preroll_ms;
     int serial_baud;
     int serial_fd;
     int resume;

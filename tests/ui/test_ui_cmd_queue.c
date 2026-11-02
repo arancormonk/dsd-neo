@@ -72,6 +72,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -11499,6 +11500,19 @@ remove_nfm_recording(const char* name, void* user) {
     return 0;
 }
 
+/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
+static void
+analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
+    const dsd_analog_call_block block = {
+        .samples = samples,
+        .count = count,
+        .sample_rate = sample_rate,
+        .input = input,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+    };
+    dsd_engine_analog_call_block(opts, state, &block);
+}
+
 /* Open a per-call NFM recording in @p dir, its CTCSS 141.3 Hz named "Traveler" (issue #637). */
 static int
 start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
@@ -11519,7 +11533,7 @@ start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f;
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
     return rc;
 }

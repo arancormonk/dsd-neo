@@ -411,6 +411,19 @@ test_events(dsd_opts* opts, dsd_state* state) {
     assert(!history[0].Event_History_Items[2].event_string[0]);
 }
 
+/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
+static void
+analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
+    const dsd_analog_call_block block = {
+        .samples = samples,
+        .count = count,
+        .sample_rate = sample_rate,
+        .input = input,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+    };
+    dsd_engine_analog_call_block(opts, state, &block);
+}
+
 static void
 test_analog(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -434,9 +447,9 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     for (int i = 0; i < 960; ++i) {
         block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
-    dsd_engine_analog_call_block(opts, state, block, 480, 24000, 1);
+    analog_call_feed(opts, state, block, 480, 24000, 1);
     assert(dsd_engine_analog_call_active(state));
     Event_History_I* history = state->event_history_s;
     assert(!strcmp(history[0].Event_History_Items[0].service_label, "Traveler /West?"));
@@ -446,17 +459,17 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.dcs_code = 047;
     state->analog_rx.dcs_inverted = 0;
     DSD_MEMSET(block, 0, sizeof block);
-    dsd_engine_analog_call_block(opts, state, block, 480, 24000, 1);
+    analog_call_feed(opts, state, block, 480, 24000, 1);
     assert(!strcmp(history[0].Event_History_Items[1].service_label, "Traveler /West?"));
     assert(!strcmp(history[0].Event_History_Items[0].service_label, "Dispatch"));
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
     for (int i = 0; i < 960; ++i) {
         block[i] = 2000.0f;
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(!strcmp(history[0].Event_History_Items[1].service_label, "Dispatch"));
     assert(!history[0].Event_History_Items[0].service_label[0]);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
     assert(history[0].Event_History_Items[1].receive_identity.kind == DSD_RECEIVE_NONE);
     assert(history[0].Event_History_Items[3].receive_identity.value == 1413);
@@ -468,25 +481,25 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     state->analog_rx.ctcss_tenths_hz = 1413;
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     service_files services = {.dir = directory};
     assert(dsd_dir_list(directory, count_service_files, &services) == 0);
     assert(services.files == 2 && services.traveler == 1 && services.dispatch == 1);
     /* A rate within the converter's tolerance of 48 kHz is written as it is, never dropped. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
-    dsd_engine_analog_call_block(opts, state, block, 960, 47999, 1);
-    dsd_engine_analog_call_block(opts, state, block, 960, 47999, 0);
+    analog_call_feed(opts, state, block, 960, 47999, 1);
+    analog_call_feed(opts, state, block, 960, 47999, 0);
     recording_frames tolerated = {.dir = directory};
     assert(dsd_dir_list(directory, count_recording_frames, &tolerated) == 0);
     assert(tolerated.files == 1 && tolerated.frames == 960);
     /* A teardown that skips the engine's finalize still publishes the open recording, never leaving its TEMP_ file. */
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     dsd_state_ext_free_all(state);
     teardown_check teardown = {.dir = directory};
@@ -541,12 +554,12 @@ test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
     for (int i = 0; i < 960; ++i) {
         block[i] = 2000.0f;
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     state->analog_rx.ctcss_tenths_hz = 1413;
     dsd_event_sync_slot(opts, state, 0);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
     tone_sync_recordings found = {.dir = directory};
     assert(dsd_dir_list(directory, check_tone_sync_recording, &found) == 0);
@@ -579,18 +592,18 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 48000;
     opts->rtlsdr_center_freq = 162550000U; /* not the receiver's on an audio input */
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     assert(strstr(row->event_string, " NFM; ") != NULL);
     assert(strstr(row->event_string, "FREQ:") == NULL && strstr(row->event_string, "Frequency:") == NULL);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
 
     opts->audio_in_type = AUDIO_IN_RTL;
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     assert(strstr(row->event_string, " NFM; FREQ: 162.550000 MHz; ") != NULL);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
 
     char log[4096];
@@ -729,7 +742,7 @@ hold_feed(hold_rig* r, int input, int value) {
     dsd_analog_sink_block_begin(r->state);
     r->now_ns += (uint64_t)HOLD_BLOCK * 1000000000ULL / (uint64_t)r->rate;
     dsd_decode_clock_test_set_ns(r->now_ns);
-    dsd_engine_analog_call_block(r->opts, r->state, block, HOLD_BLOCK, r->rate, input);
+    analog_call_feed(r->opts, r->state, block, HOLD_BLOCK, r->rate, input);
 }
 
 static void
@@ -1759,8 +1772,8 @@ test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
     g_rdio_warnings = 0;
     dsd_wav_recording_session_reset();
     dsd_analog_sink_block_begin(state);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
     assert(g_rdio_warnings == 0 && g_rdio_failed == 0);
 

@@ -736,13 +736,26 @@ setup_nfm(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1413;
 }
 
+/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
+static void
+analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
+    const dsd_analog_call_block block = {
+        .samples = samples,
+        .count = count,
+        .sample_rate = sample_rate,
+        .input = input,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+    };
+    dsd_engine_analog_call_block(opts, state, &block);
+}
+
 static void
 nfm_block(dsd_opts* opts, dsd_state* state) {
     static float block[960];
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    analog_call_feed(opts, state, block, 960, 48000, 1);
 }
 
 /* The pending publish of @p id on @p epoch, then exactly one link of it to @p row in @p ring, slot 1. */
@@ -796,7 +809,7 @@ test_held_nfm_call_is_one_recording(void) {
     static const float closed[960] = {0};
     r.state->analog_rx.carrier_open = 0;
     for (int i = 0; i < 10; i++) {
-        dsd_engine_analog_call_block(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+        analog_call_feed(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
     }
     r.state->analog_rx.carrier_open = 1;
     clock_at(k_t0 + 11);

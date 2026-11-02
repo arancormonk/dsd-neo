@@ -1447,6 +1447,7 @@ symbol_analog_block_begin(const dsd_opts* opts, dsd_state* state, uint32_t rtl_g
     state->analog_block_mixed = 0;
     dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR);
     dsd_analog_sink_block_begin(state);
+    dsd_analog_rx_block_begin(opts, state);
 }
 
 /* Every collected sample: whether the input rate may have moved since the block's last sample (a PCM rate commit, a new
@@ -1677,31 +1678,42 @@ symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned i
    block that straddles a retune or reset, which never plays, is partly the old channel's: the chain drops it rather
    than filter it into the state the next channel starts from, and starts over with the next block (it also starts over
    at a new stream or tuning generation by itself, which covers the -8 source monitor, where no tap tracks the
-   boundary). */
+   boundary). The block's first @p prefix samples, which the tone policy had not passed yet (issue #668), go through
+   as a run that does not play, so the AGC holds over them. */
 static inline void
 symbol_process_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed,
-                              int discard) {
+                              int discard, unsigned int prefix) {
+    const dsd_analog_audio_source source = symbol_analog_audio_source(opts, state);
+    const int rate_hz = symbol_analog_audio_rate_hz(opts);
     unsigned int flags = allowed ? DSD_ANALOG_AUDIO_PLAYING : 0U;
     if (discard) {
         flags = DSD_ANALOG_AUDIO_DISCARD;
+        prefix = 0U;
     }
-    (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f, analog_block,
-                                     symbol_analog_audio_source(opts, state), symbol_analog_audio_rate_hz(opts), flags);
+    if (prefix > 0U) {
+        (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f, prefix,
+                                         source, rate_hz, 0U);
+    }
+    if (prefix < analog_block) {
+        (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f + prefix,
+                                         analog_block - prefix, source, rate_hz, flags);
+    }
 }
 
-/* Whether sample @p i of the block plays under the auto squelch: the block's gate and the sample's own. */
+/* Whether sample @p i of the block plays under the auto squelch: past the block's ineligible @p prefix (issue #668),
+   the block's gate and the sample's own. */
 static inline int
-symbol_sample_heard(const dsd_opts* opts, const dsd_state* state, unsigned int i, int allowed) {
-    return allowed && dsd_squelch_gate_open(opts, state, state->analog_out_flags[i]);
+symbol_sample_heard(const dsd_opts* opts, const dsd_state* state, unsigned int i, int allowed, unsigned int prefix) {
+    return i >= prefix && allowed && dsd_squelch_gate_open(opts, state, state->analog_out_flags[i]);
 }
 
 /* The audio chain under the auto squelch (issue #518 follow-up), which gates per sample: each run of samples that play,
    or do not, goes through with its own playing flag, so the AGC adapts to exactly the samples heard, holds while the
-   gate is closed and rolls back on the close edge, whatever the block. A block that straddles a boundary is dropped
-   whole, as symbol_process_unsynced_audio() drops it. */
+   gate is closed and rolls back on the close edge, whatever the block. The block's ineligible @p prefix (issue #668)
+   is never heard. A block that straddles a boundary is dropped whole, as symbol_process_unsynced_audio() drops it. */
 static void
 symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed,
-                                   int discard) {
+                                   int discard, unsigned int prefix) {
     const dsd_analog_audio_source source = symbol_analog_audio_source(opts, state);
     const int rate_hz = symbol_analog_audio_rate_hz(opts);
     if (discard) {
@@ -1712,9 +1724,9 @@ symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsig
     }
     unsigned int start = 0U;
     while (start < analog_block) {
-        const int heard = symbol_sample_heard(opts, state, start, allowed);
+        const int heard = symbol_sample_heard(opts, state, start, allowed, prefix);
         unsigned int end = start + 1U;
-        while (end < analog_block && symbol_sample_heard(opts, state, end, allowed) == heard) {
+        while (end < analog_block && symbol_sample_heard(opts, state, end, allowed, prefix) == heard) {
             end++;
         }
         (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f + start,
@@ -1724,10 +1736,12 @@ symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsig
 }
 
 /* The monitor sink under the auto squelch: after every filter, each sample's gain ramps toward 1 while it is heard and
-   toward 0 while not (5 ms up, 10 ms down, in samples), so a closed stretch is exact silence and no edge clicks.
-   Returns 1 when any sample of the block is heard at all, which the block is written for. */
+   toward 0 while not (5 ms up, 10 ms down, in samples), so a closed stretch is exact silence and no edge clicks. The
+   block's ineligible @p prefix (issue #668), already silence, is the block gate's: the samples after it ramp in from
+   silence. Returns 1 when any sample of the block is heard at all, which the block is written for. */
 static int
-symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed,
+                       unsigned int prefix) {
     if (!allowed) {
         /* The block gate rejected the whole block (a muted output, digital sync, a retune still landing, the tone
            policy): none of it plays, not even a fade, as under a level squelch, and the next open sample ramps in. */
@@ -1737,10 +1751,10 @@ symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int anal
     const double rate = (double)symbol_analog_audio_rate_hz(opts);
     const float up = (float)(1.0 / (rate * 0.005));
     const float down = (float)(1.0 / (rate * 0.010));
-    float gain = state->analog_sink_gain;
+    float gain = prefix > 0U ? 0.0f : state->analog_sink_gain;
     int any = 0;
-    for (unsigned int i = 0; i < analog_block; i++) {
-        if (symbol_sample_heard(opts, state, i, allowed)) {
+    for (unsigned int i = prefix; i < analog_block; i++) {
+        if (symbol_sample_heard(opts, state, i, allowed, prefix)) {
             gain = fminf(1.0f, gain + up);
         } else {
             gain = fmaxf(0.0f, gain - down);
@@ -1835,12 +1849,93 @@ symbol_analog_call_input(const dsd_opts* opts, const dsd_state* state, int disca
     return DSD_ANALOG_CALL_HOLDABLE;
 }
 
+/* Whether the block is the NFM call's reception, as the per-call recording writes it: on the FM monitor, no trunking,
+   digital carrier or retune unresolved, the tap's carrier open now (its hangover included) and the tone policy passing
+   it. */
+static inline int
+symbol_unsynced_reception(const dsd_opts* opts, const dsd_state* state, int discard) {
+    return !discard && dsd_analog_tone_detection_active(opts) && opts->trunk_enable == 0 && state->carrier == 0
+           && dsd_trunk_tuning_pending_request() == 0U && dsd_analog_rx_carrier_open_now(opts, state)
+           && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
+}
+
+/* What the finalize step decided for the block. */
+typedef struct {
+    int block_hz;
+    int allowed;
+    int discard;
+    int processing;
+    /* The block's first samples the tone policy had not passed yet (issue #668), which neither play nor reach the
+       gain stage: 0 unless the block ends under a passing gate after a verdict that did not pass part-way through it. */
+    unsigned int prefix;
+} symbol_analog_block_plan;
+
+/* The ineligible start of a block that ends under a passing tone gate (issue #668): its samples before the read whose
+   verdict passed it. A block that ends under a gate that does not pass neither plays nor records at all, and one the
+   chain drops starts nothing. With one tap read per block, as at 48 kHz, it is always 0. */
+static inline unsigned int
+symbol_ineligible_prefix(const dsd_opts* opts, const dsd_state* state, unsigned int eligible_from, int discard) {
+    if (discard || eligible_from == 0U || !dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
+        return 0U;
+    }
+    return eligible_from;
+}
+
+/* The ineligible prefix is silence before any sink, the NFM call's included. */
+static inline void
+symbol_silence_ineligible_prefix(dsd_state* state, unsigned int prefix) {
+    if (prefix > 0U) {
+        DSD_MEMSET(state->analog_out_f, 0, (size_t)prefix * sizeof(state->analog_out_f[0]));
+    }
+}
+
+/* Whether the NFM call wants each block before the sink gate too: -P records with a pre-roll (issue #668). */
+static inline int
+symbol_call_wants_heard(const dsd_opts* opts) {
+    return opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0;
+}
+
+/* The flags path (the auto squelch, or the PCM noise squelch): the chain per run, the sink gate per sample, then the
+   NFM call, the speaker's own ramp and the monitor sink. */
+static void
+symbol_finish_flagged_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block,
+                            const symbol_analog_block_plan* plan, dsd_analog_call_block* call) {
+    symbol_process_unsynced_audio_runs(opts, state, analog_block, plan->processing, plan->discard, plan->prefix);
+    symbol_silence_ineligible_prefix(state, plan->prefix);
+    if (symbol_call_wants_heard(opts)) {
+        DSD_MEMCPY(state->analog_heard_f, state->analog_out_f, (size_t)analog_block * sizeof(state->analog_out_f[0]));
+        call->heard = state->analog_heard_f;
+    }
+    const int heard = symbol_apply_sink_gate(opts, state, analog_block, plan->processing, plan->prefix);
+    dsd_frame_sync_hook_analog_call_block(opts, state, call);
+    symbol_apply_speaker_ramp(opts, state, analog_block, plan->allowed, plan->processing);
+    symbol_output_unsynced_analog(opts, state, analog_block, heard && plan->allowed, plan->block_hz);
+}
+
+/* The level path: the chain over the block, then the NFM call and the monitor sink. No sink gate runs, so the block
+   before it is the block itself. */
+static void
+symbol_finish_level_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block,
+                          const symbol_analog_block_plan* plan, dsd_analog_call_block* call) {
+    symbol_process_unsynced_audio(opts, state, analog_block, plan->processing, plan->discard, plan->prefix);
+    symbol_silence_ineligible_prefix(state, plan->prefix);
+    if (symbol_call_wants_heard(opts)) {
+        call->heard = state->analog_out_f;
+    }
+    dsd_frame_sync_hook_analog_call_block(opts, state, call);
+    symbol_output_unsynced_analog(opts, state, analog_block, plan->allowed, plan->block_hz);
+}
+
 static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    symbol_analog_block_plan plan;
     /* 0 for a block that mixes two rates (issue #633): dropped as a block that straddles a boundary is. */
-    const int block_hz = symbol_analog_block_rate_hz(opts, state);
+    plan.block_hz = symbol_analog_block_rate_hz(opts, state);
+    /* The block's end in wall time, which the NFM recording is stamped from (issue #668): read before any file I/O
+       here, since the raw WAV's write and sync to disk can hold the decoder. Only while -P records. */
+    const double wall_end_s = opts->dmr_stereo_wav ? dsd_decode_now_realtime_s() : 0.0;
     symbol_update_unsynced_input_power(opts, state, analog_block);
-    symbol_write_unsynced_raw_wav(opts, state, analog_block, block_hz);
+    symbol_write_unsynced_raw_wav(opts, state, analog_block, plan.block_hz);
     /* Received-tone detection (issue #522) reads the rest of the block here, while it is still
        raw: the voice band-pass below runs in place and takes every CTCSS tone 40 dB down (and a
        DCS signal about 32 dB). It only reads, so the audio that follows is unchanged. */
@@ -1848,27 +1943,31 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
     /* One gate decision for the block, taken after the tap and before the gain stage, so the
        AGC adapts to exactly the audio that plays. While the flags carry the gate
        (dsd_squelch_flags_in_force()) each sample's own gate joins it. */
-    const int allowed = block_hz > 0 && symbol_unsynced_audio_allowed(opts, state);
-    const int discard = block_hz <= 0 || dsd_analog_rx_block_straddles_boundary(opts, state);
-    if (block_hz <= 0) {
+    plan.allowed = plan.block_hz > 0 && symbol_unsynced_audio_allowed(opts, state);
+    plan.discard = plan.block_hz <= 0 || dsd_analog_rx_block_straddles_boundary(opts, state);
+    if (plan.block_hz <= 0) {
         dsd_analog_sink_break(state);
     }
-    const int reception = !discard && dsd_analog_tone_detection_active(opts) && opts->trunk_enable == 0
-                          && state->carrier == 0 && dsd_trunk_tuning_pending_request() == 0U
-                          && dsd_analog_rx_carrier_open_now(opts, state)
-                          && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
-    const int processing = allowed || (reception && opts->dmr_stereo_wav);
-    const int call_input = symbol_analog_call_input(opts, state, discard, reception);
+    const int reception = symbol_unsynced_reception(opts, state, plan.discard);
+    plan.processing = plan.allowed || (reception && opts->dmr_stereo_wav);
+    /* The tone policy's verdict as each read of the block published it (issue #668): the samples before the one that
+       passed it are cut from what plays and records, at read precision, and neither play nor adapt the gain stage. */
+    const unsigned int eligible_from = dsd_analog_rx_block_eligible_from(opts, state, analog_block);
+    plan.prefix = symbol_ineligible_prefix(opts, state, eligible_from, plan.discard);
+    dsd_analog_call_block call = {
+        .samples = state->analog_out_f,
+        .heard = NULL,
+        .count = analog_block,
+        .sample_rate = plan.block_hz,
+        .input = symbol_analog_call_input(opts, state, plan.discard, reception),
+        .eligible_from = eligible_from,
+        .qualified_carrier = dsd_analog_rx_block_qualified_carrier(opts, state),
+        .wall_end_s = wall_end_s,
+    };
     if (dsd_squelch_flags_in_force(opts, state)) {
-        symbol_process_unsynced_audio_runs(opts, state, analog_block, processing, discard);
-        const int heard = symbol_apply_sink_gate(opts, state, analog_block, processing);
-        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, call_input);
-        symbol_apply_speaker_ramp(opts, state, analog_block, allowed, processing);
-        symbol_output_unsynced_analog(opts, state, analog_block, heard && allowed, block_hz);
+        symbol_finish_flagged_block(opts, state, analog_block, &plan, &call);
     } else {
-        symbol_process_unsynced_audio(opts, state, analog_block, processing, discard);
-        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, call_input);
-        symbol_output_unsynced_analog(opts, state, analog_block, allowed, block_hz);
+        symbol_finish_level_block(opts, state, analog_block, &plan, &call);
     }
     symbol_reset_analog_buffers(state);
 }
