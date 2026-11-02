@@ -235,6 +235,90 @@ test_folder_options_refuse_paths_that_do_not_fit(void) {
     return rc;
 }
 
+/* Issue #697: a path option whose value does not fit its buffer is refused ("path is too long"), as --src-csv is,
+   before anything is opened, imported or created; never cut to the name of some other file. */
+typedef struct {
+    const char* option; /* the option as typed; one ending in '=' carries the path in the same word */
+    size_t capacity;    /* the buffer the path is copied into, NUL included */
+} cli_path_option_case;
+
+static int
+expect_path_option_refused(const cli_path_option_case* c) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    const size_t option_len = strlen(c->option);
+    /* A path one byte too long, under a folder that does not exist, so a cut copy would be created if taken. */
+    char* word = (char*)malloc(option_len + c->capacity + 1U);
+    if (!opts || !state || !word) {
+        free(opts);
+        free(state);
+        free(word);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    DSD_MEMCPY(word, c->option, option_len);
+    char* path = word + option_len;
+    DSD_MEMSET(path, 'a', c->capacity);
+    DSD_MEMCPY(path, "dsdneo_no_such_dir/", 19U);
+    path[c->capacity] = '\0';
+
+    char arg0[] = "dsd-neo";
+    char arg1[32];
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", c->option);
+    const int joined = c->option[option_len - 1U] == '=';
+    char* argv_joined[] = {arg0, word, NULL};
+    char* argv_split[] = {arg0, arg1, path, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    char err[512];
+    const int parsed =
+        joined ? parse_args_capture_stderr(2, argv_joined, opts, state, &argc_effective, &exit_rc, err, sizeof err)
+               : parse_args_capture_stderr(3, argv_split, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "%.*s path is too long", (int)(joined ? option_len - 1U : option_len), c->option);
+    int rc = 0;
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s with a %zu-byte path: rc=%d exit=%d, wanted \"%s\"\n%s\n", c->option, c->capacity,
+                    parsed, exit_rc, want, err);
+        rc = 1;
+    }
+    free(word);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_path_options_refuse_paths_that_do_not_fit(void) {
+    const dsd_opts* o = NULL;
+    const cli_path_option_case cases[] = {
+        {"--trunk-scan", sizeof o->trunk_scan_targets_csv},
+        {"--trunk-scan=", sizeof o->trunk_scan_targets_csv},
+        {"-C", sizeof o->chan_in_file},
+        {"-G", sizeof o->group_in_file},
+        {"-k", sizeof o->key_in_file},
+        {"-K", sizeof o->key_in_file},
+        {"-w", sizeof o->wav_out_file},
+        {"-6", sizeof o->wav_out_file_raw},
+        {"-c", sizeof o->symbol_out_file},
+        {"-J", sizeof o->event_out_file},
+        {"-L", sizeof o->lrrp_out_file},
+        {"-Q", 1024U}, /* the file name -Q puts under ./DSP */
+        {"-i", sizeof o->audio_in_dev},
+        {"-o", sizeof o->audio_out_dev},
+        {"--frame-log", sizeof o->frame_log_file},
+        {"--wav-journal", sizeof o->wav_journal_file},
+        {"--p25-sm-log", sizeof o->p25_sm_log_file},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= expect_path_option_refused(&cases[i]);
+    }
+    return rc;
+}
+
 static int
 test_invalid_option_returns_error_and_does_not_exit(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -2925,6 +3009,57 @@ test_bootstrap_inherited_trunk_scan_ignores_api_token_text(void) {
     free(opts);
     free(state);
     return test_rc;
+}
+
+/* Issue #697: a second -C is refused. The maps would merge, the second one's channel numbers and EDACS LCN slots
+   shadowing the first's, while only the last path is saved; a session reads one map. */
+static int
+test_repeated_channel_map_is_refused(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char first[1024];
+    char second[1024];
+    if (test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n1,851012500\n", first, sizeof first) != 0
+        || test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n3,852012500\n", second, sizeof second)
+               != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp channel CSVs\n");
+        (void)remove(first);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-C";
+    char arg3[] = "-C";
+    char* argv[] = {arg0, arg1, first, arg3, second, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    char err[1024];
+    const int parsed = parse_args_capture_stderr(5, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    int rc = 0;
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, "-C can be given only once") == NULL) {
+        DSD_FPRINTF(stderr, "two -C maps: rc=%d exit=%d\n%s\n", parsed, exit_rc, err);
+        rc = 1;
+    }
+    if (strcmp(opts->chan_in_file, first) != 0 || state->trunk_chan_map[3] != 0) {
+        DSD_FPRINTF(stderr, "the second -C was taken: file=%s channel 3=%ld\n", opts->chan_in_file,
+                    state->trunk_chan_map[3]);
+        rc = 1;
+    }
+    (void)remove(first);
+    (void)remove(second);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
 }
 
 static int
@@ -11551,6 +11686,8 @@ main(void) {
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_folder_options_refuse_paths_that_do_not_fit();
+    rc |= test_path_options_refuse_paths_that_do_not_fit();
+    rc |= test_repeated_channel_map_is_refused();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_tetra_network_options();

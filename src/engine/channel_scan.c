@@ -1011,7 +1011,8 @@ channel_scan_row_rejects_alike(const dsd_opts* opts, const dsd_state* state, int
 
 int
 dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state) {
+    /* Channels learned over the air are no list to scan: only the user's own rows are somewhere to go. */
+    if (!opts || !state || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
     const int current = channel_scan_on_air_row(state);
@@ -1023,6 +1024,21 @@ dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* sta
         }
         if (*dsd_state_trunk_lcn_slot_const(state, row) != current_freq
             || !channel_scan_row_rejects_alike(opts, state, row)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return 0;
+    }
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    int reachable = 0;
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (channel_scan_row_reachable(opts, state, row, dsp_rate_hz) && ++reachable >= 2) {
             return 1;
         }
     }

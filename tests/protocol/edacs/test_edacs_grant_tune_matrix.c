@@ -1266,6 +1266,20 @@ edacs_run_standard_state_cases(void) {
     rc |= edacs_expect(g_state.p25_cc_freq == 856012500L && g_state.trunk_cc_freq == 856012500L,
                        "standard-site-id-rtl-capture", "state", "updated CC frequency from captured RTL LCN");
 
+    /* A -Y list's placeholder row (frequency 0, parked on purpose) whose number is the site's CC LCN: an imported
+       list is the user's, and the site never writes into it. */
+    edacs_setup_state_fixture(0);
+    g_opts.trunk_enable = 0;
+    g_opts.scanner_mode = 1;
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "scan.csv");
+    g_state.lcn_freq_count = 13;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.edacs_cc_lcn == 13, "standard-site-id-user-list", "state", "tracked CC LCN");
+    rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 0 && g_state.lcn_freq_count == 13, "standard-site-id-user-list",
+                       "state", "placeholder row of an imported list left at 0");
+
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, 1010),
                               edacs_standard_all_call_msg2(1010));

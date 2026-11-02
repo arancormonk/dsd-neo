@@ -1657,7 +1657,10 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
 static int
 no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int* install_row) {
     *install_row = -1;
-    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+    /* Channels learned over the air (a DMR site's broadcasts) are no list to scan: a -Y session without one of the
+       user's stays where it is until one is imported. */
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
+        || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:

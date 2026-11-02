@@ -4867,6 +4867,8 @@ static void
 init_manual_walk_context(dsd_opts* opts, dsd_state* state, const long* rows, int count) {
     init_test_context(opts, state);
     opts->scanner_mode = 1;
+    /* An imported list: channels learned over the air never arm the visit cap (issue #697). */
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv");
     opts->audio_in_type = AUDIO_IN_RTL;
     state->lcn_freq_count = count;
     for (int i = 0; i < count; i++) {
@@ -5164,6 +5166,7 @@ test_scan_hold_avoid_commands(void) {
 
     init_test_context(&opts, &state);
     opts.scanner_mode = 1;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv");
     opts.audio_in_type = AUDIO_IN_RTL;
     state.lcn_freq_count = 4;
     state.trunk_lcn_freq[0] = 0L;
@@ -5690,6 +5693,39 @@ test_channel_cycle_first_refusal_names_no_row(void) {
                       g_manual_leg_hz == 872000000U && state.lcn_freq_roll == 2);
     rc |= expect_int("legacy cursor: no row heard", dsd_state_lcn_heard_row(&state), -1);
     rc |= prev_lands(&opts, &state, 874000000U, 3, 2, "legacy cursor: the next previous goes on past A");
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Channels a DMR site announces are then
+ * appended to the list (dmr_cspdu_pf0_c_bcast_track_freq()), and they are no list to scan: neither the per-visit cap nor
+ * the voice gate ends a reception for them, and none of them is somewhere to go.
+ */
+static int
+test_clear_channel_map_leaves_learned_channels_unscanned(void) {
+    static const long kRows[] = {877000000L, 878000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    opts.scan_max_visit_ms = 1000;
+    opts.scan_voice_only = 1;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "learned: clear the map");
+    rc |= expect_true("learned: -Y stays on without a list",
+                      opts.scanner_mode == 1 && opts.chan_in_file[0] == '\0' && state.lcn_freq_count == 0);
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(&state, row) = 879000000L + (1000000L * row);
+    }
+    state.lcn_freq_count = 3;
+    const double now_m = dsd_decode_now_mono_s();
+    dsd_scan_voice_gate_note_retune(&state, now_m - 5.0);
+    state.scan_voice_gate_sync_m = now_m - 4.0;
+    dsd_engine_scan_visit_tick(&opts, &state, now_m);
+    rc |= expect_true("learned: the visit cap never expires", !dsd_engine_scan_visit_expired(&opts, &state, now_m));
+    rc |= expect_true("learned: the voice gate never steps", !dsd_scan_voice_gate_should_step(&opts, &state, now_m));
+    rc |= expect_true("learned: no channel is somewhere to go", !dsd_engine_channel_scan_has_other_row(&opts, &state));
     dsd_app_command_test_set_manual_tune_leg(NULL);
     freeState(&state);
     return rc;
@@ -25443,6 +25479,7 @@ main(void) {
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_first_refusal_names_no_row();
     rc |= test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit();
+    rc |= test_clear_channel_map_leaves_learned_channels_unscanned();
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();

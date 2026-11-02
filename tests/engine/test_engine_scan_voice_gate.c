@@ -143,6 +143,13 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return g_scan_waiting;
 }
 
+/* From engine/channel_scan.c, which this fixture does not link: with no RTL front end no row's width is refused, so the
+   rows a step can land on are the usable ones of a list of the user's. */
+int
+dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_state_trunk_lcn_user_list_present(opts, state) && dsd_state_trunk_lcn_usable_count(state) >= 2;
+}
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -170,8 +177,9 @@ fixture_init(gate_fixture* fix) {
     g_opts.scan_voice_qualify_ms = 1000;
     g_opts.scan_voice_hold_ms = 2000;
     g_state.lcn_freq_roll = 3;
-    /* Three real rows, so dsd_state_trunk_lcn_usable_count() sees somewhere to go and the
+    /* Three real rows of an imported list, so dsd_engine_channel_scan_can_rotate() sees somewhere to go and the
      * per-visit cap is free to fire; the cases that need a dead end shrink the list. */
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "scan.csv");
     g_state.lcn_freq_count = 3;
     for (int row = 0; row < 3; row++) {
         *dsd_state_trunk_lcn_slot(&g_state, row) = 150000000 + (12500 * (long)row);

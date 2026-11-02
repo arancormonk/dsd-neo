@@ -286,6 +286,19 @@ Generated (do not edit/commit):
     row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
+  - -Y rotates only a list of the user's (issue #697): channels a site announces while none is loaded (DMR C_BCAST,
+    `dmr_cspdu_pf0_c_bcast_track_freq()`, which appends only while `dsd_state_trunk_lcn_user_list_present()` is false,
+    at start or after Clear channel map) never make -Y step or end a reception. Without a user list
+    `no_carrier_step_scanner_mode_if_needed()` (`engine.c`) admits no timed step, `dsd_scan_voice_gate_owns_step()` is
+    false, and `dsd_engine_channel_scan_has_other_row()` finds nowhere to go, so neither the receive-filter yield nor
+    the tone-rejection step fires. The per-visit cap re-arms (`scan_visit_rearms()`) unless
+    `dsd_engine_channel_scan_can_rotate()` (`channel_scan.c`) finds a user list with two rows a step can land on
+    (`channel_scan_row_reachable()`: a frequency, not avoided, and not an analog row skipped at every visit for its
+    width at the published DSP rate), the -Y side of the trunk-scan candidate filter: a busy row beside rows that are
+    all width-skipped keeps its call, and a row whose width fits again, or a list imported later, starts a fresh limit.
+    The walk stops at the second reachable row and runs only while the cap is on. `-T` hunts are unchanged. Tests:
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_DMR_CC_RECOVERY` (the frame-sync yield hook), `APP_COMMAND_QUEUE` (after Clear
+    channel map).
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -2541,7 +2554,13 @@ suite runs under this compiler.
     1), never dropped: the options that used to drop it say `<option> requires a value` (issue #756,
     `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
     numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
-    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping
+    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping.
+    A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path
+    is too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-i`,
+    `-o`, `-w`, `-6`, `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`; options
+    that resolve a file first (`--src-csv`, `--p25-bandplan`, `--iq-replay`'s metadata) or hold a folder (`-d`, `-7`)
+    check their own. A second `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and
+    EDACS LCN slots shadowing the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits

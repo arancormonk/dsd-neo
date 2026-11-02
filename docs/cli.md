@@ -2009,6 +2009,10 @@ is delayed.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
   later of `-T`/`-Y` wins. For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
+  `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or an import during the session). With none, at
+  start or after Clear channel map, it stays on its frequency until one is imported: channels a DMR site announces
+  over the air are recorded, but `-Y` never steps to them, and neither the voice gate nor `--scan-max-visit-ms` ends a
+  reception on their account.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
@@ -2037,18 +2041,20 @@ is delayed.
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
   it is off by default. The clock starts when the row parks and starts again from zero on every re-park; sync, decoded
   voice, the voice-gate hold and the `-t` hangtime never restart it. Expiry hops only while at least two rows are usable
-  (a non-zero frequency, not avoided); with fewer the limit re-arms instead of firing, so a one-row list is unaffected
-  and a row that becomes usable later gets a full limit rather than an immediate hop. A `Y` hold suspends the limit and
-  releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold suspends it only while the call
-  being followed matches the held talkgroup, and the limit runs again from zero once that call ends. Other calls on the
-  row are still capped. Suspensions observed across stalled input restart at the first eligible decoder tick;
-  operator hold release restarts at the command. A typed row can carry its own `--scan-max-visit-ms <ms>` in the
-  `options` column, where `0` exempts that row; legacy untyped rows apply row keys but not row options, so they always
-  use the global value. A failed legacy hop keeps the row and restarts the visit and qualification windows so decoding
-  can resume before another attempt. Two caveats on legacy lists: a row whose frequency also appears on the next row
-  "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
-  already steps a quiet row about a second after its last sync, so the cap only changes what happens on a row that keeps
-  syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`,
+  (a non-zero frequency, not avoided, and not an analog row skipped at every visit because the DSP rate cannot fit its
+  width); with fewer the limit re-arms instead of firing, so a one-row list is unaffected, a busy row beside rows that
+  are all skipped keeps its call, and a row that becomes usable later gets a full limit rather than an immediate hop.
+  A `Y` hold suspends the limit and releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold
+  suspends it only while the call being followed matches the held talkgroup, and the limit runs again from zero once
+  that call ends. Other calls on the row are still capped. Suspensions observed across stalled input restart at the
+  first eligible decoder tick; operator hold release restarts at the command. A typed row can carry its own
+  `--scan-max-visit-ms <ms>` in the `options` column, where `0` exempts that row; legacy untyped rows apply row keys but
+  not row options, so they always use the global value. A failed legacy hop keeps the row and restarts the visit and
+  qualification windows so decoding can resume before another attempt. Two caveats on legacy lists: a row whose
+  frequency also appears on the next row "hops" to the same frequency, ending the call as an explicit hop rather than
+  moving the receiver, and a low `-t` already steps a quiet row about a second after its last sync, so the cap only
+  changes what happens on a row that keeps syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`,
+  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`,
   `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the mixed-mode
   example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
@@ -2120,7 +2126,11 @@ is delayed.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
-  the `2-2630` identifier-channel form printed after every P25 channel in the event history.
+  the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
+  uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
+- File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
+  `-i` takes up to 2047 bytes; `-C`, `-G`, `--trunk-scan`, `-k`/`-K`, `-o`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q`
+  file name, `--frame-log`, `--wav-journal` and `--p25-sm-log` up to 1023.
 - P25 band plan CSV: `--p25-bandplan <file>` — one row per band-plan identifier (base, spacing, type, offset,
   bandwidth, optional WACN/SYS) for sites that never broadcast `IDEN_UP`; rows yield to a real `IDEN_UP`. Format
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.

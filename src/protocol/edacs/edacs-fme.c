@@ -1391,7 +1391,9 @@ edacs_print_unknown_command(const dsd_opts* opts, unsigned long long int msg_1, 
 
 static void
 edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if (lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] != 0) {
+    /* An imported list is positional: its 0 is a row skipped or parked on purpose, which the site never fills. */
+    if (lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] != 0
+        || dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return;
     }
 

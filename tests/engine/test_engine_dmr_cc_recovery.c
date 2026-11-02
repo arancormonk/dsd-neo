@@ -1261,8 +1261,17 @@ visit_hook_defers_tuning_until_decoder_unwinds(void) {
     g_state.lcn_freq_count = 2;
     g_state.trunk_lcn_freq[0] = 451000000L;
     g_state.trunk_lcn_freq[1] = 452000000L;
+    /* Issue #697: with no list imported, those are channels a DMR site announced, which -Y never rotates through: the
+       cap neither runs nor ends the reception. */
+    g_opts.chan_in_file[0] = '\0';
     dsd_scan_voice_gate_note_retune(&g_state, dsd_decode_now_mono_s() - 2.0);
     p25_sm_tick_guard_enter();
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous conventional DMR keeps learned channels' visit");
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof(g_opts.chan_in_file), "%s", g_channels);
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "an imported list grants the visit a fresh limit");
+    dsd_scan_voice_gate_note_retune(&g_state, dsd_decode_now_mono_s() - 2.0);
     rc |= expect(dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
                  "continuous conventional DMR yields on an expired -Y visit");
     g_opts.scan_max_visit_ms = 0;

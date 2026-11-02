@@ -175,7 +175,9 @@ Notes:
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
-  holds that LCN's place. Frequencies learned from site broadcasts (with no list imported) are capped at 26.
+  holds that LCN's place, also when an EDACS site names that LCN as its control channel (the frequency it is heard on
+  is recorded there only with no list imported). Frequencies learned from site broadcasts (with no list imported) are
+  capped at 26, and a `-Y` scan never steps to them.
 
 Example:
 
