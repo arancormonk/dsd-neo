@@ -78,7 +78,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -187,7 +187,7 @@ jobs:
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('.gitleaks.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .gitleaks.sarif
 
@@ -260,7 +260,7 @@ jobs:
       - name: Upload zizmor SARIF
         if: always() && hashFiles('.zizmor.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .zizmor.sarif
 
@@ -315,7 +315,7 @@ jobs:
       - name: Upload OSV SARIF
         if: always() && hashFiles('.osv-scanner.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .osv-scanner.sarif
 
