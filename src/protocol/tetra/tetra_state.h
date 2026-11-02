@@ -33,10 +33,23 @@ typedef struct {
     int trunk_is_tuned;
 } tetra_sm_tune_snapshot;
 
-/* Everything a tune puts back when it fails: the shared tuning state, the state machine's own, and the followed call's
- * proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps (confirm_epoch). */
+/* Where the receiver is as the decoder reads it: the tuned centre (opts->rtlsdr_center_freq, which an RTL tune the
+ * backend reports in flight has already set to its target, dsd_engine_tune_rtl()) and the P25 control-channel alias
+ * the shared return prefers (state->p25_cc_freq, which a TETRA return clears). Kept as they were before a request and
+ * as the request left them, so a failure puts back only what nobody changed since (sm_restore_receiver()). */
+typedef struct {
+    long p25_cc_freq;
+    long staged_p25_cc_freq;
+    uint32_t center_hz;
+    uint32_t staged_center_hz;
+} tetra_sm_receiver_snapshot;
+
+/* Everything a tune puts back when it fails: the shared tuning state, the receiver, the state machine's own, and the
+ * followed call's proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps
+ * (confirm_epoch). */
 typedef struct {
     tetra_sm_tune_snapshot tuning;
+    tetra_sm_receiver_snapshot receiver;
     tetra_sm_grant followed;
     double t_tune_m;
     double t_voice_m;

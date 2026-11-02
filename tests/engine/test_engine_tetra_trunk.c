@@ -33,6 +33,7 @@
 enum {
     CC_HZ = 380012500,
     VC_HZ = 390012500,
+    P25_CC_HZ = 851012500,
 };
 
 static int g_failures;
@@ -470,6 +471,80 @@ test_no_carrier_leaves_a_return_in_flight_to_the_machine(void) {
     session_close(&s);
 }
 
+/* An RTL tune the backend reports in flight, as dsd_engine_tune_rtl() leaves a TIMEOUT: the target cached as the tuned
+ * centre before the answer. A return goes where the engine's goes (dsd_engine_resolve_cc_freq(): the P25 alias first). */
+static long g_cached_hz;
+
+static dsd_trunk_tune_result
+rtl_tune_hook(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    const dsd_trunk_tune_result result = tune_hook(opts, state, freq, ted_sps, request_id);
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+    }
+    return result;
+}
+
+static dsd_trunk_tune_result
+rtl_return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    g_cached_hz = state->p25_cc_freq != 0 ? state->p25_cc_freq : state->trunk_cc_freq;
+    const dsd_trunk_tune_result result = return_hook(opts, state, request_id);
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        opts->rtlsdr_center_freq = (uint32_t)g_cached_hz;
+    }
+    return result;
+}
+
+/* A grant's tune or a return that fails after the backend reported it in flight leaves the receiver where it was: the
+ * engine's tick puts back the tuned centre the backend cached and the stale P25 alias the return cleared, so the
+ * receiver's carrier reads as the one it never left, a grant to the carrier the tune never reached tunes again, and the
+ * retried return still goes to TETRA's own control channel (regression: main left the target cached and the alias
+ * cleared). */
+static void
+test_failed_tune_puts_the_receiver_back(void) {
+    session s = session_open();
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = rtl_tune_hook;
+    hooks.return_to_cc_request = rtl_return_hook;
+    dsd_trunk_tuning_hooks_set(hooks);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = CC_HZ;
+    s.state->p25_cc_freq = P25_CC_HZ;
+
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expect(follow_grant(&s) == 1 && s.opts->rtlsdr_center_freq == VC_HZ, "rx: the grant's target cached in flight");
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    engine_tick(&s);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && dsd_trunk_tuning_pending_request() == 0U,
+           "rx: the failed grant is put back");
+    expect(s.opts->rtlsdr_center_freq == CC_HZ && tetra_sm_receiver_freq(s.opts, s.state) == CC_HZ,
+           "rx: the receiver reads as still on the control channel");
+    expect(s.state->p25_cc_freq == P25_CC_HZ, "rx: a grant leaves the P25 alias alone");
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tetra_confirm_note_signalling(s.state);
+    expect(follow_grant(&s) == 1 && g_tunes == 2 && s.opts->rtlsdr_center_freq == VC_HZ,
+           "rx: the same grant tunes again");
+
+    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
+    engine_tick(&s);
+    expect(g_returns == 1 && g_cached_hz == CC_HZ && s.state->p25_cc_freq == 0,
+           "rx: the return goes to TETRA's control channel, the alias cleared");
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    engine_tick(&s);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && dsd_trunk_tuning_pending_request() == 0U,
+           "rx: the failed return is put back and its deferred retry keeps the call");
+    expect(g_returns == 2 && s.opts->rtlsdr_center_freq == VC_HZ && tetra_sm_receiver_freq(s.opts, s.state) == VC_HZ,
+           "rx: the receiver reads as still on the traffic channel");
+    expect(s.state->p25_cc_freq == P25_CC_HZ, "rx: the alias the return cleared is back");
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    engine_tick(&s);
+    expect(g_returns == 3 && g_cached_hz == CC_HZ && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC
+               && s.opts->rtlsdr_center_freq == CC_HZ,
+           "rx: the retried return still goes to TETRA's control channel");
+    session_close(&s);
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(2000ULL * 1000000000ULL);
@@ -483,6 +558,7 @@ main(void) {
     test_no_carrier_forgets_evidence();
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();
+    test_failed_tune_puts_the_receiver_back();
     dsd_decode_clock_use_system();
     if (g_failures == 0) {
         DSD_FPRINTF(stdout, "ENGINE_TETRA_TRUNK: OK\n");

@@ -32,6 +32,8 @@ enum {
     CC_HZ = 380012500,
     VC_HZ = 390012500,
     VC2_HZ = 391012500,
+    P25_CC_HZ = 851012500, /* a control channel another protocol left as the shared return's alias (p25_cc_freq) */
+    OTHER_HZ = 395012500,
 };
 
 #define SECOND_NS 1000000000ULL
@@ -40,6 +42,7 @@ static uint64_t g_now_ns;
 static int g_tunes;
 static int g_returns;
 static long g_tuned_hz;
+static long g_returned_hz;
 static int g_ted_sps;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_tune_result;
@@ -64,13 +67,15 @@ tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t req
     return g_tune_result;
 }
 
-/* And to it when it accepts a return to the control channel (dsd_engine_release_tuned_call_state()). */
+/* And to it when it accepts a return to the control channel (dsd_engine_release_tuned_call_state()), which goes to the
+ * P25 alias when one is set (dsd_engine_resolve_cc_freq()). */
 static dsd_trunk_tune_result
 return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     g_returns++;
     g_request = request_id;
+    g_returned_hz = state->p25_cc_freq != 0 ? state->p25_cc_freq : state->trunk_cc_freq;
     if (dsd_trunk_tune_result_is_ok(g_return_result)) {
-        opts->rtlsdr_center_freq = (uint32_t)state->trunk_cc_freq;
+        opts->rtlsdr_center_freq = (uint32_t)g_returned_hz;
         opts->trunk_is_tuned = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
@@ -96,6 +101,7 @@ reset_backend(void) {
     g_tunes = 0;
     g_returns = 0;
     g_tuned_hz = 0;
+    g_returned_hz = 0;
     g_ted_sps = -1;
     g_request = 0U;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -476,24 +482,36 @@ test_rename_moves_the_followed_identifier(void) {
     session_close(&s);
 }
 
-/* A tune that fails after being reported in flight puts everything back and opens the frame gate. */
+/* A tune that fails after being reported in flight puts everything back and opens the frame gate. That includes the
+ * tuned centre the backend cached as the target when it reported the tune in flight (dsd_engine_tune_rtl()): the
+ * receiver never left the control channel, so tetra_sm_receiver_freq() says so, and the same grant again is a retune
+ * rather than a follow on a carrier the receiver never reached (regression: main left the target cached). */
 static void
 test_pending_grant_fails(void) {
     reset_backend();
     session s = session_open();
     s.state->last_vc_sync_time = 77;
+    s.state->p25_cc_freq = P25_CC_HZ;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
     const uint64_t request = g_request;
+    assert(s.opts->rtlsdr_center_freq == VC_HZ && tetra_sm_receiver_freq(s.opts, s.state) == 0);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_pending_request() == request);
     tetra_sm_tick(s.opts, s.state);
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
     assert(s.opts->trunk_is_tuned == 0 && s.state->trunk_vc_freq[0] == 0 && s.state->last_vc_sync_time == 77);
+    assert(s.opts->rtlsdr_center_freq == CC_HZ && dsd_opts_tuned_freq_hz(s.opts) == CC_HZ);
+    assert(tetra_sm_receiver_freq(s.opts, s.state) == CC_HZ && s.state->p25_cc_freq == P25_CC_HZ);
     /* Nothing was forgotten: the receiver never left the control channel. */
     assert(tetra_confirm_carrier_proven(s.state));
+
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    assert(g_tunes == 2 && g_tuned_hz == VC_HZ && s.opts->rtlsdr_center_freq == VC_HZ);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123);
     session_close(&s);
 }
 
@@ -584,30 +602,85 @@ test_slow_backend_keeps_the_gate(void) {
     session_close(&s);
 }
 
-/* A return reported in flight stages ON_CC; one that then fails puts the call back. */
+/* A return reported in flight stages ON_CC; one that then fails puts the call back, with the tuned centre the backend
+ * cached for the return and the P25 alias the return cleared (regression: main left the control channel cached and the
+ * alias cleared). The next return clears the alias again and goes to TETRA's own control channel. */
 static void
 test_pending_return(void) {
     reset_backend();
     session s = session_open();
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    s.state->p25_cc_freq = P25_CC_HZ;
     g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     tetra_sm_on_release(s.opts, s.state, 0x123U);
     uint64_t request = g_request;
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    assert(g_returned_hz == CC_HZ && s.opts->rtlsdr_center_freq == CC_HZ && s.state->p25_cc_freq == 0);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     tetra_sm_tick(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123);
     assert(s.opts->trunk_is_tuned == 1 && s.state->trunk_vc_freq[0] == VC_HZ);
     assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(s.opts->rtlsdr_center_freq == VC_HZ && dsd_opts_tuned_freq_hz(s.opts) == VC_HZ);
+    assert(tetra_sm_receiver_freq(s.opts, s.state) == VC_HZ && s.state->p25_cc_freq == P25_CC_HZ);
 
     tetra_sm_on_release(s.opts, s.state, 0x123U);
     request = g_request;
+    assert(g_returns == 2 && g_returned_hz == CC_HZ && s.state->p25_cc_freq == 0);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     tetra_sm_tick(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
     assert(!tetra_sm_followed(s.state, NULL) && dsd_trunk_tuning_pending_request() == 0U);
+    assert(s.opts->rtlsdr_center_freq == CC_HZ && tetra_sm_receiver_freq(s.opts, s.state) == CC_HZ);
     session_close(&s);
+}
+
+/* A request the state machine started fails after another owner moved the receiver: what that move left stands. A
+ * carrier boundary or an engine return let go of the request (tetra_sm_disown_pending()); a correlated tune begun
+ * since decides the receiver whatever its target; a tuned centre or P25 alias someone wrote since is theirs. */
+static void
+test_late_failure_after_another_tune_puts_back_no_receiver(void) {
+    for (int how = 0; how < 4; how++) {
+        reset_backend();
+        session s = session_open();
+        const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+        const int returning = how == 1;
+        if (returning) {
+            assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+            s.state->p25_cc_freq = P25_CC_HZ;
+            g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            tetra_sm_on_release(s.opts, s.state, 0x123U);
+        } else {
+            g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+        }
+        const uint64_t request = g_request;
+        uint64_t other = 0U;
+        if (how <= 1) {
+            /* The operator's tune elsewhere (a carrier boundary). */
+            tetra_sm_abandon_carrier(s.opts, s.state);
+            s.opts->rtlsdr_center_freq = OTHER_HZ;
+            s.state->p25_cc_freq = OTHER_HZ;
+        } else if (how == 2) {
+            /* A correlated tune begun since, to the very frequency this request cached. */
+            other = dsd_trunk_tuning_request_begin();
+            s.opts->rtlsdr_center_freq = VC_HZ;
+        } else {
+            /* A tuned centre written since without a correlated request. */
+            s.opts->rtlsdr_center_freq = OTHER_HZ;
+        }
+        const uint32_t centre = s.opts->rtlsdr_center_freq;
+        const long alias = s.state->p25_cc_freq;
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        tetra_sm_tick(s.opts, s.state);
+        assert(s.opts->rtlsdr_center_freq == centre && s.state->p25_cc_freq == alias);
+        if (other != 0U) {
+            dsd_trunk_tuning_request_complete(other, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        assert(dsd_trunk_tuning_pending_request() == 0U);
+        session_close(&s);
+    }
 }
 
 /* The backend still owns @p request, which the state machine let go of: the frame gate stays closed until it answers,
@@ -821,6 +894,7 @@ main(void) {
     test_failed_tune_restores_followed_proof();
     test_slow_backend_keeps_the_gate();
     test_pending_return();
+    test_late_failure_after_another_tune_puts_back_no_receiver();
     test_external_return();
     test_abandon_carrier();
     test_released_elsewhere_and_trunking_off();

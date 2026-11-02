@@ -7989,8 +7989,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   the followed call, a "go to the MCCH" allocation to it, its channel allocated to a call the state machine does not
   follow, or its turning undecryptable; see Calls). A traffic timeslot of the control
   channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
-  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
-  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again. With
+  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared (`sm_request_cc_return()`), so no
+  P25 alias or its symbol profile comes along; the alias comes back at once when the return is refused or deferred, and
+  through the rollback when one in flight fails. A return the backend refuses or defers keeps the call, and the next
+  tick tries again. With
   trunking off nothing returns (`sm_release()`): the engine's return tunes nothing without trunking
   (`dsd_engine_return_to_cc_request()`) yet answers OK, so a return asked for then would report the receiver back on
   the control channel while it stays on the traffic channel.
@@ -8019,7 +8021,17 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   With trunking on again the hangtime or the grant timeout returns from the channel.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
-  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
+  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`),
+  and the receiver as the decoder reads it (`tetra_sm_receiver_snapshot`): the tuned centre `opts->rtlsdr_center_freq`,
+  which an RTL tune that timed out has already set to its target (`dsd_engine_tune_rtl()`), and the P25 alias
+  `p25_cc_freq` a return cleared, both as they were before the request and as it left them. A failure puts each back
+  only when the request is still the newest correlated tune (`dsd_trunk_tuning_last_request()`) and the value is still
+  the one the request left (`sm_restore_receiver()`): a tune begun since, or a centre or alias written since by another
+  owner, decides where the receiver is. Without this a failed grant's target stayed cached, so
+  `tetra_sm_receiver_freq()` named a carrier the receiver never reached and the same grant was then followed without a
+  retune. Both fields are `dsd_opts`/`dsd_state` fields protocol code already reads and writes, so no runtime hook is
+  involved; the engine reconciles the centre with the stream itself only when no trunking owner is active
+  (`dsd_engine_retire_inactive_tune_failures()`).
   Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
   with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. It is settled
   once it is answered -- a completion commits, a failure restores the rollback first and completes the request after,

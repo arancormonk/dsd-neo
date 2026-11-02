@@ -84,6 +84,8 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.tuning.last_cc_sync_time_m = state->last_cc_sync_time_m;
     r.tuning.p25_last_vc_tune_time = state->p25_last_vc_tune_time;
     r.tuning.p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
+    r.receiver.center_hz = opts->rtlsdr_center_freq;
+    r.receiver.p25_cc_freq = state->p25_cc_freq;
     r.followed = ts->sm.followed;
     r.t_tune_m = ts->sm.t_tune_m;
     r.t_voice_m = ts->sm.t_voice_m;
@@ -96,8 +98,25 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     return r;
 }
 
+/* The receiver a failed request @p request_id leaves: back where it was, unless another owner moved it since. A
+ * correlated tune begun after it decides where the receiver goes, whatever its target; a centre or alias written since
+ * by anyone else is theirs. A request the state machine let go of (tetra_sm_disown_pending()) never gets here. */
 static void
-sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_rollback* r) {
+sm_restore_receiver(dsd_opts* opts, dsd_state* state, const tetra_sm_receiver_snapshot* r, uint64_t request_id) {
+    if (dsd_trunk_tuning_last_request() != request_id) {
+        return;
+    }
+    if (opts->rtlsdr_center_freq == r->staged_center_hz) {
+        opts->rtlsdr_center_freq = r->center_hz;
+    }
+    if (state->p25_cc_freq == r->staged_p25_cc_freq) {
+        state->p25_cc_freq = r->p25_cc_freq;
+    }
+}
+
+static void
+sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_rollback* r, uint64_t request_id) {
+    sm_restore_receiver(opts, state, &r->receiver, request_id);
     opts->trunk_is_tuned = r->tuning.trunk_is_tuned;
     DSD_MEMCPY(state->p25_vc_freq, r->tuning.p25_vc_freq, sizeof state->p25_vc_freq);
     DSD_MEMCPY(state->trunk_vc_freq, r->tuning.trunk_vc_freq, sizeof state->trunk_vc_freq);
@@ -185,9 +204,14 @@ tetra_sm_disown_pending(tetra_sm_t* sm) {
     dsd_trunk_tuning_request_disown(request_id);
 }
 
+/* Stage request @p request_id the backend reported in flight, with @p prev (sm_capture() before it was asked for) to put
+ * back if it fails, and the receiver as the request left it. */
 static void
-sm_stage_pending(tetra_state_t* ts, uint8_t kind, uint64_t request_id, const tetra_sm_rollback* prev) {
+sm_stage_pending(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, uint8_t kind, uint64_t request_id,
+                 const tetra_sm_rollback* prev) {
     ts->sm.pending_prev = *prev;
+    ts->sm.pending_prev.receiver.staged_center_hz = opts->rtlsdr_center_freq;
+    ts->sm.pending_prev.receiver.staged_p25_cc_freq = state->p25_cc_freq;
     ts->sm.pending_request_id = request_id;
     ts->sm.pending_kind = kind;
 }
@@ -249,7 +273,7 @@ sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         DSD_FPRINTF(stderr, "[TETRA SM] %s failed (result %d)\n", kind == SM_PENDING_GRANT ? "tune" : "return",
                     (int)result);
     }
-    sm_restore(opts, state, ts, &ts->sm.pending_prev);
+    sm_restore(opts, state, ts, &ts->sm.pending_prev, request_id);
     dsd_trunk_tuning_request_complete(request_id, result);
     return 1;
 }
@@ -265,6 +289,21 @@ sm_settle_at_entry(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         return ts->sm.pending_request_id == 0U;
     }
     return sm_settle_pending(opts, state, ts);
+}
+
+/* Ask the backend for a return to TETRA's own control channel. The shared return prefers the P25 control channel; an
+ * alias another protocol left would also bring that protocol's symbol profile, so it is cleared for the request. A
+ * request refused or deferred gets it back at once; one in flight leaves it cleared, and its rollback (sm_capture()
+ * before this, sm_stage_pending() after) puts it back if it fails. */
+static dsd_trunk_tune_result
+sm_request_cc_return(dsd_opts* opts, dsd_state* state, uint64_t* request_id) {
+    const long p25_cc = state->p25_cc_freq;
+    state->p25_cc_freq = 0;
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, request_id);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        state->p25_cc_freq = p25_cc;
+    }
+    return result;
 }
 
 /* Return to the control channel, or stop following on its carrier. Returns 1 when the call was let go (the return
@@ -290,14 +329,9 @@ sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reas
         return 1;
     }
     const tetra_sm_rollback prev = sm_capture(opts, state, ts);
-    /* The shared return prefers the P25 control channel; TETRA returns to its own, and an alias another protocol left
-     * would also bring that protocol's symbol profile. */
-    const long p25_cc = state->p25_cc_freq;
-    state->p25_cc_freq = 0;
     uint64_t request_id = 0U;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    const dsd_trunk_tune_result result = sm_request_cc_return(opts, state, &request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
-        state->p25_cc_freq = p25_cc;
         if (sm_narrates(ts, 1)) {
             DSD_FPRINTF(stderr, "[TETRA SM] return to the control channel (%s) %s; call kept\n", reason,
                         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "deferred" : "refused");
@@ -305,7 +339,7 @@ sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reas
         return 0;
     }
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        sm_stage_pending(ts, SM_PENDING_RETURN, request_id, &prev);
+        sm_stage_pending(opts, state, ts, SM_PENDING_RETURN, request_id, &prev);
         DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
         sm_set_state(state, ts, sm_rest_state(opts, state), reason);
         return 1;
@@ -368,7 +402,7 @@ sm_tune_grant(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_s
     sm_follow(state, ts, grant);
     sm_set_state(state, ts, TETRA_SM_TUNED, "grant");
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        sm_stage_pending(ts, SM_PENDING_GRANT, request_id, &prev);
+        sm_stage_pending(opts, state, ts, SM_PENDING_GRANT, request_id, &prev);
         return 1;
     }
     sm_grant_tune_completed(opts, state, ts, 0.0);
