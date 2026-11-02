@@ -7,24 +7,23 @@
  * INI loading and profile overlay support for user configuration.
  */
 
+#include <algorithm>
+#include <ctype.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
-#include <dsd-neo/runtime/receive_policy.h>
-#if defined(_WIN32)
-#include <algorithm>
-#endif
-#include <ctype.h>
-#include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <iterator>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,8 +45,9 @@ seek_config_stream_to_start(FILE* stream) {
 /**
  * @brief Copy a path value with shell-like expansion (~, $VAR, ${VAR}).
  *
- * A path whose expansion does not fit @p dst is refused, never cut short to a file the config did not name: @p dst
- * keeps what it had, and the key is warned about.
+ * A path whose expansion does not fit @p dst (or that cannot be expanded) is refused, never cut short to a file the
+ * config did not name: @p dst keeps what it had, and the key is warned about. user_config_path_capacity() gives
+ * --validate-config the same limit.
  *
  * @return 0 when copied (an empty value clears @p dst); -1 when refused.
  */
@@ -63,11 +63,54 @@ copy_path_expanded(const char* key_lc, char* dst, size_t dst_size, const char* s
 
     char expanded[1024];
     if (dsd_config_expand_path(src, expanded, sizeof(expanded)) != 0 || strlen(expanded) >= dst_size) {
-        LOG_WARN("Config: invalid %s; the path is too long, keeping previous/default value\n", key_lc);
+        LOG_WARN("Config: invalid %s; the path cannot be expanded or is too long, keeping previous/default value\n",
+                 key_lc);
         return -1;
     }
     DSD_SNPRINTF(dst, dst_size, "%s", expanded);
     return 0;
+}
+
+/* How many bytes the loader keeps of each PATH key's value (copy_path_expanded()), NUL included, for
+   --validate-config to refuse what the loader refuses; 0 for a key that is not one. */
+size_t
+user_config_path_capacity(const char* section, const char* key) {
+    struct path_key {
+        const char* section;
+        const char* key;
+        size_t capacity;
+    };
+
+    static const path_key k_paths[] = {
+        {"input", "file_path", sizeof(dsdneoUserConfig::file_path)},
+        {"trunking", "chan_csv", sizeof(dsdneoUserConfig::trunk_chan_csv)},
+        {"trunking", "group_csv", sizeof(dsdneoUserConfig::trunk_group_csv)},
+        {"trunking", "src_csv", sizeof(dsdneoUserConfig::trunk_src_csv)},
+        {"trunking", "p25_bandplan_csv", sizeof(dsdneoUserConfig::trunk_p25_bandplan_csv)},
+        {"trunk_scan", "targets_csv", sizeof(dsd_trunk_scan_list_spec::path)},
+        {"logging", "event_log", sizeof(dsdneoUserConfig::event_log)},
+        {"logging", "event_log_file", sizeof(dsdneoUserConfig::event_log)},
+        {"logging", "frame_log", sizeof(dsdneoUserConfig::frame_log)},
+        {"logging", "p25_sm_log", sizeof(dsdneoUserConfig::p25_sm_log)},
+        {"recording", "per_call_wav_dir", sizeof(dsdneoUserConfig::per_call_wav_dir)},
+        {"recording", "static_wav", sizeof(dsdneoUserConfig::static_wav_path)},
+        {"recording", "raw_wav", sizeof(dsdneoUserConfig::raw_wav_path)},
+    };
+    if (section == nullptr || key == nullptr) {
+        return 0U;
+    }
+    /* targets_csv_2 .. targets_csv_8 share list 1's buffer size. */
+    const size_t key_len = strncmp(key, "targets_csv_", 12) == 0 ? 11U : strlen(key);
+    const path_key* found =
+        std::find_if(std::begin(k_paths), std::end(k_paths), [section, key, key_len](const path_key& path) {
+            return strcmp(section, path.section) == 0 && strlen(path.key) == key_len
+                   && strncmp(key, path.key, key_len) == 0;
+        });
+    if (found == std::end(k_paths)) {
+        return 0U;
+    }
+    /* The expansion buffer is 1024 bytes: no path is kept longer than that. */
+    return found->capacity < 1024U ? found->capacity : 1024U;
 }
 
 namespace {
@@ -588,20 +631,34 @@ trunk_scan_list_key_number(const char* key_lc) {
     return key_lc[12] - '0';
 }
 
-/* An empty targets_csv_N clears list N and every later one, whichever key or file set them (issue #697): run after
-   every list key, so the order keys come in does not matter. */
+/* An empty targets_csv_N clears list N and every later one an earlier file or profile left, path and off state
+   (issue #697): a list this file or profile names itself stays, so "targets_csv_2 = \"\"" beside "targets_csv_3 = ..."
+   is a gap the start rules refuse, and so does an off state when it names lists_off too. Run after every list key, so
+   the order keys come in does not matter. */
 static void
 trunk_scan_lists_settle(dsdneoUserConfig* cfg) {
     for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
-        if ((cfg->trunk_scan_lists_named & (1U << i)) == 0U || cfg->trunk_scan_lists[i].path[0] != '\0') {
+        if ((cfg->trunk_scan_lists_layer_named & (1U << i)) == 0U || cfg->trunk_scan_lists[i].path[0] != '\0') {
             continue;
         }
-        for (int j = i + 1; j < DSD_TRUNK_SCAN_MAX_LISTS; j++) {
-            cfg->trunk_scan_lists[j].path[0] = '\0';
+        for (int j = i; j < DSD_TRUNK_SCAN_MAX_LISTS; j++) {
+            if (j > i && (cfg->trunk_scan_lists_layer_named & (1U << j)) == 0U) {
+                cfg->trunk_scan_lists[j].path[0] = '\0';
+            }
+            if (!cfg->trunk_scan_lists_off_layer_set) {
+                cfg->trunk_scan_lists[j].start_off = 0U;
+            }
         }
         break;
     }
     cfg->trunk_scan_list_count = dsd_trunk_scan_lists_span(cfg->trunk_scan_lists);
+}
+
+/* A file or profile starts reading: what it names of the lists is its own from here (trunk_scan_lists_settle()). */
+static void
+trunk_scan_lists_begin_layer(dsdneoUserConfig* cfg) {
+    cfg->trunk_scan_lists_layer_named = 0U;
+    cfg->trunk_scan_lists_off_layer_set = 0;
 }
 
 static void
@@ -611,6 +668,7 @@ apply_trunk_scan_list_key(dsdneoUserConfig* cfg, const char* key_lc, int list, c
         return;
     }
     cfg->trunk_scan_lists_named |= 1U << (list - 1);
+    cfg->trunk_scan_lists_layer_named |= 1U << (list - 1);
     trunk_scan_lists_settle(cfg);
 }
 
@@ -629,6 +687,7 @@ apply_trunk_scan_lists_off(dsdneoUserConfig* cfg, const char* val) {
         cfg->trunk_scan_lists[i].start_off = (mask & (1U << i)) != 0U ? 1U : 0U;
     }
     cfg->trunk_scan_lists_off_is_set = 1;
+    cfg->trunk_scan_lists_off_layer_set = 1;
     trunk_scan_lists_settle(cfg);
 }
 
@@ -1006,6 +1065,7 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     if (!cfg || !fp) {
         return -1;
     }
+    trunk_scan_lists_begin_layer(cfg);
 
     char line[8192];
     char current_section[64];
@@ -1439,6 +1499,7 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     if (!fp || !cfg) {
         return -1;
     }
+    trunk_scan_lists_begin_layer(cfg);
 
     /* Includes are already processed by dsd_user_config_load_profile() before
      * calling this function. This function only extracts profile overlay keys. */

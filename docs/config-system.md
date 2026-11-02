@@ -862,10 +862,14 @@ When `[trunk_scan] enabled = true`:
   profiles, whatever order the keys come in.
 - Each key is its own setting: an include or profile that names `targets_csv_2` replaces list 2 only, and one that
   leaves out `lists_off` keeps the off states it inherits. An empty `targets_csv_N = ""` clears list N and every later
-  list; an empty `lists_off = ""` switches every list on. A list switched on or off while the session runs is never
-  saved: a save writes the configured lists and `lists_off`.
-- A path whose expansion is 1024 bytes or more is refused with a warning and the key keeps its earlier value (for every
-  path key), never cut short to another file's name.
+  list an included file, or the file under a profile, left, off states included; a list the same file or profile sets
+  itself stays, so `targets_csv_2 = ""` beside `targets_csv_3 = "..."` is a gap and is refused. An empty
+  `lists_off = ""` switches every list on. A list switched on or off while the session runs is never saved: a save
+  writes the configured lists, an empty key after the last one (`targets_csv_3 = ""` after two lists) and `lists_off`
+  (`""` when every list starts on), so loading the save over a session with more lists gives exactly the saved set.
+- A path that cannot be expanded, or whose expansion does not fit its key (1024 bytes, 512 for
+  `[recording] per_call_wav_dir`, NUL included), is refused with a warning and the key keeps its earlier value (for
+  every path key), never cut short to another file's name; `--validate-config` reports it as an error.
 - Global `[trunking] chan_csv` and `[trunking] p25_bandplan_csv` are rejected; each trunk target must name its own
   `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
 - `[trunking] scanner = true` is rejected unless `[trunking] enabled = true` (trunking wins over the scanner): the `-Y`

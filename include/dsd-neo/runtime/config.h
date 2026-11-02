@@ -637,11 +637,16 @@ typedef struct dsdneoUserConfig {
     /* targets_csv, targets_csv_2 .. targets_csv_8 and lists_off (issue #697), kept by list number: count is
        dsd_trunk_scan_lists_span(), so a gap or a lists_off entry past the last list stays for the start rules to
        refuse. A key a file or profile names replaces what an earlier one left; one it omits inherits. An empty
-       targets_csv_N clears list N and every later one, an empty lists_off every off state. */
+       targets_csv_N clears list N and every later one an earlier file or profile left (path and off state), an empty
+       lists_off every off state. */
     dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
     int trunk_scan_list_count;
     uint32_t trunk_scan_lists_named; /* bit N-1: the targets_csv key of list N was named, empty or not */
     int trunk_scan_lists_off_is_set;
+    /* The loader's: what the file or profile being read names itself (the same bits, lists_off), so an empty
+       targets_csv_N clears only what earlier ones left and a contradiction inside one stays for the gap rule. */
+    uint32_t trunk_scan_lists_layer_named;
+    int trunk_scan_lists_off_layer_set;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
 

@@ -1160,12 +1160,16 @@ render_radioreference_section(FILE* out, const dsdneoUserConfig* cfg) {
 }
 
 /* List 1 is targets_csv, list N targets_csv_N (issue #697); lists_off names the lists that start off. Each path is a
-   line of its own, so every line stays far below the loader's line buffer. */
+   line of its own, so every line stays far below the loader's line buffer. A save with lists ends them with an empty
+   key and always writes lists_off, so loading it over a session with more lists, or other off states, gives the
+   saved set exactly. */
 static void
 render_trunk_scan_lists(FILE* out, const dsdneoUserConfig* cfg) {
     char off[3 * DSD_TRUNK_SCAN_MAX_LISTS + 1] = "";
     size_t used = 0U;
-    for (int i = 0; i < cfg->trunk_scan_list_count && i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+    const int count =
+        cfg->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? cfg->trunk_scan_list_count : DSD_TRUNK_SCAN_MAX_LISTS;
+    for (int i = 0; i < count; i++) {
         const dsd_trunk_scan_list_spec* list = &cfg->trunk_scan_lists[i];
         if (list->path[0] != '\0' && i == 0) {
             DSD_FPRINTF(out, "targets_csv = \"%s\"\n", list->path);
@@ -1177,8 +1181,16 @@ render_trunk_scan_lists(FILE* out, const dsdneoUserConfig* cfg) {
             used += n > 0 ? (size_t)n : 0U;
         }
     }
+    if (count <= 0) {
+        return;
+    }
+    if (count < DSD_TRUNK_SCAN_MAX_LISTS) {
+        DSD_FPRINTF(out, "targets_csv_%d = \"\"\n", count + 1);
+    }
     if (used > 0U) {
         DSD_FPRINTF(out, "lists_off = %s\n", off);
+    } else {
+        DSD_FPRINTF(out, "lists_off = \"\"\n");
     }
 }
 

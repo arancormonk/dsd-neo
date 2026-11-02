@@ -271,17 +271,21 @@ validate_trunk_scan_lists_off_entry(const dsdcfg_schema_entry_t* entry, const ch
     return 1;
 }
 
-/* A path whose expansion does not fit is refused by the loader (it keeps the previous value), never cut short. */
+/* A path the loader cannot expand, or whose expansion does not fit its key (user_config_path_capacity()), is refused
+   by the loader (it keeps the previous value), never cut short. */
 static int
 validate_path_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                     const char* diag_section, const char* diag_key) {
     if (entry->type != DSDCFG_TYPE_PATH) {
         return 0;
     }
+    const size_t capacity = user_config_path_capacity(entry->section, entry->key);
     char expanded[1024];
-    if (val[0] != '\0' && dsd_config_expand_path(val, expanded, sizeof expanded) != 0) {
+    if (val[0] != '\0'
+        && (dsd_config_expand_path(val, expanded, sizeof expanded) != 0
+            || strlen(expanded) >= (capacity > 0U ? capacity : sizeof expanded))) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key,
-                         "Path is too long; the previous value is kept");
+                         "Path cannot be expanded or is too long; the previous value is kept");
     }
     return 1;
 }

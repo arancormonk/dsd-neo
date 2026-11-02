@@ -355,8 +355,9 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (`cli_validate_trunk_scan_runtime_args()`), the engine init and, through the composed-config rule table, the config
   validation share. The CLI adds a list per `--trunk-scan`/`--trunk-scan-off` (`cli_add_trunk_scan_list()`; the first
   replaces inherited lists whole). The INI loader keeps per-key presence (`trunk_scan_lists_named`,
-  `trunk_scan_lists_off_is_set`) so an include or profile overrides key by key and an empty `targets_csv_N` truncates
-  wherever it sits; `dsd_user_config_compose_trunk_scan_lists()` puts what a config names over a base spec (apply,
+  `trunk_scan_lists_off_is_set`) so an include or profile overrides key by key, and per file or profile
+  (`trunk_scan_lists_layer_named`) so an empty `targets_csv_N` clears only what earlier files left (a same-file
+  contradiction stays for the gap rule); a save ends its lists with an empty key and always writes `lists_off`; `dsd_user_config_compose_trunk_scan_lists()` puts what a config names over a base spec (apply,
   queue overlay, next-start defer). Until the coordinator keeps several lists, init refuses more than one.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`

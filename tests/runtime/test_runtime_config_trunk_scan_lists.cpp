@@ -149,30 +149,68 @@ test_numbered_keys_load_and_roundtrip() {
     CHECK(load_ini(text, nullptr, back.get()) == 0);
     CHECK(cfg_lists_are(*back, paths, off, 3));
 
-    /* One list, all on: the save is what it always was, with no lists_off line. */
+    /* A save ends its lists with an empty key and always writes lists_off, so loading a one-list save over a
+       session with three lists, one of them off, gives exactly the saved list, on (review M4). */
     auto one = std::make_unique<dsdneoUserConfig>();
     CHECK(load_ini("[trunk_scan]\nenabled = true\ntargets_csv = \"/lists/a.csv\"\n", nullptr, one.get()) == 0);
     const std::string one_text = render(*one);
-    CHECK(one_text.find("targets_csv = \"/lists/a.csv\"\n") != std::string::npos);
-    CHECK(one_text.find("targets_csv_2") == std::string::npos);
-    CHECK(one_text.find("lists_off") == std::string::npos);
+    CHECK(one_text.find("targets_csv = \"/lists/a.csv\"\ntargets_csv_2 = \"\"\nlists_off = \"\"\n")
+          != std::string::npos);
+    auto saved = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(one_text, nullptr, saved.get()) == 0);
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "/lists/x.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", "/lists/y.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[2].path, sizeof opts->trunk_scan_lists[2].path, "%s", "/lists/z.csv");
+    opts->trunk_scan_lists[0].start_off = 1U;
+    opts->trunk_scan_list_count = 3;
+    dsd_apply_user_config_to_opts(saved.get(), opts.get(), state.get());
+    static const char* const just_a[] = {"/lists/a.csv"};
+    static const int on[] = {0};
+    CHECK(lists_are(opts->trunk_scan_lists, opts->trunk_scan_list_count, just_a, on, 1));
+
+    /* Eight lists need no terminator, and a save with no lists writes no list key at all. */
+    auto eight = std::make_unique<dsdneoUserConfig>();
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        DSD_SNPRINTF(eight->trunk_scan_lists[i].path, sizeof eight->trunk_scan_lists[i].path, "/l%d.csv", i + 1);
+    }
+    eight->trunk_scan_list_count = DSD_TRUNK_SCAN_MAX_LISTS;
+    eight->has_trunk_scan = 1;
+    const std::string eight_text = render(*eight);
+    CHECK(eight_text.find("targets_csv_8 = \"/l8.csv\"\n") != std::string::npos);
+    CHECK(eight_text.find("targets_csv_9") == std::string::npos);
+    auto none = std::make_unique<dsdneoUserConfig>();
+    none->has_trunk_scan = 1;
+    const std::string none_text = render(*none);
+    CHECK(none_text.find("targets_csv") == std::string::npos && none_text.find("lists_off") == std::string::npos);
 }
 
-/* An empty targets_csv_N clears N and every later list, before or after the keys that set them. */
+bool
+refused_with(const dsdneoUserConfig& cfg, const char* why_part) {
+    char why[256] = "";
+    return dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0
+           && strstr(why, why_part) != nullptr;
+}
+
+/* An empty targets_csv_N beside a targets_csv_3 the same file sets is a contradiction the gap rule refuses, in either
+   key order; nothing is dropped without a word (review I1). */
 void
-test_empty_key_clears_later_lists_in_any_order() {
-    static const char* const paths[] = {"/a.csv"};
-    static const int off[] = {0};
+test_empty_key_beside_a_later_list_is_a_gap_in_any_order() {
     auto before = std::make_unique<dsdneoUserConfig>();
-    CHECK(load_ini("[trunk_scan]\ntargets_csv = \"/a.csv\"\ntargets_csv_2 = \"\"\ntargets_csv_3 = \"/c.csv\"\n",
+    CHECK(load_ini("[trunk_scan]\nenabled = true\ntargets_csv = \"/a.csv\"\ntargets_csv_2 = \"\"\n"
+                   "targets_csv_3 = \"/c.csv\"\n",
                    nullptr, before.get())
           == 0);
-    CHECK(cfg_lists_are(*before, paths, off, 1));
+    CHECK(before->trunk_scan_list_count == 3 && strcmp(before->trunk_scan_lists[2].path, "/c.csv") == 0);
+    CHECK(refused_with(*before, "without gaps"));
     auto after = std::make_unique<dsdneoUserConfig>();
-    CHECK(load_ini("[trunk_scan]\ntargets_csv_3 = \"/c.csv\"\ntargets_csv = \"/a.csv\"\ntargets_csv_2 = \"\"\n",
+    CHECK(load_ini("[trunk_scan]\nenabled = true\ntargets_csv_3 = \"/c.csv\"\ntargets_csv = \"/a.csv\"\n"
+                   "targets_csv_2 = \"\"\n",
                    nullptr, after.get())
           == 0);
-    CHECK(cfg_lists_are(*after, paths, off, 1));
+    CHECK(after->trunk_scan_list_count == 3 && strcmp(after->trunk_scan_lists[2].path, "/c.csv") == 0);
+    CHECK(refused_with(*after, "without gaps"));
 
     /* lists_off before the paths it numbers is the same as after them. */
     static const char* const two[] = {"/a.csv", "/b.csv"};
@@ -263,6 +301,47 @@ test_includes_and_profiles_compose_per_key() {
     (void)remove(included);
 }
 
+/* An empty targets_csv_N clears what an earlier file left, never what a later one names: an include's empty
+   targets_csv_2 under a file that sets targets_csv_3 is a gap the start rules refuse. A profile that shrinks an
+   inherited set clears the removed lists' off states with them, so an inherited lists_off naming one does not refuse
+   the start (review I1). */
+void
+test_empty_key_clears_only_what_earlier_layers_left() {
+    char included[DSD_TEST_PATH_MAX];
+    CHECK(write_temp_config("[trunk_scan]\ntargets_csv = \"/a.csv\"\ntargets_csv_2 = \"\"\n", included, sizeof included)
+          == 0);
+    auto gap = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(std::string("include = \"") + included + "\"\n[trunk_scan]\nenabled = true\n"
+                       + "targets_csv_3 = \"/c.csv\"\n",
+                   nullptr, gap.get())
+          == 0);
+    CHECK(gap->trunk_scan_list_count == 3 && strcmp(gap->trunk_scan_lists[2].path, "/c.csv") == 0);
+    CHECK(refused_with(*gap, "without gaps"));
+    (void)remove(included);
+
+    const std::string root = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"/a.csv\"\n"
+                             "targets_csv_2 = \"/b.csv\"\n"
+                             "targets_csv_3 = \"/c.csv\"\n"
+                             "lists_off = 3\n"
+                             "[profile.short]\n"
+                             "trunk_scan.targets_csv_3 = \"\"\n"
+                             "[profile.keepoff]\n"
+                             "trunk_scan.targets_csv_3 = \"\"\n"
+                             "trunk_scan.lists_off = 3\n";
+    auto shrunk = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(root, "short", shrunk.get()) == 0);
+    static const char* const two[] = {"/a.csv", "/b.csv"};
+    static const int none_off[] = {0, 0};
+    CHECK(cfg_lists_are(*shrunk, two, none_off, 2));
+    CHECK(dsd_user_config_check_trunk_scan_startable(shrunk.get(), nullptr, nullptr, 0U) == 0);
+    /* A profile that also names lists_off keeps what it says, which the start rules then judge. */
+    auto keepoff = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(root, "keepoff", keepoff.get()) == 0);
+    CHECK(refused_with(*keepoff, "has no targets_csv"));
+}
+
 /* lists_off that is no list of list numbers keeps what was there, with a warning; the validator calls it an error. */
 void
 test_bad_lists_off_keeps_previous() {
@@ -286,6 +365,10 @@ test_bad_lists_off_keeps_previous() {
     uint32_t mask = 0U;
     CHECK(dsd_trunk_scan_lists_off_parse(" 8 ,1,\t3 ", &mask) == 0 && mask == 0x85U);
     CHECK(dsd_trunk_scan_lists_off_parse("", &mask) == 0 && mask == 0U);
+    /* Blanks before a comma are no part of the number, however many (review M3). */
+    CHECK(dsd_trunk_scan_lists_off_parse("2        , 3\t\t\t\t\t\t\t\t", &mask) == 0 && mask == 0x6U);
+    CHECK(dsd_trunk_scan_lists_off_parse("        2", &mask) == 0 && mask == 0x2U);
+    CHECK(dsd_trunk_scan_lists_off_parse("00000002", &mask) != 0); /* longer than any list number */
 }
 
 /* A path whose expansion does not fit is refused and the key keeps what it had, never cut to another file's name
@@ -303,8 +386,8 @@ test_path_expansion_overflow_is_refused() {
     static const int off[] = {0, 0};
     CHECK(cfg_lists_are(*cfg, paths, off, 2));
     CHECK(strcmp(cfg->trunk_chan_csv, "/chan.csv") == 0);
-    CHECK(strstr(g_log_text, "invalid targets_csv_2; the path is too long") != nullptr);
-    CHECK(strstr(g_log_text, "invalid chan_csv; the path is too long") != nullptr);
+    CHECK(strstr(g_log_text, "invalid targets_csv_2; the path cannot be expanded or is too long") != nullptr);
+    CHECK(strstr(g_log_text, "invalid chan_csv; the path cannot be expanded or is too long") != nullptr);
 }
 
 /* Applied over a session's lists: naming lists_off alone keeps its paths, naming paths alone keeps its off states,
@@ -401,7 +484,8 @@ test_validation_reports_list_keys() {
 
     const validate_case cases[] = {
         {"[trunk_scan]\nenabled = true\ntargets_csv = \"/a.csv\"\nlists_off = 1,1\n", "lists_off", "Expected list"},
-        {"[trunk_scan]\ntargets_csv_2 = \"" + long_path + "\"\n", "targets_csv_2", "Path is too long"},
+        {"[trunk_scan]\ntargets_csv_2 = \"" + long_path + "\"\n", "targets_csv_2",
+         "Path cannot be expanded or is too long"},
         {"[trunk_scan]\nenabled = true\ntargets_csv = \"/a.csv\"\ntargets_csv_4 = \"/d.csv\"\n", "targets_csv",
          "without gaps"},
         {"[trunk_scan]\nenabled = true\ntargets_csv = \"/a.csv\"\nlists_off = 1\n", "lists_off",
@@ -436,6 +520,47 @@ test_validation_reports_list_keys() {
     (void)remove(path);
 }
 
+/* --validate-config refuses exactly the paths the loader refuses, key by key: every PATH key in the schema, at the
+   lengths either side of a 512- and a 1024-byte field (review M2: per_call_wav_dir keeps 511 bytes). */
+void
+test_validator_and_loader_agree_on_path_length() {
+    static const size_t lengths[] = {511U, 512U, 1023U, 1024U};
+    for (int e = 0; e < dsdcfg_schema_count(); e++) {
+        const dsdcfg_schema_entry_t* entry = dsdcfg_schema_get(e);
+        if (entry == nullptr || entry->type != DSDCFG_TYPE_PATH) {
+            continue;
+        }
+        for (size_t length : lengths) {
+            const std::string path = "/" + std::string(length - 1U, 'p');
+            /* An input file path is saved only beside a file source. */
+            const std::string source = strcmp(entry->section, "input") == 0 ? "source = \"file\"\n" : "";
+            std::string ini = "[";
+            ini += entry->section;
+            ini += "]\n";
+            ini += source;
+            ini += entry->key;
+            ini += " = \"";
+            ini += path;
+            ini += "\"\n";
+            char file[DSD_TEST_PATH_MAX];
+            CHECK(write_temp_config(ini, file, sizeof file) == 0);
+            dsdcfg_diagnostics_t diags;
+            const bool validator_refuses = dsd_user_config_validate(file, &diags) != 0;
+            dsdcfg_diags_free(&diags);
+            auto cfg = std::make_unique<dsdneoUserConfig>();
+            CHECK(dsd_user_config_load(file, cfg.get()) == 0);
+            /* What the loader kept is what a save writes back. */
+            const bool loader_refuses = render(*cfg).find(path + "\"") == std::string::npos;
+            (void)remove(file);
+            if (validator_refuses != loader_refuses) {
+                DSD_FPRINTF(stderr, "[%s] %s at %zu bytes: validator %s, loader %s\n", entry->section, entry->key,
+                            length, validator_refuses ? "refuses" : "accepts", loader_refuses ? "refuses" : "keeps");
+                g_failures++;
+            }
+        }
+    }
+}
+
 /* The list numbers have one spelling each: targets_csv is list 1, and nothing names a ninth. */
 void
 test_unknown_list_keys_are_ignored() {
@@ -455,7 +580,8 @@ int
 main(void) {
     dsd_neo_log_set_tap(capture_log, NULL);
     test_numbered_keys_load_and_roundtrip();
-    test_empty_key_clears_later_lists_in_any_order();
+    test_empty_key_beside_a_later_list_is_a_gap_in_any_order();
+    test_empty_key_clears_only_what_earlier_layers_left();
     test_start_rules_on_the_composed_lists();
     test_includes_and_profiles_compose_per_key();
     test_bad_lists_off_keeps_previous();
@@ -464,6 +590,7 @@ main(void) {
     test_snapshot_and_next_start();
     test_validation_reports_list_keys();
     test_unknown_list_keys_are_ignored();
+    test_validator_and_loader_agree_on_path_length();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;

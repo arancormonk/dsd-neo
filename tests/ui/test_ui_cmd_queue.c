@@ -23408,6 +23408,49 @@ test_config_defers_the_trunk_scan_list_spec_whole(void) {
     return rc;
 }
 
+/* Issue #697 (review M4): a saved one-list config, its keys as a save writes them (targets_csv, the empty
+   targets_csv_2 that ends the lists, an empty lists_off), loaded over a session whose three lists wait for the next
+   start, one of them off, leaves exactly the saved list waiting, on. */
+static int
+test_config_load_of_a_one_list_save_replaces_waiting_lists(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    set_trunk_scan_list(opts.trunk_scan_lists, 0, "a.csv", 0);
+    opts.trunk_scan_list_count = 1;
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 0, "x.csv", 1);
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 1, "y.csv", 0);
+    set_trunk_scan_list(opts.next_start.trunk_scan_lists, 2, "z.csv", 0);
+    opts.next_start.trunk_scan_list_count = 3;
+    opts.next_start.pending |= DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+
+    dsd_user_config_init(&cfg);
+    int keyed = dsd_user_config_apply_key(&cfg, "trunk_scan", "enabled", "true");
+    keyed &= dsd_user_config_apply_key(&cfg, "trunk_scan", "targets_csv", "b.csv");
+    keyed &= dsd_user_config_apply_key(&cfg, "trunk_scan", "targets_csv_2", "");
+    keyed &= dsd_user_config_apply_key(&cfg, "trunk_scan", "lists_off", "");
+    rc |= expect_true("one-list save keys taken", keyed == 1);
+    cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+    cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: one-list save");
+    rc |= expect_int("one-list save: still waiting",
+                     (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U, 1);
+    const int exact = saved.trunk_scan_list_count == 1 && strcmp(saved.trunk_scan_lists[0].path, "b.csv") == 0
+                      && saved.trunk_scan_lists[0].start_off == 0U;
+    if (!exact) {
+        DSD_FPRINTF(stderr, "one-list save: count=%d first=%s off=%u\n", saved.trunk_scan_list_count,
+                    saved.trunk_scan_lists[0].path, saved.trunk_scan_lists[0].start_off);
+        rc = 1;
+    }
+    rc |= expect_str("one-list save: the running list stays", opts.trunk_scan_lists[0].path, "a.csv");
+    freeState(&state);
+    return rc;
+}
+
 /* Issue #697: a config whose lists the next start refuses (every list off, a gap) is refused whole, as one that names
    no list is. */
 static int
@@ -25429,6 +25472,7 @@ main(void) {
     rc |= test_config_keeps_the_running_trunk_scan_list();
     rc |= test_config_defers_the_trunk_scan_list_spec_whole();
     rc |= test_config_refuses_trunk_scan_lists_the_next_start_refuses();
+    rc |= test_config_load_of_a_one_list_save_replaces_waiting_lists();
     rc |= test_config_restart_required_says_what_waits();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

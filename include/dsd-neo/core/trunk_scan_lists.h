@@ -159,24 +159,25 @@ dsd_trunk_scan_lists_skip_blanks(const char* s) {
 /* One lists_off entry at *cursor, up to a ',' or the end; *more says a ',' followed it (and was stepped over). */
 static inline int
 dsd_trunk_scan_lists_off_entry(const char** cursor, int* out_list, int* more) {
-    const char* s = dsd_trunk_scan_lists_skip_blanks(*cursor);
+    const char* start = dsd_trunk_scan_lists_skip_blanks(*cursor);
+    const char* end = start;
+    while (*end != '\0' && *end != ',') {
+        end++;
+    }
+    *more = *end == ',';
+    *cursor = *more ? end + 1 : end;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+        end--; /* blanks before the ',' are no part of the number */
+    }
     char token[8];
-    size_t len = 0U;
-    while (*s != '\0' && *s != ',' && len + 1U < sizeof token) {
-        token[len++] = *s++;
+    const size_t len = (size_t)(end - start);
+    if (len == 0U || len >= sizeof token || *start < '0' || *start > '9') {
+        return -1; /* empty, longer than any list number, or a sign strtol would take */
     }
-    if (*s != '\0' && *s != ',') {
-        return -1; /* longer than any list number */
-    }
-    *more = *s == ',';
-    *cursor = *more ? s + 1 : s;
-    while (len > 0U && (token[len - 1U] == ' ' || token[len - 1U] == '\t')) {
-        len--;
+    for (size_t i = 0; i < len; i++) {
+        token[i] = start[i];
     }
     token[len] = '\0';
-    if (token[0] < '0' || token[0] > '9') {
-        return -1; /* empty, or a sign strtol would take */
-    }
     return dsd_parse_int_strict(token, 10, 1, DSD_TRUNK_SCAN_MAX_LISTS, out_list);
 }
 
