@@ -16,12 +16,21 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "../../src/app_control/commands_internal.h"
 #include "api_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "json.h"
 
 #ifndef DSD_API_TEST_COMMANDS_H
@@ -228,6 +237,41 @@ is_ok(const dsd_json_node* resp) {
     return dsd_json_as_bool(dsd_json_obj_get(resp, "ok"), &ok) == 0 && ok;
 }
 
+/*
+ * Issue #803: rr_apply_import's response acknowledges the queue; the decoder's verdict arrives in status.message
+ * (state->ui_msg, which the status feed publishes). TETRA on a receiver that cannot decode it is refused with the
+ * reason, and the mode stays.
+ */
+static void
+check_rr_apply_tetra_refusal(const char* what, int audio_in_type, const char* audio_in_dev, int bw_khz,
+                             const char* want_message) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts != NULL && state != NULL);
+    initOpts(opts);
+    opts->audio_out_type = 9; /* the null output: no host audio stream */
+    initState(state);
+    opts->audio_in_type = audio_in_type;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", audio_in_dev);
+    opts->rtl_dsp_bw_khz = bw_khz;
+    dsd_app_frontend_runtime_start(opts, state);
+    dsd_json_node* resp = execute("rr_apply_import", "{\"decode_mode\":17,\"trunking\":true,\"tune_hz\":390012500}");
+    assert(is_ok(resp));
+    dsd_json_free(resp);
+    state->ui_msg[0] = '\0';
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    if (strcmp(state->ui_msg, want_message) != 0) {
+        DSD_FPRINTF(stderr, "rr_apply_import %s: status message \"%s\", want \"%s\"\n", what, state->ui_msg,
+                    want_message);
+        assert(0);
+    }
+    assert(dsd_infer_decode_mode_preset(opts) != DSDCFG_MODE_TETRA && opts->trunk_enable == 0);
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     int ids[MAX_IDS];
@@ -270,6 +314,13 @@ main(void) {
     assert(!is_ok(resp));
     assert(strcmp(error_code(resp), "rejected") == 0);
     dsd_json_free(resp);
+
+    check_rr_apply_tetra_refusal("on PulseAudio", AUDIO_IN_PULSE, "pulse", 48,
+                                 "Failed: RR import -> TETRA needs an IQ radio input or a symbol capture");
+    check_rr_apply_tetra_refusal("on an Airspy", AUDIO_IN_RTL, "airspy", 48,
+                                 "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
+    check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
+                                 "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
 
     dsd_app_frontend_runtime_start(NULL, NULL);
     /* Issue #671: scan_resume resumes a paused scan; it takes no parameters and is admitted as SCAN_RESUME. */

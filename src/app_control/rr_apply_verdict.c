@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * The RadioReference import's receiver verdict (issue #803): whether the session can take an import and decode the
+ * mode it selects. Pure: plain facts in, a verdict out, plus the two helpers that read those facts off a dsd_opts and
+ * ask the next-start rule. No stream, engine or I/O, so the decoder thread's preflight and the frontends' pre-check
+ * run the same code (rr_apply_verdict.h).
+ */
+
+#include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/tetra_rate.h>
+#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "rr_apply_verdict.h"
+
+/* The reasons, as phrases a toast puts after "Failed: RR import -> " (and a frontend frames as it likes). Each fits an
+   80-column status line with that prefix. */
+static const char k_rr_why_trunk_scan[] = "stop the trunk scan first; it keeps its own channel maps";
+static const char k_rr_why_am_audio[] = "AM needs an IQ radio input";
+static const char k_rr_why_tetra_audio[] = "TETRA needs an IQ radio input or a symbol capture";
+static const char k_rr_why_tetra_uplink[] = "TETRA uplink session; restart without --tetra-uplink";
+static const char k_rr_why_tetra_airspy[] = "an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp";
+static const char k_rr_why_tetra_rtl_bw[] = "TETRA needs 72 kHz DSP bandwidth; set it and import again";
+
+static int
+rr_refuse(char* why, size_t why_size, const char* text) {
+    if (why && why_size > 0U) {
+        DSD_SNPRINTF(why, why_size, "%s", text);
+    }
+    return 1;
+}
+
+/* Inputs that hand the decoder I/Q samples, which AM and TETRA need. */
+static int
+rr_input_is_iq(int input_kind) {
+    return input_kind == DSD_APP_RR_INPUT_RTL || input_kind == DSD_APP_RR_INPUT_SOAPY
+           || input_kind == DSD_APP_RR_INPUT_AIRSPY || input_kind == DSD_APP_RR_INPUT_IQ_REPLAY;
+}
+
+/* A SoapySDR device settles its own rate: one known to run TETRA passes, one known not to is refused with the advice a
+   switch to TETRA gives (dsd_tetra_dsp_rate_advice(); its brief SoapySDR text matches the RTL-SDR one, so no options
+   are needed to pick it), and an unknown one passes for the decoder thread to decide. */
+static int
+rr_tetra_soapy_verdict(uint32_t actual_rate_hz, char* why, size_t why_size) {
+    if (actual_rate_hz == 0U) {
+        return 0;
+    }
+    const int rate_hz = actual_rate_hz > (uint32_t)INT_MAX ? INT_MAX : (int)actual_rate_hz;
+    char advice[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (dsd_tetra_dsp_rate_advice(NULL, rate_hz, 1, advice, sizeof advice) != 1) {
+        return 0;
+    }
+    return rr_refuse(why, why_size, advice);
+}
+
+/* TETRA by input (the verdict table of issue #803). */
+static int
+rr_tetra_verdict(const dsd_app_rr_receiver_facts* f, char* why, size_t why_size) {
+    if (!rr_input_is_iq(f->input_kind) && f->input_kind != DSD_APP_RR_INPUT_SYMBOLS) {
+        return rr_refuse(why, why_size, k_rr_why_tetra_audio);
+    }
+    if (f->tetra_uplink) {
+        return rr_refuse(why, why_size, k_rr_why_tetra_uplink);
+    }
+    switch (f->input_kind) {
+        case DSD_APP_RR_INPUT_RTL:
+            /* The DSP bandwidth is the rate, and 72 kHz the one TETRA is set up for (-fT). Changing it here would
+               reopen the radio, which restarts an --iq-capture from its start, so the operator sets it. */
+            return f->rtl_dsp_bw_khz == DSD_TETRA_DSP_BW_KHZ ? 0 : rr_refuse(why, why_size, k_rr_why_tetra_rtl_bw);
+        case DSD_APP_RR_INPUT_AIRSPY: return rr_refuse(why, why_size, k_rr_why_tetra_airspy);
+        case DSD_APP_RR_INPUT_SOAPY: return rr_tetra_soapy_verdict(f->actual_rate_hz, why, why_size);
+        default: return 0; /* an I/Q replay re-plans to a TETRA rate or refuses; a symbol capture has no rate */
+    }
+}
+
+int
+dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!facts) {
+        return 1;
+    }
+    if (facts->trunk_scan_running) {
+        /* A trunk scan gets its channel maps per target: refusing the whole import keeps a half-applied one off it. */
+        return rr_refuse(why, why_size, k_rr_why_trunk_scan);
+    }
+    if (facts->decode_mode == (int32_t)DSDCFG_MODE_AM && !rr_input_is_iq(facts->input_kind)) {
+        return rr_refuse(why, why_size, k_rr_why_am_audio);
+    }
+    if (facts->decode_mode == (int32_t)DSDCFG_MODE_TETRA) {
+        return rr_tetra_verdict(facts, why, why_size);
+    }
+    return 0;
+}
+
+/* The input as the stream start classifies it (dsd_opts_analog_rate_source()), and the decode-mode input check
+   (dsd_decode_mode_runs_on_input()): a radio input is I/Q, a symbol capture is symbols, anything else is audio. */
+static int
+rr_input_kind(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        return DSD_APP_RR_INPUT_SYMBOLS;
+    }
+    if (!dsd_opts_input_is_radio(opts)) {
+        return DSD_APP_RR_INPUT_AUDIO;
+    }
+    switch (dsd_opts_analog_rate_source(opts)) {
+        case DSD_ANALOG_RATE_CAPTURE: return DSD_APP_RR_INPUT_IQ_REPLAY;
+        case DSD_ANALOG_RATE_DEVICE:
+            return dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? DSD_APP_RR_INPUT_AIRSPY
+                                                                            : DSD_APP_RR_INPUT_SOAPY;
+        default: return DSD_APP_RR_INPUT_RTL;
+    }
+}
+
+void
+rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payload* p, int has_group, int has_chan,
+                             uint32_t actual_rate_hz, dsd_app_rr_receiver_facts* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
+    if (!opts || !p) {
+        return;
+    }
+    out->decode_mode = p->decode_mode;
+    out->input_kind = rr_input_kind(opts);
+    out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    out->actual_rate_hz = actual_rate_hz;
+    out->tetra_uplink = opts->tetra_uplink ? 1 : 0;
+    out->trunk_scan_running = opts->trunk_scan_enabled == 1 ? 1 : 0;
+    out->has_group = has_group ? 1 : 0;
+    out->has_chan = has_chan ? 1 : 0;
+    /* Exactly one tuner owner, as the apply sets it (rr_apply_tuner_owner()). */
+    out->trunking = p->trunking ? 1 : 0;
+    out->scanner = (!p->trunking && p->scanner) ? 1 : 0;
+}
+
+int
+rr_apply_next_start_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_app_rr_receiver_facts* facts,
+                            const char* chan_path, char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!opts || !state || !facts) {
+        return -1;
+    }
+    /* Two saves (a few tens of KB each) on the heap, once per import checked. */
+    dsdneoUserConfig* before = (dsdneoUserConfig*)calloc(2, sizeof *before);
+    if (!before) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", "out of memory");
+        }
+        return -1;
+    }
+    dsdneoUserConfig* after = before + 1;
+    dsd_snapshot_opts_to_user_config(opts, state, before);
+    DSD_MEMCPY(after, before, sizeof *after);
+    /* What the import leaves: the tuner owner it sets and the channel map it loads or clears (rr_apply_files()). A
+       frontend asks before the file exists; the rules only ask whether there is one. */
+    after->trunk_enabled = facts->trunking;
+    after->trunk_scanner = facts->scanner;
+    const char* chan = (chan_path && chan_path[0] != '\0') ? chan_path : "radioreference import";
+    DSD_SNPRINTF(after->trunk_chan_csv, sizeof after->trunk_chan_csv, "%s", facts->has_chan ? chan : "");
+    const int rc = dsd_user_config_check_trunk_scan_startable(after, before, why, why_size);
+    free(before);
+    return rc;
+}

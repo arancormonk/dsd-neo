@@ -266,6 +266,29 @@ Two more limits worth knowing:
 - Applying is asynchronous and its outcome is reported by a status message from the decoder, not by the
   wizard. A session started with `--trunk-scan` manages its own channel maps: the wizard refuses the import
   before writing anything, and the decoder-thread handler refuses the apply again if one ever reaches it.
+- The decoder checks everything it can before it changes anything: the receiver (below), a trunk scan
+  waiting for the next start, the width an AM or Analog mode needs, whether a running I/Q replay can run the
+  mode, and each CSV file. A refused import changes nothing (the call, a running `-Y` scan, the mode and the
+  files all stay, and Config -> Save writes what it would have before), and the status message gives the
+  reason, for example `Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`.
+- An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
+  frequency.
+
+#### Receiver requirements
+
+AM needs an IQ radio input. TETRA needs a receiver that can decode it, and the import is refused, with the
+reason, when the session cannot:
+
+| Input | TETRA import |
+|---|---|
+| RTL-SDR or rtl_tcp at a 72 kHz DSP bandwidth | Accepted |
+| RTL-SDR or rtl_tcp at any other DSP bandwidth | Refused: set the DSP bandwidth to 72 kHz (or start with `-fT`), then import again. The import does not change it itself, because reopening the radio would restart an `--iq-capture` from the beginning |
+| SoapySDR | Accepted when the rate the device runs at is a TETRA rate (a multiple of 18 kHz from 36 to 144 kHz), refused with advice otherwise. The wizard cannot see that rate, so only the decoder decides |
+| Airspy | Refused: no Airspy rate decodes TETRA yet |
+| I/Q replay | Accepted; the replay is re-planned to a TETRA rate, or the import is refused when the capture cannot be resampled to one |
+| Symbol capture (`.bin`, `.raw`, `.sym`) | Accepted |
+| PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an IQ radio input or a symbol capture |
+| A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
 - `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
   never steps and the session will look stuck on the first frequency. The generator emits that warning and
   the panel shows it.

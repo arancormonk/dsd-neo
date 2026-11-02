@@ -28,6 +28,7 @@ target_sources(
         notification_status.c
         rigctl_connect.c
         rigctl_passband.c
+        rr_apply_verdict.c
         rr_import_apply.c
         rtl_gain_view.c
         rx_tone_view.c

@@ -3,14 +3,20 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Pure plan -> apply-payload mapping. No session state, no I/O, no threads. */
+/* Pure plan -> apply-payload mapping, and the frontends' pre-check of an import over the published snapshots. No live
+   session state, no I/O, no threads of its own. */
 
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "rr_apply_verdict.h"
 
 /**
  * @brief Copy a path into the payload and report whether it is meaningful.
@@ -83,5 +89,33 @@ dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_p
     out->tune_hz = (uint32_t)plan->tune_hz;
     out->has_chan = rr_copy_path(out->chan_path, sizeof out->chan_path, chan_path);
     out->has_group = rr_copy_path(out->group_path, sizeof out->group_path, group_path);
+    return 0;
+}
+
+int
+dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, int has_chan, char* why,
+                              size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    const dsd_opts* osnap = p ? dsd_app_get_latest_opts_snapshot() : NULL;
+    if (osnap == NULL) {
+        return 0; /* nothing published yet: no evidence against the import */
+    }
+    /* No measured rate here: the frontend metric lags the committed rate, and the stream belongs to the decoder
+       thread. An RTL-SDR's rate is its committed DSP bandwidth; a SoapySDR device's is unknown, so it passes. */
+    dsd_app_rr_receiver_facts facts;
+    rr_apply_receiver_facts_fill(osnap, p, has_group, has_chan, 0U, &facts);
+    if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
+        return 1;
+    }
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    if (snap != NULL && rr_apply_next_start_refusal(osnap, snap, &facts, p->chan_path, why, why_size) != 0) {
+        /* The rule without its advice, as the decoder's refusal names it. */
+        if (why && why_size > 0U) {
+            why[strcspn(why, ";")] = '\0';
+        }
+        return 1;
+    }
     return 0;
 }

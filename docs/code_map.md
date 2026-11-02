@@ -3302,6 +3302,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     and the pure plan-to-payload mapper; `src/app_control/rr_import_apply.c` implements it, and the
     `DSD_APP_CMD_RR_APPLY_IMPORT` / `DSD_APP_CMD_RR_ACCOUNT_SET` handlers run on the decoder thread so no
     frontend ever writes `dsd_opts` itself
+  - RadioReference receiver verdict (issue #803): `dsd_app_rr_receiver_verdict()` (pure, plain
+    `dsd_app_rr_receiver_facts`, `src/app_control/rr_apply_verdict.c`) refuses an import under a running trunk scan,
+    AM or TETRA on audio, and TETRA where it decodes nothing (RTL-SDR/rtl_tcp off 72 kHz, an Airspy, a SoapySDR rate
+    that is no TETRA rate, `--tetra-uplink`); an unknown SoapySDR rate passes. The module-private
+    `rr_apply_verdict.h` fills the facts from a `dsd_opts` and asks the next-start rule
+    (`rr_apply_next_start_refusal()`); the decoder's preflight and the frontends' advisory
+    `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured rate, no `rtl_stream_*` call) share it.
+  - Invariant: `apply_rr_import()` has one commit point. `rr_apply_preflight()` runs every deterministic check
+    before the carrier boundary and the `-Y` leave (mode bound, verdict, next start, the receive profile the mode
+    publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
+    refusal changes nothing. After it, an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer
+    or not
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,

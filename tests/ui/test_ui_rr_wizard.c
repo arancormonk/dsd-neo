@@ -58,6 +58,13 @@ dsd_app_get_latest_opts_snapshot(void) {
     return g_stub_opts_published ? &g_stub_opts : NULL;
 }
 
+/* The state half of the published pair, which dsd_app_rr_apply_block_reason() (rr_import_apply.c) reads for the
+ * next-start rule: nothing published here. */
+const dsd_state*
+dsd_app_get_latest_snapshot(void) {
+    return NULL;
+}
+
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
 #error "DSD_NEO_TEST_RR_FIXTURE_DIR must be defined by the build"
 #endif

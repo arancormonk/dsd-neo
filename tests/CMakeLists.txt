@@ -5523,6 +5523,7 @@ if(DSD_HAS_EXPAT)
         ui/test_ui_rr_wizard.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard
@@ -8568,6 +8569,35 @@ target_link_libraries(
 )
 add_test(NAME APP_P25_CC_SELECTION COMMAND dsd-neo_test_app_p25_cc_selection)
 
+# The RR import's receiver verdict (issue #803), compiled directly like UI_RR_WIZARD's copy of rr_import_apply.c so it
+# needs no engine, stream or link seam and runs on every platform. The protocol and codec2 libraries are what
+# initState()/freeState() and dsd-neo_core reach (as CORE_MBE_TRANSFORM_CONTEXT links them).
+add_executable(
+    dsd-neo_test_app_control_rr_verdict
+    ui/test_app_control_rr_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rr_verdict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rr_verdict
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(
+    NAME APP_CONTROL_RR_VERDICT
+    COMMAND dsd-neo_test_app_control_rr_verdict
+)
+
 add_executable(dsd-neo_test_app_control_rr_apply ui/test_app_control_rr_apply.c)
 target_include_directories(
     dsd-neo_test_app_control_rr_apply
@@ -8592,8 +8622,12 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+        PRIVATE
+            DSD_NEO_TEST_IO_CONTROL_WRAP
+            DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+            DSD_NEO_TEST_RR_APPLY_WRAP
     )
+    # The running-replay and file-load steps an import can fail at after its commit point (issue #803).
     target_link_options(
         dsd-neo_test_app_control_rr_apply
         PRIVATE
@@ -8601,6 +8635,11 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
+            "LINKER:--wrap=svc_import_channel_map"
+            "LINKER:--wrap=rtl_stream_get_request_rate_hz"
+            "LINKER:--wrap=rtl_stream_replay_replan_check_request"
+            "LINKER:--wrap=svc_rtl_replay_replan_locked"
+            "LINKER:--wrap=svc_rtl_restart_recovery_locked"
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
