@@ -2791,8 +2791,9 @@ suite runs under this compiler.
     (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
     value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
     is read case- and space-blind. The group writer (`dsd_rr_generate_group_csv*()`) takes the protocol: it drops
-    rows with no valid ID and rows above the kind's `id_max` before duplicate selection, with one counted warning
-    per class, and when nothing is left it returns 0 with no text. Every caller passes the system's protocol;
+    rows with no valid ID and rows above the kind's `id_max` before duplicate selection
+    (`dsd_rr_talkgroup_writable()`, the one rule a preview shares), with one counted warning per class, and when
+    nothing is left it returns 0 with no text. Every caller passes the system's protocol;
     the terminal wizard's group cache copies the writer's warnings into the plan even when there is no text, and
     a refresh (terminal and Qt) that would leave a talkgroup list empty keeps the stored file and says why.
     The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
@@ -10039,8 +10040,8 @@ Qt Quick frontend (`src/ui/qt`):
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
-  encryption counts, sample) holds only the rows the group writer keeps (`tg_dec_valid`, `dsd_rr_protocol_id_max()`),
-  so the preview agrees with the file. See
+  encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
+  row of each ID), so the preview agrees with the file. See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
   acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed

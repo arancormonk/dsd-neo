@@ -343,6 +343,15 @@ dsd_rr_protocol_id_max(dsd_rr_protocol protocol) {
     return (row != NULL) ? row->id_max : 0U;
 }
 
+int
+dsd_rr_talkgroup_writable(const dsd_rr_talkgroup* talkgroup, dsd_rr_protocol protocol) {
+    if (talkgroup == NULL || !talkgroup->tg_dec_valid) {
+        return 0;
+    }
+    const uint32_t id_max = dsd_rr_protocol_id_max(protocol);
+    return (id_max == 0U || talkgroup->tg_dec <= id_max) ? 1 : 0;
+}
+
 const char*
 dsd_rr_protocol_token(dsd_rr_protocol protocol) {
     const rr_protocol_entry* row = rr_protocol_row(protocol);
@@ -1516,9 +1525,9 @@ rr_group_warn(dsd_rr_protocol protocol, dsd_rr_warning_list* warnings, const rr_
  *
  * Runs before duplicate selection, so a row with no usable ID - or one the
  * protocol cannot carry - can never be the "first" of a duplicate pair and push
- * a real one out. 0 is not excluded: no protocol rule makes it unusable here.
+ * a real one out (dsd_rr_talkgroup_writable(), the rule a preview shares).
  *
- * @param id_max     Largest ID the protocol carries, or 0 for no ceiling.
+ * @param protocol   Protocol the IDs are written for.
  * @param talkgroups Talkgroups.
  * @param count      Number of talkgroups.
  * @param keys       Receives the keys, sized for @p count.
@@ -1526,16 +1535,17 @@ rr_group_warn(dsd_rr_protocol protocol, dsd_rr_warning_list* warnings, const rr_
  * @return The number of keys written.
  */
 static size_t
-rr_group_keys(uint32_t id_max, const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys,
+rr_group_keys(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys,
               rr_group_counts* counts) {
     size_t kept = 0;
     for (size_t i = 0; i < count; i++) {
-        if (!talkgroups[i].tg_dec_valid) {
-            counts->no_id++;
-            continue;
-        }
-        if (id_max != 0U && talkgroups[i].tg_dec > id_max) {
-            counts->over_max++;
+        if (!dsd_rr_talkgroup_writable(&talkgroups[i], protocol)) {
+            /* One rule, two warnings: no usable ID, or one above the ceiling. */
+            if (talkgroups[i].tg_dec_valid) {
+                counts->over_max++;
+            } else {
+                counts->no_id++;
+            }
             continue;
         }
         keys[kept].dec = talkgroups[i].tg_dec;
@@ -1572,7 +1582,7 @@ dsd_rr_generate_group_csv_with_policy(dsd_rr_protocol protocol, const dsd_rr_tal
         return -1;
     }
     rr_group_counts counts = {0U, 0U, 0U, 0U, 0U};
-    const size_t kept = rr_group_keys(dsd_rr_protocol_id_max(protocol), talkgroups, count, keys, &counts);
+    const size_t kept = rr_group_keys(protocol, talkgroups, count, keys, &counts);
     if (kept == 0U) {
         /* Nothing writable: no file, but the skip counts still say why. */
         free(keys);

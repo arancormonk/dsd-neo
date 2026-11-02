@@ -586,6 +586,7 @@ test_saved_tetra_system_round_trip() {
     int status = 0;
     const QByteArray sealed =
         dsd_qt::backup::backup_seal(built.archive, QStringLiteral("kordia tetra"), test_kdf(), &status);
+    expect("tetra backup: seals", status == DSD_BACKUP_OK && !sealed.isEmpty());
     const QByteArray opened = dsd_qt::backup::backup_open(sealed, QStringLiteral("kordia tetra"), &status);
     const auto parsed = dsd_qt::backup::backup_parse_archive(opened, snapshot.root);
     expect("tetra backup: the restore accepts it", status == DSD_BACKUP_OK && parsed.error == BackupError::None);

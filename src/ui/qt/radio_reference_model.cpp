@@ -352,29 +352,24 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
 }
 
 /**
- * @brief Whether the group-CSV writer keeps @p tg for a protocol whose IDs stop at @p idMax (0: no ceiling).
+ * @brief Fill @p summary's count, encryption counts and sample from the talkgroups the group file would hold.
  *
- * The writer's own skip rule (rr_group_keys()): a row with no usable ID, or one the protocol cannot carry (a TETRA
- * group is 24 bits), never reaches the file, so the preview must not count or show it either.
+ * As the writer does: a row it skips (dsd_rr_talkgroup_writable(): no usable ID, or one the protocol cannot carry)
+ * and a repeated ID after its first row never reach the file, so the preview neither counts nor shows them.
  */
-bool
-talkgroup_writable(const dsd_rr_talkgroup& tg, uint32_t idMax) {
-    return tg.tg_dec_valid != 0 && (idMax == 0U || tg.tg_dec <= idMax);
-}
-
-/** @brief Fill @p summary's count, encryption counts and sample from the talkgroups the group file would hold. */
 void
 summarize_talkgroups(const dsd_rr_talkgroup_list& talkgroups, dsd_rr_protocol protocol, QVariantMap* summary) {
-    const uint32_t idMax = dsd_rr_protocol_id_max(protocol);
+    QSet<uint32_t> seen;
     int count = 0;
     int encCount = 0;
     int partialCount = 0;
     QVariantList sample;
     for (size_t i = 0; i < talkgroups.count; i++) {
         const dsd_rr_talkgroup& tg = talkgroups.items[i];
-        if (!talkgroup_writable(tg, idMax)) {
+        if (dsd_rr_talkgroup_writable(&tg, protocol) == 0 || seen.contains(tg.tg_dec)) {
             continue;
         }
+        seen.insert(tg.tg_dec);
         count++;
         if (tg.enc >= 2) {
             encCount++;

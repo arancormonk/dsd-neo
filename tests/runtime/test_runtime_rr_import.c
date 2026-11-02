@@ -886,6 +886,22 @@ test_tetra_kind(void) {
         expect("other kinds have no ID ceiling", dsd_rr_protocol_id_max((dsd_rr_protocol)p) == 0U);
     }
     expect("unsupported has no ID ceiling", dsd_rr_protocol_id_max(DSD_RR_PROTO_UNSUPPORTED) == 0U);
+
+    /* The writer's skip rule, which a preview shares: a usable ID within the ceiling, 0 and 0xFFFFFF included. */
+    dsd_rr_talkgroup tg;
+    DSD_MEMSET(&tg, 0, sizeof(tg));
+    expect("NULL is not writable", dsd_rr_talkgroup_writable(NULL, DSD_RR_PROTO_P25) == 0);
+    tg.tg_dec = 1017000U;
+    expect("no usable ID is not writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_P25) == 0);
+    tg.tg_dec_valid = 1;
+    tg.tg_dec = 0U;
+    expect("ID 0 is writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 1);
+    tg.tg_dec = 0xFFFFFFU;
+    expect("the TETRA ceiling is writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 1);
+    tg.tg_dec = 0x1000000U;
+    expect("above the TETRA ceiling is not writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 0);
+    tg.tg_dec = UINT32_MAX;
+    expect("no ceiling for P25", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_P25) == 1);
 }
 
 /* map_need 0 is a successful generate with no file, for one site or several;

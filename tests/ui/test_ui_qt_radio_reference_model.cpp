@@ -1114,10 +1114,12 @@ test_tetra_system_token(void) {
  * Regression: the preview's count, sample and encryption counts read every row
  * RadioReference lists, while the writer skips a row with no usable ID and, for
  * TETRA, an ID above the 24-bit ceiling (0xFFFFFF). Such rows showed in the
- * preview but never reached the file. Three TETRA rows are rewritten: one to
+ * preview but never reached the file, and so did a repeated ID, which the
+ * writer drops after its first row. Four TETRA rows are rewritten: one to
  * 0x1000000 and fully encrypted (skipped), one to 0xFFFFFF and partially
  * encrypted (kept: the ceiling is inclusive), one past any 32-bit ID and fully
- * encrypted (no usable ID, skipped).
+ * encrypted (no usable ID, skipped), and a later one to 0xFFFFFF again, fully
+ * encrypted (a duplicate, dropped).
  */
 void
 test_talkgroup_preview_matches_the_file(void) {
@@ -1131,14 +1133,17 @@ test_talkgroup_preview_matches_the_file(void) {
         {"Bin 1025000" + encTail + '0', "Bin 1025000" + encTail + '1'},
         {QByteArrayLiteral(">1025001</tgDec>"), QByteArrayLiteral(">99999999999</tgDec>")},
         {"Trucking 1025001" + encTail + '0', "Trucking 1025001" + encTail + '2'},
+        {QByteArrayLiteral(">1033000</tgDec>"), QByteArrayLiteral(">16777215</tgDec>")},
+        {"Mobility Taxi" + encTail + '0', "Mobility Taxi" + encTail + '2'},
     };
     h.model.loadSystem(10880);
     pump(h.model);
 
     const QVariantMap summary = h.model.talkgroupSummary();
-    expect_int("preview: the two skipped rows are not counted", summary.value(QStringLiteral("count")).toInt(), 14);
-    expect_int("preview: neither skipped encrypted row is counted", summary.value(QStringLiteral("encCount")).toInt(),
-               0);
+    expect_int("preview: the two skipped rows and the duplicate are not counted",
+               summary.value(QStringLiteral("count")).toInt(), 13);
+    expect_int("preview: no skipped or duplicate encrypted row is counted",
+               summary.value(QStringLiteral("encCount")).toInt(), 0);
     expect_int("preview: the kept partially encrypted row is counted",
                summary.value(QStringLiteral("partialEncCount")).toInt(), 1);
     expect("preview: an ID above 0xFFFFFF is not shown",
@@ -1146,14 +1151,18 @@ test_talkgroup_preview_matches_the_file(void) {
     expect("preview: 0xFFFFFF is shown",
            sample_row(summary, 16777215ULL).value(QStringLiteral("name")).toString() == QStringLiteral("Bin 1025000"));
     expect("preview: a row with no usable ID is not shown", !sample_names(summary, QStringLiteral("Trucking 1025001")));
+    expect("preview: a repeated ID is not shown again", !sample_names(summary, QStringLiteral("Mobility Taxi")));
 
     /* The file agrees with the preview. */
     const QString groupCsv =
         h.model.buildImportPlan(QVariantList{0}, QVariantMap()).value(QStringLiteral("groupCsvText")).toString();
     expect("preview: the file holds 0xFFFFFF", groupCsv.contains(QStringLiteral("\n16777215,")));
-    expect("preview: the file skips the same rows",
-           !groupCsv.contains(QStringLiteral("16777216")) && !groupCsv.contains(QStringLiteral("Trucking 1025001")));
-    expect_int("preview: the file holds as many rows as the preview counts", row_count(groupCsv), 15);
+    expect("preview: the file skips the same rows", !groupCsv.contains(QStringLiteral("16777216"))
+                                                        && !groupCsv.contains(QStringLiteral("Trucking 1025001"))
+                                                        && !groupCsv.contains(QStringLiteral("Mobility Taxi")));
+    /* One header line, then one line per talkgroup the preview counts. */
+    expect_int("preview: the file holds as many rows as the preview counts", row_count(groupCsv),
+               summary.value(QStringLiteral("count")).toInt() + 1);
 }
 
 /**

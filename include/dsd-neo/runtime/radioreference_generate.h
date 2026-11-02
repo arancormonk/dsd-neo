@@ -196,6 +196,20 @@ int dsd_rr_chan_map_need(dsd_rr_protocol protocol);
 uint32_t dsd_rr_protocol_id_max(dsd_rr_protocol protocol);
 
 /**
+ * @brief Whether the group-CSV writer keeps a talkgroup for @p protocol.
+ *
+ * The writer's one skip rule, shared with any preview of what it writes: a
+ * talkgroup with no usable ID (tg_dec_valid 0), or one above
+ * dsd_rr_protocol_id_max() for @p protocol, never reaches the file. 0 is
+ * kept. Duplicate IDs are the writer's to drop afterwards (the first wins).
+ *
+ * @param talkgroup Talkgroup, or NULL.
+ * @param protocol  Protocol the IDs are written for.
+ * @return 1 when it can be written, 0 otherwise (and for NULL).
+ */
+int dsd_rr_talkgroup_writable(const dsd_rr_talkgroup* talkgroup, dsd_rr_protocol protocol);
+
+/**
  * @brief The site's control-channel frequency.
  *
  * @param site Site.

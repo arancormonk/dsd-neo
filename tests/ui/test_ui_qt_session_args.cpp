@@ -1078,12 +1078,23 @@ test_tetra_rate(void) {
     expect("placeholder: blank otherwise shows the app default",
            builder.effectiveBandwidthKhz(QStringLiteral("-fs"), usb, -1) == SessionArgPrefs().bandwidthKhz);
 
+    /* The start refusal says the one fix for the system's source, as the gate does. */
     const QVariantMap result = builder.build(airspy);
-    expect("the start refusal carries its category and text",
+    expect("the Airspy start refusal carries its category and the Airspy text",
            !result.value(QStringLiteral("ok")).toBool()
                && result.value(QStringLiteral("error")).toString() == QStringLiteral("tetra-rate")
-               && result.value(QStringLiteral("errorText")).toString()
-                      == session_args_error_text(SessionArgsError::TetraRate));
+               && result.value(QStringLiteral("errorText")).toString() == airspyText);
+    QVariantMap remote = usb_system();
+    remote.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    remote.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    remote.insert(QStringLiteral("port"), 1234);
+    remote.insert(QStringLiteral("decodeFlag"), tetra);
+    remote.insert(QStringLiteral("bandwidthKhz"), 48);
+    const QVariantMap remoteResult = builder.build(remote);
+    expect("the rtl_tcp start refusal carries its category and the bandwidth text, not the Airspy one",
+           remoteResult.value(QStringLiteral("error")).toString() == QStringLiteral("tetra-rate")
+               && remoteResult.value(QStringLiteral("errorText")).toString() == bandwidthText
+               && !remoteResult.value(QStringLiteral("errorText")).toString().contains(QStringLiteral("Airspy")));
     expect("the start refusal names both fixes",
            session_args_error_text(SessionArgsError::TetraRate).contains(QStringLiteral("Airspy"))
                && session_args_error_text(SessionArgsError::TetraRate).contains(QStringLiteral("72 kHz")));

@@ -199,7 +199,8 @@ bool session_args_tetra_runs_on(const QString& sourceType, int bandwidthKhz);
  * @brief Why TETRA cannot decode on @p sourceType at @p bandwidthKhz, or empty when it can (issue #803).
  *
  * Unlike session_args_error_text(SessionArgsError::TetraRate), which covers both cases, the text names the one fix
- * for this source: another radio for an Airspy, the 72 kHz bandwidth for a USB or rtl_tcp radio.
+ * for this source: another radio for an Airspy, the 72 kHz bandwidth for a USB or rtl_tcp radio. A start refused
+ * with TetraRate carries the same text for its system's source as its "errorText".
  */
 QString session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz);
 
