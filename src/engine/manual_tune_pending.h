@@ -34,10 +34,11 @@ typedef struct {
 void dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out);
 
 /* Whether the noted tune's completion has come, and the next dsd_engine_manual_tune_poll() will act on it: a failure of
-   any tune (the cached centre goes back, an entry's toast) or an untyped -Y step's landing (its row commits). The
-   synced-frames loop ends a reception on it, so a frame decoded after it is never named after a frequency the receiver
-   did not reach, nor after the row left. An entry's landing changes nothing the decoder names, so it ends nothing. A flag read
-   and one atomic load while nothing is noted. Decoder thread. */
+   any tune (the cached centre goes back, an entry's toast), an untyped -Y step's landing (its row commits) or a
+   RadioReference import's landing (its toast, issue #803). The synced-frames loop ends a reception on it, so a frame
+   decoded after it is never named after a frequency the receiver did not reach, nor after the row left, and the outcome
+   is posted while the carrier keeps sync. An entry's landing changes nothing the decoder names, so it ends nothing. A
+   flag read and one atomic load while nothing is noted. Decoder thread. */
 int dsd_engine_manual_tune_settled_ready(void);
 
 /* Whether a manual tune of any kind is noted and its completion still awaited: it decides where the receiver goes, so

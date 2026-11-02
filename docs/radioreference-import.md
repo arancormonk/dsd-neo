@@ -277,6 +277,15 @@ Limits worth knowing:
   `Failed: P25 Phase 1 -> the replay did not start at the new rate (see log)`, and the import goes no further.
   A CSV file that cannot be loaded by then (deleted in the meantime) is reported as a partial apply that names
   what did take, for example `Failed: RR import -> channel map not loaded; mode and talkgroups applied`.
+- The tune to the system's frequency reports how it went. A tune that fails is a partial apply
+  (`Failed: RR import -> tune to 851.012500 MHz failed; mode applied`). A tuner that is busy (for example
+  while auto-PPM trains) takes nothing: the rest applies and the message asks for a retry
+  (`Deferred; retry: RR import -> tune to 851.012500 MHz deferred (tuner busy); mode applied`); a manual tune
+  still waiting to land keeps the receiver. A tune that is still on its way says so in the applied message
+  (`...; tuning to 851.012500 MHz`), and a later message gives the outcome: `Applied: RR import -> tuned to
+  851.012500 MHz`, the failure (with what else the import applied), or `Interrupted: RR import -> tune to
+  851.012500 MHz; a newer tune took over` (or `; the radio input stopped`). A landing or an interruption never
+  covers a newer message. A session with no tuner (a WAV file, UDP audio) says nothing about a tune.
 - An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
   frequency.
 - `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner

@@ -28,7 +28,11 @@ extern "C" {
 #endif
 
 /** What a noted manual tune was. */
-typedef enum { DSD_MANUAL_TUNE_ENTRY = 1, DSD_MANUAL_TUNE_UNTYPED_STEP = 2 } dsd_manual_tune_kind;
+typedef enum {
+    DSD_MANUAL_TUNE_ENTRY = 1,
+    DSD_MANUAL_TUNE_UNTYPED_STEP = 2,
+    DSD_MANUAL_TUNE_RR_IMPORT = 3, /**< A RadioReference import's tune (issue #803). */
+} dsd_manual_tune_kind;
 
 /** dsd_engine_manual_tune_poll() results. */
 enum {
@@ -55,6 +59,27 @@ void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind 
                                          uint32_t scan_session, uint64_t map_seq);
 
 /**
+ * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
+ * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
+ *
+ * Called after the import posted its own toast. The poll then posts each outcome: a late failure posts
+ * @p failure_text; a landing, or a drop (a newer tune took over, the stream stopped), replaces the import's toast or a
+ * line already cleared, never a newer message, and the import's toast only when @p own_toast_replaceable (it reported
+ * a success the landing completes, not a failure the landing would hide).
+ *
+ * @param state                 Decoder state; its ui_msg is the import's toast.
+ * @param id                    The ID io_control_set_freq_tagged() handed back; 0 notes nothing and leaves any older
+ *                              tune noted (a tune that was not queued supersedes nothing).
+ * @param requested_hz          The frequency asked for.
+ * @param prior_applied_hz      The centre in force before the tune.
+ * @param failure_text          The toast a late failure posts; NULL or empty for the plain tune failure.
+ * @param own_toast_replaceable Non-zero when a landing or a drop may replace the import's toast.
+ */
+void dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32_t requested_hz,
+                                           uint32_t prior_applied_hz, const char* failure_text,
+                                           int own_toast_replaceable);
+
+/**
  * @brief Drop the noted tune: another tune of the receiver now decides where the receiver is. The next
  * dsd_engine_manual_tune_poll() reports the drop (DSD_MANUAL_TUNE_DROPPED), unless a newer tune is noted first, which
  * then owns the receiver: an untyped -Y step's drop is still reported then, ahead of the newer tune, since a resume may
@@ -70,6 +95,7 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
  * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
+ * A RadioReference import's tune posts every outcome (dsd_engine_manual_tune_note_rr_import()).
  * An untyped -Y step's failure is not toasted: the scan passes the row, as after a step that failed in its wait (issue
  * #666), and the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
  *

@@ -272,6 +272,42 @@ check_rr_apply_tetra_refusal(const char* what, int audio_in_type, const char* au
     free(opts);
 }
 
+/*
+ * Issue #803 (T5): the import's tune outcome arrives the same way, never in the response. An RTL input whose stream is
+ * not running cannot take the tune: the response is still the queue's acknowledgement, and status.message is the
+ * partial apply, which on main read "Applied: RR import".
+ */
+static void
+check_rr_apply_tune_outcome(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts != NULL && state != NULL);
+    initOpts(opts);
+    opts->audio_out_type = 9; /* the null output: no host audio stream */
+    initState(state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0");
+    dsd_app_frontend_runtime_start(opts, state);
+    dsd_json_node* resp = execute("rr_apply_import", "{\"decode_mode\":2,\"trunking\":true,\"tune_hz\":851375000}");
+    assert(is_ok(resp));
+    const char* status = dsd_json_as_str(dsd_json_obj_get(resp, "status"));
+    assert(status != NULL && strcmp(status, "queued") == 0);
+    assert(dsd_json_obj_get(resp, "message") == NULL);
+    dsd_json_free(resp);
+    state->ui_msg[0] = '\0';
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    const char* want = "Failed: RR import -> tune to 851.375000 MHz failed; mode applied";
+    if (strcmp(state->ui_msg, want) != 0) {
+        DSD_FPRINTF(stderr, "rr_apply_import tune: status message \"%s\", want \"%s\"\n", state->ui_msg, want);
+        assert(0);
+    }
+    assert(dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_P25P1 && opts->trunk_enable == 1);
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     int ids[MAX_IDS];
@@ -321,6 +357,7 @@ main(void) {
                                  "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
     check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
                                  "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
+    check_rr_apply_tune_outcome();
 
     dsd_app_frontend_runtime_start(NULL, NULL);
     /* Issue #671: scan_resume resumes a paused scan; it takes no parameters and is admitted as SCAN_RESUME. */

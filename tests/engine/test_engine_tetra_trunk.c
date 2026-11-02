@@ -586,16 +586,20 @@ secondary_open(void) {
 }
 
 /* The engine's tuner-free answer holds the move back while anything else decides where the receiver goes: a manual tune
- * of any kind still pending, a correlated tune in flight, trunk scan owning the tuner, -Y scanning. Once that is over,
- * the next SYSINFO moves (regression: main never moved off a secondary carrier). */
+ * of any kind still pending (a RadioReference import's among them), a correlated tune in flight, trunk scan owning the
+ * tuner, -Y scanning. Once that is over, the next SYSINFO moves (regression: main never moved off a secondary
+ * carrier). */
 static void
 test_engine_holds_the_move_while_the_tuner_is_busy(void) {
-    for (int how = 0; how < 5; how++) {
+    for (int how = 0; how < 6; how++) {
         session s = secondary_open();
         uint64_t other = 0U;
         if (how == 1) {
             dsd_engine_manual_tune_note_pending(s.state, DSD_MANUAL_TUNE_ENTRY, 77U, (uint32_t)OTHER_FREQ_HZ,
                                                 (uint32_t)VC_HZ, -1, 0U, 0U);
+        } else if (how == 5) {
+            /* A RadioReference import's tune still pending (issue #803). */
+            dsd_engine_manual_tune_note_rr_import(s.state, 78U, (uint32_t)OTHER_FREQ_HZ, (uint32_t)VC_HZ, NULL, 1);
         } else if (how == 2) {
             other = dsd_trunk_tuning_request_begin();
             dsd_trunk_tuning_request_mark_ready(other);
@@ -613,7 +617,7 @@ test_engine_holds_the_move_while_the_tuner_is_busy(void) {
         } else {
             expect(tetra_sm_get_state(s.state) == TETRA_SM_IDLE && s.opts->rtlsdr_center_freq == VC_HZ,
                    "busy: the machine stays where it is");
-            if (how == 1) {
+            if (how == 1 || how == 5) {
                 dsd_engine_manual_tune_supersede(s.state);
                 (void)dsd_engine_manual_tune_poll(s.opts, s.state);
             } else if (how == 2) {

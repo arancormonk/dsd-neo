@@ -2979,12 +2979,17 @@ A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manu
 `src/engine/manual_tune_pending.c`). `io_control_set_freq_tagged()` tags each RTL leg with an ID from its own space
 (`RTL_STREAM_TUNE_ID_MANUAL_BIT`, bit 63, above any ledger ID). On `RTL_STREAM_TUNE_TIMEOUT` it hands the ID back, and
 the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `svc_rtl_tune()` for the frequency entry,
-tap-to-tune and the Airspy live apply). The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
+tap-to-tune and the Airspy live apply; `dsd_engine_manual_tune_note_rr_import()` for a RadioReference import's tune,
+kind `DSD_MANUAL_TUNE_RR_IMPORT`, issue #803). A deferred tune has no ID and is never noted: the plain note supersedes
+the older record before it rejects ID 0, and a tune that queued nothing must not drop one. The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
 manual IDs into a small ring of atomic slots (eight; the poll looks for its record's ID, so an older tune finishing late
 never hides the completion awaited) and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
 waits on a manual tune. The decoder loop polls (`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`,
 one atomic load while nothing is pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied
-centre and, for an entry, toasts `Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. The
+centre and, for an entry, toasts `Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`.
+An RR import's record reports every outcome: its late failure posts the text the import composed (the tune among what
+failed, and what the import applied); its landing and its drop (superseded, or the stream stopped) replace only the
+import's own success toast or a cleared line, never a newer message. The
 cached centre follows a tune that fails inside its wait the same way: `io_control_set_freq_tagged()` (and
 `dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a target an earlier timeout cached,
 which the failed request may have coalesced over, was never reached. Every other tune of the receiver that reached the
@@ -2997,7 +3002,8 @@ is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_
 its owner settles what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver,
 and the older drop goes unreported. The record is process-wide, as the controller and its callback are. Tests:
 `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
-coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, and what ends a synced reception),
+coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an
+RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes),
 `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
@@ -3012,7 +3018,8 @@ clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan
 moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
 resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
 loop checks before every frame for a completion the poll will act on (`dsd_engine_manual_tune_settled_ready()`, one
-atomic load while nothing is noted: a step's landing, or any noted tune's late failure) and ends the reception when it
+atomic load while nothing is noted: a step's landing, an RR import's landing, or any noted tune's late failure) and ends
+the reception when it
 has come, so at most the frame in flight decodes under the row left, and a carrier that keeps sync (a control channel)
 never goes on decoding under an entry's frequency the receiver did not reach. The outer pass's poll then commits the
 row (boundary, then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no
@@ -3320,6 +3327,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
     import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
     and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+  - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
+    tuner took supersedes a pending manual tune: one applied or accepted, or an RTL request that failed in its wait
+    after the controller queued it; a rigctl refusal, an RTL input with no stream and a deferral leave it. A failure or
+    a deferral is a partial apply ("tune to X MHz failed" / "deferred (tuner busy)", "Deferred; retry" when it is the
+    only one); a timeout is noted after the import's toast (`dsd_engine_manual_tune_note_rr_import()`) and the poll
+    posts its outcome; no tuner says nothing
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,

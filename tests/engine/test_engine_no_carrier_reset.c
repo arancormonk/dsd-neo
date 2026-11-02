@@ -2676,6 +2676,65 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     return rc;
 }
 
+/* Issue #803 (T5, through the live loop): a RadioReference import's tune that timed out, noted as the import notes it.
+   A control channel keeps sync, so the synced-frames pass must hand back to the outer pass when the tune lands or
+   fails, or the import's outcome waits for the sync to drop. PENDING -> OK posts the landing, PENDING -> FAILED the
+   import's failure text and the centre back. */
+static int
+test_rr_import_tune_outcome_ends_a_synced_reception(void) {
+    int rc = 0;
+    for (int fails = 0; fails <= 1; fails++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        reset_rtl_profile_fakes();
+        dsd_trunk_tuning_requests_reset();
+        dsd_engine_manual_tune_supersede(state);
+        while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 980012500U;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        g_rtl_last_applied_hz = 980012500U;
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        uint64_t pending_id = 0U;
+        rc |= expect_true("rr-import-tune-times-out",
+                          io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                              && pending_id != 0U);
+        g_rtl_timeout_outstanding = 0;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
+                     "Applied: RR import (P25 Phase 1) +trunking; tuning to 981.012500 MHz");
+        state->ui_msg_expire = dsd_realtime_time() + 4;
+        dsd_engine_manual_tune_note_rr_import(state, pending_id, 981012500U, 980012500U,
+                                              "Failed: RR import -> tune to 981.012500 MHz failed; mode applied", 1);
+
+        /* The carrier keeps sync for 8 more frames; the tune completes while frame 2 decodes. */
+        g_frame_land_result = fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK;
+        run_synced_frames(opts, state, 8, 2);
+        if (g_frame_count != 3) {
+            DSD_FPRINTF(stderr, "rr import %s: %d frames decoded in the reception (want 3)\n",
+                        fails ? "late failure" : "landing", g_frame_count);
+        }
+        rc |=
+            expect_true("rr-import-outcome-ends-the-reception", g_frame_count == 3 && state->synctype == DSD_SYNC_NONE);
+        const int polled = dsd_engine_scan_untyped_poll(opts, state);
+        const char* want = fails ? "Failed: RR import -> tune to 981.012500 MHz failed; mode applied"
+                                 : "Applied: RR import -> tuned to 981.012500 MHz";
+        if (strcmp(state->ui_msg, want) != 0) {
+            DSD_FPRINTF(stderr, "rr import outcome toast: \"%s\" (want \"%s\")\n", state->ui_msg, want);
+        }
+        rc |= expect_true("rr-import-outcome-polled",
+                          polled == (fails ? DSD_MANUAL_TUNE_FAILED : DSD_MANUAL_TUNE_LANDED));
+        rc |= expect_true("rr-import-outcome-posted", strcmp(state->ui_msg, want) == 0);
+        rc |= expect_true("rr-import-outcome-centre", opts->rtlsdr_center_freq == (fails ? 980012500U : 981012500U));
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Final re-review, Minor 1: a running scan's step dropped before it landed (a newer tune of the receiver, a stream
    reopen) failed nothing. What replaced it decides the receiver, and the scan's windows stay as they are, as before a
    drop was reported; only a step that failed reopens them. */
@@ -8602,6 +8661,7 @@ main(void) {
     rc |= test_untyped_step_drops_a_previous_retry();
     rc |= test_untyped_resume_says_a_deferral();
     rc |= test_entry_late_failure_ends_a_synced_reception();
+    rc |= test_rr_import_tune_outcome_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();
     rc |= test_running_step_dropped_keeps_the_windows();

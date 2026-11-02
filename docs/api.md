@@ -744,7 +744,14 @@ field, and the decoder refuses the rest when it applies the command.
   mode and talkgroups applied`). On an I/Q replay the
   import never tunes, even with a rigctl radio connected. Success reads
   `Applied: RR import (<mode>)`, with what the mode change had to say (a
-  replay's new rate) in place of the reminder to save.
+  replay's new rate) in place of the reminder to save. The tune's outcome
+  arrives in `status.message` too, never in the response: a tune that fails is
+  a partial apply (`Failed: RR import -> tune to <MHz> MHz failed; mode
+  applied`); a busy tuner takes nothing (`Deferred; retry: RR import -> tune to
+  <MHz> MHz deferred (tuner busy); ...`); a tune still on its way ends the
+  success message in `tuning to <MHz> MHz`, and a later `status.message` gives
+  its outcome (`Applied: RR import -> tuned to <MHz> MHz`, the failure, or
+  `Interrupted: RR import -> tune to <MHz> MHz; ...`).
 * **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
   terminal's frequency entry does. It is refused during an I/Q replay and for
   `0`. With single-system P25 trunking on and no scan it selects that control

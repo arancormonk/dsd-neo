@@ -16,6 +16,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -32,6 +33,7 @@
 
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
+#include "../../src/engine/manual_tune_pending.h"
 #include "../../src/protocol/tetra/tetra_state.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -43,6 +45,7 @@
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
 static uint32_t g_io_control_tune_freq = 0U;
+static uint64_t g_io_control_tune_pending_id = 0U; /* handed back with RTL_STREAM_TUNE_TIMEOUT */
 static int g_manual_tune_supersedes = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
@@ -52,13 +55,17 @@ int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, ui
 
 int
 __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
-    (void)opts;
     (void)state;
     if (out_pending_id) {
-        *out_pending_id = 0U;
+        *out_pending_id = g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_tune_pending_id : 0U;
     }
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq_hz;
+    /* As the real tune caches it: the centre applied, or the one a timed-out request still owns. */
+    if (opts
+        && (g_io_control_tune_result == RTL_STREAM_TUNE_OK || g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT)) {
+        opts->rtlsdr_center_freq = freq_hz;
+    }
     return g_io_control_tune_result;
 }
 
@@ -79,6 +86,7 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0U;
+    g_io_control_tune_pending_id = 0U;
     g_manual_tune_supersedes = 0;
 }
 #endif
@@ -1330,6 +1338,244 @@ test_apply_profile_check_after_the_leave(void) {
     return rc;
 }
 
+/* Main-failing regression (T5, issue #803): the import reports what its tune did. On main the result was discarded:
+   every outcome read "Applied: RR import", and a tune that failed before the controller took it still dropped an older
+   manual tune pending. Now:
+   - a failure the tuner never took (a rigctl refusal, an RTL input with no stream) is a partial apply, and an older
+     pending tune keeps the receiver; one that failed in the RTL wait after the controller queued it still supersedes;
+   - a deferred tune queued nothing: a partial apply asking for a retry, and the older pending tune stays noted;
+   - a timed-out tune is noted as an RR import's, and its landing, late failure or drop is reported by the poll; a
+     landing or drop never covers a newer message or a failure the import reported;
+   - a session with no tuner says nothing of a tune, as before. */
+#define RR_TUNE_HZ  851012500U
+#define RR_PRIOR_HZ 852000000U
+#define RR_OLDER_ID (RTL_STREAM_TUNE_ID_MANUAL_BIT | 0x7701U)
+
+static void
+clear_manual_tune(dsd_state* state) {
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+}
+
+/* An RTL session on rtl:0, its stream running (a fake handle, as above) or not, with an older entry still pending. */
+static void
+tune_session(dsd_opts* opts, dsd_state* state, int stream_running) {
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0");
+    opts->rtlsdr_center_freq = RR_PRIOR_HZ;
+    state->rtl_ctx = stream_running ? (struct RtlSdrContext*)(void*)g_fake_stream : NULL;
+    reset_replay_script();
+    clear_manual_tune(state);
+    dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, RR_OLDER_ID, 853000000U, RR_PRIOR_HZ, -1, 0U, 0U);
+}
+
+static void
+tune_session_end(dsd_state* state) {
+    clear_manual_tune(state);
+    state->rtl_ctx = NULL;
+    reset_replay_script();
+    freeState(state);
+}
+
+static int
+apply_tuned_import(const char* what, dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p, int result,
+                   uint64_t pending_id) {
+    reset_io_control_tune_stub(result);
+    g_io_control_tune_pending_id = pending_id;
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(what, dsd_app_command_set_rr_apply(p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(what, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int(what, g_io_control_tune_calls, 1);
+    return rc;
+}
+
+/* The older entry is still the one noted: its own completion lands it. */
+static int
+expect_older_entry_kept(const char* what) {
+    int rc = expect_int(what, dsd_engine_manual_tune_noted(), 1);
+    dsd_engine_manual_tune_completion(RR_OLDER_ID, RTL_STREAM_TUNE_OK);
+    rc |= expect_int(what, dsd_engine_manual_tune_poll(NULL, NULL), DSD_MANUAL_TUNE_LANDED);
+    dsd_manual_tune_settled settled;
+    dsd_engine_manual_tune_last_settled(&settled);
+    rc |= expect_int(what, (int)settled.kind, DSD_MANUAL_TUNE_ENTRY);
+    return rc;
+}
+
+static void
+tuned_payload(dsd_app_rr_apply_payload* p) {
+    DSD_MEMSET(p, 0, sizeof *p);
+    p->decode_mode = (int32_t)DSDCFG_MODE_TDMA;
+    p->trunking = 1U;
+    p->tune_hz = RR_TUNE_HZ;
+}
+
+static int
+test_apply_immediate_tune_failures(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    tuned_payload(&p);
+
+    /* RTL input with no stream: refused before anything was queued. */
+    tune_session(&opts, &state, 0);
+    rc |= apply_tuned_import("no stream", &opts, &state, &p, RTL_STREAM_TUNE_FAILED, 0U);
+    rc |= expect_str("no stream: toast", state.ui_msg,
+                     "Failed: RR import -> tune to 851.012500 MHz failed; mode applied");
+    rc |= expect_int("no stream: supersedes nothing", g_manual_tune_supersedes, 0);
+    rc |= expect_int("no stream: trunking applied", opts.trunk_enable, 1);
+    rc |= expect_older_entry_kept("no stream: older tune kept");
+    tune_session_end(&state);
+
+    /* A rigctl peer refused it, while an RTL stream runs beside it: nothing reached the RTL controller. */
+    tune_session(&opts, &state, 1);
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)4242;
+    rc |= apply_tuned_import("rigctl", &opts, &state, &p, -1, 0U);
+    rc |= expect_str("rigctl: toast", state.ui_msg, "Failed: RR import -> tune to 851.012500 MHz failed; mode applied");
+    rc |= expect_int("rigctl: supersedes nothing", g_manual_tune_supersedes, 0);
+    rc |= expect_older_entry_kept("rigctl: older tune kept");
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    tune_session_end(&state);
+
+    /* Failed in the RTL wait: the controller had queued it (a coalesced request among them), so it decides. */
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("queued", &opts, &state, &p, RTL_STREAM_TUNE_FAILED, 0U);
+    rc |= expect_str("queued: toast", state.ui_msg, "Failed: RR import -> tune to 851.012500 MHz failed; mode applied");
+    rc |= expect_int("queued: supersedes the older tune", g_manual_tune_supersedes, 1);
+    rc |= expect_int("queued: older tune dropped", dsd_engine_manual_tune_noted(), 0);
+    tune_session_end(&state);
+
+    /* No tuner at all (PulseAudio): nothing said of a tune, as before. */
+    init_test_context(&opts, &state);
+    clear_manual_tune(&state);
+    rc |= apply_tuned_import("no tuner", &opts, &state, &p, -1, 0U);
+    rc |= expect_str("no tuner: toast", state.ui_msg,
+                     "Applied: RR import (P25 (Phase 1 + 2)) +trunking; save via Config menu");
+    rc |= expect_int("no tuner: supersedes nothing", g_manual_tune_supersedes, 0);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_apply_deferred_tune(void) {
+    int rc = write_text("rr_apply_tune_chan.csv", "ChannelNumber(dec),frequency(Hz),note\n1,851012500,cc\n");
+    rc |= write_text("rr_apply_tune_group.csv", "id,mode,name\n101,A,Dispatch\n");
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    tuned_payload(&p);
+
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("deferred", &opts, &state, &p, RTL_STREAM_TUNE_DEFERRED, 0U);
+    rc |= expect_str("deferred: toast", state.ui_msg,
+                     "Deferred; retry: RR import -> tune to 851.012500 MHz deferred (tuner busy); mode applied");
+    rc |= expect_int("deferred: supersedes nothing", g_manual_tune_supersedes, 0);
+    rc |= expect_int("deferred: trunking applied", opts.trunk_enable, 1);
+    rc |= expect_older_entry_kept("deferred: older tune kept");
+    tune_session_end(&state);
+
+    /* Deferred, and a file that did not load: a failure first of all. */
+    tune_session(&opts, &state, 1);
+    payload_files(&p, "rr_apply_tune_chan.csv", "rr_apply_tune_group.csv");
+    g_chan_import_fails = 1;
+    rc |= apply_tuned_import("deferred and a file", &opts, &state, &p, RTL_STREAM_TUNE_DEFERRED, 0U);
+    g_chan_import_fails = 0;
+    rc |= expect_str("deferred and a file: toast", state.ui_msg,
+                     "Failed: RR import -> tune to 851.012500 MHz deferred (tuner busy) and channel map not loaded; "
+                     "mode and talkgroups applied");
+    tune_session_end(&state);
+    (void)remove("rr_apply_tune_chan.csv");
+    (void)remove("rr_apply_tune_group.csv");
+    return rc;
+}
+
+static int
+test_apply_pending_tune_outcomes(void) {
+    int rc = write_text("rr_apply_tune_chan.csv", "ChannelNumber(dec),frequency(Hz),note\n1,851012500,cc\n");
+    rc |= write_text("rr_apply_tune_group.csv", "id,mode,name\n101,A,Dispatch\n");
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    tuned_payload(&p);
+    const char* pending_toast = "Applied: RR import (P25 (Phase 1 + 2)) +trunking; tuning to 851.012500 MHz";
+    dsd_manual_tune_settled settled;
+
+    /* PENDING -> OK: noted as an RR import's in place of the older tune, and its landing reported. */
+    const uint64_t landed_id = RTL_STREAM_TUNE_ID_MANUAL_BIT | 0x9901U;
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("pending", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, landed_id);
+    rc |= expect_str("pending: toast", state.ui_msg, pending_toast);
+    rc |= expect_int("pending: noted", dsd_engine_manual_tune_noted(), 1);
+    rc |= expect_int("pending: nothing settled yet", dsd_engine_manual_tune_poll(&opts, &state), DSD_MANUAL_TUNE_NONE);
+    dsd_engine_manual_tune_completion(RR_OLDER_ID, RTL_STREAM_TUNE_FAILED); /* the older one's: no longer counts */
+    rc |= expect_int("pending: the older tune's completion settles nothing", dsd_engine_manual_tune_poll(&opts, &state),
+                     DSD_MANUAL_TUNE_NONE);
+    dsd_engine_manual_tune_completion(landed_id, RTL_STREAM_TUNE_OK);
+    rc |= expect_int("pending: landed", dsd_engine_manual_tune_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
+    dsd_engine_manual_tune_last_settled(&settled);
+    rc |= expect_int("pending: an RR import's", (int)settled.kind, DSD_MANUAL_TUNE_RR_IMPORT);
+    rc |= expect_str("pending: landing toast", state.ui_msg, "Applied: RR import -> tuned to 851.012500 MHz");
+    rc |= expect_int("pending: centre", (int)opts.rtlsdr_center_freq, (int)RR_TUNE_HZ);
+    tune_session_end(&state);
+
+    /* PENDING -> FAILED: the import's outcome with the tune among what failed; the centre goes back. */
+    const uint64_t failed_id = RTL_STREAM_TUNE_ID_MANUAL_BIT | 0x9902U;
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("late failure", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, failed_id);
+    dsd_engine_manual_tune_completion(failed_id, RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("late failure: polled", dsd_engine_manual_tune_poll(&opts, &state), DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_str("late failure: toast", state.ui_msg,
+                     "Failed: RR import -> tune to 851.012500 MHz failed; mode applied");
+    rc |= expect_int("late failure: centre back", (int)opts.rtlsdr_center_freq, (int)RR_PRIOR_HZ);
+    tune_session_end(&state);
+
+    /* PENDING -> superseded while the import's toast is up: the drop is said. */
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("superseded", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, landed_id + 2U);
+    dsd_engine_manual_tune_supersede(&state);
+    rc |= expect_int("superseded: polled", dsd_engine_manual_tune_poll(&opts, &state), DSD_MANUAL_TUNE_DROPPED);
+    rc |= expect_str("superseded: toast", state.ui_msg,
+                     "Interrupted: RR import -> tune to 851.012500 MHz; a newer tune took over");
+    tune_session_end(&state);
+
+    /* ... and under a newer message (the tune that took over says where the receiver went): that one stays. */
+    tune_session(&opts, &state, 1);
+    rc |= apply_tuned_import("superseded under news", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, landed_id + 3U);
+    dsd_engine_manual_tune_supersede(&state);
+    DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", "Applied: tuned -> 853.000000 MHz");
+    rc |= expect_int("superseded under news: polled", dsd_engine_manual_tune_poll(&opts, &state),
+                     DSD_MANUAL_TUNE_DROPPED);
+    rc |= expect_str("superseded under news: newer message kept", state.ui_msg, "Applied: tuned -> 853.000000 MHz");
+    tune_session_end(&state);
+
+    /* PENDING with a file that did not load: the partial apply stays up over the landing, and a late failure names
+       both. */
+    payload_files(&p, "rr_apply_tune_chan.csv", "rr_apply_tune_group.csv");
+    const char* partial = "Failed: RR import -> channel map not loaded; mode and talkgroups applied";
+    for (int late_failure = 0; late_failure <= 1; late_failure++) {
+        const uint64_t id = landed_id + 4U + (uint64_t)late_failure;
+        tune_session(&opts, &state, 1);
+        g_chan_import_fails = 1;
+        rc |= apply_tuned_import("pending partial", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, id);
+        g_chan_import_fails = 0;
+        rc |= expect_str("pending partial: toast", state.ui_msg, partial);
+        dsd_engine_manual_tune_completion(id, late_failure ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_OK);
+        (void)dsd_engine_manual_tune_poll(&opts, &state);
+        rc |= expect_str(late_failure ? "pending partial: late failure names both" : "pending partial: landing quiet",
+                         state.ui_msg,
+                         late_failure ? "Failed: RR import -> tune to 851.012500 MHz failed and channel map not "
+                                        "loaded; mode and talkgroups applied"
+                                      : partial);
+        tune_session_end(&state);
+    }
+    (void)remove("rr_apply_tune_chan.csv");
+    (void)remove("rr_apply_tune_group.csv");
+    return rc;
+}
+
 /* New behaviour (D3): the decoder thread checks a SoapySDR device at the rate the running stream committed, which a
    frontend cannot see. */
 static int
@@ -1423,6 +1669,9 @@ main(void) {
     rc |= test_apply_success_keeps_the_mode_note();
     rc |= test_apply_tetra_soapy_rate();
     rc |= test_apply_profile_check_after_the_leave();
+    rc |= test_apply_immediate_tune_failures();
+    rc |= test_apply_deferred_tune();
+    rc |= test_apply_pending_tune_outcomes();
 #endif
 #endif
     if (rc == 0) {

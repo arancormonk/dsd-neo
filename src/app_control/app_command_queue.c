@@ -6626,15 +6626,24 @@ rr_apply_join(char* out, size_t out_size, const rr_apply_list* list) {
 }
 
 /* "Failed: RR import -> channel map not loaded; mode and talkgroups applied": a partial apply is never reported as
-   success, and says what did take. */
+   success, and says what did take. @p category leads it ("Failed", or "Deferred; retry" when only the tune was
+   deferred). */
 static void
-rr_apply_toast_partial(dsd_state* state, const rr_apply_outcome* outcome) {
+rr_apply_outcome_text(char* out, size_t out_size, const char* category, const rr_apply_outcome* outcome) {
     char failed[128];
     char applied[64];
     rr_apply_join(failed, sizeof failed, &outcome->failed);
     rr_apply_join(applied, sizeof applied, &outcome->applied);
-    LOG_WARN("RR import applied in part: %s; %s applied.\n", failed, applied[0] != '\0' ? applied : "nothing else");
-    ui_set_toast(state, 6, "Failed: RR import -> %s; %s applied", failed, applied[0] != '\0' ? applied : "nothing");
+    DSD_SNPRINTF(out, out_size, "%s: RR import -> %s; %s applied", category, failed,
+                 applied[0] != '\0' ? applied : "nothing");
+}
+
+static void
+rr_apply_toast_partial(dsd_state* state, const char* category, const rr_apply_outcome* outcome) {
+    char text[sizeof state->ui_msg];
+    rr_apply_outcome_text(text, sizeof text, category, outcome);
+    LOG_WARN("%s\n", text);
+    ui_set_toast(state, 6, "%s", text);
 }
 
 /* The files' half of an outcome: one phrase for what did not load, the rest among what was applied. */
@@ -6657,12 +6666,12 @@ rr_apply_outcome_files(rr_apply_outcome* outcome, const dsd_app_rr_apply_payload
     }
 }
 
-/* io_control_set_freq() is compiled unconditionally and dispatches rigctl
+/* io_control_set_freq_tagged() is compiled unconditionally and dispatches rigctl
    (opts->use_rigctl == 1) and RTL (opts->audio_in_type == AUDIO_IN_RTL) itself,
    returning -1 when neither owns the tuner. 0 is applied and
-   RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
-   cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
-   about and which must not fail the whole apply. It takes the payload's
+   RTL_STREAM_TUNE_TIMEOUT is accepted-pending. A session that cannot retune
+   (WAV, stdin, UDP, symbol file) is no failure: the preview already warned about
+   it, and the import says nothing of a tune (rr_apply_tune()). It takes the payload's
    uint32_t as it is on every build (issue #671), so only 0 is no frequency. */
 static int
 rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
@@ -6678,17 +6687,54 @@ rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload
            && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
 }
 
-static void
+/* What the import's tune did (issue #803). */
+typedef enum {
+    RR_TUNE_NONE = 0, /* no tune asked, or no tuner to take one: nothing to say, as the preview warned */
+    RR_TUNE_APPLIED,  /* the receiver is on the channel, or the tune was accepted with nothing to follow */
+    RR_TUNE_PENDING,  /* the wait timed out: the manual-tune tracker follows it under pending_id */
+    RR_TUNE_DEFERRED, /* the tuner was busy and queued nothing */
+    RR_TUNE_FAILED,
+} rr_apply_tune_outcome;
+
+typedef struct {
+    rr_apply_tune_outcome outcome;
+    uint64_t pending_id;
+    uint32_t prior_hz; /* the centre in force before the tune */
+} rr_apply_tune_result;
+
+/* The import's tune, through io_control_set_freq_tagged(). Only a request the tuner took decides where the receiver
+   goes, so only that supersedes a manual tune still pending (issue #671): one applied or accepted, or an RTL request
+   that failed in its wait after the controller queued it (a coalesced one among them). A rigctl refusal, an RTL input
+   with no stream, and a deferral queued nothing, and an older pending tune keeps the receiver. A timed-out request is
+   noted once the import has posted its toast (rr_apply_report()). */
+static rr_apply_tune_result
 rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    /* Before the RTL and rigctl alternatives io_control_set_freq() dispatches to: a replay's import would otherwise
-       move a connected rigctl peer the replay does not hear (issue #803). */
-    if (dsd_opts_input_is_iq_replay(opts)) {
-        return;
+    rr_apply_tune_result r = {RR_TUNE_NONE, 0U, opts->rtlsdr_center_freq};
+    /* Before the RTL and rigctl alternatives io_control_set_freq_tagged() dispatches to: a replay's import would
+       otherwise move a connected rigctl peer the replay does not hear (issue #803). */
+    if (dsd_opts_input_is_iq_replay(opts) || !rr_apply_tune_frequency_fits(p)) {
+        return r;
     }
-    if (rr_apply_tune_frequency_fits(p) && io_control_set_freq(opts, state, p->tune_hz) != RTL_STREAM_TUNE_DEFERRED) {
-        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+    const int rtl_queues = opts->use_rigctl != 1 && dsd_opts_input_is_radio(opts) && state->rtl_ctx != NULL;
+    const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
+    if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        r.outcome = RR_TUNE_DEFERRED;
+        return r;
+    }
+    if (rc == RTL_STREAM_TUNE_TIMEOUT && r.pending_id != 0U) {
+        r.outcome = RR_TUNE_PENDING;
+        return r;
+    }
+    const int accepted = rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT;
+    if (accepted || rtl_queues) {
         dsd_engine_manual_tune_supersede(state);
     }
+    if (accepted) {
+        r.outcome = RR_TUNE_APPLIED;
+    } else if (rr_apply_moves_the_receiver(opts, p)) {
+        r.outcome = RR_TUNE_FAILED;
+    }
+    return r;
 }
 
 /* The session was just re-pointed at a different system, so the old system's CC
@@ -6717,6 +6763,25 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A pending tune, noted with the toast its late failure posts: the import's outcome with the tune among what failed.
+   @p replaceable says the import's own toast is the one naming the pending tune, which the landing may replace. */
+static void
+rr_apply_note_pending_tune(dsd_state* state, const dsd_app_rr_apply_payload* p, const rr_apply_tune_result* tune,
+                           int files_failed, int replaceable) {
+    char mhz[16];
+    char tune_failed[48];
+    DSD_SNPRINTF(tune_failed, sizeof tune_failed, "tune to %s MHz failed", ui_toast_mhz(p->tune_hz, mhz, sizeof mhz));
+    rr_apply_outcome outcome;
+    DSD_MEMSET(&outcome, 0, sizeof outcome);
+    rr_apply_list_add(&outcome.failed, tune_failed);
+    rr_apply_list_add(&outcome.applied, "mode");
+    rr_apply_outcome_files(&outcome, p, files_failed);
+    char failure_text[sizeof state->ui_msg];
+    rr_apply_outcome_text(failure_text, sizeof failure_text, "Failed", &outcome);
+    dsd_engine_manual_tune_note_rr_import(state, tune->pending_id, p->tune_hz, tune->prior_hz, failure_text,
+                                          replaceable);
+}
+
 /* The tuner owner an applied import names in its toast. */
 static const char*
 rr_apply_owner_text(const dsd_app_rr_apply_payload* p) {
@@ -6739,6 +6804,58 @@ rr_apply_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, char*
         ui_set_toast(state, 5, "Failed: RR import -> %s not applied", dsd_decode_mode_display_name(mode));
     }
     return UI_CMD_APPLY_FAILED;
+}
+
+/* The tune's half of an outcome: a tune that failed or was deferred is among what failed, its phrase written to
+   @p phrase, which the outcome then points at. */
+static void
+rr_apply_outcome_tune(rr_apply_outcome* outcome, rr_apply_tune_outcome tune, const char* mhz, char* phrase,
+                      size_t phrase_size) {
+    phrase[0] = '\0';
+    if (tune == RR_TUNE_FAILED || tune == RR_TUNE_DEFERRED) {
+        DSD_SNPRINTF(phrase, phrase_size, "tune to %s MHz %s", mhz,
+                     tune == RR_TUNE_FAILED ? "failed" : "deferred (tuner busy)");
+        rr_apply_list_add(&outcome->failed, phrase);
+    }
+}
+
+/* The import's toast, after everything it changed, and its tune's follow-up. A tune that failed or was deferred, or a
+   file that did not load, is a partial apply naming what took; otherwise the import applied, and a tune still pending
+   says so in place of the reminder to save, and is noted so its outcome is reported (issue #803). */
+static int
+rr_apply_report(dsd_state* state, const dsd_app_rr_apply_payload* p, dsdneoUserDecodeMode mode, const char* note,
+                int files_failed, const rr_apply_tune_result* tune) {
+    char mhz[16];
+    (void)ui_toast_mhz(p->tune_hz, mhz, sizeof mhz);
+    char tune_phrase[64];
+    rr_apply_outcome outcome;
+    DSD_MEMSET(&outcome, 0, sizeof outcome);
+    rr_apply_outcome_tune(&outcome, tune->outcome, mhz, tune_phrase, sizeof tune_phrase);
+    rr_apply_list_add(&outcome.applied, "mode");
+    rr_apply_outcome_files(&outcome, p, files_failed);
+    const int partial = outcome.failed.count != 0U;
+    if (partial) {
+        const int only_deferred = tune->outcome == RR_TUNE_DEFERRED && files_failed == 0;
+        rr_apply_toast_partial(state, only_deferred ? "Deferred; retry" : "Failed", &outcome);
+    } else {
+        char pending[48];
+        DSD_SNPRINTF(pending, sizeof pending, "tuning to %s MHz", mhz);
+        /* What the mode change had to say (a replay's new rate, TETRA's rate advice) outranks the pending tune (its
+           outcome follows), which outranks the reminder to save. */
+        const char* tail = "save via Config menu";
+        if (note[0] != '\0') {
+            tail = note;
+        } else if (tune->outcome == RR_TUNE_PENDING) {
+            tail = pending;
+        }
+        ui_set_toast(state, note[0] != '\0' ? 8 : 4, "Applied: RR import (%s)%s; %s",
+                     dsd_decode_mode_display_name(mode), rr_apply_owner_text(p), tail);
+    }
+    if (tune->outcome == RR_TUNE_PENDING) {
+        /* Its landing may replace only a toast that says it is pending: never a partial apply, nor the mode's note. */
+        rr_apply_note_pending_tune(state, p, tune, files_failed, !partial && note[0] == '\0');
+    }
+    return partial ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
 }
 
 /**
@@ -6792,21 +6909,9 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
        reads it, so the simulcast override needs a second publish, and a re-apply
        onto an already-matching mode needs the first one. */
     (void)decode_mode_republish(opts, state, mode);
-    rr_apply_tune(opts, state, &p);
+    const rr_apply_tune_result tune = rr_apply_tune(opts, state, &p);
     rr_apply_reacquire(opts, state);
-
-    if (files_failed != 0) {
-        rr_apply_outcome outcome;
-        DSD_MEMSET(&outcome, 0, sizeof outcome);
-        rr_apply_list_add(&outcome.applied, "mode");
-        rr_apply_outcome_files(&outcome, &p, files_failed);
-        rr_apply_toast_partial(state, &outcome);
-        return UI_CMD_APPLY_FAILED;
-    }
-    /* What the mode change had to say (a replay's new rate, TETRA's rate advice) outranks the reminder to save. */
-    ui_set_toast(state, note[0] != '\0' ? 8 : 4, "Applied: RR import (%s)%s; %s", dsd_decode_mode_display_name(mode),
-                 rr_apply_owner_text(&p), note[0] != '\0' ? note : "save via Config menu");
-    return UI_CMD_APPLY_COMPLETED;
+    return rr_apply_report(state, &p, mode, note, files_failed, &tune);
 }
 
 /* The UI thread never writes dsd_opts: the opts pointer a menu action receives

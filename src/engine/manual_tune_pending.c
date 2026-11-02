@@ -25,6 +25,8 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <stdint.h>
+#include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -55,6 +57,15 @@ static int g_displaced_unreported;
 /* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
+/* A RadioReference import's tune (dsd_engine_manual_tune_note_rr_import(), issue #803): the toast its late failure
+   posts, and the import's own toast, which its landing or drop may replace ("" when only a cleared line may be). Kept
+   for the import noted last; a record of another kind never reads them. */
+static char g_rr_failure_text[sizeof(((dsd_state*)0)->ui_msg)];
+static char g_rr_own_toast[sizeof(((dsd_state*)0)->ui_msg)];
+
+/* How long a RadioReference import's tune outcome stays up: its failure as long as the import's partial apply, its
+   landing as long as a tune's success. A drop stays as a tune's failure does (DSD_MANUAL_TUNE_FAILED_TOAST_S). */
+enum { MANUAL_TUNE_RR_FAILED_TOAST_S = 6, MANUAL_TUNE_RR_LANDED_TOAST_S = 3 };
 
 /* The last few manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for an empty slot. Not one slot:
    an older tune that finishes late (one in flight before a newer one queued) would overwrite the completion the record
@@ -130,6 +141,23 @@ dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind,
 }
 
 void
+dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32_t requested_hz, uint32_t prior_applied_hz,
+                                      const char* failure_text, int own_toast_replaceable) {
+    if (id == 0U) {
+        /* Nothing was queued, so nothing decides the receiver: dsd_engine_manual_tune_note_pending() would still drop
+           an older tune noted. */
+        return;
+    }
+    DSD_SNPRINTF(g_rr_failure_text, sizeof g_rr_failure_text, "%s", failure_text ? failure_text : "");
+    g_rr_own_toast[0] = '\0';
+    if (own_toast_replaceable && state) {
+        DSD_SNPRINTF(g_rr_own_toast, sizeof g_rr_own_toast, "%s", state->ui_msg);
+    }
+    dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_RR_IMPORT, id, requested_hz, prior_applied_hz, -1, 0U,
+                                        0U);
+}
+
+void
 dsd_engine_manual_tune_supersede(dsd_state* state) {
     (void)state; // the record is process-wide, as the RTL controller is
     if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED) {
@@ -154,6 +182,48 @@ manual_tune_settle(void) {
     manual_tune_keep_settled(&g_record);
 }
 
+/* Whether a RadioReference import's landing or drop may take the line: it shows nothing, or still the import's own
+   toast. A newer message says where the receiver went, and a failure the import reported outranks its landing. */
+static int
+manual_tune_rr_line_free(const dsd_state* state) {
+    if (state->ui_msg[0] == '\0' || state->ui_msg_expire <= dsd_realtime_time()) {
+        return 1;
+    }
+    return g_rr_own_toast[0] != '\0' && strcmp(state->ui_msg, g_rr_own_toast) == 0;
+}
+
+/* The record settled as @p polled: a RadioReference import's tune says how (issue #803). @p stream_stopped says a drop
+   came from the stream's session ending rather than from a newer tune. */
+static void
+manual_tune_rr_report(dsd_state* state, int polled, int stream_stopped) {
+    if (!state || g_record.kind != DSD_MANUAL_TUNE_RR_IMPORT) {
+        return;
+    }
+    char mhz[16];
+    (void)dsd_freq_hz_mhz_text(g_record.requested_hz, mhz, sizeof mhz);
+    const time_t now = dsd_realtime_time();
+    if (polled == DSD_MANUAL_TUNE_FAILED) {
+        if (g_rr_failure_text[0] != '\0') {
+            DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", g_rr_failure_text);
+        } else {
+            DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: RR import -> tune to %s MHz failed", mhz);
+        }
+        state->ui_msg_expire = now + MANUAL_TUNE_RR_FAILED_TOAST_S;
+        return;
+    }
+    if (!manual_tune_rr_line_free(state)) {
+        return;
+    }
+    if (polled == DSD_MANUAL_TUNE_LANDED) {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: RR import -> tuned to %s MHz", mhz);
+        state->ui_msg_expire = now + MANUAL_TUNE_RR_LANDED_TOAST_S;
+        return;
+    }
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Interrupted: RR import -> tune to %s MHz; %s", mhz,
+                 stream_stopped ? "the radio input stopped" : "a newer tune took over");
+    state->ui_msg_expire = now + DSD_MANUAL_TUNE_FAILED_TOAST_S;
+}
+
 /* dsd_engine_manual_tune_poll() for a noted record, under the P25 SM tick guard: a watchdog retune (trunking on once
    the scan the tune was for has left) supersedes the record and writes the cached centre under it, so the record's
    state, its completion and the centre a failure puts back are read and written in one hold, never over a newer
@@ -166,6 +236,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     }
     if (noted == MANUAL_TUNE_DROPPED_UNREPORTED) {
         manual_tune_settle();
+        manual_tune_rr_report(state, DSD_MANUAL_TUNE_DROPPED, 0);
         return DSD_MANUAL_TUNE_DROPPED;
     }
     /* The completion before the session: a stop moves the session before it fails the request it queued, so a failure
@@ -176,6 +247,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
         /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
            frequency the decoder holds. */
         manual_tune_settle();
+        manual_tune_rr_report(state, DSD_MANUAL_TUNE_DROPPED, 1);
         return DSD_MANUAL_TUNE_DROPPED;
     }
     if (!completed) {
@@ -183,10 +255,12 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     }
     manual_tune_settle();
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
+        manual_tune_rr_report(state, DSD_MANUAL_TUNE_LANDED, 0);
         return DSD_MANUAL_TUNE_LANDED;
     }
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_SUPERSEDED) {
         /* Taken over before it ran: what replaced it decides the receiver, as for a tune superseded here. */
+        manual_tune_rr_report(state, DSD_MANUAL_TUNE_DROPPED, 0);
         return DSD_MANUAL_TUNE_DROPPED;
     }
     if (opts) {
@@ -202,6 +276,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: frequency -> %s MHz", mhz);
         state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
     }
+    manual_tune_rr_report(state, DSD_MANUAL_TUNE_FAILED, 0);
     return DSD_MANUAL_TUNE_FAILED;
 }
 
@@ -252,5 +327,7 @@ dsd_engine_manual_tune_settled_ready(void) {
     if (!manual_tune_completion_for(g_record.id, &packed)) {
         return 0;
     }
-    return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP;
+    /* A RadioReference import's landing is reported, so the reception it ends hands its toast to the outer pass. */
+    return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP
+           || g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT;
 }
