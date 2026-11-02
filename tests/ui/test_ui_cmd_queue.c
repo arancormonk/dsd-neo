@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
@@ -5369,10 +5370,12 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("idle avoid does not tune", g_io_control_tune_calls, 0);
     rc |= expect_contains("idle avoid toast", state.ui_msg, "Not scanning");
     state.ui_msg[0] = '\0';
+    /* Clear is a flag edit: with no scan it clears the list's avoids, here none (issue #672 B1, D2). */
     rc |= expect_int("idle clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle clear drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_contains("idle clear toast", state.ui_msg, "Not scanning");
+    rc |= expect_str("idle clear toast", state.ui_msg, "Cleared 0 scan avoids");
+    rc |= expect_int("idle clear tunes nothing", g_io_control_tune_calls, 0);
     rc |= expect_int("idle controls never reach hook", g_scan_control_calls, 0);
     freeState(&state);
 
@@ -24033,8 +24036,7 @@ test_paused_list_controls_and_stops(void) {
 
     /* The scan controls wait for the resume, the hold and the avoids as they were. */
     (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
-    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_SCAN_AVOID_CLEAR,
-                                     DSD_APP_CMD_CHANNEL_CYCLE};
+    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_CHANNEL_CYCLE};
     for (size_t i = 0; i < sizeof k_controls / sizeof k_controls[0]; i++) {
         rc |= drain_action(&opts, &state, k_controls[i], "control while paused");
         rc |= expect_str("control while paused toast", state.ui_msg, "Scan paused: resume it first");
@@ -24044,7 +24046,12 @@ test_paused_list_controls_and_stops(void) {
                              && state.lcn_scan_paused == 1,
                          1);
     }
-    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 0);
+    /* Clearing the avoids only edits flags, so the paused scan takes it (issue #672 D3), and keeps the pause. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "clear while paused");
+    rc |= expect_str("clear while paused toast", state.ui_msg, "Cleared 1 scan avoid");
+    rc |= expect_int("clear while paused completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("clear while paused keeps the pause",
+                     state.lcn_avoid_total == 0U && state.lcn_freq_roll == 2 && state.lcn_scan_paused == 1, 1);
 
     /* A tap-to-tune is the operator's: no scan refuses it (audio input has no tuner to take it). */
     rc |= expect_int("tap queued", post_u32(DSD_APP_CMD_MANUAL_TUNE, 866000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -24554,6 +24561,422 @@ test_frequency_entry_reaches_a_rigctl_peer_on_every_build(void) {
     return rc;
 }
 
+/*
+ * Issue #672: putting one avoided entry back (DSD_APP_CMD_SCAN_AVOID_REMOVE), clear outside a running rotation (B1),
+ * avoid on an entry already avoided (B4) and exact counts (B6). Portable: the -Y walk goes through the queue's manual
+ * tune seam and the trunk scan through a fake coordinator hook, so every toolchain runs these.
+ */
+static const long k_avoid_rows[] = {851012500L, 852025000L, 853037500L, 854050000L};
+static const char k_avoid_stale[] = "Scan list changed; nothing put back";
+
+static void
+seed_avoid_rows(dsd_state* state) {
+    state->lcn_freq_count = 4;
+    for (int i = 0; i < 4; i++) {
+        state->trunk_lcn_freq[i] = k_avoid_rows[i];
+    }
+}
+
+/* The identity the scan avoid view lists for @p row, as a frontend would take it. */
+static dsd_app_scan_avoid_remove_payload
+avoid_identity(const dsd_opts* opts, const dsd_state* state, int row) {
+    dsd_app_scan_avoid_remove_payload id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    id.row = -1;
+    dsd_app_scan_avoid_list list;
+    if (dsd_app_scan_avoid_list_build(opts, state, &list) == 0) {
+        for (size_t i = 0; i < list.count; i++) {
+            if (list.entries[i].identity.kind == DSD_APP_SCAN_AVOID_KIND_LCN && list.entries[i].identity.row == row) {
+                id = list.entries[i].identity;
+            }
+        }
+    }
+    dsd_app_scan_avoid_list_free(&list);
+    return id;
+}
+
+static int
+drain_avoid_remove(dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* id, const char* label) {
+    int rc = expect_int(label, dsd_app_command_scan_avoid_remove(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* An identity that names nothing here: refused with the stale toast as a failed command, nothing changed. */
+static int
+expect_avoid_remove_stale(dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* id,
+                          const char* label) {
+    const uint64_t rev = state->lcn_avoid_rev;
+    const size_t total = state->lcn_avoid_total;
+    int rc = drain_avoid_remove(opts, state, id, label);
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: toast", label);
+    rc |= expect_str(tag, state->ui_msg, k_avoid_stale);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: failed", label);
+    rc |= expect_int(tag, dsd_app_command_test_last_failed(), 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: nothing changed", label);
+    rc |= expect_true(tag, state->lcn_avoid_rev == rev && state->lcn_avoid_total == total);
+    return rc;
+}
+
+/* Garbage a raw submission can carry: refused as an invalid payload before anything indexes or narrows it. */
+static int
+expect_avoid_remove_invalid(dsd_opts* opts, dsd_state* state, const void* payload, size_t n, const char* label) {
+    const uint64_t rev = state->lcn_avoid_rev;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, payload, n),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: invalid payload", label);
+    rc |= expect_int(tag, dsd_app_command_test_last_invalid_payload(), 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: nothing changed", label);
+    rc |= expect_true(tag, state->lcn_avoid_rev == rev && state->ui_msg[0] == '\0');
+    return rc;
+}
+
+static int
+test_scan_avoid_remove_lcn_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    seed_avoid_rows(&state);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 2U, 1);
+    arm_manual_leg();
+
+    /* -Y stopped, no trunking (B1): the row named comes back, only its flag changes, nothing tunes. */
+    const dsd_app_scan_avoid_remove_payload id1 = avoid_identity(&opts, &state, 1);
+    rc |= expect_true("lcn identity listed", id1.row == 1 && id1.frequency_hz == 852025000U);
+    uint64_t rev = state.lcn_avoid_rev;
+    rc |= drain_avoid_remove(&opts, &state, &id1, "put back row 2");
+    rc |= expect_str("put back row 2 toast", state.ui_msg, "Put back 852.025000 MHz (1 avoided)");
+    rc |= expect_int("put back row 2 completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_true("put back row 2 clears its flag alone",
+                      !dsd_state_trunk_lcn_avoid_get(&state, 1U) && dsd_state_trunk_lcn_avoid_get(&state, 2U)
+                          && state.lcn_avoid_total == 1U && state.lcn_avoid_rev != rev);
+    rc |= expect_int("put back row 2 tunes nothing", g_manual_leg_calls, 0);
+
+    rev = state.lcn_avoid_rev;
+    rc |= drain_avoid_remove(&opts, &state, &id1, "put back row 2 again");
+    rc |= expect_str("put back row 2 again toast", state.ui_msg, "Already put back: 852.025000 MHz");
+    rc |= expect_int("put back row 2 again failed", dsd_app_command_test_last_failed(), 1);
+    rc |=
+        expect_true("put back row 2 again changes nothing", state.lcn_avoid_rev == rev && state.lcn_avoid_total == 1U);
+
+    /* Every part of the identity must match. */
+    const dsd_app_scan_avoid_remove_payload id2 = avoid_identity(&opts, &state, 2);
+    dsd_app_scan_avoid_remove_payload bad = id2;
+    bad.instance++;
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "other instance");
+    bad = id2;
+    bad.list_rev++;
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "other list");
+    bad = id2;
+    bad.frequency_hz = 852025000U;
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "other frequency");
+    bad = id2;
+    bad.row = 4;
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "row past the list");
+    bad.row = INT32_MAX;
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "row far past the list");
+
+    /* Raw garbage. */
+    bad = id2;
+    bad.kind = 0U;
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "kind none");
+    bad.kind = 3U;
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "unknown kind");
+    bad = id2;
+    bad.row = -1;
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "negative row");
+    bad.row = INT32_MIN;
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "most negative row");
+    bad = id2;
+    DSD_MEMSET(bad.target_id, 'x', sizeof bad.target_id);
+    rc |= expect_int("unterminated id refused at submit", dsd_app_command_scan_avoid_remove(&bad),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("NULL payload refused at submit", dsd_app_command_scan_avoid_remove(NULL),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "unterminated id");
+    rc |= expect_avoid_remove_invalid(&opts, &state, &id2, sizeof id2 - 1U, "short payload");
+    bad = id2;
+    bad.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    bad.session = 0U;
+    rc |= expect_avoid_remove_invalid(&opts, &state, &bad, sizeof bad, "trunk-scan session 0");
+    /* A trunk-scan identity with no trunk scan configured names nothing in this session. */
+    bad.session = 1U;
+    DSD_SNPRINTF(bad.target_id, sizeof bad.target_id, "%s", "a");
+    rc |= expect_avoid_remove_stale(&opts, &state, &bad, "trunk-scan identity without a trunk scan");
+    rc |= expect_true("refusals keep row 3 avoided", dsd_state_trunk_lcn_avoid_get(&state, 2U) == 1);
+
+    /* An in-place write to the avoided row (a protocol's row seed) retires the identity; the refreshed one works, and a
+       0 Hz placeholder is named by its row. */
+    rev = state.lcn_avoid_rev;
+    rc |= expect_int("row write", dsd_state_trunk_lcn_freq_write(&state, 2, 0L), 0);
+    rc |= expect_true("row write moves the avoid revision", state.lcn_avoid_rev != rev);
+    rc |= expect_avoid_remove_stale(&opts, &state, &id2, "identity before the row write");
+    const dsd_app_scan_avoid_remove_payload id2_now = avoid_identity(&opts, &state, 2);
+    rc |= expect_true("refreshed identity", id2_now.row == 2 && id2_now.frequency_hz == 0U);
+    rc |= drain_avoid_remove(&opts, &state, &id2_now, "put back the placeholder");
+    rc |= expect_str("put back the placeholder toast", state.ui_msg, "Put back row 3 (0 avoided)");
+    rc |= expect_true("put back the placeholder clears it", !dsd_state_trunk_lcn_avoid_get(&state, 2U));
+
+    /* A map reload with the same rows, and a restart with the same import (same rows, Hz and avoids), retire every
+       identity taken before. */
+    seed_avoid_rows(&state);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    const dsd_app_scan_avoid_remove_payload id0 = avoid_identity(&opts, &state, 0);
+    dsd_state_trunk_lcn_replace_begin(&state);
+    seed_avoid_rows(&state);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    rc |= expect_avoid_remove_stale(&opts, &state, &id0, "identity before a map reload");
+    const dsd_app_scan_avoid_remove_payload id0_reload = avoid_identity(&opts, &state, 0);
+    freeState(&state);
+    init_test_context(&opts, &state);
+    seed_avoid_rows(&state);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    arm_manual_leg();
+    rc |= expect_avoid_remove_stale(&opts, &state, &id0_reload, "identity before a restart");
+    rc |= expect_true("refusals keep row 1 avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U) == 1);
+
+    /* Taken under -T, a paused -Y, a running -Y and an I/Q replay (D2/D3): a flag edit, no tune. */
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 2U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 3U, 1);
+    opts.trunk_enable = 1;
+    dsd_app_scan_avoid_remove_payload id = avoid_identity(&opts, &state, 0);
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back under -T");
+    rc |= expect_str("put back under -T toast", state.ui_msg, "Put back 851.012500 MHz (3 avoided)");
+    opts.trunk_enable = 0;
+    state.lcn_scan_paused = 1U;
+    id = avoid_identity(&opts, &state, 1);
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back while -Y is paused");
+    rc |= expect_str("put back while -Y is paused toast", state.ui_msg, "Put back 852.025000 MHz (2 avoided)");
+    state.lcn_scan_paused = 0U;
+    opts.scanner_mode = 1;
+    id = avoid_identity(&opts, &state, 2);
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back while -Y runs");
+    rc |= expect_str("put back while -Y runs toast", state.ui_msg, "Put back 853.037500 MHz (1 avoided)");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    id = avoid_identity(&opts, &state, 3);
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back during a replay");
+    rc |= expect_str("put back during a replay toast", state.ui_msg, "Put back 854.050000 MHz (0 avoided)");
+    rc |= expect_int("put back during a replay completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("put backs tune nothing", g_manual_leg_calls, 0);
+
+    /* Under a trunk scan an LCN identity names nothing (the coordinator's targets are the list). */
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    id = avoid_identity(&opts, &state, 0);
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_avoid_remove_stale(&opts, &state, &id, "LCN identity under a trunk scan");
+    rc |= expect_true("LCN identity under a trunk scan keeps the flag", dsd_state_trunk_lcn_avoid_get(&state, 0U) == 1);
+    opts.trunk_scan_enabled = 0;
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/* B1 (D2/D3): clear takes the -Y avoids whenever no trunk scan runs -- -T, a stopped list, a paused one -- while hold
+   and avoid still need a running rotation. */
+static int
+test_scan_avoid_clear_outside_a_rotation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    seed_avoid_rows(&state);
+    opts.trunk_enable = 1;
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "clear under -T");
+    rc |= expect_str("clear under -T toast", state.ui_msg, "Cleared 2 scan avoids");
+    rc |=
+        expect_true("clear under -T clears", state.lcn_avoid_total == 0U && !dsd_state_trunk_lcn_avoid_get(&state, 0U));
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid under -T");
+    rc |= expect_contains("avoid under -T still needs a rotation", state.ui_msg, "Not scanning");
+    opts.trunk_enable = 0;
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 2U, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "clear with -Y stopped");
+    rc |= expect_str("clear with -Y stopped toast", state.ui_msg, "Cleared 1 scan avoid");
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 3U, 1);
+    state.lcn_scan_paused = 1U;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "clear while -Y is paused");
+    rc |= expect_str("clear while -Y is paused toast", state.ui_msg, "Cleared 1 scan avoid");
+    rc |= expect_int("clear while -Y is paused completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("clear while -Y is paused keeps the pause", state.lcn_scan_paused, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "hold while -Y is paused");
+    rc |= expect_str("hold while -Y is paused toast", state.ui_msg, "Scan paused: resume it first");
+    freeState(&state);
+    return rc;
+}
+
+/* A fake coordinator: put back answers as scripted, and records what it was asked. */
+static int g_unavoid_result;
+static int g_unavoid_calls;
+static uint32_t g_unavoid_session;
+static char g_unavoid_target[64];
+static int g_avoid_control_result;
+
+static int
+fake_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+    (void)opts;
+    g_unavoid_calls++;
+    g_unavoid_session = session;
+    DSD_SNPRINTF(g_unavoid_target, sizeof g_unavoid_target, "%s", target_id ? target_id : "");
+    if (g_unavoid_result == DSD_TRUNK_SCAN_CONTROL_OK && state->trunk_scan_avoided_count > 0U) {
+        state->trunk_scan_avoided_count--;
+    }
+    return g_unavoid_result;
+}
+
+static int
+fake_avoid_control(dsd_opts* opts, dsd_state* state, int op) {
+    (void)opts;
+    (void)state;
+    (void)op;
+    return g_avoid_control_result;
+}
+
+static int
+test_scan_avoid_remove_trunk_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_session = 4242U;
+    state.trunk_scan_avoided_count = 2U;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.control = fake_avoid_control;
+    hooks.unavoid = fake_unavoid;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_unavoid_calls = 0;
+
+    dsd_app_scan_avoid_remove_payload id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    id.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    id.session = 4242U;
+    id.row = -1;
+    DSD_SNPRINTF(id.target_id, sizeof id.target_id, "%s", "county-p25");
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_OK;
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back a target");
+    rc |= expect_str("put back a target toast", state.ui_msg, "Put back target county-p25 (1 avoided)");
+    rc |=
+        expect_true("put back a target reaches the coordinator with its identity",
+                    g_unavoid_calls == 1 && g_unavoid_session == 4242U && strcmp(g_unavoid_target, "county-p25") == 0);
+    rc |= expect_int("put back a target completed", dsd_app_command_test_last_failed(), 0);
+
+    /* A paused trunk scan takes it too (D3); the coordinator decides. */
+    state.trunk_scan_paused = 1U;
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED;
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back a target already back");
+    rc |= expect_str("put back a target already back toast", state.ui_msg, "Already put back: target county-p25");
+    rc |= expect_int("put back a target already back failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("paused scan still asks the coordinator", g_unavoid_calls, 2);
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_STALE;
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back from another session");
+    rc |= expect_str("put back from another session toast", state.ui_msg, k_avoid_stale);
+    rc |= expect_int("put back from another session failed", dsd_app_command_test_last_failed(), 1);
+    state.trunk_scan_paused = 0U;
+
+    /* An LCN identity under a trunk scan never reaches the coordinator. */
+    dsd_app_scan_avoid_remove_payload lcn = id;
+    lcn.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+    lcn.row = 0;
+    rc |= drain_avoid_remove(&opts, &state, &lcn, "LCN identity under a trunk scan");
+    rc |= expect_str("LCN identity under a trunk scan toast", state.ui_msg, k_avoid_stale);
+    rc |= expect_int("LCN identity never reaches the coordinator", g_unavoid_calls, 3);
+
+    /* B4: avoiding the target the receiver fell back onto, already avoided, says so. */
+    g_avoid_control_result = DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "fallback");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid the avoided fallback");
+    rc |= expect_str("avoid the avoided fallback toast", state.ui_msg, "Already avoided: target fallback");
+
+    /* No coordinator installed. */
+    dsd_trunk_scan_hooks_set(NULL);
+    rc |= drain_avoid_remove(&opts, &state, &id, "put back with no coordinator");
+    rc |= expect_str("put back with no coordinator toast", state.ui_msg, "Trunk scan is not running");
+    rc |= expect_int("put back with no coordinator failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+    return rc;
+}
+
+/* B4: Avoid on a -Y row already avoided (a failed tune left the receiver on it) changes no flag, revision, cursor or
+   visit clock and tunes nothing, with two and with several usable rows; the drain's own maintenance is the baseline. */
+static int
+expect_avoid_on_avoided_row(const long* rows, int count, const char* label) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char tag[160];
+    init_manual_walk_context(&opts, &state, rows, count);
+    opts.scan_max_visit_ms = 60000;
+    state.lcn_freq_roll = 1; /* row 0 heard */
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    state.scan_visit_since_m = 42.0;
+    state.scan_visit_roll_seen = state.lcn_freq_roll;
+    int rc = drain_action(&opts, &state, DSD_APP_CMD_UI_MSG_CLEAR, label);
+    const double since = state.scan_visit_since_m;
+    const uint64_t rev = state.lcn_avoid_rev;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, label);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: toast", label);
+    rc |= expect_str(tag, state.ui_msg, "Already avoided: 861.000000 MHz");
+    DSD_SNPRINTF(tag, sizeof tag, "%s: nothing changed", label);
+    rc |= expect_true(tag, g_manual_leg_calls == 0 && state.lcn_freq_roll == 1 && state.lcn_avoid_rev == rev
+                               && state.lcn_avoid_total == 1U && dsd_state_trunk_lcn_avoid_get(&state, 0U) == 1
+                               && fabs(state.scan_visit_since_m - since) < 1e-9);
+    /* The same command on a row not avoided does step, so the seam above would have seen a tune. */
+    state.lcn_freq_roll = 2;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, label);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: a fresh avoid steps", label);
+    rc |= expect_true(tag, g_manual_leg_calls == 1 && dsd_state_trunk_lcn_avoid_get(&state, 1U) == 1);
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_scan_avoid_on_an_avoided_row(void) {
+    static const long k_three[] = {861000000L, 862000000L, 863000000L};
+    static const long k_four[] = {861000000L, 862000000L, 863000000L, 864000000L};
+    return expect_avoid_on_avoided_row(k_three, 3, "two usable rows")
+           | expect_avoid_on_avoided_row(k_four, 4, "three usable rows");
+}
+
+/* B6: more avoided rows than lcn_avoid_count holds (65,535): the avoid and clear toasts count them exactly. */
+static int
+test_scan_avoid_counts_past_65535(void) {
+    enum { ROWS = 70000, AVOIDED = 65536 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    rc |= expect_int("70,000-row list", dsd_state_trunk_lcn_reserve(&state, ROWS), 0);
+    for (int i = 0; i < ROWS; i++) {
+        *dsd_state_trunk_lcn_slot(&state, i) = 851000000L + (12500L * i);
+    }
+    state.lcn_freq_count = ROWS;
+    rc |= expect_int("avoid store", dsd_state_trunk_lcn_avoid_reserve(&state, ROWS), 0);
+    for (int i = 0; i < AVOIDED; i++) {
+        state.trunk_lcn_avoid[i] = 1U;
+    }
+    opts.scanner_mode = 1;
+    state.lcn_freq_roll = ROWS - 1; /* row 69,998 heard */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid the 65,537th row");
+    rc |= expect_str("avoid the 65,537th row toast", state.ui_msg, "Avoiding 1725.975000 MHz (65537 avoided)");
+    rc |= expect_true("avoid the 65,537th row: the saturating count",
+                      state.lcn_avoid_count == UINT16_MAX && state.lcn_avoid_total == 65537U);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "clear 65,537 rows");
+    rc |= expect_str("clear 65,537 rows toast", state.ui_msg, "Cleared 65537 scan avoids");
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -24861,6 +25284,11 @@ main(void) {
     rc |= test_channel_cycle_prev_candidates();
     rc |= test_channel_cycle_without_a_tuner_says_so();
     rc |= test_channel_cycle_prev_refusals_and_trunk_scan();
+    rc |= test_scan_avoid_remove_lcn_identity();
+    rc |= test_scan_avoid_clear_outside_a_rotation();
+    rc |= test_scan_avoid_remove_trunk_scan();
+    rc |= test_scan_avoid_on_an_avoided_row();
+    rc |= test_scan_avoid_counts_past_65535();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_signal_search_refuses_channel_cycle_prev();
 #endif

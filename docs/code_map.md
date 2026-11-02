@@ -3406,15 +3406,36 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     no paused scan to resume`), and a second one while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are
     refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
     stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
-    and trunking off leaves the pause. Hold, avoid, clear avoids and Next and Previous channel on a paused scan answer
+    and trunking off leaves the pause. Hold, avoid and Next and Previous channel on a paused scan answer
     `Scan paused: resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan
-    keeps its hold, while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan
+    keeps its hold, while a `-Y` pause already dropped the hold), while `MANUAL_TUNE`, clear avoids and put back
+    (flag edits, issue #672) are allowed. A paused `-Y` scan
     ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
     RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
     `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
     `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
     followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
     `API_COMMANDS`.
+  - Scan avoid commands (issue #672): `SCAN_AVOID_REMOVE` (221, `dsd_app_scan_avoid_remove_payload`, typed submit
+    `dsd_app_command_scan_avoid_remove()`, which refuses an unterminated `target_id`; min-size rule; not coalescible;
+    API `scan_avoid_remove`) puts one avoided entry back by the identity the scan avoid view lists, never a list
+    position. `apply_cmd_scan_avoid_remove()` validates what a raw submission can carry first (known kind, terminated
+    id, `row >= 0`, trunk-scan `session != 0`; else an invalid payload) and refuses an identity of the other scanner's
+    kind (an LCN identity while `trunk_scan_enabled`, a trunk-scan one without) with `Scan list changed; nothing put
+    back`. A trunk-scan identity goes to `dsd_trunk_scan_hook_unavoid()` (OK, `NOT_AVOIDED`, `STALE`, `UNAVAILABLE`
+    each with its toast); an LCN identity must match instance, list revision, row (range-checked before it indexes)
+    and frequency (`dsd_app_scan_avoid_lcn_match()`, `src/app_control/scan_avoid_view_internal.h`, read as the view
+    lists it) and still be avoided, then only its flag clears (`dsd_state_trunk_lcn_avoid_set()`, which stamps
+    `lcn_avoid_rev`); the drain's visit tick gives the visit cap as for clear. Put back never tunes, so a paused scan,
+    a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command.
+    `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
+    the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
+    rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
+    scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). The `-Y`
+    avoid, clear and put-back toasts count through the view (`size_t`, B6: `lcn_avoid_count` saturates at 65,535);
+    the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its list
+    failed to allocate. Toasts name a row by its MHz (`row N` with no frequency) and a target by its id. Tests:
+    `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -4003,6 +4024,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   gates, the Qt metrics and the API feed's `status.scan` (`dsd_app_scan_kind_name()`, `dsd_app_scan_state_name()`:
   `off|running|paused`) read; the scan timing, scan row and gain views read the same running predicate directly.
   Test: `APP_SCAN_STATE_VIEW`.
+  `include/dsd-neo/app_control/scan_avoid_view.h` and `src/app_control/scan_avoid_view.c` (issue #672) list the
+  session's avoids for every frontend and the API. `dsd_app_scan_avoid_summary_get()` (a few loads, no walk) gives
+  `kind` (`TRUNK_SCAN` while `--trunk-scan` is configured, else `LCN` while `-Y` runs or is paused or the channel map
+  has rows, else `NONE`), `available` (`scan_avoids_complete`, and `trunk_scan_avoids_ok` for a trunk scan),
+  `total` (exact `lcn_avoid_total` or the published list's count, only while available: `total_known`),
+  `instance`, `list_rev` or `session`, `revision` (`lcn_avoid_rev` / `trunk_scan_avoid_rev`), `can_avoid` (a
+  rotation runs, today's Avoid gate) and `can_manage` (a store and a running rotation, entries, or an incomplete copy,
+  so Clear stays reachable while the list is not ready). Frontends rebuild only when
+  `dsd_app_scan_avoid_summary_same_key()` (kind, instance, revision, availability) moves.
+  `dsd_app_scan_avoid_list_build()` returns an owned list (`_free()`) of `{identity, label}` in one linear pass on
+  the caller's thread, nothing while unavailable; `dsd_app_scan_avoid_raw_collect()` is its unformatted half
+  (identities, ordinal, stored name or label) for the API feed's decoder-thread observer, and
+  `dsd_app_scan_avoid_raw_label()` formats one entry: `Row 3  851.012500 MHz  Name` or `#2  county-p25  851.012500
+  MHz  Label` (the row or 1-based target position first, so duplicate names, shared id prefixes and narrow-terminal
+  substitutions still read apart; `frequency unknown` for 0 Hz; MHz through `dsd_freq_hz_mhz_text()`). The identity
+  is `dsd_app_scan_avoid_remove_payload`: LCN `(instance, list_rev, row, frequency_hz)`, trunk scan
+  `(session, target_id)`. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
+  `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
   scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`

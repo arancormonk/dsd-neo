@@ -102,7 +102,8 @@ enum dsd_app_command_id {
     DSD_APP_CMD_WAV_TOGGLE = 214,
     DSD_APP_CMD_ENC_LOCKOUT_CLEAR = 215, // forget all encrypted-target lockouts
     // On-the-fly scan controls (#380): -Y rows or --trunk-scan targets, whichever is running
-    // (a paused scan refuses them, CHANNEL_CYCLE's next included, until it resumes)
+    // (a paused scan refuses hold and avoid, CHANNEL_CYCLE's next included, until it resumes; clear is a flag edit it
+    // takes, issue #672)
     DSD_APP_CMD_SCAN_HOLD_TOGGLE = 216, // hold/release rotation on the channel/target on air
     DSD_APP_CMD_SCAN_AVOID = 217,       // avoid the channel/target on air for the session and step on
     DSD_APP_CMD_SCAN_AVOID_CLEAR = 218, // put every avoided channel/target back into the rotation
@@ -113,6 +114,11 @@ enum dsd_app_command_id {
     // target, -Y row, P25 control-channel candidate (-^) or LCN -- refused as it is (a replay, Signal search, a paused
     // scan, no tuner); no payload. The rotation and Next carry on forward from where it lands.
     DSD_APP_CMD_CHANNEL_CYCLE_PREV = 220,
+    // Put one avoided -Y row or --trunk-scan target back into the rotation by its identity (issue #672); payload
+    // dsd_app_scan_avoid_remove_payload. Never retunes. Unlike hold and avoid, it and SCAN_AVOID_CLEAR are taken while a
+    // scan is paused, and for -Y rows whenever no trunk scan runs (-Y stopped, -T): the avoids still filter the control
+    // channel hunts there.
+    DSD_APP_CMD_SCAN_AVOID_REMOVE = 221,
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
@@ -653,6 +659,30 @@ typedef struct {
     dsd_app_receive_payload receive;
 } dsd_app_scan_row_edit_payload;
 
+/** Which store an avoided entry lives in (issue #672): a -Y channel map row, or a --trunk-scan target. */
+typedef enum {
+    DSD_APP_SCAN_AVOID_KIND_NONE = 0,
+    DSD_APP_SCAN_AVOID_KIND_LCN = 1,
+    DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN = 2,
+} dsd_app_scan_avoid_kind;
+
+/** DSD_APP_CMD_SCAN_AVOID_REMOVE (issue #672): the identity of one avoided entry, as the scan avoid view
+ * (<dsd-neo/app_control/scan_avoid_view.h>) lists it, never a list position. A -Y row (KIND_LCN) is
+ * (@c instance, @c list_rev, @c row, @c frequency_hz): dsd_state::state_instance and lcn_list_rev, the row and its
+ * frequency, so it names nothing after a restart, a new channel map or a write to that row. A --trunk-scan target
+ * (KIND_TRUNK_SCAN) is (@c session, @c target_id): dsd_state::trunk_scan_session (nonzero) and the target's id. The
+ * fields the other kind uses are ignored. */
+typedef struct {
+    uint32_t kind; /* dsd_app_scan_avoid_kind */
+    uint32_t session;
+    uint64_t instance;
+    uint64_t list_rev;
+    uint64_t frequency_hz;
+    int32_t row;
+    uint32_t pad; /* explicit, so the payload carries no indeterminate padding */
+    char target_id[64];
+} dsd_app_scan_avoid_remove_payload;
+
 typedef enum {
     DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
     DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
@@ -716,6 +746,9 @@ int dsd_app_command_set_tone_filter(int32_t mode, const char* list);
 int dsd_app_command_set_tone_filter_mode(int32_t mode);
 /** Submit DSD_APP_CMD_SCAN_ROW_EDIT. A payload whose strings are not NUL-terminated is rejected here. */
 int dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload);
+/** Submit DSD_APP_CMD_SCAN_AVOID_REMOVE. A NULL payload or a @c target_id that is not NUL-terminated is rejected here;
+ * the decoder checks the rest. */
+int dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

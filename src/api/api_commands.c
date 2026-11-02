@@ -562,6 +562,42 @@ submit_scan_row_edit(const api_command_desc* d, const dsd_json_node* params, uin
     return dsd_app_command_scan_row_edit(&p);
 }
 
+/* scan_avoid_remove (issue #672): one avoided entry by the identity the scan avoid view lists. A -Y row needs instance,
+   list_rev, row and frequency_hz; a trunk-scan target needs session (1..UINT32_MAX, refused above rather than narrowed)
+   and target_id. */
+static int
+scan_avoid_remove_params(const dsd_json_node* params, dsd_app_scan_avoid_remove_payload* p) {
+    const char* kind = dsd_json_as_str_bounded(dsd_json_obj_get(params, "kind"), sizeof p->target_id);
+    if (kind == NULL) {
+        return -1;
+    }
+    if (strcmp(kind, "lcn") == 0) {
+        p->kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+        return param_u64(params, "instance", &p->instance) != 0 || param_u64(params, "list_rev", &p->list_rev) != 0
+               || param_i32(params, "row", &p->row) != 0 || p->row < 0
+               || param_u64(params, "frequency_hz", &p->frequency_hz) != 0;
+    }
+    if (strcmp(kind, "trunk_scan") == 0) {
+        p->kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+        return param_u32(params, "session", &p->session) != 0 || p->session == 0U
+               || param_str(params, "target_id", p->target_id, sizeof p->target_id) != 0 || p->target_id[0] == '\0';
+    }
+    return -1;
+}
+
+static int
+submit_scan_avoid_remove(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)d;
+    (void)request_id;
+    dsd_app_scan_avoid_remove_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.row = -1;
+    if (scan_avoid_remove_params(params, &p)) {
+        return API_INVALID_PARAMS;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, &p, sizeof p);
+}
+
 static int
 submit_airspy(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)d;
@@ -934,6 +970,8 @@ static const api_command_desc k_commands[] = {
     API_ACTION("scan_hold_toggle", DSD_APP_CMD_SCAN_HOLD_TOGGLE),
     API_ACTION("scan_avoid", DSD_APP_CMD_SCAN_AVOID),
     API_ACTION("scan_avoid_clear", DSD_APP_CMD_SCAN_AVOID_CLEAR),
+    API_KIND("scan_avoid_remove", DSD_APP_CMD_SCAN_AVOID_REMOVE, submit_scan_avoid_remove,
+             "{kind:lcn|trunk_scan,instance,list_rev,row,frequency_hz,session,target_id}"),
     API_ACTION("scan_resume", DSD_APP_CMD_SCAN_RESUME),
 
     API_ACTION("quit", DSD_APP_CMD_QUIT),

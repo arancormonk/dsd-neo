@@ -1114,6 +1114,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_row_view.h
   CXX
 )
+# Issue #672: the avoided scan channels every frontend lists.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_avoid_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW
+  dsd-neo/app_control/scan_avoid_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_avoid_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW_CXX
+  dsd-neo/app_control/scan_avoid_view.h
+  CXX
+)
 # Issue #671: which scan the session has, running or paused.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_state_view
@@ -3248,6 +3261,26 @@ target_link_libraries(
     PRIVATE dsd-neo_core dsd-neo_runtime
 )
 add_test(NAME APP_SCAN_STATE_VIEW COMMAND dsd-neo_test_app_scan_state_view)
+
+# Issue #672: the avoided -Y rows or trunk-scan targets every frontend lists, and the identity put back takes.
+add_executable(
+    dsd-neo_test_app_control_scan_avoid_view
+    ui/test_app_control_scan_avoid_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_scan_avoid_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_avoid_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_AVOID_VIEW
+    COMMAND dsd-neo_test_app_control_scan_avoid_view
+)
 
 # Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.
 add_executable(

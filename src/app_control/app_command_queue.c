@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -111,6 +112,7 @@
 #include "key_commands.h"
 #include "recording_view_internal.h"
 #include "rr_apply_verdict.h"
+#include "scan_avoid_view_internal.h"
 #include "scan_row_edit.h"
 #include "services.h"
 #include "snapshot_internal.h"
@@ -4836,6 +4838,14 @@ dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload) {
 }
 
 int
+dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload) {
+    if (!payload || memchr(payload->target_id, '\0', sizeof payload->target_id) == NULL) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_set_tone_filter_mode(int32_t mode) {
     dsd_app_tone_filter_payload payload;
     DSD_MEMSET(&payload, 0, sizeof payload);
@@ -4879,6 +4889,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
+    {DSD_APP_CMD_SCAN_AVOID_REMOVE, sizeof(dsd_app_scan_avoid_remove_payload)},
     {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
@@ -7799,14 +7810,45 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
+/* An avoided -Y row as the avoid and put-back toasts name it (issue #672): its frequency to the Hz, as every frequency
+   is shown (issue #670), or "row N" for a placeholder with no frequency yet. A stored row is within the trunk ceiling,
+   so a frequency fits the uint32_t text. */
+static const char*
+scan_avoid_lcn_toast_name(uint64_t hz, int row, char* out, size_t out_size) {
+    if (hz > 0U && hz <= UINT32_MAX) {
+        char mhz[16];
+        DSD_SNPRINTF(out, out_size, "%s MHz", ui_toast_mhz((uint32_t)hz, mhz, sizeof mhz));
+    } else {
+        DSD_SNPRINTF(out, out_size, "row %d", row + 1);
+    }
+    return out;
+}
+
+/* The avoided -Y rows, exact, through the scan avoid view (issue #672 B6): lcn_avoid_count saturates at 65,535. */
+static size_t
+scan_avoid_lcn_total(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_scan_avoid_summary summary;
+    if (dsd_app_scan_avoid_summary_get(opts, state, &summary) != 0 || summary.kind != DSD_APP_SCAN_AVOID_KIND_LCN) {
+        return 0U;
+    }
+    return summary.total;
+}
+
 /* Avoids the row the receiver is on (issue #666), not the one before the cursor: a placeholder the scan parked on, or a
-   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. */
+   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. A row already avoided (a
+   failed tune can leave the receiver on one) is left as it is, with no step (issue #672 B4). */
 static void
 apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
     const int row = dsd_engine_channel_scan_on_air_row(state);
     const long freq = row >= 0 ? *dsd_state_trunk_lcn_slot(state, row) : 0L;
     if (freq == 0) {
         ui_set_toast(state, 3, "No scan channel on air to avoid");
+        return;
+    }
+    char name[32];
+    (void)scan_avoid_lcn_toast_name(freq > 0 ? (uint64_t)freq : 0U, row, name, sizeof name);
+    if (dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+        ui_set_toast(state, 3, "Already avoided: %s", name);
         return;
     }
     if (dsd_state_trunk_lcn_usable_count(state) <= 1) {
@@ -7817,24 +7859,22 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;
     }
-    /* To the Hz, as every frequency is shown: four decimals named another channel of a 6.25 kHz plan (issue #670). A
-       stored row is within the trunk ceiling, so it fits the uint32_t text. */
-    char mhz[16];
-    ui_set_toast(state, 3, "Avoiding %s MHz (%u avoided)",
-                 ui_toast_mhz(freq > 0 ? (uint32_t)freq : 0U, mhz, sizeof mhz), (unsigned)state->lcn_avoid_count);
+    ui_set_toast(state, 3, "Avoiding %s (%zu avoided)", name, scan_avoid_lcn_total(opts, state));
     if (scan_control_tuner_present(opts)) {
         (void)apply_manual_lcn_cycle(opts, state);
     }
 }
 
 static void
-apply_manual_scan_avoid_clear(dsd_state* state) {
-    const int cleared = dsd_state_trunk_lcn_avoid_clear(state);
-    ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
+apply_manual_scan_avoid_clear(const dsd_opts* opts, dsd_state* state) {
+    const size_t cleared = scan_avoid_lcn_total(opts, state);
+    (void)dsd_state_trunk_lcn_avoid_clear(state);
+    ui_set_toast(state, 3, "Cleared %zu scan avoid%s", cleared, cleared == 1U ? "" : "s");
 }
 
-/* A scan control (hold, avoid, clear avoids, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the
-   scan has no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
+/* A scan control (hold, avoid, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the scan has no
+   channel on air to act on until it resumes. The hold and the avoids stay as they were. Clear avoids and put back are
+   flag edits a paused scan takes (issue #672 D3). */
 static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
 
 /* Next or Previous channel with nothing to tune (issue #666): neither a radio input nor a rigctl peer
@@ -7853,6 +7893,9 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
         case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE:
             if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
                 ui_set_toast(state, 3, "Cannot avoid the last usable trunk scan target");
+            } else if (rc == DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED) {
+                /* The receiver fell back onto an avoided target; nothing changed (issue #672 B4). */
+                ui_set_toast(state, 3, "Already avoided: target %s", target_id);
             } else {
                 ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target_id,
                              (unsigned)state->trunk_scan_avoided_count);
@@ -7899,6 +7942,87 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* Put back, refused: the identity names nothing in this session's list (another session, map or row, or the other
+   scanner's kind), so the frontend's list is out of date. */
+static const char k_scan_avoid_remove_stale[] = "Scan list changed; nothing put back";
+
+/* What a raw submission can carry, checked before anything indexes or narrows it (issue #672): a known kind, a
+   terminated id, a row that can index, a trunk-scan session that can name one. */
+static int
+scan_avoid_remove_payload_valid(const dsd_app_scan_avoid_remove_payload* p) {
+    if (!memchr(p->target_id, '\0', sizeof p->target_id)) {
+        return 0;
+    }
+    if (p->kind == DSD_APP_SCAN_AVOID_KIND_LCN) {
+        return p->row >= 0;
+    }
+    return p->kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN && p->session != 0U;
+}
+
+/* A -Y row: the same instance, list, row and frequency, and still avoided; the flag alone changes (the drain's visit tick
+   restarts the visit cap as it does for clear). */
+static int
+apply_scan_avoid_remove_lcn(const dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* p) {
+    const int match = dsd_app_scan_avoid_lcn_match(state, p);
+    if (match == DSD_APP_SCAN_AVOID_MATCH_STALE) {
+        ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale);
+        return UI_CMD_APPLY_FAILED;
+    }
+    char name[32];
+    (void)scan_avoid_lcn_toast_name(p->frequency_hz, p->row, name, sizeof name);
+    if (match == DSD_APP_SCAN_AVOID_MATCH_NOT_AVOIDED) {
+        ui_set_toast(state, 3, "Already put back: %s", name);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (dsd_state_trunk_lcn_avoid_set(state, (size_t)p->row, 0) != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "Put back %s (%zu avoided)", name, scan_avoid_lcn_total(opts, state));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/* A --trunk-scan target: the coordinator puts it back (dsd_trunk_scan_hook_unavoid()), paused or not. Its count is the
+   coordinator's own (trunk_scan_avoided_count, which a failed list allocation leaves exact). */
+static int
+apply_scan_avoid_remove_trunk_scan(const dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* p) {
+    const int rc = dsd_trunk_scan_hook_unavoid(opts, state, p->session, p->target_id);
+    switch (rc) {
+        case DSD_TRUNK_SCAN_CONTROL_OK:
+            ui_set_toast(state, 3, "Put back target %s (%u avoided)", p->target_id,
+                         (unsigned)state->trunk_scan_avoided_count);
+            return UI_CMD_APPLY_COMPLETED;
+        case DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED:
+            ui_set_toast(state, 3, "Already put back: target %s", p->target_id);
+            break;
+        case DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE: ui_set_toast(state, 3, "Trunk scan is not running"); break;
+        default: ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale); break;
+    }
+    return UI_CMD_APPLY_FAILED;
+}
+
+/* DSD_APP_CMD_SCAN_AVOID_REMOVE (issue #672): put one avoided entry back by its identity. A flag edit that never tunes,
+   so a paused scan, a stopped -Y list, -T and an I/Q replay all take it; Signal search refuses it with the other
+   receiver commands (command_allowed_during_search()). An LCN identity is refused while a trunk scan is configured and a
+   trunk-scan identity without one. */
+static int
+apply_cmd_scan_avoid_remove(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_scan_avoid_remove_payload p;
+    if (!state || c->n != sizeof p) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    if (!scan_avoid_remove_payload_valid(&p)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int trunk_scan = opts->trunk_scan_enabled == 1;
+    if ((p.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) != trunk_scan) {
+        ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale);
+        return UI_CMD_APPLY_FAILED;
+    }
+    return trunk_scan ? apply_scan_avoid_remove_trunk_scan(opts, state, &p)
+                      : apply_scan_avoid_remove_lcn(opts, state, &p);
+}
+
 static int
 apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int op;
@@ -7906,6 +8030,7 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         case DSD_APP_CMD_SCAN_HOLD_TOGGLE: op = DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE; break;
         case DSD_APP_CMD_SCAN_AVOID: op = DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE; break;
         case DSD_APP_CMD_SCAN_AVOID_CLEAR: op = DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR; break;
+        case DSD_APP_CMD_SCAN_AVOID_REMOVE: return apply_cmd_scan_avoid_remove(opts, state, c);
         default: return 0;
     }
     if (!state) {
@@ -7913,6 +8038,12 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     if (opts->trunk_scan_enabled == 1) {
         return apply_trunk_scan_control(opts, state, op);
+    }
+    /* Clear is a flag edit with no row on air to act on, taken whenever no trunk scan runs (issue #672 B1, D2/D3): a
+       paused or stopped -Y list and -T keep their avoids, which the control-channel hunts skip. */
+    if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR) {
+        apply_manual_scan_avoid_clear(opts, state);
+        return 1;
     }
     if (state->lcn_scan_paused) {
         ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
@@ -7924,8 +8055,7 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: apply_manual_scan_hold_toggle(state); break;
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: apply_manual_scan_avoid(opts, state); break;
-        default: apply_manual_scan_avoid_clear(state); break;
+        default: apply_manual_scan_avoid(opts, state); break;
     }
     return 1;
 }
