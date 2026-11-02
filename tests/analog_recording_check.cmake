@@ -6,8 +6,10 @@
 # Each leg must, as in iq_decode_check.cmake, exit 0, show no sanitizer report
 # and print "ANALOG AUDIO OK", and then:
 #   - its folder holds exactly FILES recordings (*.wav), and no TEMP_ file;
-#   - its journal has FILES "publish" lines, each an NFM recording pending its
-#     call's history row and not failed, naming a file in the folder, and one
+#   - its journal has FILES "publish" lines, each an analog recording pending its
+#     call's history row and not failed, its system the call's mode (NFM from an
+#     I/Q replay, ANALOG from the discriminator tap, an audio input whose mode is
+#     unknown), naming a file in the folder, and one
 #     "link" line for each of them; no "unlink" and no "error" line;
 #   - the host printed FILES "ANALOG CALL ROW:" lines: one history row a file.
 #
@@ -54,6 +56,11 @@ if(NOT _expected_duration_count EQUAL FILES)
 endif()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
+if(MODE MATCHES "--analog-pcm-tap")
+    set(_system "ANALOG")
+else()
+    set(_system "NFM")
+endif()
 set(_rates "-")
 if(DEFINED RATES)
     string(REPLACE "," ";" _rates "${RATES}")
@@ -151,11 +158,11 @@ function(_analog_recording_leg leg rate out_files out_summary)
                 NOT _line MATCHES "\"id\":\"[^\"]+\""
                 OR NOT _line MATCHES "\"pending\":true"
                 OR NOT _line MATCHES "\"failed\":false"
-                OR NOT _line MATCHES "\"system\":\"NFM\""
+                OR NOT _line MATCHES "\"system\":\"${_system}\""
             )
                 message(
                     FATAL_ERROR
-                    "analog_recording_check: ${leg}: not a pending NFM publish: '${_line}'"
+                    "analog_recording_check: ${leg}: not a pending analog publish: '${_line}'"
                 )
             endif()
             string(REGEX MATCH "\"id\":\"([^\"]+)\"" _unused "${_line}")

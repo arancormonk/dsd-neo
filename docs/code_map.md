@@ -1515,6 +1515,28 @@ suite runs under this compiler.
   satisfy to be loaded), `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
   `dsd_call_record_site_compatible()` the call-state reacquisition guard above uses. Tests:
   `CORE_RECEIVED_IDENTITY_SITE`, `CORE_CALL_ALERT_HISTORY`, `CORE_CALL_STATE`.
+- Analog rows (issue #667; `dsd_events.c`, `call_state.c`). A row is analog by its protocol (`DSD_SYNC_ANALOG`). Its
+  mode, `dsd_analog_mode` (`<dsd-neo/core/analog_mode.h>`, pinned values: unknown 0, NFM 1, AM 2), rides as a uint8_t
+  on the observation (`dsd_call_observation::analog_mode`), the canonical call (`dsd_call_snapshot::analog_mode`) and the
+  row (`Event_History::analog_mode`). The canonical call takes it from the observation that begins the epoch and keeps
+  it: a CONTINUE never changes it, a reacquired epoch is seeded with the ending one's. The event layer copies it with
+  the row's other per-call fields (init, push, the render context both ways, a merge that fills an unknown one, a data
+  notice from its observation); trunk-scan snapshots copy whole rows and calls. On any other protocol the mode is 0 and
+  means nothing. `sysid_string` is the mode's name (`dsd_analog_mode_name()`: `NFM`, `AM`, `ANALOG` when unknown), and
+  the row text (`watchdog_event_current_build_event_analog()`) is the protocol token, the mode word (none when unknown),
+  the frequency, then the receive identity's confirmed tone, copied into the render context beside the service label:
+  `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `ANALOG NFM; FREQ: ...; DCS D023N / D047I;`
+  (`dsd_dcs_format_label()` of the canonical value `value / 2`, `value % 2`: both spellings, the canonical one first),
+  `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input `ANALOG; CTCSS 100.0 Hz;`. An untoned or never confirmed call
+  has no tone token; the call keeps its confirmed tone after the carrier drops, so a tone lost at the end still shows.
+  Call alerts (A1): an analog row sounds no VOICE_START or VOICE_END and arms neither (no withheld START, no END held
+  for the reacquire window). The END is decided from the outgoing row's protocol, read before the staged row is cleared
+  (`watchdog_event_row_is_analog()` in `watchdog_event_retire_staged_row()` and `watchdog_event_finalize_ended()`), so a
+  digital END still pending when an analog call takes the slot sounds as before. On `-o -` the 8 kHz alert blocks would
+  land in the 48 kHz monitor stream; on UDP an alert goes to the digital port, never the analog one (base port + 2).
+  Tests: `CORE_RECEIVE` (`test_analog_row_text`, `test_analog_mode_rows`), `CORE_CALL_ALERT_HISTORY`
+  (`test_analog_call_sounds_no_alerts`, `test_digital_end_sounds_when_an_analog_call_takes_the_slot`,
+  `test_digital_call_after_an_analog_call_sounds_only_its_start`), `CORE_VOICE_CHAIN` (the alert's UDP port).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -11782,7 +11804,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a RECEPTION block continues or
   begins the call, and a BREAK ends it. The state splits the logical call (`active`, `held`, the gap counters,
   `last_m`, `boundaries_seen`, the identity) from its recording segment (`analog_call_recording`: file, folder, open
-  stamp, `spans_pause`), which a stop or folder change closes while the call goes on.
+  stamp, `spans_pause`), which a stop or folder change closes while the call goes on. Its observations carry the
+  call's mode (`analog_call_mode()`, issue #667): the analog demodulator in force on a radio input
+  (`dsd_opts_input_is_radio()`: NFM, or AM for `DSD_ANALOG_DEMOD_AM`), unknown on audio input.
   - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
     It is a recording setting: it holds a call only while per-call recording is on (`opts->dmr_stereo_wav`, `-P`), and
     is off otherwise (`analog_call_max_gap48()`). With the hold off a HOLDABLE block ends the call, as every

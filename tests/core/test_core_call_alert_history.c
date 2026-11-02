@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
@@ -3134,6 +3135,118 @@ committed_history_rows(const Event_History_I* history) {
         }
     }
     return rows;
+}
+
+// An NFM call on slot 0, as the analog tracker observes one (issue #667): no identity, target 0.
+static int
+observe_analog_call(dsd_state* state, dsd_call_boundary boundary) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .frequency_hz = 154430000,
+        .analog_mode = DSD_ANALOG_MODE_NFM,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    return dsd_call_state_observe(state, &observation, boundary);
+}
+
+// Whether the slot's lifecycle holds a START or END alert armed.
+static int
+alert_armed(const dsd_state* state, uint8_t slot) {
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(state, &context) > 0);
+    return context.events[slot].start_alert_pending != 0U || context.events[slot].end_alert_pending != 0U;
+}
+
+// Issue #667 A1: an analog call sounds no START or END alert and arms none, under any end: an explicit end, and a
+// sync-loss end, whose END a digital call holds for the reacquire window. Its row still commits.
+static int
+test_analog_call_sounds_no_alerts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    static const dsd_call_end_reason k_ends[] = {DSD_CALL_END_EXPLICIT, DSD_CALL_END_SYNC_LOSS};
+    for (size_t i = 0; i < sizeof k_ends / sizeof k_ends[0]; i++) {
+        reset_fixture(&opts, &state, event_history);
+        opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+        assert(observe_analog_call(&state, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("an analog call sounds no START", g_beeper_count, 0);
+        rc |= expect_int("an analog call arms no START", alert_armed(&state, 0U), 0);
+        assert(end_test_call(&state, 0U, k_ends[i]) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("an analog call's row commits", event_history[0].Event_History_Items[1].systype,
+                         DSD_SYNC_ANALOG);
+        rc |= expect_int("an analog call arms no END", alert_armed(&state, 0U), 0);
+        dsd_event_flush_pending_alerts(&opts, &state);
+        rc |= expect_int("an analog call sounds no END", g_beeper_count, 0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+// Issue #667 A1: the END is the outgoing call's, decided from its own row. A digital call an analog call replaces
+// sounds its END (at once, or the one its sync-loss end still holds); the analog call sounds no START.
+static int
+test_digital_end_sounds_when_an_analog_call_takes_the_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int held = 0; held <= 1; held++) {
+        reset_fixture(&opts, &state, event_history);
+        opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("the digital call sounds its START", g_beeper_count, 1);
+        if (held) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            rc |= expect_int("the sync-loss end holds the digital END", g_beeper_count, 1);
+            rc |= expect_int("the digital END is armed", alert_armed(&state, 0U), 1);
+        }
+        assert(observe_analog_call(&state, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int(held ? "the held digital END sounds as the analog call begins"
+                              : "the replaced digital call sounds its END",
+                         g_beeper_count, 2);
+        rc |= expect_int("the analog call arms nothing", alert_armed(&state, 0U), 0);
+        assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        dsd_event_flush_pending_alerts(&opts, &state);
+        rc |= expect_int("the analog call sounds no END", g_beeper_count, 2);
+        rc |= expect_int("both rows commit", committed_history_rows(&event_history[0]), 2);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+// Issue #667 A1: a digital call that replaces an analog one sounds its own START, and the analog row it commits no END.
+static int
+test_digital_call_after_an_analog_call_sounds_only_its_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+    assert(observe_analog_call(&state, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_int("the analog row commits", event_history[0].Event_History_Items[1].systype, DSD_SYNC_ANALOG);
+    rc |= expect_int("only the digital START sounds", g_beeper_count, 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("the digital call sounds its END", g_beeper_count, 2);
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 // The scan-channel label a row carries comes from the same resolver the frontends use, so these
@@ -9220,6 +9333,9 @@ main(void) {
     rc |= test_route_text_only_row_survives_epoch_change_commit();
     rc |= test_standalone_provoice_zero_id_row_commits();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
+    rc |= test_analog_call_sounds_no_alerts();
+    rc |= test_digital_end_sounds_when_an_analog_call_takes_the_slot();
+    rc |= test_digital_call_after_an_analog_call_sounds_only_its_start();
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_merged_row_end_stamp_advances();
     rc |= test_merged_row_start_stamp_is_frozen();

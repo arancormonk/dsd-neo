@@ -419,6 +419,9 @@ typedef struct {
     // The numbering channel was named in, a dsd_call_channel_kind (<dsd-neo/core/call_channel.h>): the DMR call's own
     // LSN, LPCN or LCN; DSD_CALL_CHANNEL_NONE for other protocols. Meaningful only with channel != 0, and set with it.
     uint8_t call_channel_kind;
+    // An analog row's mode, a dsd_analog_mode (<dsd-neo/core/analog_mode.h>): NFM or AM as the demodulator ran, unknown
+    // (0) on audio input. A row is analog by its systype (DSD_SYNC_ANALOG); the mode means nothing on any other row.
+    uint8_t analog_mode;
     // The system and site the call was heard on: the site parts (dsd_rxid_site_snapshot(),
     // <dsd-neo/core/received_identity_site.h>) of the received identity record the sys_id parts come from, taken under
     // the same rule and frozen with them -- what the carrier sent while the call was heard, never a part of the moment

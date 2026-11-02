@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <assert.h>
 #include <dsd-neo/app_control/receive_view.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -17,6 +18,7 @@
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -441,7 +443,8 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     Event_History_I* history = state->event_history_s;
     assert(!strcmp(history[0].Event_History_Items[0].service_label, "Traveler /West?"));
     assert(history[0].Event_History_Items[0].target_id == 0);
-    assert(strcmp(history[0].Event_History_Items[0].sysid_string, "NFM") == 0);
+    /* An audio input's analog call names no mode: another receiver demodulated it (issue #667). */
+    assert(strcmp(history[0].Event_History_Items[0].sysid_string, "ANALOG") == 0);
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
     state->analog_rx.dcs_code = 047;
     state->analog_rx.dcs_inverted = 0;
@@ -555,7 +558,8 @@ test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Issue #670: the NFM row names the frequency as the digital rows do, in MHz with six decimals, and leaves it out when
-   there is none (an audio input: the tuned frequency is 0), in the history and in the -J event log alike. */
+   there is none (an audio input: the tuned frequency is 0), in the history and in the -J event log alike. The audio
+   input's row names no mode either (issue #667). */
 static void
 test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -581,7 +585,7 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     opts->rtlsdr_center_freq = 162550000U; /* not the receiver's on an audio input */
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
-    assert(strstr(row->event_string, " NFM; ") != NULL);
+    assert(strstr(row->event_string, " ANALOG; ") != NULL && strstr(row->event_string, "NFM") == NULL);
     assert(strstr(row->event_string, "FREQ:") == NULL && strstr(row->event_string, "Frequency:") == NULL);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
@@ -589,7 +593,7 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_RTL;
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
-    assert(strstr(row->event_string, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    assert(strstr(row->event_string, " ANALOG NFM; FREQ: 162.550000 MHz; ") != NULL);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
 
@@ -599,18 +603,157 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     const size_t n = fread(log, 1U, sizeof log - 1U, f);
     fclose(f);
     log[n] = '\0';
-    assert(strstr(log, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    assert(strstr(log, " ANALOG NFM; FREQ: 162.550000 MHz; ") != NULL);
     assert(strstr(log, "Frequency:") == NULL);
     assert(strstr(log, "FREQ: 0.") == NULL);
     /* Both calls are logged: the audio input's row with no frequency, then the radio's. */
-    const char* first = strstr(log, " NFM; ");
-    assert(first != NULL && strncmp(first + 6, "FREQ:", 5) != 0);
-    assert(strstr(first + 6, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    const char* first = strstr(log, " ANALOG; ");
+    assert(first != NULL && strncmp(first + 9, "FREQ:", 5) != 0);
+    assert(strstr(first + 9, " ANALOG NFM; FREQ: 162.550000 MHz; ") != NULL);
     opts->event_out_file[0] = '\0';
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->rtlsdr_center_freq = 0U;
     static const char* const files[] = {"events.log", NULL};
     assert(dsd_test_remove_temp_dir(directory, files) == 0);
+}
+
+/* The tone the analog tracker sees on its next block (issue #667): still acquiring (none confirmed), a confirmed untoned
+   carrier, or a locked CTCSS tone or DCS code. */
+typedef enum { ROW_TONE_ACQUIRING, ROW_TONE_NONE, ROW_TONE_CTCSS, ROW_TONE_DCS } row_tone;
+
+static void
+row_set_tone(dsd_state* state, row_tone tone, int value, int inverted) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    if (tone == ROW_TONE_ACQUIRING) {
+        state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    } else if (tone == ROW_TONE_NONE) {
+        state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    }
+    state->analog_rx.tone_kind = tone == ROW_TONE_DCS ? DSD_ANALOG_TONE_KIND_DCS : DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = tone == ROW_TONE_CTCSS ? value : 0;
+    state->analog_rx.dcs_code = tone == ROW_TONE_DCS ? value : 0;
+    state->analog_rx.dcs_inverted = inverted;
+}
+
+/* One analog call through the tracker under @p tone, ended by a BREAK block: its committed row. A second tone, unless
+   it equals the first, follows on a second block (a tone lost before the end). */
+static const Event_History*
+row_one_call(dsd_opts* opts, dsd_state* state, row_tone tone, int value, int inverted, row_tone then) {
+    float block[960];
+    for (int i = 0; i < 960; ++i) {
+        block[i] = 2000.0f;
+    }
+    row_set_tone(state, tone, value, inverted);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    if (then != tone) {
+        row_set_tone(state, then, 0, 0);
+        dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+        assert(dsd_engine_analog_call_active(state));
+    }
+    state->analog_rx.carrier_open = 0;
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+    assert(row->systype == DSD_SYNC_ANALOG);
+    return row;
+}
+
+/* The row text after its "YYYY-MM-DD HH:MM:SS " stamp. */
+static const char*
+row_text(const Event_History* row) {
+    assert(strlen(row->event_string) > 20U);
+    return row->event_string + 20;
+}
+
+/* Issue #667 G1/G2: an analog row names its mode (NFM as the demodulator ran on a radio input, none on audio input), the
+   frequency as before, and the CTCSS tone or DCS code its carrier was confirmed on, spelled as Call Info's Rx tone line
+   spells it (both DCS spellings, the canonical one first). An untoned or never confirmed call names none, and a tone
+   lost before the end leaves the confirmed one. The system string is the mode, ANALOG when unknown. */
+static void
+test_analog_row_text(dsd_opts* opts, dsd_state* state) {
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 0;
+    opts->dmr_stereo_wav = 0;
+    opts->wav_out_dir[0] = '\0';
+    opts->wav_sample_rate = 48000;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 154430000U;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive); /* no service names: the row's own tokens only */
+    assert(dsd_analog_tone_detection_active(opts));
+
+    const Event_History* row = row_one_call(opts, state, ROW_TONE_CTCSS, 1000, 0, ROW_TONE_CTCSS);
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz; ") == 0);
+    assert(strcmp(row->sysid_string, "NFM") == 0 && row->analog_mode == DSD_ANALOG_MODE_NFM);
+    row = row_one_call(opts, state, ROW_TONE_DCS, 023, 0, ROW_TONE_DCS);
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I; ") == 0);
+    row = row_one_call(opts, state, ROW_TONE_DCS, 047, 1, ROW_TONE_DCS); /* the same signal, its other spelling */
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I; ") == 0);
+    row = row_one_call(opts, state, ROW_TONE_DCS, 023, 1, ROW_TONE_DCS); /* inverted: the canonical normal code first */
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; DCS D047N / D023I; ") == 0);
+    row = row_one_call(opts, state, ROW_TONE_NONE, 0, 0, ROW_TONE_NONE);
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; ") == 0);
+    row = row_one_call(opts, state, ROW_TONE_ACQUIRING, 0, 0, ROW_TONE_ACQUIRING);
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; ") == 0);
+    row = row_one_call(opts, state, ROW_TONE_CTCSS, 1413, 0, ROW_TONE_ACQUIRING); /* a reverse burst at the end */
+    assert(strcmp(row_text(row), "ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 141.3 Hz; ") == 0);
+
+    /* Audio input: no mode word and no frequency, the tone still named. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    row = row_one_call(opts, state, ROW_TONE_CTCSS, 1000, 0, ROW_TONE_CTCSS);
+    assert(strcmp(row_text(row), "ANALOG; CTCSS 100.0 Hz; ") == 0);
+    assert(strcmp(row->sysid_string, "ANALOG") == 0 && row->analog_mode == DSD_ANALOG_MODE_UNKNOWN);
+    row = row_one_call(opts, state, ROW_TONE_NONE, 0, 0, ROW_TONE_NONE);
+    assert(strcmp(row_text(row), "ANALOG; ") == 0);
+    opts->rtlsdr_center_freq = 0U;
+    DSD_MEMSET(&state->analog_rx, 0, sizeof state->analog_rx);
+}
+
+/* Issue #667 D7: the canonical call takes its mode from the observation that begins it and keeps it, and the row and
+   its system string follow it: AM (which the tracker admits only later) as NFM, unknown as ANALOG. */
+static void
+test_analog_mode_rows(dsd_opts* opts, dsd_state* state) {
+    static const struct {
+        uint8_t mode;
+        int64_t freq_hz;
+        const char* text;
+        const char* sysid;
+    } cases[] = {
+        {DSD_ANALOG_MODE_AM, 119100000, "ANALOG AM; FREQ: 119.100000 MHz; ", "AM"},
+        {DSD_ANALOG_MODE_NFM, 154430000, "ANALOG NFM; FREQ: 154.430000 MHz; ", "NFM"},
+        {DSD_ANALOG_MODE_UNKNOWN, 0, "ANALOG; ", "ANALOG"},
+    };
+
+    DSD_MEMSET(&state->analog_rx, 0, sizeof state->analog_rx);
+    double now_m = 100.0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_ANALOG,
+            .slot = 0,
+            .kind = DSD_CALL_KIND_VOICE,
+            .frequency_hz = cases[i].freq_hz,
+            .analog_mode = cases[i].mode,
+            .observed_m = now_m,
+        };
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        /* A later observation in another mode leaves the call's. */
+        observation.analog_mode = cases[i].mode == DSD_ANALOG_MODE_NFM ? DSD_ANALOG_MODE_AM : DSD_ANALOG_MODE_NFM;
+        observation.observed_m = now_m + 0.5;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(state, 0, &call) > 0 && call.analog_mode == cases[i].mode);
+        assert(dsd_call_state_end_ex(state, 0, now_m + 1.0, DSD_CALL_END_EXPLICIT) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+        assert(row->systype == DSD_SYNC_ANALOG && row->analog_mode == cases[i].mode);
+        assert(strcmp(row_text(row), cases[i].text) == 0);
+        assert(strcmp(row->sysid_string, cases[i].sysid) == 0);
+        now_m += 10.0;
+    }
 }
 
 /* A trunking context remembers the access code verified on each voice channel and refuses a grant to one the policy in
@@ -1072,7 +1215,7 @@ test_hold_joins_a_pause_up_to_the_max_gap(void) {
     hold_expect_span(&r, first_m, last_m);
     assert(fabs((last_m - first_m) - 0.480) < 1e-6);
     assert(r.history[0].push_seq == commits + 1U);
-    assert(strcmp(r.history[0].Event_History_Items[1].sysid_string, "NFM") == 0);
+    assert(strcmp(r.history[0].Event_History_Items[1].sysid_string, "ANALOG") == 0); /* audio input: no mode */
     hold_files found;
     hold_take(&r, &found, 1);
     assert(found.frames[0] == 25L * HOLD_BLOCK);
@@ -1681,7 +1824,7 @@ test_hold_teardown_while_held(void) {
     hold_receive(&r, 2, 1000);
     hold_closed(&r, 5);
     dsd_engine_analog_call_end(r.opts, r.state);
-    assert(!strcmp(r.history[0].Event_History_Items[1].sysid_string, "NFM"));
+    assert(!strcmp(r.history[0].Event_History_Items[1].sysid_string, "ANALOG")); /* audio input: no mode */
     hold_expect_one_burst(&r, 2, 1000);
     hold_receive(&r, 2, 1000);
     hold_closed(&r, 5);
@@ -1824,6 +1967,13 @@ main(void) {
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog_event_frequency(opts, state);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->event_history_s = history;
+    init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
+    init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
+    test_analog_row_text(opts, state);
+    test_analog_mode_rows(opts, state);
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->event_history_s = history;

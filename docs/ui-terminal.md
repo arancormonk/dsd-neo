@@ -637,7 +637,8 @@ Its `Service names...` row edits a naming table using options
 such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed
-history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone.
+history and named per-call WAVs; an NFM call is named by the CTCSS tone or DCS code it
+was received with. Its history row also prints that tone, named or not (see "Event History Rows").
 The single-slot DMR decoder (`-fr`, `-nm`) shows every call in its `SLOT 1` block, its one
 lane; a `--slot-name` there names the over-the-air slot the call was proven on, as the `-J`
 slot field does.
@@ -1008,9 +1009,10 @@ manual channel cycle, a scan row or target change, a mode change, an input switc
 makes on its own, such as `rtl_fm` scanning several frequencies into stdin, is not one of these: after a hop that leaves
 a gap shorter than half a second, the previous channel's tone can show for a few hundred milliseconds until it is
 dropped. The same text comes from the shared app-control view the Qt/Android monitor uses, so both always agree.
-Supported tones and codes, timing, the DCS alias table and the requirements on externally demodulated audio are in the
-CLI guide: [CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and
-[DCS](cli.md#received-code-dcs-on-the-analog-monitor).
+A call's history row ends with the same text (`CTCSS 100.0 Hz;`, `DCS D023N / D047I;`) for the tone or code the call
+was confirmed on, kept when the tone is lost just before the end; see "Event History Rows". Supported tones and codes,
+timing, the DCS alias table and the requirements on externally demodulated audio are in the CLI guide:
+[CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and [DCS](cli.md#received-code-dcs-on-the-analog-monitor).
 
 ### Tone filter
 
@@ -1197,6 +1199,15 @@ radio heard under two sites inside the reacquire window gives two rows. Earlier 
 without padding (`SYS: A3F;`), `:0.0` for a P25 site not yet received, nothing of a P25 system without a WACN,
 `SYS: 0.5;` for an IDAS site, and an EDACS part never received as 0. The `-J` log and the control API's `event` text
 are the same lines.
+
+An analog call row names its mode after the `ANALOG` token, then the frequency and the received tone:
+`2026-04-30 09:12:04 ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `... ANALOG NFM; FREQ: 154.430000 MHz;
+DCS D023N / D047I;`, `... ANALOG AM; FREQ: 119.100000 MHz;`. The mode is `NFM` or `AM` as dsd-neo demodulated it. On
+audio input another receiver demodulated the audio, so the row names no mode and, as dsd-neo tuned nothing, no
+frequency: `... ANALOG; CTCSS 100.0 Hz;`. The tone is the CTCSS tone or DCS code the call was confirmed on, written as
+Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone, or one never confirmed, has none. Two
+receptions on one channel that differ only by tone now read differently. Earlier versions wrote `NFM` on every analog
+row, audio input included, and no tone. Analog rows sound no call alert (`-a`).
 
 ### Scoped scan controls and loaded keys
 

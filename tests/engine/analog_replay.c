@@ -79,7 +79,7 @@
  * 0.3, 0.6, 1.5 and 3.0 s between them, writes it to the private directory and adds `--iq-replay` for it (the case
  * names no capture of its own); with --analog-pcm-tap the run takes its discriminator tap as `-i` instead. With per-call
  * recording on (-P), the stop hook, which runs after the engine committed the session's last calls, also prints one
- * "ANALOG CALL ROW: start=S end=E" line per NFM call history row, oldest first (decode time, whole seconds).
+ * "ANALOG CALL ROW: start=S end=E" line per analog call history row, oldest first (decode time, whole seconds).
  * tests/analog_recording_check.cmake reads those lines with the recordings and the journal.
  */
 
@@ -93,6 +93,7 @@
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -2041,7 +2042,7 @@ analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
     return 0;
 }
 
-/* With per-call recording on (-P), one line per NFM call history row the run committed, oldest first: when its call
+/* With per-call recording on (-P), one line per analog call history row the run committed, oldest first: when its call
    began and ended, in whole seconds of decode time. The stop hook runs after the engine committed the session's last
    calls, so a call still held when the input ended is among them (issue #756). */
 static void
@@ -2052,7 +2053,7 @@ analog_print_call_rows(const dsd_opts* opts, const dsd_state* state) {
     const Event_History_I* history = &state->event_history_s[0];
     for (int i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
         const Event_History* row = &history->Event_History_Items[i];
-        if (strcmp(row->sysid_string, "NFM") == 0) {
+        if (row->systype == DSD_SYNC_ANALOG) {
             DSD_FPRINTF(stderr, "ANALOG CALL ROW: start=%lld end=%lld\n", (long long)row->event_start_time,
                         (long long)row->event_time);
         }

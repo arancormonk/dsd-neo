@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import wave
 
+ANALOG_ROW = re.compile(r" ANALOG(?: NFM| AM)?;")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -59,18 +61,19 @@ def main():
             if denied:
                 assert not frames, f"{name}: rejected audio was recorded"
                 assert not calls, f"{name}: rejected traffic made a recording"
-                assert "TGT:" not in history and "SRC:" not in history and " NFM;" not in history, history
+                assert "TGT:" not in history and "SRC:" not in history, history
+                assert not ANALOG_ROW.search(history), history
             else:
                 assert frames and any(frames), f"{name}: accepted audio is absent"
             if service:
-                assert "[" + service + "] " + mode_word(mode) in history, history
+                assert re.search(re.escape("[" + service + "]") + protocol_token(mode).pattern, history), history
                 if per_call:
                     # A conventional NFM call has no talkgroup, source or call type, so its service ends the name.
                     label = "_SVC_" + service.replace(" ", "_") + ("_" if mode != "-fA" else ".wav")
                     assert label in calls[0].name, f"{name}: {calls[0].name} lacks {label}"
             if unnamed:
                 # Traffic no rule names is still received, under no service label.
-                lines = [line for line in history.splitlines() if " " + mode_word(mode) + " " in line]
+                lines = [line for line in history.splitlines() if protocol_token(mode).search(line)]
                 assert lines, f"{name}: no call was published\n{history}"
                 assert all("[" not in line for line in lines), history
                 assert all("_SVC_" not in call.name for call in calls), [call.name for call in calls]
@@ -79,6 +82,11 @@ def main():
 
         def mode_word(mode):
             return {"-fr": "DMR", "-fi": "NXDN", "-f1": "P25p1", "-fA": "ANALOG"}[mode]
+
+        def protocol_token(mode):
+            # An analog row's protocol token is followed by its mode word, or directly by ';' when the mode is
+            # unknown (issue #667): "ANALOG NFM;", "ANALOG AM;", "ANALOG;".
+            return ANALOG_ROW if mode == "-fA" else re.compile(" " + mode_word(mode) + " ")
 
         for fixture, mode, option, value in [
             ("dmr_voice", "-fr", "dcc", "2"),

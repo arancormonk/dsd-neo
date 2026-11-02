@@ -133,6 +133,11 @@ typedef struct {
     uint8_t emergency;
     uint8_t priority;
     uint8_t has_service_metadata; /**< Non-zero when service options, emergency, and priority were observed. */
+    /**
+     * dsd_analog_mode (<dsd-neo/core/analog_mode.h>) of an analog (DSD_SYNC_ANALOG) call; 0 (unknown) otherwise.
+     * Taken by the observation that begins an epoch; a later observation never changes it.
+     */
+    uint8_t analog_mode;
     double observed_m;
 } dsd_call_observation;
 
@@ -260,6 +265,11 @@ typedef struct {
      * changes for the epoch (a reacquired epoch keeps them). NONE: another protocol's channel, replaced as observed.
      */
     uint8_t channel_kind;
+    /**
+     * dsd_analog_mode (<dsd-neo/core/analog_mode.h>) of an analog call, from the observation that began the epoch and
+     * kept for it: the demodulator the call was heard through, or unknown on audio input. 0 on every other protocol.
+     */
+    uint8_t analog_mode;
     dsd_call_crypto_state crypto;
     uint16_t service_options;
     uint16_t kid;

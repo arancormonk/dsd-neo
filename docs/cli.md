@@ -342,9 +342,15 @@ Windows console runs:
   decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
   none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
-  FDMA rows carry no slot tag. An analog (NFM) line names the tuned frequency as digital lines do,
-  `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
-  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). The control API's `event` text is the same row.
+  FDMA rows carry no slot tag. An analog line names its mode after the `ANALOG` token, `NFM` or `AM` as dsd-neo
+  demodulated it, and no mode on audio input, where another receiver did. It names the tuned frequency as digital lines
+  do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
+  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). Last comes the CTCSS tone or DCS code the call
+  was received with, as Call Info's `Rx tone:` line writes it: `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
+  `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
+  `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
+  before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
+  and no tone. The control API's `event` text is the same row.
   A call line names the system and site the call was heard on, and a DMR trunked call's own channel by its numbering
   (`LSN:`, `LPCN:`, `LCN:`), from the parts the carrier sent: see [Event History Rows](ui-terminal.md#event-history-rows)
   for the tokens per protocol. A part never received is left out, never printed as 0.
@@ -561,7 +567,9 @@ Notes
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
   plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output.
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output. Analog (NFM and
+  AM) calls sound no alert: the beep would land in the analog audio on `-o -` (on UDP output an alert goes to the digital
+  port, never the analog one).
 
 ## Modes & Decoders (`-f`)
 

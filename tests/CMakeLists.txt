@@ -1400,6 +1400,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_mode
+  HEADERS_PUBLIC_CORE_ANALOG_MODE
+  dsd-neo/core/analog_mode.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_mode_cxx
+  HEADERS_PUBLIC_CORE_ANALOG_MODE_CXX
+  dsd-neo/core/analog_mode.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_crc_provenance
   HEADERS_PUBLIC_CORE_CRC_PROVENANCE
   dsd-neo/core/crc_provenance.h

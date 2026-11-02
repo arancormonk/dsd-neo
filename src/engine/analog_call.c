@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -13,6 +14,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -292,6 +294,16 @@ analog_call_hold(dsd_opts* opts, dsd_state* state, analog_call* call, size_t cou
     (void)analog_call_reconcile(opts, state, call);
 }
 
+/* The mode a call is heard in (issue #667 D7): the demodulator dsd-neo runs on a radio input, and unknown on audio
+   input, which another receiver demodulated. */
+static uint8_t
+analog_call_mode(const dsd_opts* opts) {
+    if (!dsd_opts_input_is_radio(opts)) {
+        return (uint8_t)DSD_ANALOG_MODE_UNKNOWN;
+    }
+    return opts->analog_demod == DSD_ANALOG_DEMOD_AM ? (uint8_t)DSD_ANALOG_MODE_AM : (uint8_t)DSD_ANALOG_MODE_NFM;
+}
+
 /* A RECEPTION block, stamped @p now_m: the call's audio. A confirmed new identity ends the call (held or not) and
    begins another with this block (D4); a held call otherwise goes on, its pause written first. */
 static void
@@ -311,6 +323,7 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
         .slot = 0,
         .kind = DSD_CALL_KIND_VOICE,
         .frequency_hz = (int64_t)dsd_opts_tuned_freq_hz(opts),
+        .analog_mode = analog_call_mode(opts),
         .observed_m = now_m,
     };
     (void)dsd_call_state_observe(state, &observation,

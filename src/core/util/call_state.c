@@ -535,6 +535,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->protocol = previous->protocol;
     snapshot->channel = previous->channel;
     snapshot->channel_kind = previous->channel_kind;
+    snapshot->analog_mode = previous->analog_mode;
     snapshot->frequency_hz = previous->frequency_hz;
     snapshot->reacquire_rx_id = previous->reacquire_rx_id;
     snapshot->crypto = previous->crypto;
@@ -731,6 +732,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
             dsd_receive_identity_merge(&snapshot->receive_identity, &received);
         } else {
             snapshot->receive_identity = received;
+            /* The demodulator the call is heard through is the one its first observation names (issue #667). */
+            snapshot->analog_mode = observation->analog_mode;
         }
     } else {
         dsd_receive_identity_merge(&snapshot->receive_identity, &received);
