@@ -11,6 +11,8 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/received_identity.h>
+#include <stdint.h>
 #include <string.h>
 #include "dmr_tiii_site.h"
 
