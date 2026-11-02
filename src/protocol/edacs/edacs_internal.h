@@ -41,6 +41,12 @@ int edacs_analog_input_rate_hz(const dsd_opts* opts);
 int edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, struct dsd_rate_converter* conv, short* analog1,
                                  short* analog2, short* analog3, double* pwr);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* Test hook: replace the real-time clock a network quiet spell is measured on (edacs_net_quiet_pay()); NULL restores
+   dsd_realtime_mono_ms(). */
+void edacs_test_set_quiet_clock(uint64_t (*now_ms)(void));
+#endif
+
 /* EDACS analog voice reads three 960-sample blocks at a time. */
 enum { EDACS_ANALOG_BLOCK_SAMPLES = 960, EDACS_ANALOG_TRIPLET_SAMPLES = 3 * EDACS_ANALOG_BLOCK_SAMPLES };
 

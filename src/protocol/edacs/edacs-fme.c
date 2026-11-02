@@ -212,6 +212,26 @@ edacs_no_stream_reset(dsd_state* state) {
     state->edacs_no_stream_paid = 0U;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+static uint64_t (*g_edacs_quiet_test_clock)(void) = NULL;
+
+void
+edacs_test_set_quiet_clock(uint64_t (*now_ms)(void)) {
+    g_edacs_quiet_test_clock = now_ms;
+}
+#endif
+
+/* The real-time clock a network quiet spell is measured on. */
+static uint64_t
+edacs_quiet_now_ms(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_edacs_quiet_test_clock) {
+        return g_edacs_quiet_test_clock();
+    }
+#endif
+    return dsd_realtime_mono_ms();
+}
+
 /* How long one TCP or UDP wait lasts: the decoder's input wait slice. */
 enum { EDACS_NET_WAIT_SLICE_MS = 100 };
 
@@ -228,7 +248,7 @@ edacs_net_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
         state->edacs_no_stream_since_ms = since_ms;
         state->edacs_no_stream_paid = 0U;
     }
-    const uint64_t now_ms = dsd_realtime_mono_ms();
+    const uint64_t now_ms = edacs_quiet_now_ms();
     const uint64_t elapsed_ms =
         now_ms > state->edacs_no_stream_since_ms ? now_ms - state->edacs_no_stream_since_ms : 0U;
     if (elapsed_ms < (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
@@ -260,7 +280,7 @@ edacs_read_sample_net(dsd_opts* opts, dsd_state* state, short* out, edacs_net_re
             *out = 0;
             return 1;
         }
-        const uint64_t wait_from_ms = dsd_realtime_mono_ms();
+        const uint64_t wait_from_ms = edacs_quiet_now_ms();
         int16_t sample = 0;
         const int got = read_wait(opts, &sample, EDACS_NET_WAIT_SLICE_MS);
         if (got > 0) {

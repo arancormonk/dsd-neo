@@ -7954,15 +7954,28 @@ endif()
 
 # EDACS analog voice and the M17 encoder over a TCP sender quiet past the 1.5 s receive timeout keep the connection; a
 # real close still shuts down; the encoder's silent stdin read gives way to shutdown (issue #667 D12).
+# edacs-fme.c is compiled in with DSD_NEO_TEST_HOOKS, for the clock a network stall is measured on
+# (edacs_test_set_quiet_clock()); the library's own copy is then never pulled in.
 add_executable(
     dsd-neo_test_protocol_net_quiet_sender
     protocol/test_protocol_net_quiet_sender.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/edacs/edacs-fme.c
 )
 target_include_directories(
     dsd-neo_test_protocol_net_quiet_sender
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
         ${PROJECT_SOURCE_DIR}/src/protocol/m17
+        ${_PUBLIC_INCLUDES}
+)
+target_compile_definitions(
+    dsd-neo_test_protocol_net_quiet_sender
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+# The library builds edacs-fme.c with these features; the test's copy is built the same way.
+target_link_libraries(
+    dsd-neo_test_protocol_net_quiet_sender
+    PRIVATE dsd-neo_feature_colors dsd-neo_feature_radio dsd-neo_feature_rtlsdr
 )
 # The test calls the EDACS and M17 readers itself, so the libraries link as a group (as RUNTIME_CLI_PARSE's do): the
 # static order the engine gives them leaves cross-library references unresolved.

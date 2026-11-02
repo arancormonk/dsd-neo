@@ -6710,15 +6710,13 @@ Notes:
   apply a queued command while the input is silent (issue #634). `tcp_input.c` reads its socket through one
   `dsd_pcm_stream` (platform). Its one read, `tcp_input_read_sample_wait()` (issue #667 D12), times out and keeps the
   connection, so only a real close or socket error is a lost connection (B7): the symbol path reconnects, and EDACS
-  analog voice and the M17 encoder close the input and shut down, as they did. EDACS analog voice reads TCP and UDP
-  in bounded waits (`edacs_read_sample_net()`): once a quiet spell lasts a stream pause
-  (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`) all of it plays as zero-power silence paced by real time (`edacs_net_quiet_pay()`,
-  as a missing RTL stream's `edacs_no_stream_pay()`), so the call ends on its own squelch count or watchdog; a
-  shorter stall inserts nothing, and only a stopped UDP input or a closed connection shuts down. The M17 encoder reads
-  TCP, UDP and
-  stdin through one wait (`m17_str_wait_sample()`), which gives the block up for a queued command after a stream
-  pause and stops at shutdown. There is no blocking TCP hook (`PROTOCOL_NET_QUIET_SENDER`).
-  `ConnectBounded()` (`dsd_rigctl.c`) connects within
+  analog voice and the M17 encoder close the input and shut down, as they did. EDACS analog voice reads TCP and UDP in
+  bounded waits (`edacs_read_sample_net()`): once a quiet spell lasts a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`)
+  all of it plays as zero-power silence paced by real time (`edacs_net_quiet_pay()`, as a missing RTL stream's
+  `edacs_no_stream_pay()`), so the call ends on its own squelch count or watchdog; a shorter stall inserts nothing, and
+  only a stopped UDP input or a closed connection shuts down. The M17 encoder reads TCP, UDP and stdin through one wait
+  (`m17_str_wait_sample()`), which gives the block up for a queued command after a stream pause and stops at shutdown.
+  There is no blocking TCP hook (`PROTOCOL_NET_QUIET_SENDER`). `ConnectBounded()` (`dsd_rigctl.c`) connects within
   `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
   the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
   startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine

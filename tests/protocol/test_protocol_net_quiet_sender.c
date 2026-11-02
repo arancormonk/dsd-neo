@@ -52,9 +52,6 @@ enum { k_m17_read_stop = 0 };
 /* Longer than the 1.5 s receive timeout every TCP audio connection runs with (ConnectBounded()). */
 enum { k_quiet_ms = 1800, k_first = 1000, k_after = 2000 };
 
-/* A network stall shorter than a stream pause (DSD_ANALOG_STREAM_PAUSE_MIN_MS) while the sender still transmits. */
-enum { k_stall_ms = 300 };
-
 #ifdef MSG_NOSIGNAL
 #define SERVE_SEND_FLAGS MSG_NOSIGNAL
 #else
@@ -162,7 +159,7 @@ server_listen(server* srv) {
 
 /* A TCP input on a connection to the server, at 48 kHz and unit volume. */
 static int
-session_open_paced(session* s, int count, int close_after, int after, int quiet_ms) {
+session_open(session* s, int count, int close_after) {
     DSD_MEMSET(s, 0, sizeof(*s));
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
@@ -171,8 +168,8 @@ session_open_paced(session* s, int count, int close_after, int after, int quiet_
     s->srv.listener = DSD_INVALID_SOCKET;
     s->srv.count = count;
     s->srv.close_after = close_after;
-    s->srv.after = after;
-    s->srv.quiet_ms = quiet_ms;
+    s->srv.after = count;
+    s->srv.quiet_ms = k_quiet_ms;
     s->opts->tcp_sockfd = DSD_INVALID_SOCKET;
     s->opts->audio_in_type = AUDIO_IN_TCP;
     s->opts->wav_sample_rate = 48000;
@@ -188,12 +185,6 @@ session_open_paced(session* s, int count, int close_after, int after, int quiet_
     }
     s->opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(s->opts->tcp_sockfd, 48000);
     return s->opts->tcp_in_ctx ? 0 : -1;
-}
-
-/* The usual session: as many samples after the quiet spell as before it, quiet for k_quiet_ms. */
-static int
-session_open(session* s, int count, int close_after) {
-    return session_open_paced(s, count, close_after, count, k_quiet_ms);
 }
 
 static void
@@ -255,26 +246,83 @@ test_edacs_quiet_sender(void) {
     return rc;
 }
 
-/* EDACS analog voice: a stall shorter than a stream pause inserts no silence. The sender's samples on either side of it
-   make up one triplet, so a level-squelched call goes on as it did before the bounded reads. */
+/* --- EDACS analog voice across a stall, on a fake clock: no real wait, so the stall's length is exact. --- */
+
+static uint64_t g_fake_ms;
+static int g_fake_reads;
+static int g_fake_timeouts;
+static int g_fake_ctx_token;
+
+static uint64_t
+fake_now_ms(void) {
+    return g_fake_ms;
+}
+
+/* 960 samples of k_first, then g_fake_timeouts waits that each time out after their full timeout on the fake clock (a
+   stall of that many slices), then k_after for good. */
 static int
-test_edacs_short_stall(void) {
-    session* s = &g_session;
-    if (expect(session_open_paced(s, 960, 0, 1920, k_stall_ms) == 0, "EDACS stall: session opens")) {
-        session_close(s);
+fake_tcp_read_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
+    (void)ctx;
+    if (g_fake_reads < 960) {
+        g_fake_reads++;
+        *out = k_first;
         return 1;
     }
+    if (g_fake_timeouts > 0) {
+        g_fake_timeouts--;
+        g_fake_ms += timeout_ms;
+        return -1;
+    }
+    *out = k_after;
+    return 1;
+}
+
+/* One triplet read across a stall of @p timeouts 100 ms waits, on the fake clock. */
+static int
+edacs_triplet_across_stall(int timeouts, short* a1, short* a2, short* a3) {
+    DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
+    DSD_MEMSET(&g_state, 0, sizeof(g_state));
+    g_opts.audio_in_type = AUDIO_IN_TCP;
+    g_opts.wav_sample_rate = 48000;
+    g_opts.input_volume_multiplier = 1;
+    g_opts.tcp_sockfd = DSD_INVALID_SOCKET;
+    g_opts.tcp_in_ctx = (tcp_input_ctx*)&g_fake_ctx_token;
+    exitflag = 0;
+    g_fake_ms = 1000000U;
+    g_fake_reads = 0;
+    g_fake_timeouts = timeouts;
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.tcp_read_sample_wait = fake_tcp_read_wait;
+    dsd_net_audio_input_hooks_set(hooks);
+    edacs_test_set_quiet_clock(fake_now_ms);
+    double pwr = -1.0;
+    const int got = edacs_collect_analog_triplet(&g_opts, &g_state, NULL, a1, a2, a3, &pwr);
+    edacs_test_set_quiet_clock(NULL);
+    dsd_engine_net_audio_input_hooks_install();
+    g_opts.tcp_in_ctx = NULL;
+    return got;
+}
+
+/* A stall shorter than a stream pause (300 ms of a 500 ms pause) inserts no silence: the sender's samples on either
+   side of it make up the triplet, so a level-squelched call goes on, as it did before the bounded reads. One as long as
+   the pause (600 ms) plays as silence, all of it, so the call can end as on a quiet channel. */
+static int
+test_edacs_stalls(void) {
     static short a1[960];
     static short a2[960];
     static short a3[960];
-    double pwr = -1.0;
-    int rc = expect(edacs_collect_analog_triplet(s->opts, s->state, NULL, a1, a2, a3, &pwr) == 1,
-                    "EDACS stall: the triplet across the stall is read");
+    int rc = expect(edacs_triplet_across_stall(3, a1, a2, a3) == 1, "EDACS short stall: the triplet is read");
     rc |= expect(!block_holds(a1, 960U, 0) && !block_holds(a2, 960U, 0) && !block_holds(a3, 960U, 0),
-                 "EDACS stall: no silence was inserted");
-    rc |= expect(a1[959] == k_first && a2[0] == k_after && a3[959] == k_after, "EDACS stall: the samples in order");
-    rc |= expect(dsd_exitflag_load() == 0 && s->opts->tcp_in_ctx != NULL, "EDACS stall: the input stays");
-    session_close(s);
+                 "EDACS short stall: no silence was inserted");
+    rc |=
+        expect(a1[959] == k_first && a2[0] == k_after && a3[959] == k_after, "EDACS short stall: the samples in order");
+    rc |= expect(dsd_exitflag_load() == 0, "EDACS short stall: nothing shut down");
+
+    rc |= expect(edacs_triplet_across_stall(6, a1, a2, a3) == 1, "EDACS long stall: the triplet is read");
+    rc |= expect(a1[959] == k_first && a2[0] == 0 && a3[959] == 0 && !block_holds(a2, 960U, k_after),
+                 "EDACS long stall: the stall plays as silence");
+    rc |= expect(dsd_exitflag_load() == 0, "EDACS long stall: nothing shut down");
     return rc;
 }
 
@@ -371,16 +419,35 @@ udp_session_open(udp_sender* sender) {
     return dsd_net_audio_input_hook_udp_start(&g_opts, "127.0.0.1", port, 48000) == 0 ? 0 : -1;
 }
 
+/* Also after a udp_session_open() that failed part-way: the UDP input stopped if it started, the sender closed. */
+static void
+udp_session_close(udp_sender* sender) {
+    if (g_opts.udp_in_ctx) {
+        dsd_net_audio_input_hook_udp_stop(&g_opts);
+    }
+    if (sender->sock != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(sender->sock);
+        sender->sock = DSD_INVALID_SOCKET;
+    }
+    exitflag = 0;
+}
+
 /* EDACS analog voice over UDP: a sender quiet for a stream pause and more plays as silence, so the call's own timers
    can end it, and the sender's samples after it are read. It used to wait for the sender forever. */
 static int
 test_edacs_udp_quiet_sender(void) {
     udp_sender sender;
+    sender.sock = DSD_INVALID_SOCKET;
     if (expect(udp_session_open(&sender) == 0, "EDACS UDP: input starts")) {
+        udp_session_close(&sender);
         return 1;
     }
     dsd_thread_t thread;
-    int rc = expect(dsd_thread_create(&thread, udp_sender_main, &sender) == 0, "EDACS UDP: sender thread");
+    if (expect(dsd_thread_create(&thread, udp_sender_main, &sender) == 0, "EDACS UDP: sender thread")) {
+        udp_session_close(&sender);
+        return 1;
+    }
+    int rc = 0;
     static short a1[960];
     static short a2[960];
     static short a3[960];
@@ -406,8 +473,7 @@ test_edacs_udp_quiet_sender(void) {
     rc |= expect(edacs_collect_analog_triplet(&g_opts, &g_state, NULL, a1, a2, a3, &pwr) == 0,
                  "EDACS UDP stop: the triplet is refused");
     rc |= expect(dsd_exitflag_load() == 1, "EDACS UDP stop: shut down");
-    (void)dsd_socket_close(sender.sock);
-    exitflag = 0;
+    udp_session_close(&sender);
     return rc;
 }
 
@@ -506,7 +572,7 @@ main(void) {
     int rc = 0;
     rc |= test_edacs_quiet_sender();
     rc |= test_edacs_close();
-    rc |= test_edacs_short_stall();
+    rc |= test_edacs_stalls();
     rc |= test_edacs_udp_quiet_sender();
     rc |= test_m17_quiet_sender();
     rc |= test_m17_close();
