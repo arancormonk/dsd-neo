@@ -1165,22 +1165,47 @@ Item {
                     }
 
                     PlexTextField {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceSiteSearch"
+
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
                         placeholderText: radioReference.conventional ? qsTr("Search repeaters") : qsTr("Search sites")
                         text: screen.siteSearch
                         onTextChanged: screen.siteSearch = text
                     }
-                    // Two things a conventional import has to say, because
-                    // neither is guessable from the list itself. The third — which
-                    // radios can scan the repeaters — rides in plan.warnings with
-                    // every other warning.
-                    OutlineButton {
+
+                    // The column runs at spacing 0 so the site rows sit flush;
+                    // the controls under the search field keep the 10 px the
+                    // card's other controls are spaced by, and its padding.
+                    Item {
                         width: parent.width
+                        height: 10
+                    }
+
+                    // Inset like the search field above it: full card width,
+                    // its outline ran into the card's edges and read as a row.
+                    OutlineButton {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceEachSiteButton"
+
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
                         visible: radioReference.trunked
                         text: (screen.eachSite ? "✓ " : "") + qsTr("Import each selected site as its own system")
                         onClicked: screen.eachSite = !screen.eachSite
                     }
+
+                    Item {
+                        width: parent.width
+                        height: 4
+                        visible: radioReference.trunked
+                    }
+
+                    // Two things a conventional import has to say, because
+                    // neither is guessable from the list itself. The third — which
+                    // radios can scan the repeaters — rides in plan.warnings with
+                    // every other warning.
 
                     ReadableText {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().

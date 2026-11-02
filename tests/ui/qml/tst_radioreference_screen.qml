@@ -357,6 +357,29 @@ Item {
             tryVerify(function () { return !bandplan.visible }, 2000, "a TETRA system was told to import a P25 band plan")
         }
 
+        // The per-site button and the conventional notes under the search
+        // field are spaced and inset like the card's other controls: the
+        // button ran full card width, flush against the field, and read as a
+        // site row rather than a control.
+        function test_22_the_controls_under_the_site_search_are_spaced() {
+            loadTetraSystem(2)
+            var search = findChild(tc.screen, "radioReferenceSiteSearch")
+            var each = findChild(tc.screen, "radioReferenceEachSiteButton")
+            verify(search !== null && each !== null)
+            tryVerify(function () { return each.visible })
+            verify(each.y >= search.y + search.height + 10,
+                   "the per-site button touches the search field: " + each.y + " < " + (search.y + search.height + 10))
+            compare(each.x, search.x, "the per-site button is not inset like the search field")
+            compare(each.width, search.width, "the per-site button is not as wide as the search field")
+
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            loadTwoSiteSystem()
+            var count = findChild(tc.screen, "radioReferenceRepeaterCount")
+            tryVerify(function () { return count.visible && !each.visible })
+            verify(count.y >= search.y + search.height + 10, "the repeater count touches the search field")
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
