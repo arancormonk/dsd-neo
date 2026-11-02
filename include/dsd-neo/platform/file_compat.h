@@ -343,6 +343,19 @@ int dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user);
 ssize_t dsd_read(int fd, void* buf, size_t count);
 
 /**
+ * @brief Wait up to @p timeout_ms for a read on @p fd to return without blocking.
+ *
+ * A descriptor at end of stream or with an error counts as ready, so the read that follows reports it. On Windows only
+ * an anonymous pipe can be waited on (PeekNamedPipe()); a console, a regular file or any other handle reports ready at
+ * once, and the read that follows may block.
+ *
+ * @param fd          File descriptor.
+ * @param timeout_ms  Longest wait in milliseconds (0 polls).
+ * @return 1 when ready, 0 on timeout or a signal interruption, -1 on failure.
+ */
+int dsd_fd_wait_readable(int fd, unsigned int timeout_ms);
+
+/**
  * @brief Write to a file descriptor.
  *
  * @param fd        File descriptor.

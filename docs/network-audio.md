@@ -35,9 +35,12 @@ Notes:
 - From the terminal UI, Input > Switch source > `UDP audio...` binds the address and port at once and `TCP audio...`
   (or `8`) connects at once; either keeps the running input when it cannot (a held port, a refused or unanswered
   connection). A TCP connect gives up after 10 seconds; a host name is looked up through the system resolver, which
-  bounds that wait itself, and a reconnect reuses the address it found. While a UDP sender is silent between
-  transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a frame is
-  waited for, as before.
+  bounds that wait itself, and a reconnect reuses the address it found. While a UDP, TCP or stdin sender is silent
+  between transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a
+  frame is waited for, as before.
+- A TCP connection stays up however long its sender is silent: DSD-neo reconnects only when the producer closes the
+  connection or it fails. On Windows, stdin is waited on this way only when it is a pipe; console input and a
+  redirected file block in their read.
 
 ### Squelch on PCM input
 

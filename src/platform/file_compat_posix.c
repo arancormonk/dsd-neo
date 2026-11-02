@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -661,6 +662,21 @@ dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
 ssize_t
 dsd_read(int fd, void* buf, size_t count) {
     return read(fd, buf, count);
+}
+
+int
+dsd_fd_wait_readable(int fd, unsigned int timeout_ms) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    const int wait_ms = timeout_ms > (unsigned int)INT_MAX ? INT_MAX : (int)timeout_ms;
+    const int ready = poll(&pfd, 1, wait_ms);
+    if (ready < 0) {
+        return errno == EINTR ? 0 : -1;
+    }
+    /* POLLHUP, POLLERR and POLLNVAL count as ready: the read that follows reports them. */
+    return ready > 0 ? 1 : 0;
 }
 
 ssize_t

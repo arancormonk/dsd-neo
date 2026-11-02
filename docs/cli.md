@@ -98,6 +98,12 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
+- A TCP or stdin source that goes quiet keeps its input. TCP audio stays connected however long its sender is silent
+  (a squelched network audio source), and DSD-neo reconnects only when the connection closes or fails. While stdin or
+  TCP sends nothing, the decoder still ends an analog call on time, applies menu commands and runs its timers, as on
+  UDP. A source that stops in the middle of a digital frame is waited for, as before. On Windows only a pipe (`rtl_fm
+  ... | dsd-neo -i -`) is waited on this way: console stdin and a redirected file block in their read until data
+  comes.
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
@@ -1728,8 +1734,9 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   block is 960 samples, about 117 ms at 8192 Hz. A pause shorter than one block is not seen.
 - An input that stops sending is not a pause in the signal, and still ends the call: a stream on stdin, UDP or TCP that
   sends nothing for about half a second (`rtl_fm` without `-E pad`, a UDP sender that stops between transmissions),
-  or a radio input that stops delivering. On UDP and radio input the call ends at once; on stdin and TCP it ends when
-  data comes back or the input ends, and its row still ends at its last audio. A shorter stall is joined without any
+  or a radio input that stops delivering. The call ends at once, and its row ends at its last audio (on Windows, stdin
+  that is a console or a redirected file ends it only when data comes back or the input ends). A shorter stall is
+  joined without any
   silence. To join pauses, keep the stream running while the channel is quiet (`rtl_fm -E pad`, or a channelizer that
   keeps sending the channel's noise).
 - A scan leaving the channel, a retune, an input switch, a decode mode change or stopping the decoder ends a paused

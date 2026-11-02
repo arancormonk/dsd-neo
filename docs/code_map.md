@@ -924,6 +924,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - Buffered PCM input (issue #667 D12): `dsd_pcm_stream` in `include/dsd-neo/platform/pcm_stream.h`
+    (`src/platform/pcm_stream.c`) reads raw PCM16LE mono from a descriptor (stdin) or a socket (TCP audio). One reader
+    per stream serves every consumer, so the stdin input and the TCP input each have exactly one buffer. The blocking
+    read (`dsd_pcm_stream_read()`) waits as long as the stream does, and a socket's receive timeout ends it, as
+    libsndfile's read did. The bounded read (`dsd_pcm_stream_read_wait()`) returns SAMPLE, TIMEOUT or END, keeps a part
+    sample for the next call, and checks readiness only when the buffer runs dry, refilling it at most once per wait. On
+    sockets it waits with `dsd_socket_wait()`. On descriptors it waits with `dsd_fd_wait_readable()` (`file_compat.h`):
+    `poll()` on POSIX, and on Windows `PeekNamedPipe()` in 5 ms sleeps for an anonymous pipe. A Windows console or
+    regular file reports ready at once and its read blocks. `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -2911,8 +2920,8 @@ publication is put off and the tick has left the guard (`p25_sm_tick_guard_busy(
 pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`) of the silence or one wait slice (100 ms) after the tick ends, whichever is
 later; on an RTL device with no stream, at the read's next empty poll after the tick. It is not folded into the
 controls-pending query, whose signal-search and TCP-reconnect callers it would cut. A connected TCP or stdin input
-blocks in its read with no slices, so there the retry waits for the next sample or command, as a queued command already
-does. The hold is one copy long, and a watchdog tick that meets it waits for its next period.
+waits in the same slices (issue #667 D12), except Windows console stdin and a regular file, which block in their read.
+The hold is one copy long, and a watchdog tick that meets it waits for its next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 
@@ -4216,7 +4225,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   components, preserving the reversed-tap convention and sample-window bounds. Tests: `DSP_FLL_BAND_EDGE`
   (independent complex convolution over every history position), `DSP_MMSE_INTERP`, and `DSP_COSTAS`.
 - Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync) waits
-  on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted a
+  on a UDP, TCP or stdin input in 100 ms slices (`symbol_wait_pcm_sample()` over `udp_read_sample_wait` and
+  `tcp_read_sample_wait` in the network-audio hooks, and the stdin reader's `dsd_pcm_stream_read_wait()`, issue #667
+  D12). A TCP timeout never reaches the reconnect: only the connection's close or an error does (B7), and the first
+  sample of a new connection is scaled by the input volume like every other (B5). Shutdown ends the wait. Once the
+  silence has lasted a
   stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
   runtime's controls-pending query reports a queued command, or decoder-thread trunking timers are due
   (`dsd_frame_sync_hook_decoder_ticks_due()`: a startup control-channel hunt armed, running or due to arm
@@ -6694,11 +6707,18 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
-  apply a queued command while the input is silent (issue #634); `ConnectBounded()` (`dsd_rigctl.c`) connects within
+  apply a queued command while the input is silent (issue #634). `tcp_input.c` reads its socket through one
+  `dsd_pcm_stream` (platform). The blocking `tcp_input_read_sample()` keeps its contract for EDACS and the M17 encoder,
+  where any failed read, a receive timeout included, ends the connection. The bounded `tcp_input_read_sample_wait()`
+  (issue #667 D12) times out and keeps the connection, so only a real close or socket error reconnects (B7).
+  `ConnectBounded()` (`dsd_rigctl.c`) connects within
   `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
   the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
   startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine
-  installs both in the network-audio hook table (`udp_read_sample_wait`, `tcp_connect`).
+  installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`). The
+  stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0 (`dsd_opts::audio_in_stdin`,
+  raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share and an input switch holds and
+  closes like the other handles.
 - M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
   `include/dsd-neo/io/m17_udp.h`.
 
@@ -11927,8 +11947,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     if recording stays off; a folder change (stop and start inside one recording transition) keeps it held, and the next
     file starts at the resumed block.
   - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
-    `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input (stdin and TCP block in the
-    read, so their call ends only when data returns). With the hold off a row ends one block earlier than "now" did.
+    `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input. With the hold off a row ends
+    one block earlier than "now" did.
   - Boundaries (B6): a call compares the published `state->analog_rx.boundaries` with the epoch it began under. A move
     ends the call at `last_m`; the block that carries it straddles the boundary, so it is not written either, and the
     next RECEPTION block begins a new call. This catches a stream pause or reconnect inside a long PCM block, which no
@@ -11978,11 +11998,13 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   - A live radio read on the analog monitor, NFM or AM (issue #667 D8), yields with zero samples after 100 ms without
     output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
-    freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data
-    returns), each ended at its last reception. A reset that moves the boundaries epoch under a running call or
-    candidate (a TCP reconnect, which clears that deadline) makes `dsd_engine_analog_call_due()` true by itself (issue
-    #667 D12), so a silent hunt read still gives way to the tick that ends the cut reception (`CORE_RECEIVE`).
-    Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
+    freshness deadline closes stalled calls and WAVs on the decoder thread (UDP, RTL, and since the bounded reads, issue
+    #667 D12, stdin and TCP too; Windows console stdin and a regular file only when data returns), each ended at its
+    last reception. A reset that moves the boundaries epoch under a running call or candidate (a TCP reconnect, which
+    clears that deadline) makes `dsd_engine_analog_call_due()` true by itself, so a hunt read on a new connection that
+    stays silent, or sends part of a sample, still gives way to the tick that ends the cut reception.
+    `CORE_RECEIVE` and `ENGINE_PCM_INPUT_WAIT` (over a real socket) cover it, and `DECODE_PCM_ANALOG_STDIN_STALL`
+    covers a stdin stall. Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
     `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
 - App-control receive commands validate complete edits before application. Row commands retain scanner session and
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.

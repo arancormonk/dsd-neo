@@ -7932,6 +7932,38 @@ add_test(
     COMMAND dsd-neo_test_engine_silent_input_publish
 )
 
+# A stdin source that stops sending, the pipe held open (osmocom rtl_fm -l while squelched): the analog call ends on
+# its stale deadline and its row is written during the stall, stamped with its own end (issue #667 A2). POSIX only:
+# PLATFORM_PCM_STREAM covers the Windows pipe wait.
+if(NOT WIN32)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_PCM_ANALOG_STDIN_STALL
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/stdin_stall_check.py
+                $<TARGET_FILE:dsd-neo>
+        )
+        set_tests_properties(
+            DECODE_PCM_ANALOG_STDIN_STALL
+            PROPERTIES LABELS "analog" TIMEOUT 120
+        )
+    endif()
+endif()
+
+# A TCP PCM input that goes quiet (issue #667 D12, B7): an idle connection is kept past its receive timeout, and a
+# reconnect to a silent or half-sample connection gives the hunt to the engine's tick, which ends the cut reception.
+add_executable(
+    dsd-neo_test_engine_pcm_input_wait
+    engine/test_engine_pcm_input_wait.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_pcm_input_wait
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(NAME ENGINE_PCM_INPUT_WAIT COMMAND dsd-neo_test_engine_pcm_input_wait)
+
 # Per-target squelch overrides (issue #521) observed through the production frame-sync power
 # gate: the real trunk scan coordinator moves between targets while the channel power is held.
 add_executable(
@@ -14656,6 +14688,21 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
+# The buffered PCM16LE reader the stdin and TCP inputs share (issue #667 D12): real pipes, sockets and files.
+add_executable(
+    dsd-neo_test_platform_pcm_stream
+    platform/test_platform_pcm_stream.c
+)
+target_include_directories(
+    dsd-neo_test_platform_pcm_stream
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_pcm_stream
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
+
 # A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
 if(UNIX)
     add_executable(
@@ -16648,6 +16695,21 @@ if(DSD_HAS_RADIO)
             DECODE_IQ_RECEIVE_POLICY
             PROPERTIES LABELS "iq-decode" TIMEOUT 180
         )
+        # M17 and EDACS decode the same from a PCM file, stdin and TCP (issue #667 D12): stdin and TCP share one
+        # buffered reader with bounded waits. POSIX only, for the pipe and the SIGINT that ends an M17-only session.
+        if(NOT WIN32)
+            add_test(
+                NAME DECODE_PCM_INPUT_PATHS
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/pcm_input_paths_check.py
+                    $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_PCM_INPUT_PATHS
+                PROPERTIES LABELS "iq-decode" TIMEOUT 180
+            )
+        endif()
     endif()
 
     # Reject case: the fixture must run (expected) and must not produce a decode

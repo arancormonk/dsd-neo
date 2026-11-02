@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Regression test: TCP PCM input must preserve the caller-owned descriptor,
- * read raw little-endian PCM16 samples, and invalidate itself at EOF.
+ * read raw little-endian PCM16 samples, and invalidate itself at EOF, through
+ * the blocking read and the bounded one alike.
  */
 
 #include <dsd-neo/io/tcp_input.h>
@@ -70,6 +71,10 @@ main(void) {
         DSD_FPRINTF(stderr, "NULL read changed output or reported success\n");
         return 1;
     }
+    if (tcp_input_read_sample_wait(NULL, &sample, 10U) != 0 || sample != 123) {
+        DSD_FPRINTF(stderr, "NULL bounded read changed output or reported success\n");
+        return 1;
+    }
 
 #if DSD_PLATFORM_WIN_NATIVE
     DSD_FPRINTF(stderr, "tcp_input POSIX raw descriptor test skipped on native Windows\n");
@@ -136,6 +141,25 @@ main(void) {
         close(fd);
         return 1;
     }
+
+    /* The bounded read (issue #667 D12) reads the same samples, and its end of stream ends the input as well. */
+    ctx = tcp_input_open((dsd_socket_t)fd, 48000);
+    for (size_t i = 0; ctx && i < sizeof(expected) / sizeof(expected[0]); i++) {
+        sample = 0;
+        if (tcp_input_read_sample_wait(ctx, &sample, 100U) != 1 || sample != expected[i]) {
+            DSD_FPRINTF(stderr, "bounded read_sample mismatch at sample %zu\n", i);
+            tcp_input_close(ctx);
+            close(fd);
+            return 1;
+        }
+    }
+    if (!ctx || tcp_input_read_sample_wait(ctx, &sample, 100U) != 0 || tcp_input_is_valid(ctx) != 0) {
+        DSD_FPRINTF(stderr, "bounded EOF read did not end the TCP input\n");
+        tcp_input_close(ctx);
+        close(fd);
+        return 1;
+    }
+    tcp_input_close(ctx);
     close(fd);
     return 0;
 #endif

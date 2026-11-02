@@ -4534,6 +4534,89 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     dsd_socket_cleanup();
 }
 
+/* The samples the decoder took from a TCP input at @p rate_hz with the input volume at 3, over its first @p count reads
+   (the matched filter seam's raw history, oldest first), after a connection that drops @p drops times before its first
+   sample. A reconnect starts a new PCM stream, so its resampler starts afresh, as a session's first read does. */
+static void
+tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
+    static dsd_opts opts;
+    static dsd_state state;
+    assert(dsd_socket_init() == 0);
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.analog_only = 0;
+    opts.monitor_input_audio = 0;
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = rate_hz;
+    opts.input_volume_multiplier = 3;
+    opts.tcp_sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    g_connect_socket = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    assert(opts.tcp_sockfd != DSD_INVALID_SOCKET && g_connect_socket != DSD_INVALID_SOCKET);
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_tcp_ctx_token;
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.jitter = -1;
+    exitflag = 0;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 960000U;
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.tcp_open = fake_tcp_open;
+    hooks.tcp_connect = fake_tcp_connect;
+    hooks.tcp_close = fake_tcp_close;
+    hooks.tcp_read_sample = fake_tcp_read_sample;
+    dsd_net_audio_input_hooks_set(hooks);
+    g_tcp_opens = 0;
+    g_tcp_drops_left = drops;
+    g_tcp_sample_n = 0;
+    for (int n = 0; n < count; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(exitflag == 0 && g_tcp_opens == drops);
+    assert(state.matched_filter.raw_count >= count);
+    for (int n = 0; n < count; n++) {
+        int idx = state.matched_filter.raw_head - count + n;
+        while (idx < 0) {
+            idx += DSD_MATCHED_FILTER_HISTORY;
+        }
+        out[n] = state.matched_filter.raw[idx];
+    }
+
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    (void)dsd_socket_close(opts.tcp_sockfd);
+    opts.tcp_sockfd = 0;
+    opts.tcp_in_ctx = NULL;
+    g_connect_socket = DSD_INVALID_SOCKET;
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+    dsd_socket_cleanup();
+}
+
+/* Issue #667 B5: the first sample of a new TCP connection is scaled by the input volume like every other, on a native
+   (48 kHz) and a staged (16 kHz) input: the decoder takes the same samples after a reconnect as from a connection that
+   never dropped. It used to take that one sample raw, a third of its level here. */
+static void
+test_pcm_tcp_reconnect_scales_the_first_sample(void) {
+    static const int rates[] = {48000, 16000};
+    int differs = 0;
+    for (size_t r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+        float kept[48];
+        float reconnected[48];
+        tcp_samples_taken(rates[r], 0, kept, 48);
+        tcp_samples_taken(rates[r], 1, reconnected, 48);
+        assert(fabsf(kept[0]) > 1000.0f); /* the tone's first sample, three times 3000 at 48 kHz */
+        for (int n = 0; n < 48; n++) {
+            if (fabsf(kept[n] - reconnected[n]) > 1e-3f) {
+                DSD_FPRINTF(stderr, "B5 at %d Hz: sample %d after the reconnect is %g, want %g\n", rates[r], n,
+                            (double)reconnected[n], (double)kept[n]);
+                differs = 1;
+                break;
+            }
+        }
+    }
+    assert(!differs);
+}
+
 /* The passband the fake rigctl peer runs, as the client knows it. */
 static int32_t g_pcm_passband_hz = 25000;
 
@@ -5760,6 +5843,7 @@ main(void) {
     test_rx_tone_stalled_radio_stream_goes_stale();
     test_rx_tone_tcp_reconnect_starts_a_new_reception();
     test_pcm_tcp_reconnect_is_a_new_stream();
+    test_pcm_tcp_reconnect_scales_the_first_sample();
     test_rx_tone_retune_skips_the_input_backlog();
     test_rx_tone_backlog_skip_is_bounded();
     test_rx_tone_backlog_skip_ignores_playback_time();

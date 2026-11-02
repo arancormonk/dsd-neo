@@ -18,6 +18,7 @@ dsd_engine_net_audio_input_hooks_install(void) {
     hooks.tcp_open = tcp_input_open;
     hooks.tcp_close = tcp_input_close;
     hooks.tcp_read_sample = tcp_input_read_sample;
+    hooks.tcp_read_sample_wait = tcp_input_read_sample_wait;
 
     hooks.udp_start = udp_input_start;
     hooks.udp_stop = udp_input_stop;

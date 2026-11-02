@@ -38,6 +38,7 @@
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/input_failure.h>
@@ -1009,6 +1010,8 @@ dsd_audio_release_input_sources(dsd_opts* opts) {
         free(opts->audio_in_file_info);
         opts->audio_in_file_info = NULL;
     }
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
     if (opts->symbolfile) {
         fclose(opts->symbolfile);
         opts->symbolfile = NULL;
@@ -1060,20 +1063,14 @@ dsd_audio_alloc_pcm16_mono_info_exact_rate(int sample_rate_hz) {
     return info;
 }
 
+/* stdin is raw PCM16LE mono at the -s rate, as libsndfile read it before (SF_FORMAT_RAW): never a container, so no
+   header is parsed. One reader serves every consumer (issue #667 D12). */
 static int
 dsd_audio_open_stdin_input(dsd_opts* opts) {
     opts->audio_in_type = AUDIO_IN_STDIN;
-    opts->audio_in_file_info = dsd_audio_alloc_pcm16_mono_info_exact_rate(opts->wav_sample_rate);
-    if (opts->audio_in_file_info == NULL) {
-        LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-        return -1;
-    }
-
-    opts->audio_in_file = sf_open_fd(dsd_fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
-    if (opts->audio_in_file == NULL) {
-        LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
-        free(opts->audio_in_file_info);
-        opts->audio_in_file_info = NULL;
+    opts->audio_in_stdin = dsd_pcm_stream_open_fd(dsd_fileno(stdin));
+    if (opts->audio_in_stdin == NULL) {
+        LOG_ERROR("Error, couldn't open stdin for audio input\n");
         return -1;
     }
     return 0;

@@ -37,6 +37,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
@@ -1872,26 +1873,26 @@ m17_str_read_block_pulse(dsd_opts* opts, m17_encoder_input* in, short* out, size
     return M17_STR_READ_OK;
 }
 
+/* stdin through the input's one reader (issue #667 D12), the symbol path's too: a blocking read, as before. */
 static int
 m17_str_read_block_stdin(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
-    if (opts->audio_in_file == NULL) {
+    if (opts->audio_in_stdin == NULL) {
         LOG_ERROR("M17 stream encoder has no STDIN audio handle");
         return M17_STR_READ_ERROR;
     }
 
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
-            short s = 0;
-            const sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
-            if (result != 1) {
-                const int read_error = sf_error(opts->audio_in_file);
-                if (read_error != SF_ERR_NO_ERROR) {
-                    LOG_ERROR("M17 stream encoder failed to read STDIN: %s", sf_strerror(opts->audio_in_file));
+            int16_t s = 0;
+            if (dsd_pcm_stream_read(opts->audio_in_stdin, &s) != 1) {
+                const int read_error = dsd_pcm_stream_failed(opts->audio_in_stdin);
+                if (read_error) {
+                    LOG_ERROR("M17 stream encoder failed to read STDIN");
                 }
-                sf_close(opts->audio_in_file);
-                opts->audio_in_file = NULL;
+                dsd_pcm_stream_close(opts->audio_in_stdin);
+                opts->audio_in_stdin = NULL;
                 dsd_exitflag_store(1);
-                if (read_error != SF_ERR_NO_ERROR) {
+                if (read_error) {
                     return M17_STR_READ_ERROR;
                 }
                 DSD_FPRINTF(stderr, "Connection to STDIN Disconnected.\n");

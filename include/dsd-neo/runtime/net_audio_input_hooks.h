@@ -27,6 +27,9 @@ typedef struct {
     tcp_input_ctx* (*tcp_open)(dsd_socket_t sockfd, int samplerate);
     void (*tcp_close)(tcp_input_ctx* ctx);
     int (*tcp_read_sample)(tcp_input_ctx* ctx, int16_t* out);
+    /* A TCP read that gives up after timeout_ms with no sample (-1) and keeps the connection, as the UDP wait does
+       (issue #667 D12). The blocking read above keeps its contract for EDACS and the M17 encoder. */
+    int (*tcp_read_sample_wait)(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms);
 
     int (*udp_start)(dsd_opts* opts, const char* bindaddr, int port, int samplerate);
     void (*udp_stop)(dsd_opts* opts);
@@ -44,6 +47,9 @@ void dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks);
 tcp_input_ctx* dsd_net_audio_input_hook_tcp_open(dsd_socket_t sockfd, int samplerate);
 void dsd_net_audio_input_hook_tcp_close(tcp_input_ctx* ctx);
 int dsd_net_audio_input_hook_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out);
+/** 1 with a sample, 0 when the connection ended, -1 when none arrived within @p timeout_ms. Without the hook it waits
+    as dsd_net_audio_input_hook_tcp_read_sample() does, and never returns -1. */
+int dsd_net_audio_input_hook_tcp_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms);
 
 int dsd_net_audio_input_hook_udp_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate);
 void dsd_net_audio_input_hook_udp_stop(dsd_opts* opts);

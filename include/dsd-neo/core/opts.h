@@ -26,6 +26,7 @@
 #endif
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -105,6 +106,9 @@ struct dsd_opts {
     FILE* mbe_in_f;
     SNDFILE* audio_in_file;
     SF_INFO* audio_in_file_info;
+    /* The stdin input's one reader (`-i -`, raw PCM16LE mono), which every consumer of stdin shares: the symbol path's
+       bounded read and the M17 encoder's blocking read (issue #667 D12). */
+    dsd_pcm_stream* audio_in_stdin;
     SNDFILE* audio_out_file;
     SF_INFO* audio_out_file_info;
     FILE* mbe_out_f;
