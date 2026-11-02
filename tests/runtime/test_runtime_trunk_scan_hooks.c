@@ -70,6 +70,8 @@ _Static_assert(DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_B
 _Static_assert(DSD_TRUNK_SCAN_LIST_ALL < 1, "every list is no list number");
 
 static int g_list_set_calls = 0;
+static const dsd_opts* g_list_set_opts = NULL;
+static const dsd_state* g_list_set_state = NULL;
 static uint32_t g_list_set_session = 0U;
 static int g_list_set_list = 0;
 static int g_list_set_enabled = -1;
@@ -77,9 +79,9 @@ static uint32_t g_list_set_request = 0U;
 
 static int
 fake_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request) {
-    (void)opts;
-    (void)state;
     g_list_set_calls++;
+    g_list_set_opts = opts;
+    g_list_set_state = state;
     g_list_set_session = session;
     g_list_set_list = list;
     g_list_set_enabled = enabled;
@@ -314,6 +316,7 @@ main(void) {
     assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 0, 11U) == DSD_TRUNK_SCAN_LIST_SET_OK);
     assert(g_list_set_calls == 1 && g_list_set_session == 9U && g_list_set_list == 2 && g_list_set_enabled == 0
            && g_list_set_request == 11U);
+    assert(g_list_set_opts == &opts && g_list_set_state == &state);
     assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, DSD_TRUNK_SCAN_LIST_ALL, 1, 12U)
            == DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
     assert(g_list_set_calls == 2 && g_list_set_list == DSD_TRUNK_SCAN_LIST_ALL && g_list_set_enabled == 1);

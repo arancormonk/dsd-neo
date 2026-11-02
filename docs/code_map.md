@@ -391,15 +391,17 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
   of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
   (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits
-  under its own target and the hold carries over), and an attempt that did not move backs off a cooldown, a failed
-  preparation included. Nothing is stored about the reasons: they are read again each time, so a list switched back on,
-  every list on or the avoids cleared end it, and it stays while either reason holds. `depart_due_m`/`depart_yield`
-  say when it is next due and whether the frame loop may yield for it then: `dsd_engine_trunk_scan_departure_due()`
-  (two fields and the decode clock, no walk) joins the frame-sync yield predicate, so a continuous DMR carrier unwinds
-  at a burst boundary and the tick departs after protocol cleanup; with no alternate coming (none cooling) the tick
-  re-checks a cooldown later and the loop is not asked to yield. A pause keeps it; a resume from a target out of the
-  rotation walks the candidates after it (`trunk_scan_resume_park()`) and on total failure stays paused with the
-  manual-session rollback; with none eligible it resumes in place and the obligation runs later.
+  under its own target and the hold carries over), and an attempt that did not move waits for the soonest cooldown of
+  what it tried (a switch that cannot be prepared cools its target down as a failed retune does, in every advance and
+  resume walk), or a cooldown when nothing cooled. Nothing is stored about the reasons: they are read again each time,
+  so a list switched back on, every list on or the avoids cleared end it, and it stays while either reason holds.
+  `depart_due_m`/`depart_yield` say when it is next due and whether the frame loop may yield for it then:
+  `dsd_engine_trunk_scan_departure_due()` (two fields and the decode clock, no walk) joins the frame-sync yield
+  predicate, so a continuous DMR carrier unwinds at a burst boundary and the tick departs after protocol cleanup; with
+  no alternate coming (none cooling) the tick re-checks a cooldown later and the loop is not asked to yield. A pause
+  keeps it; a resume from a target out of the rotation walks the candidates after it (`trunk_scan_resume_park()`) and on
+  total failure stays paused with the manual-session rollback; with none eligible it resumes in place and the obligation
+  runs later.
 - List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
   name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
   `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (D10: position among the

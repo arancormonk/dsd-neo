@@ -17074,7 +17074,7 @@ scan_list_files_write(scan_list_files* files, const char* header, const char* co
         return -1;
     }
     for (int i = 0; i < count; i++) {
-        char file[64];
+        char file[256];
         DSD_SNPRINTF(file, sizeof file, "%s.csv", names[i]);
         if (dsd_test_path_join(files->paths[i], sizeof files->paths[i], files->dir, file) != 0) {
             return -1;
@@ -17923,14 +17923,16 @@ test_lists_departure_cancellation(void) {
 static int
 test_lists_resume_walks_past_an_unreachable_target(void) {
     static const char* const names[] = {"a", "b"};
-    static const char second[] = "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"
-                                 "c,nfm-conventional,156430000,,250,2000,,\n";
-    static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n", second};
+    /* c runs a tuner gain of its own and a the configured one: a refused landing on c may leave c's on the device. */
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,rtl_gain\n";
+    static const char second[] = "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000,\n"
+                                 "c,nfm-conventional,156430000,,250,2000,,,10\n";
+    static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,,\n", second};
     static dsd_opts opts;
     static dsd_state state;
     scan_list_files files;
     g_scan_dsp_rate_hz = 16000;
-    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, NULL, 2, &opts, &state) != 0) {
+    if (scan_lists_init(&files, header, names, bodies, NULL, 2, &opts, &state) != 0) {
         g_scan_dsp_rate_hz = 0;
         return 1;
     }
@@ -17950,14 +17952,20 @@ test_lists_resume_walks_past_an_unreachable_target(void) {
     test_rc |= expect_list_published(&state, "paused", 2, "b", 1U, 2U);
     test_rc |= expect_departure_due(&opts, &state, "paused", 5.0, 0);
 
-    /* c fails again: the resume leaves the scan paused. */
+    /* c fails again: the resume leaves the scan paused, and the gain the stream must give back is c's, the target the
+       refused landing installed, not that of a, which the scan stays paused at. */
     trunk_scan_test_set_now(2.50);
     g_scan_tune_to_freq_failures_remaining = 1;
-    const int refused = dsd_engine_trunk_scan_resume_locked(&opts, &state);
+    dsd_trunk_scan_leave_report report;
+    const int refused = dsd_engine_trunk_scan_resume_ex_locked(&opts, &state, &report);
     g_scan_tune_to_freq_failures_remaining = 0;
-    if (refused != -3 || state.trunk_scan_paused != 1U || dsd_engine_trunk_scan_active_index(&state) != 0U) {
-        DSD_FPRINTF(stderr, "a resume whose landing fails: rc %d paused %u active %zu; want -3, paused, at a\n",
-                    refused, (unsigned)state.trunk_scan_paused, dsd_engine_trunk_scan_active_index(&state));
+    if (refused != -3 || state.trunk_scan_paused != 1U || dsd_engine_trunk_scan_active_index(&state) != 0U
+        || report.restart_gain != 1) {
+        DSD_FPRINTF(stderr,
+                    "a resume whose landing fails: rc %d paused %u active %zu restart gain %d; want -3, paused, at a, "
+                    "c's gain to give back\n",
+                    refused, (unsigned)state.trunk_scan_paused, dsd_engine_trunk_scan_active_index(&state),
+                    report.restart_gain);
         test_rc = 1;
     }
     trunk_scan_test_set_now(5.00);
@@ -18159,6 +18167,17 @@ test_due_retry_with_an_alternate_walks_once_a_cooldown(void) {
                     g_scan_dsp_rate_reads, g_counting_tune_to_cc_calls);
         test_rc = 1;
     }
+    /* The operator's hold makes the retry in place owed at once: the wait for the rotation does not outlast it. */
+    trunk_scan_test_set_now(3.40);
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 3.45);
+    if (g_counting_tune_to_cc_calls != 1 || g_counting_tune_to_cc_freq != 851000000L) {
+        DSD_FPRINTF(stderr, "a held target's due retry waited for the rotation's re-check: %d tunes, want 1 on a\n",
+                    g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -18208,6 +18227,188 @@ test_advance_reads_the_rate_once_per_walk(void) {
     return test_rc;
 }
 
+/* §2.4 [S1], as ruled: a failed preparation cools its target down as a failed retune does. A dwell advance whose
+ * switch to b cannot be prepared (b's keys do not allocate) moves on to c, and the rotation then passes b over until
+ * its cooldown ends instead of trying it again at the next dwell. */
+static int
+test_dwell_advance_cools_a_target_whose_switch_fails_to_prepare(void) {
+    static const char* const names[] = {"targets"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,,\n"
+                                         "b,p25-trunk,852000000,,250,,,-K keys.csv\n"
+                                         "c,p25-trunk,853000000,,250,,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX] = "";
+    int test_rc = 0;
+    if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 1) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        test_rc = 1;
+    } else {
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[512] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "prepare cooldown init: %s\n", err);
+            test_rc = 1;
+        } else {
+            dsd_key_set_test_alloc_fail_after(0);
+            tick_at(&opts, &state, 0.30);
+            dsd_key_set_test_alloc_fail_after(-1);
+            test_rc |= expect_published_target(&state, "b unprepared, on to c", "c", 3U, 3U);
+            tick_at(&opts, &state, 0.56);
+            test_rc |= expect_published_target(&state, "rotation to a", "a", 1U, 3U);
+            tick_at(&opts, &state, 0.82);
+            test_rc |= expect_published_target(&state, "b still cooling down", "c", 3U, 3U);
+            tick_at(&opts, &state, 2.40);
+            tick_at(&opts, &state, 2.66);
+            test_rc |= expect_published_target(&state, "b after its cooldown", "b", 2U, 3U);
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    if (keys[0] != '\0') {
+        (void)remove(keys);
+    }
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+/* §2.4 [S1], as ruled: a departure that did not move waits for the soonest cooldown among its alternates, not a flat
+ * cooldown from its own attempt. c cooled down from a failed retune at 0.10; at 1.80 list a goes off and b's switch
+ * cannot be prepared (b cools until 3.80); the departure leaves for c as c's cooldown ends at 2.10. */
+static int
+test_lists_departure_waits_for_the_soonest_cooldown(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,,\n",
+                                         "c,p25-trunk,853000000,,250,,,\n"
+                                         "b,p25-trunk,852000000,,250,,,-K keys.csv\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX] = "";
+    int test_rc = 0;
+    if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 2) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        test_rc = 1;
+    } else {
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[512] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "soonest cooldown init: %s\n", err);
+            test_rc = 1;
+        } else {
+            test_rc |= expect_control_rc(
+                "hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+            /* c fails (cooling until 2.10) and the step lands on b; the next one goes back to a, past c. */
+            g_counting_tune_to_cc_failures_remaining = 1;
+            trunk_scan_test_set_now(0.10);
+            test_rc |=
+                expect_control_rc("advance past a failing c",
+                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+            g_counting_tune_to_cc_failures_remaining = 0;
+            trunk_scan_test_set_now(0.15);
+            test_rc |= expect_control_rc(
+                "advance to a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+            test_rc |= expect_published_target(&state, "back on a", "a", 1U, 3U);
+            dsd_key_set_test_alloc_fail_after(0);
+            trunk_scan_test_set_now(1.80);
+            test_rc |= expect_list_rc("a off, b unprepared", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+            dsd_key_set_test_alloc_fail_after(-1);
+            test_rc |= expect_published_target(&state, "a off, nowhere yet", "a", 1U, 3U);
+            test_rc |= expect_departure_due(&opts, &state, "c's cooldown", 2.05, 0);
+            test_rc |= expect_departure_due(&opts, &state, "c's cooldown end", 2.15, 1);
+            tick_at(&opts, &state, 2.15);
+            test_rc |= expect_published_target(&state, "the departure at c's cooldown end", "c", 2U, 3U);
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    if (keys[0] != '\0') {
+        (void)remove(keys);
+    }
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+/* The startup park's fallback: with every target in the rotation skipped for its width (list one, whose target is
+ * receivable, starts off), the scan starts on the first one in the rotation; the front end refuses that park before
+ * any backend moves, with no "retune failed" line of the coordinator's own, and the advance after it finds nowhere to
+ * go. */
+static int
+test_lists_start_on_an_unreachable_target_when_nothing_else_is_on(void) {
+    static const char* const names[] = {"one", "two"};
+    static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n",
+                                         "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"};
+    static const int off[] = {1, 0};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, off, &opts);
+    dsd_test_capture_stderr cap;
+    char buf[8192] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanstartfallback") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
+    const int refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    scan_list_files_remove(&files);
+    const int failed = count_text(buf, "Trunk scan target 'wide' retune failed");
+    if (rc != 0 || started_on != 1U || refusals != 1 || failed != 0) {
+        DSD_FPRINTF(stderr,
+                    "start fallback (rc=%d %s): started on %zu, refused %d, retune-failed %d; want 1, 1, 0\n%s\n", rc,
+                    err, started_on, refusals, failed, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* A list's name is its file's name without the extension, the extension found on the whole name however long, then
+ * cut to fit: a long name with a dot inside keeps what precedes the extension, not what precedes the inner dot. */
+static int
+test_lists_long_file_names_keep_their_stem(void) {
+    char name[160];
+    DSD_SNPRINTF(name, sizeof name, "a.b");
+    DSD_MEMSET(name + 3, 'x', 140U);
+    name[143] = '\0';
+    const char* names[] = {"short", name};
+    static const char* const bodies[] = {"s,p25-trunk,851000000,,250,,\n", "l,p25-trunk,852000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    char want[DSD_TRUNK_SCAN_LIST_NAME_SIZE];
+    DSD_SNPRINTF(want, sizeof want, "%s", name);
+    const int test_rc = expect_list_published(&state, "a long file name", 2, want, 1U, 1U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -18249,6 +18450,10 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_receive_rejection_hands_over_to_a_copy);
     rc |= run_with_default_tune_hook(test_due_retry_with_an_alternate_walks_once_a_cooldown);
     rc |= run_with_default_tune_hook(test_advance_reads_the_rate_once_per_walk);
+    rc |= run_with_default_tune_hook(test_dwell_advance_cools_a_target_whose_switch_fails_to_prepare);
+    rc |= run_with_default_tune_hook(test_lists_departure_waits_for_the_soonest_cooldown);
+    rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
+    rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
     rc |= test_parser_reads_spreadsheet_quoted_labels();
