@@ -709,6 +709,7 @@ test_apply_am_bounds(void) {
 
 /* ---- Issue #803: the receiver verdict and the commit point -------------------------------------------------------- */
 
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) || defined(DSD_NEO_TEST_RR_APPLY_WRAP)
 static int
 expect_contains(const char* tag, const char* got, const char* want) {
     if (strstr(got, want) == NULL) {
@@ -717,6 +718,7 @@ expect_contains(const char* tag, const char* got, const char* want) {
     }
     return 0;
 }
+#endif
 
 /* The INI Config -> Save would write now (dsd_snapshot_opts_to_user_config()), into @p path. */
 static int
@@ -920,8 +922,11 @@ test_apply_tetra_accepted(void) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0");
     dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 
-    /* The session already decodes TETRA (an earlier import), and its machine has moved to a main carrier. */
+    /* The session already decodes TETRA (an earlier import), and its machine has moved to a main carrier. Neither
+       import tunes: without the io_control seam (macOS, Windows) a tune on an RTL input with no stream fails, and the
+       tune's outcomes have tests of their own under that seam. */
     tetra_payload(&p);
+    p.tune_hz = 0U;
     p.has_group = 0U;
     p.group_path[0] = '\0';
     rc |= expect_int("first tetra import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -936,6 +941,7 @@ test_apply_tetra_accepted(void) {
     }
 
     tetra_payload(&p);
+    p.tune_hz = 0U;
     state.ui_msg[0] = '\0';
     rc |= expect_int("tetra import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tetra import drained", dsd_app_drain_cmds(&opts, &state), 1);
