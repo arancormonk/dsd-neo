@@ -125,4 +125,8 @@
   # Gui.
   { include: ["@[\"<](.*/)?qguiapplication\\.h[\">]", private, "<QGuiApplication>", public] },
   { include: ["@[\"<](.*/)?qfontdatabase\\.h[\">]", private, "<QFontDatabase>", public] },
+  # Qt 6 declares the QAccessible class in qaccessible_base.h, which qaccessible.h includes; <QAccessible> is the
+  # class header Qt documents.
+  { include: ["@[\"<](.*/)?qaccessible_base\\.h[\">]", private, "<QAccessible>", public] },
+  { include: ["@[\"<](.*/)?qaccessible\\.h[\">]", private, "<QAccessible>", public] },
 ]
