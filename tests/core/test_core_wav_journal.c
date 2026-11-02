@@ -737,13 +737,22 @@ setup_nfm(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1413;
 }
 
+/* One NFM block. A reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS (issue #667), so a block that
+   would begin one comes after its tone check, as the symbol path hands it over under a tone filter: enough PENDING
+   blocks (recorded nowhere) that this block brings the reception to the minimum. */
 static void
 nfm_block(dsd_opts* opts, dsd_state* state) {
     static float block[960];
+    static const float checked[960] = {0};
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    if (!dsd_engine_analog_call_active(state)) {
+        for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
+            dsd_engine_analog_call_block(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+        }
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
 }
 
 /* The pending publish of @p id on @p epoch, then exactly one link of it to @p row in @p ring, slot 1. */
@@ -790,7 +799,8 @@ test_held_nfm_call_is_one_recording(void) {
     rc |= expect_int("tone named",
                      dsd_receive_names_parse("--tone-name '141.3=Dispatch'", &r.opts->receive.names, NULL, 0), 0);
     submit(&r, DSD_APP_CMD_WAV_START);
-    clock_at(k_t0 + 10);
+    /* Half a second in: the call's tone check and first block, all stamped here, lie in second k_t0 + 10. */
+    clock_at_ms(k_t0 + 10, 500);
     nfm_block(r.opts, r.state);
     nfm_block(r.opts, r.state);
     const uint64_t epoch = call_epoch(&r);

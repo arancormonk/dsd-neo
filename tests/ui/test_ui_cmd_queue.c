@@ -72,6 +72,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -11517,10 +11518,16 @@ start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     state->analog_rx.ctcss_tenths_hz = 1413;
     static float block[960];
+    static const float checked[960] = {0};
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f;
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    /* The tone check before it (PENDING, recorded nowhere) brings the reception to the minimum a call needs (issue
+       #667) at its first block. */
+    for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
+        dsd_engine_analog_call_block(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
     rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
     return rc;
 }

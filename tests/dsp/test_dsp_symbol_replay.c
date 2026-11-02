@@ -5381,9 +5381,9 @@ test_call_input_follows_the_flag_squelch(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is a block the call may hold
-   through, one the policy passed is its reception, and one it rejected breaks it. Returns how many blocks were
-   checked. */
+/* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is PENDING (a block a call may
+   hold through, and a reception's lead-in before it is a call, issue #667), one the policy passed is its reception,
+   and one it rejected breaks it. Returns how many blocks were checked. */
 static int
 push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
     int checked = 0;
@@ -5393,7 +5393,7 @@ push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz)
         if (!seen->carrier_open) {
             assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
         } else if (seen->gate == DSD_ANALOG_TONE_GATE_PENDING) {
-            assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
+            assert(seen->input == DSD_ANALOG_CALL_PENDING);
             checked++;
         } else if (seen->gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
             assert(seen->input == DSD_ANALOG_CALL_RECEPTION);
@@ -5404,7 +5404,7 @@ push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz)
     return checked;
 }
 
-/* The real tone detector and policy: PENDING is holdable, ALLOWED is reception, REJECTED is a break, and a block list
+/* The real tone detector and policy: PENDING is PENDING, ALLOWED is reception, REJECTED is a break, and a block list
    that passes a carrier for carrying no tone at all makes it reception like any other pass. */
 static void
 test_call_input_follows_the_tone_policy(void) {

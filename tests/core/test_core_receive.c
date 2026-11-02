@@ -15,6 +15,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -415,6 +416,24 @@ test_events(dsd_opts* opts, dsd_state* state) {
     assert(!history[0].Event_History_Items[2].event_string[0]);
 }
 
+/* A reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS (issue #667). The tone check before a new call,
+   as the symbol path hands it over under a tone filter: a call still running ends at the first of these blocks (these
+   tests run with the hold off), and the rest are the new reception's lead-in, recorded nowhere, enough that a block of
+   @p count samples at @p rate after them brings it to the minimum. */
+static void
+analog_lead_in(dsd_opts* opts, dsd_state* state, size_t count, int rate) {
+    static const float checked[960] = {0};
+    if (dsd_engine_analog_call_active(state)) {
+        dsd_engine_analog_call_block(opts, state, checked, 960, rate, DSD_ANALOG_CALL_PENDING);
+        assert(!dsd_engine_analog_call_active(state));
+    }
+    const uint64_t need = (uint64_t)DSD_ANALOG_CALL_MIN_MS * 48U;
+    for (uint64_t fed = 0; (fed + count) * 48000U / (uint64_t)rate < need; fed += 960U) {
+        dsd_engine_analog_call_block(opts, state, checked, 960, rate, DSD_ANALOG_CALL_PENDING);
+        assert(!dsd_engine_analog_call_active(state));
+    }
+}
+
 static void
 test_analog(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -440,6 +459,7 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     }
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
+    analog_lead_in(opts, state, 480, 24000);
     dsd_engine_analog_call_block(opts, state, block, 480, 24000, 1);
     assert(dsd_engine_analog_call_active(state));
     Event_History_I* history = state->event_history_s;
@@ -451,6 +471,8 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.dcs_code = 047;
     state->analog_rx.dcs_inverted = 0;
     DSD_MEMSET(block, 0, sizeof block);
+    /* The new code's check ends the call (the carrier stays up), and its first block begins the next one. */
+    analog_lead_in(opts, state, 480, 24000);
     dsd_engine_analog_call_block(opts, state, block, 480, 24000, 1);
     assert(!strcmp(history[0].Event_History_Items[1].service_label, "Traveler /West?"));
     assert(!strcmp(history[0].Event_History_Items[0].service_label, "Dispatch"));
@@ -458,6 +480,7 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     for (int i = 0; i < 960; ++i) {
         block[i] = 2000.0f;
     }
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(!strcmp(history[0].Event_History_Items[1].service_label, "Dispatch"));
     assert(!history[0].Event_History_Items[0].service_label[0]);
@@ -469,28 +492,34 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     assert(dsd_dir_list(directory, check_recording, &check) == 0);
     assert(check.files == 3 && check.traveler == 1 && check.dispatch == 1 && check.unnamed == 1);
     /* A tone still being acquired between two confirmed ones does not hide the change: each service gets its own
-       recording, never one under the later name. */
+       recording, never one under the later name. The new code's reception runs the minimum to be a call of its own. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     state->analog_rx.ctcss_tenths_hz = 1413;
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    }
+    assert(dsd_engine_analog_call_active(state));
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     service_files services = {.dir = directory};
     assert(dsd_dir_list(directory, count_service_files, &services) == 0);
     assert(services.files == 2 && services.traveler == 1 && services.dispatch == 1);
     /* A rate within the converter's tolerance of 48 kHz is written as it is, never dropped. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    analog_lead_in(opts, state, 960, 47999);
     dsd_engine_analog_call_block(opts, state, block, 960, 47999, 1);
     dsd_engine_analog_call_block(opts, state, block, 960, 47999, 0);
     recording_frames tolerated = {.dir = directory};
     assert(dsd_dir_list(directory, count_recording_frames, &tolerated) == 0);
     assert(tolerated.files == 1 && tolerated.frames == 960);
     /* A teardown that skips the engine's finalize still publishes the open recording, never leaving its TEMP_ file. */
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     dsd_state_ext_free_all(state);
@@ -547,11 +576,16 @@ test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
     for (int i = 0; i < 960; ++i) {
         block[i] = 2000.0f;
     }
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     state->analog_rx.ctcss_tenths_hz = 1413;
     dsd_event_sync_slot(opts, state, 0);
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    /* The new tone's reception, as long as a call must be (issue #667). */
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    }
+    assert(dsd_engine_analog_call_active(state));
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
     tone_sync_recordings found = {.dir = directory};
@@ -586,6 +620,7 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 48000;
     opts->rtlsdr_center_freq = 162550000U; /* not the receiver's on an audio input */
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     assert(strstr(row->event_string, " ANALOG; ") != NULL && strstr(row->event_string, "NFM") == NULL);
@@ -594,6 +629,7 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     assert(!dsd_engine_analog_call_active(state));
 
     opts->audio_in_type = AUDIO_IN_RTL;
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     assert(strstr(row->event_string, " ANALOG NFM; FREQ: 162.550000 MHz; ") != NULL);
@@ -648,6 +684,7 @@ row_one_call(dsd_opts* opts, dsd_state* state, row_tone tone, int value, int inv
         block[i] = 2000.0f;
     }
     row_set_tone(state, tone, value, inverted);
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
     if (then != tone) {
@@ -1071,16 +1108,43 @@ hold_closed(hold_rig* r, int blocks) {
     }
 }
 
-/* Blocks of a carrier whose tone is still being checked. */
+/* Blocks of a carrier whose tone is still being checked: PENDING, which holds a call like any HOLDABLE block. */
 static void
 hold_pending(hold_rig* r, int blocks) {
     r->state->analog_rx.carrier_open = 1;
     for (int i = 0; i < blocks; i++) {
-        hold_feed(r, DSD_ANALOG_CALL_HOLDABLE, 0);
+        hold_feed(r, DSD_ANALOG_CALL_PENDING, 0);
     }
 }
 
-/* The slot's last call ended, and its row spans @p started_m to @p ended_m on the decode clock. */
+/* How many lead-in blocks bring a reception to DSD_ANALOG_CALL_MIN_MS at its first RECEPTION block, at the rig's rate:
+   the tracker counts the spans in 48 kHz samples with the remainder carried, so the total's whole samples. */
+static int
+hold_lead_in_blocks(const hold_rig* r) {
+    const uint64_t need = (uint64_t)DSD_ANALOG_CALL_MIN_MS * 48U;
+    int blocks = 0;
+    while ((uint64_t)(blocks + 1) * HOLD_BLOCK * 48000U / (uint64_t)r->rate < need) {
+        blocks++;
+    }
+    return blocks;
+}
+
+/* A new call (issue #667): the tone check before it (a lead-in of PENDING blocks, recorded nowhere) and @p blocks
+   RECEPTION blocks of @p value, the first of which makes it a call. Returns where it starts: the lead-in's first sample.
+   No call may be running, or one whose hold ends at the lead-in's first block. */
+static double
+hold_begin(hold_rig* r, int blocks, int value) {
+    const double start_m = hold_now_m(r);
+    hold_pending(r, hold_lead_in_blocks(r));
+    assert(!dsd_engine_analog_call_active(r->state));
+    hold_receive(r, 1, value);
+    assert(dsd_engine_analog_call_active(r->state));
+    hold_receive(r, blocks - 1, value);
+    return start_m;
+}
+
+/* The slot's last call ended, and its row spans @p started_m to @p ended_m on the decode clock. A start is its first
+   block's stamp less the block's span (issue #667), within an ulp of the rig's own conversion. */
 static void
 hold_expect_span(const hold_rig* r, double started_m, double ended_m) {
     dsd_call_snapshot call;
@@ -1179,8 +1243,7 @@ static void
 test_hold_row_ends_at_the_last_reception(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_b1", 0);
-    hold_receive(&r, 3, 1000);
-    double first_m = (double)(k_hold_t0_ns + 20000000ULL) / 1e9;
+    double first_m = hold_begin(&r, 3, 1000);
     double last_m = hold_now_m(&r);
     hold_advance_ms(&r, 10000);
     dsd_engine_analog_call_end(r.opts, r.state);
@@ -1188,39 +1251,38 @@ test_hold_row_ends_at_the_last_reception(void) {
     hold_expect_one_burst(&r, 3, 1000);
 
     /* The tick: the carrier closed with no block since (hold off), then the input stopped past its deadline. */
-    hold_receive(&r, 2, 1000);
-    first_m = last_m + 10.0 + 0.020;
+    first_m = hold_begin(&r, 2, 1000);
     last_m = hold_now_m(&r);
     r.state->analog_rx.carrier_open = 0;
     hold_advance_ms(&r, 5000);
     dsd_engine_analog_call_tick(r.opts, r.state);
     hold_expect_span(&r, first_m, last_m);
     hold_expect_one_burst(&r, 2, 1000);
-    hold_receive(&r, 2, 1000);
+    first_m = hold_begin(&r, 2, 1000);
     last_m = hold_now_m(&r);
     r.state->analog_rx.stale_after_ms = 1U;
     hold_advance_ms(&r, 5000);
     dsd_engine_analog_call_tick(r.opts, r.state);
     assert(!dsd_engine_analog_call_active(r.state));
-    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_span(&r, first_m, last_m);
     r.state->analog_rx.stale_after_ms = 0U;
     hold_expect_one_burst(&r, 2, 1000);
 
     /* The hangover's end with the hold off: one block earlier than main's "now". */
-    hold_receive(&r, 2, 1000);
+    first_m = hold_begin(&r, 2, 1000);
     last_m = hold_now_m(&r);
     hold_closed(&r, 1);
-    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_span(&r, first_m, last_m);
     hold_expect_one_burst(&r, 2, 1000);
 
     /* Held, then ended: the hold is not the call's. */
     r.opts->analog_record_max_gap_ms = 1000;
-    hold_receive(&r, 2, 1000);
+    first_m = hold_begin(&r, 2, 1000);
     last_m = hold_now_m(&r);
     hold_closed(&r, 5);
     assert(dsd_engine_analog_call_active(r.state));
     dsd_engine_analog_call_end(r.opts, r.state);
-    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_span(&r, first_m, last_m);
     hold_expect_one_burst(&r, 2, 1000);
     hold_close(&r);
 }
@@ -1232,12 +1294,14 @@ hold_slow_write(SNDFILE* file, const short* samples, long long count) {
     return (long long)sf_write_short(file, samples, (sf_count_t)count);
 }
 
+/* The call's start is its first block's stamp less the block's span (issue #667), which may be an ulp (some 0.24 us at
+   the rig's 1.7e9 s) from the rig's own conversion of that instant; its other stamps are the blocks' exactly. */
 static void
 hold_expect_stamps(const hold_rig* r, int phase, double started_m, double last_m) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof call);
     assert(dsd_call_state_get(r->state, 0U, &call) > 0 && (int)call.phase == phase);
-    assert(fabs(call.started_m - started_m) < 1e-9);
+    assert(fabs(call.started_m - started_m) < 1e-6);
     assert(fabs(call.media_updated_m - last_m) < 1e-9);
     assert(phase != DSD_CALL_PHASE_ENDED || fabs(call.ended_m - last_m) < 1e-9);
 }
@@ -1250,9 +1314,7 @@ test_hold_row_end_is_the_block_stamp(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_stamp", 1000);
     dsd_wav_test_set_io(hold_slow_write, NULL);
-    hold_receive(&r, 1, 1000);
-    const double first_m = hold_now_m(&r);
-    hold_receive(&r, 1, 1000);
+    const double first_m = hold_begin(&r, 2, 1000);
     double last_m = hold_now_m(&r);
     hold_closed(&r, 3);
     dsd_engine_analog_call_end(r.opts, r.state);
@@ -1260,9 +1322,7 @@ test_hold_row_end_is_the_block_stamp(void) {
     hold_expect_one_burst(&r, 2, 1000);
 
     /* A resume as the call's last reception: three held blocks of silence are written before its own audio. */
-    hold_receive(&r, 1, 1000);
-    const double resumed_first_m = hold_now_m(&r);
-    hold_receive(&r, 1, 1000);
+    const double resumed_first_m = hold_begin(&r, 2, 1000);
     hold_closed(&r, 3);
     hold_receive(&r, 1, 2000);
     last_m = hold_now_m(&r);
@@ -1289,7 +1349,7 @@ test_hold_needs_recording(void) {
     hold_open(&r, "dsdneo_hold_unrecorded", 1000);
     r.opts->dmr_stereo_wav = 0;
     for (int tick = 0; tick < 2; tick++) {
-        hold_receive(&r, 2, 1000);
+        const double first_m = hold_begin(&r, 2, 1000);
         const double last_m = hold_now_m(&r);
         if (tick) {
             r.state->analog_rx.carrier_open = 0;
@@ -1298,14 +1358,14 @@ test_hold_needs_recording(void) {
             hold_closed(&r, 1);
         }
         assert(!dsd_engine_analog_call_active(r.state));
-        hold_expect_span(&r, last_m - 0.020, last_m);
+        hold_expect_span(&r, first_m, last_m);
     }
     hold_files found;
     hold_take(&r, &found, 0);
 
     for (int tick = 0; tick < 2; tick++) {
         r.opts->dmr_stereo_wav = 1;
-        hold_receive(&r, 2, 1000);
+        const double first_m = hold_begin(&r, 2, 1000);
         const double last_m = hold_now_m(&r);
         hold_closed(&r, 3);
         r.opts->dmr_stereo_wav = 0;
@@ -1318,13 +1378,13 @@ test_hold_needs_recording(void) {
             hold_closed(&r, 1);
         }
         assert(!dsd_engine_analog_call_active(r.state));
-        hold_expect_span(&r, last_m - 0.020, last_m);
+        hold_expect_span(&r, first_m, last_m);
     }
     r.opts->dmr_stereo_wav = 1;
-    hold_receive(&r, 2, 2000);
+    const double first_m = hold_begin(&r, 2, 2000);
     const double last_m = hold_now_m(&r);
     dsd_engine_analog_call_end(r.opts, r.state);
-    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_span(&r, first_m, last_m);
     hold_expect_one_burst(&r, 2, 2000);
     hold_close(&r);
 }
@@ -1336,14 +1396,13 @@ static void
 test_hold_boundary_move_ends_the_call(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_b6", 0);
-    hold_receive(&r, 1, 1000);
+    double first_m = hold_begin(&r, 1, 1000);
     double last_m = hold_now_m(&r);
     r.state->analog_rx.boundaries++;
     hold_receive(&r, 1, 2000);
     assert(!dsd_engine_analog_call_active(r.state));
-    hold_expect_span(&r, last_m, last_m);
-    hold_receive(&r, 1, 3000);
-    assert(dsd_engine_analog_call_active(r.state));
+    hold_expect_span(&r, first_m, last_m);
+    (void)hold_begin(&r, 1, 3000);
     dsd_engine_analog_call_end(r.opts, r.state);
     hold_files found;
     hold_take(&r, &found, 2);
@@ -1353,20 +1412,20 @@ test_hold_boundary_move_ends_the_call(void) {
 
     /* Held: the move ends the held call without its pause, on a reception or on a held block. */
     r.opts->analog_record_max_gap_ms = 1000;
-    hold_receive(&r, 1, 4000);
+    first_m = hold_begin(&r, 1, 4000);
     last_m = hold_now_m(&r);
     hold_closed(&r, 3);
     r.state->analog_rx.boundaries++;
     hold_receive(&r, 1, 5000);
     assert(!dsd_engine_analog_call_active(r.state));
-    hold_expect_span(&r, last_m, last_m);
-    hold_receive(&r, 1, 6000);
+    hold_expect_span(&r, first_m, last_m);
+    (void)hold_begin(&r, 1, 6000);
     dsd_engine_analog_call_end(r.opts, r.state);
     hold_take(&r, &found, 2);
     assert(found.frames[hold_file_starting(&found, 4000)] == HOLD_BLOCK);
     assert(found.frames[hold_file_starting(&found, 6000)] == HOLD_BLOCK);
     hold_release(&found);
-    hold_receive(&r, 1, 7000);
+    (void)hold_begin(&r, 1, 7000);
     hold_closed(&r, 2);
     r.state->analog_rx.boundaries++;
     hold_closed(&r, 1);
@@ -1375,17 +1434,16 @@ test_hold_boundary_move_ends_the_call(void) {
     hold_close(&r);
 }
 
-/* A held call is one call: one row from its first reception to its last, committed once (one VOICE_END: the commit of
-   a call that ended, never of one held), and one recording with the pause as silence where it was. A pause of exactly
-   the max gap is joined (the 200 ms hangover the blocks before it recorded, then 300 ms); one block more ends the call
-   at that block, with nothing written for the pause. */
+/* A held call is one call: one row from its start (its tone check, issue #667) to its last reception, committed once
+   (one VOICE_END: the commit of a call that ended, never of one held), and one recording with the pause as silence
+   where it was. A pause of exactly the max gap is joined (the 200 ms hangover the blocks before it recorded, then
+   300 ms); one block more ends the call at that block, with nothing written for the pause. */
 static void
 test_hold_joins_a_pause_up_to_the_max_gap(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_48k", 500);
     const uint64_t commits = r.history[0].push_seq;
-    hold_receive(&r, 5, 1000);
-    const double first_m = (double)(k_hold_t0_ns + 20000000ULL) / 1e9;
+    const double first_m = hold_begin(&r, 5, 1000);
     hold_closed(&r, 15);
     assert(dsd_engine_analog_call_active(r.state));
     assert(r.history[0].push_seq == commits);
@@ -1393,7 +1451,8 @@ test_hold_joins_a_pause_up_to_the_max_gap(void) {
     const double last_m = hold_now_m(&r);
     dsd_engine_analog_call_end(r.opts, r.state);
     hold_expect_span(&r, first_m, last_m);
-    assert(fabs((last_m - first_m) - 0.480) < 1e-6);
+    /* The 480 ms tone check, then 5 + 15 + 5 blocks. */
+    assert(fabs((last_m - first_m) - (0.480 + 0.500)) < 1e-6);
     assert(r.history[0].push_seq == commits + 1U);
     assert(strcmp(r.history[0].Event_History_Items[1].sysid_string, "ANALOG") == 0); /* audio input: no mode */
     hold_files found;
@@ -1404,14 +1463,14 @@ test_hold_joins_a_pause_up_to_the_max_gap(void) {
     assert(hold_run_is(found.samples[0], 20L * HOLD_BLOCK, 5L * HOLD_BLOCK, 2000));
     hold_release(&found);
 
-    hold_receive(&r, 5, 3000);
+    const double over_first_m = hold_begin(&r, 5, 3000);
     const double over_m = hold_now_m(&r);
     hold_closed(&r, 15);
     assert(dsd_engine_analog_call_active(r.state));
     hold_closed(&r, 1);
     assert(!dsd_engine_analog_call_active(r.state));
-    hold_expect_span(&r, over_m - 0.080, over_m);
-    hold_receive(&r, 5, 4000);
+    hold_expect_span(&r, over_first_m, over_m);
+    (void)hold_begin(&r, 5, 4000);
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 3U);
     hold_take(&r, &found, 2);
@@ -1424,7 +1483,7 @@ test_hold_joins_a_pause_up_to_the_max_gap(void) {
 /* The frames a call of @p blocks blocks at the rig's rate writes from a fresh start (the converter's own output). */
 static long
 hold_burst_frames(hold_rig* r, int blocks) {
-    hold_receive(r, blocks, 2000);
+    (void)hold_begin(r, blocks, 2000);
     dsd_engine_analog_call_end(r->opts, r->state);
     hold_files found;
     hold_take(r, &found, 1);
@@ -1436,8 +1495,8 @@ hold_burst_frames(hold_rig* r, int blocks) {
 
 /* A block rate other than 48 kHz (staged PCM rates, RTL output): the gap is counted at 48 kHz with the block rate's
    remainder carried, and the owed silence lands between the converter's outputs for the two bursts. @p joined held
-   blocks are joined, as one row from the first reception to the last, and one more ends the call at its last
-   reception, a row of its own. */
+   blocks are joined, as one row from the call's start (its tone check) to the last reception, and one more ends the
+   call at its last reception, a row of its own. */
 static void
 hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     hold_rig r;
@@ -1446,9 +1505,7 @@ hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     const double block_s = (double)HOLD_BLOCK / (double)rate;
     const long burst = hold_burst_frames(&r, 3);
     const uint64_t commits = r.history[0].push_seq;
-    hold_receive(&r, 1, 2000);
-    const double first_m = hold_now_m(&r);
-    hold_receive(&r, 2, 2000);
+    double first_m = hold_begin(&r, 3, 2000);
     hold_closed(&r, joined);
     assert(dsd_engine_analog_call_active(r.state));
     hold_receive(&r, 3, 2000);
@@ -1456,7 +1513,8 @@ hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 1U);
     hold_expect_span(&r, first_m, last_m);
-    assert(fabs((last_m - first_m) - (double)(5 + joined) * block_s) < 1e-6);
+    /* The tone check, then 3 + joined + 3 blocks. */
+    assert(fabs((last_m - first_m) - (double)(hold_lead_in_blocks(&r) + 6 + joined) * block_s) < 1e-6);
     hold_files found;
     hold_take(&r, &found, 1);
     assert(found.frames[0] == 2 * burst + owed);
@@ -1464,13 +1522,13 @@ hold_check_rate(int rate, int max_gap_ms, int joined, long owed) {
     assert(hold_run_is(found.samples[0], burst, owed, 0));
     hold_release(&found);
 
-    hold_receive(&r, 3, 2000);
+    first_m = hold_begin(&r, 3, 2000);
     last_m = hold_now_m(&r);
     hold_closed(&r, joined + 1);
     assert(!dsd_engine_analog_call_active(r.state));
     assert(r.history[0].push_seq == commits + 2U);
-    hold_expect_span(&r, last_m - 2.0 * block_s, last_m);
-    hold_receive(&r, 3, 2000);
+    hold_expect_span(&r, first_m, last_m);
+    (void)hold_begin(&r, 3, 2000);
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 3U);
     hold_take(&r, &found, 2);
@@ -1496,7 +1554,7 @@ static void
 test_hold_tone_checks_age_the_gap(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_pending", 500);
-    hold_receive(&r, 5, 1000);
+    (void)hold_begin(&r, 5, 1000);
     for (int i = 0; i < 3; i++) {
         hold_closed(&r, 3);
         hold_pending(&r, 2);
@@ -1506,7 +1564,7 @@ test_hold_tone_checks_age_the_gap(void) {
     assert(!dsd_engine_analog_call_active(r.state));
     hold_expect_one_burst(&r, 5, 1000);
 
-    hold_receive(&r, 5, 1000);
+    (void)hold_begin(&r, 5, 1000);
     hold_pending(&r, 25);
     assert(dsd_engine_analog_call_active(r.state));
     hold_receive(&r, 5, 2000);
@@ -1516,12 +1574,12 @@ test_hold_tone_checks_age_the_gap(void) {
     assert(found.frames[0] == 35L * HOLD_BLOCK);
     assert(hold_run_is(found.samples[0], 5L * HOLD_BLOCK, 25L * HOLD_BLOCK, 0));
     hold_release(&found);
-    hold_receive(&r, 5, 1000);
+    (void)hold_begin(&r, 5, 1000);
     hold_pending(&r, 26);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_expect_one_burst(&r, 5, 1000);
 
-    hold_receive(&r, 5, 1000);
+    (void)hold_begin(&r, 5, 1000);
     hold_pending(&r, 5);
     hold_closed(&r, 20);
     assert(dsd_engine_analog_call_active(r.state));
@@ -1531,7 +1589,7 @@ test_hold_tone_checks_age_the_gap(void) {
     assert(found.frames[0] == 31L * HOLD_BLOCK);
     assert(hold_run_is(found.samples[0], 5L * HOLD_BLOCK, 25L * HOLD_BLOCK, 0));
     hold_release(&found);
-    hold_receive(&r, 5, 1000);
+    (void)hold_begin(&r, 5, 1000);
     hold_pending(&r, 5);
     hold_closed(&r, 21);
     assert(!dsd_engine_analog_call_active(r.state));
@@ -1575,7 +1633,8 @@ take_hold_service(const char* name, void* user) {
 
 /* D4: a resumed carrier continues the held call unless its identity is confirmed different (known against known, the
    rule inside one carrier): the same tone or one still being acquired goes on, with the pause written; a different
-   one ends the held call at its last reception, without the pause, and begins a new call with its first block. */
+   one ends the held call at its last reception, without the pause, and begins a new reception with its first block,
+   a call once it ran the minimum (issue #667). */
 static void
 test_hold_identity_on_resume(void) {
     hold_rig r;
@@ -1585,7 +1644,7 @@ test_hold_identity_on_resume(void) {
            == 0);
     hold_lock_tone(&r, 1413);
     for (int acquiring = 0; acquiring < 2; acquiring++) {
-        hold_receive(&r, 2, 1000);
+        (void)hold_begin(&r, 2, 1000);
         hold_closed(&r, 5);
         r.state->analog_rx.tone_state = acquiring ? DSD_ANALOG_TONE_STATE_ACQUIRING : DSD_ANALOG_TONE_STATE_LOCKED;
         hold_receive(&r, 2, 2000);
@@ -1595,20 +1654,26 @@ test_hold_identity_on_resume(void) {
         assert(dsd_dir_list(r.dir, take_hold_service, &one) == 0);
         assert(one.traveler == 1 && one.dispatch == 0 && one.frames[0] == 9L * HOLD_BLOCK);
     }
-    hold_receive(&r, 2, 1000);
+    const double traveler_first_m = hold_begin(&r, 2, 1000);
+    const double traveler_last_m = hold_now_m(&r);
     const uint64_t commits = r.history[0].push_seq;
     hold_closed(&r, 5);
     hold_advance_ms(&r, 5000); /* No clock decides the hold, and the row ends at the last reception. */
     hold_lock_tone(&r, 0);
     hold_receive(&r, 2, 2000);
+    /* The held call ended as the new code came; the new reception is not a call until it ran the minimum. */
+    assert(!dsd_engine_analog_call_active(r.state) && r.history[0].push_seq == commits + 1U);
+    hold_receive(&r, DSD_ANALOG_CALL_MIN_MS / 20 - 2, 2000);
     assert(dsd_engine_analog_call_active(r.state) && r.history[0].push_seq == commits + 1U);
     const Event_History* held = &r.history[0].Event_History_Items[1];
-    assert(!strcmp(held->service_label, "Traveler") && held->event_time - held->event_start_time == 0);
+    assert(!strcmp(held->service_label, "Traveler"));
+    assert(held->event_start_time == (time_t)floor(traveler_first_m)
+           && held->event_time == (time_t)floor(traveler_last_m));
     dsd_engine_analog_call_end(r.opts, r.state);
     hold_services two = {.dir = r.dir};
     assert(dsd_dir_list(r.dir, take_hold_service, &two) == 0);
     assert(two.traveler == 1 && two.dispatch == 1 && two.frames[0] == 2L * HOLD_BLOCK
-           && two.frames[1] == 2L * HOLD_BLOCK);
+           && two.frames[1] == (long)(DSD_ANALOG_CALL_MIN_MS / 20) * HOLD_BLOCK);
     hold_close(&r);
 }
 
@@ -1619,8 +1684,8 @@ hold_slow_close(SNDFILE* file) {
     return sf_close(file);
 }
 
-/* D4 on a slow disk: a new identity on the resume ends the held call and closes its recording before the new call
-   begins with the block, whose start is still the block's stamp. It was read after the close. */
+/* D4 on a slow disk: a new identity on the resume ends the held call and closes its recording before the new reception
+   begins with the block, whose start is still the block's first sample by its stamp. It was read after the close. */
 static void
 test_hold_new_identity_starts_at_the_block_stamp(void) {
     hold_rig r;
@@ -1630,18 +1695,22 @@ test_hold_new_identity_starts_at_the_block_stamp(void) {
            == 0);
     dsd_wav_test_set_io(hold_slow_write, hold_slow_close);
     hold_lock_tone(&r, 1413);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 3);
     hold_lock_tone(&r, 0);
+    const double first_m = hold_now_m(&r);
     hold_receive(&r, 1, 2000);
+    /* The new code's reception runs the minimum to be a call (issue #667). */
+    hold_receive(&r, DSD_ANALOG_CALL_MIN_MS / 20 - 1, 2000);
     const double last_m = hold_now_m(&r);
-    hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, last_m, last_m);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, first_m, last_m);
     dsd_engine_analog_call_end(r.opts, r.state);
     dsd_wav_test_set_io(NULL, NULL);
-    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, last_m, last_m);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, first_m, last_m);
     hold_services two = {.dir = r.dir};
     assert(dsd_dir_list(r.dir, take_hold_service, &two) == 0);
-    assert(two.traveler == 1 && two.dispatch == 1 && two.frames[0] == 2L * HOLD_BLOCK && two.frames[1] == HOLD_BLOCK);
+    assert(two.traveler == 1 && two.dispatch == 1 && two.frames[0] == 2L * HOLD_BLOCK
+           && two.frames[1] == (long)(DSD_ANALOG_CALL_MIN_MS / 20) * HOLD_BLOCK);
     hold_close(&r);
 }
 
@@ -1678,9 +1747,10 @@ hold_end_before_a_reception(hold_rig* r, int end) {
     }
 }
 
-/* On a slow disk, every end of a held call that closes its recording before the next reception begins a call (in that
-   block or before it) leaves the new call's stamps the block's: the close's time is not the call's. The block's stamp
-   was read after the reconciliation that opens the block closed the old recording. */
+/* On a slow disk, every end of a held call that closes its recording before the next reception begins (in that block
+   or before it) leaves the new call's stamps the blocks': the close's time is not the call's. The block's stamp was
+   read after the reconciliation that opens the block closed the old recording. The next reception begins with its
+   tone check (issue #667), whose first block now carries that reconciliation. */
 static void
 test_hold_ends_before_a_begin_keep_its_stamp(void) {
     hold_rig r;
@@ -1689,14 +1759,14 @@ test_hold_ends_before_a_begin_keep_its_stamp(void) {
     for (int end = 0; end < HOLD_END_CASES; end++) {
         r.opts->dmr_stereo_wav = 1;
         r.opts->analog_record_max_gap_ms = 1000;
-        hold_receive(&r, 2, 1000);
+        (void)hold_begin(&r, 2, 1000);
         hold_closed(&r, 10); /* 400 ms */
         hold_end_before_a_reception(&r, end);
-        hold_receive(&r, 1, 3000);
+        const double start_m = hold_begin(&r, 1, 3000);
         const double block_m = hold_now_m(&r);
-        hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, block_m, block_m);
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ACTIVE, start_m, block_m);
         dsd_engine_analog_call_end(r.opts, r.state);
-        hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, block_m, block_m);
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, start_m, block_m);
         const int recorded = end != HOLD_END_UNRECORDED && end != HOLD_END_STOPPED;
         hold_files found;
         hold_take(&r, &found, recorded ? 2 : 1);
@@ -1718,13 +1788,13 @@ test_hold_ends_without_the_pause(void) {
     const uint64_t commits = r.history[0].push_seq;
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits);
-    hold_receive(&r, 2, 1000);
+    double first_m = hold_begin(&r, 2, 1000);
     double last_m = hold_now_m(&r);
     dsd_engine_analog_call_end(r.opts, r.state);
-    hold_expect_span(&r, last_m - 0.020, last_m);
+    hold_expect_span(&r, first_m, last_m);
     hold_expect_one_burst(&r, 2, 1000);
     for (int rejected = 0; rejected < 2; rejected++) {
-        hold_receive(&r, 2, 1000);
+        first_m = hold_begin(&r, 2, 1000);
         last_m = hold_now_m(&r);
         hold_closed(&r, 5);
         if (rejected) {
@@ -1733,28 +1803,35 @@ test_hold_ends_without_the_pause(void) {
             dsd_engine_analog_call_end(r.opts, r.state);
         }
         assert(!dsd_engine_analog_call_active(r.state));
-        hold_expect_span(&r, last_m - 0.020, last_m);
+        hold_expect_span(&r, first_m, last_m);
         hold_expect_one_burst(&r, 2, 1000);
     }
     assert(r.history[0].push_seq == commits + 3U);
     hold_close(&r);
 }
 
-/* Receive two blocks and hold the call for three, returning the last reception's end. */
-static double
+/* A call's start and its last reception's end. */
+typedef struct {
+    double first_m;
+    double last_m;
+} hold_span;
+
+/* Begin a call of two blocks and hold it for three. */
+static hold_span
 hold_start_held(hold_rig* r) {
-    hold_receive(r, 2, 1000);
-    const double last_m = hold_now_m(r);
+    hold_span span;
+    span.first_m = hold_begin(r, 2, 1000);
+    span.last_m = hold_now_m(r);
     hold_closed(r, 3);
     assert(dsd_engine_analog_call_active(r->state));
-    return last_m;
+    return span;
 }
 
 static void
-hold_expect_tick_ends(hold_rig* r, double last_m) {
+hold_expect_tick_ends(hold_rig* r, hold_span span) {
     dsd_engine_analog_call_tick(r->opts, r->state);
     assert(!dsd_engine_analog_call_active(r->state));
-    hold_expect_span(r, last_m - 0.020, last_m);
+    hold_expect_span(r, span.first_m, span.last_m);
     hold_expect_one_burst(r, 2, 1000);
 }
 
@@ -1765,7 +1842,7 @@ static void
 test_hold_tick_precedence(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_tick", 1000);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     r.state->analog_rx.carrier_open = 0;
     dsd_engine_analog_call_tick(r.opts, r.state);
     assert(dsd_engine_analog_call_active(r.state));
@@ -1775,28 +1852,28 @@ test_hold_tick_precedence(void) {
     dsd_engine_analog_call_end(r.opts, r.state);
     hold_expect_one_burst(&r, 2, 1000);
 
-    double last_m = hold_start_held(&r);
+    hold_span span = hold_start_held(&r);
     r.opts->analog_only = 0;
-    hold_expect_tick_ends(&r, last_m);
+    hold_expect_tick_ends(&r, span);
     r.opts->analog_only = 1;
-    last_m = hold_start_held(&r);
+    span = hold_start_held(&r);
     r.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
-    hold_expect_tick_ends(&r, last_m);
+    hold_expect_tick_ends(&r, span);
     r.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
-    last_m = hold_start_held(&r);
+    span = hold_start_held(&r);
     (void)dsd_trunk_tuning_request_begin();
-    hold_expect_tick_ends(&r, last_m);
+    hold_expect_tick_ends(&r, span);
     dsd_trunk_tuning_requests_reset();
-    last_m = hold_start_held(&r);
+    span = hold_start_held(&r);
     r.state->analog_rx.stale_after_ms = 1U;
-    hold_expect_tick_ends(&r, last_m);
+    hold_expect_tick_ends(&r, span);
     r.state->analog_rx.stale_after_ms = 0U;
     /* Lowered below the gap so far (260 ms), the hold still on: the tick reconciles. Turned off, it ends as on main. */
     for (int off = 0; off < 2; off++) {
         r.opts->analog_record_max_gap_ms = 1000;
-        last_m = hold_start_held(&r);
+        span = hold_start_held(&r);
         r.opts->analog_record_max_gap_ms = off ? 200 : 259;
-        hold_expect_tick_ends(&r, last_m);
+        hold_expect_tick_ends(&r, span);
     }
     hold_close(&r);
 }
@@ -1819,28 +1896,31 @@ test_hold_tick_ends_a_moved_epoch(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_tick_b6", 1000);
     for (int held = 0; held < 2; held++) {
-        hold_receive(&r, 2, 1000);
-        const double last_m = hold_now_m(&r);
+        hold_span span;
+        span.first_m = hold_begin(&r, 2, 1000);
+        span.last_m = hold_now_m(&r);
         if (held) {
             hold_closed(&r, 3);
         }
         hold_reset_receiver(&r);
         hold_advance_ms(&r, 5000);
-        hold_expect_tick_ends(&r, last_m);
+        hold_expect_tick_ends(&r, span);
         dsd_engine_analog_call_tick(r.opts, r.state);
         assert(!dsd_engine_analog_call_active(r.state));
     }
     r.opts->analog_record_max_gap_ms = 0;
-    hold_receive(&r, 2, 1000);
-    const double last_m = hold_now_m(&r);
+    hold_span span;
+    span.first_m = hold_begin(&r, 2, 1000);
+    span.last_m = hold_now_m(&r);
     hold_reset_receiver(&r);
-    hold_expect_tick_ends(&r, last_m);
+    hold_expect_tick_ends(&r, span);
     hold_close(&r);
 }
 
 /* D10, ending: every value at or under the hangover is off (a closed carrier ends an active call at once, as on main);
-   turning the hold off, or lowering it below the gap so far, ends a held call at the next block, which a reception
-   then begins anew; the first held block may already be past it (200 ms hangover + 20 ms). */
+   turning the hold off, or lowering it below the gap so far, ends a held call at the next block (here the next call's
+   tone check, issue #667), which a reception then begins anew; the first held block may already be past it (200 ms
+   hangover + 20 ms). */
 static void
 test_hold_live_changes_end(void) {
     hold_rig r;
@@ -1848,20 +1928,19 @@ test_hold_live_changes_end(void) {
     static const int off[] = {0, 1, 200};
     for (size_t i = 0; i < sizeof off / sizeof off[0]; i++) {
         r.opts->analog_record_max_gap_ms = off[i];
-        hold_receive(&r, 2, 1000);
+        const double first_m = hold_begin(&r, 2, 1000);
         const double last_m = hold_now_m(&r);
         hold_closed(&r, 1);
         assert(!dsd_engine_analog_call_active(r.state));
-        hold_expect_span(&r, last_m - 0.020, last_m);
+        hold_expect_span(&r, first_m, last_m);
         hold_expect_one_burst(&r, 2, 1000);
     }
     for (int lowered = 0; lowered < 2; lowered++) {
         r.opts->analog_record_max_gap_ms = 1000;
-        hold_receive(&r, 2, 1000);
+        (void)hold_begin(&r, 2, 1000);
         hold_closed(&r, 10); /* 400 ms */
         r.opts->analog_record_max_gap_ms = lowered ? 399 : 0;
-        hold_receive(&r, 1, 2000);
-        assert(dsd_engine_analog_call_active(r.state));
+        (void)hold_begin(&r, 1, 2000);
         dsd_engine_analog_call_end(r.opts, r.state);
         hold_files found;
         hold_take(&r, &found, 2);
@@ -1870,12 +1949,12 @@ test_hold_live_changes_end(void) {
         hold_release(&found);
     }
     r.opts->analog_record_max_gap_ms = 219;
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 1);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_expect_one_burst(&r, 2, 1000);
     r.opts->analog_record_max_gap_ms = 220;
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 1);
     assert(dsd_engine_analog_call_active(r.state));
     hold_closed(&r, 1);
@@ -1889,7 +1968,7 @@ static void
 test_hold_live_changes_extend(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_live_extend", 1000);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 10); /* 400 ms */
     r.opts->analog_record_max_gap_ms = 400;
     hold_receive(&r, 1, 2000);
@@ -1899,7 +1978,7 @@ test_hold_live_changes_extend(void) {
     assert(found.frames[0] == 13L * HOLD_BLOCK && hold_run_is(found.samples[0], 2L * HOLD_BLOCK, 10L * HOLD_BLOCK, 0));
     hold_release(&found);
     r.opts->analog_record_max_gap_ms = 300;
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 5); /* 300 ms */
     r.opts->analog_record_max_gap_ms = 1000;
     hold_closed(&r, 15); /* 600 ms */
@@ -1913,22 +1992,23 @@ test_hold_live_changes_extend(void) {
 }
 
 /* The default (200 ms: the hold off) writes what main wrote, block for block: a closed carrier, a tone check and a
-   BREAK each end the call, and each reception's blocks land in a file of their own as they came. */
+   BREAK each end the call, and each reception's blocks land in a file of their own as they came. Each call begins
+   with its own tone check (issue #667), which records nothing. */
 static void
 test_hold_off_keeps_main_payloads(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_golden", 200);
     const uint64_t commits = r.history[0].push_seq;
-    hold_receive(&r, 1, 100);
+    (void)hold_begin(&r, 1, 100);
     hold_receive(&r, 1, 200);
     hold_receive(&r, 1, 300);
     hold_closed(&r, 1);
-    hold_receive(&r, 1, 400);
+    (void)hold_begin(&r, 1, 400);
     hold_receive(&r, 1, 500);
     hold_pending(&r, 1);
-    hold_receive(&r, 1, 600);
+    (void)hold_begin(&r, 1, 600);
     hold_feed(&r, DSD_ANALOG_CALL_BREAK, 0);
-    hold_receive(&r, 1, 700);
+    (void)hold_begin(&r, 1, 700);
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 4U);
     hold_files found;
@@ -1979,7 +2059,7 @@ test_hold_silence_write_failure_latches(void) {
     hold_open(&r, "dsdneo_hold_latch", 1000);
     dsd_wav_recording_session_reset();
     dsd_wav_test_set_io(hold_seam_write, NULL);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     const int writes = g_hold_writes;
     hold_closed(&r, 20);
     g_hold_short_at = g_hold_writes;
@@ -2002,12 +2082,12 @@ static void
 test_hold_teardown_while_held(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_teardown", 1000);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 5);
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(!strcmp(r.history[0].Event_History_Items[1].sysid_string, "ANALOG")); /* audio input: no mode */
     hold_expect_one_burst(&r, 2, 1000);
-    hold_receive(&r, 2, 1000);
+    (void)hold_begin(&r, 2, 1000);
     hold_closed(&r, 5);
     dsd_state_ext_free_all(r.state);
     hold_expect_one_burst(&r, 2, 1000);
@@ -2019,7 +2099,7 @@ static void
 test_hold_largest_silence_write(void) {
     hold_rig r;
     hold_open(&r, "dsdneo_hold_flush", 10000);
-    hold_receive(&r, 1, 1000);
+    (void)hold_begin(&r, 1, 1000);
     hold_pending(&r, 500);
     const uint64_t began_ns = dsd_realtime_mono_ns();
     hold_receive(&r, 1, 2000);
@@ -2030,6 +2110,568 @@ test_hold_largest_silence_write(void) {
     assert(found.frames[0] == 502L * HOLD_BLOCK && hold_run_is(found.samples[0], HOLD_BLOCK, 500L * HOLD_BLOCK, 0));
     hold_release(&found);
     printf("CORE_RECEIVE: a 10 s pause written as silence in %.2f ms\n", (double)took_ns / 1e6);
+    hold_close(&r);
+}
+
+/* --- Issue #667 D1: a reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS. --- */
+
+/* The recording journal (issue #708), in a folder of its own: the rig's folder holds only recordings. */
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX * 2];
+} hold_journal;
+
+static void
+hold_journal_open(hold_journal* j) {
+    assert(dsd_test_mkdtemp(j->dir, sizeof j->dir, "dsdneo_hold_journal"));
+    assert(dsd_test_path_join(j->path, sizeof j->path, j->dir, "calls.jsonl") == 0);
+    assert(dsd_wav_journal_open(j->path) == 0);
+}
+
+static void
+hold_journal_close(const hold_journal* j) {
+    dsd_wav_journal_close();
+    (void)remove(j->path);
+    assert(dsd_test_rmdir(j->dir) == 0);
+}
+
+/* The @p nth line of the journal of @p type ("publish", ...; any line when NULL) into @p line. Returns 0 when there is
+   none. */
+static int
+hold_journal_line(const hold_journal* j, const char* type, int nth, char* line, size_t size) {
+    static char text[65536];
+    FILE* f = dsd_fopen_existing_regular_file(j->path, "rb");
+    if (!f) {
+        return 0;
+    }
+    const size_t n = fread(text, 1U, sizeof text - 1U, f);
+    (void)fclose(f);
+    text[n] = '\0';
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"type\":\"%s\"", type ? type : "");
+    for (char* at = text; *at != '\0';) {
+        char* end = strchr(at, '\n');
+        const size_t len = end ? (size_t)(end - at) : strlen(at);
+        if (len > 0U && len < size) {
+            DSD_MEMCPY(line, at, len);
+            line[len] = '\0';
+            if ((!type || strstr(line, want) != NULL) && nth-- == 0) {
+                return 1;
+            }
+        }
+        at += len + (end ? 1U : 0U);
+    }
+    return 0;
+}
+
+static int
+hold_journal_count(const hold_journal* j, const char* type) {
+    char line[4096];
+    int count = 0;
+    while (hold_journal_line(j, type, count, line, sizeof line)) {
+        count++;
+    }
+    return count;
+}
+
+/* The integer @p key of the journal's @p nth publish line. */
+static long long
+hold_journal_publish_field(const hold_journal* j, int nth, const char* key) {
+    char line[4096];
+    assert(hold_journal_line(j, "publish", nth, line, sizeof line));
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"%s\":", key);
+    const char* at = strstr(line, want);
+    assert(at != NULL);
+    char* end = NULL;
+    const long long value = strtoll(at + strlen(want), &end, 10);
+    assert(end != at + strlen(want));
+    return value;
+}
+
+/* Nothing of a reception that never became a call: no canonical call (so no row, live call or alert), no recording, no
+   journal line, and no commit since @p commits. */
+static void
+hold_expect_nothing(const hold_rig* r, const hold_journal* j, uint64_t commits) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(!dsd_engine_analog_call_active(r->state));
+    assert(dsd_call_state_get(r->state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(r->history[0].push_seq == commits);
+    hold_files found;
+    hold_take(r, &found, 0);
+    assert(!j || hold_journal_count(j, NULL) == 0);
+}
+
+/* D1: a reception counts its RECEPTION blocks, the hangover's included (the symbol path hands those over as RECEPTION
+   too), and becomes a call at the block that brings it to 500 ms, never before: 280 ms of signal and its 200 ms
+   hangover leave nothing, 300 ms and the hangover make a call from its first sample, and so does more. The spans are
+   counted at the block rate in 48 kHz samples: at 44100 Hz the 23rd 960-sample block reaches 24000, the 22nd does
+   not. */
+static void
+test_candidate_qualifies_at_the_minimum(void) {
+    hold_rig r;
+    hold_journal j;
+    hold_open(&r, "dsdneo_cand_min", 0);
+    hold_journal_open(&j);
+    const uint64_t commits = r.history[0].push_seq;
+    hold_receive(&r, 24, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_closed(&r, 1);
+    hold_expect_nothing(&r, &j, commits);
+
+    for (int extra = 0; extra < 2; extra++) {
+        const double first_m = hold_now_m(&r);
+        hold_receive(&r, 24, 1000);
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_receive(&r, 1 + extra, 1000);
+        assert(dsd_engine_analog_call_active(r.state));
+        const double last_m = hold_now_m(&r);
+        hold_closed(&r, 1);
+        hold_expect_span(&r, first_m, last_m);
+        assert(r.history[0].push_seq == commits + 1U + (uint64_t)extra);
+        hold_expect_one_burst(&r, 25 + extra, 1000);
+        assert(hold_journal_count(&j, "publish") == 1 + extra);
+        assert(hold_journal_publish_field(&j, extra, "duration_ms") == 500 + 20 * extra);
+    }
+    hold_journal_close(&j);
+    hold_close(&r);
+
+    hold_open(&r, "dsdneo_cand_min_44k", 0);
+    r.rate = 44100;
+    hold_receive(&r, 22, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_files found;
+    hold_take(&r, &found, 1);
+    hold_release(&found);
+    hold_close(&r);
+}
+
+/* D1 through a tone check that returns after the reception began (the carrier up, its tone checked again): with the
+   hold off it ends the reception, which leaves nothing, and the check that goes on is the next reception's lead-in.
+   With the hold on, the check holds it as it would a call, its span counted toward the gap but not the minimum, and
+   owed as silence; a check that ends rejected leaves nothing. Nothing is published before the reception is a call. */
+static void
+test_candidate_through_a_tone_check(void) {
+    hold_rig r;
+    hold_journal j;
+    hold_open(&r, "dsdneo_cand_pending", 0);
+    hold_journal_open(&j);
+    const uint64_t commits = r.history[0].push_seq;
+    hold_receive(&r, 10, 1000);
+    hold_pending(&r, 1);
+    hold_expect_nothing(&r, &j, commits);
+    const double lead_m = hold_now_m(&r);
+    hold_pending(&r, 4);
+    hold_receive(&r, 20, 2000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 1, 2000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_span(&r, lead_m, last_m);
+    hold_expect_one_burst(&r, 21, 2000);
+    assert(hold_journal_count(&j, "publish") == 1);
+    hold_journal_close(&j);
+    hold_close(&r);
+
+    hold_open(&r, "dsdneo_cand_pending_held", 1000);
+    hold_journal_open(&j);
+    const uint64_t held_commits = r.history[0].push_seq;
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 10, 1000);
+    hold_pending(&r, 5);
+    hold_receive(&r, 14, 2000);
+    assert(!dsd_engine_analog_call_active(r.state) && hold_journal_count(&j, NULL) == 0);
+    assert(r.history[0].push_seq == held_commits);
+    hold_receive(&r, 1, 2000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double held_last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_span(&r, first_m, held_last_m);
+    hold_files found;
+    hold_take(&r, &found, 1);
+    assert(found.frames[0] == 30L * HOLD_BLOCK);
+    assert(hold_run_is(found.samples[0], 0, 10L * HOLD_BLOCK, 1000));
+    assert(hold_run_is(found.samples[0], 10L * HOLD_BLOCK, 5L * HOLD_BLOCK, 0));
+    assert(hold_run_is(found.samples[0], 15L * HOLD_BLOCK, 15L * HOLD_BLOCK, 2000));
+    hold_release(&found);
+
+    const uint64_t rejected_commits = r.history[0].push_seq;
+    const int lines = hold_journal_count(&j, NULL);
+    hold_receive(&r, 10, 1000);
+    hold_pending(&r, 5);
+    hold_feed(&r, DSD_ANALOG_CALL_BREAK, 0);
+    assert(hold_journal_count(&j, NULL) == lines);
+    hold_expect_nothing(&r, NULL, rejected_commits);
+    hold_journal_close(&j);
+    hold_close(&r);
+}
+
+/* A reception starts at its first block's first sample, the lead-in's: a call whose tone check began at x.51 s starts
+   in that second although its first RECEPTION block ends in the next. Each recording segment is stamped from its first
+   block's first sample, read before the open: one opened on a block from x.99 s to the next second is filed under x,
+   and so is the segment a -P toggle opens later in the call. Main stamped both from the block's end. */
+static void
+test_candidate_start_crosses_a_second(void) {
+    hold_rig r;
+    hold_journal j;
+    hold_open(&r, "dsdneo_cand_second", 0);
+    hold_journal_open(&j);
+    const time_t t0 = (time_t)(k_hold_t0_ns / 1000000000ULL);
+    hold_advance_ms(&r, 510);
+    hold_pending(&r, hold_lead_in_blocks(&r)); /* to x.99 s */
+    hold_receive(&r, 1, 1000);                 /* x.99 s to x+1.01 s */
+    assert(dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 49, 1000); /* to x+1.99 s */
+    r.opts->dmr_stereo_wav = 0;
+    dsd_engine_analog_call_stop_recording(r.opts, r.state);
+    r.opts->dmr_stereo_wav = 1;
+    hold_receive(&r, 2, 2000); /* x+1.99 s to x+2.03 s */
+    dsd_engine_analog_call_end(r.opts, r.state);
+    const Event_History* row = &r.history[0].Event_History_Items[1];
+    assert(row->systype == DSD_SYNC_ANALOG && row->event_start_time == t0 && row->event_time == t0 + 2);
+    assert(hold_journal_count(&j, "publish") == 2);
+    assert(hold_journal_publish_field(&j, 0, "start") == (long long)t0);
+    assert(hold_journal_publish_field(&j, 1, "start") == (long long)t0 + 1);
+    hold_files found;
+    hold_take(&r, &found, 2);
+    assert(found.frames[hold_file_starting(&found, 1000)] == 50L * HOLD_BLOCK);
+    assert(found.frames[hold_file_starting(&found, 2000)] == 2L * HOLD_BLOCK);
+    hold_release(&found);
+    hold_journal_close(&j);
+    hold_close(&r);
+}
+
+/* The one recording in the rig's folder: its name, then removed. */
+typedef struct {
+    const char* dir;
+    int files;
+    char name[256];
+} hold_named;
+
+static int
+take_hold_named(const char* name, void* user) {
+    hold_named* found = user;
+    DSD_SNPRINTF(found->name, sizeof found->name, "%s", name);
+    found->files++;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
+    assert(remove(path) == 0);
+    return 0;
+}
+
+/* Identity before a reception is a call (D4 within D1): a tone confirmed and then lost still names it, at its BEGIN,
+   though the receiver no longer publishes it then; a tone confirmed only after it began does not start it over; a
+   confirmed change (to another code, or to no tone at all) ends it, leaving nothing, and begins the next reception
+   with its block. */
+static void
+test_candidate_identity(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_cand_identity", 0);
+    assert(dsd_receive_names_parse("--tone-name '141.3=Traveler' --tone-name 'D023I=Dispatch'", &r.opts->receive.names,
+                                   NULL, 0)
+           == 0);
+    for (int unknown_first = 0; unknown_first < 2; unknown_first++) {
+        if (unknown_first) {
+            r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+        } else {
+            hold_lock_tone(&r, 1413);
+        }
+        const double first_m = hold_now_m(&r);
+        hold_receive(&r, 10, 1000);
+        if (unknown_first) {
+            hold_lock_tone(&r, 1413);
+        } else {
+            r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+        }
+        hold_receive(&r, 14, 1000);
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_receive(&r, 1, 1000);
+        assert(dsd_engine_analog_call_active(r.state));
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(r.state, 0U, &call) > 0 && strcmp(call.service_label, "Traveler") == 0);
+        assert(same_identity(&call.receive_identity, DSD_RECEIVE_CTCSS, 1413));
+        const double last_m = hold_now_m(&r);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        hold_expect_span(&r, first_m, last_m);
+        const Event_History* row = &r.history[0].Event_History_Items[1];
+        assert(strcmp(row->service_label, "Traveler") == 0 && strstr(row->event_string, "CTCSS 141.3 Hz; ") != NULL);
+        hold_services one = {.dir = r.dir};
+        assert(dsd_dir_list(r.dir, take_hold_service, &one) == 0);
+        assert(one.traveler == 1 && one.dispatch == 0 && one.frames[0] == 25L * HOLD_BLOCK);
+    }
+    for (int untoned = 0; untoned < 2; untoned++) {
+        const uint64_t commits = r.history[0].push_seq;
+        hold_lock_tone(&r, 1413);
+        hold_receive(&r, 10, 1000);
+        if (untoned) {
+            r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+        } else {
+            hold_lock_tone(&r, 0);
+        }
+        const double first_m = hold_now_m(&r);
+        hold_receive(&r, 24, 2000);
+        assert(!dsd_engine_analog_call_active(r.state) && r.history[0].push_seq == commits);
+        hold_receive(&r, 1, 2000);
+        assert(dsd_engine_analog_call_active(r.state));
+        const double last_m = hold_now_m(&r);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        assert(r.history[0].push_seq == commits + 1U);
+        hold_expect_span(&r, first_m, last_m);
+        const Event_History* row = &r.history[0].Event_History_Items[1];
+        assert(strcmp(row->service_label, untoned ? "" : "Dispatch") == 0);
+        assert(untoned ? same_identity(&row->receive_identity, DSD_RECEIVE_NONE, 0)
+                       : row->receive_identity.kind == DSD_RECEIVE_DCS);
+        if (untoned) {
+            hold_expect_one_burst(&r, 25, 2000);
+        } else {
+            hold_services one = {.dir = r.dir};
+            assert(dsd_dir_list(r.dir, take_hold_service, &one) == 0);
+            assert(one.traveler == 0 && one.dispatch == 1 && one.frames[1] == 25L * HOLD_BLOCK);
+        }
+    }
+    hold_close(&r);
+}
+
+/* Every way a reception can end before it is a call (D1). */
+enum {
+    CAND_END_EXPLICIT,      /* dsd_engine_analog_call_end(): a retune, a scan leave, an input or mode change, Stop */
+    CAND_END_BREAK,         /* a BREAK block: a rejected tone, digital sync, a straddled boundary */
+    CAND_END_CLOSED,        /* the block after the hangover, the hold off */
+    CAND_END_EPOCH,         /* a block that carries a moved boundaries epoch */
+    CAND_END_TICK_EPOCH,    /* the tick: the epoch moved with no block after it */
+    CAND_END_TICK_DETECT,   /* the tick: tone detection off */
+    CAND_END_TICK_REJECTED, /* the tick: the tone rejected */
+    CAND_END_TICK_CLOSED,   /* the tick: the carrier closed, the hold off */
+    CAND_END_TICK_STALE,    /* the tick: the input stopped past its deadline */
+    CAND_END_HELD,          /* the hold on: a pause past the max gap */
+    CAND_END_LEAD_IN,       /* a lead-in that a closed carrier ends before any RECEPTION block */
+    CAND_END_TEARDOWN,      /* a teardown that skipped the engine's finalize */
+    CAND_END_CASES,
+};
+
+static void
+hold_end_candidate(hold_rig* r, int end) {
+    switch (end) {
+        case CAND_END_EXPLICIT: dsd_engine_analog_call_end(r->opts, r->state); break;
+        case CAND_END_BREAK: hold_feed(r, DSD_ANALOG_CALL_BREAK, 0); break;
+        case CAND_END_CLOSED:
+        case CAND_END_LEAD_IN: hold_closed(r, 1); break;
+        case CAND_END_EPOCH:
+            r->state->analog_rx.boundaries++;
+            hold_receive(r, 1, 2000);
+            break;
+        case CAND_END_TICK_EPOCH: hold_reset_receiver(r); break;
+        case CAND_END_TICK_DETECT: r->opts->analog_only = 0; break;
+        case CAND_END_TICK_REJECTED: r->state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED; break;
+        case CAND_END_TICK_CLOSED: r->state->analog_rx.carrier_open = 0; break;
+        case CAND_END_TICK_STALE:
+            r->state->analog_rx.stale_after_ms = 1U;
+            assert(dsd_engine_analog_call_due(r->state)); /* a reception that is no call yet is due too */
+            break;
+        case CAND_END_HELD: hold_closed(r, 41); break; /* 200 ms hangover + 820 ms > 1000 ms */
+        default: dsd_state_ext_free_all(r->state); break;
+    }
+    if (end >= CAND_END_TICK_EPOCH && end <= CAND_END_TICK_STALE) {
+        dsd_engine_analog_call_tick(r->opts, r->state);
+    }
+}
+
+/* D1: a reception that ends before it is a call, whatever ends it, leaves nothing: no row, live call or alert, and its
+   temporary recording is discarded unpublished, with no journal line. */
+static void
+test_candidate_ends_leave_nothing(void) {
+    for (int end = 0; end < CAND_END_CASES; end++) {
+        hold_rig r;
+        hold_journal j;
+        hold_open(&r, "dsdneo_cand_end", end == CAND_END_HELD ? 1000 : 0);
+        hold_journal_open(&j);
+        const uint64_t commits = r.history[0].push_seq;
+        if (end == CAND_END_LEAD_IN) {
+            hold_pending(&r, 10);
+        } else {
+            hold_receive(&r, 10, 1000);
+        }
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_end_candidate(&r, end);
+        hold_expect_nothing(&r, &j, commits);
+        r.opts->analog_only = 1;
+        r.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+        r.state->analog_rx.stale_after_ms = 0U;
+        hold_journal_close(&j);
+        hold_close(&r);
+    }
+}
+
+/* D1: per-call recording stopped (-P off) or moved to another folder before the reception is a call discards what it
+   recorded so far, unpublished; the reception goes on and, once it is a call, publishes what it records from then on
+   (nothing with recording off). */
+static void
+test_candidate_recording_stopped_or_moved(void) {
+    for (int moved = 0; moved < 2; moved++) {
+        hold_rig r;
+        hold_journal j;
+        char other[DSD_TEST_PATH_MAX];
+        assert(dsd_test_mkdtemp(other, sizeof other, "dsdneo_cand_moved"));
+        hold_open(&r, "dsdneo_cand_stop", 0);
+        hold_journal_open(&j);
+        hold_receive(&r, 10, 1000);
+        r.opts->dmr_stereo_wav = 0;
+        dsd_engine_analog_call_stop_recording(r.opts, r.state);
+        if (moved) {
+            r.opts->dmr_stereo_wav = 1;
+            DSD_SNPRINTF(r.opts->wav_out_dir, sizeof r.opts->wav_out_dir, "%s", other);
+        }
+        hold_files found;
+        hold_take(&r, &found, 0);
+        assert(hold_journal_count(&j, NULL) == 0);
+        hold_receive(&r, 15, 2000);
+        assert(dsd_engine_analog_call_active(r.state));
+        dsd_engine_analog_call_end(r.opts, r.state);
+        hold_take(&r, &found, 0);
+        assert(hold_journal_count(&j, "publish") == moved);
+        if (moved) {
+            hold_rig there = r;
+            DSD_SNPRINTF(there.dir, sizeof there.dir, "%s", other);
+            hold_expect_one_burst(&there, 15, 2000);
+        }
+        assert(dsd_test_rmdir(other) == 0);
+        hold_journal_close(&j);
+        hold_close(&r);
+    }
+}
+
+/* D1 with the hold on: a reception held before it is a call writes the pause into its recording on resuming, as a call
+   does (the frames in order: the first burst, the pause's silence at 48 kHz from the held blocks' spans at their rate,
+   the second burst), and once it is a call publishes it, its journal duration the whole file's. At 48 kHz and at
+   44100 Hz, whose spans carry a remainder. */
+static void
+hold_check_held_candidate(int rate, long owed) {
+    hold_rig r;
+    hold_journal j;
+    hold_open(&r, "dsdneo_cand_held", 1000);
+    r.rate = rate;
+    const long first = hold_burst_frames(&r, 5);
+    const long second = hold_burst_frames(&r, 20);
+    hold_journal_open(&j);
+    hold_receive(&r, 5, 1000);
+    hold_closed(&r, 10);
+    assert(!dsd_engine_analog_call_active(r.state));
+    const int lead = hold_lead_in_blocks(&r);
+    /* lead + 1 RECEPTION blocks reach the minimum: 5, then lead - 5 more are one short, and the next makes the call. */
+    hold_receive(&r, lead - 5, 2000);
+    assert(!dsd_engine_analog_call_active(r.state) && hold_journal_count(&j, NULL) == 0);
+    hold_receive(&r, 1, 2000);
+    assert(dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 20 - (lead - 4), 2000);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_files found;
+    hold_take(&r, &found, 1);
+    assert(found.frames[0] == first + owed + second);
+    assert(found.samples[0][first - 1] != 0 && found.samples[0][found.frames[0] - 1] != 0);
+    assert(hold_run_is(found.samples[0], first, owed, 0));
+    assert(rate != 48000
+           || (hold_run_is(found.samples[0], 0, first, 1000)
+               && hold_run_is(found.samples[0], first + owed, second, 2000)));
+    assert(hold_journal_count(&j, "publish") == 1);
+    assert(hold_journal_publish_field(&j, 0, "duration_ms") == (long long)found.frames[0] * 1000LL / 48000LL);
+    hold_release(&found);
+    hold_journal_close(&j);
+    hold_close(&r);
+}
+
+static void
+test_held_candidate_owes_silence(void) {
+    hold_check_held_candidate(48000, 10L * HOLD_BLOCK);
+    /* Ten 960-sample blocks at 44100 Hz are 10448.98 samples at 48 kHz. */
+    hold_check_held_candidate(44100, 10448L);
+}
+
+/* D1: a BEGIN that fails (the call state could not be allocated) leaves the reception a candidate, unpublished, and the
+   next RECEPTION block tries again: the call then starts at the reception's first sample, its recording whole. One
+   that ends before a BEGIN succeeds leaves nothing. Main ignored the failed BEGIN and went on as a call. */
+static void
+test_candidate_begin_failure(void) {
+    for (int ends = 0; ends < 2; ends++) {
+        hold_rig r;
+        hold_open(&r, "dsdneo_cand_begin", 0);
+        const uint64_t commits = r.history[0].push_seq;
+        const double first_m = hold_now_m(&r);
+        dsd_call_state_test_alloc_fail_after(0);
+        hold_receive(&r, 25, 1000);
+        assert(!dsd_engine_analog_call_active(r.state));
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(r.state, 0U, &call) <= 0);
+        dsd_call_state_test_alloc_reset();
+        if (ends) {
+            hold_closed(&r, 1);
+            hold_expect_nothing(&r, NULL, commits);
+        } else {
+            hold_receive(&r, 1, 1000);
+            assert(dsd_engine_analog_call_active(r.state));
+            const double last_m = hold_now_m(&r);
+            dsd_engine_analog_call_end(r.opts, r.state);
+            hold_expect_span(&r, first_m, last_m);
+            assert(r.history[0].push_seq == commits + 1U);
+            hold_expect_one_burst(&r, 26, 1000);
+        }
+        hold_close(&r);
+    }
+}
+
+/* A teardown that skipped the engine's finalize: a reception that is no call yet leaves nothing, and a call's recording
+   is published under the mode it began in, NFM on a radio input. */
+static void
+test_teardown_in_both_states(void) {
+    for (int radio = 0; radio < 2; radio++) {
+        hold_rig r;
+        hold_open(&r, "dsdneo_cand_teardown", 0);
+        if (radio) {
+            r.opts->audio_in_type = AUDIO_IN_RTL;
+        }
+        hold_receive(&r, 24, 1000);
+        dsd_state_ext_free_all(r.state);
+        hold_files found;
+        hold_take(&r, &found, 0);
+        (void)hold_begin(&r, 2, 1000);
+        dsd_state_ext_free_all(r.state);
+        hold_named named = {.dir = r.dir};
+        assert(dsd_dir_list(r.dir, take_hold_named, &named) == 0);
+        assert(named.files == 1 && dsd_test_analog_recording_name_is(named.name, radio ? "NFM" : "ANALOG", NULL));
+        hold_close(&r);
+    }
+}
+
+/* D1: a lead-in is a tone check under an open carrier, so the tick leaves it, and its span counts: ten checked blocks
+   and fifteen received make a call. A closed carrier ends it (it has no hold), and the count starts over. */
+static void
+test_lead_in_through_the_tick(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_cand_lead_tick", 0);
+    const double first_m = hold_now_m(&r);
+    hold_pending(&r, 10);
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    hold_receive(&r, 14, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_span(&r, first_m, last_m);
+    hold_expect_one_burst(&r, 15, 1000);
+
+    hold_pending(&r, 10);
+    hold_closed(&r, 1);
+    hold_receive(&r, 24, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_one_burst(&r, 25, 1000);
     hold_close(&r);
 }
 
@@ -2054,6 +2696,16 @@ test_analog_hold(void) {
     test_hold_silence_write_failure_latches();
     test_hold_teardown_while_held();
     test_hold_largest_silence_write();
+    test_candidate_qualifies_at_the_minimum();
+    test_candidate_through_a_tone_check();
+    test_candidate_start_crosses_a_second();
+    test_candidate_identity();
+    test_candidate_ends_leave_nothing();
+    test_candidate_recording_stopped_or_moved();
+    test_held_candidate_owes_silence();
+    test_candidate_begin_failure();
+    test_teardown_in_both_states();
+    test_lead_in_through_the_tick();
 }
 
 static int
@@ -2083,7 +2735,9 @@ test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
     g_rdio_warnings = 0;
     dsd_wav_recording_session_reset();
     dsd_analog_sink_block_begin(state);
+    analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
     assert(!dsd_engine_analog_call_active(state));
     assert(g_rdio_warnings == 0 && g_rdio_failed == 0);

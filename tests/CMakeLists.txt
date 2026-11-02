@@ -5973,11 +5973,14 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# call_state.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_core's copy, so a test can fail the call state's
+# allocation under the analog tracker's BEGIN (issue #667).
 add_executable(
     dsd-neo_test_core_receive
     core/test_core_receive.c
     ../src/engine/analog_call.c
     ../src/app_control/receive_view.c
+    ../src/core/util/call_state.c
 )
 target_link_libraries(
     dsd-neo_test_core_receive
@@ -5985,8 +5988,11 @@ target_link_libraries(
 )
 target_include_directories(
     dsd-neo_test_core_receive
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core/file
+        ${PROJECT_SOURCE_DIR}/src/core/util
 )
+target_compile_definitions(dsd-neo_test_core_receive PRIVATE DSD_NEO_TEST_HOOKS)
 add_test(NAME CORE_RECEIVE COMMAND dsd-neo_test_core_receive)
 
 add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)

@@ -479,13 +479,22 @@ setup_nfm(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1413;
 }
 
+/* One NFM block. A reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS (issue #667), so a block that
+   would begin one comes after its tone check, as the symbol path hands it over under a tone filter: enough PENDING
+   blocks (recorded nowhere) that this block brings the reception to the minimum. */
 static void
 nfm_block(dsd_opts* opts, dsd_state* state) {
     static float block[960];
+    static const float checked[960] = {0};
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    if (!dsd_engine_analog_call_active(state)) {
+        for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
+            dsd_engine_analog_call_block(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+        }
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
 }
 
 /* B4: a stop closes and publishes a conventional NFM call's recording at once, under the call's row, and the call goes

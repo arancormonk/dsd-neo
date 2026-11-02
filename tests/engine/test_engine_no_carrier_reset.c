@@ -5577,7 +5577,12 @@ test_replay_leave_closes_the_nfm_recording(void) {
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    /* A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS (issue #667): 20 ms blocks on the capture's clock, from
+       0.1 s in, so the call starts in the capture's first second. */
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_decode_clock_set_media_ns(100000000ULL + (uint64_t)(i + 1) * 20000000ULL);
+        dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    }
     rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
 
     /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */

@@ -350,7 +350,8 @@ Windows console runs:
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
   before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
-  and no tone. An analog line is stamped with the time its call ended, even when it is written later (an input that
+  and no tone. A reception shorter than 500 ms makes no analog line (see `-P` below for how it is counted). An analog
+  line is stamped with the time its call ended, even when it is written later (an input that
   stopped sending held the end back); earlier versions stamped it when it was written. The control API's `event` text
   is the same row.
   A call line names the system and site the call was heard on, and a DMR trunked call's own channel by its numbering
@@ -1642,6 +1643,15 @@ identity and label, and different confirmed identifiers do not merge into one ca
 
 `-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
 History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
+
+A reception becomes a call only once it has lasted 500 ms. The time counts the 200 ms hangover after the carrier
+drops, and, under a tone filter, the time the tone is checked before it is allowed. A shorter reception (a kerchunk,
+a radio keyed by mistake) leaves no history row, no `-J` line, no live call and no recording: what was recorded of it
+is deleted, never published. So a burst with less than about 300 ms of signal leaves nothing. The time is counted on
+whole blocks of audio: 20 ms on a radio input, 960 samples on audio input (384 ms at 2500 Hz). A call that counts
+starts when its carrier opened, the tone check included, and its recording starts with its first allowed audio.
+Earlier versions made a row and a recording of every reception, however short, and under a tone filter started the
+row when the tone was allowed.
 Carrier end (200 ms after the carrier drops, or after a longer pause with `--analog-record-max-gap-ms`, below),
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
 include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named

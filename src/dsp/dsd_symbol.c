@@ -1821,16 +1821,23 @@ symbol_analog_block_collect(const dsd_opts* opts, dsd_state* state, uint32_t rtl
 /* What the block is to the engine's NFM call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
    rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no detection, a channel the
    tap has not read yet, a rejected tone) from one it may hold through (the carrier closed, or its tone still checked).
-   Only a block that is no reception pays for the checks, the boundaries' read last. */
+   A tone still checked under an open carrier is PENDING, which a reception not yet a call counts as its lead-in (issue
+   #667). Only a block that is no reception pays for the checks, the boundaries' read last. */
 static int
 symbol_analog_call_input(const dsd_opts* opts, const dsd_state* state, int discard, int reception) {
     if (reception) {
         return DSD_ANALOG_CALL_RECEPTION;
     }
-    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)
-        || dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED
-        || !dsd_analog_rx_boundaries_current(opts, state)) {
+    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)) {
         return DSD_ANALOG_CALL_BREAK;
+    }
+    const int gate = dsd_analog_tone_gate_in_force(opts, state);
+    if (gate == DSD_ANALOG_TONE_GATE_REJECTED || !dsd_analog_rx_boundaries_current(opts, state)) {
+        return DSD_ANALOG_CALL_BREAK;
+    }
+    if (gate == DSD_ANALOG_TONE_GATE_PENDING && dsd_trunk_tuning_pending_request() == 0U
+        && dsd_analog_rx_carrier_open_now(opts, state)) {
+        return DSD_ANALOG_CALL_PENDING;
     }
     return DSD_ANALOG_CALL_HOLDABLE;
 }

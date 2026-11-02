@@ -136,6 +136,22 @@ def main():
         replay("tone-allow-blocked", "nfm_ctcss_synth_1000", "-fA", ["--tone-allow", "97.4/141.3", *tone_name],
                denied=True, per_call=True)
 
+        # Issue #667: a reception is a call only once it ran 500 ms. The real capture's reverse burst and tone gap
+        # (3.7-4.0 s) leave an untoned stretch of about 400 ms between its two CTCSS 151.4 Hz receptions, too short to
+        # be a call: two rows, both toned, where there were three.
+        real = root / "real-ctcss-rows"
+        real.mkdir()
+        result = subprocess.run(
+            [args.binary, "--frontend", "none", "-fA", "--iq-replay", str(fixtures / "nfm_ctcss_real.iq.json"),
+             "-o", "null", "-P", "-J", str(real / "events.log")],
+            cwd=real, capture_output=True, text=True, timeout=60, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        real_rows = [line for line in (real / "events.log").read_text().splitlines() if ANALOG_ROW.search(line)]
+        assert len(real_rows) == 2, real_rows
+        assert all("CTCSS 151.4 Hz;" in line for line in real_rows), real_rows
+        assert len(list((real / "WAV").glob("*.wav"))) == 2
+        print("real-ctcss-rows OK")
+
         # The same, from a channel-map row's options cell rather than the command line: the rows the issue asks for.
         # Each baseline is the host's own unnamed row, since a dmr row runs the dual-slot decoder and the NFM row's
         # tone filter withholds the audio heard while its tone is acquired.
