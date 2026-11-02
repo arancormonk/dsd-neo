@@ -1012,8 +1012,8 @@ test_dmr_t3_capmax_marker_pair(void) {
     free(state);
 }
 
-/* What drops a system drops the marker; what keeps it (a trunk follow, the no-carrier pass, another site of the same
-   network) keeps the marker. */
+/* What drops a system drops the marker; what keeps it (a trunk follow, the no-carrier pass, the RAS reset, another
+   site of the same network) keeps the marker. */
 static void
 test_dmr_t3_capmax_marker_lifecycle(void) {
     dsd_state* state = new_state();
@@ -1042,6 +1042,11 @@ test_dmr_t3_capmax_marker_lifecycle(void) {
     expect_capmax("trunk tune keeps", state, 2U, 1U, 1U);
     dsd_rxid_mark_stale(state);
     expect_capmax("stale keeps", state, 2U, 1U, 1U);
+    /* The RAS reset (a new carrier, a colour code change) drops the RAS part alone; the network stays recognised. */
+    dsd_rxid_note_dmr_ras(state);
+    dsd_rxid_forget_dmr_ras(state);
+    expect_u("ras reset drops ras", id->valid & DSD_RXID_DMR_RAS, 0U);
+    expect_capmax("ras reset keeps", state, 2U, 1U, 1U);
     note_t3_site(state, 0x2102U, 1U, 2U, 2U);
     expect_capmax("same network's other site keeps", state, 2U, 1U, 1U);
     dsd_rxid_note_dmr_t3_syscode(state, 0x2201U);

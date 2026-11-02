@@ -1076,7 +1076,7 @@ test_reacquire_refused_after_cross_family_wipe_and_dmr_site(void) {
     const uint64_t first = open_crypto_call(state, &call);
     dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_VOICE_POS);
     assert(state->rx_id.family == DSD_RXID_FAMILY_NONE);
-    dsd_rxid_note_dmr_site(state, DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small · Net 12 · Site 301");
+    dsd_rxid_note_dmr_site(state, DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small · Net 12 · Site 31");
     assert(state->rx_id.family == DSD_RXID_FAMILY_DMR);
     assert(dsd_call_state_end_ex(state, 0U, 10.2, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_call_snapshot s;
@@ -1129,7 +1129,7 @@ test_reacquire_identity_less_kept(void) {
     assert(reentry_reacquires(state, &reentry, first, 12U, DSD_CALL_CHANNEL_LPCN, call.frequency_hz) == 1);
 
     assert(dsd_call_state_end_ex(state, 0U, 10.4, DSD_CALL_END_SYNC_LOSS) == 1);
-    dsd_rxid_note_dmr_site(state, DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small · Net 12 · Site 301");
+    dsd_rxid_note_dmr_site(state, DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small · Net 12 · Site 31");
     reentry.observed_m = 10.5;
     assert(reentry_reacquires(state, &reentry, first, 12U, DSD_CALL_CHANNEL_LPCN, call.frequency_hz) == 1);
     dsd_state_ext_free_all(state);
