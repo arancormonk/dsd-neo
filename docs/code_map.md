@@ -9809,7 +9809,9 @@ Qt Quick frontend (`src/ui/qt`):
     (`Row::analogMode`, a `dsd_analog_mode` from `Event_History::analog_mode`; stored as `analogMode` only when NFM or
     AM). A row an older build stored has none and reads unknown, never a mode guessed from its saved name, and keeps
     that name; a stored analog row with no name, and a live one nothing else names, is named by its mode (`NFM`, `AM`,
-    `Analog` when unknown). An update of an old row's reception fills its unknown mode. Roles: `analog` (bool) and
+    `Analog` when unknown). An update of an old row's reception fills its unknown mode. Decided limit: a row an older
+    build stored (no fragments) no longer matches an update whose tone or frequency became known after the row was
+    saved; that update logs a new row or is dropped. Roles: `analog` (bool) and
     `analogMode` (`"NFM"`, `"AM"`, `""`), also in `recordFor()`. `receivedTone` is the confirmed CTCSS/DCS tone spelled
     by `dsd_ctcss_format_label()` / `dsd_dcs_format_label()` (`CTCSS 100.0 Hz`, `DCS D023N / D047I`), as the event row,
     the terminal and the API spell it. On screen an analog row's tone takes the access code's place on the History and
@@ -11821,7 +11823,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (`dmr_data_sync()` sets the mono proof aside for it), an MS-mode data burst takes its lane's slot as its voice does,
   the LC path holds the voice channel only for admitted slots, and enrichment (`dsd_event_enrich_epoch()`) skips a
   Checking/rejected call. Anonymous history rows (no target or source) heard on different frequencies never merge;
-  analog rows (`Row::analog`) are not told apart by their label, so a confirmed tone folds into its fragment. Code
+  analog rows (`Row::analog`) never merge at all (issue #667): each is one reception, matched only by the same
+  reception read again (same start, tone and frequency). Code
   freshness is decided at the tune (`dsd_state::receive_codes_fresh_freq`), a mono-slot proof survives a standalone data
   burst only on the same carrier, an interrupted CACH proves no slot, and a trunk-scan conventional target whose
   admitted activity hold (data included) still runs is never released by the receive check. The receive policy boundary

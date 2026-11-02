@@ -929,7 +929,7 @@ test_recording_labels(void) {
     rc |= expect_str("per call wav off with a handle", lbl_per_call_wav(&ctx, b, sizeof(b)), "Per-call WAV [Off]");
     opts.dmr_stereo_wav = 1;
 
-    /* The NFM max gap (issue #756): 200 ms or less is off, whatever value is stored. */
+    /* The analog pause hold (issue #756; NFM and AM, #667): 200 ms or less is off, whatever value is stored. */
     rc |= expect_str("analog pause hold null ctx", lbl_analog_record_max_gap(NULL, b, sizeof(b)),
                      "Analog pause hold... [Off]");
     const int k_gap_off[] = {0, 150, 200};

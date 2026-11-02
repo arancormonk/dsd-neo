@@ -260,20 +260,20 @@ its own (radio names learned over the air, radio ID list rows and talkgroup rows
 you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
-Both switches, and **NFM pause hold** below, also change a running session: Settings reads **Applying…** until the
+Both switches, and **Analog pause hold** below, also change a running session: Settings reads **Applying…** until the
 decoder confirms. A change the session cannot take (while Signal search runs, while the session is still starting, with
 no storage for recordings, or when the session's Extra decoder arguments record to one file with `-w`) is saved and
 applies at the next start, and Settings says so. A call that could not be recorded (the phone's storage is full, or the
 file could not be written) is reported under the switches.
 
-### Pauses in NFM calls
+### Pauses in analog calls
 
-An analog FM (NFM) call ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
-and a new History row. **NFM pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10 seconds:
-one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved as
-silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose a
-time. It works only while Record calls is on, so it is disabled while Record calls is off, and turning Record calls off
-ends a paused call at its last audio. Digital calls are not affected.
+An analog call (NFM or AM) ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
+and a new History row. **Analog pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10
+seconds: one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved
+as silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose
+a time. It works only while Record calls is on, so it is disabled while Record calls is off, and turning Record calls
+off ends a paused call at its last audio. Digital calls are not affected.
 
 - While a call is paused it still shows as active, and its timer keeps running, until the pause is decided.
 - Under a tone filter, the tone is checked again each time the signal comes back. That takes about 0.4 to 0.8 seconds
@@ -379,7 +379,7 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- A backup carries the Record calls, Only unknown talkgroups, NFM pause hold and Storage limit settings, never the
+- A backup carries the Record calls, Only unknown talkgroups, Analog pause hold and Storage limit settings, never the
   recordings. A restored Storage limit lower than what the recordings on the phone take removes the oldest of them when
   DSD-neo next opens.
 
@@ -2058,7 +2058,10 @@ it was decoded on right after its talkgroup and source: a DMR or dPMR color code
 number (**RAN 5**) or an M17 channel access number (**CAN 0**). The frequency the
 call was heard on closes the line, so a narrow phone cuts it off first. The details
 sheet spells both out (**Color code 1**, **Frequency 851.0125 MHz**). A call whose
-code or frequency is not known leaves it out.
+code or frequency is not known leaves it out. An analog call shows its tone where a
+digital call shows its access code (**CTCSS 100.0 Hz**, **DCS D023N / D047I**), and its
+details say what it was heard in (**Analog NFM**, **Analog AM**, or **Analog** when
+that is not known) where a digital call says Encrypted or Unencrypted.
 
 History's search finds a call by its talkgroup, unit, name, message text, channel or
 the frequency it was heard on. A frequency needs its decimal point (**851.0125**,
