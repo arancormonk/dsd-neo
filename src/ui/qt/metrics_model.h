@@ -30,12 +30,14 @@
 #include <cmath>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/p25_metrics.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
+#include "scan_avoid_list_model.h"
 
 namespace dsd_qt {
 
@@ -223,8 +225,15 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
-    Q_PROPERTY(int scanAvoidCount READ scanAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
+    /* Issue #672: the avoided -Y rows or trunk-scan targets, from the app-control scan avoid view over the held
+       snapshot, on their own signal so a call or a hop re-reads none of them. The list is a model of its own, rebuilt
+       by key only when the view's key moves (ScanAvoidListModel); the count is its rows. */
+    Q_PROPERTY(dsd_qt::ScanAvoidListModel* scanAvoidModel READ scanAvoidModel CONSTANT)
+    Q_PROPERTY(int scanAvoidCount READ scanAvoidCount NOTIFY scanAvoidsChanged)
+    Q_PROPERTY(bool scanAvoidsAvailable READ scanAvoidsAvailable NOTIFY scanAvoidsChanged)
+    Q_PROPERTY(bool scanAvoidsTotalKnown READ scanAvoidsTotalKnown NOTIFY scanAvoidsChanged)
+    Q_PROPERTY(bool scanAvoidsManageable READ scanAvoidsManageable NOTIFY scanAvoidsChanged)
     /* #508: why the rotation is staying on the row on air, and how long is left.
        One group, one signal: they are read together by one row. */
     Q_PROPERTY(bool scanTimingVisible READ scanTimingVisible NOTIFY scanTimingChanged)
@@ -1551,10 +1560,37 @@ class MetricsModel : public QObject {
         return m_view.scan_target_count;
     }
 
-    /** @brief Channels or targets avoided for the session, whichever rotation is running. */
+    /** @brief The avoided -Y rows or trunk-scan targets of the session (issue #672), in list order. */
+    ScanAvoidListModel*
+    scanAvoidModel() {
+        return &m_scanAvoidModel;
+    }
+
+    /** @brief How many entries the list holds: 0 while it is not available. */
     int
     scanAvoidCount() const {
         return m_view.scan_avoid_count;
+    }
+
+    /** @brief The list is whole and built: its entries can be shown and put back. */
+    bool
+    scanAvoidsAvailable() const {
+        return m_view.scan_avoids_available;
+    }
+
+    /** @brief scanAvoidCount is the exact number of avoided entries; false while the list is not available. */
+    bool
+    scanAvoidsTotalKnown() const {
+        return m_view.scan_avoids_total_known;
+    }
+
+    /**
+     * @brief The list and Clear are offered (the view's can_manage): a scan runs, entries exist, or the copy is
+     * incomplete. Avoids a stopped -Y left behind, which the -T control-channel hunts still skip, count (issue #672 B1).
+     */
+    bool
+    scanAvoidsManageable() const {
+        return m_view.scan_avoids_manageable;
     }
 
     /**
@@ -2102,6 +2138,7 @@ class MetricsModel : public QObject {
     void twoSlotCarrierChanged();
     void controlChanged();
     void scanTimingChanged();
+    void scanAvoidsChanged();
     void rxToneChanged();
     void rxToneConfiguredTextChanged();
     void toneFilterChanged();
@@ -2345,6 +2382,10 @@ class MetricsModel : public QObject {
         bool operator_tuned = false;
         bool scan_hold = false;
         bool scan_target_avoided = false;
+        /* Issue #672: a cleared model has no store, which the view reads as whole and empty. */
+        bool scan_avoids_available = true;
+        bool scan_avoids_total_known = true;
+        bool scan_avoids_manageable = false;
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
         bool scan_visit_live = false;
@@ -2419,10 +2460,24 @@ class MetricsModel : public QObject {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
                    && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
                    && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
-                   && scan_hold == other.scan_hold && scan_avoid_count == other.scan_avoid_count
-                   && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
-                   && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
-                   && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
+                   && scan_hold == other.scan_hold && scan_target_avoided == other.scan_target_avoided
+                   && scan_kind == other.scan_kind && scan_paused == other.scan_paused
+                   && scan_resumable == other.scan_resumable && scan_entry_count == other.scan_entry_count
+                   && operator_tuned == other.operator_tuned;
+        }
+
+        /* Issue #672: the avoid list's reading, on its own signal. The rows themselves are the list model's. */
+        bool
+        scanAvoidsEquals(const View& other) const {
+            return scan_avoid_count == other.scan_avoid_count && scan_avoids_available == other.scan_avoids_available
+                   && scan_avoids_total_known == other.scan_avoids_total_known
+                   && scan_avoids_manageable == other.scan_avoids_manageable;
+        }
+
+        /* The scan timing row and the avoid list, each on its own signal (publish()). */
+        bool
+        scanReadingsEqual(const View& other) const {
+            return scanTimingEquals(other) && scanAvoidsEquals(other);
         }
 
         /* Countdown updates notify only the scan timing row. */
@@ -2584,8 +2639,20 @@ class MetricsModel : public QObject {
                                   const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
     static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
+    /** @brief Scan hold (#380), read from whichever rotation is running; the avoids are refreshScanAvoids()'s. */
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /**
+     * @brief The avoid list (issue #672): rebuilt into m_scanAvoidModel only when the view's key moved since the last
+     * build that succeeded, or after a build that failed (retried each refresh at the same key, reading unavailable
+     * meanwhile), then the readings from it.
+     */
+    void refreshScanAvoids(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief Build the list into m_scanAvoidModel; false, with the rows dropped, when it cannot be built. */
+    bool buildScanAvoids(const dsd_opts* opts_snapshot, const dsd_state* snapshot, dsd_app_scan_avoid_summary* built);
+    /** @brief The label an avoid list entry is shown with; see the definition for how a trunk-scan target is named. */
+    QString scanAvoidLabel(const dsd_app_scan_avoid_raw_entry& entry) const;
+    /** @brief Signal the scan timing row and the avoid list, each only when it moved. */
+    void emitScanSignals(bool timing, bool avoids);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */
@@ -2623,6 +2690,12 @@ class MetricsModel : public QObject {
     expireSyncForTest() {
         m_sync_seen_m = 0.0;
     }
+
+    /** @brief Fail the next @p builds avoid-list builds, as an allocation failure would (issue #672). */
+    void
+    failScanAvoidBuildsForTest(int builds) {
+        m_failScanAvoidBuilds = builds;
+    }
 #endif
 
   private:
@@ -2637,6 +2710,14 @@ class MetricsModel : public QObject {
      * one-shot reset was a race. See syncedHere(). */
     int m_sync_type_here = DSD_SYNC_NONE;
     double m_sync_seen_m = 0.0;
+    /* Issue #672: the avoid list, and the view's key of the last build that succeeded. A failed build leaves
+       m_scanAvoidsBuilt false, so the next refresh tries again even at the same key. */
+    ScanAvoidListModel m_scanAvoidModel;
+    dsd_app_scan_avoid_summary m_scanAvoidsBuiltKey{};
+    bool m_scanAvoidsBuilt = false;
+#ifdef DSD_NEO_TEST_HOOKS
+    int m_failScanAvoidBuilds = 0;
+#endif
     /* The decode second decodeNowMsChanged last announced. */
     qlonglong m_decode_now_notified_s = 0;
     /* Armed for a live ui_message's expiry stamp, so the message leaves the screen

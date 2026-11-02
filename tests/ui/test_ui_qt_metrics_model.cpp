@@ -11,7 +11,9 @@
  * the poll happened to read on the same frame — which is what these cases pin.
  */
 
+#include <QAbstractItemModel>
 #include <QCoreApplication>
+#include <QLatin1Char>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -23,11 +25,11 @@
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/receive_types.h>
-#include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -41,7 +43,10 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+/* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
+extern "C" {
 #include <dsd-neo/core/state.h>
+}
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -56,11 +61,13 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <memory>
+#include <vector>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include "../test_support/radio_policy_test.h"
 #include "metrics_model.h"
+#include "scan_avoid_list_model.h"
 
 namespace {
 
@@ -150,6 +157,326 @@ dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
     out.valid = 0;
     out.snr_db = 0.0;
     return out;
+}
+
+/* Issue #672: a -Y list of @p rows rows, 851.0125 MHz up in 12.5 kHz steps, as a channel map leaves it. */
+static void
+seed_lcn_rows(dsd_state* state, int rows) {
+    expect("the LCN rows fit", dsd_state_trunk_lcn_reserve(state, static_cast<size_t>(rows)) == 0);
+    for (int i = 0; i < rows; ++i) {
+        *dsd_state_trunk_lcn_slot(state, i) = 851012500L + (12500L * i);
+    }
+    state->lcn_freq_count = rows;
+}
+
+/* The coordinator's published avoid list: @p count targets "t1".. of session @p session, with a new revision, as
+   trunk_scan_publish_avoids() leaves it. */
+static void
+publish_trunk_avoids(dsd_state* state, uint32_t session, size_t count) {
+    std::vector<dsd_trunk_scan_avoid_entry> entries(count);
+    for (size_t i = 0; i < count; ++i) {
+        entries[i] = dsd_trunk_scan_avoid_entry{};
+        entries[i].ordinal = static_cast<uint32_t>(i + 1U);
+        entries[i].frequency_hz = 851012500ULL + (12500ULL * i);
+        DSD_SNPRINTF(entries[i].id, sizeof entries[i].id, "t%zu", i + 1U);
+    }
+    expect("the trunk-scan avoid list is published",
+           dsd_state_trunk_scan_avoids_set(state, entries.empty() ? nullptr : entries.data(), count) == 0);
+    state->trunk_scan_session = session;
+    state->trunk_scan_avoid_rev = dsd_state_rev_next();
+}
+
+namespace {
+
+/* What a list model told its views since the last take(): each structural change as "-first:last", "+first:last",
+   "~first:last>dest", "=row" for a label, "reset". */
+class ModelLog {
+  public:
+    explicit ModelLog(QAbstractItemModel* model) {
+        QObject::connect(model, &QAbstractItemModel::rowsRemoved, [this](const QModelIndex&, int first, int last) {
+            m_events.append(QStringLiteral("-%1:%2").arg(first).arg(last));
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsInserted, [this](const QModelIndex&, int first, int last) {
+            m_events.append(QStringLiteral("+%1:%2").arg(first).arg(last));
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsMoved,
+                         [this](const QModelIndex&, int first, int last, const QModelIndex&, int dest) {
+                             m_events.append(QStringLiteral("~%1:%2>%3").arg(first).arg(last).arg(dest));
+                         });
+        QObject::connect(model, &QAbstractItemModel::dataChanged, [this](const QModelIndex& from, const QModelIndex&) {
+            m_events.append(QStringLiteral("=%1").arg(from.row()));
+        });
+        QObject::connect(model, &QAbstractItemModel::modelReset, [this] { m_events.append(QStringLiteral("reset")); });
+    }
+
+    QString
+    take() {
+        const QString joined = m_events.join(QLatin1Char(' '));
+        m_events.clear();
+        return joined;
+    }
+
+  private:
+    QStringList m_events;
+};
+
+} // namespace
+
+static QStringList
+model_keys(const QAbstractItemModel& model) {
+    QStringList keys;
+    for (int i = 0; i < model.rowCount(); ++i) {
+        keys.append(model.data(model.index(i, 0), dsd_qt::ScanAvoidListModel::KeyRole).toString());
+    }
+    return keys;
+}
+
+static dsd_qt::ScanAvoidListModel::Entry
+avoid_entry(const char* key, const char* label) {
+    dsd_qt::ScanAvoidListModel::Entry entry{QString::fromUtf8(key), QString::fromUtf8(label), {}};
+    entry.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    return entry;
+}
+
+/* Issue #672 (S8): the list model turns one list into the next by key, in runs, so a delegate keeps its item while its
+   entry stays, and only the rows that changed are announced. */
+static void
+test_scan_avoid_list_model_diff() {
+    dsd_qt::ScanAvoidListModel model;
+    ModelLog log(&model);
+    model.apply({avoid_entry("a", "A"), avoid_entry("b", "B"), avoid_entry("c", "C"), avoid_entry("d", "D")});
+    expect("a first list is one insert", log.take() == QStringLiteral("+0:3"));
+    model.apply({avoid_entry("a", "A"), avoid_entry("b", "B"), avoid_entry("c", "C"), avoid_entry("d", "D")});
+    expect("the same list announces nothing", log.take().isEmpty());
+    /* One out, one in, the same count: a remove and an insert, never a rebuild of the rows that stay. */
+    model.apply({avoid_entry("a", "A"), avoid_entry("c", "C"), avoid_entry("d", "D"), avoid_entry("e", "E")});
+    expect("an equal-count membership change removes and inserts", log.take() == QStringLiteral("-1:1 +3:3"));
+    expect("the rows follow the new list", model_keys(model) == QStringList({"a", "c", "d", "e"}));
+    /* Runs: two left at the front, two new in the middle. */
+    model.apply({avoid_entry("d", "D"), avoid_entry("x", "X"), avoid_entry("y", "Y"), avoid_entry("e", "E")});
+    expect("a run is one remove or one insert", log.take() == QStringLiteral("-0:1 +1:2"));
+    /* A reordered target list moves the rows, by runs. */
+    model.apply({avoid_entry("y", "Y"), avoid_entry("e", "E"), avoid_entry("d", "D"), avoid_entry("x", "X")});
+    expect("a reorder moves the rows", log.take() == QStringLiteral("~2:3>0"));
+    expect("the moved rows read in the new order", model_keys(model) == QStringList({"y", "e", "d", "x"}));
+    /* A new label for a kept key is a data change of that row alone. */
+    model.apply({avoid_entry("y", "Y"), avoid_entry("e", "E2"), avoid_entry("d", "D"), avoid_entry("x", "X")});
+    expect("a relabel is a data change", log.take() == QStringLiteral("=1"));
+    expect("the row reads its new label",
+           model.data(model.index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString() == QStringLiteral("E2"));
+    /* Two entries with one key break the contract; the model starts over rather than guess. */
+    model.apply({avoid_entry("q", "Q"), avoid_entry("q", "Q")});
+    expect("duplicate keys reset", log.take() == QStringLiteral("reset") && model.rowCount() == 2);
+    model.clear();
+    expect("clear removes every row", log.take() == QStringLiteral("-0:1") && model.rowCount() == 0);
+    expect("no row, no entry", model.entry(QStringLiteral("q")).isEmpty());
+
+    /* Keys: an LCN identity by every part, a trunk-scan one by session and id, an id that looks like an arg() marker
+       kept as it is. The entry carries 64-bit values as decimal strings. */
+    dsd_app_scan_avoid_remove_payload lcn{};
+    lcn.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+    lcn.instance = 18446744073709551615ULL;
+    lcn.list_rev = 9007199254740993ULL;
+    lcn.row = 3;
+    lcn.frequency_hz = 851012500ULL;
+    expect("an LCN key", dsd_qt::ScanAvoidListModel::keyOf(lcn)
+                             == QStringLiteral("lcn:18446744073709551615:9007199254740993:3:851012500"));
+    dsd_app_scan_avoid_remove_payload trunk{};
+    trunk.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    trunk.session = 4294967295U;
+    DSD_SNPRINTF(trunk.target_id, sizeof trunk.target_id, "%s", "%1:x");
+    expect("a trunk-scan key", dsd_qt::ScanAvoidListModel::keyOf(trunk) == QStringLiteral("trunk:4294967295:%1:x"));
+    model.apply({{dsd_qt::ScanAvoidListModel::keyOf(lcn), QStringLiteral("Row 4  851.012500 MHz"), lcn},
+                 {dsd_qt::ScanAvoidListModel::keyOf(trunk), QStringLiteral("#1  %1:x  frequency unknown"), trunk}});
+    const QVariantMap row = model.entry(dsd_qt::ScanAvoidListModel::keyOf(lcn));
+    expect("an LCN entry", row.value("kind").toInt() == DSD_APP_SCAN_AVOID_KIND_LCN
+                               && row.value("instance").toString() == QStringLiteral("18446744073709551615")
+                               && row.value("listRev").toString() == QStringLiteral("9007199254740993")
+                               && row.value("frequencyHz").toString() == QStringLiteral("851012500")
+                               && row.value("row").toInt() == 3
+                               && row.value("label").toString() == QStringLiteral("Row 4  851.012500 MHz"));
+    const QVariantMap target = model.entry(dsd_qt::ScanAvoidListModel::keyOf(trunk));
+    expect("a trunk-scan entry", target.value("kind").toInt() == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN
+                                     && target.value("session").toULongLong() == 4294967295ULL
+                                     && target.value("targetId").toString() == QStringLiteral("%1:x"));
+}
+
+/* Issue #672: the Monitor's avoid list and its readings, from the app-control view over the held snapshot. Built only
+   when the view's key moves; a hop, a call or a refresh with nothing new announces nothing. */
+static void
+test_scan_avoids() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    dsd_qt::ScanAvoidListModel* list = model.scanAvoidModel();
+    ModelLog log(list);
+    int avoidSignals = 0;
+    int controlSignals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::scanAvoidsChanged, [&] { ++avoidSignals; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controlSignals; });
+
+    model.refresh(&opts, &state);
+    expect("no store, nothing to manage", !model.scanAvoidsManageable() && model.scanAvoidCount() == 0
+                                              && model.scanAvoidsAvailable() && list->rowCount() == 0);
+
+    /* B1: -Y stopped (the -T hunts still skip its avoided rows): listed and manageable, with no rotation running. */
+    seed_lcn_rows(&state, 4);
+    expect("row 1 avoided", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1) == 0);
+    expect("row 3 avoided", dsd_state_trunk_lcn_avoid_set(&state, 3U, 1) == 0);
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("a stopped -Y list's avoids are manageable",
+           !model.scanRotationActive() && model.scanAvoidsManageable() && model.scanAvoidsAvailable()
+               && model.scanAvoidsTotalKnown() && model.scanAvoidCount() == 2);
+    expect("one announcement", avoidSignals == 1 && log.take() == QStringLiteral("+0:1"));
+    expect("labels from the view", list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+                                       == QStringLiteral("Row 2  851.025000 MHz"));
+    const QString row1 = list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::KeyRole).toString();
+    expect("keys carry the identity", row1 == dsd_qt::ScanAvoidListModel::keyOf([&] {
+                                          dsd_app_scan_avoid_remove_payload id{};
+                                          id.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+                                          id.instance = state.state_instance;
+                                          id.list_rev = state.lcn_list_rev;
+                                          id.row = 1;
+                                          id.frequency_hz = 851025000ULL;
+                                          return id;
+                                      }()));
+
+    /* Nothing new for the list: a running rotation, a hop, a call. The list is not rebuilt or announced. */
+    opts.scanner_mode = 1;
+    avoidSignals = 0;
+    model.refresh(&opts, &state, true);
+    state.lcn_scan_hold = 1;
+    model.refresh(&opts, &state);
+    expect("the controls moved", controlSignals > 0);
+    expect("the list did not", avoidSignals == 0 && log.take().isEmpty());
+
+    /* A put back removes its row alone. */
+    expect("row 1 put back", dsd_state_trunk_lcn_avoid_set(&state, 1U, 0) == 0);
+    model.refresh(&opts, &state);
+    expect("one row leaves", log.take() == QStringLiteral("-0:0") && model.scanAvoidCount() == 1 && avoidSignals == 1);
+    /* One in, one out at the same count. */
+    expect("row 0 avoided", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1) == 0);
+    expect("row 3 put back", dsd_state_trunk_lcn_avoid_set(&state, 3U, 0) == 0);
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("an equal-count change is a remove and an insert", log.take() == QStringLiteral("-0:0 +0:0"));
+    expect("the count did not move, so its reading says nothing", avoidSignals == 0 && model.scanAvoidCount() == 1);
+
+    /* An incomplete snapshot (B2): no rows to act on, the count unknown, Clear still offered. */
+    state.scan_avoids_complete = 0U;
+    model.refresh(&opts, &state);
+    expect("an incomplete copy is not listed", !model.scanAvoidsAvailable() && !model.scanAvoidsTotalKnown()
+                                                   && model.scanAvoidCount() == 0 && model.scanAvoidsManageable());
+    expect("its rows are dropped", log.take() == QStringLiteral("-0:0"));
+    state.scan_avoids_complete = 1U;
+    model.refresh(&opts, &state);
+    expect("a whole copy lists them again",
+           model.scanAvoidsAvailable() && model.scanAvoidCount() == 1 && log.take() == QStringLiteral("+0:0"));
+
+    /* T2: a build that fails reads unavailable with no rows, and the next refresh at the same key builds it. */
+    expect("row 2 avoided", dsd_state_trunk_lcn_avoid_set(&state, 2U, 1) == 0);
+    model.failScanAvoidBuildsForTest(1);
+    model.refresh(&opts, &state);
+    expect("a failed build is unavailable", !model.scanAvoidsAvailable() && !model.scanAvoidsTotalKnown()
+                                                && model.scanAvoidCount() == 0 && model.scanAvoidsManageable()
+                                                && list->rowCount() == 0);
+    log.take();
+    model.refresh(&opts, &state);
+    expect("the same key builds again",
+           model.scanAvoidsAvailable() && model.scanAvoidCount() == 2 && log.take() == QStringLiteral("+0:1"));
+
+    /* A trunk scan's targets win while it is configured, paused too (D3), keyed by session and id. */
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    publish_trunk_avoids(&state, 7U, 2U);
+    model.refresh(&opts, &state);
+    expect("the trunk scan's targets",
+           model.scanAvoidCount() == 2 && model_keys(*list) == QStringList({"trunk:7:t1", "trunk:7:t2"}));
+    expect("a trunk-scan label", list->data(list->index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+                                     == QStringLiteral("#2  t2  851.025000 MHz"));
+    log.take();
+    /* The app writes each target's uid as its id: the list names a target by the channel name Main hands the model
+       (issue #671), else by its label column, and keeps the id only for a target with neither. A rename is a data
+       change of that row alone. */
+    model.setChannelNames({{"t1", "Fire Dispatch"}});
+    model.refresh(&opts, &state);
+    expect("a target named by its channel",
+           list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#1  Fire Dispatch  851.012500 MHz"));
+    expect("only that row is relabelled", log.take() == QStringLiteral("=0"));
+    {
+        dsd_trunk_scan_avoid_entry labelled[2] = {};
+        for (uint32_t i = 0; i < 2U; ++i) {
+            labelled[i].ordinal = i + 1U;
+            labelled[i].frequency_hz = 851012500ULL + (12500ULL * i);
+            DSD_SNPRINTF(labelled[i].id, sizeof labelled[i].id, "t%u", i + 1U);
+        }
+        DSD_SNPRINTF(labelled[1].label, sizeof labelled[1].label, "%s", "County");
+        expect("labelled targets published", dsd_state_trunk_scan_avoids_set(&state, labelled, 2U) == 0);
+        state.trunk_scan_avoid_rev = dsd_state_rev_next();
+    }
+    model.refresh(&opts, &state);
+    expect("a target with no channel name by its label column",
+           list->data(list->index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#2  County  851.025000 MHz"));
+    model.setChannelNames({});
+    model.refresh(&opts, &state);
+    expect("an unnamed target keeps its id",
+           list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#1  t1  851.012500 MHz"));
+    log.take();
+    state.trunk_scan_paused = 1U;
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("paused, the list stays and is manageable",
+           model.scanAvoidsManageable() && model.scanAvoidCount() == 2 && log.take().isEmpty() && avoidSignals == 0);
+    state.trunk_scan_paused = 0U;
+    /* A hop to another target publishes nothing new for the list. */
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "t3");
+    model.refresh(&opts, &state, true);
+    expect("a hop rebuilds nothing", log.take().isEmpty() && avoidSignals == 0);
+    /* The coordinator could not allocate its list: unavailable, nothing listed, Clear still offered. */
+    state.trunk_scan_avoids_ok = 0U;
+    model.refresh(&opts, &state);
+    expect("an unallocated trunk-scan list is not listed",
+           !model.scanAvoidsAvailable() && model.scanAvoidCount() == 0 && model.scanAvoidsManageable());
+    state.trunk_scan_avoids_ok = 1U;
+
+    /* A stop drops the list with the session; the next refresh builds it again. */
+    model.clear();
+    expect("a cleared model lists nothing", list->rowCount() == 0 && model.scanAvoidCount() == 0
+                                                && !model.scanAvoidsManageable() && model.scanAvoidsAvailable());
+    model.refresh(&opts, &state);
+    expect("the next session builds its own", model.scanAvoidCount() == 2);
+    opts.trunk_scan_enabled = 0;
+    publish_trunk_avoids(&state, 0U, 0U);
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof state.trunk_scan_active_id);
+    freeState(&state);
+}
+
+/* Issue #672 (S8): a long list costs only what changed. 10,000 avoided rows, the first put back: one remove, and the
+   rest of the rows keep their items. */
+static void
+test_scan_avoids_large_list() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    seed_lcn_rows(&state, 10001);
+    for (size_t row = 0; row < 10000U; ++row) {
+        (void)dsd_state_trunk_lcn_avoid_set(&state, row, 1);
+    }
+    dsd_qt::MetricsModel model;
+    ModelLog log(model.scanAvoidModel());
+    model.refresh(&opts, &state);
+    expect("10,000 avoided rows", model.scanAvoidCount() == 10000 && log.take() == QStringLiteral("+0:9999"));
+    expect("the first put back", dsd_state_trunk_lcn_avoid_set(&state, 0U, 0) == 0);
+    model.refresh(&opts, &state);
+    expect("one remove, nothing else", log.take() == QStringLiteral("-0:0") && model.scanAvoidCount() == 9999);
+    freeState(&state);
 }
 
 static void
@@ -2118,6 +2445,9 @@ main(int argc, char** argv) {
     test_slot_kind_and_labels();
     test_scan_row();
     test_scan_state();
+    test_scan_avoid_list_model_diff();
+    test_scan_avoids();
+    test_scan_avoids_large_list();
     test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();
     test_options_readiness();
@@ -2513,22 +2843,29 @@ main(int argc, char** argv) {
     expect("plain trunking is not a rotation", !model.scanRotationActive());
     opts.trunk_enable = 0;
     state.lcn_scan_hold = 1;
-    state.lcn_avoid_count = 3;
+    /* Issue #672: the count is the avoid list's entries, from the store the view reads (the -Y rows' flags, the
+       coordinator's published targets), never the saturating counters beside them. */
+    seed_lcn_rows(&state, 4);
+    for (size_t row = 0; row < 3U; ++row) {
+        expect("an avoid flag is set", dsd_state_trunk_lcn_avoid_set(&state, row, 1) == 0);
+    }
+    state.lcn_avoid_count = 9;
     state.trunk_scan_hold = 0;
-    state.trunk_scan_avoided_count = 7;
+    publish_trunk_avoids(&state, 5U, 7U);
+    state.trunk_scan_avoided_count = 9;
     state.trunk_scan_active_avoided = 1;
     opts.scanner_mode = 1;
     model.refresh(&opts, &state);
     expect("-Y is a rotation", model.scanRotationActive());
     expect("-Y hold reads the scan-list flag", model.scanHold());
-    expect("-Y avoids read the scan-list count", model.scanAvoidCount() == 3);
+    expect("-Y avoids are the avoided rows", model.scanAvoidCount() == 3);
     expect("-Y never parks on an avoided row", !model.scanTargetAvoided());
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     model.refresh(&opts, &state);
     expect("trunk scan is a rotation", model.scanRotationActive());
     expect("trunk scan hold reads the coordinator's flag", !model.scanHold());
-    expect("trunk scan avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("trunk scan avoids are the coordinator's published targets", model.scanAvoidCount() == 7);
     expect("trunk scan reports the avoided fallback", model.scanTargetAvoided());
     // WP-S1: the held snapshot supplies target identity and lifecycle clearing.
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dispatch");
@@ -2552,13 +2889,16 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("co-active rotations still count as one", model.scanRotationActive());
     expect("co-active hold reads the coordinator's flag", !model.scanHold());
-    expect("co-active avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("co-active avoids are the coordinator's published targets", model.scanAvoidCount() == 7);
     expect("co-active avoided fallback comes from trunk scan", model.scanTargetAvoided());
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 0;
     state.lcn_scan_hold = 0;
+    (void)dsd_state_trunk_lcn_avoid_clear(&state);
     state.lcn_avoid_count = 0;
+    state.lcn_freq_count = 0;
     state.trunk_scan_hold = 0;
+    publish_trunk_avoids(&state, 0U, 0U);
     state.trunk_scan_avoided_count = 0;
     state.trunk_scan_active_avoided = 0;
 

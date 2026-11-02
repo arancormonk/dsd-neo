@@ -10343,6 +10343,36 @@ Qt Quick frontend (`src/ui/qt`):
   and `scanResumeButton` spans the columns in one row. No wheel handler: the row scrolls with the list from tier 3.
   Tests: `tst_monitor_recent_calls.qml` (`test_03c` to `test_03f`), `tst_a11y_monitor_controls.qml`
   (`test_scan_controls_are_named_for_the_scan`), `UI_QT_CONTROLLER` (`test_scan_step_bridge`).
+- Monitor scan avoids (issue #672): `MetricsModel` publishes `scanAvoidCount`, `scanAvoidsAvailable`,
+  `scanAvoidsTotalKnown` and `scanAvoidsManageable` on their own `scanAvoidsChanged` (the view's `can_manage`, so avoids
+  a stopped `-Y` or a paused scan keeps count too, B1/D3), and the list as `scanAvoidModel`, a `ScanAvoidListModel`
+  (`src/ui/qt/scan_avoid_list_model.{h,cpp}`, roles `key` and `label`) it owns. `refreshScanAvoids()` reads
+  `dsd_app_scan_avoid_summary_get()` over the held pair each refresh and rebuilds the list
+  (`dsd_app_scan_avoid_raw_collect()`, labelled with `dsd_app_scan_avoid_raw_label()`) only when
+  `dsd_app_scan_avoid_summary_same_key()` moved since the last build that succeeded, or after `setChannelNames()`. A
+  trunk-scan target is labelled by its channel name (the app writes each target's uid as its id, #671), else its label
+  column, else its id: `#1  Fire Dispatch  851.012500 MHz`. A failed build (or a count past `INT_MAX`) leaves no rows,
+  reads unavailable and is retried on the next refresh at the same key (T2). A hop, a call or a pause publishes nothing
+  new for the list; `clear()` drops it with the session. `ScanAvoidListModel::apply()` turns one list into the next by
+  key (`keyOf()`: `lcn:<instance>:<list rev>:<row>:<Hz>`, `trunk:<session>:<id>`): runs of removed rows, runs of new
+  ones, kept rows moved, a new label as a data change, so a put back is one remove and the other delegates keep their
+  items (#782). `CommandBridge::restoreScanAvoid(key)` looks the key up in that model (`entry()`, 64-bit fields as
+  decimal strings), parses it with `scanAvoidIdentity()` (refusing a bad number, a negative row, a session of 0 or past
+  32 bits, an empty, NUL-holding or over-long id) and submits `dsd_app_command_scan_avoid_remove()`; `qt_ui.cpp` hands
+  the bridge the model. The Monitor's `scanAvoidRow` is a `ReadingFlow` shown while manageable with entries or an
+  unknown count (`?`), with Show ("Show avoided scan channels") and Clear ("Clear scan avoids") at the default
+  `OutlineButton` size, 8 px apart (B-Qt1, B-Qt2). Show opens `qml/ScanAvoidSheet.qml`, a live-apply `ModalSheet`:
+  "Avoided channels (N)", a `ListView` of bounded height (at most 55% of the panel, so Put all back and Done stay in
+  view) that gets its model only while the sheet is open and on top (a ListView's delegates stay in the accessibility
+  tree under a covering sheet), a row per entry with Put back ("Put back <label>"; disabled and unnamed while its row is
+  being removed) beside its label or, when both do not fit, under it, "No avoided channels." or, unavailable, "List not
+  ready yet. Put all back still works.", then Put all back (`clearScanAvoids()`) and Done. No row leaves before the
+  decoder's next snapshot drops it. It closes when the avoids stop being manageable, when the session stops and with the
+  screen. Tests: `UI_QT_METRICS_MODEL` (`test_scan_avoid_list_model_diff`, `test_scan_avoids`,
+  `test_scan_avoids_large_list`), `UI_QT_CONTROLLER` (`test_scan_avoid_identity_parse`,
+  `test_scan_avoid_restore_bridge`), `tst_monitor_scan_avoids.qml`, `tst_monitor_recent_calls.qml` (`test_03c`,
+  `test_03d`), `tst_a11y_closed_sheets.qml` (`test_scan_avoid_sheet_rows`), `tst_a11y_monitor_controls.qml`,
+  `tst_a11y_text_reach.qml`.
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone

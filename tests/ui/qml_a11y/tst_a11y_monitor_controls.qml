@@ -89,6 +89,25 @@ Item {
             }
         }
 
+        // Issue #672 (B-Qt2): the SCAN AVOIDS row's buttons say what they act on, each name starting with the word on
+        // the button. Clear was read as "Clear" alone, which could as well be the call log or the squelch.
+        function test_scan_avoid_buttons_are_named_for_the_avoids() {
+            testContext.setPrefs("monitorDetailsExpanded", true);
+            set({scanAvoidsManageable: true, scanAvoidCount: 2});
+            var row = findChild(monitor, "scanAvoidRow");
+            tryVerify(function () { return row.visible });
+            wait(20);
+            var names = {scanAvoidShowButton: "Show avoided scan channels", scanAvoidClearButton: "Clear scan avoids"};
+            for (var objectName in names) {
+                var button = findChild(monitor, objectName);
+                verify(button !== null, objectName + " is missing");
+                var node = testContext.accessibleNode(button);
+                verify(node.inTree && node.focusable, objectName + " is a swipe stop");
+                compare(node.name, names[objectName], objectName);
+            }
+            testContext.setPrefs("monitorDetailsExpanded", false);
+        }
+
         // Hold TG sends the hold or release the press asks for, not one read from the engine's state: pressed twice
         // before the engine's state arrives, it is read as held and then released, and the decoder is asked for the
         // hold and then the release (twice "hold" read the engine's unchanged state).
