@@ -18,6 +18,10 @@
  * ncurses' SIGTSTP handler runs them), whose resume turns tracking on, the next frame turns it back off when the
  * capture is off, and idle frames after it write nothing. A closed and reopened terminal does not turn tracking on.
  *
+ * The pty's other end is read on a thread of its own the whole time: endwin() sets the tty mode with TCSADRAIN, and
+ * macOS (as the BSDs) holds that until the reader takes the exit strings endwin() just wrote, so a test that read only
+ * between calls would hang there. Linux passes a pty's output straight to the reader and does not wait.
+ *
  * Exit 77 (skipped) when the host has no pty, no xterm-256color terminfo, or an ncurses without button 5.
  */
 
@@ -34,6 +38,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -175,20 +180,32 @@ dsd_realtime_mono_ns(void) {
 static const uint64_t kFrameBudgetNs = 1000ULL * 1000ULL * 1000ULL;
 
 static int g_master = -1;
+/* The step under way, named when the test times out. */
+static const char* volatile g_step = "setup";
+/* What the screen wrote, read by drain_screen_output() and the reader thread; g_out_lock guards it and the stop. */
+static dsd_mutex_t g_out_lock;
 static char g_screen_out[65536];
 static size_t g_screen_out_len;
+static int g_reader_stop;
 
 static void
 on_alarm(int sig) {
     (void)sig;
-    static const char msg[] = "UI_MOUSE_PTY: a frame blocked on a queued mouse report\n";
+    static const char msg[] = "UI_MOUSE_PTY: timed out, blocked in: ";
+    const char* step = g_step;
+    size_t len = 0U;
+    while (step[len] != '\0') {
+        len++;
+    }
     (void)!write(STDERR_FILENO, msg, sizeof msg - 1U);
+    (void)!write(STDERR_FILENO, step, len);
+    (void)!write(STDERR_FILENO, "\n", 1U);
     _exit(1);
 }
 
-/* Read what the screen wrote, so the pty never fills, and keep it for the tracking-string checks. */
+/* Read what the screen wrote, so the pty never fills, and keep it for the tracking-string checks. g_out_lock held. */
 static void
-drain_screen_output(void) {
+drain_screen_output_locked(void) {
     char buf[4096];
     for (;;) {
         ssize_t n = read(g_master, buf, sizeof buf);
@@ -203,15 +220,36 @@ drain_screen_output(void) {
     }
 }
 
+/* Everything the screen has written so far is in g_screen_out once this returns, whichever thread read it. */
+static void
+drain_screen_output(void) {
+    (void)dsd_mutex_lock(&g_out_lock);
+    drain_screen_output_locked();
+    (void)dsd_mutex_unlock(&g_out_lock);
+}
+
 static int
 screen_wrote(const char* seq) {
-    return strstr(g_screen_out, seq) != NULL;
+    (void)dsd_mutex_lock(&g_out_lock);
+    const int found = strstr(g_screen_out, seq) != NULL;
+    (void)dsd_mutex_unlock(&g_out_lock);
+    return found;
+}
+
+static size_t
+screen_output_len(void) {
+    (void)dsd_mutex_lock(&g_out_lock);
+    const size_t len = g_screen_out_len;
+    (void)dsd_mutex_unlock(&g_out_lock);
+    return len;
 }
 
 static void
 screen_output_clear(void) {
+    (void)dsd_mutex_lock(&g_out_lock);
     g_screen_out_len = 0;
     g_screen_out[0] = '\0';
+    (void)dsd_mutex_unlock(&g_out_lock);
 }
 
 /* The direction of the last tracking string the screen wrote since the clear: 'h' on, 'l' off, 0 none. */
@@ -219,9 +257,11 @@ static char
 last_tracking(void) {
     static const char kXm[] = "\033[?1006;1000";
     char dir = 0;
+    (void)dsd_mutex_lock(&g_out_lock);
     for (const char* p = strstr(g_screen_out, kXm); p != NULL; p = strstr(p + 1, kXm)) {
         dir = p[sizeof kXm - 1U];
     }
+    (void)dsd_mutex_unlock(&g_out_lock);
     return dir;
 }
 
@@ -242,6 +282,25 @@ fd_readable(int fd, int timeout_ms) {
     }
 }
 
+/* Reads the pty's other end while the test runs, above all while endwin() waits for its output to be read. */
+static DSD_THREAD_RETURN_TYPE
+screen_reader(void* arg) {
+    (void)arg;
+    for (;;) {
+        (void)dsd_mutex_lock(&g_out_lock);
+        const int stop = g_reader_stop;
+        if (!stop) {
+            drain_screen_output_locked();
+        }
+        (void)dsd_mutex_unlock(&g_out_lock);
+        if (stop) {
+            break;
+        }
+        (void)fd_readable(g_master, 20);
+    }
+    DSD_THREAD_RETURN;
+}
+
 /* Type @p report into the terminal and wait until the screen's input has it. */
 static int
 queue_input(int slave, const char* report) {
@@ -260,6 +319,7 @@ input_pending(int slave) {
 /* One UI frame: input (with the capture switch), then the draw's doupdate(). Fails when it took over the budget. */
 static int
 frame(const char* tag) {
+    g_step = tag;
     const uint64_t t0 = dsd_time_monotonic_ns();
     dsd_neo_ui_async_test_process_input_frame(g_osnap);
     doupdate();
@@ -400,6 +460,7 @@ static int
 resume_restores_tracking(const char* tag, int frame_between) {
     const char want = ui_mouse_capture_is_on() ? 'h' : 'l';
     screen_output_clear();
+    g_step = "endwin() before a resume";
     endwin();
     drain_screen_output();
     (void)raise(SIGCONT);
@@ -423,8 +484,9 @@ resume_restores_tracking(const char* tag, int frame_between) {
     for (int i = 0; i < 3; i++) {
         rc |= frame(tag);
     }
-    if (g_screen_out_len != 0U) {
-        DSD_FPRINTF(stderr, "%s: idle frames wrote %zu bytes\n", tag, g_screen_out_len);
+    const size_t idle_len = screen_output_len();
+    if (idle_len != 0U) {
+        DSD_FPRINTF(stderr, "%s: idle frames wrote %zu bytes\n", tag, idle_len);
         rc = 1;
     }
     return rc;
@@ -435,6 +497,7 @@ resume_restores_tracking(const char* tag, int frame_between) {
    before a capture asks for it. */
 static int
 reopen_leaves_tracking_off(void) {
+    g_step = "the terminal's close and reopen";
     dsd_neo_ui_async_test_close_curses_if_opened(1);
     drain_screen_output();
     int rc = expect("closed: tracking off", ui_mouse_capture_is_on() == 0 && last_tracking() == 'l');
@@ -491,6 +554,8 @@ typedef struct {
     int saved_stdout;
     FILE* in;
     SCREEN* screen;
+    dsd_thread_t reader;
+    int reader_started;
 } pty_screen;
 
 static int
@@ -510,6 +575,10 @@ open_pty(pty_screen* p) {
     struct winsize ws = {.ws_row = 24, .ws_col = 80};
     (void)ioctl(g_master, TIOCSWINSZ, &ws);
     (void)fcntl(g_master, F_SETFL, fcntl(g_master, F_GETFL) | O_NONBLOCK);
+    if (dsd_thread_create(&p->reader, screen_reader, NULL) != 0) {
+        return -1;
+    }
+    p->reader_started = 1;
     return 0;
 }
 
@@ -520,6 +589,12 @@ close_screen(pty_screen* p) {
         endwin();
         drain_screen_output();
         delscreen(p->screen);
+    }
+    if (p->reader_started) {
+        (void)dsd_mutex_lock(&g_out_lock);
+        g_reader_stop = 1;
+        (void)dsd_mutex_unlock(&g_out_lock);
+        (void)dsd_thread_join(p->reader);
     }
     (void)fflush(stdout);
     if (p->saved_stdout >= 0) {
@@ -598,8 +673,12 @@ main(void) {
     printf("UI_MOUSE_PTY: skipped (this ncurses has no button 5)\n");
     return kSkip;
 #else
-    pty_screen p = {.slave = -1, .saved_stdout = -1, .in = NULL, .screen = NULL};
+    pty_screen p = {.slave = -1, .saved_stdout = -1, .in = NULL, .screen = NULL, .reader_started = 0};
     const char* why = NULL;
+    if (dsd_mutex_init(&g_out_lock) != 0) {
+        DSD_FPRINTF(stderr, "UI_MOUSE_PTY: mutex init failed\n");
+        return 1;
+    }
     if (open_screen(&p, &why) != 0) {
         close_screen(&p);
         printf("UI_MOUSE_PTY: skipped (%s)\n", why);
