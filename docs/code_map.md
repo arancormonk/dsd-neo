@@ -2736,8 +2736,13 @@ suite runs under this compiler.
     multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its
     own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
-    the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
-    `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
+    the rate. Qt refuses such a start instead (issue #803): `session_args_effective_bandwidth_khz()` is the DSP
+    bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized as the engine reads a USB
+    or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`, or snapped for an Airspy), the one rule the start check,
+    the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
+    `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on an Airspy and on a USB or rtl_tcp
+    radio off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`). Tests: `RUNTIME_DECODE_MODE`,
+    `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").

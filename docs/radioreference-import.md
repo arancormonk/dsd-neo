@@ -324,6 +324,11 @@ is refused with the reason:
 | PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an IQ radio input or a symbol capture |
 | A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
 
+In the Android and Qt app, a saved TETRA system is checked when it starts, as an AM one is. It starts on a USB
+RTL-SDR or rtl_tcp radio whose bandwidth is 72 kHz or left empty (an empty field runs TETRA at 72 kHz, whatever the
+default bandwidth in Settings). On an Airspy, or at any other bandwidth, it is refused with the reason, because it
+would start and never decode. A bandwidth the radio does not offer counts as the 48 kHz it runs at.
+
 ## What gets generated
 
 The import produces up to two files and a decode flag. Which of them depends on the system type
