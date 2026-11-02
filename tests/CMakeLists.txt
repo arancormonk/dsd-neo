@@ -10901,6 +10901,15 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_resampler ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_IQ_RESAMPLER COMMAND dsd-neo_test_dsp_iq_resampler)
 
+# The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
+add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
+target_include_directories(
+    dsd-neo_test_dsp_rate_plan_step
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_rate_plan_step ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_RATE_PLAN_STEP COMMAND dsd-neo_test_dsp_rate_plan_step)
+
 add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
 target_include_directories(
     dsd-neo_test_dsp_firdes
@@ -14507,6 +14516,19 @@ add_test(
     NAME IO_IQ_REPLAY_RATE_PLAN
     COMMAND dsd-neo_test_io_iq_replay_rate_plan
 )
+
+# The live rate plan (issue #806): every backend over the Airspy and SoapySDR rate grid, tolerance before passes, the
+# refusals and the step's delay and tail.
+add_executable(dsd-neo_test_io_rate_plan io/test_io_rate_plan.c)
+target_include_directories(
+    dsd-neo_test_io_rate_plan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_io_rate_plan
+    PRIVATE dsd-neo_io_iq dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME IO_RATE_PLAN COMMAND dsd-neo_test_io_rate_plan)
 
 # Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
 # a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
@@ -21310,9 +21332,34 @@ target_include_directories(
 target_compile_definitions(dsd-neo_test_io_airspy_source PRIVATE USE_AIRSPY)
 target_link_libraries(
     dsd-neo_test_io_airspy_source
-    PRIVATE dsd-neo_runtime dsd-neo_platform
+    PRIVATE dsd-neo_runtime dsd-neo_io_iq dsd-neo_platform
 )
 add_test(NAME IO_AIRSPY_SOURCE COMMAND dsd-neo_test_io_airspy_source)
+
+# The same adapter built with Android's default-rate preference (the lowest listed rate), so a desktop run proves that
+# wiring too (#806).
+add_executable(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    io/test_io_airspy_source.cpp
+    io/airspy_sdk_double.cpp
+    ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+)
+target_include_directories(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+)
+target_compile_definitions(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE USE_AIRSPY AIRSPY_SOURCE_PREFER_LOWEST_RATE=1
+)
+target_link_libraries(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE dsd-neo_runtime dsd-neo_io_iq dsd-neo_platform
+)
+add_test(
+    NAME IO_AIRSPY_SOURCE_PREFER_LOWEST
+    COMMAND dsd-neo_test_io_airspy_source_prefer_lowest
+)
 
 # A terminal menu callback named like a libairspy call shadows the SDK in the desktop CLI (#806).
 # The compile-time unit runs wherever the terminal UI and libairspy build. The runtime check builds

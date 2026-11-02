@@ -5545,11 +5545,27 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   unused clock, signal estimates, configuration and request-lock snapshots. Enabled updates gather the full inputs.
   `IO_RTL_AUTO_PPM` compares every output field through disable, repeated disabled updates and re-enable with full
   versus minimal disabled inputs; `dsd-neo_bench_rtl_consumer` covers the per-sample monitor cost.
+- Live rate plan (issue #806): `src/io/iq/rate_plan.c`, `<dsd-neo/io/rate_plan.h>`, in `dsd-neo_io_iq` so radio
+  and replay share it with no DSP or device dependency. `dsd_rate_plan_compute()` takes the backend, the request, the
+  programmed rate, the read-back (0 before one), the DSP bandwidth rate (target) and the pass cap, and returns the
+  nominal rate (the programmed rate when the read-back is within 100 ppm of it, decided before the passes), the passes
+  (the most that keep the half-band output at or above the target), the half-band output as an exact fraction
+  (numerator over 2^shift, lowest terms), `device_forced` (programmed differs from the request, or the read-back was
+  out of tolerance), `step_eligible` (Airspy, SoapySDR, or a replay that keeps a forced chain; never RTL-SDR or
+  rtl_tcp), the I/Q rate step (L/M exact up to 4096, else the closest fit within 5 ppm with `approx_ppm`; edges 0.45 x
+  target and target less that) and `step_out_hz`. Refusals carry a message and keep the fields worked out before them:
+  an RTL-SDR or rtl_tcp read-back out of tolerance (with the read-back and forced flag), a nominal rate below the
+  target, no ratio within 5 ppm, and a backend that cannot step left at a fractional rate.
+  `dsd_rate_plan_step_bounds()` gives the step's taps per phase, group delay and tail in input samples and seconds.
+  The plan repeats the I/Q resampler's 4096 term limit, 5 ppm bound, 30 shift limit and Kaiser tap estimate, since
+  io_iq cannot link dsp; `DSP_RATE_PLAN_STEP` pins each copy to the resampler and designs every grid step from the
+  plan's fields. `IO_RATE_PLAN` covers every backend over the Airspy and SoapySDR rate grid, the tolerance edges and
+  the refusals.
 - Source kind per read: a prepared stream records whether its private `opts` copy names an I/Q replay
   (`RtlSdrInternals::source_replay`), so `stream_is_replay_active()` (every decoder read and replay clock step) no
   longer parses `audio_in_dev`.
 - Targets:
-  - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
+  - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers, and the live rate plan; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
     - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
@@ -5691,6 +5707,9 @@ Key public headers:
 - Native Airspy adapter: `src/io/radio/airspy_source.cpp` owns SDK calls and USB lifecycle;
   `rtl_device.cpp` connects its CF32 callbacks to the shared generation-checked input ring.
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
+  An open with no rate configured programs `airspy_pick_default_rate()` of the listed rates: the lowest on Android
+  (`AIRSPY_SOURCE_PREFER_LOWEST_RATE`), the highest elsewhere. Tests: `IO_AIRSPY_SOURCE` and
+  `IO_AIRSPY_SOURCE_PREFER_LOWEST` (the adapter built with Android's preference), each with the plan that follows.
   The vendored Android libairspy's stop (0001-libairspy) waits until libusb has called back every cancelled transfer,
   so `airspy_close()` and the restart after a retune never free or resubmit one still in flight; system libairspy
   keeps upstream's single poll. Test: `VENDORED_LIBAIRSPY_TRANSFERS`.

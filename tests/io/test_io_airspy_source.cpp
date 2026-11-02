@@ -10,7 +10,9 @@
 #include <airspy.h>
 #include <atomic>
 #include <cstring>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <vector>
 #include "airspy_source.h"
@@ -26,8 +28,73 @@ capture(void* context, const float* samples, size_t count, uint64_t dropped) {
     received->assign(samples, samples + count * 2);
 }
 
-int
-main() {
+/* The helper on its own, both preferences, whatever order the rates come in. */
+static void
+test_pick_default_rate() {
+    const uint32_t r2[] = {10000000, 2500000};
+    const uint32_t mini[] = {3000000, 6000000};
+    CHECK(airspy_pick_default_rate(r2, 2, 0) == 10000000 && airspy_pick_default_rate(r2, 2, 1) == 2500000);
+    CHECK(airspy_pick_default_rate(mini, 2, 0) == 6000000 && airspy_pick_default_rate(mini, 2, 1) == 3000000);
+    CHECK(airspy_pick_default_rate(r2, 1, 1) == 10000000 && airspy_pick_default_rate(r2, 0, 1) == 0);
+    CHECK(airspy_pick_default_rate(nullptr, 2, 0) == 0);
+}
+
+/* An open with no rate configured, on an R2 and on a Mini, programs the rate this build's preference picks (the
+ * highest on the desktop, the lowest on Android; the IO_AIRSPY_SOURCE_PREFER_LOWEST build runs the adapter with the
+ * Android preference), and the live plan at 48 and 72 kHz steps from it to the DSP bandwidth rate. */
+static void
+test_default_rate_plan() {
+    struct pair_case {
+        uint32_t listed[2];
+        uint32_t want;
+        int passes; /* the same at 48 and 72 kHz */
+        int m;      /* M at 48 and 72 kHz: 625 from an R2 rate (384/625, 576/625), 125 from a Mini's (64/125, 96/125) */
+    };
+
+    const bool lowest = AIRSPY_SOURCE_PREFER_LOWEST_RATE != 0;
+    const pair_case cases[] = {
+        {{10000000, 2500000}, lowest ? 2500000U : 10000000U, lowest ? 5 : 7, 625},
+        {{6000000, 3000000}, lowest ? 3000000U : 6000000U, lowest ? 5 : 6, 125},
+    };
+    const uint32_t saved[2] = {rates[0], rates[1]};
+    for (const pair_case& c : cases) {
+        rates[0] = c.listed[0];
+        rates[1] = c.listed[1];
+        dsd_airspy_config cfg;
+        dsd_airspy_config_defaults(&cfg);
+        CHECK(cfg.sample_rate == 0);
+        auto received = std::make_unique<std::vector<float>>();
+        airspy_source* s = airspy_source_open(&cfg, capture, received.get());
+        CHECK(s && rate == c.want);
+        CHECK(rate == airspy_pick_default_rate(c.listed, 2, AIRSPY_SOURCE_PREFER_LOWEST_RATE));
+        dsd_airspy_info info{};
+        CHECK(airspy_source_info(s, &info) == 0 && info.sample_rate == c.want);
+        airspy_source_close(s);
+
+        const uint32_t targets[] = {48000, 72000};
+        for (uint32_t target : targets) {
+            dsd_rate_plan_input in{};
+            in.backend = DSD_RATE_PLAN_BACKEND_AIRSPY;
+            in.request_hz = target == 48000 ? 1536000U : 1152000U;
+            in.programmed_hz = rate;
+            in.readback_hz = info.sample_rate;
+            in.target_hz = target;
+            in.max_passes = 10;
+            dsd_rate_plan plan{};
+            CHECK(dsd_rate_plan_compute(&in, &plan) == DSD_RATE_PLAN_OK);
+            CHECK(plan.device_forced && plan.step.enabled && plan.step_out_hz == target);
+            const int want_l = target == 48000 ? (c.m == 625 ? 384 : 64) : (c.m == 625 ? 576 : 96);
+            CHECK(plan.passes == c.passes && plan.step.L == want_l && plan.step.M == c.m);
+        }
+    }
+    rates[0] = saved[0];
+    rates[1] = saved[1];
+}
+
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+/* The adapter's lifecycle, with the desktop's default rate (the highest listed). */
+static void
+test_adapter() {
     dsd_airspy_config cfg;
     dsd_airspy_config_defaults(&cfg);
     // The adapter retains this context until close joins the receive callback.
@@ -136,6 +203,16 @@ main() {
     CHECK(airspy_source_last_open_error() == 0);
     airspy_source_close(s);
     CHECK(airspy_source_set_fd(42) != 0 && !airspy_source_fd_in_use());
+}
+#endif
+
+int
+main() {
+    test_pick_default_rate();
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+    test_adapter();
+#endif
+    test_default_rate_plan();
     return 0;
 }
 
