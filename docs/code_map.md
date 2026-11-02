@@ -4764,6 +4764,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   reports the delay, which replay does not compensate (0.41 ms for 48,254 Hz to 72 kHz, about 2.5 ms for 8 to 72 kHz).
   Only the replay reader thread touches it (`rtl_device.cpp`: configured before the thread starts, cleared at a RETUNE,
   RESET, MUTE and loop rewind, freed after the join); live paths never run it. Test: `DSP_IQ_RESAMPLER`.
+  - Rational entry point for the live rate step (issue #806): `dsd_iq_resampler_configure_ratio()` takes an L/M the
+    caller chose (lowest terms, each at most 4096), the input rate as an exact fraction (a whole-Hz numerator over
+    2^shift, kept in lowest terms in `in_rate_num`/`in_rate_shift`, so 2.5 MS/s after six half-band passes is
+    39,062.5 Hz) and the protected and stopband edges as given. It refuses edges with no transition band, a protected
+    band past 0.45 of the input rate, or a stopband edge past the input or output rate less the protected band,
+    compared exactly. The design is configure()'s: with the step's edges (0.45 x D and D less that) it matches
+    `configure()` at the rates scaled by 2^shift bit for bit, and `dsd_iq_resampler_group_delay_seconds()` and
+    `dsd_iq_resampler_in_rate_hz()` report the real fractional rate. `in_hz`/`out_hz` stay whole-Hz fields and read 0
+    when the rate is not whole. `configure()` keeps its release-first contract for replay.
+  - Transactional use: a configure (either entry point) releases only its own target, so a caller can design a
+    candidate next to the running and retained ones; `dsd_iq_resampler_swap()` exchanges two whole (no allocation, the
+    history and phase travel with the design); `dsd_iq_resampler_matches()` compares a `configure_ratio()` design's
+    key (L, M, input rate as a value, both edges; `max_in` is not part of it). Bounds for planning:
+    `dsd_iq_resampler_tail_inputs()` (taps per phase - 1 input samples) and `dsd_iq_resampler_group_delay_inputs()`
+    ((L x T - 1) / 2L input samples; 2.5 MS/s stepped to 4 kHz delays 5.3 ms).
 - The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
   in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
   6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS

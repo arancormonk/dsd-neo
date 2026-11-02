@@ -5,8 +5,8 @@
 
 /**
  * @file
- * @brief Streaming complex (I/Q) rational resampler for replayed captures (issue #701). See
- * <dsd-neo/dsp/iq_resampler.h>.
+ * @brief Streaming complex (I/Q) rational resampler for replayed captures (issue #701) and the live rate step (#806).
+ * See <dsd-neo/dsp/iq_resampler.h>.
  */
 
 #include <dsd-neo/dsp/iq_resampler.h>
@@ -73,7 +73,7 @@ const char*
 dsd_iq_resampler_status_text(int status) {
     switch (status) {
         case DSD_IQ_RESAMPLER_OK: return "ok";
-        case DSD_IQ_RESAMPLER_ERR_ARGS: return "invalid rates or sizes";
+        case DSD_IQ_RESAMPLER_ERR_ARGS: return "invalid rates, ratio or sizes";
         case DSD_IQ_RESAMPLER_ERR_RATIO: return "no rational ratio within 250 ppm for these rates";
         case DSD_IQ_RESAMPLER_ERR_BAND: return "the protected band leaves no transition band";
         case DSD_IQ_RESAMPLER_ERR_TAPS: return "the transition band needs more than 256 taps per phase";
@@ -155,32 +155,15 @@ iq_resampler_pick_taps(double in, int L, double pass, double stop, int* out_taps
     return DSD_IQ_RESAMPLER_OK;
 }
 
-int
-dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int protect_hz, size_t max_in_complex) {
-    if (!r) {
-        return DSD_IQ_RESAMPLER_ERR_ARGS;
-    }
-    iq_resampler_release(r);
-    if (in_hz <= 0 || out_hz <= 0 || protect_hz <= 0 || max_in_complex == 0U
-        || max_in_complex > (size_t)INT32_MAX / 4U) {
-        return DSD_IQ_RESAMPLER_ERR_ARGS;
-    }
-    int L = 1;
-    int M = 1;
-    const int ratio_rc = iq_resampler_pick_ratio(in_hz, out_hz, &L, &M);
-    if (ratio_rc != DSD_IQ_RESAMPLER_OK) {
-        return ratio_rc;
-    }
+static int
+iq_resampler_max_in_ok(size_t max_in_complex) {
+    return max_in_complex > 0U && max_in_complex <= (size_t)INT32_MAX / 4U;
+}
 
-    /* The edges: see the header. */
-    const double in = (double)in_hz;
-    const double protect = (double)protect_hz;
-    const double pass = fmin(protect, DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in);
-    const double stop = fmin(in - pass, (double)out_hz - protect);
-    if (!(stop > pass)) {
-        return DSD_IQ_RESAMPLER_ERR_BAND;
-    }
-
+/* Designs the bank for L/M at @p in Hz with the edges given and allocates the history into the released @p r. A refusal
+   leaves @p r released. The rate fields are the caller's to set. */
+static int
+iq_resampler_build(dsd_iq_resampler* r, int L, int M, double in, double pass, double stop, size_t max_in_complex) {
     int T = 0;
     const int taps_rc = iq_resampler_pick_taps(in, L, pass, stop, &T);
     if (taps_rc != DSD_IQ_RESAMPLER_OK) {
@@ -201,8 +184,6 @@ dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int prote
     DSD_MEMSET(work, 0, work_len * sizeof(float));
 
     r->configured = 1;
-    r->in_hz = in_hz;
-    r->out_hz = out_hz;
     r->L = L;
     r->M = M;
     r->taps_per_phase = T;
@@ -213,6 +194,156 @@ dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int prote
     r->bank = bank;
     r->work = work;
     return DSD_IQ_RESAMPLER_OK;
+}
+
+int
+dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int protect_hz, size_t max_in_complex) {
+    if (!r) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    iq_resampler_release(r);
+    if (in_hz <= 0 || out_hz <= 0 || protect_hz <= 0 || !iq_resampler_max_in_ok(max_in_complex)) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    int L = 1;
+    int M = 1;
+    const int ratio_rc = iq_resampler_pick_ratio(in_hz, out_hz, &L, &M);
+    if (ratio_rc != DSD_IQ_RESAMPLER_OK) {
+        return ratio_rc;
+    }
+
+    /* The edges: see the header. */
+    const double in = (double)in_hz;
+    const double protect = (double)protect_hz;
+    const double pass = fmin(protect, DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in);
+    const double stop = fmin(in - pass, (double)out_hz - protect);
+    if (!(stop > pass)) {
+        return DSD_IQ_RESAMPLER_ERR_BAND;
+    }
+
+    const int rc = iq_resampler_build(r, L, M, in, pass, stop, max_in_complex);
+    if (rc != DSD_IQ_RESAMPLER_OK) {
+        return rc;
+    }
+    r->in_hz = in_hz;
+    r->out_hz = out_hz;
+    r->in_rate_num = in_hz;
+    r->in_rate_shift = 0U;
+    return DSD_IQ_RESAMPLER_OK;
+}
+
+static int
+iq_resampler_gcd(int a, int b) {
+    while (b != 0) {
+        const int t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+/* configure_ratio()'s arguments, apart from the band rules. */
+static int
+iq_resampler_ratio_args_ok(int L, int M, int64_t num, unsigned shift, int protect_hz, int stop_hz) {
+    const int terms_ok = L >= 1 && L <= DSD_IQ_RESAMPLER_MAX_RATIO_TERM && M >= 1
+                         && M <= DSD_IQ_RESAMPLER_MAX_RATIO_TERM && iq_resampler_gcd(L, M) == 1;
+    const int rate_ok = num >= 1 && num <= (int64_t)INT32_MAX && shift <= DSD_IQ_RESAMPLER_MAX_RATE_SHIFT;
+    return terms_ok && rate_ok && protect_hz > 0 && stop_hz > 0;
+}
+
+/* The band rules (see the header), compared exactly: P + S and the rates are whole numbers below 2^44, so every product
+   here, scaled by a power of two, is exact in a double. */
+static int
+iq_resampler_ratio_band_ok(int L, int M, int64_t num, unsigned shift, int protect_hz, int stop_hz) {
+    if (stop_hz <= protect_hz) {
+        return 0;
+    }
+    const double in = ldexp((double)num, -(int)shift);
+    if (!((double)protect_hz <= DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in)) {
+        return 0;
+    }
+    /* (P + S) x 2^shift against the input rate's numerator, and against the output rate's, num x L / M. */
+    const double edges = ldexp((double)protect_hz + (double)stop_hz, (int)shift);
+    return edges <= (double)num && edges * (double)M <= (double)num * (double)L;
+}
+
+/* Puts num / 2^shift in lowest terms, so equal rates compare equal. */
+static void
+iq_resampler_lowest_terms(int64_t* num, unsigned* shift) {
+    while (*shift > 0U && (*num & 1) == 0) {
+        *num /= 2;
+        (*shift)--;
+    }
+}
+
+/* num / 2^shift x L / M in whole Hz, or 0 when it is not whole or past INT32_MAX. num x L < 2^43 and M x 2^shift < 2^43,
+   so both fit 64 bits. */
+static int
+iq_resampler_whole_out_hz(int64_t num, unsigned shift, int L, int M) {
+    const int64_t top = num * (int64_t)L;
+    const int64_t bottom = (int64_t)M << shift;
+    if (top % bottom != 0) {
+        return 0;
+    }
+    const int64_t out = top / bottom;
+    return out <= (int64_t)INT32_MAX ? (int)out : 0;
+}
+
+int
+dsd_iq_resampler_configure_ratio(dsd_iq_resampler* r, int L, int M, int64_t in_rate_num, unsigned in_rate_shift,
+                                 int protect_hz, int stop_hz, size_t max_in_complex) {
+    if (!r) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    iq_resampler_release(r);
+    if (!iq_resampler_ratio_args_ok(L, M, in_rate_num, in_rate_shift, protect_hz, stop_hz)
+        || !iq_resampler_max_in_ok(max_in_complex)) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    if (!iq_resampler_ratio_band_ok(L, M, in_rate_num, in_rate_shift, protect_hz, stop_hz)) {
+        return DSD_IQ_RESAMPLER_ERR_BAND;
+    }
+    int64_t num = in_rate_num;
+    unsigned shift = in_rate_shift;
+    iq_resampler_lowest_terms(&num, &shift);
+    /* The rate is exact in a double, so the taps match configure()'s at the rates scaled by 2^shift bit for bit. */
+    const int rc = iq_resampler_build(r, L, M, ldexp((double)num, -(int)shift), (double)protect_hz, (double)stop_hz,
+                                      max_in_complex);
+    if (rc != DSD_IQ_RESAMPLER_OK) {
+        return rc;
+    }
+    r->in_hz = shift == 0U ? (int)num : 0;
+    r->out_hz = iq_resampler_whole_out_hz(num, shift, L, M);
+    r->in_rate_num = num;
+    r->in_rate_shift = shift;
+    r->keyed = 1;
+    r->protect_hz = protect_hz;
+    r->stop_hz = stop_hz;
+    return DSD_IQ_RESAMPLER_OK;
+}
+
+int
+dsd_iq_resampler_matches(const dsd_iq_resampler* r, int L, int M, int64_t in_rate_num, unsigned in_rate_shift,
+                         int protect_hz, int stop_hz) {
+    if (!r || !r->configured || !r->keyed || in_rate_num < 1 || in_rate_shift > DSD_IQ_RESAMPLER_MAX_RATE_SHIFT) {
+        return 0;
+    }
+    int64_t num = in_rate_num;
+    unsigned shift = in_rate_shift;
+    iq_resampler_lowest_terms(&num, &shift);
+    return r->L == L && r->M == M && r->in_rate_num == num && r->in_rate_shift == shift && r->protect_hz == protect_hz
+           && r->stop_hz == stop_hz;
+}
+
+void
+dsd_iq_resampler_swap(dsd_iq_resampler* a, dsd_iq_resampler* b) {
+    if (!a || !b || a == b) {
+        return;
+    }
+    dsd_iq_resampler t;
+    DSD_MEMCPY(&t, a, sizeof(t));
+    DSD_MEMCPY(a, b, sizeof(*a));
+    DSD_MEMCPY(b, &t, sizeof(*b));
 }
 
 size_t
@@ -306,10 +437,26 @@ dsd_iq_resampler_process(dsd_iq_resampler* r, const float* in, size_t in_complex
 
 double
 dsd_iq_resampler_ratio_error_ppm(const dsd_iq_resampler* r) {
-    if (!r || !r->configured) {
+    if (!r || !r->configured || r->keyed) {
         return 0.0;
     }
     return ((double)r->L * (double)r->in_hz / ((double)r->M * (double)r->out_hz) - 1.0) * 1e6;
+}
+
+double
+dsd_iq_resampler_in_rate_hz(const dsd_iq_resampler* r) {
+    if (!r || !r->configured) {
+        return 0.0;
+    }
+    return ldexp((double)r->in_rate_num, -(int)r->in_rate_shift);
+}
+
+double
+dsd_iq_resampler_group_delay_inputs(const dsd_iq_resampler* r) {
+    if (!r || !r->configured) {
+        return 0.0;
+    }
+    return ((double)r->L * (double)r->taps_per_phase - 1.0) / (2.0 * (double)r->L);
 }
 
 double
@@ -317,5 +464,13 @@ dsd_iq_resampler_group_delay_seconds(const dsd_iq_resampler* r) {
     if (!r || !r->configured) {
         return 0.0;
     }
-    return ((double)r->L * (double)r->taps_per_phase - 1.0) / (2.0 * (double)r->L * (double)r->in_hz);
+    return ((double)r->L * (double)r->taps_per_phase - 1.0) / (2.0 * (double)r->L * dsd_iq_resampler_in_rate_hz(r));
+}
+
+size_t
+dsd_iq_resampler_tail_inputs(const dsd_iq_resampler* r) {
+    if (!r || !r->configured) {
+        return 0U;
+    }
+    return (size_t)r->taps_per_phase - 1U;
 }
