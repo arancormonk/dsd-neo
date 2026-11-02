@@ -313,7 +313,8 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
 /**
  * @brief Append the call recording the app owns (issue #708), before the extra options: the store's folder and its
  * journal always, so a -P among the extra options records into a folder the app manages, then -P,
- * --record-unknown-only and the NFM pause hold (--analog-record-max-gap-ms, issue #756) as the preferences say.
+ * --record-unknown-only, the NFM pause hold (--analog-record-max-gap-ms, issue #756) and the NFM pre-roll
+ * (--analog-record-preroll-ms, issue #668) as the preferences say.
  * Nothing without a folder.
  */
 void
@@ -333,6 +334,7 @@ append_recording_args(QStringList& args, const SessionArgPrefs& prefs) {
         // Always, off included, so the session holds what Settings shows. An extra option comes later and wins;
         // Settings then shuts the row, with a note that says so.
         args << QStringLiteral("--analog-record-max-gap-ms") << QString::number(prefs.analogMaxGapMs);
+        args << QStringLiteral("--analog-record-preroll-ms") << QString::number(prefs.analogPrerollMs);
     }
 }
 
@@ -459,6 +461,14 @@ session_args_extra_sets_pause_hold(const QString& tokens) {
     const QStringList options = option_tokens(tokens);
     return std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
         return long_option_is(token, QLatin1String("--analog-record-max-gap-ms"));
+    });
+}
+
+bool
+session_args_extra_sets_preroll(const QString& tokens) {
+    const QStringList options = option_tokens(tokens);
+    return std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
+        return long_option_is(token, QLatin1String("--analog-record-preroll-ms"));
     });
 }
 
@@ -1028,6 +1038,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 SessionArgsBuilder::SessionArgsBuilder(const AppPrefs* prefs, QObject* parent) : QObject(parent), m_prefs(prefs) {
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::extraArgsChanged, this, &SessionArgsBuilder::extraArgsSetPauseHoldChanged);
+        connect(m_prefs, &AppPrefs::extraArgsChanged, this, &SessionArgsBuilder::extraArgsSetPrerollChanged);
     }
 }
 
@@ -1055,6 +1066,7 @@ session_args_prefs(const AppPrefs* prefs) {
         out.recordCalls = prefs->recordCalls();
         out.recordUnknownOnly = prefs->recordUnknownOnly();
         out.analogMaxGapMs = prefs->analogMaxGapMs();
+        out.analogPrerollMs = prefs->analogPrerollMs();
     }
     return out;
 }
@@ -1200,6 +1212,11 @@ SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz
 bool
 SessionArgsBuilder::extraArgsSetPauseHold() const {
     return m_prefs != nullptr && session_args_extra_sets_pause_hold(m_prefs->extraArgs());
+}
+
+bool
+SessionArgsBuilder::extraArgsSetPreroll() const {
+    return m_prefs != nullptr && session_args_extra_sets_preroll(m_prefs->extraArgs());
 }
 
 int

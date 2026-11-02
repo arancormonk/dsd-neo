@@ -90,6 +90,9 @@ enum Key {
     // Issue #756: the longest pause one analog NFM call recording keeps going through (--analog-record-max-gap-ms).
     // Portable with the other recording choices.
     kRecordingAnalogMaxGapMs,
+    // Issue #668: how much of what was heard just before an NFM call each recording starts with
+    // (--analog-record-preroll-ms). Portable with the other recording choices.
+    kRecordingAnalogPrerollMs,
     kKeyCount
 };
 
@@ -135,6 +138,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/acceptedStartKind", false},
     {"listen/acceptedStartUid", false},
     {"recording/analogMaxGapMs", true},
+    {"recording/analogPrerollMs", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -254,6 +258,21 @@ sane_analog_max_gap(const QVariant& raw) {
     int ms = 0;
     const bool ok = stored_int(raw, &ms);
     return ok && ms >= 0 && ms <= kMaxAnalogMaxGapMs ? ms : kDefaultAnalogMaxGapMs;
+}
+
+// The NFM pre-rolls the settings offer, in ms (0: off), and the range the decoder takes (--analog-record-preroll-ms).
+// As with the pause hold, a value in range but not offered is kept as it is.
+constexpr int kAnalogPrerollChoices[] = {0, 100, 200, 300, 500, DSD_ANALOG_RECORD_PREROLL_MAX_MS};
+constexpr int kDefaultAnalogPrerollMs = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
+constexpr int kMaxAnalogPrerollMs = DSD_ANALOG_RECORD_PREROLL_MAX_MS;
+
+/** @brief @p raw if it holds a value the decoder takes (0..1000 ms), else the default; text that is not a number
+ *         included. */
+int
+sane_analog_preroll(const QVariant& raw) {
+    int ms = 0;
+    const bool ok = stored_int(raw, &ms);
+    return ok && ms >= 0 && ms <= kMaxAnalogPrerollMs ? ms : kDefaultAnalogPrerollMs;
 }
 
 /**
@@ -979,6 +998,30 @@ QVariantList
 AppPrefs::analogMaxGapChoices() const {
     QVariantList choices;
     for (const int choice : kAnalogMaxGapChoices) {
+        choices.append(choice);
+    }
+    return choices;
+}
+
+int
+AppPrefs::analogPrerollMs() const {
+    return sane_analog_preroll(m_settings.value(key_name(kRecordingAnalogPrerollMs), kDefaultAnalogPrerollMs));
+}
+
+void
+AppPrefs::setAnalogPrerollMs(int ms) {
+    const int next = sane_analog_preroll(ms);
+    if (!stored_int_differs(m_settings.value(key_name(kRecordingAnalogPrerollMs), kDefaultAnalogPrerollMs), next)) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordingAnalogPrerollMs), next);
+    Q_EMIT analogPrerollMsChanged();
+}
+
+QVariantList
+AppPrefs::analogPrerollChoices() const {
+    QVariantList choices;
+    for (const int choice : kAnalogPrerollChoices) {
         choices.append(choice);
     }
     return choices;

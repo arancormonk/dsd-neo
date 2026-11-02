@@ -66,6 +66,13 @@ accepted(int status) {
     return status == DSD_APP_COMMAND_SUBMIT_QUEUED || status == DSD_APP_COMMAND_SUBMIT_COALESCED;
 }
 
+/** @brief Submit the recording setting @p command with @p value; a negative @p value is none to send. False only when
+ *         the queue refused it. */
+bool
+send_setting_unless_none(int command, int value) {
+    return value < 0 || accepted(dsd_app_command_set_i32(command, value));
+}
+
 } // namespace
 
 CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {}
@@ -349,7 +356,7 @@ CommandBridge::recordingSessionLive(dsd_app_recording_view* view) const {
 }
 
 bool
-CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) const {
+CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs, int analogPrerollMs) const {
     dsd_app_recording_view view{};
     if (!recordingSessionLive(&view)) {
         return false;
@@ -365,16 +372,16 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) con
         noteRecording(QStringLiteral("static-wav"));
         return false;
     }
-    // On: the NFM pause hold and unknown-only first, so the first call recorded already follows them, and the start
-    // last. Off: the stop first, so a refused second submit never leaves the session recording more than it did
-    // (unknown-only cleared, the stop refused). The stop is the switch: once it is in, unknown-only follows best
-    // effort, as it applies only while calls record and a later start sends it first, and the status keeps describing
-    // the stop. The hold is left as it is: the decoder holds a call only while calls record, so the stop also ends a
-    // paused call, and a later start sends the hold again. A negative hold is none to send: the session's own stands
-    // (one its extra options set).
+    // On: the NFM pause hold, the NFM pre-roll and unknown-only first, so the first call recorded already follows
+    // them, and the start last. Off: the stop first, so a refused second submit never leaves the session recording
+    // more than it did (unknown-only cleared, the stop refused). The stop is the switch: once it is in, unknown-only
+    // follows best effort, as it applies only while calls record and a later start sends it first, and the status
+    // keeps describing the stop. The hold and the pre-roll are left as they are: the decoder uses them only while
+    // calls record, and a later start sends them again. A negative hold or pre-roll is none to send: the session's
+    // own stands (one its extra options set).
     if (on) {
-        const bool sent = (analogMaxGapMs < 0
-                           || accepted(dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, analogMaxGapMs)))
+        const bool sent = send_setting_unless_none(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, analogMaxGapMs)
+                          && send_setting_unless_none(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, analogPrerollMs)
                           && accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
                           && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0));
         if (sent) {
@@ -400,6 +407,11 @@ CommandBridge::setRecordUnknownOnly(bool on) const {
 bool
 CommandBridge::setAnalogRecordMaxGap(int ms) const {
     return sendWhileRecording(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ms);
+}
+
+bool
+CommandBridge::setAnalogRecordPreroll(int ms) const {
+    return sendWhileRecording(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, ms);
 }
 
 bool

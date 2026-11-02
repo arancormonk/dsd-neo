@@ -196,7 +196,7 @@ Item {
     function setRecordCalls(on) {
         prefs.recordCalls = on;
         if (recordingLive)
-            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly, analogMaxGapInExtras ? -1 : prefs.analogMaxGapMs); });
+            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly, analogMaxGapInExtras ? -1 : prefs.analogMaxGapMs, analogPrerollInExtras ? -1 : prefs.analogPrerollMs); });
     }
     // Unknown-only travels with Record calls: it applies only while calls record.
     function setRecordUnknownOnly(on) {
@@ -215,6 +215,13 @@ Item {
         prefs.analogMaxGapMs = ms;
         if (recordingLive && prefs.recordCalls)
             sendRecordingSwitch(function () { return commands.setAnalogRecordMaxGap(ms); });
+    }
+    // Issue #668: the NFM pre-roll goes the same way as the pause hold.
+    readonly property bool analogPrerollInExtras: sessionArgs.extraArgsSetPreroll
+    function setAnalogPreroll(ms) {
+        prefs.analogPrerollMs = ms;
+        if (recordingLive && prefs.recordCalls)
+            sendRecordingSwitch(function () { return commands.setAnalogRecordPreroll(ms); });
     }
 
     signal openDiagnostics
@@ -721,7 +728,7 @@ Item {
                         subtitle: Util.pauseHoldOn(prefs.analogMaxGapMs) ? qsTr("%1 · Pauses up to this long stay in one recording").arg(Util.pauseHoldText(prefs.analogMaxGapMs)) : qsTr("Off · Each pause over 0.2 seconds starts a new recording")
                         enabled: prefs.recordCalls && !screen.analogMaxGapInExtras
                         showCaret: enabled
-                        showDivider: !analogMaxGapExtrasNote.visible && !sessionNoticeList.visible
+                        showDivider: !analogMaxGapExtrasNote.visible
                         onTapped: {
                             var holds = prefs.analogMaxGapChoices;
                             screenChoices.open(title, holds.map(function (ms) {
@@ -736,6 +743,29 @@ Item {
                         id: analogMaxGapExtrasNote
                         objectName: "analogMaxGapExtrasNote"
                         notices: screen.analogMaxGapInExtras ? [{text: qsTr("Extra decoder arguments set the pause hold (--analog-record-max-gap-ms) for every session, so this setting is not used."), problem: false}] : []
+                    }
+
+                    DisclosureRow {
+                        objectName: "analogPrerollRow"
+                        title: qsTr("NFM pre-roll")
+                        subtitle: prefs.analogPrerollMs > 0 ? qsTr("%1 · Recordings start up to this much early, so first words aren't cut off").arg(Util.prerollText(prefs.analogPrerollMs)) : qsTr("Off · Recordings may miss a call's first word")
+                        enabled: prefs.recordCalls && !screen.analogPrerollInExtras
+                        showCaret: enabled
+                        showDivider: !analogPrerollExtrasNote.visible && !sessionNoticeList.visible
+                        onTapped: {
+                            var prerolls = prefs.analogPrerollChoices;
+                            screenChoices.open(title, prerolls.map(function (ms) {
+                                return Util.prerollText(ms);
+                            }), function (index) {
+                                screen.setAnalogPreroll(prerolls[index]);
+                            });
+                        }
+                    }
+
+                    NoticeList {
+                        id: analogPrerollExtrasNote
+                        objectName: "analogPrerollExtrasNote"
+                        notices: screen.analogPrerollInExtras ? [{text: qsTr("Extra decoder arguments set the pre-roll (--analog-record-preroll-ms) for every session, so this setting is not used."), problem: false}] : []
                     }
 
                     NoticeList {

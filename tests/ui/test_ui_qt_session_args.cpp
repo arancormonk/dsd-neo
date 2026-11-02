@@ -34,6 +34,7 @@
 #include "decoder_host.h"
 #include "recording_sessions.h"
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
 #include "saved_systems_model.h"
@@ -167,12 +168,14 @@ test_prefs_mapping(void) {
     prefs.setRecordCalls(true);
     prefs.setRecordUnknownOnly(true);
     prefs.setAnalogMaxGapMs(1500);
+    prefs.setAnalogPrerollMs(300);
     const SessionArgPrefs mapped = dsd_qt::session_args_prefs(&prefs);
-    expect("the call recording preferences map, never a folder", mapped.recordCalls && mapped.recordUnknownOnly
-                                                                     && mapped.analogMaxGapMs == 1500
-                                                                     && mapped.recordingFolder.isEmpty());
-    expect("call recording is off by default",
-           !none.recordCalls && !none.recordUnknownOnly && none.analogMaxGapMs == 200);
+    expect("the call recording preferences map, never a folder",
+           mapped.recordCalls && mapped.recordUnknownOnly && mapped.analogMaxGapMs == 1500
+               && mapped.analogPrerollMs == 300 && mapped.recordingFolder.isEmpty());
+    expect("call recording is off by default", !none.recordCalls && !none.recordUnknownOnly
+                                                   && none.analogMaxGapMs == 200
+                                                   && none.analogPrerollMs == DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS);
     expect("every preference maps",
            mapped.gainDb == 41 && mapped.ppm == 7 && mapped.bandwidthKhz == 24 && mapped.biasTee
                && !mapped.skipEncrypted && !mapped.persistTgLockouts && mapped.autoPpm && mapped.relaxedCrc
@@ -190,6 +193,7 @@ test_prefs_mapping(void) {
     prefs.setRecordCalls(defaults.recordCalls);
     prefs.setRecordUnknownOnly(defaults.recordUnknownOnly);
     prefs.setAnalogMaxGapMs(defaults.analogMaxGapMs);
+    prefs.setAnalogPrerollMs(defaults.analogPrerollMs);
 }
 
 /* Issue #708: the call recording a session's argv names, from the store's folder and the two preferences, before the
@@ -217,9 +221,12 @@ test_recording_args(void) {
                            QStringLiteral("--record-unknown-only"),
                            QStringLiteral("--analog-record-max-gap-ms"),
                            QStringLiteral("200"),
+                           QStringLiteral("--analog-record-preroll-ms"),
+                           QString::number(DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS),
                            QStringLiteral("-Z")};
     const qsizetype at = args.indexOf(QStringLiteral("-7"));
-    expect("folder, journal, -P, unknown-only and the NFM pause hold, then the extra options, after the hang time",
+    expect("folder, journal, -P, unknown-only, the NFM pause hold and pre-roll, then the extra options, after the "
+           "hang time",
            error == SessionArgsError::None && at > args.indexOf(QStringLiteral("-t"))
                && args.mid(at, want.size()) == want && args.count(QStringLiteral("-7")) == 1);
 
@@ -228,22 +235,27 @@ test_recording_args(void) {
     args = session_args_build(sys, prefs, &error);
     expect("Record calls off still names the folder and journal, so an extra -P records there",
            args.contains("-7") && args.contains("--wav-journal") && !args.contains("-P")
-               && !args.contains("--record-unknown-only") && !args.contains("--analog-record-max-gap-ms"));
+               && !args.contains("--record-unknown-only") && !args.contains("--analog-record-max-gap-ms")
+               && !args.contains("--analog-record-preroll-ms"));
 
-    // Unknown-only and the NFM pause hold travel with -P: neither while Record calls is off, whatever their own
-    // settings say.
+    // Unknown-only, the NFM pause hold and the NFM pre-roll travel with -P: none while Record calls is off, whatever
+    // their own settings say.
     for (const bool record : {false, true}) {
         for (const bool unknown : {false, true}) {
             prefs.recordCalls = record;
             prefs.recordUnknownOnly = unknown;
             prefs.analogMaxGapMs = 2000;
+            prefs.analogPrerollMs = 300;
             args = session_args_build(sys, prefs, &error);
             const qsizetype hold = args.indexOf(QStringLiteral("--analog-record-max-gap-ms"));
-            expect(qPrintable(QStringLiteral("Record calls %1, unknown-only %2").arg(record).arg(unknown)),
-                   args.contains(QStringLiteral("-P")) == record
-                       && args.contains(QStringLiteral("--record-unknown-only")) == (record && unknown)
-                       && (hold >= 0) == record
-                       && (!record || (args.value(hold + 1) == QStringLiteral("2000") && hold > args.indexOf("-P"))));
+            const qsizetype preroll = args.indexOf(QStringLiteral("--analog-record-preroll-ms"));
+            expect(
+                qPrintable(QStringLiteral("Record calls %1, unknown-only %2").arg(record).arg(unknown)),
+                args.contains(QStringLiteral("-P")) == record
+                    && args.contains(QStringLiteral("--record-unknown-only")) == (record && unknown)
+                    && (hold >= 0) == record && (preroll >= 0) == record
+                    && (!record || (args.value(hold + 1) == QStringLiteral("2000") && hold > args.indexOf("-P")))
+                    && (!record || (args.value(preroll + 1) == QStringLiteral("300") && preroll > args.indexOf("-P"))));
         }
     }
     prefs.recordUnknownOnly = false;
@@ -268,6 +280,25 @@ test_recording_args(void) {
                && args.indexOf(QStringLiteral("4000")) > args.indexOf(QStringLiteral("10000")));
     sys["extraArgs"] = QStringLiteral("-Z");
     prefs.analogMaxGapMs = 200;
+
+    // Issue #668: the pre-roll the same way, off included.
+    for (const int ms : {0, 100, 200, 1000}) {
+        prefs.analogPrerollMs = ms;
+        args = session_args_build(sys, prefs, &error);
+        const qsizetype preroll = args.indexOf(QStringLiteral("--analog-record-preroll-ms"));
+        expect(qPrintable(QStringLiteral("the pre-roll %1 ms is sent once").arg(ms)),
+               preroll >= 0 && args.value(preroll + 1) == QString::number(ms)
+                   && args.count(QStringLiteral("--analog-record-preroll-ms")) == 1);
+    }
+    sys["extraArgs"] = QStringLiteral("--analog-record-preroll-ms 700");
+    args = session_args_build(sys, prefs, &error);
+    expect("an extra pre-roll comes after the app's",
+           error == SessionArgsError::None && args.count(QStringLiteral("--analog-record-preroll-ms")) == 2
+               && args.lastIndexOf(QStringLiteral("--analog-record-preroll-ms"))
+                      == args.indexOf(QStringLiteral("700")) - 1
+               && args.indexOf(QStringLiteral("700")) > args.indexOf(QStringLiteral("1000")));
+    sys["extraArgs"] = QStringLiteral("-Z");
+    prefs.analogPrerollMs = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
 
     prefs.recordCalls = true;
     prefs.extraArgs = QStringLiteral("-Z");
@@ -424,6 +455,55 @@ test_extra_sets_pause_hold(void) {
     expect("QML reads it as a property",
            dsd_qt::SessionArgsBuilder::staticMetaObject
                .property(dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfProperty("extraArgsSetPauseHold"))
+               .hasNotifySignal());
+}
+
+/* Issue #668: the NFM pre-roll row is shut by the same reading as the pause hold row: the long option wherever it
+ * stands, in either form, never as another option's value or after a "--" that is no value. */
+void
+test_extra_sets_preroll(void) {
+    using dsd_qt::session_args_extra_sets_preroll;
+    for (const auto& tokens : QStringList{
+             "--analog-record-preroll-ms 700",
+             "--analog-record-preroll-ms=700",
+             "-Z --analog-record-preroll-ms 0",
+             "--api-token secret --analog-record-preroll-ms 700",
+             "-c --analog-record-preroll-ms 700",
+             "--analog-record-preroll-ms 700 -- -Z",
+         }) {
+        expect(qPrintable(QStringLiteral("sets the pre-roll: %1").arg(tokens)),
+               session_args_extra_sets_preroll(tokens));
+    }
+    for (const auto& tokens : QStringList{
+             "",
+             "-Z",
+             "-- --analog-record-preroll-ms 700",
+             "--api-token --analog-record-preroll-ms",
+             "--frame-log --analog-record-preroll-ms=700",
+             "--analog-record-preroll-msx 1",
+             "--analog-record-preroll 700",
+             "--analog-record-max-gap-ms 700",
+         }) {
+        expect(qPrintable(QStringLiteral("sets no pre-roll: %1").arg(tokens)),
+               !session_args_extra_sets_preroll(tokens));
+    }
+    expect("the pre-roll does not shut the pause hold row",
+           !dsd_qt::session_args_extra_sets_pause_hold(QStringLiteral("--analog-record-preroll-ms 700")));
+
+    expect("no preferences, no pre-roll", !dsd_qt::SessionArgsBuilder(nullptr).extraArgsSetPreroll());
+    dsd_qt::AppPrefs appPrefs;
+    const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+    int changes = 0;
+    QObject::connect(&builder, &dsd_qt::SessionArgsBuilder::extraArgsSetPrerollChanged, [&changes] { changes++; });
+    appPrefs.setExtraArgs(QStringLiteral("--analog-record-preroll-ms=700"));
+    expect("the builder reads a pre-roll",
+           builder.extraArgsSetPreroll() && !builder.extraArgsSetPauseHold() && changes == 1);
+    appPrefs.setExtraArgs(QStringLiteral("-- --analog-record-preroll-ms 700"));
+    expect("the builder reads no pre-roll after --", !builder.extraArgsSetPreroll() && changes == 2);
+    appPrefs.setExtraArgs(QString());
+    expect("QML reads it as a property",
+           dsd_qt::SessionArgsBuilder::staticMetaObject
+               .property(dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfProperty("extraArgsSetPreroll"))
                .hasNotifySignal());
 }
 
@@ -1646,6 +1726,7 @@ main(int argc, char** argv) {
     test_recording_args();
     test_recording_refused_extras();
     test_extra_sets_pause_hold();
+    test_extra_sets_preroll();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();
