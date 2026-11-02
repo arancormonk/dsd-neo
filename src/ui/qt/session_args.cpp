@@ -456,20 +456,24 @@ session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool
                                                                : SessionArgsError::None;
 }
 
+/* Whether the extra options @p tokens set the long option @p name, in either of its forms. */
+namespace {
+bool
+extra_sets_long_option(const QString& tokens, QLatin1String name) {
+    const QStringList options = option_tokens(tokens);
+    return std::any_of(options.cbegin(), options.cend(),
+                       [name](const QString& token) { return long_option_is(token, name); });
+}
+} // namespace
+
 bool
 session_args_extra_sets_pause_hold(const QString& tokens) {
-    const QStringList options = option_tokens(tokens);
-    return std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
-        return long_option_is(token, QLatin1String("--analog-record-max-gap-ms"));
-    });
+    return extra_sets_long_option(tokens, QLatin1String("--analog-record-max-gap-ms"));
 }
 
 bool
 session_args_extra_sets_preroll(const QString& tokens) {
-    const QStringList options = option_tokens(tokens);
-    return std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
-        return long_option_is(token, QLatin1String("--analog-record-preroll-ms"));
-    });
+    return extra_sets_long_option(tokens, QLatin1String("--analog-record-preroll-ms"));
 }
 
 static QString

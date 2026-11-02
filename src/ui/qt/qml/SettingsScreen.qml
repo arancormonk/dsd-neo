@@ -748,7 +748,7 @@ Item {
                     DisclosureRow {
                         objectName: "analogPrerollRow"
                         title: qsTr("NFM pre-roll")
-                        subtitle: prefs.analogPrerollMs > 0 ? qsTr("%1 · Recordings start up to this much early, so first words aren't cut off").arg(Util.prerollText(prefs.analogPrerollMs)) : qsTr("Off · Recordings may miss a call's first word")
+                        subtitle: prefs.analogPrerollMs > 0 ? qsTr("%1 · Recordings start up to this much early").arg(Util.prerollText(prefs.analogPrerollMs)) : qsTr("Off · Recordings may miss a call's first word")
                         enabled: prefs.recordCalls && !screen.analogPrerollInExtras
                         showCaret: enabled
                         showDivider: !analogPrerollExtrasNote.visible && !sessionNoticeList.visible

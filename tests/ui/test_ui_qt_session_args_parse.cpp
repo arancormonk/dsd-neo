@@ -470,7 +470,8 @@ struct LiveBridge {
 
 /* A setting changed twice while Record calls on still waits in the queue (a carrier holds it; nothing drains): both
  * changes go, so the session ends at the last one. The first change is then the view's latest command, not the start,
- * and the second was lost for the NFM pause hold (issue #756) and Only unknown talkgroups (issue #708) alike. */
+ * and the second was lost for the NFM pause hold (issue #756) and Only unknown talkgroups (issue #708) alike. The NFM
+ * pre-roll (issue #668) goes the same way behind them. */
 void
 test_live_settings_behind_a_queued_start(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     {
@@ -485,12 +486,18 @@ test_live_settings_behind_a_queued_start(dsd_qt::AppPrefs& prefs, Sessions& sess
         live_bridge.status.refresh();
         expect("the status shows the hold applying",
                live_bridge.status.commandState() == "pending" && live_bridge.status.command() == "analogMaxGap");
+        expect("a pre-roll behind them is sent too", live_bridge.bridge.setAnalogRecordPreroll(300));
+        live_bridge.status.refresh();
+        expect("the status shows the pre-roll applying",
+               live_bridge.status.commandState() == "pending" && live_bridge.status.command() == "analogPreroll");
         (void)live.drain();
         live_bridge.status.refresh();
-        expect("the session records with the second hold",
-               opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000);
-        expect("which the status shows applied",
-               live_bridge.status.commandState() == "applied" && live_bridge.status.analogMaxGapMs() == 3000);
+        expect("the session records with the second hold and the pre-roll",
+               opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000
+                   && opts->analog_record_preroll_ms == 300);
+        expect("which the status shows applied", live_bridge.status.commandState() == "applied"
+                                                     && live_bridge.status.analogMaxGapMs() == 3000
+                                                     && live_bridge.status.analogPrerollMs() == 300);
     }
     {
         bool started = false;
@@ -518,18 +525,23 @@ test_live_settings_behind_a_queued_stop(dsd_qt::AppPrefs& prefs, Sessions& sessi
         expect("a session recording each call starts", started && opts->dmr_stereo_wav == 1);
         const LiveBridge live_bridge;
         expect("Record calls off is queued", live_bridge.bridge.setRecordCalls(false, false, 200, 0));
+        const int preroll = opts->analog_record_preroll_ms;
         expect("a pause hold behind it sends nothing", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+        expect("nor does a pre-roll", live_bridge.bridge.setAnalogRecordPreroll(preroll == 300 ? 400 : 300));
         expect("nor does unknown-only", live_bridge.bridge.setRecordUnknownOnly(true));
         expect("only the stop and its unknown-only clear apply", live.drain() == 2);
         expect("the session stops, its settings as they were",
-               opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200 && opts->record_unknown_only == 0);
+               opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200
+                   && opts->analog_record_preroll_ms == preroll && opts->record_unknown_only == 0);
 
         expect("Record calls off and on again are queued",
                live_bridge.bridge.setRecordCalls(false, false, 200, 0)
                    && live_bridge.bridge.setRecordCalls(true, false, 200, 0));
         expect("a pause hold behind the start is sent", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+        expect("and a pre-roll", live_bridge.bridge.setAnalogRecordPreroll(500));
         (void)live.drain();
-        expect("the session records with it", opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000);
+        expect("the session records with them", opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000
+                                                    && opts->analog_record_preroll_ms == 500);
     }
     prefs.setRecordCalls(false);
 }
@@ -548,11 +560,14 @@ test_live_setting_after_a_dropped_start(dsd_qt::AppPrefs& prefs, Sessions& sessi
     dsd_app_frontend_runtime_start(live.decoder.opts.get(), live.decoder.state.get());
     live_bridge.status.refresh();
     expect("the start reads as dropped", live_bridge.status.commandState() == "dropped");
+    const int preroll = opts->analog_record_preroll_ms;
     expect("a pause hold after it sends nothing", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+    expect("a pre-roll neither", live_bridge.bridge.setAnalogRecordPreroll(preroll == 300 ? 400 : 300));
     expect("unknown-only neither", live_bridge.bridge.setRecordUnknownOnly(true));
     expect("nothing is queued", live.drain() == 0);
     expect("the session records nothing, its settings as they were",
-           opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200 && opts->record_unknown_only == 0);
+           opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200
+               && opts->analog_record_preroll_ms == preroll && opts->record_unknown_only == 0);
 }
 
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
@@ -598,9 +613,11 @@ test_live_record_off_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
  * records. */
 void
 test_live_record_on_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
-    for (const int refused :
-         {static_cast<int>(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET),
-          static_cast<int>(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET), static_cast<int>(DSD_APP_CMD_WAV_START)}) {
+    for (const int refused : {
+             static_cast<int>(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET),
+             static_cast<int>(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET),
+             static_cast<int>(DSD_APP_CMD_WAV_START),
+         }) {
         const bool hold_refused = refused == DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET;
         const bool preroll_refused = refused == DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET;
         bool started = false;

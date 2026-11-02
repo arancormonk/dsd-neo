@@ -1019,7 +1019,7 @@ AppPrefs::setAnalogPrerollMs(int ms) {
 }
 
 QVariantList
-AppPrefs::analogPrerollChoices() const {
+AppPrefs::analogPrerollChoices() {
     QVariantList choices;
     for (const int choice : kAnalogPrerollChoices) {
         choices.append(choice);

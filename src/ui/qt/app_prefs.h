@@ -291,7 +291,7 @@ class AppPrefs : public QObject {
     void setAnalogPrerollMs(int ms);
 
     /** @brief The pre-rolls offered, in ms: 0 (off), 100, 200, 300, 500 and 1000. */
-    QVariantList analogPrerollChoices() const;
+    static QVariantList analogPrerollChoices();
 
   Q_SIGNALS:
     void autoStartOnAttachChanged();

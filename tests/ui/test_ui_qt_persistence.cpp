@@ -664,10 +664,10 @@ test_analog_preroll_pref() {
     {
         AppPrefs prefs;
         int changes = 0;
-        QObject::connect(&prefs, &AppPrefs::analogPrerollMsChanged, &prefs, [&changes]() { ++changes; });
+        QObject::connect(&prefs, &AppPrefs::analogPrerollMsChanged, &prefs, [&changes] { ++changes; });
         expect("the pre-roll is the decoder's default", prefs.analogPrerollMs() == fallback && !stored.contains(key));
         expect("the pre-rolls Settings offers",
-               prefs.analogPrerollChoices() == QVariantList({0, 100, 200, 300, 500, 1000}));
+               AppPrefs::analogPrerollChoices() == QVariantList({0, 100, 200, 300, 500, 1000}));
         prefs.setAnalogPrerollMs(300);
         expect("a choice is saved", prefs.analogPrerollMs() == 300 && stored.value(key).toInt() == 300 && changes == 1);
         prefs.setAnalogPrerollMs(300);
@@ -695,7 +695,7 @@ test_analog_preroll_pref() {
         stored.setValue(key, QStringLiteral("abc"));
         expect("an unparsable stored pre-roll reads as the default", reloaded.analogPrerollMs() == fallback);
         int changes = 0;
-        QObject::connect(&reloaded, &AppPrefs::analogPrerollMsChanged, &reloaded, [&changes]() { ++changes; });
+        QObject::connect(&reloaded, &AppPrefs::analogPrerollMsChanged, &reloaded, [&changes] { ++changes; });
         reloaded.setAnalogPrerollMs(fallback);
         expect("a corrective pre-roll write replaces the damage",
                stored.value(key).toString() == QString::number(fallback) && changes == 1);
@@ -727,8 +727,13 @@ const WideIntPref kWideIntPrefs[] = {
     {"search/port", &AppPrefs::searchPort, &AppPrefs::setSearchPort, 1234, 80},
     {"recording/limitMb", &AppPrefs::recordingLimitMb, &AppPrefs::setRecordingLimitMb, 1000, 2000},
     {"recording/analogMaxGapMs", &AppPrefs::analogMaxGapMs, &AppPrefs::setAnalogMaxGapMs, 200, 2000},
-    {"recording/analogPrerollMs", &AppPrefs::analogPrerollMs, &AppPrefs::setAnalogPrerollMs,
-     DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS, 500},
+    {
+        "recording/analogPrerollMs",
+        &AppPrefs::analogPrerollMs,
+        &AppPrefs::setAnalogPrerollMs,
+        DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS,
+        500,
+    },
 };
 
 /* @p wide as a restored backup holds it (a JSON integer, a JSON number too big for one), or as the file reads back. */
