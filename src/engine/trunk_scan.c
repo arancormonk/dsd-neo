@@ -338,6 +338,12 @@ typedef struct {
     /* The empty decoder state a pause puts over the live one, so the manual session starts from no target's tables:
        storage of its own, never scratch_snapshot, which holds a resume's rollback (F1). */
     dsd_trunk_scan_snapshot empty_snapshot;
+    /* The published avoid list (dsd_state::trunk_scan_avoids, issue #672) could not allocate at its last rebuild: the
+       tick rebuilds it again, paused or not, until one allocates (trunk_scan_publish_avoids()). */
+    int avoids_publish_retry;
+    /* A control found the P25 SM tick guard held and left its timing unpublished: the next tick's publication owes it
+       (trunk_scan_control_publish_timing()). */
+    int timing_dirty;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2258,6 +2264,11 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->scan_row_edited = 0U;
     state->scan_row_listed = 0U;
     dsd_scan_timing_clear(state);
+    /* The avoid list goes with its session (issue #672), under a new revision so no snapshot keeps the entries. */
+    state->trunk_scan_session = 0U;
+    dsd_state_trunk_scan_avoids_free(state);
+    state->trunk_scan_avoids_ok = 1U;
+    state->trunk_scan_avoid_rev = dsd_state_rev_next();
 }
 
 static size_t
@@ -2267,6 +2278,43 @@ trunk_scan_avoided_count(const dsd_trunk_scan_coord* coord) {
         avoided += coord->targets[i].avoided ? 1U : 0U;
     }
     return avoided;
+}
+
+/* Rebuild the published avoid list (issue #672) from the targets' flags, in list order, under a new
+ * trunk_scan_avoid_rev, which the snapshot's copy keys on. Called where the membership changes (an avoid, a clear, a
+ * put back, the attach) and nowhere else: a hop, a pause or a resume changes no flag. A list that cannot allocate is
+ * published empty with trunk_scan_avoids_ok 0, never with stale entries, and the tick tries again. */
+static void
+trunk_scan_publish_avoids(dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const size_t avoided = trunk_scan_avoided_count(coord);
+    if (dsd_state_trunk_scan_avoids_reserve(state, avoided) != 0) {
+        /* A retry that fails again changes nothing published, so it moves no revision. */
+        const int changed = state->trunk_scan_avoids_ok != 0U || state->trunk_scan_avoid_count != 0U;
+        state->trunk_scan_avoid_count = 0;
+        state->trunk_scan_avoids_ok = 0U;
+        coord->avoids_publish_retry = 1;
+        if (changed) {
+            state->trunk_scan_avoid_rev = dsd_state_rev_next();
+        }
+        return;
+    }
+    size_t published = 0;
+    for (size_t i = 0; i < coord->count && published < avoided; i++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (!rt->avoided) {
+            continue;
+        }
+        dsd_trunk_scan_avoid_entry* entry = &state->trunk_scan_avoids[published++];
+        DSD_MEMSET(entry, 0, sizeof(*entry));
+        entry->ordinal = (uint32_t)(i + 1U);
+        entry->frequency_hz = rt->target.frequency_hz;
+        DSD_SNPRINTF(entry->id, sizeof entry->id, "%s", rt->target.id);
+        DSD_SNPRINTF(entry->label, sizeof entry->label, "%s", rt->target.label);
+    }
+    state->trunk_scan_avoid_count = published;
+    state->trunk_scan_avoids_ok = 1U;
+    coord->avoids_publish_retry = 0;
+    state->trunk_scan_avoid_rev = dsd_state_rev_next();
 }
 
 /* What the coordinator publishes whether or not a target is on air: the list's size and avoids, the operator hold, and
@@ -2280,6 +2328,8 @@ trunk_scan_publish_configured(dsd_state* state, const dsd_trunk_scan_coord* coor
     state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
     state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
     state->trunk_scan_configured_trunk_enable = coord->saved_trunk_enable ? 1U : 0U;
+    /* Half of a trunk-scan avoid identity (issue #672), so it stays while paused, unlike scan_row_session. */
+    state->trunk_scan_session = coord->session;
 }
 
 /* A paused scan (issue #671) names no target: no id, ordinal or scan row (the "this channel" editors see none), no
@@ -3861,7 +3911,8 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
     if (!opts || !state) {
         return;
     }
-    if (!coord || coord->active >= coord->count) {
+    /* A paused scan has no visit (issue #671): whatever reaches here then leaves the timing cleared. */
+    if (!coord || coord->active >= coord->count || coord->paused) {
         dsd_scan_timing_clear(state);
         return;
     }
@@ -4160,13 +4211,22 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     const double now_m = trunk_scan_now_m();
     trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     trunk_scan_publish_timing(opts, state, coord, now_m);
+    coord->timing_dirty = 0;
 }
 
 void
 dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    /* A paused scan rotates nothing and publishes nothing until a resume. */
-    if (!opts || !state || !coord || coord->count == 0 || coord->paused) {
+    if (!opts || !state || !coord || coord->count == 0) {
+        return;
+    }
+    /* An avoid list that could not allocate is rebuilt before the paused return, so a paused scan's list recovers too.
+       The rebuild touches the list alone: no rotation, timing, tuner, hold or clock. */
+    if (coord->avoids_publish_retry) {
+        trunk_scan_publish_avoids(state, coord);
+    }
+    /* A paused scan rotates nothing and publishes nothing else until a resume. */
+    if (coord->paused) {
         return;
     }
     if (!p25_sm_tick_guard_try_enter()) {
@@ -4213,6 +4273,18 @@ trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     return coord->hold_active;
 }
 
+/* An avoid lifted that gives the visit somewhere to go again (@p had_alternate 0, now one) starts the cap's interval
+   afresh, as a park does, rather than let it expire at once against a visit that could not leave. A visit with no clock
+   (paused, or a park that never landed) has nothing to restart. */
+static void
+trunk_scan_restart_visit_for_new_alternate(dsd_trunk_scan_coord* coord, int had_alternate, double now_m) {
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!had_alternate && trunk_scan_visit_alternate_is_eligible(coord, now_m) && rt->visit_since_m >= 0.0) {
+        rt->visit_since_m = now_m;
+        rt->visit_rearm_pending = 0;
+    }
+}
+
 static int
 trunk_scan_control_avoid_clear(dsd_state* state, dsd_trunk_scan_coord* coord) {
     const double now_m = trunk_scan_now_m();
@@ -4221,10 +4293,9 @@ trunk_scan_control_avoid_clear(dsd_state* state, dsd_trunk_scan_coord* coord) {
     for (size_t i = 0; i < coord->count; i++) {
         coord->targets[i].avoided = 0;
     }
-    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (!had_alternate && trunk_scan_visit_alternate_is_eligible(coord, now_m) && rt->visit_since_m >= 0.0) {
-        rt->visit_since_m = now_m;
-        rt->visit_rearm_pending = 0;
+    trunk_scan_restart_visit_for_new_alternate(coord, had_alternate, now_m);
+    if (cleared > 0U || coord->avoids_publish_retry) {
+        trunk_scan_publish_avoids(state, coord);
     }
     trunk_scan_publish_active_target(state, coord);
     return cleared > INT_MAX ? INT_MAX : (int)cleared;
@@ -4232,6 +4303,11 @@ trunk_scan_control_avoid_clear(dsd_state* state, dsd_trunk_scan_coord* coord) {
 
 static int
 trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    /* The receiver fell back onto an avoided target (every alternate failed or was cooling down): it is avoided
+       already, and avoiding it again must not release its call and walk the list once more (issue #672, B4). */
+    if (coord->targets[coord->active].avoided) {
+        return DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED;
+    }
     if (trunk_scan_usable_count(coord) <= 1) {
         return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
@@ -4239,6 +4315,7 @@ trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
         return DSD_TRUNK_SCAN_CONTROL_BUSY;
     }
     coord->targets[coord->active].avoided = 1;
+    trunk_scan_publish_avoids(state, coord);
     const int rc = trunk_scan_control_advance_locked(opts, state, coord, 1);
     trunk_scan_publish_active_target(state, coord);
     p25_sm_tick_guard_leave();
@@ -4258,15 +4335,35 @@ trunk_scan_control_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coor
     return rc;
 }
 
+/* The timing a control leaves behind (B5). The command queue publishes right after a control, possibly while input is
+   stalled, so the label and the timing should already describe the same visit. The report reads the parked target's
+   P25 machine, which the watchdog thread changes under the P25 SM tick guard, so it is built only with the guard held;
+   a control that finds it held leaves the publication to the next tick, which takes it. The caller holds no guard
+   (avoid, advance and retreat leave theirs first): the guard is not re-entrant. A paused scan publishes no timing. */
+static void
+trunk_scan_control_publish_timing(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    if (coord->paused) {
+        dsd_scan_timing_clear(state);
+        return;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        coord->timing_dirty = 1;
+        return;
+    }
+    trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
+    coord->timing_dirty = 0;
+    p25_sm_tick_guard_leave();
+}
+
 int
 dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
     }
-    /* Every control acts on the target on air, and a paused scan has none: a resume comes first. The hold and the
-       avoids stay as they are. */
-    if (coord->paused) {
+    /* Every control but clear acts on the target on air, and a paused scan has none: a resume comes first. Clearing
+       the avoids only edits flags, so a paused scan takes it too (issue #672). The hold stays as it is. */
+    if (coord->paused && op != DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR) {
         return DSD_TRUNK_SCAN_CONTROL_PAUSED;
     }
     int rc;
@@ -4278,10 +4375,8 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
         case DSD_TRUNK_SCAN_CONTROL_RETREAT: rc = trunk_scan_control_advance(opts, state, coord, -1); break;
         default: return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
-    // The command queue publishes immediately, possibly while input is stalled.
-    // Its target label and timing must already describe the same visit.
     if (rc >= 0) {
-        trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
+        trunk_scan_control_publish_timing(opts, state, coord);
     }
     return rc;
 }
@@ -4569,6 +4664,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.active_chan_csv = dsd_engine_trunk_scan_active_chan_csv;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     hooks.control = dsd_engine_trunk_scan_control;
+    hooks.unavoid = dsd_engine_trunk_scan_unavoid_target;
     hooks.decryption_apply = trunk_scan_apply_decryption;
     dsd_trunk_scan_hooks_set(&hooks);
 }
@@ -4725,6 +4821,8 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
     dsd_trunk_scan_target_list_reset(&list);
     trunk_scan_install_runtime_hooks(coord);
+    /* The session's list starts empty, under a revision of its own. */
+    trunk_scan_publish_avoids(state, coord);
     const int switch_rc = trunk_scan_switch_to(opts, state, coord, 0, 0);
     if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
         trunk_scan_detach(opts, state, coord, 1);
@@ -5187,6 +5285,31 @@ trunk_scan_edit_find(const dsd_trunk_scan_coord* coord, uint32_t session, const 
         }
     }
     return -1;
+}
+
+int
+dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
+        return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    const int index = trunk_scan_edit_find(coord, session, target_id);
+    if (index < 0) {
+        return DSD_TRUNK_SCAN_CONTROL_STALE;
+    }
+    if (!coord->targets[index].avoided) {
+        return DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED;
+    }
+    /* A flag edit, as clear's: no retune, and the hold, cooldowns and dwell stay. Putting back the parked fallback
+       gives the visit no new alternate (the active target is none), so only its published avoided mark changes. */
+    const double now_m = trunk_scan_now_m();
+    const int had_alternate = trunk_scan_visit_alternate_is_eligible(coord, now_m);
+    coord->targets[index].avoided = 0;
+    trunk_scan_restart_visit_for_new_alternate(coord, had_alternate, now_m);
+    trunk_scan_publish_avoids(state, coord);
+    trunk_scan_publish_active_target(state, coord);
+    trunk_scan_control_publish_timing(opts, state, coord);
+    return DSD_TRUNK_SCAN_CONTROL_OK;
 }
 
 /* Install @p next as target @p index's session edit: from its next visit when it is not parked, at once when it is.

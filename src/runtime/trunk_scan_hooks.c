@@ -185,3 +185,11 @@ dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op) {
     }
     return g_trunk_scan_hooks.control(opts, state, op);
 }
+
+int
+dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+    if (!g_trunk_scan_hooks.unavoid) {
+        return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    return g_trunk_scan_hooks.unavoid(opts, state, session, target_id);
+}

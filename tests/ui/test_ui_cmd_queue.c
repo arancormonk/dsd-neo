@@ -24171,8 +24171,9 @@ finish_trunk_scan(dsd_opts* opts, dsd_state* state, const char* csv) {
 /*
  * Issue #671: a frequency entry over a running trunk scan pauses it (the tune and the pause in one hold of the P25 SM
  * tick guard, before the P25 control-channel selection a parked trunked target would otherwise get), and the scan
- * keeps its coordinator for a resume. While paused: a second entry only tunes; hold, avoid, clear avoids and next are
- * refused with no target named (no "Avoiding target" toast); a tap-to-tune is allowed; trunking cannot be switched
+ * keeps its coordinator for a resume. While paused: a second entry only tunes; hold, avoid and next are refused with no
+ * target named (no "Avoiding target" toast), and clear avoids, a flag edit, is taken (issue #672); a tap-to-tune is
+ * allowed; trunking cannot be switched
  * either way (B5: each target sets its own, running or paused); a tuner release leaves the pause. `y` and
  * DSD_APP_CMD_SCAN_RESUME resume it on the target it left; `y` and a release pause a running one in place; a resume
  * of a running scan is refused; a refused entry leaves the scan running. On main the entry was refused under trunk
@@ -24210,8 +24211,7 @@ test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
     rc |= expect_str("trunk second entry toast", state.ui_msg, "Applied: frequency -> 861.000000 MHz");
     rc |= expect_int("trunk second entry: a plain tune", g_seam_tune_guarded == 0 && state.trunk_scan_paused == 1, 1);
 
-    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_SCAN_AVOID_CLEAR,
-                                     DSD_APP_CMD_CHANNEL_CYCLE};
+    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_CHANNEL_CYCLE};
     const uint8_t hold_before = state.trunk_scan_hold;
     for (size_t i = 0; i < sizeof k_controls / sizeof k_controls[0]; i++) {
         rc |= drain_action(&opts, &state, k_controls[i], "trunk control while paused");
@@ -24222,6 +24222,17 @@ test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
                              && state.trunk_scan_paused == 1,
                          1);
     }
+    /* Clearing the avoids only edits flags, so the paused scan takes it (issue #672): it completes, names no target and
+       leaves the pause, the hold and the tuner as they were. */
+    const int clear_tunes = g_seam_tune_calls;
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "trunk clear while paused");
+    rc |= expect_str("trunk clear while paused toast", state.ui_msg, "Cleared 0 trunk scan avoids");
+    rc |= expect_int("trunk clear while paused completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("trunk clear while paused keeps the pause",
+                     state.trunk_scan_hold == hold_before && state.trunk_scan_avoided_count == 0U
+                         && state.trunk_scan_paused == 1 && state.trunk_scan_active_id[0] == '\0'
+                         && g_seam_tune_calls == clear_tunes,
+                     1);
 
     rc |= expect_int("trunk tap queued", post_u32(DSD_APP_CMD_MANUAL_TUNE, 862000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
     state.ui_msg[0] = '\0';

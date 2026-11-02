@@ -398,7 +398,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   carrier's decoding (`dsd_engine_scan_forget_carrier()`, the helper the -Y pause and a target switch share); a pause
   for a tune leaves that to the caller's TUNE boundary. While paused every coordinator entry point is dark: no tick,
   yield, timing, conventional hold or class answer; the P25/DMR context and channel-map hooks NULL; controls answer
-  `DSD_TRUNK_SCAN_CONTROL_PAUSED`; live decryption STALE; target edits stored for the next visit; the configured gain
+  `DSD_TRUNK_SCAN_CONTROL_PAUSED` except the avoid edits (clear and put back, issue #672, below); live decryption STALE; target edits stored for the next visit; the configured gain
   in force; shutdown saves no live state into the target; the band-plan export reads the paused target's snapshot; and
   `dsd_engine_scan_hears_tones()` answers for the session in force (B26). A resume ends the manual session's calls
   under no name, saves it as the rollback, recaptures the configured modulation, and re-parks the target as a revisit
@@ -419,6 +419,31 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   Phase 2 call, a pause over a P25 park or DMR tune in flight and its late answer, a resume that supersedes one, both
   resume failures, a watchdog thread reading the hooks beside a pause and a resume, each command waiting out a held
   guard), `APP_COMMAND_QUEUE`.
+- Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
+  `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
+  under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a
+  clear that cleared something, a put back. A hop, advance, retreat, hold, pause, resume (refused or not) or target
+  edit changes no flag and stamps nothing; the frontends rebuild only when the revision moves. A list that cannot
+  allocate is published empty with `trunk_scan_avoids_ok` 0 (never stale entries) and `avoids_publish_retry` set; the
+  tick services that flag before its paused return, rebuilding the list alone, and a retry that fails again stamps
+  nothing. `trunk_scan_session` (`coord->session`, published with the configured state, so kept while paused unlike
+  `scan_row_session`) is a put back identity's other half. The detach (`trunk_scan_clear_published_target()`) frees
+  the list, zeroes the session and stamps the revision. `dsd_engine_trunk_scan_unavoid_target()` (the `unavoid` hook)
+  finds the target by `(session, id)` (`trunk_scan_edit_find()`; STALE when absent or session 0, NOT_AVOIDED when
+  clear), clears its flag only -- no retune, hold, retry-cooldown or dwell change -- restarts the visit cap only when
+  it makes the first eligible alternate (clear's rule, `trunk_scan_restart_visit_for_new_alternate()`; the parked
+  fallback is no alternate, so putting it back only drops its avoided mark), then republishes the list, the target and
+  the timing. A paused scan takes the put back and the clear (flag edits; its timing stays cleared) and refuses every
+  other control. Avoid on an active target already avoided (the parked fallback) answers
+  `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` before anything runs (B4): no release, walk, tune, flag, revision or clock.
+  Timing after a control (B5): the report reads the parked target's P25 machine, which the watchdog changes under the
+  P25 SM tick guard, so `trunk_scan_control_publish_timing()` builds it only under `p25_sm_tick_guard_try_enter()`,
+  never nested (the flag-only controls and the put back hold no guard; avoid, advance and retreat leave theirs first);
+  when the guard is held the next tick publishes it (`timing_dirty`), and `trunk_scan_publish_timing()` leaves a paused
+  scan's timing cleared whoever calls it. Tests: `ENGINE_TRUNK_SCAN` (put back, stale and unknown identities, the
+  parked fallback, cooldowns kept, the cap's 0 -> 1 rule, paused put back and clear, rebuild sites, allocation failure
+  retried while paused, the busy guard), `ENGINE_TRUNK_SCAN_PAUSE` (controls and put backs beside a thread changing the
+  P25 machine under the real guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
@@ -1130,7 +1155,8 @@ suite runs under this compiler.
   `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
   `_avoid_free()`, the snapshot copies and the trunk-scan list's `dsd_state_trunk_scan_avoids_reserve()`/`_set()`/
   `_free()`) stamp nothing. The published trunk-scan list (`dsd_trunk_scan_avoid_entry`: ordinal, frequency, id,
-  label) sits in the uncopied heap gap beside the LCN stores; `initState()` and `freeState()` release it (the LCN
+  label) sits in the uncopied heap gap beside the LCN stores; `initState()`, `freeState()` and the coordinator's detach
+  release it (the LCN
   umbrella `dsd_state_trunk_lcn_free()` leaves it alone, so a live list only changes with a new
   `trunk_scan_avoid_rev` or `state_instance`), a failed `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from
   `initState()`) says whether the coordinator's last rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
@@ -3015,7 +3041,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
     a step or avoid lands on.
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
-    stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast.
+    stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast. Avoid on a
+    target already avoided answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` and does nothing (issue #672).
+  - A paused scan takes clear alone (a flag edit, issue #672); the other ops answer "paused".
+- `dsd_trunk_scan_hook_unavoid()` — put one avoided target back by its identity, `(session, target id)` (issue #672):
+  `DSD_TRUNK_SCAN_CONTROL_OK`, `_STALE` (another session, session 0 or no such id), `_NOT_AVOIDED`, or "unavailable"
+  when trunk scan is not installed (a NULL slot); also while paused. Its own slot beside `control`, so
+  `APP_COMMAND_QUEUE` fakes it as it fakes `control`.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl

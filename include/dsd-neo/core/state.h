@@ -1068,8 +1068,8 @@ struct dsd_state {
     dsd_key_set scan_keys_active;
     uint8_t scan_keys_active_set;
     /* The avoided --trunk-scan targets the coordinator published (issue #672), trunk_scan_avoid_count entries in a heap
-     * store of trunk_scan_avoid_capacity; NULL until the first publication. Only the coordinator fills it (through
-     * dsd_state_trunk_scan_avoids_set(), stamping trunk_scan_avoid_rev); initState() and freeState() release it. The
+     * store of trunk_scan_avoid_capacity; NULL until the first publication. Only the coordinator fills it (its reserve
+     * helper, stamping trunk_scan_avoid_rev); the coordinator's detach, initState() and freeState() release it. The
      * LCN umbrella free (dsd_state_trunk_lcn_free()) leaves it alone: a live state's list changes only with a new
      * trunk_scan_avoid_rev or, at initState(), a new state_instance, which the snapshot's gated copy keys on. Never
      * inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as the stores above. */
@@ -2905,7 +2905,7 @@ int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
  * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release. The
  * published trunk-scan avoid list is not an LCN store and is left alone: only
  * its owner empties it, with a new revision (dsd_state_trunk_scan_avoids_free()
- * from initState()/freeState()). A storage helper: it stamps no revision.
+ * from the trunk-scan detach, initState() or freeState()). A storage helper: it stamps no revision.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
 
