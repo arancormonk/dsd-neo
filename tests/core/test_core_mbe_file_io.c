@@ -3777,9 +3777,15 @@ nfm_name_case_run(const nfm_name_case* c) {
     return rc;
 }
 
-/* A mode word of 160 characters, which the name's system part holds: the analog part keeps it whole (issue #668). */
+/* A mode word of 160 characters, which the name's system part holds: the analog part keeps it whole (issue #668). On
+   Windows a path stays under MAX_PATH (260), which the runner's temp directory and a 160-character word pass, so the
+   rename would fail there; the word is 80 characters, still well past the 48 the analog part once had. */
+#if DSD_PLATFORM_WIN_NATIVE
+static const char k_long_mode[] = "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE";
+#else
 static const char k_long_mode[] = "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE"
                                   "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE";
+#endif
 
 static int
 test_close_and_rename_wav_names_an_nfm_recording(void) {
