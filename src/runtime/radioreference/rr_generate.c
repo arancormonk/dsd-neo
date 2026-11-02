@@ -1429,6 +1429,7 @@ rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* 
 
 /** What a group-CSV pass did, so the warnings can be worded once at the end. */
 typedef struct {
+    size_t no_id;
     size_t duplicates;
     size_t shortened;
     size_t emitted;
@@ -1477,6 +1478,12 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted
 static void
 rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
     char msg[DSD_RR_WARNING_TEXT_MAX];
+    if (counts->no_id > 0U) {
+        (void)DSD_SNPRINTF(msg, sizeof(msg),
+                           "%zu talkgroup(s) were skipped because RadioReference lists no usable ID for them.",
+                           counts->no_id);
+        rr_warn(warnings, msg);
+    }
     if (counts->duplicates > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu duplicate talkgroup ID(s) were dropped; the first one wins.",
                            counts->duplicates);
@@ -1487,8 +1494,37 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
                            counts->shortened);
         rr_warn(warnings, msg);
     }
-    (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu talkgroup(s) written.", counts->emitted);
-    rr_warn(warnings, msg);
+    if (counts->emitted > 0U) {
+        (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu talkgroup(s) written.", counts->emitted);
+        rr_warn(warnings, msg);
+    }
+}
+
+/**
+ * @brief Collect the sort keys of the talkgroups that can be written.
+ *
+ * Runs before duplicate selection, so a row with no usable ID can never be the
+ * "first" of a duplicate pair and push a real one out.
+ *
+ * @param talkgroups Talkgroups.
+ * @param count      Number of talkgroups.
+ * @param keys       Receives the keys, sized for @p count.
+ * @param counts     Running tallies; the skip counts are filled in.
+ * @return The number of keys written.
+ */
+static size_t
+rr_group_keys(const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys, rr_group_counts* counts) {
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!talkgroups[i].tg_dec_valid) {
+            counts->no_id++;
+            continue;
+        }
+        keys[kept].dec = talkgroups[i].tg_dec;
+        keys[kept].order = i;
+        kept++;
+    }
+    return kept;
 }
 
 int
@@ -1517,17 +1553,20 @@ dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t
     if (keys == NULL) {
         return -1;
     }
-    for (size_t i = 0; i < count; i++) {
-        keys[i].dec = talkgroups[i].tg_dec;
-        keys[i].order = i;
+    rr_group_counts counts = {0U, 0U, 0U, 0U};
+    const size_t kept = rr_group_keys(talkgroups, count, keys, &counts);
+    if (kept == 0U) {
+        /* Nothing writable: no file, but the skip counts still say why. */
+        free(keys);
+        rr_group_warn(warnings, &counts);
+        return 0;
     }
-    qsort(keys, count, sizeof(*keys), rr_tg_key_cmp);
+    qsort(keys, kept, sizeof(*keys), rr_tg_key_cmp);
 
     rr_text text = {NULL, 0U, 0U, 0};
     rr_text_add(&text, RR_GROUP_HEADER);
 
-    rr_group_counts counts = {0U, 0U, 0U};
-    for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < kept; i++) {
         if (i > 0U && keys[i].dec == keys[i - 1U].dec) {
             counts.duplicates++;
             continue;

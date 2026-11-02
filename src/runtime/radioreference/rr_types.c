@@ -97,6 +97,31 @@ rr_parse_long_strict(const char* text, long* out) {
     return 0;
 }
 
+int
+rr_parse_ll_range_strict(const char* text, long long min_value, long long max_value, long long* out) {
+    if (text == NULL || out == NULL || min_value > max_value) {
+        return -1;
+    }
+
+    const char* start = rr_skip_ws(text);
+    if (*start == '\0') {
+        return -1;
+    }
+
+    char* end = NULL;
+    errno = 0;
+    const long long value = strtoll(start, &end, 10);
+    if (errno != 0 || end == start || *rr_skip_ws(end) != '\0') {
+        return -1;
+    }
+    if (value < min_value || value > max_value) {
+        return -1;
+    }
+
+    *out = value;
+    return 0;
+}
+
 void
 rr_copy_field(char* dst, size_t dst_sz, const char* src) {
     if (dst == NULL || dst_sz == 0U) {

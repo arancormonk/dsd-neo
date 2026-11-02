@@ -238,10 +238,15 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
  * fields. No space follows a comma, because the importer does not trim the name
  * column. Category shortening is not included in talkgroup-name warnings.
  *
+ * A talkgroup whose tg_dec_valid is 0 has no ID to write: it is skipped before
+ * duplicate selection and counted in its own warning. When every talkgroup is
+ * skipped this returns 0 with `*out == NULL` and `*out_len == 0` - "no group
+ * file", with the warnings saying why - and the caller must not write one.
+ *
  * @param talkgroups      Talkgroups to emit.
  * @param count           Number of talkgroups.
  * @param partial_enc_as_de Treat enc == 1 (partially encrypted) as blocked.
- * @param out             Receives the heap text; caller frees. Never NULL on 0.
+ * @param out             Receives the heap text, or NULL when nothing was writable; caller frees.
  * @param out_len         Receives the text length in bytes.
  * @param warnings        Optional; receives preview warnings.
  * @return 0 on success, -1 on invalid argument or allocation failure.

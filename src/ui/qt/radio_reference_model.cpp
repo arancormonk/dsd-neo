@@ -1655,7 +1655,13 @@ RadioReferenceModel::completeRefresh() {
     const bool isChan = (m_refreshKind == QLatin1String("chan"));
     const QString text = plan.value(isChan ? QStringLiteral("chanCsvText") : QStringLiteral("groupCsvText")).toString();
     if (text.isEmpty()) {
-        setError(ParseError, tr("RadioReference has no data for this file any more."));
+        /* The writer skips every talkgroup it cannot give an ID, so a list can
+         * come back empty while RadioReference still lists talkgroups; the
+         * stored copy is kept either way, and the message says which. */
+        setError(ParseError, (!isChan && m_talkgroupData.count > 0)
+                                 ? tr("None of the talkgroups RadioReference lists has an ID dsd-neo can use, so "
+                                      "the stored copy was kept.")
+                                 : tr("RadioReference has no data for this file any more."));
         endRefresh(result);
         return;
     }

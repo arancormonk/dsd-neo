@@ -222,6 +222,10 @@ typedef struct {
 
 typedef struct {
     uint32_t tg_dec;
+    /** 1 when tg_dec holds a tgDec value that parsed in range; 0 when the element
+     * was absent, nil, malformed or above UINT32_MAX (tg_dec is then 0 and means
+     * nothing). A zeroed struct is invalid, so a hand-built talkgroup sets it. */
+    int tg_dec_valid;
     int tg_cid;
     char alpha_tag[64];
     char description[160];

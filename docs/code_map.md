@@ -2782,6 +2782,13 @@ suite runs under this compiler.
     just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
     returns 0 with no text and keeps the trunked "first site only" warning.
+    The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
+    (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
+    value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
+    is read case- and space-blind. The group writer (`dsd_rr_generate_group_csv*()`) drops rows with no valid
+    ID before duplicate selection, with a counted warning, and when nothing is left it returns 0 with no text;
+    the terminal wizard's group cache copies the writer's warnings into the plan even when there is no text, and
+    a refresh (terminal and Qt) that would leave a talkgroup list empty keeps the stored file and says why.
     The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
     selection, Hz-to-MHz text, the baked-key rule and the output filename stem — lives in
     `radioreference/rr_import.c` behind `include/dsd-neo/runtime/radioreference_import.h` and compiles with

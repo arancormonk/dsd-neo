@@ -528,6 +528,7 @@ static void
 tg_set(dsd_rr_talkgroup* tg, uint32_t dec, const char* alpha, const char* descr, int enc) {
     DSD_MEMSET(tg, 0, sizeof(*tg));
     tg->tg_dec = dec;
+    tg->tg_dec_valid = 1;
     if (alpha != NULL) {
         (void)DSD_SNPRINTF(tg->alpha_tag, sizeof(tg->alpha_tag), "%s", alpha);
     }
@@ -617,6 +618,61 @@ test_group_csv(void) {
 
     expect("group csv rejects empty input", dsd_rr_generate_group_csv(partial, 0U, 0, &text, &len, NULL) != 0);
     expect("group csv rejects NULL out", dsd_rr_generate_group_csv(partial, 2U, 0, NULL, &len, NULL) != 0);
+}
+
+/**
+ * @brief Regression: a tgDec that does not parse never becomes a written ID.
+ *
+ * Parsed end to end from SOAP text. The old parser wrapped 4294967309 to 13 and
+ * left "12x" at its zeroed 0, and the writer emitted both: a "0" row, and an
+ * aliased 13 that - being first in input order - beat the real TG 13 in the
+ * duplicate pass and was reported as a duplicate the user never had.
+ */
+static void
+test_group_csv_skips_unusable_ids(void) {
+    static const char k_body[] = "<?xml version=\"1.0\"?><Envelope><Body><getTrsTalkgroupsResponse><return>"
+                                 "<item><tgDec>4294967309</tgDec><tgAlpha>Wrapped</tgAlpha></item>"
+                                 "<item><tgDec>12x</tgDec><tgAlpha>Junk</tgAlpha></item>"
+                                 "<item><tgAlpha>Absent</tgAlpha></item>"
+                                 "<item><tgDec>13</tgDec><tgAlpha>Real 13</tgAlpha></item>"
+                                 "</return></getTrsTalkgroupsResponse></Body></Envelope>";
+    dsd_rr_talkgroup_list list;
+    dsd_rr_error err;
+    DSD_MEMSET(&list, 0, sizeof(list));
+    DSD_MEMSET(&err, 0, sizeof(err));
+    expect("unusable-id body parses",
+           rr_soap_parse(k_body, sizeof(k_body) - 1U, RR_SHAPE_TALKGROUP_LIST, &list, &err, NULL) == 0);
+    expect_size("four talkgroups parsed", list.count, 4U);
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("unusable-id csv generated",
+           dsd_rr_generate_group_csv(list.items, list.count, 1, &text, &len, &warnings) == 0);
+    expect_str("only the real talkgroup is written", text,
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
+               "13,A,Real 13\n");
+    expect("unusable ids are counted",
+           warned(&warnings, "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("an unusable id is not reported as a duplicate", !warned(&warnings, "duplicate"));
+    expect("the written count excludes skipped rows", warned(&warnings, "1 talkgroup(s) written."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Nothing usable at all: no file, and the warning still says why. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("all-unusable generation succeeds",
+           dsd_rr_generate_group_csv(list.items, 3U, 1, &text, &len, &warnings) == 0);
+    expect("all-unusable writes no file", text == NULL && len == 0U);
+    expect("all-unusable keeps the skip warning",
+           warned(&warnings, "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("all-unusable claims nothing written", !warned(&warnings, "written"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+    dsd_rr_talkgroup_list_free(&list);
 }
 
 /**
@@ -1610,6 +1666,7 @@ test_group_listening_policy(void) {
     dsd_rr_talkgroup groups[3] = {{0}};
     for (int i = 0; i < 3; ++i) {
         groups[i].tg_dec = (uint32_t)(100 + i);
+        groups[i].tg_dec_valid = 1;
         groups[i].enc = i;
     }
     for (int policy = DSD_RR_TG_KEEP_ENABLED; policy <= DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL; ++policy) {
@@ -1638,6 +1695,7 @@ main(void) {
     test_classify_from_fixtures();
     test_group_listening_policy();
     test_group_csv();
+    test_group_csv_skips_unusable_ids();
     test_group_csv_fixture();
     test_chan_p25_ranking();
     test_chan_p25_drops_frequencies_past_the_trunk_ceiling();

@@ -984,6 +984,47 @@ test_refresh_uses_the_recorded_tower(void) {
 }
 
 /**
+ * @brief Regression: a refresh whose talkgroups all lack a usable ID keeps the file.
+ *
+ * Every tgDec is pushed past UINT32_MAX. The old parser wrapped each one into a
+ * different 32-bit ID and the refresh replaced the stored list with them; now
+ * the writer skips them all, and the refresh keeps the stored copy and says why.
+ */
+void
+test_refresh_keeps_a_group_list_when_no_id_is_usable(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
+    expect("no-id: a plan built", plan.value(QStringLiteral("ok")).toBool());
+    expect("no-id: import ok",
+           h.model.performImport(plan, QStringLiteral("SARA Network"), -1).value(QStringLiteral("ok")).toBool());
+    const int groupRow = row_of_type(h.library, QStringLiteral("group"));
+    expect("no-id: a talkgroup row exists", groupRow >= 0);
+    if (groupRow < 0) {
+        return;
+    }
+    const QString path = h.library.get(groupRow).value(QStringLiteral("path")).toString();
+    const QByteArray before = read_stored(path);
+
+    QVariantMap finished;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::refreshFinished, &h.model,
+                     [&finished](int, const QVariantMap& result) { finished = result; });
+    h.fake.replaceFrom = QByteArrayLiteral("<tgDec xsi:type=\"xsd:int\">");
+    h.fake.replaceTo = QByteArrayLiteral("<tgDec xsi:type=\"xsd:int\">99999999999");
+    expect("no-id: the refresh starts", h.model.refreshRow(groupRow));
+    pump(h.model);
+
+    expect("no-id: the refresh reports failure", !finished.value(QStringLiteral("ok")).toBool());
+    expect_str("no-id: the reason is given", h.model.errorText(),
+               QStringLiteral("None of the talkgroups RadioReference lists has an ID dsd-neo can use, so the stored "
+                              "copy was kept."));
+    expect("no-id: the stored list is byte-identical", read_stored(path) == before);
+}
+
+/**
  * @brief A trunked site with no marked control channel is still importable.
  *
  * Capacity Plus has no fixed control channel and RadioReference leaves `use` nil
@@ -1289,6 +1330,7 @@ main(int argc, char** argv) {
     test_refresh_survives_a_row_removed_mid_flight();
     test_site_numbers_are_ambiguous();
     test_refresh_uses_the_recorded_tower();
+    test_refresh_keeps_a_group_list_when_no_id_is_usable();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_results_and_loaded_system_stay_exclusive();

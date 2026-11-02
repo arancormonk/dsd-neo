@@ -290,6 +290,10 @@ list — RadioReference adds rows over time.
 | TETRA | `-fT`, with trunking on | Never — the decoder learns the cell's carriers from its control channel |
 | Everything else (LTR, Motorola, OpenSky, iDEN, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
 
+A talkgroup whose RadioReference ID is missing, not a number or too large to be one is left out
+of the talkgroup list, and the preview counts the skipped rows in a warning. When no talkgroup is
+left, the import writes no talkgroup list and the warning says why.
+
 `-^` rides with every P25 import on purpose. Supplying a channel map tells the decoder a user LCN
 list exists, which otherwise disables its own learned control-channel candidates; `-^` puts the
 learned ones first and leaves the imported list as the backstop.
@@ -355,6 +359,8 @@ browser reports that no imports were found there.
 - A refreshed file is pushed into a running session only when that session is actually using it.
   Applying a channel map replaces the live one wholesale and discards what the decoder had learned
   on the air — see `docs/csv-formats.md`.
+- A talkgroup-list refresh in which none of RadioReference's talkgroups has a usable ID keeps the
+  stored list and says so, rather than replacing it with an empty one.
 - The "treat partly encrypted as encrypted" answer is recorded with the file, so a refresh
   regenerates the talkgroup list with the answer the original import was given rather than the
   UI default.

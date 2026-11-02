@@ -1083,6 +1083,100 @@ test_list_free_contract(void) {
     }
 }
 
+/** @brief Parse an in-memory talkgroup list built from bare `<item>` bodies. */
+static int
+parse_talkgroup_items(const char* items, dsd_rr_talkgroup_list* out) {
+    char body[2048];
+    dsd_rr_error err;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    const int n = DSD_SNPRINTF(body, sizeof(body),
+                               "<?xml version=\"1.0\"?><Envelope><Body><getTrsTalkgroupsResponse><return>%s"
+                               "</return></getTrsTalkgroupsResponse></Body></Envelope>",
+                               items);
+    if (n <= 0 || (size_t)n >= sizeof(body)) {
+        expect("talkgroup body fits", 0);
+        return -1;
+    }
+    return rr_soap_parse(body, (size_t)n, RR_SHAPE_TALKGROUP_LIST, out, &err, NULL);
+}
+
+/**
+ * @brief Regression: a numeric field never narrows into a different value.
+ *
+ * The old parse read a long and cast it: on LP64 tgDec 4294967309 wrapped to 13
+ * and aliased a real talkgroup, 2^32 became 0, and an INT field above INT_MAX
+ * wrapped negative; on LLP64 strtol failed from 2^31 instead. Text that does not
+ * parse left the zeroed 0 behind, which the group writer then emitted as TG 0.
+ * Now every out-of-range or malformed value is rejected, and a talkgroup whose
+ * tgDec is missing or bad says so through tg_dec_valid.
+ */
+static void
+test_integer_fields_are_bounded(void) {
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    const int rc = parse_talkgroup_items("<item><tgDec>16777215</tgDec><tgAlpha>max24</tgAlpha></item>"
+                                         "<item><tgDec>4294967295</tgDec><tgAlpha>max32</tgAlpha></item>"
+                                         "<item><tgDec>4294967296</tgDec><tgAlpha>wrap0</tgAlpha></item>"
+                                         "<item><tgDec>4294967309</tgDec><tgAlpha>wrap13</tgAlpha></item>"
+                                         "<item><tgDec>12x</tgDec><tgAlpha>junk</tgAlpha></item>"
+                                         "<item><tgDec>2147483648</tgDec><tgAlpha>int-edge</tgAlpha></item>"
+                                         "<item><tgDec>-1</tgDec><tgAlpha>negative</tgAlpha></item>"
+                                         "<item><tgAlpha>absent</tgAlpha></item>"
+                                         "<item><tgDec> 0 </tgDec><tgAlpha>zero</tgAlpha>"
+                                         "<tgCid>2147483648</tgCid></item>"
+                                         "<item><tgDec>7</tgDec><tgCid>-2147483648</tgCid></item>",
+                                         &tgs);
+    expect("bounded talkgroups parse", rc == 0);
+    expect_ll("bounded talkgroup count", (long long)tgs.count, 10);
+    if (rc != 0 || tgs.count != 10U) {
+        dsd_rr_talkgroup_list_free(&tgs);
+        return;
+    }
+    expect_ll("24-bit max kept", (long long)tgs.items[0].tg_dec, 16777215);
+    expect_ll("24-bit max valid", tgs.items[0].tg_dec_valid, 1);
+    expect_ll("UINT32_MAX kept", (long long)tgs.items[1].tg_dec, 4294967295LL);
+    expect_ll("UINT32_MAX valid", tgs.items[1].tg_dec_valid, 1);
+    expect_ll("2^32 is not narrowed to 0", tgs.items[2].tg_dec_valid, 0);
+    expect_ll("2^32 leaves no ID", (long long)tgs.items[2].tg_dec, 0);
+    expect_ll("2^32+13 does not alias TG 13", tgs.items[3].tg_dec_valid, 0);
+    expect("2^32+13 is never 13", tgs.items[3].tg_dec != 13U);
+    expect_ll("trailing junk is not an ID", tgs.items[4].tg_dec_valid, 0);
+    /* Past LONG_MAX on LLP64: the 64-bit parse is what keeps this one. */
+    expect_ll("2^31 kept", (long long)tgs.items[5].tg_dec, 2147483648LL);
+    expect_ll("2^31 valid", tgs.items[5].tg_dec_valid, 1);
+    expect_ll("a negative ID is rejected", tgs.items[6].tg_dec_valid, 0);
+    expect_ll("an absent tgDec is not valid", tgs.items[7].tg_dec_valid, 0);
+    expect_ll("0 with spaces is a real ID", tgs.items[8].tg_dec_valid, 1);
+    expect_ll("an INT above INT_MAX is rejected, not wrapped", tgs.items[8].tg_cid, 0);
+    expect_ll("INT_MIN itself is kept", tgs.items[9].tg_cid, -2147483647LL - 1LL);
+    dsd_rr_talkgroup_list_free(&tgs);
+
+    /* getStateInfo's enclosing stid takes the same bounded parse. */
+    static const char* const k_stids[] = {"4294967296", "4294967297", "2147483648"};
+    for (size_t i = 0; i < sizeof(k_stids) / sizeof(k_stids[0]); i++) {
+        char body[1024];
+        const int n = DSD_SNPRINTF(body, sizeof(body),
+                                   "<?xml version=\"1.0\"?><Envelope><Body><getStateInfoResponse><return>"
+                                   "<stid>%s</stid><stateName>Nowhere</stateName><countyList>"
+                                   "<item><ctid>5</ctid><countyName>Edge</countyName></item>"
+                                   "</countyList></return></getStateInfoResponse></Body></Envelope>",
+                                   k_stids[i]);
+        dsd_rr_county_list counties;
+        dsd_rr_error err;
+        DSD_MEMSET(&counties, 0, sizeof(counties));
+        DSD_MEMSET(&err, 0, sizeof(err));
+        const int parsed = (n > 0 && (size_t)n < sizeof(body))
+                               ? rr_soap_parse(body, (size_t)n, RR_SHAPE_COUNTY_LIST, &counties, &err, NULL)
+                               : -1;
+        expect("out-of-range stid still parses the counties", parsed == 0 && counties.count == 1U);
+        if (parsed == 0 && counties.count == 1U) {
+            expect_ll("an out-of-range stid is not narrowed", counties.items[0].stid, 0);
+            expect_str("the state name still lands", counties.items[0].state_name, "Nowhere");
+        }
+        dsd_rr_county_list_free(&counties);
+    }
+}
+
 /**
  * @brief Regression: the control-channel mark is read case- and space-blind.
  *
@@ -1153,6 +1247,7 @@ main(void) {
     test_talkgroups();
     test_talkgroup_categories();
     test_tetra_system();
+    test_integer_fields_are_bounded();
     test_control_marks_ignore_case_and_spaces();
     test_fault_classification();
     test_hostile_and_malformed_input();

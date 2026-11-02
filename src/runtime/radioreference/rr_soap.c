@@ -294,7 +294,7 @@ rr_soap_build_request(const char* method, const rr_soap_param* params, size_t n,
 #define RR_LEAF_MAX   4096
 #define RR_DETAIL_MAX 256
 
-typedef enum { RR_F_INT, RR_F_U32, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
+typedef enum { RR_F_INT, RR_F_U32, RR_F_ID, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
 
 /** One leaf element mapped onto a record member. */
 typedef struct {
@@ -302,13 +302,15 @@ typedef struct {
     rr_field_kind kind;
     size_t offset;
     size_t size;
+    size_t valid_offset; /**< RR_F_ID only: the int member that records whether the value parsed. */
 } rr_field_def;
 
-#define RR_STR(type, member, elem) {elem, RR_F_STR, offsetof(type, member), sizeof(((type*)0)->member)}
-#define RR_INT(type, member, elem) {elem, RR_F_INT, offsetof(type, member), 0}
-#define RR_U32(type, member, elem) {elem, RR_F_U32, offsetof(type, member), 0}
-#define RR_DEC(type, member, elem) {elem, RR_F_DEC, offsetof(type, member), 0}
-#define RR_MHZ(type, member, elem) {elem, RR_F_MHZ, offsetof(type, member), 0}
+#define RR_STR(type, member, elem)       {elem, RR_F_STR, offsetof(type, member), sizeof(((type*)0)->member), 0}
+#define RR_INT(type, member, elem)       {elem, RR_F_INT, offsetof(type, member), 0, 0}
+#define RR_U32(type, member, elem)       {elem, RR_F_U32, offsetof(type, member), 0, 0}
+#define RR_ID(type, member, valid, elem) {elem, RR_F_ID, offsetof(type, member), 0, offsetof(type, valid)}
+#define RR_DEC(type, member, elem)       {elem, RR_F_DEC, offsetof(type, member), 0, 0}
+#define RR_MHZ(type, member, elem)       {elem, RR_F_MHZ, offsetof(type, member), 0, 0}
 
 static const rr_field_def k_country_fields[] = {
     RR_INT(dsd_rr_country, coid, "coid"),
@@ -371,9 +373,12 @@ static const rr_field_def k_site_freq_fields[] = {
 };
 
 static const rr_field_def k_talkgroup_fields[] = {
-    RR_U32(dsd_rr_talkgroup, tg_dec, "tgDec"),      RR_INT(dsd_rr_talkgroup, tg_cid, "tgCid"),
-    RR_STR(dsd_rr_talkgroup, alpha_tag, "tgAlpha"), RR_STR(dsd_rr_talkgroup, description, "tgDescr"),
-    RR_STR(dsd_rr_talkgroup, mode, "tgMode"),       RR_INT(dsd_rr_talkgroup, enc, "enc"),
+    RR_ID(dsd_rr_talkgroup, tg_dec, tg_dec_valid, "tgDec"),
+    RR_INT(dsd_rr_talkgroup, tg_cid, "tgCid"),
+    RR_STR(dsd_rr_talkgroup, alpha_tag, "tgAlpha"),
+    RR_STR(dsd_rr_talkgroup, description, "tgDescr"),
+    RR_STR(dsd_rr_talkgroup, mode, "tgMode"),
+    RR_INT(dsd_rr_talkgroup, enc, "enc"),
     RR_STR(dsd_rr_talkgroup, slot, "tgSlot"),
 };
 
@@ -682,6 +687,40 @@ rr_finish_site_position(dsd_rr_site* site) {
 }
 
 /**
+ * @brief Parse an `xsd:int` leaf without narrowing it.
+ *
+ * @param text Leaf text.
+ * @param out  Receives the value; untouched on failure.
+ * @return 0 on success, -1 when malformed or outside int's range.
+ */
+static int
+rr_parse_int_field(const char* text, int* out) {
+    long long value = 0;
+    if (rr_parse_ll_range_strict(text, INT_MIN, INT_MAX, &value) != 0) {
+        return -1;
+    }
+    *out = (int)value;
+    return 0;
+}
+
+/**
+ * @brief Parse an unsigned 32-bit leaf without wrapping it.
+ *
+ * @param text Leaf text.
+ * @param out  Receives the value; untouched on failure.
+ * @return 0 on success, -1 when malformed, negative or above UINT32_MAX.
+ */
+static int
+rr_parse_u32_field(const char* text, uint32_t* out) {
+    long long value = 0;
+    if (rr_parse_ll_range_strict(text, 0, (long long)UINT32_MAX, &value) != 0) {
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
+}
+
+/**
  * @brief Store one leaf value into a record member.
  *
  * @param record Record base address.
@@ -702,19 +741,26 @@ rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* na
         switch (table[i].kind) {
             case RR_F_STR: rr_copy_field(base, table[i].size, text); break;
             case RR_F_INT: {
-                long value = 0;
-                if (rr_parse_long_strict(text, &value) == 0) {
-                    const int narrowed = (int)value;
-                    DSD_MEMCPY(base, &narrowed, sizeof(narrowed));
+                int value = 0;
+                if (rr_parse_int_field(text, &value) == 0) {
+                    DSD_MEMCPY(base, &value, sizeof(value));
                 }
                 break;
             }
             case RR_F_U32: {
-                long value = 0;
-                if (rr_parse_long_strict(text, &value) == 0 && value >= 0) {
-                    const uint32_t narrowed = (uint32_t)value;
-                    DSD_MEMCPY(base, &narrowed, sizeof(narrowed));
+                uint32_t value = 0;
+                if (rr_parse_u32_field(text, &value) == 0) {
+                    DSD_MEMCPY(base, &value, sizeof(value));
                 }
+                break;
+            }
+            case RR_F_ID: {
+                /* Written either way, so the last element decides: a value that
+                 * does not parse must not leave an earlier one looking valid. */
+                uint32_t value = 0;
+                const int valid = (rr_parse_u32_field(text, &value) == 0) ? 1 : 0;
+                DSD_MEMCPY(base, &value, sizeof(value));
+                DSD_MEMCPY((char*)record + table[i].valid_offset, &valid, sizeof(valid));
                 break;
             }
             case RR_F_DEC: {
@@ -826,9 +872,8 @@ rr_apply_root_leaf(rr_parse_ctx* ctx, const char* name) {
 
     /* StateInfo carries these once, above the rows they belong to, and they land
      * on the context rather than on the sink, which is why no field table fits. */
-    long value = 0;
-    if (strcmp(name, "stid") == 0 && rr_parse_long_strict(ctx->text, &value) == 0) {
-        ctx->enclosing_stid = (int)value;
+    if (strcmp(name, "stid") == 0) {
+        (void)rr_parse_int_field(ctx->text, &ctx->enclosing_stid);
     } else if (strcmp(name, "stateName") == 0) {
         rr_copy_field(ctx->enclosing_state_name, sizeof(ctx->enclosing_state_name), ctx->text);
     }

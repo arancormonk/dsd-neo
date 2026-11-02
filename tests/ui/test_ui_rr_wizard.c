@@ -93,6 +93,17 @@ static const char k_empty_cats_body[] =
     "<return xsi:type=\"SOAP-ENC:Array\" SOAP-ENC:arrayType=\"tns:TalkgroupCat[0]\"></return>"
     "</ns1:getTrsTalkgroupCatsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
+/* Talkgroups none of which has a usable ID: one past UINT32_MAX, one that is
+ * not a number, one with no tgDec at all. */
+static const char k_unusable_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>4294967296</tgDec><tgAlpha>Wrapped</tgAlpha></item>"
+    "<item><tgDec>12x</tgDec><tgAlpha>Junk</tgAlpha></item>"
+    "<item><tgAlpha>Absent</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
 /** @return The first index at or after @p from whose call was @p method, or -1. */
 static int
 call_index_of(const char* method, int from) {
@@ -194,6 +205,8 @@ typedef struct {
      * already arrived" deterministic instead of a race with the worker. */
     char fault_method[64];
     char last_method[64];
+    /* When set, served for getTrsTalkgroups instead of the system's fixture. */
+    const char* talkgroups_body;
 } wiz_fake;
 
 static void
@@ -295,6 +308,23 @@ fixture_for(const char* method, int sid, char* out, size_t out_sz) {
     return -1;
 }
 
+/** @brief Serve @p text as a 200 response body. */
+static int
+wiz_serve_text(dsd_rr_response* resp, const char* text) {
+    const size_t len = strlen(text);
+    char* copy = (char*)malloc(len + 1U);
+    if (copy == NULL) {
+        resp->status = DSD_RR_ERR_NOMEM;
+        return -1;
+    }
+    DSD_MEMCPY(copy, text, len + 1U);
+    resp->http_status = 200;
+    resp->body = copy;
+    resp->body_len = len;
+    resp->status = DSD_RR_OK;
+    return 0;
+}
+
 static int
 wiz_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
     wiz_fake* fake = (wiz_fake*)ctx;
@@ -315,6 +345,10 @@ wiz_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
 
     const int fault_now =
         fake->serve_fault || (fake->fault_method[0] != '\0' && strcmp(fake->fault_method, fake->last_method) == 0);
+
+    if (!fault_now && fake->talkgroups_body != NULL && strcmp(fake->last_method, "getTrsTalkgroups") == 0) {
+        return wiz_serve_text(resp, fake->talkgroups_body);
+    }
 
     /* Only sid 6673 has a captured cats file; every other system gets a valid
      * empty one so the four-fetch batch still completes. */
@@ -1184,6 +1218,48 @@ test_trunked_plan_and_options(void) {
     rr_wizard_core_cycle_option(c.core, 1);
     expect_ll("plan: simulcast back to follow-record", (long long)rr_wizard_core_options(c.core)->simulcast, -1);
     expect_ll("plan: esk untouched by the simulcast key", (long long)rr_wizard_core_options(c.core)->esk, -1);
+    wiz_case_close(&c);
+}
+
+/*
+ * Regression: the preview's group half comes from a cache, and the splice that
+ * copies it into the plan returned early when there was no text - taking the
+ * warnings with it. With every talkgroup skipped for want of a usable ID there
+ * is no file, and the skip warning is the only thing that says why.
+ */
+static void
+test_plan_keeps_group_warnings_without_text(void) {
+    static wiz_case c;
+    if (!wiz_case_open(&c)) {
+        return;
+    }
+    c.fake.talkgroups_body = k_unusable_tgs_body;
+    expect("no-id: ladder reaches the search chooser", drive_to_search_mode(&c));
+    expect("no-id: reached the systems list", drive_zip_to_results(&c));
+    rr_wizard_core_on_chooser_done(c.core, 1); /* sid 6673 */
+    expect("no-id: reached the system stage", pump_until_step(c.core, RR_STEP_SYSTEM, 5000U));
+
+    const dsd_rr_import_plan* p = rr_wizard_core_plan(c.core);
+    expect("no-id: the plan is published", p != NULL);
+    if (p == NULL) {
+        wiz_case_close(&c);
+        return;
+    }
+    expect_ll("no-id: three talkgroups loaded", (long long)rr_wizard_core_talkgroups(c.core)->count, 3);
+    expect("no-id: the plan stays importable", p->ok == 1);
+    expect("no-id: no group file", p->group_csv_text == NULL && p->group_csv_len == 0U);
+    expect("no-id: the channel map is still there", p->chan_csv_text != NULL);
+    expect("no-id: the preview says why",
+           warnings_contain(&p->warnings,
+                            "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+
+    /* A rebuild reuses the cache rather than regenerating: the warning must
+     * survive that path too. */
+    rr_wizard_core_cycle_option(c.core, 1);
+    p = rr_wizard_core_plan(c.core);
+    expect("no-id: the warning survives a rebuild",
+           warnings_contain(&p->warnings,
+                            "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
     wiz_case_close(&c);
 }
 
@@ -2590,6 +2666,43 @@ test_refresh_keeps_the_file_when_one_site_survives(void) {
     ref_case_close(&rc);
 }
 
+/*
+ * Regression: a refresh whose talkgroups all lack a usable ID used to write
+ * them anyway, as TG 0 rows. Now the writer skips them, the refresh has
+ * nothing to put in the file, and the stored list is kept with a reason.
+ */
+static void
+test_refresh_keeps_the_file_when_no_talkgroup_is_usable(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    static const char k_seed[] = "DEC,Mode,Name,(generated from RadioReference)\n52031,A,Seeded\n";
+    ref_prov(&prov, "group", 6673, "16863", 1);
+    if (!ref_case_open(&rc, "sara group.csv", k_seed, strlen(k_seed), &prov)) {
+        return;
+    }
+    rc.c.fake.talkgroups_body = k_unusable_tgs_body;
+    sentinel_take(rc.csv_path);
+    if (!ref_drive(&rc)) {
+        expect("no-id refresh: finished", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    expect("no-id refresh: lands on the error step", rr_wizard_core_step(rc.c.core) == RR_STEP_ERROR);
+    expect("no-id refresh: says why",
+           strcmp(rr_wizard_core_error_text(rc.c.core), "None of the talkgroups RadioReference lists has an ID "
+                                                        "dsd-neo can use, so the stored copy was kept.")
+               == 0);
+    expect_file_matches("no-id refresh: stored bytes untouched", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    dsd_rr_provenance after;
+    DSD_MEMSET(&after, 0, sizeof(after));
+    expect_ll("no-id refresh: sidecar still readable", (long long)dsd_rr_provenance_read(rc.csv_path, &after), 0);
+    expect_ll("no-id refresh: sidecar timestamp untouched", after.imported_at, 1700000000LL);
+    expect_ll("no-id refresh: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
 static void
 test_refresh_honours_the_stored_partial_encryption_answer(void) {
     static ref_case rc;
@@ -2898,6 +3011,7 @@ main(void) {
     test_browse_statewide();
     test_system_load_call_sequence();
     test_trunked_plan_and_options();
+    test_plan_keeps_group_warnings_without_text();
     test_conventional_plan();
     test_conventional_selection_order();
     test_restart_retires_the_loaded_system();
@@ -2925,6 +3039,7 @@ main(void) {
     test_refresh_skips_a_vanished_site();
     test_refresh_keeps_the_file_when_no_site_matches();
     test_refresh_keeps_the_file_when_one_site_survives();
+    test_refresh_keeps_the_file_when_no_talkgroup_is_usable();
     test_refresh_honours_the_stored_partial_encryption_answer();
     test_refresh_pushes_only_the_file_the_session_uses();
     test_refresh_pushes_a_group_file_as_a_group_list();

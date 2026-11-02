@@ -89,6 +89,7 @@ static void
 tg_set(dsd_rr_talkgroup* tg, uint32_t dec, const char* alpha, const char* descr, int enc) {
     DSD_MEMSET(tg, 0, sizeof(*tg));
     tg->tg_dec = dec;
+    tg->tg_dec_valid = 1;
     if (alpha != NULL) {
         (void)DSD_SNPRINTF(tg->alpha_tag, sizeof(tg->alpha_tag), "%s", alpha);
     }

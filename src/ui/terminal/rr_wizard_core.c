@@ -1321,7 +1321,8 @@ rr_refresh_match_sites(const dsd_rr_site_list* sites, const int* ids, size_t id_
  * action rather than once per frame.
  *
  * @return 0 with a heap copy in *out_text, -1 when the plan could not be built,
- *         -2 when the kind's text is absent or empty.
+ *         -2 when the kind's text is absent or empty, -3 when RadioReference
+ *         still lists talkgroups but none of them could be written.
  */
 static int
 rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_count, int is_chan, char** out_text,
@@ -1356,7 +1357,9 @@ rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_c
     len = is_chan ? plan.chan_csv_len : plan.group_csv_len;
     if (src == NULL || len == 0U) {
         dsd_rr_import_plan_free(&plan);
-        return -2;
+        /* The writer skips every talkgroup it cannot give an ID; replacing a
+         * working list with nothing would be worse than keeping it. */
+        return (!is_chan && w->talkgroups.count > 0U) ? -3 : -2;
     }
     copy = (char*)malloc(len);
     if (copy != NULL) {
@@ -1583,6 +1586,11 @@ rr_refresh_complete(RrWizardCore* w) {
         rr_refresh_fail(w, "RadioReference has no data for this file any more.");
         return;
     }
+    if (gen_rc == -3) {
+        rr_refresh_fail(w, "None of the talkgroups RadioReference lists has an ID dsd-neo can use, so the stored "
+                           "copy was kept.");
+        return;
+    }
 
     const int stage_rc = rr_refresh_stage_and_replace(w->refresh.path, text, len, is_chan);
     free(text);
@@ -1732,21 +1740,22 @@ rr_group_cache_sync(RrWizardCore* w) {
  * @brief Give the plan its own copy of the cached group CSV and warnings.
  *
  * The copy is what keeps dsd_rr_import_plan_free() correct, and a memcpy is
- * cheaper than the sort-and-format it replaces.
+ * cheaper than the sort-and-format it replaces. The warnings are copied even
+ * when there is no text: a list whose every talkgroup was skipped writes no
+ * file, and its warnings are the only place the preview says why.
  */
 static void
 rr_plan_splice_group(RrWizardCore* w) {
-    if (w->group_text == NULL || w->group_len == 0U) {
-        return;
+    if (w->group_text != NULL && w->group_len > 0U) {
+        char* copy = (char*)malloc(w->group_len + 1U);
+        if (copy == NULL) {
+            return;
+        }
+        DSD_MEMCPY(copy, w->group_text, w->group_len);
+        copy[w->group_len] = '\0';
+        w->plan.group_csv_text = copy;
+        w->plan.group_csv_len = w->group_len;
     }
-    char* copy = (char*)malloc(w->group_len + 1U);
-    if (copy == NULL) {
-        return;
-    }
-    DSD_MEMCPY(copy, w->group_text, w->group_len);
-    copy[w->group_len] = '\0';
-    w->plan.group_csv_text = copy;
-    w->plan.group_csv_len = w->group_len;
     for (size_t i = 0; i < w->group_warnings.count; i++) {
         (void)dsd_rr_warning_list_add(&w->plan.warnings, w->group_warnings.items[i].text);
     }
