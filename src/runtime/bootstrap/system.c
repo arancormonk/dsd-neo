@@ -9,7 +9,7 @@
 #include <dsd-neo/runtime/log.h>
 
 void
-dsd_bootstrap_apply_fp_mode(void) {
+dsd_bootstrap_apply_fp_mode(dsd_fp_mode_scope* caller) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         dsd_neo_config_init();
@@ -17,6 +17,9 @@ dsd_bootstrap_apply_fp_mode(void) {
     }
     const dsd_fp_mode mode = dsd_runtime_fp_mode_from_config(cfg);
     dsd_runtime_fp_mode_publish(mode);
+    if (caller) {
+        dsd_runtime_fp_mode_scope_enter(caller);
+    }
     dsd_runtime_fp_mode_apply_thread("decoder");
     if (mode == DSD_FP_MODE_INHERIT) {
         return;

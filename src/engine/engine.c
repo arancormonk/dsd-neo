@@ -88,6 +88,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
@@ -4370,15 +4371,10 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
     dsd_state_rebase_decode_timestamps(opts, state);
 }
 
-int
-dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
-    if (!opts || !state) {
-        return -1;
-    }
-
+static int
+engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     dsd_input_failure_clear();
     reset_device_io_caches();
-    dsd_bootstrap_apply_fp_mode();
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
     InitAllFecFunction();
@@ -4451,5 +4447,19 @@ ENGINE_OUT:
         || (failure.kind == DSD_INPUT_FAILURE_FILE && opts->iq_replay_requested)) {
         rc = 1;
     }
+    return rc;
+}
+
+int
+dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
+    if (!opts || !state) {
+        return -1;
+    }
+    /* The run's floating-point mode on this (decoder) thread for the run, and the host thread's own mode back when it
+       returns: a host that runs one session after another on this thread starts each from its own mode. */
+    dsd_fp_mode_scope host_fp_mode;
+    dsd_bootstrap_apply_fp_mode(&host_fp_mode);
+    const int rc = engine_run_session(opts, state, hooks);
+    dsd_runtime_fp_mode_scope_leave(&host_fp_mode);
     return rc;
 }

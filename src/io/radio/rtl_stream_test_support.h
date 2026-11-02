@@ -198,6 +198,8 @@ typedef struct {
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
                                   uint64_t* dropped);
+/* Called first thing in the Airspy callback's own work (inside its floating-point mode scope); NULL clears it. */
+void rtl_device_test_set_airspy_work_probe(void (*probe)(void));
 
 typedef struct {
     const float* samples; /* the driver's CF32 buffer: pairs complex samples, I then Q */

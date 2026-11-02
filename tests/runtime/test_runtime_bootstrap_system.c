@@ -61,12 +61,17 @@ apply_from(unsigned int start_bits) {
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
     const unsigned int original = _mm_getcsr();
     _mm_setcsr((original & ~DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS) | start_bits);
-    dsd_bootstrap_apply_fp_mode();
+    const unsigned int caller_csr = _mm_getcsr();
+    dsd_fp_mode_scope caller;
+    dsd_bootstrap_apply_fp_mode(&caller);
     const unsigned int after = _mm_getcsr();
+    /* The run returns: the caller's own MXCSR is back. */
+    dsd_runtime_fp_mode_scope_leave(&caller);
+    assert(_mm_getcsr() == caller_csr);
     _mm_setcsr(original);
     return after & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS;
 #else
-    dsd_bootstrap_apply_fp_mode();
+    dsd_bootstrap_apply_fp_mode(NULL);
     return start_bits;
 #endif
 }

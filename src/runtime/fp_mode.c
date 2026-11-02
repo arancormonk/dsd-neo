@@ -8,18 +8,30 @@
  * @brief The run's floating-point mode (SSE FTZ/DAZ), applied by each float thread at its entry.
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/fp_mode.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
 #include <xmmintrin.h>
 #endif
 
 static atomic_int g_fp_mode = DSD_FP_MODE_INHERIT;
-/* Set by tests while no observed thread runs (dsd_runtime_fp_mode_set_observer()). */
-static dsd_runtime_fp_mode_observer_fn g_fp_mode_observer = NULL;
+/* The observer (dsd_runtime_fp_mode_set_observer()): its pointer's bytes in an atomic word, so a set racing an apply
+   stays defined. */
+static dsd_atomic_u64 g_fp_mode_observer;
+_Static_assert(sizeof(dsd_runtime_fp_mode_observer_fn) <= sizeof(uint64_t), "the observer fits the atomic word");
+
+static dsd_runtime_fp_mode_observer_fn
+fp_mode_observer_load(void) {
+    const uint64_t word = dsd_atomic_u64_load_relaxed(&g_fp_mode_observer);
+    dsd_runtime_fp_mode_observer_fn observer = NULL;
+    DSD_MEMCPY((void*)&observer, &word, sizeof observer);
+    return observer;
+}
 
 int
 dsd_runtime_fp_mode_supported(void) {
@@ -72,7 +84,7 @@ dsd_runtime_fp_mode_apply_thread(const char* thread_tag) {
         csr = want;
     }
 #endif
-    const dsd_runtime_fp_mode_observer_fn observer = g_fp_mode_observer;
+    const dsd_runtime_fp_mode_observer_fn observer = fp_mode_observer_load();
     if (observer) {
         observer(thread_tag ? thread_tag : "", csr);
     }
@@ -113,5 +125,7 @@ dsd_runtime_fp_mode_scope_leave(const dsd_fp_mode_scope* scope) {
 
 void
 dsd_runtime_fp_mode_set_observer(dsd_runtime_fp_mode_observer_fn observer) {
-    g_fp_mode_observer = observer;
+    uint64_t word = 0U;
+    DSD_MEMCPY(&word, (const void*)&observer, sizeof observer);
+    dsd_atomic_u64_store_relaxed(&g_fp_mode_observer, word);
 }

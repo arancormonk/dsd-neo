@@ -17,7 +17,10 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/fp_mode.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +40,7 @@ static int
 create_seam(dsd_thread_t* thread, dsd_thread_fn entry, void* arg) {
     g_creates++;
     if (g_fail_create) {
-        return 11; /* EAGAIN: a thread or ulimit cap */
+        return EAGAIN; /* what pthread_create() returns at a thread or ulimit cap */
     }
     return dsd_thread_create(thread, entry, arg);
 }
@@ -59,15 +62,17 @@ set_caller_ftz_daz(unsigned int bits) {
 #endif
 }
 
+/* 1 once the watchdog thread entered @p want times in all, 0 when 5 s of real time pass first. */
 static int
 wait_for_entries(int want) {
-    for (int i = 0; i < 5000; i++) {
-        if (atomic_load(&g_watchdog_entries) >= want) {
-            return 1;
+    const uint64_t deadline_ns = dsd_realtime_mono_ns() + 5000000000ULL;
+    while (atomic_load(&g_watchdog_entries) < want) {
+        if (dsd_realtime_mono_ns() >= deadline_ns) {
+            return 0;
         }
         dsd_sleep_ms(1U);
     }
-    return 0;
+    return 1;
 }
 
 /* One run: the run's mode published, the starting thread in the opposite mode, the watchdog's entry seen with the

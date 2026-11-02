@@ -12,7 +12,9 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#ifdef DSD_NEO_TEST_HOOKS
 #include <dsd-neo/platform/threading.h>
+#endif
 
 /*
  * Background watchdog for the P25 trunking state machine tick.
@@ -73,11 +75,13 @@ void p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
 /** @brief Stop the background watchdog thread (safe to call when stopped). */
 void p25_sm_watchdog_stop(void);
 
+#ifdef DSD_NEO_TEST_HOOKS
 /** Creates the watchdog thread the way dsd_thread_create() does: 0 on success. */
 typedef int (*p25_sm_watchdog_thread_create_fn)(dsd_thread_t* thread, dsd_thread_fn entry, void* arg);
 
 /** @brief Tests: create the watchdog thread through @p create (NULL: dsd_thread_create()). Set while it is stopped. */
 void p25_sm_watchdog_set_thread_create_for_test(p25_sm_watchdog_thread_create_fn create);
+#endif
 
 /**
  * @brief Return 1 while a P25 SM tick is executing on the current thread.

@@ -13025,14 +13025,20 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_cold_start PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_COLD_START COMMAND dsd-neo_test_p25_sm_cold_start)
 
-# P25 SM watchdog thread start: a failed start rolls back and joins nothing; the entry applies FTZ/DAZ (issue #672)
+# P25 SM watchdog thread start: a failed start rolls back and joins nothing; the entry applies FTZ/DAZ (issue #672).
+# The watchdog's source comes in with DSD_NEO_TEST_HOOKS for its thread-start seam.
 add_executable(
     dsd-neo_test_p25_sm_watchdog_start
     protocol/p25/test_p25_sm_watchdog_start.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_sm_watchdog.c
 )
 target_include_directories(
     dsd-neo_test_p25_sm_watchdog_start
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_p25_sm_watchdog_start

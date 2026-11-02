@@ -84,8 +84,14 @@ void dsd_runtime_fp_mode_scope_leave(const dsd_fp_mode_scope* scope);
  * build has no MXCSR). */
 typedef void (*dsd_runtime_fp_mode_observer_fn)(const char* thread_tag, unsigned int csr);
 
-/** @brief Tests: observe every thread's apply. Set it before the threads it watches start and clear it (NULL) after
- * they are joined. */
+/**
+ * @brief Tests: observe every thread's apply.
+ *
+ * Built into every build, not only test builds: the tests that use it run the production engine, stream and protocol
+ * threads, and a test-only observer would need hook-enabled copies of the runtime, engine and IO libraries, which the
+ * Windows DLL builds cannot take. Unset, it costs one relaxed load per thread start. Set it before the threads it watches start and clear it (NULL) after they are joined; the slot is atomic, so
+ * a set that breaks that rule is a missed or extra observation, never undefined behavior.
+ */
 void dsd_runtime_fp_mode_set_observer(dsd_runtime_fp_mode_observer_fn observer);
 
 #ifdef __cplusplus

@@ -26,7 +26,9 @@ static dsd_thread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;
 /* Whether g_p25_sm_wd_thread holds a started thread: only that one is joined (a handle never created is not). */
 static int g_p25_sm_wd_thread_created = 0;
+#ifdef DSD_NEO_TEST_HOOKS
 static p25_sm_watchdog_thread_create_fn g_p25_sm_wd_create_for_test = NULL;
+#endif
 static atomic_int g_p25_sm_tick_lock = 0;
 static atomic_int g_p25_sm_in_tick = 0;
 static dsd_opts* g_opts = NULL;
@@ -144,9 +146,13 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     if (!atomic_compare_exchange_strong(&g_p25_sm_wd_running, &expected, 1)) {
         return;
     }
+#ifdef DSD_NEO_TEST_HOOKS
     const p25_sm_watchdog_thread_create_fn create = g_p25_sm_wd_create_for_test;
     const int rc = create ? create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL)
                           : dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
+#else
+    const int rc = dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
+#endif
     if (rc != 0) {
         /* No watchdog this run: the decoder's own ticks keep the state machine going. A later start tries again. */
         atomic_store(&g_p25_sm_wd_running, 0);
@@ -165,10 +171,12 @@ p25_sm_watchdog_stop(void) {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
 void
 p25_sm_watchdog_set_thread_create_for_test(p25_sm_watchdog_thread_create_fn create) {
     g_p25_sm_wd_create_for_test = create;
 }
+#endif
 
 int
 p25_sm_in_tick(void) {

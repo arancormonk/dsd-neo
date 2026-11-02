@@ -5328,8 +5328,22 @@ soapy_progress_monitor(void* arg) {
     DSD_THREAD_RETURN;
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static void (*g_test_airspy_work_probe)(void) = nullptr;
+
+extern "C" void
+rtl_device_test_set_airspy_work_probe(void (*probe)(void)) {
+    g_test_airspy_work_probe = probe;
+}
+#endif
+
 static void
 airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_airspy_work_probe) {
+        g_test_airspy_work_probe();
+    }
+#endif
     auto* dev = static_cast<rtl_device*>(context);
     if (!dev->run.load(std::memory_order_acquire)) {
         return;

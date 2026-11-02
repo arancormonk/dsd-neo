@@ -510,6 +510,18 @@ audit_freq_row(const NcMenuItem* root, size_t n) {
     }
 }
 
+/* FTZ/DAZ is a start-time setting (issue #672 B12): its Advanced row, first there, only reports the mode in force and
+   runs nothing. */
+static void
+audit_ftz_row(void) {
+    const NcMenuItem* it = ADV_MENU_ITEMS_LEN > 0 ? &ADV_MENU_ITEMS[0] : NULL;
+    if (!it || !it->id || strcmp(it->id, "adv.ftz") != 0) {
+        fail("root/advanced", it ? it->id : NULL, "the FTZ/DAZ status row is not Advanced's first row");
+    } else if (it->kind != NC_ITEM_STATUS || it->on_select || it->submenu || it->label_fn != lbl_ftz_daz) {
+        fail("root/advanced", it->id, "the FTZ/DAZ row is not a read-only status row of lbl_ftz_daz");
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -523,6 +535,7 @@ main(void) {
     audit_hotkeys();
     audit_width_rows(root, n);
     audit_freq_row(root, n);
+    audit_ftz_row();
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

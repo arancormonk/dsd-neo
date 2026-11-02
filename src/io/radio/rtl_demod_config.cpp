@@ -597,7 +597,7 @@ demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) 
  * @brief Initialize the demodulator for the requested mode and attach output ring.
  *
  * Chooses RO2/digital/analog initialization based on @p opts flags, seeds mode
- * defaults, primes the worker pool, and wires up the output ring target.
+ * defaults and wires up the output ring target.
  * Returns immediately when inputs are NULL.
  *
  * @param demod         Demodulator state to initialize.
@@ -1028,7 +1028,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
 /**
  * @brief Release resources allocated by demod_init_mode/config helpers.
  *
- * Tears down resampler/filter buffers, worker pools, and any dynamically
+ * Tears down resampler/filter buffers, the ready primitives, and any dynamically
  * allocated state within the demodulator instance. Safe on partially
  * initialized structures.
  *
