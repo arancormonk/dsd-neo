@@ -25,10 +25,12 @@
 #include <curses.h>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -1182,9 +1184,26 @@ ui_row_flag_field(ui_row* row, int on, const char* word) {
    closes the row (PR #463 feedback), after the name; nothing follows it, and it changes only when the operator avoids
    or clears. Same word as the "Clear avoids" menu row and the Qt SCAN AVOIDS badge. */
 static void
-ui_row_avoids_field(ui_row* row, unsigned int count) {
+ui_row_avoids_field(ui_row* row, size_t count) {
     if (count != 0U) {
-        ui_row_field(row, " Avoids: %u", count);
+        ui_row_field(row, " Avoids: %zu", count);
+    }
+}
+
+/* The -Y list's avoid count: through the scan avoid view while it is the list the view reads, so it is exact past
+   65,535 and the number the Avoids menu rows show (issue #672 B6). A copy that could not hold the whole store knows
+   only that some exist (B2), and says "?". Under --trunk-scan, whose rows the view does not read, the row's own
+   count. */
+static void
+ui_row_lcn_avoids_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_scan_avoid_summary summary;
+    if (dsd_app_scan_avoid_summary_get(opts, state, &summary) != 0
+        || summary.kind != (uint32_t)DSD_APP_SCAN_AVOID_KIND_LCN) {
+        ui_row_avoids_field(row, state->lcn_avoid_count);
+    } else if (summary.total_known) {
+        ui_row_avoids_field(row, summary.total);
+    } else if (state->lcn_avoid_count != 0U) {
+        ui_row_field(row, " Avoids: ?");
     }
 }
 
@@ -1216,7 +1235,7 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     ui_row_flag_field(&row, state->trunk_scan_hold, "HOLD");
     ui_row_flag_field(&row, state->trunk_scan_active_avoided, "[avoided]");
     ui_row_field(&row, " Target: %s", state->trunk_scan_active_id);
-    ui_row_avoids_field(&row, (unsigned int)state->trunk_scan_avoided_count);
+    ui_row_avoids_field(&row, state->trunk_scan_avoided_count);
     ui_row_end(&row);
 }
 
@@ -1355,7 +1374,7 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
     }
     // Under -Y the channel on air is never an avoided one (the avoid steps off the row in the same
     // command, and the hangtime step and `L` skip avoided rows).
-    ui_row_avoids_field(&row, (unsigned int)state->lcn_avoid_count);
+    ui_row_lcn_avoids_field(&row, opts, state);
     ui_row_end(&row);
 }
 
@@ -1363,16 +1382,34 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
    receiver is on the operator's frequency. The row says so, names the key that resumes it, and keeps the list's avoid
    count. A resume waiting on its row's tune is still paused. */
 static void
-ui_render_paused_scan_row(const dsd_app_scan_state_view* view, const dsd_state* state) {
+ui_render_paused_scan_row(const dsd_app_scan_state_view* view, const dsd_opts* opts, const dsd_state* state) {
     ui_row row;
     ui_io_row_begin(&row);
     if (view->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK) {
         ui_row_field(&row, "| Trunk Scan: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
-        ui_row_avoids_field(&row, (unsigned int)state->trunk_scan_avoided_count);
+        ui_row_avoids_field(&row, state->trunk_scan_avoided_count);
     } else {
         ui_row_field(&row, "| Scan Mode: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
-        ui_row_avoids_field(&row, (unsigned int)state->lcn_avoid_count);
+        ui_row_lcn_avoids_field(&row, opts, state);
     }
+    ui_row_end(&row);
+}
+
+/* A -Y list's avoids outlive the scan (issue #672 B1, D2): the DMR and NXDN control-channel hunts under -T still skip
+   those rows, and the Avoids menu still lists them. While any are left, the Scan Mode row stays, saying the scan is off
+   and how many rows it left out; with none, no row, as before. */
+static void
+ui_render_stopped_scan_row(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_scan_avoid_summary summary;
+    if (opts->scanner_mode == 1 || dsd_app_scan_avoid_summary_get(opts, state, &summary) != 0
+        || summary.kind != (uint32_t)DSD_APP_SCAN_AVOID_KIND_LCN
+        || (summary.total_known ? summary.total == 0U : state->lcn_avoid_count == 0U)) {
+        return;
+    }
+    ui_row row;
+    ui_io_row_begin(&row);
+    ui_row_field(&row, "| Scan Mode: OFF");
+    ui_row_lcn_avoids_field(&row, opts, state);
     ui_row_end(&row);
 }
 
@@ -1398,9 +1435,10 @@ static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     dsd_app_scan_state_view scan;
     if (dsd_app_scan_state_view_get(opts, state, &scan) == 0 && scan.paused) {
-        ui_render_paused_scan_row(&scan, state);
+        ui_render_paused_scan_row(&scan, opts, state);
     } else {
         ui_render_running_scan_rows(opts, state);
+        ui_render_stopped_scan_row(opts, state);
     }
 
     if (opts->reverse_mute == 1) {

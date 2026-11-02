@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -114,6 +115,19 @@ scan_rotation_active(const void* ctx) {
         return false;
     }
     return view.running != 0;
+}
+
+/* The Avoids list and Clear rows (issue #672 D2/D3): offered while a rotation runs, and outside one while avoids are
+   left to manage -- a stopped -Y list's rows, -T (whose control-channel hunts skip them) and a paused scan -- or while
+   the copy is incomplete, so Clear stays reachable. */
+bool
+scan_avoids_manageable(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    dsd_app_scan_avoid_summary summary;
+    if (!c || dsd_app_scan_avoid_summary_get(c->opts, c->state, &summary) != 0) {
+        return false;
+    }
+    return summary.can_manage != 0;
 }
 
 /* The frequency entry tunes a radio input, or a connected rigctl peer from any input (issue #671); a running or paused
@@ -769,14 +783,35 @@ lbl_scan_hold(const void* v, char* b, size_t n) {
     return b;
 }
 
+/* The count both Avoids rows show, from the frame's pair through the view (issue #672 B2, B6): exact past 65,535, and
+   "?" while the copy could not hold the whole store. */
+static const char*
+scan_avoid_count_text(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    dsd_app_scan_avoid_summary summary;
+    if (!c || dsd_app_scan_avoid_summary_get(c->opts, c->state, &summary) != 0) {
+        DSD_MEMSET(&summary, 0, sizeof summary);
+        summary.total_known = 1;
+    }
+    if (!summary.total_known) {
+        DSD_SNPRINTF(b, n, "?");
+    } else {
+        DSD_SNPRINTF(b, n, "%zu", summary.total);
+    }
+    return b;
+}
+
+const char*
+lbl_scan_avoid_list(const void* v, char* b, size_t n) {
+    char count[24];
+    DSD_SNPRINTF(b, n, "Avoided channels... [%s]", scan_avoid_count_text(v, count, sizeof count));
+    return b;
+}
+
 const char*
 lbl_scan_avoid_clear(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    unsigned count = 0;
-    if (c && c->opts && c->state) {
-        count = (c->opts->trunk_scan_enabled == 1) ? c->state->trunk_scan_avoided_count : c->state->lcn_avoid_count;
-    }
-    DSD_SNPRINTF(b, n, "Clear avoids [%u]", count);
+    char count[24];
+    DSD_SNPRINTF(b, n, "Clear avoids [%s]", scan_avoid_count_text(v, count, sizeof count));
     return b;
 }
 

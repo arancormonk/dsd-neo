@@ -9167,20 +9167,39 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     another start. A callback that advances takes the context back with `ui_chooser_take_context()` /
     `ui_prompt_take_context()` (valid only inside that callback) and hands it to the next owned widget, whose dispose it
     then is; a start or open handed a context already owned (by the running callback, or by the open widget it replaces)
-    takes that ownership over the same way, disposing with the owner's dispose when given none. A prompt's cancel runs
-    after the prompt is gone, so a callback may open another prompt or chooser. Owned: `ProfileSelCtx`, `PulseSelCtx`,
-    `EnvEditCtx` (name prompt, then value prompt), `CsvPickerCtx` (chooser, then the "Enter a path..." prompt), and the
-    Imported Systems browser's `RrBrowseCtx` through its system, action and delete-confirmation levels; RadioReference's
-    wizard context (`g_rr_panel`) stays borrowed. Items and the title are drawn through `ui_text`: sanitized, measured
-    in cells and cut between code points with the row model's marker, the window sized from widths measured once per
-    start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls `rr_panel_shutdown()` (it closes a
-    chooser borrowing the wizard's strings before freeing them), then `ui_overlays_shutdown()` (`menu_core.c`: help,
-    prompt and chooser - a few passes, since a cancel can open another - then every menu frame, and the overlay's
-    bookkeeping reset), then closes curses. Tests: `UI_CHOOSER_NAVIGATION` (owned paths, rendering on a `newterm`
-    screen), `UI_PROMPT_VALIDATION`, `UI_CSV_PICKER` (the real flow), `UI_RR_PANEL_KEYS` (browser levels; the real
-    `ui_overlays_shutdown()` over a menu, help, an owned prompt and the browser's chooser, then a restart),
-    `UI_MENU_NAVIGATION` (shutdown and restart), `UI_ASYNC_LIFECYCLE` (exit order), `UI_MENU_CALLBACKS`,
-    `UI_MENU_ACTIONS`, `UI_TEXT`.
+    takes that ownership over the same way, disposing with the owner's dispose when given none. A context belongs to one
+    widget at a time: a prompt is never opened with a context an open chooser owns (or the reverse), and a cancel
+    callback never reopens a widget with the context it was handed (the replace or shutdown closing it would close and
+    dispose that one too); no caller does either (`menu_prompts.h`). A prompt's cancel runs after the prompt is gone, so
+    a callback may open another prompt or chooser. Owned: `ProfileSelCtx`, `PulseSelCtx`, `EnvEditCtx` (name prompt,
+    then value prompt), `CsvPickerCtx` (chooser, then the "Enter a path..." prompt), and the Imported Systems browser's
+    `RrBrowseCtx` through its system, action and delete-confirmation levels, the avoided channel chooser's
+    `ScanAvoidPickCtx`; RadioReference's wizard context (`g_rr_panel`) stays borrowed. Items and the title are drawn
+    through `ui_text`: sanitized, measured in cells and cut between code points with the row model's marker, the window
+    sized from widths measured once per start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls
+    `rr_panel_shutdown()` (it closes a chooser borrowing the wizard's strings before freeing them), then
+    `ui_overlays_shutdown()` (`menu_core.c`: help, prompt and chooser - a few passes, since a cancel can open another -
+    then every menu frame, and the overlay's bookkeeping reset), then closes curses. Tests: `UI_CHOOSER_NAVIGATION`
+    (owned paths, rendering on a `newterm` screen), `UI_PROMPT_VALIDATION`, `UI_CSV_PICKER` (the real flow),
+    `UI_RR_PANEL_KEYS` (browser levels; the real `ui_overlays_shutdown()` over a menu, help, an owned prompt and the
+    browser's chooser, then a restart), `UI_MENU_NAVIGATION` (shutdown and restart), `UI_ASYNC_LIFECYCLE` (exit order),
+    `UI_MENU_CALLBACKS`, `UI_MENU_ACTIONS`, `UI_TEXT`.
+  - Scan avoids (issue #672 D1, D2, D5, B1): Trunking > Avoids (`trunk.avoids`, `TRUNK_AVOID_ITEMS` in
+    `menu_items.c`) holds Avoid current channel (`trunk.avoid`, `b`, `scan_rotation_active()`), Avoided channels...
+    (`trunk.avoid_list`, `lbl_scan_avoid_list()`) and, after a separator, Clear avoids (`trunk.avoid_clear`); the last
+    two are offered by `scan_avoids_manageable()` (the view's `can_manage`: a running rotation, avoids left outside one,
+    or an incomplete copy) and count through `dsd_app_scan_avoid_summary_get()` on the frame's pair (`[?]` while the
+    total is unknown). `act_scan_avoid_list()` builds the list from the frame's pair, toasts `Avoided channel list not
+    ready; try again` (unavailable) or `No avoided channels`, else copies every label and identity into an owned
+    `ScanAvoidPickCtx` and opens `Avoided channels (N)`; Enter submits that entry's identity with
+    `dsd_app_command_scan_avoid_remove()` (never an index into later state) and the chooser closes, the decoder's toast
+    reporting the outcome. The main screen's `-Y` counts (`ui_row_lcn_avoids_field()`, `dsd_ncurses_printer.c`) read
+    the same view (exact past 65,535; `?` for an incomplete copy), and `ui_render_stopped_scan_row()` keeps
+    `| Scan Mode: OFF Avoids: N` while a stopped `-Y` list's avoids are left. Clear outside a running scan hides all
+    three rows; the menu tick closes an open submenu left with no selectable row back to its parent
+    (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
+    (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 14), `UI_NCURSES_PRINTER_HELPERS`,
+    `UI_MENU_NAVIGATION` (an emptied submenu).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -9201,10 +9220,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     options (the menu's context), as the row's predicate does, and opens the prompt or one line of help with the
     reason (an I/Q replay; no connected rigctl peer). The `y` row
     (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
-    resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold,
-    avoid and clear avoids (`scan_rotation_active()`) and Next and Previous channel under a trunk scan
-    (`trunk_enabled()`) need the scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`,
-    `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
+    resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold
+    and avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the
+    scan running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
+    `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT`
+    (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to

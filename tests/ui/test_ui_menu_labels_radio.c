@@ -74,6 +74,22 @@ dsd_rr_available(void) {
     return 1;
 }
 
+/* The Avoids rows read only the scan avoid view's summary (issue #672); its list half, which reads the -Y store, links
+   against these. */
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return 0;
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return "";
+}
+
 /* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
  * target links no libraries at all, so the runtime definition is stubbed here. */
 static const char* g_imports_dir = "/tmp/dsd-neo-imports";

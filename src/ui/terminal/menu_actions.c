@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2158,6 +2160,92 @@ act_tg_session_avoid_clear(void* v) {
         dsd_tg_policy_table_version(snapshot, &context, NULL);
         (void)dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context);
     }
+}
+
+/* The avoided-channel chooser's context (issue #672): the list built from the frame's pair, with every label and
+   identity, so a pick answered frames later submits the identity it showed, never an index into newer state. */
+typedef struct {
+    dsd_app_scan_avoid_list list;
+    const char** items;
+    char title[48];
+} ScanAvoidPickCtx;
+
+static void
+scan_avoid_pick_ctx_dispose(void* user) {
+    ScanAvoidPickCtx* ctx = (ScanAvoidPickCtx*)user;
+    if (!ctx) {
+        return;
+    }
+    dsd_app_scan_avoid_list_free(&ctx->list);
+    free((void*)ctx->items);
+    free(ctx);
+}
+
+/* The context the chooser hands its callback; the callback only reads it, the chooser's dispose frees it. */
+static const ScanAvoidPickCtx*
+scan_avoid_pick_ctx_of(void* user) {
+    return (ScanAvoidPickCtx*)user;
+}
+
+/* Enter puts the entry back and the chooser closes (D5); the decoder's toast says what happened, including a list the
+   scan changed under it. */
+static void
+chooser_done_scan_avoid(void* user, int selected) {
+    const ScanAvoidPickCtx* ctx = scan_avoid_pick_ctx_of(user);
+    if (!ctx || selected < 0 || (size_t)selected >= ctx->list.count) {
+        return;
+    }
+    (void)dsd_app_command_scan_avoid_remove(&ctx->list.entries[selected].identity);
+}
+
+static ScanAvoidPickCtx*
+scan_avoid_pick_ctx_create(dsd_app_scan_avoid_list* list) {
+    ScanAvoidPickCtx* ctx = (ScanAvoidPickCtx*)calloc(1, sizeof *ctx);
+    const char** items = (const char**)calloc(list->count, sizeof *items);
+    if (!ctx || !items) {
+        free(ctx);
+        free((void*)items);
+        return NULL;
+    }
+    for (size_t i = 0; i < list->count; i++) {
+        items[i] = list->entries[i].label;
+    }
+    ctx->list = *list;
+    DSD_MEMSET(list, 0, sizeof *list);
+    ctx->items = items;
+    DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Avoided channels (%zu)", ctx->list.count);
+    return ctx;
+}
+
+/* Avoided channels...: the avoided -Y rows or trunk-scan targets from the frame's pair (issue #672). */
+void
+act_scan_avoid_list(void* v) {
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c || !c->opts || !c->state) {
+        return;
+    }
+    dsd_app_scan_avoid_list list;
+    if (dsd_app_scan_avoid_list_build(c->opts, c->state, &list) != 0 || list.count > (size_t)INT_MAX) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Out of memory");
+        return;
+    }
+    if (!list.summary.available) {
+        ui_statusf("Avoided channel list not ready; try again");
+        return;
+    }
+    if (list.count == 0) {
+        ui_statusf("No avoided channels");
+        return;
+    }
+    ScanAvoidPickCtx* ctx = scan_avoid_pick_ctx_create(&list);
+    if (!ctx) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Out of memory");
+        return;
+    }
+    ui_chooser_start_owned(ctx->title, ctx->items, (int)ctx->list.count, 0, chooser_done_scan_avoid, ctx,
+                           scan_avoid_pick_ctx_dispose);
 }
 
 void

@@ -86,6 +86,7 @@
     X(act_rr_library)                                                                                                  \
     X(act_scan_avoid)                                                                                                  \
     X(act_scan_avoid_clear)                                                                                            \
+    X(act_scan_avoid_list)                                                                                             \
     X(act_scan_hold_toggle)                                                                                            \
     X(act_scan_voice_hold)                                                                                             \
     X(act_scan_voice_only)                                                                                             \
@@ -293,6 +294,7 @@
     X(lbl_rt_sched)                                                                                                    \
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \
+    X(lbl_scan_avoid_list)                                                                                             \
     X(lbl_scan_hold)                                                                                                   \
     X(lbl_scan_voice_hold)                                                                                             \
     X(lbl_scan_voice_only)                                                                                             \
@@ -365,6 +367,7 @@
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
+    X(scan_avoids_manageable)                                                                                          \
     X(scan_rotation_active)                                                                                            \
     X(trunk_enabled)
 

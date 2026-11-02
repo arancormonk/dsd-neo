@@ -384,18 +384,33 @@ dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload) {
     return capture_command(DSD_APP_CMD_SCAN_ROW_EDIT, payload, payload ? sizeof *payload : 0U);
 }
 
+int
+dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload) {
+    return capture_command(DSD_APP_CMD_SCAN_AVOID_REMOVE, payload, payload ? sizeof *payload : 0U);
+}
+
+/* The -Y rows' avoid flags and names the avoided-channel list reads (issue #672); no row is avoided or named unless a
+   test says so. */
+static uint8_t g_lcn_avoided[8];
+static const char* g_lcn_names[8];
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    const char* name = index < sizeof g_lcn_names / sizeof g_lcn_names[0] ? g_lcn_names[index] : NULL;
+    return name ? name : ""; /* as the store answers a row without one */
+}
+
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return index < sizeof g_lcn_avoided ? g_lcn_avoided[index] : 0;
+}
+
 /* As scan_mode.c answers it: FM for nfm, AM for am. */
 int
 dsd_scan_mode_analog_kind(dsd_scan_mode mode) { // NOLINT(misc-use-internal-linkage)
     return mode == DSD_SCAN_MODE_NFM ? DSD_ANALOG_DEMOD_FM : (mode == DSD_SCAN_MODE_AM ? DSD_ANALOG_DEMOD_AM : -1);
-}
-
-/* No -Y row has a name in these tests. */
-const char*
-dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)index;
-    return NULL;
 }
 
 int
@@ -3073,6 +3088,130 @@ test_scan_row_scope_chooser(void) {
     return rc;
 }
 
+static dsd_app_scan_avoid_remove_payload
+captured_avoid_remove(void) {
+    dsd_app_scan_avoid_remove_payload p;
+    DSD_MEMCPY(&p, g_cmd.data, sizeof p);
+    return p;
+}
+
+/* Trunking > Avoids > Avoided channels... (issue #672): the list comes from the frame's pair, the chooser owns a copy
+   of every label and identity, and a pick submits the identity it showed, however the state moved since. */
+static int
+test_scan_avoid_list_chooser(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    UiCtx ctx = make_ctx(&opts, &state);
+
+    reset_capture();
+    act_scan_avoid_list(NULL);
+    rc |= expect_int("avoid list without a frame opens nothing", g_chooser.calls + g_cmd.calls, 0);
+
+    /* A stopped -Y list with three rows: D2 keeps its avoids manageable. */
+    state.state_instance = 7U;
+    state.lcn_list_rev = 11U;
+    state.lcn_avoid_rev = 12U;
+    state.lcn_freq_count = 3;
+    state.trunk_lcn_avoid_capacity = 3;
+    state.trunk_lcn_freq[0] = 462012500;
+    state.trunk_lcn_freq[1] = 462025000;
+    state.trunk_lcn_freq[2] = 462037500;
+
+    /* A copy that could not hold the whole store: no list yet. */
+    reset_capture();
+    act_scan_avoid_list(&ctx);
+    rc |= expect_str("incomplete copy", g_status, "Avoided channel list not ready; try again");
+    rc |= expect_int("incomplete copy opens nothing", g_chooser.calls + g_cmd.calls, 0);
+
+    state.scan_avoids_complete = 1;
+    reset_capture();
+    act_scan_avoid_list(&ctx);
+    rc |= expect_str("nothing avoided", g_status, "No avoided channels");
+    rc |= expect_int("nothing avoided opens nothing", g_chooser.calls + g_cmd.calls, 0);
+
+    g_lcn_avoided[0] = 1;
+    g_lcn_avoided[2] = 1;
+    g_lcn_names[2] = "Feuerwehr S\xC3\xBC"
+                     "d";
+    state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
+    reset_capture();
+    act_scan_avoid_list(&ctx);
+    rc |= expect_int("one chooser", g_chooser.calls, 1);
+    rc |= expect_str("chooser title", g_chooser.title, "Avoided channels (2)");
+    rc |= expect_int("chooser rows", g_chooser.n, 2);
+    rc |= expect_int("opens on the first row", g_chooser.initial_sel, 0);
+    rc |= expect_str("unnamed row label", g_chooser.labels[0], "Row 1  462.012500 MHz");
+    rc |= expect_str("named row label", g_chooser.labels[1],
+                     "Row 3  462.037500 MHz  Feuerwehr S\xC3\xBC"
+                     "d");
+    rc |= expect_int("the chooser owns its context", g_chooser.dispose != NULL && g_chooser.user != NULL, 1);
+    rc |= expect_int("opening submits nothing", g_cmd.calls, 0);
+
+    /* Newer frames move the live pair: the context still holds what the chooser shows. */
+    g_lcn_avoided[0] = 0;
+    g_lcn_avoided[2] = 0;
+    g_lcn_names[2] = NULL;
+    state.trunk_lcn_freq[2] = 463000000;
+    state.lcn_list_rev = 99U;
+    rc |= expect_str("labels survive the state", g_chooser.labels[1],
+                     "Row 3  462.037500 MHz  Feuerwehr S\xC3\xBC"
+                     "d");
+    g_chooser.on_done(g_chooser.user, -1);
+    rc |= expect_int("Esc submits nothing", g_cmd.calls, 0);
+    g_chooser.on_done(g_chooser.user, 2);
+    rc |= expect_int("a row past the list submits nothing", g_cmd.calls, 0);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_int("pick submits put back", g_cmd.id, DSD_APP_CMD_SCAN_AVOID_REMOVE);
+    rc |= expect_int("pick submits once", g_cmd.calls, 1);
+    rc |= expect_int("put back payload size", (int)g_cmd.n, (int)sizeof(dsd_app_scan_avoid_remove_payload));
+    dsd_app_scan_avoid_remove_payload p = captured_avoid_remove();
+    rc |= expect_int("identity kind", (int)p.kind, DSD_APP_SCAN_AVOID_KIND_LCN);
+    rc |= expect_int("identity instance", p.instance == 7U, 1);
+    rc |= expect_int("identity list as shown", p.list_rev == 11U, 1);
+    rc |= expect_int("identity row", p.row, 2);
+    rc |= expect_int("identity frequency as shown", p.frequency_hz == 462037500U, 1);
+    g_chooser.dispose(g_chooser.user);
+
+    /* A trunk scan's targets, paused (D3): listed and put back by session and id. */
+    dsd_trunk_scan_avoid_entry target;
+    DSD_MEMSET(&target, 0, sizeof target);
+    target.ordinal = 2U;
+    target.frequency_hz = 851012500U;
+    DSD_SNPRINTF(target.id, sizeof target.id, "%s", "county-p25");
+    DSD_SNPRINTF(target.label, sizeof target.label, "%s", "County Fire");
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_paused = 1;
+    state.trunk_scan_session = 5U;
+    state.trunk_scan_avoids = &target;
+    state.trunk_scan_avoid_count = 1U;
+    state.trunk_scan_avoid_rev = 3U;
+    state.trunk_scan_avoids_ok = 0;
+    reset_capture();
+    act_scan_avoid_list(&ctx);
+    rc |= expect_str("trunk list not published", g_status, "Avoided channel list not ready; try again");
+    rc |= expect_int("trunk list not published opens nothing", g_chooser.calls, 0);
+    state.trunk_scan_avoids_ok = 1;
+    reset_capture();
+    act_scan_avoid_list(&ctx);
+    rc |= expect_str("trunk chooser title", g_chooser.title, "Avoided channels (1)");
+    rc |= expect_str("trunk row label", g_chooser.labels[0], "#2  county-p25  851.012500 MHz  County Fire");
+    g_chooser.on_done(g_chooser.user, 0);
+    p = captured_avoid_remove();
+    rc |= expect_int("trunk identity kind", (int)p.kind, DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN);
+    rc |= expect_int("trunk identity session", (int)p.session, 5);
+    rc |= expect_str("trunk identity id", p.target_id, "county-p25");
+    g_chooser.dispose(g_chooser.user);
+
+    state.trunk_scan_avoids = NULL;
+    DSD_MEMSET(g_lcn_avoided, 0, sizeof g_lcn_avoided);
+    reset_capture();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3081,6 +3220,7 @@ main(void) {
     const unsigned int ftz_daz_before = _mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS;
 #endif
     rc |= test_simple_commands_and_prompts();
+    rc |= test_scan_avoid_list_chooser();
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
     rc |= test_width_rows_on_rigctl_audio();

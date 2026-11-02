@@ -42,6 +42,7 @@ void act_trunk_toggle(void* v);
 void act_scan_toggle(void* v);
 void act_scan_hold_toggle(void* v);
 void act_scan_avoid(void* v);
+void act_scan_avoid_list(void* v);
 void act_scan_avoid_clear(void* v);
 void act_lcw_toggle(void* v);
 void act_p25_enc_lockout(void* v);

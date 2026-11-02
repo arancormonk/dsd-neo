@@ -2020,8 +2020,10 @@ is delayed.
   global keys. A row may not mix direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
-  the same rows backward; the scan then carries on forward from there) and clear all avoids; see
-  `docs/ui-terminal.md`.
+  the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and
+  clear all avoids; see `docs/ui-terminal.md`. The avoids outlive `-Y`: with it stopped the DMR and NXDN
+  control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists them, puts them back and
+  clears them.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
@@ -2079,9 +2081,10 @@ is delayed.
   paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
   leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
   resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused,
-  another entry or a spectrum tap only tunes; `Y`, `b`, `J`, `L` and "Clear avoids" answer `Scan paused: resume it
-  first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference import that
-  replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  another entry or a spectrum tap only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`, while
+  putting avoided rows back (one, or all with "Clear avoids") still works, since it never tunes. Turning trunking on,
+  an input switch that runs, or a channel-map import, clear or RadioReference import that replaces the list stops the
+  paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
   row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`

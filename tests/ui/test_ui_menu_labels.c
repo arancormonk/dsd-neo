@@ -90,6 +90,22 @@ dsd_rr_available(void) {
     return g_rr_available;
 }
 
+/* The Avoids rows read only the scan avoid view's summary (issue #672); its list half, which reads the -Y store, links
+   against these. */
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return 0;
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return "";
+}
+
 /* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
  * target links no libraries at all, so the runtime definition is stubbed here. */
 static const char* g_imports_dir = "/tmp/dsd-neo-imports";
@@ -222,6 +238,47 @@ test_predicates(void) {
     state.lcn_scan_paused = 1;
     rc |= expect_int("scan rotation paused -Y", scan_rotation_active(&ctx), 0);
     state.lcn_scan_paused = 0;
+
+    /* The Avoids list and Clear rows (issue #672 D2/D3): offered while a rotation runs, and outside one while avoids
+       are left -- a stopped -Y list, -T, a paused scan -- or while the copy is incomplete. B1: with -Y stopped they
+       were hidden while its avoids still kept rows out of the -T hunts. */
+    state.scan_avoids_complete = 1;
+    rc |= expect_int("avoids rows null ctx", scan_avoids_manageable(NULL), 0);
+    rc |= expect_int("avoids rows without a scanner", scan_avoids_manageable(&ctx), 0);
+    opts.scanner_mode = 1;
+    rc |= expect_int("avoids rows while -Y runs", scan_avoids_manageable(&ctx), 1);
+    opts.scanner_mode = 0;
+    state.lcn_freq_count = 3;
+    rc |= expect_int("avoids rows: stopped list, none avoided", scan_avoids_manageable(&ctx), 0);
+    state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
+    rc |= expect_int("avoids rows: stopped list with avoids", scan_avoids_manageable(&ctx), 1);
+    rc |= expect_int("avoid row: stopped list", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 1;
+    rc |= expect_int("avoids rows under -T", scan_avoids_manageable(&ctx), 1);
+    rc |= expect_int("avoid row under -T", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 0;
+    state.lcn_scan_paused = 1;
+    rc |= expect_int("avoids rows while -Y is paused", scan_avoids_manageable(&ctx), 1);
+    state.lcn_scan_paused = 0;
+    state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
+    state.scan_avoids_complete = 0;
+    rc |= expect_int("avoids rows: incomplete copy keeps Clear", scan_avoids_manageable(&ctx), 1);
+    state.scan_avoids_complete = 1;
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_avoids_ok = 1;
+    rc |= expect_int("avoids rows while a trunk scan runs", scan_avoids_manageable(&ctx), 1);
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("avoids rows: paused trunk scan, none avoided", scan_avoids_manageable(&ctx), 0);
+    state.trunk_scan_avoid_count = 1;
+    rc |= expect_int("avoids rows: paused trunk scan with avoids", scan_avoids_manageable(&ctx), 1);
+    state.trunk_scan_avoid_count = 0;
+    state.trunk_scan_paused = 0;
+    state.trunk_scan_avoids_ok = 0;
+    opts.trunk_scan_enabled = 0;
+    state.lcn_freq_count = 0;
+    state.scan_avoids_complete = 0;
 
     /* The frequency row (Input, issue #671) is offered where a tune can land: a radio input, or any input but a
        replay with a live rigctl peer. A scan no longer hides it: an accepted tune pauses the scan. */
@@ -427,25 +484,49 @@ test_trunking_labels(void) {
     /* The hold and avoid labels read whichever scanner is running. */
     rc |= expect_str("scan hold null ctx", lbl_scan_hold(NULL, b, sizeof(b)), "Scan hold [Off]");
     rc |= expect_str("scan hold off", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
+    rc |= expect_str("avoid clear null ctx", lbl_scan_avoid_clear(NULL, b, sizeof(b)), "Clear avoids [0]");
+    rc |= expect_str("avoid list null ctx", lbl_scan_avoid_list(NULL, b, sizeof(b)), "Avoided channels... [0]");
     rc |= expect_str("avoid clear none", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [0]");
+    rc |= expect_str("avoid list none", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [0]");
+    /* Both counts read the scan avoid view (issue #672 B6): the exact total past the 65,535 lcn_avoid_count saturates
+       at, from the frame's pair. */
+    state.scan_avoids_complete = 1;
     opts.scanner_mode = 1;
     state.lcn_scan_hold = 1;
-    state.lcn_avoid_count = 3;
+    state.lcn_avoid_count = 65535;
+    state.lcn_avoid_total = 65537;
     state.trunk_scan_hold = 0;
     state.trunk_scan_avoided_count = 7;
+    state.trunk_scan_avoid_count = 7;
+    state.trunk_scan_avoids_ok = 1;
     rc |= expect_str("scan hold -Y", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
-    rc |= expect_str("avoid clear -Y", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [3]");
+    rc |= expect_str("avoid clear -Y", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [65537]");
+    rc |= expect_str("avoid list -Y", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [65537]");
+    /* A copy that could not hold the whole store (B2) does not know how many: "?", not the saturating count. */
+    state.scan_avoids_complete = 0;
+    rc |= expect_str("avoid clear -Y incomplete", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [?]");
+    rc |= expect_str("avoid list -Y incomplete", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [?]");
+    state.scan_avoids_complete = 1;
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_str("scan hold trunk scan", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
     rc |= expect_str("avoid clear trunk scan", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [7]");
+    rc |= expect_str("avoid list trunk scan", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [7]");
+    /* The coordinator could not allocate the list it published: its count is not the list's. */
+    state.trunk_scan_avoids_ok = 0;
+    rc |= expect_str("avoid list trunk scan unpublished", lbl_scan_avoid_list(&ctx, b, sizeof(b)),
+                     "Avoided channels... [?]");
+    state.trunk_scan_avoids_ok = 1;
     state.trunk_scan_hold = 1;
     rc |= expect_str("scan hold trunk scan on", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
     opts.trunk_scan_enabled = 0;
     state.lcn_scan_hold = 0;
     state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
     state.trunk_scan_hold = 0;
     state.trunk_scan_avoided_count = 0;
+    state.trunk_scan_avoid_count = 0;
+    state.scan_avoids_complete = 0;
     opts.p25_lcw_retune = 1;
     rc |= expect_str("lcw on", lbl_lcw(&ctx, b, sizeof(b)), "LCW explicit retune [On]");
     opts.trunk_use_allow_list = 1;

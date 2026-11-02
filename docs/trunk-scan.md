@@ -373,15 +373,18 @@ During scanning:
   end (usually seconds), since leaving it early would lose the call.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked target,
   `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target now, `J`
-  moves one eligible target back (the rotation then carries on forward from there), and "Clear avoids" puts every
-  avoided target back. `L` and `J` skip avoided targets and targets still cooling down after a failed retune. A hold
-  only pauses the idle dwell: the parked target's trunking state machine keeps following calls, and `J` and `L` still
-  move while held (the hold then applies to the new target). Avoiding the last usable target is refused, as are `L` and
-  `J` on a single-target list (`Trunk scan has only one target`). When `L` or `J` cannot move (no other target is
-  eligible, the switch cannot be set up, or every other target fails to retune and the receiver falls back), it says
-  `Staying on target <id>`. Avoids are not written back to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]`
-  when every alternate failed to retune and the receiver fell back onto a target that was avoided, and last `Avoids: N`,
-  the number of targets currently out of the rotation.
+  moves one eligible target back (the rotation then carries on forward from there), Trunking > Avoids > "Avoided
+  channels..." lists the avoided targets (`#2  county-p25  851.012500 MHz  County Fire`) and Enter puts one back, and
+  "Clear avoids" puts every avoided target back. Putting a target back does not retune, and leaves a hold, a cooldown
+  and the dwell as they were; if it was the last alternate avoided, the visit cap restarts as it does for Clear. `L` and
+  `J` skip avoided targets and targets still cooling down after a failed retune. A hold only pauses the idle dwell: the
+  parked target's trunking state machine keeps following calls, and `J` and `L` still move while held (the hold then
+  applies to the new target). Avoiding the last usable target is refused, as are `L` and `J` on a single-target list
+  (`Trunk scan has only one target`). When `L` or `J` cannot move (no other target is eligible, the switch cannot be set
+  up, or every other target fails to retune and the receiver falls back), it says `Staying on target <id>`. Avoids are
+  not written back to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune
+  and the receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out
+  of the rotation.
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
   frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the
   API's `scanner_toggle`) pauses it where it is without tuning, and so do Qt/Android **Explore from here** and the API's
@@ -390,9 +393,10 @@ During scanning:
   frequency -> 154.000000 MHz; scan paused`). A tune that is refused or deferred changes nothing, and the scan keeps
   running. While paused the Trunk Scan row reads `| Trunk Scan: PAUSED (y resumes)` with no target or Scan Timing row,
   nothing rotates, and calls heard are the operator's (Qt/Android history files them under **Exploring**). Another
-  frequency entry, a spectrum tap or a drag only tunes; `Y`, `b`, `J`, `L` and "Clear avoids" answer `Scan paused:
-  resume it first`, and `t` stays refused as during the scan (`Trunk scan: each target sets its own trunking`). A
-  per-target edit made while paused waits for that target's next visit.
+  frequency entry, a spectrum tap or a drag only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`
+  (putting avoided targets back, one from the list or all with "Clear avoids", still works: it never tunes), and `t`
+  stays refused as during the scan (`Trunk scan: each target sets its own trunking`). A per-target edit made while
+  paused waits for that target's next visit.
 - **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
   fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were. A resume whose
   retune is refused, or whose target cannot be set up again, leaves the scan paused and says why. A trunk scan cannot be

@@ -33,6 +33,13 @@ typedef void (*ui_chooser_done_fn)(void* user, int selected);
  * that is already owned - by the callback running now, or by the open widget of
  * the same kind it replaces - takes that ownership over the same way (no
  * dispose then); given no dispose of its own, it disposes with the owner's.
+ *
+ * A context belongs to one widget at a time. Never open a prompt with a
+ * context an open chooser still owns, or the reverse: neither claims the
+ * other's, so both would dispose it. A cancel callback (Esc, or the cancel a
+ * close, a replacing open or shutdown delivers) must not reopen a widget with
+ * the context it was handed: the replace or shutdown that is closing it goes
+ * on to close and dispose that new widget too, freeing the context under it.
  */
 typedef void (*ui_context_dispose_fn)(void* user);
 
@@ -212,8 +219,9 @@ void ui_chooser_start_at(const char* title, const char* const* items, int count,
  * @p on_done returns (pick, cancel, the empty list's or the render path's
  * cancel), unless the callback took the context with
  * ui_chooser_take_context(); or, with no callback, when the chooser is closed
- * (ui_chooser_close(), shutdown) or replaced by another start. The title, the
- * item array and its strings may all live in the context.
+ * (ui_chooser_close(), shutdown) or replaced by another start (a start handed
+ * this same context takes it over instead: see ui_context_dispose_fn). The
+ * title, the item array and its strings may all live in the context.
  */
 void ui_chooser_start_owned(const char* title, const char* const* items, int count, int initial_sel,
                             ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose);

@@ -179,8 +179,11 @@ Main Menu
 │   ├── Next channel                             L   (while trunking or scanning, not while a scan is paused)
 │   ├── Previous channel                         J   (while trunking or scanning, not while a scan is paused)
 │   ├── Scan hold [Off]                          Y   (while a -Y or --trunk-scan scan runs)
-│   ├── Avoid current channel                    b   (while a -Y or --trunk-scan scan runs)
-│   ├── Clear avoids [0]                             (while a -Y or --trunk-scan scan runs)
+│   ├── Avoids                                       (hidden while none of its rows is offered)
+│   │   ├── Avoid current channel                b   (while a -Y or --trunk-scan scan runs)
+│   │   ├── Avoided channels... [0]                  (while a scan runs, or avoids are left: -Y stopped, -T, paused)
+│   │   ├── ─────
+│   │   └── Clear avoids [0]                         (as Avoided channels...)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -416,6 +419,31 @@ avoids, edits and place, and the receiver stays on the frequency typed. `y` resu
 tuning its capture recorded, and on audio input without a connected rigctl peer; there `=` opens one line of help
 instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
 `Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).`).
+
+### Avoided channels
+
+`b` takes the channel on air, or the `--trunk-scan` target, out of the rotation for the rest of the session (issue
+#672). Trunking > Avoids > **Avoided channels... [N]** lists what is out, one entry per row, with what tells two
+entries apart first:
+
+- a `-Y` row: `Row 3  462.037500 MHz  Marion` (its row in the channel map, its frequency, its name if it has one);
+- a trunk-scan target: `#2  county-p25  851.012500 MHz  County Fire` (its place in the target list, its id, its
+  frequency, its label if it has one).
+
+A row the map left without a frequency reads `frequency unknown`. Enter puts the highlighted entry back into the
+rotation and closes the list; the toast confirms it (`Put back 462.037500 MHz (1 avoided)`, `Put back target
+county-p25 (0 avoided)`). Nothing retunes: the receiver stays where it is, and a hold, a target cooling down after a
+failed retune and the dwell are left as they were. Esc closes the list and changes nothing. **Clear avoids** puts
+every entry back at once.
+
+The list and Clear are offered while a scan runs and, outside one, while avoids are left. A `-Y` list's avoids
+outlive the scan: the DMR and NXDN control-channel hunts under `-T` still skip those rows, so with `-Y` stopped, under
+`-T` and on a paused scan the list and Clear stay, and the main screen keeps the count (see "Channel Labels"). Avoid
+current channel needs a running scan. Avoids are never saved.
+
+If the scan list changed after the list opened (a map reload or a restart), Enter puts nothing back and says
+`Scan list changed; nothing put back`; open the list again. `[?]` in place of the count means the screen's copy of the
+avoids is not whole yet: the list then says `Avoided channel list not ready; try again`, and Clear still works.
 
 ### Decoder mode
 
@@ -749,10 +777,11 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the
-avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or
-paused, `t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning
-trunking on stops the scan.
+While a scan is paused, `Y`, `b`, `J` and `L` are refused with `Scan paused: resume it first`; the avoids, and a trunk
+scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Trunking > Avoids > **Avoided channels...** and
+**Clear avoids** still work while paused: they only change which entries the rotation skips, and nothing retunes.
+Under `--trunk-scan`, running or paused, `t` is refused with `Trunk scan: each target sets its own trunking`. Over a
+paused `-Y` scan, `t` turning trunking on stops the scan.
 
 **Mouse wheel.** Off by default: turn on Display → **Mouse wheel steps channels**, or set `terminal_mouse_wheel = true`
 under `[output]` in the config file (Save config keeps the menu setting). While a `-Y` or `--trunk-scan` list runs,
@@ -890,6 +919,14 @@ target or a timing row, since the receiver is on the operator's frequency; the l
 ```
 | Scan Mode: PAUSED (y resumes) Avoids: 2
 | Trunk Scan: PAUSED (y resumes)
+```
+
+With `-Y` stopped, its avoids stay for the session (the `-T` control-channel hunts skip those rows too), and while any
+are left the Scan Mode row says the scan is off and how many rows it left out. Trunking > Avoids lists them and puts
+them back (see "Avoided channels"):
+
+```
+| Scan Mode: OFF Avoids: 2
 ```
 
 ### Scan Timing
