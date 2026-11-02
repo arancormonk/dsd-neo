@@ -1091,9 +1091,8 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
    the configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the frame's
    snapshot pair, which its picker (act_tone_filter()) opens on. The value keeps the view's lowercase spelling, as Call
    Info prints it and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles'
-   grammar. The
-   view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "..."
-   (dsd_tone_display_to_ascii()). */
+   grammar. The view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes
+   "..." (dsd_tone_display_to_ascii()). */
 const char*
 lbl_tone_filter(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;

@@ -8,8 +8,11 @@
 #include <dsd-neo/app_control/frontend.h>
 
 #include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -43,11 +46,11 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
     return 0;
 }
 
-/* Stand-ins for the frame's pair: only their addresses are compared. */
-static unsigned char g_frame_opts_token;
-static unsigned char g_frame_state_token;
-#define FRAME_OPTS  ((const dsd_opts*)&g_frame_opts_token)
-#define FRAME_STATE ((const dsd_state*)&g_frame_state_token)
+/* Stand-ins for the frame's pair, real objects on the heap (main()): only their addresses are compared. */
+static dsd_opts* g_frame_opts;
+static dsd_state* g_frame_state;
+#define FRAME_OPTS  ((const dsd_opts*)g_frame_opts)
+#define FRAME_STATE ((const dsd_state*)g_frame_state)
 
 static void
 reset_fakes(void) {
@@ -175,6 +178,9 @@ test_qpsk_reports_invalid_when_all_estimates_stale(void) {
 
 int
 main(void) {
+    g_frame_opts = (dsd_opts*)calloc(1, sizeof(*g_frame_opts));
+    g_frame_state = (dsd_state*)calloc(1, sizeof(*g_frame_state));
+    assert(g_frame_opts != NULL && g_frame_state != NULL);
     test_c4fm_uses_direct_snr();
     test_c4fm_keeps_stable_direct_snr();
     test_gfsk_uses_direct_snr();
@@ -184,6 +190,8 @@ main(void) {
     test_qpsk_uses_constellation_fallback();
     test_qpsk_uses_best_cross_modulation_snr_when_constellation_invalid();
     test_qpsk_reports_invalid_when_all_estimates_stale();
+    free(g_frame_state);
+    free(g_frame_opts);
     printf("UI_SNR_READOUT: OK\n");
     return 0;
 }
