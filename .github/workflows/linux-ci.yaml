@@ -462,7 +462,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -790,7 +790,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -872,7 +872,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1862,7 +1862,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1951,7 +1951,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -2078,7 +2078,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: env.CI_RUN_CHECK == 'true' && (steps.dockerhub.outputs.available == 'true')
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
