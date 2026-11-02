@@ -210,14 +210,15 @@ static void
 test_plan_note_for_tetra_only(void) {
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof plan);
-    const char* lines[RR_PANEL_NOTE_LINES_MAX + 1] = {NULL, NULL, NULL};
+    const char* lines[RR_PANEL_NOTE_LINES_MAX + 1] = {NULL, NULL, NULL, NULL};
 
     plan.protocol = DSD_RR_PROTO_TETRA;
-    assert(rr_panel_plan_note(&plan, lines, RR_PANEL_NOTE_LINES_MAX + 1) == 2U);
-    assert(strcmp(lines[0], "TETRA needs RTL-SDR or rtl_tcp at 72 kHz, or a symbol capture; no Airspy.") == 0);
-    assert(strcmp(lines[1], "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.") == 0);
-    assert(lines[2] == NULL);
-    for (size_t i = 0; i < 2U; i++) {
+    assert(rr_panel_plan_note(&plan, lines, RR_PANEL_NOTE_LINES_MAX + 1) == 3U);
+    assert(strcmp(lines[0], "TETRA needs an I/Q radio at a TETRA rate, or a symbol capture.") == 0);
+    assert(strcmp(lines[1], "On RTL-SDR or rtl_tcp that rate is 72 kHz; an Airspy can't decode it yet.") == 0);
+    assert(strcmp(lines[2], "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.") == 0);
+    assert(lines[3] == NULL);
+    for (size_t i = 0; i < 3U; i++) {
         assert(strlen(lines[i]) <= 74U);
     }
     assert(rr_panel_plan_note(&plan, lines, 1U) == 1U);

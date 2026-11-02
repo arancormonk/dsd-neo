@@ -166,11 +166,13 @@ rr_panel_plan_line(const dsd_rr_import_plan* plan, char* out, size_t out_sz) {
 
 size_t
 rr_panel_plan_note(const dsd_rr_import_plan* plan, const char** lines, size_t max_lines) {
-    /* The Qt screen's note, cut to the terminal: the receiver it needs (the
-       import's verdict refuses an RTL-SDR or rtl_tcp at another bandwidth and
-       every Airspy), then the Tetrapol caveat. */
+    /* The Qt screen's note, cut to the terminal: the receiver it needs (any I/Q
+       radio input at a TETRA rate, a SoapySDR radio or an I/Q replay included;
+       the import's verdict refuses an RTL-SDR or rtl_tcp at another bandwidth
+       and every Airspy), then the Tetrapol caveat. */
     static const char* const k_tetra[RR_PANEL_NOTE_LINES_MAX] = {
-        "TETRA needs RTL-SDR or rtl_tcp at 72 kHz, or a symbol capture; no Airspy.",
+        "TETRA needs an I/Q radio at a TETRA rate, or a symbol capture.",
+        "On RTL-SDR or rtl_tcp that rate is 72 kHz; an Airspy can't decode it yet.",
         "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.",
     };
     if (plan == NULL || lines == NULL || plan->protocol != DSD_RR_PROTO_TETRA) {
