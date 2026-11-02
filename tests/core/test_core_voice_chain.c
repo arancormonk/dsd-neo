@@ -466,14 +466,14 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
     return rc;
 }
 
-static size_t g_analog_port_bytes;
+static size_t g_analog_port_samples;
 
 static void
 capture_analog_port(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)opts;
     (void)state;
     (void)data;
-    g_analog_port_bytes += nsam;
+    g_analog_port_samples += nsam;
 }
 
 /* On UDP output an alert is digital audio: it goes to the digital port (the base port), never to the analog one (base
@@ -493,11 +493,11 @@ test_beeper_on_udp_uses_the_digital_port(void) {
     opts->pulse_digi_out_channels = 1;
     g_tone_float = 0;
     g_tone_count = 0;
-    g_analog_port_bytes = 0;
+    g_analog_port_samples = 0;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_tone, .blast_analog = capture_analog_port});
     beeper(opts, state, 0, 40, 86, 3);
     int rc = expect_true("the alert reaches the digital port", g_tone_count == (size_t)6U * 160U);
-    rc |= expect_true("the alert never reaches the analog port", g_analog_port_bytes == 0U);
+    rc |= expect_true("the alert never reaches the analog port", g_analog_port_samples == 0U);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     free_state(state);
     free(opts);

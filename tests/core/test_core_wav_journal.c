@@ -1560,6 +1560,8 @@ count_discard_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
         return;
     }
     g_unremoved_warnings += strstr(text, "could not be removed") != NULL;
+    /* Only the publishing closer writes this line: counted so a discard routed through that closer fails the
+       "nothing logged" checks below, not because a discard could write it. */
     g_close_warnings += strstr(text, "did not close cleanly") != NULL;
 }
 
@@ -1613,6 +1615,9 @@ test_unpublished_analog_recording_is_discarded(void) {
     rc |= expect_true("discard: returns no handle", discard_analog_wav_file(wav, path) == NULL);
     dsd_wav_test_set_io(NULL, NULL);
     rc |= expect_int("discard: closed through the segment table", g_segment_closes, 1);
+    /* What a write already reported stays reported (D1): the discard drops the latch, not the count. */
+    rc |= expect_int("discard: the write failure stays counted",
+                     recording_status().failures[DSD_WAV_RECORDING_ERROR_WRITE], 1);
     rc |= expect_true("discard: the file is gone", !file_exists(path));
 
     dsd_wav_test_set_io(NULL, failing_close);
@@ -1622,6 +1627,7 @@ test_unpublished_analog_recording_is_discarded(void) {
     rc |= expect_true("discard after a failed close: the file is gone", !file_exists(path));
     rc |= expect_int("discard after a failed close: counted as no close failure",
                      recording_status().failures[DSD_WAV_RECORDING_ERROR_CLOSE], 0);
+    /* Neither the removal warning nor the publishing closer's (count_discard_log_lines()). */
     rc |= expect_int("discard after a failed close: nothing logged", g_close_warnings + g_unremoved_warnings, 0);
 
     reload(&r);
