@@ -158,25 +158,46 @@ ui_mouse_take_resume(void) {
     return 1;
 }
 
+/* The capture keeps its state this frame: after a resume, send that state once more. */
+static void
+ui_mouse_resync_after_resume(int on) {
+    if (ui_mouse_take_resume() && g_primed) {
+        ui_mouse_set_tracking(on);
+    }
+}
+
+/* The capture changes state this frame, and that change sends the tracking string itself. */
+static void
+ui_mouse_drop_resume(void) {
+    (void)ui_mouse_take_resume();
+}
+
 #else
 
+/* No Ctrl+Z here. */
 static void
 ui_mouse_watch_resume(void) {}
 
-static int
-ui_mouse_take_resume(void) {
-    return 0;
+static void
+ui_mouse_resync_after_resume(int on) {
+    (void)on;
 }
+
+static void
+ui_mouse_drop_resume(void) {}
 
 #endif
 
 #else
 
 /* PDCurses has no suspend. */
-static int
-ui_mouse_take_resume(void) {
-    return 0;
+static void
+ui_mouse_resync_after_resume(int on) {
+    (void)on;
 }
+
+static void
+ui_mouse_drop_resume(void) {}
 
 static void
 ui_mouse_set_tracking(int on) {
@@ -230,13 +251,11 @@ ui_mouse_wheel_available(const void* ctx) {
 void
 ui_mouse_capture_set(int on) {
     on = on ? 1 : 0;
-    const int resumed = ui_mouse_take_resume();
     if (on == g_on) {
-        if (resumed && g_primed) {
-            ui_mouse_set_tracking(on);
-        }
+        ui_mouse_resync_after_resume(on);
         return;
     }
+    ui_mouse_drop_resume();
     if (on && !ui_mouse_wheel_available(NULL)) {
         return;
     }
