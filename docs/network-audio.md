@@ -38,11 +38,12 @@ Notes:
   bounds that wait itself, and a reconnect reuses the address it found. While a UDP, TCP or stdin sender is silent
   between transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a
   frame is waited for, as before.
-- A TCP connection stays up however long its sender is silent, in every mode. Only a connection the producer closes,
-  or one that fails, is lost: decoding then reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`)
-  end the session. During an EDACS analog call a silent sender sounds like a quiet channel, and the call ends as it
-  would on one. Ctrl-C ends a silent TCP or stdin wait at once. On Windows, stdin is waited on this way only when it is
-  a pipe; console input and a redirected file block in their read.
+- A TCP connection stays up however long its sender is silent, in every mode. Only a connection the producer closes, or
+  one that fails, is lost: decoding then reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) end
+  the session. During an EDACS analog call, on TCP or UDP, a sender silent for half a second or more sounds like a quiet
+  channel, and the call ends as it would on one; a shorter network stall is waited out. Ctrl-C ends a silent TCP or
+  stdin wait at once. On Windows, stdin is waited on this way only when it is a pipe; console input and a redirected
+  file block in their read.
 
 ### Squelch on PCM input
 

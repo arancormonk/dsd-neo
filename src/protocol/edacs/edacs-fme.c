@@ -42,6 +42,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/platform/audio.h>
@@ -211,16 +212,17 @@ edacs_no_stream_reset(dsd_state* state) {
     state->edacs_no_stream_paid = 0U;
 }
 
-/* How long one TCP wait lasts before the time it took is paid as silence: the decoder's input wait slice. */
-enum { EDACS_TCP_WAIT_SLICE_MS = 100 };
+/* How long one TCP or UDP wait lasts: the decoder's input wait slice. */
+enum { EDACS_NET_WAIT_SLICE_MS = 100 };
 
-/* A TCP sender that went quiet (a squelched network audio source sends nothing, issue #667 D12): the time since the
-   quiet spell began, @p since_ms on its first wait, comes out as silent samples at the rate the input is read at, as a
-   missing RTL stream's does (edacs_no_stream_pay()). Their triplets have no power and every sample closed, so the call
-   ends on its own squelch count, release marker or no-squelch watchdog, and the decoder goes back to the control
-   channel. */
+/* A TCP or UDP sender that went quiet (a squelched network audio source sends nothing, issue #667 D12): once the quiet
+   spell, which began at @p since_ms on its first wait, has lasted a stream pause (DSD_ANALOG_STREAM_PAUSE_MIN_MS, as
+   the decoder and the M17 encoder take it), all of it comes out as silent samples at the rate the input is read at,
+   as a missing RTL stream's time does (edacs_no_stream_pay()). Its triplets have no power, so the call ends on its own
+   squelch count, release marker or no-squelch watchdog, and the decoder goes back to the control channel. A shorter
+   stall (a network hiccup while the sender still transmits) pays nothing: the read waits it out, as it always did. */
 static void
-edacs_tcp_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
+edacs_net_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
     if (!state->edacs_no_stream_active) {
         state->edacs_no_stream_active = 1U;
         state->edacs_no_stream_since_ms = since_ms;
@@ -229,6 +231,9 @@ edacs_tcp_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
     const uint64_t now_ms = dsd_realtime_mono_ms();
     const uint64_t elapsed_ms =
         now_ms > state->edacs_no_stream_since_ms ? now_ms - state->edacs_no_stream_since_ms : 0U;
+    if (elapsed_ms < (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+        return;
+    }
     const uint64_t due = (elapsed_ms * (uint64_t)edacs_analog_input_rate_hz(opts)) / 1000U;
     if (due > state->edacs_no_stream_paid) {
         state->edacs_no_stream_owed += due - state->edacs_no_stream_paid;
@@ -236,10 +241,19 @@ edacs_tcp_quiet_pay(const dsd_opts* opts, dsd_state* state, uint64_t since_ms) {
     }
 }
 
-/* One TCP sample, with the input volume. A quiet spell plays as silence (edacs_tcp_quiet_pay()); 0 when the connection
-   closed or failed, which closes it and asks for shutdown, as before, or when shutdown was asked for meanwhile. */
-static inline int
-edacs_read_sample_tcp(dsd_opts* opts, dsd_state* state, short* out) {
+/* A bounded read of the TCP or UDP input: 1 with a sample, 0 when the input ended, -1 when none came in time. */
+typedef int (*edacs_net_read_wait_fn)(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+
+static int
+edacs_tcp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    return dsd_net_audio_input_hook_tcp_read_sample_wait(opts->tcp_in_ctx, out, timeout_ms);
+}
+
+/* One network sample, with the input volume, through @p read_wait: a quiet spell plays as silence
+   (edacs_net_quiet_pay()). Returns 1 with a sample, 0 when the input ended (the caller's to say how) and -1 when
+   shutdown was asked for meanwhile. */
+static int
+edacs_read_sample_net(dsd_opts* opts, dsd_state* state, short* out, edacs_net_read_wait_fn read_wait) {
     for (;;) {
         if (state->edacs_no_stream_owed > 0U) {
             state->edacs_no_stream_owed--;
@@ -248,38 +262,46 @@ edacs_read_sample_tcp(dsd_opts* opts, dsd_state* state, short* out) {
         }
         const uint64_t wait_from_ms = dsd_realtime_mono_ms();
         int16_t sample = 0;
-        const int got =
-            dsd_net_audio_input_hook_tcp_read_sample_wait(opts->tcp_in_ctx, &sample, EDACS_TCP_WAIT_SLICE_MS);
+        const int got = read_wait(opts, &sample, EDACS_NET_WAIT_SLICE_MS);
         if (got > 0) {
             state->edacs_no_stream_active = 0U;
             *out = edacs_apply_input_volume(opts, sample);
             return 1;
         }
         if (got == 0) {
-            dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-            opts->tcp_in_ctx = NULL;
-            DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
-            DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-            dsd_request_shutdown(opts, state);
             return 0;
         }
         if (dsd_exitflag_load() == 1) {
-            return 0;
+            return -1;
         }
-        edacs_tcp_quiet_pay(opts, state, wait_from_ms);
+        edacs_net_quiet_pay(opts, state, wait_from_ms);
     }
 }
 
-/* One UDP sample, with the input volume; 0 when the input stopped, which asks for shutdown. */
+/* One TCP sample: 0 when the connection closed or failed, which closes it and asks for shutdown, as before, or when
+   shutdown was asked for during a quiet spell. */
+static inline int
+edacs_read_sample_tcp(dsd_opts* opts, dsd_state* state, short* out) {
+    const int got = edacs_read_sample_net(opts, state, out, edacs_tcp_read_wait);
+    if (got == 0) {
+        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+        DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
+        DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
+        dsd_request_shutdown(opts, state);
+    }
+    return got > 0;
+}
+
+/* One UDP sample: 0 when the input stopped, which asks for shutdown, as before, or when shutdown was asked for during
+   a quiet spell. */
 static inline int
 edacs_read_sample_udp(dsd_opts* opts, dsd_state* state, short* out) {
-    short sample = 0;
-    if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
+    const int got = edacs_read_sample_net(opts, state, out, dsd_net_audio_input_hook_udp_read_sample_wait);
+    if (got == 0) {
         dsd_request_shutdown(opts, state);
-        return 0;
     }
-    *out = edacs_apply_input_volume(opts, sample);
-    return 1;
+    return got > 0;
 }
 
 static int

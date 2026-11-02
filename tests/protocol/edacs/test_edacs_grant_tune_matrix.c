@@ -110,6 +110,8 @@ static int g_tcp_signal_rate_hz = 48000;
 static int g_tcp_dotting_until = 0;
 static int g_tcp_dotting_from = -1;
 static int g_tcp_silence_from = -1;
+/* A stop (shutdown asked for) at this TCP read, during an analog call; -1 for none. */
+static int g_tcp_stop_at = -1;
 static int g_tcp_retune_at = -1;
 static int g_tcp_publish_at = -1;
 static dsd_trunk_tune_result g_tcp_publish_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -378,6 +380,9 @@ edacs_fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeou
     if (g_tcp_retune_at >= 0 && index == g_tcp_retune_at) {
         dsd_trunk_tuning_generation_advance();
     }
+    if (g_tcp_stop_at >= 0 && index == g_tcp_stop_at) {
+        dsd_exitflag_store(1);
+    }
     if (g_tcp_publish_at >= 0 && index == g_tcp_publish_at) {
         dsd_trunk_tuning_request_publish(g_last_vc_request, g_tcp_publish_result);
     }
@@ -537,6 +542,7 @@ edacs_reset_audio_hook_state(void) {
     g_tcp_dotting_until = 0;
     g_tcp_dotting_from = -1;
     g_tcp_silence_from = -1;
+    g_tcp_stop_at = -1;
     g_tcp_retune_at = -1;
     g_tcp_publish_at = -1;
     g_tcp_publish_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -2371,6 +2377,26 @@ edacs_run_analog_retune_cases(void) {
     return rc;
 }
 
+/* A stop (shutdown asked for) during an analog call ends it at the next triplet boundary, with the input left open: the
+   loop's own exit-flag check. The tone plays on and the input never fails before the bound, so nothing else ends the
+   call. The loop runs inside processFrame(), under the P25 SM tick guard, so it pumps no other command (#554), and
+   leaving it early ends the call for good, so other commands wait for the call to end (issue #637). */
+static int
+edacs_run_analog_stop_cases(void) {
+    edacs_reset_audio_hook_state();
+    g_tcp_signal = EDACS_TCP_TONE;
+    g_tcp_signal_rate_hz = 48000;
+    g_tcp_fail_at = 20 * 2880;
+    g_tcp_stop_at = 2 * 2880 - 1;
+    edacs_run_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_OK);
+    int rc = edacs_expect(g_tcp_read_count >= 2 * 2880 && g_tcp_read_count <= 3 * 2880, "analog-667", "stop",
+                          "the call left within one triplet of the stop");
+    rc |= edacs_expect(g_tcp_close_count == 0 && dsd_exitflag_load() == 1, "analog-667", "stop",
+                       "the stop left the input open and the shutdown asked for");
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
 /* Issue #708: an analog grant's slot 1 file that does not open is marked to open again at the call's end, as the event
    layer's rotation marks one, and a later grant's open clears the mark. */
 static int
@@ -3384,6 +3410,7 @@ main(void) {
     rc |= edacs_run_converted_collect_cases();
     rc |= edacs_run_analog_call_cases();
     rc |= edacs_run_analog_retune_cases();
+    rc |= edacs_run_analog_stop_cases();
     rc |= edacs_run_analog_wav_reopen_mark_cases();
     rc |= edacs_run_analog_tune_gate_cases();
     rc |= edacs_run_golden_48k_cases();

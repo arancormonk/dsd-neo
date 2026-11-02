@@ -7955,11 +7955,11 @@ endif()
 # EDACS analog voice and the M17 encoder over a TCP sender quiet past the 1.5 s receive timeout keep the connection; a
 # real close still shuts down; the encoder's silent stdin read gives way to shutdown (issue #667 D12).
 add_executable(
-    dsd-neo_test_protocol_tcp_quiet_sender
-    protocol/test_protocol_tcp_quiet_sender.c
+    dsd-neo_test_protocol_net_quiet_sender
+    protocol/test_protocol_net_quiet_sender.c
 )
 target_include_directories(
-    dsd-neo_test_protocol_tcp_quiet_sender
+    dsd-neo_test_protocol_net_quiet_sender
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
         ${PROJECT_SOURCE_DIR}/src/protocol/m17
@@ -7968,7 +7968,7 @@ target_include_directories(
 # static order the engine gives them leaves cross-library references unresolved.
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
-        dsd-neo_test_protocol_tcp_quiet_sender
+        dsd-neo_test_protocol_net_quiet_sender
         PRIVATE
             "-Wl,--start-group"
             dsd-neo_engine
@@ -7979,7 +7979,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 else()
     target_link_libraries(
-        dsd-neo_test_protocol_tcp_quiet_sender
+        dsd-neo_test_protocol_net_quiet_sender
         PRIVATE
             dsd-neo_engine
             ${_DSD_RUNTIME_CLI_PARSE_LIBS}
@@ -7988,8 +7988,8 @@ else()
     )
 endif()
 add_test(
-    NAME PROTOCOL_TCP_QUIET_SENDER
-    COMMAND dsd-neo_test_protocol_tcp_quiet_sender
+    NAME PROTOCOL_NET_QUIET_SENDER
+    COMMAND dsd-neo_test_protocol_net_quiet_sender
 )
 
 # A TCP PCM input that goes quiet (issue #667 D12, B7): an idle connection is kept past its receive timeout, and a

@@ -102,10 +102,11 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   sender is silent (a squelched network audio source). Only a connection that closes or fails is lost: decoding then
   reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) close the input and end the session, as
   before. While stdin or TCP sends nothing, the decoder still ends an analog call on time, applies menu commands and
-  runs its timers, as on UDP. An EDACS analog call hears the quiet spell as silence and ends as it does on a quiet
-  channel, and the M17 encoder waits for audio. Ctrl-C ends a silent stdin or TCP wait at once. A source that stops in
-  the middle of a digital frame is waited for, as before. On Windows only a pipe (`rtl_fm ... | dsd-neo -i -`) is
-  waited on this way: console stdin and a redirected file block in their read until data comes.
+  runs its timers, as on UDP. An EDACS analog call, on TCP or UDP, hears a quiet spell of half a second or more as
+  silence and ends as it does on a quiet channel; a shorter stall is waited out. The M17 encoder waits for audio. Ctrl-C
+  ends a silent stdin or TCP wait at once. A source that stops in the middle of a digital frame is waited for, as
+  before. On Windows only a pipe (`rtl_fm ... | dsd-neo -i -`) is waited on this way: console stdin and a redirected
+  file block in their read until data comes.
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
