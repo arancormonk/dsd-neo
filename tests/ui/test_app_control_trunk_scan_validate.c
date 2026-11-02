@@ -4,6 +4,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
@@ -568,6 +569,54 @@ test_previews_note_unreachable_names(void) {
     assert(dsd_test_remove_temp_dir(dir, files) == 0);
 }
 
+/* Issue #697: the lists of one session validate together: a target id is unique across them, and every error names
+   the file it is about by the name the caller gives it, a parser error and a cross-file repeat (both rows) alike. */
+static void
+test_target_lists_validate_together(void) {
+    char a[DSD_TEST_PATH_MAX];
+    char b[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(a, sizeof a, "lists-a-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    fd = dsd_test_mkstemp(b, sizeof b, "lists-b-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    write_targets(a, "alpha,p25-conventional,851500000,,1500,1200,,\n"
+                     "bravo,dmr-conventional,461000000,,1500,1200,,\n");
+    write_targets(b, "charlie,nxdn48-conventional,461556250,,1500,1200,,\n"
+                     "delta,p25-conventional,851500000,,1500,1200,,\n");
+    const char* paths[] = {a, b};
+    const char* names[] = {"security", "hospital"};
+    int count = 0;
+    char err[512] = {0};
+    /* The same type and frequency in two lists is two targets. */
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) == 0);
+    assert(count == 4 && err[0] == '\0');
+
+    write_targets(b, "charlie,nxdn48-conventional,461556250,,1500,1200,,\n"
+                     "bravo,p25-conventional,852000000,,1500,1200,,\n");
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) != 0);
+    assert(count == 0);
+    assert(strstr(err, "hospital row 3: target id 'bravo' is also security row 3") != NULL);
+    /* Without names the paths name the files. */
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, NULL, 2, &count, err, sizeof err) != 0);
+    assert(strstr(err, b) != NULL && strstr(err, a) != NULL);
+
+    write_targets(b, "charlie,no-such-type,461556250,,1500,1200,,\n");
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) != 0);
+    assert(strncmp(err, "hospital: ", 10) == 0);
+
+    const char* nine[DSD_TRUNK_SCAN_MAX_LISTS + 1];
+    for (int i = 0; i <= DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        nine[i] = a;
+    }
+    assert(dsd_app_trunk_scan_validate_target_lists(nine, NULL, DSD_TRUNK_SCAN_MAX_LISTS + 1, &count, err, sizeof err)
+           != 0);
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 0, &count, err, sizeof err) != 0);
+    remove(a);
+    remove(b);
+}
+
 int
 main(void) {
     int count = 99;
@@ -602,6 +651,7 @@ main(void) {
     test_quoted_options_cells();
     test_bom_target_file_bundle();
     test_previews_note_unreachable_names();
+    test_target_lists_validate_together();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");
     return 0;

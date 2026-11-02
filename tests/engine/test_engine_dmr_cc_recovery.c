@@ -200,7 +200,8 @@ setup(float hangtime) {
                                  "nxdn,nxdn-trunk,454000000,,250,1200,\n")) {
         return 1;
     }
-    DSD_SNPRINTF(g_opts.trunk_scan_targets_csv, sizeof(g_opts.trunk_scan_targets_csv), "%s", g_targets);
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[0].path, sizeof g_opts.trunk_scan_lists[0].path, "%s", g_targets);
+    g_opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     char error[256] = {0};
     const int rc = dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error));

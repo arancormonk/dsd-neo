@@ -105,7 +105,7 @@ Path expansion is applied to:
 - `[trunking] group_csv`
 - `[trunking] src_csv`
 - `[trunking] p25_bandplan_csv`
-- `[trunk_scan] targets_csv`
+- `[trunk_scan] targets_csv` and `targets_csv_2` … `targets_csv_8`
 - `[logging] event_log`
 - `[logging] frame_log`
 - `[logging] p25_sm_log`
@@ -256,12 +256,14 @@ If the default file does not exist, it will be created when settings are saved
 
 A config loaded into a running session (terminal Config > Load, Qt, the API `config_apply`) cannot change what only
 startup sets: the frontend, `[trunk_scan] enabled`, `[trunking] chan_csv`, an Airspy input chosen over audio input, and
-under a running trunk scan its `targets_csv`, `idle_dwell_ms` and `activity_hold_ms`. The session keeps running the
+under a running trunk scan its lists (`targets_csv`, `targets_csv_N`, `lists_off`), `idle_dwell_ms` and
+`activity_hold_ms`. The session keeps running the
 values it started with, the status line says a restart is needed, and every save (the exit autosave included) writes
 the loaded values, so the next start runs them.
 
 A config whose next start the trunk-scan rules below would refuse (a global `chan_csv` or `p25_bandplan_csv`, or the
-`-Y` scanner with trunking off, beside an enabled trunk scan, or a trunk scan without `targets_csv`) is not applied at
+`-Y` scanner with trunking off, beside an enabled trunk scan, or a trunk scan without `targets_csv` or with lists that
+break the list rules below) is not applied at
 all, and the status line gives the rule; a rule the session's own save already breaks does not refuse a config that
 keeps it or fixes it. The same rules refuse a channel-map or P25 band-plan import, the `-Y` scanner toggle and a
 RadioReference import while a trunk scan waits for the next start. A config whose new input does not start is rolled
@@ -409,7 +411,9 @@ still save; **Skip** never saves or changes the list. See [Skip lifetimes](cli.m
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable single-tuner trunk scan | `false` |
-| `targets_csv` | PATH | Scan target list CSV | (empty) |
+| `targets_csv` | PATH | Scan target list CSV (list 1) | (empty) |
+| `targets_csv_2` … `targets_csv_8` | PATH | Lists 2 to 8, scanned in the same session | (empty) |
+| `lists_off` | STRING | Lists that start switched off, by number (`2, 3`) | (empty) |
 | `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
 | `activity_hold_ms` | INT (250-600000) | Conventional DMR/NXDN activity hold | `1200` |
 
@@ -851,6 +855,17 @@ When `[trunking] enabled = true`:
 When `[trunk_scan] enabled = true`:
 
 - `targets_csv` is required and must use the target format in `docs/csv-formats.md`.
+- Several lists (issue #697): `targets_csv_2` … `targets_csv_8` add lists 2 to 8 to the same session, and
+  `lists_off = 2, 3` names the lists that start switched off (each a list number, once). List numbers have no gaps
+  (`targets_csv_3` needs `targets_csv_2`), every `lists_off` number needs its list, and at least one list must start
+  on; startup and `--validate-config` refuse a config that breaks these rules, checked on the result of includes and
+  profiles, whatever order the keys come in.
+- Each key is its own setting: an include or profile that names `targets_csv_2` replaces list 2 only, and one that
+  leaves out `lists_off` keeps the off states it inherits. An empty `targets_csv_N = ""` clears list N and every later
+  list; an empty `lists_off = ""` switches every list on. A list switched on or off while the session runs is never
+  saved: a save writes the configured lists and `lists_off`.
+- A path whose expansion is 1024 bytes or more is refused with a warning and the key keeps its earlier value (for every
+  path key), never cut short to another file's name.
 - Global `[trunking] chan_csv` and `[trunking] p25_bandplan_csv` are rejected; each trunk target must name its own
   `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
 - `[trunking] scanner = true` is rejected unless `[trunking] enabled = true` (trunking wins over the scanner): the `-Y`
@@ -861,9 +876,10 @@ When `[trunk_scan] enabled = true`:
   with scan rows; the source-label fallback uses whichever group policy table is active.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 - Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
-- While a trunk scan runs, a loaded config leaves `[trunk_scan]` (`enabled`, `targets_csv`, `idle_dwell_ms`,
+- While a trunk scan runs, a loaded config leaves `[trunk_scan]` (`enabled`, the lists, `idle_dwell_ms`,
   `activity_hold_ms`) and the global `[trunking] chan_csv` / `p25_bandplan_csv` as the scan started with them; a change
-  to any of them takes effect at the next start.
+  to any of them takes effect at the next start. The lists wait as one: a config naming only `lists_off` is put over
+  the lists already waiting for the next start, not the running ones, so it keeps an earlier config's new paths.
 - Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.
 
 Example:
@@ -884,22 +900,27 @@ group_csv = "~/radio/group.csv"
 [trunk_scan]
 enabled = true
 targets_csv = "~/radio/trunk_scan_targets.csv"
+# targets_csv_2 = "~/radio/hospital.csv"
+# lists_off = 2
 idle_dwell_ms = 3000
 activity_hold_ms = 1200
 ```
 
 Config/CLI interaction:
 
-- `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
+- `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`, when the list numbers
+  have a gap, when `lists_off` names a list number with no list or is not a list of list numbers, and when every list
+  starts off.
 - `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled, and the same for
   `[trunking] p25_bandplan_csv` and for `[trunking] scanner = true` with trunking off.
 - `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`. Config loading is range-free
   by design, so such a value loads, but the decoder treats anything below `1000` as disabled; use `0` to disable the
   per-visit cap or `1000..3600000` to set one. The CLI switch rejects `1..999` outright.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
-  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
-  flags such as
-  `--frontend terminal` and trunk-scan timing overrides keep the inherited scan enabled.
+  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run; the exit
+  autosave then records the scan as off, as it records the input that run used (the effective settings are written
+  back on exit). UI-only flags such as `--frontend terminal` and trunk-scan timing overrides keep the inherited scan
+  enabled. A `--trunk-scan` or `--trunk-scan-off` on the command line replaces the config's lists as a whole.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other
   profile-based runs.
 

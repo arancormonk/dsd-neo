@@ -123,6 +123,17 @@ void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);
 
+/**
+ * @brief Whether target lists loaded one by one can run in one session (issue #697).
+ *
+ * No target id repeats across the lists (each list's own rules stay its parser's), and their union fits
+ * dsd_trunk_scan_max_targets(). The error names the files from @p names[i] (list i's file) and both rows.
+ *
+ * @return 0 when they can; -1 otherwise.
+ */
+int dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
+                                      char* err, size_t err_sz);
+
 /** Shared lexical splitter for target import/relocation. Modifies line in place. */
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
 

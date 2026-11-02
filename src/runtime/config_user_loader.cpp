@@ -10,6 +10,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -24,6 +25,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -44,27 +46,28 @@ seek_config_stream_to_start(FILE* stream) {
 /**
  * @brief Copy a path value with shell-like expansion (~, $VAR, ${VAR}).
  *
- * Expands the source path and copies it to the destination buffer.
- * Falls back to verbatim copy if expansion fails.
+ * A path whose expansion does not fit @p dst is refused, never cut short to a file the config did not name: @p dst
+ * keeps what it had, and the key is warned about.
+ *
+ * @return 0 when copied (an empty value clears @p dst); -1 when refused.
  */
-static void
-copy_path_expanded(char* dst, size_t dst_size, const char* src) {
+static int
+copy_path_expanded(const char* key_lc, char* dst, size_t dst_size, const char* src) {
     if (!dst || dst_size == 0) {
-        return;
+        return -1;
     }
     if (!src || !*src) {
         dst[0] = '\0';
-        return;
+        return 0;
     }
 
     char expanded[1024];
-    if (dsd_config_expand_path(src, expanded, sizeof(expanded)) == 0) {
-        DSD_SNPRINTF(dst, dst_size, "%s", expanded);
-    } else {
-        /* Expansion failed (truncation or error), use verbatim */
-        DSD_SNPRINTF(dst, dst_size, "%s", src);
+    if (dsd_config_expand_path(src, expanded, sizeof(expanded)) != 0 || strlen(expanded) >= dst_size) {
+        LOG_WARN("Config: invalid %s; the path is too long, keeping previous/default value\n", key_lc);
+        return -1;
     }
-    dst[dst_size - 1] = '\0';
+    DSD_SNPRINTF(dst, dst_size, "%s", expanded);
+    return 0;
 }
 
 namespace {
@@ -366,7 +369,7 @@ apply_input_rtltcp_soapy_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
 static int
 apply_input_file_network_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
     if (strcmp(key_lc, "file_path") == 0) {
-        copy_path_expanded(cfg->file_path, sizeof cfg->file_path, val);
+        (void)copy_path_expanded(key_lc, cfg->file_path, sizeof cfg->file_path, val);
     } else if (strcmp(key_lc, "file_sample_rate") == 0) {
         (void)apply_integer_setting(val, 48000, mode, &cfg->file_sample_rate);
     } else if (strcmp(key_lc, "tcp_host") == 0) {
@@ -495,13 +498,13 @@ apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* va
 static int
 apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "chan_csv") == 0) {
-        copy_path_expanded(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
+        (void)copy_path_expanded(key_lc, cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
     } else if (strcmp(key_lc, "group_csv") == 0) {
-        copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
+        (void)copy_path_expanded(key_lc, cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
     } else if (strcmp(key_lc, "src_csv") == 0) {
-        copy_path_expanded(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, val);
+        (void)copy_path_expanded(key_lc, cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, val);
     } else if (strcmp(key_lc, "p25_bandplan_csv") == 0) {
-        copy_path_expanded(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, val);
+        (void)copy_path_expanded(key_lc, cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, val);
     } else {
         return 0;
     }
@@ -571,15 +574,76 @@ apply_radioreference_section_key(dsdneoUserConfig* cfg, const char* key_lc, cons
     }
 }
 
+/* The list number a [trunk_scan] path key names: targets_csv is list 1, targets_csv_N list N (2..8); 0 for any other
+   key ("targets_csv_1" and "targets_csv_02" name none, so a list has one spelling). */
+static int
+trunk_scan_list_key_number(const char* key_lc) {
+    if (strcmp(key_lc, "targets_csv") == 0) {
+        return 1;
+    }
+    if (strncmp(key_lc, "targets_csv_", 12) != 0 || key_lc[12] < '2' || key_lc[12] > '0' + DSD_TRUNK_SCAN_MAX_LISTS
+        || key_lc[13] != '\0') {
+        return 0;
+    }
+    return key_lc[12] - '0';
+}
+
+/* An empty targets_csv_N clears list N and every later one, whichever key or file set them (issue #697): run after
+   every list key, so the order keys come in does not matter. */
+static void
+trunk_scan_lists_settle(dsdneoUserConfig* cfg) {
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        if ((cfg->trunk_scan_lists_named & (1U << i)) == 0U || cfg->trunk_scan_lists[i].path[0] != '\0') {
+            continue;
+        }
+        for (int j = i + 1; j < DSD_TRUNK_SCAN_MAX_LISTS; j++) {
+            cfg->trunk_scan_lists[j].path[0] = '\0';
+        }
+        break;
+    }
+    cfg->trunk_scan_list_count = dsd_trunk_scan_lists_span(cfg->trunk_scan_lists);
+}
+
+static void
+apply_trunk_scan_list_key(dsdneoUserConfig* cfg, const char* key_lc, int list, const char* val) {
+    dsd_trunk_scan_list_spec* spec = &cfg->trunk_scan_lists[list - 1];
+    if (copy_path_expanded(key_lc, spec->path, sizeof spec->path, val) != 0) {
+        return;
+    }
+    cfg->trunk_scan_lists_named |= 1U << (list - 1);
+    trunk_scan_lists_settle(cfg);
+}
+
+/* lists_off names every list that starts off; one it leaves out starts on, and an empty value switches every list on.
+   A value that is not a list of list numbers keeps what was there. */
+static void
+apply_trunk_scan_lists_off(dsdneoUserConfig* cfg, const char* val) {
+    uint32_t mask = 0U;
+    if (dsd_trunk_scan_lists_off_parse(val, &mask) != 0) {
+        LOG_WARN("Config: invalid lists_off = '%s' (expected list numbers 1 to %d, comma-separated, each once); "
+                 "keeping previous/default value\n",
+                 val, DSD_TRUNK_SCAN_MAX_LISTS);
+        return;
+    }
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        cfg->trunk_scan_lists[i].start_off = (mask & (1U << i)) != 0U ? 1U : 0U;
+    }
+    cfg->trunk_scan_lists_off_is_set = 1;
+    trunk_scan_lists_settle(cfg);
+}
+
 static void
 apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "enabled") == 0) {
+    const int list = trunk_scan_list_key_number(key_lc);
+    if (list > 0) {
+        apply_trunk_scan_list_key(cfg, key_lc, list, val);
+    } else if (strcmp(key_lc, "lists_off") == 0) {
+        apply_trunk_scan_lists_off(cfg, val);
+    } else if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_scan_enabled = b;
         }
-    } else if (strcmp(key_lc, "targets_csv") == 0) {
-        copy_path_expanded(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, val);
     } else if (strcmp(key_lc, "idle_dwell_ms") == 0) {
         int parsed = 0;
         if (user_config_parse_int_value(val, &parsed) == 0) {
@@ -596,11 +660,11 @@ apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const ch
 static void
 apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
-        copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
+        (void)copy_path_expanded(key_lc, cfg->event_log, sizeof cfg->event_log, val);
     } else if (strcmp(key_lc, "frame_log") == 0) {
-        copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
+        (void)copy_path_expanded(key_lc, cfg->frame_log, sizeof cfg->frame_log, val);
     } else if (strcmp(key_lc, "p25_sm_log") == 0) {
-        copy_path_expanded(cfg->p25_sm_log, sizeof cfg->p25_sm_log, val);
+        (void)copy_path_expanded(key_lc, cfg->p25_sm_log, sizeof cfg->p25_sm_log, val);
     }
 }
 
@@ -693,11 +757,11 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
             cfg->per_call_wav = b;
         }
     } else if (strcmp(key_lc, "per_call_wav_dir") == 0) {
-        copy_path_expanded(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, val);
+        (void)copy_path_expanded(key_lc, cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, val);
     } else if (strcmp(key_lc, "static_wav") == 0) {
-        copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
+        (void)copy_path_expanded(key_lc, cfg->static_wav_path, sizeof cfg->static_wav_path, val);
     } else if (strcmp(key_lc, "raw_wav") == 0) {
-        copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+        (void)copy_path_expanded(key_lc, cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
     } else if (strcmp(key_lc, "unknown_talkgroups_only") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {

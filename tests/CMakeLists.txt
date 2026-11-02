@@ -614,6 +614,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/dmr_key_map.h
   C
 )
+# The trunk-scan list spec opts, the next start and the user config share (issue #697).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_trunk_scan_lists
+  HEADERS_PUBLIC_CORE_TRUNK_SCAN_LISTS
+  dsd-neo/core/trunk_scan_lists.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_trunk_scan_lists_cxx
+  HEADERS_PUBLIC_CORE_TRUNK_SCAN_LISTS_CXX
+  dsd-neo/core/trunk_scan_lists.h
+  CXX
+)
 # The analog sinks' converter (issue #633).
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_rate_converter
@@ -8274,6 +8287,23 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
+
+add_executable(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    runtime/test_runtime_config_trunk_scan_lists.cpp
+)
+target_include_directories(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME RUNTIME_CONFIG_TRUNK_SCAN_LISTS
+    COMMAND dsd-neo_test_runtime_config_trunk_scan_lists
+)
 
 add_executable(
     dsd-neo_test_runtime_rr_provenance

@@ -295,7 +295,8 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
     opts->trunk_hangtime = configured_hangtime;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     g_pending = 0;
     /* The scan's own stamps, the SM stamps below and every tick read one decode instant. */

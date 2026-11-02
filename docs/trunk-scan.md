@@ -137,6 +137,20 @@ For an external receiver that sends PCM audio over TCP and is tuned through rigc
 dsd-neo -ft -i tcp -U 4532 --trunk-scan ~/radio/trunk_scan_targets.csv -G ~/radio/group.csv --frontend terminal
 ```
 
+Several target lists in one session (issue #697): give each file its own `--trunk-scan`, and use `--trunk-scan-off`
+for a list that starts switched off; the scan rotates over the targets of every list that is on:
+
+```sh
+dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/security.csv --trunk-scan ~/radio/hospital.csv \
+  --trunk-scan-off ~/radio/municipality.csv -G ~/radio/group.csv --frontend terminal
+```
+
+- Lists are numbered in command-line order across both options (the example's `municipality` is list 3), and a list's
+  name is its file name without folder and extension. Both options also take the `--trunk-scan=FILE` form.
+- At most 8 lists. A ninth, the same path given twice, a path of 1024 bytes or more and a start with every list off are
+  refused.
+- Lists given on the command line replace a config file's lists as a whole.
+
 Optional timing controls:
 
 ```sh
@@ -274,6 +288,22 @@ idle_dwell_ms = 3000
 activity_hold_ms = 1200
 ```
 
+Several lists from a config file take numbered keys, list 1 staying `targets_csv`; `lists_off` names the lists that
+start switched off:
+
+```ini
+[trunk_scan]
+enabled = true
+targets_csv = "~/radio/security.csv"
+targets_csv_2 = "~/radio/hospital.csv"
+targets_csv_3 = "~/radio/municipality.csv"
+lists_off = 3
+```
+
+The rules (no gaps in the numbers, every `lists_off` number a list, one list on) and how includes, profiles and empty
+keys combine are in [the config guide](config-system.md). A save writes the configured lists, never a list switched on
+or off during the session.
+
 Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `scan_voice_qualify_ms`,
 `scan_voice_hold_ms`): conventional targets reuse `dwell_ms` as the qualify window and `activity_hold_ms` as the
 hold, refreshed only from decoded voice; trunked targets are unchanged.
@@ -310,15 +340,17 @@ dsd-neo --validate-config ~/radio/config.ini
 
 Config notes:
 
-- `targets_csv` supports the same path expansion as other config paths (`~`, `$VAR`, and `${VAR}`).
+- `targets_csv` and `targets_csv_2` … `targets_csv_8` support the same path expansion as other config paths (`~`,
+  `$VAR`, and `${VAR}`); a path that does not fit once expanded is refused, never cut short.
 - `targets_csv` is required when `enabled = true`.
 - `[trunking] chan_csv` is rejected when trunk scan is enabled.
 - `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`: the decoder ignores such a
   value, so use `0` to disable the cap or `1000..3600000` to set one.
 - Profiles can enable trunk scan. A profile may inherit `trunk_scan.targets_csv` from the base config.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
-  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
-  flags and trunk-scan timing overrides keep it enabled.
+  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run, and the
+  exit autosave then records the scan as off, as it records the input that run used. UI-only flags and trunk-scan
+  timing overrides keep it enabled.
 
 ## Runtime Behavior
 

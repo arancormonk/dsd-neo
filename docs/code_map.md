@@ -345,7 +345,19 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
   `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
   target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
-  instead of being a constant that goes stale.
+  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` holds lists loaded one by one to
+  the rules across them (issue #697): a target id is unique across lists (the error names both files and rows) and the
+  union fits the budget.
+- Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
+  start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
+  `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
+  `_describe_fault()` are the start rules (list 1 named, no gap, every `lists_off` number a list, one list on) the CLI
+  (`cli_validate_trunk_scan_runtime_args()`), the engine init and, through the composed-config rule table, the config
+  validation share. The CLI adds a list per `--trunk-scan`/`--trunk-scan-off` (`cli_add_trunk_scan_list()`; the first
+  replaces inherited lists whole). The INI loader keeps per-key presence (`trunk_scan_lists_named`,
+  `trunk_scan_lists_off_is_set`) so an include or profile overrides key by key and an empty `targets_csv_N` truncates
+  wherever it sits; `dsd_user_config_compose_trunk_scan_lists()` puts what a config names over a base spec (apply,
+  queue overlay, next-start defer). Until the coordinator keeps several lists, init refuses more than one.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
   state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
@@ -374,10 +386,12 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the configured
   modulation, which a modulation change made during the scan recaptured; an init that fails after attaching puts back
   the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running coordinator's
-  target-list path, idle dwell and activity hold as they were and reports restart-required
+  target lists, idle dwell and activity hold as they were and reports restart-required
   (`cfg_restore_lifecycle_owned()` in app_control), as it does in every session for the frontend, the trunk-scan flag,
   the channel map (imported at startup only) and an Airspy input over a non-radio one. The applied values wait for the
-  next start in `dsd_opts::next_start` (`dsd_opts_next_start`, `cfg_defer_path()`/`cfg_defer_int()`): the session runs
+  next start in `dsd_opts::next_start` (`dsd_opts_next_start`, `cfg_defer_path()`/`cfg_defer_int()`, and
+  `cfg_defer_trunk_scan_lists()`, which defers the whole list spec as one, built over the spec already waiting so a
+  config naming only `lists_off` keeps waiting paths): the session runs
   the old ones, every save writes the new ones (`snapshot_next_start_config()`), a config naming the running value again
   drops one, and a channel-map import or clear drops the map's; an Airspy chosen over audio input waits in
   `audio_in_dev`, which a save writes. Before anything is staged, the save the apply would leave is held to startup's
@@ -12116,7 +12130,8 @@ pace. How the harness works and how to add a case: `docs/testing.md` "Accessibil
 through `json_store` (`scan_lists.json`). `scan_list_targets.{h,cpp}` is a pure
 QtCore generator with no filesystem or engine dependency. `scan_list_starter`
 checks imported paths, atomically writes the private CSV, validates through
-`app_control/trunk_scan_validate.h`, and delegates argv assembly to
+`app_control/trunk_scan_validate.h` (`dsd_app_trunk_scan_validate_target_lists()` is the several-file form, errors
+named by display name; issue #697), and delegates argv assembly to
 `session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
 the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.

@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -1406,6 +1407,60 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
     parsed.targets = NULL;
     parsed.count = 0U;
     parsed.capacity = 0U;
+    return 0;
+}
+
+/* The target of @p list with @p id, or NULL. */
+static const dsd_trunk_scan_target*
+scan_find_target_id(const dsd_trunk_scan_target_list* list, const char* id) {
+    for (size_t i = 0; i < list->count; i++) {
+        if (strcmp(list->targets[i].id, id) == 0) {
+            return &list->targets[i];
+        }
+    }
+    return NULL;
+}
+
+/* A target of list @p l whose id an earlier list holds, named with both files and rows. */
+static int
+scan_check_list_ids(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t l, char* err,
+                    size_t err_sz) {
+    for (size_t i = 0; i < lists[l].count; i++) {
+        const dsd_trunk_scan_target* target = &lists[l].targets[i];
+        for (size_t k = 0; k < l; k++) {
+            const dsd_trunk_scan_target* first = scan_find_target_id(&lists[k], target->id);
+            if (first != NULL) {
+                scan_set_error(err, err_sz, "%s row %u: target id '%s' is also %s row %u; ids are unique across lists",
+                               names[l], target->csv_row, target->id, names[k], first->csv_row);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
+                                  char* err, size_t err_sz) {
+    if (lists == NULL || names == NULL) {
+        scan_set_error(err, err_sz, "no trunk scan target lists");
+        return -1;
+    }
+    size_t total = 0U;
+    for (size_t l = 0; l < count; l++) {
+        total += lists[l].count;
+        if (total > dsd_trunk_scan_max_targets()) {
+            scan_set_error(err, err_sz,
+                           "%s: the lists hold %zu targets together, more than the %zu that fit in the %d MB target "
+                           "budget",
+                           names[l], total, dsd_trunk_scan_max_targets(),
+                           DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / (1024 * 1024));
+            return -1;
+        }
+        if (scan_check_list_ids(lists, names, l, err, err_sz) != 0) {
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -4703,8 +4758,19 @@ trunk_scan_init_validate(const dsd_opts* opts, const dsd_state* state, char* err
                        "--trunk-scan cannot use a global P25 band plan; use per-target p25_bandplan_csv values");
         return -1;
     }
-    if (opts->trunk_scan_targets_csv[0] == '\0') {
+    if (opts->trunk_scan_list_count <= 0 || opts->trunk_scan_lists[0].path[0] == '\0') {
         scan_set_error(err, err_sz, "--trunk-scan requires targets_csv");
+        return -1;
+    }
+    char why[160];
+    if (dsd_trunk_scan_lists_describe_fault(opts->trunk_scan_lists, opts->trunk_scan_list_count, why, sizeof why)
+        != 0) {
+        scan_set_error(err, err_sz, "%s", why);
+        return -1;
+    }
+    /* Interim (issue #697): the coordinator loads one list until it keeps several. */
+    if (opts->trunk_scan_list_count > 1) {
+        scan_set_error(err, err_sz, "--trunk-scan loads one target list for now");
         return -1;
     }
     if (trunk_scan_is_iq_replay(opts)) {
@@ -4812,7 +4878,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
 
     dsd_trunk_scan_target_list list;
-    if (dsd_trunk_scan_load_targets_csv(opts->trunk_scan_targets_csv, opts, &list, err, err_sz) != 0) {
+    if (dsd_trunk_scan_load_targets_csv(opts->trunk_scan_lists[0].path, opts, &list, err, err_sz) != 0) {
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);

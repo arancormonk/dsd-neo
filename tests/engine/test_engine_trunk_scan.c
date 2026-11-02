@@ -1666,6 +1666,66 @@ expect_target0_p25_state(const dsd_state* state) {
     return test_rc;
 }
 
+/* Issue #697: the engine starts from the configured lists, and refuses those startup refuses (every list off, a gap)
+   with the CLI's reason. Until the coordinator keeps several lists it refuses more than one plainly. */
+static int
+test_init_reads_the_list_spec(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        int count;
+        int second_path;
+        int first_off;
+        const char* want;
+    } cases[] = {
+        {1, 0, 1, "every trunk-scan list starts off"},
+        {3, 0, 0, "trunk-scan list 2 has no target CSV"},
+        {2, 1, 0, "loads one target list for now"},
+        {0, 0, 0, "requires targets_csv"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_scan_opts_state(&opts, &state);
+        if (cases[i].count > 0) {
+            DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+            opts.trunk_scan_lists[0].start_off = (uint8_t)cases[i].first_off;
+        }
+        if (cases[i].count == 3) {
+            DSD_SNPRINTF(opts.trunk_scan_lists[2].path, sizeof opts.trunk_scan_lists[2].path, "%s", target_path);
+        }
+        if (cases[i].second_path) {
+            DSD_SNPRINTF(opts.trunk_scan_lists[1].path, sizeof opts.trunk_scan_lists[1].path, "%s", target_path);
+        }
+        opts.trunk_scan_list_count = cases[i].count;
+        char err[256] = {0};
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strstr(err, cases[i].want) == NULL) {
+            DSD_FPRINTF(stderr, "list spec case %zu: err=\"%s\", wanted \"%s\"\n", i, err, cases[i].want);
+            test_rc = 1;
+            dsd_engine_trunk_scan_shutdown(&opts, &state);
+        }
+    }
+
+    /* List 1 alone starts as the one target CSV always did. */
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "one list did not start: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_coordinator_idle_rotation_and_state_restore(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -1680,7 +1740,8 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -1771,7 +1832,8 @@ test_coordinator_publishes_active_target_label(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -1824,7 +1886,8 @@ test_target_label_names_the_channel(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -1884,7 +1947,8 @@ test_target_chan_csv_names_are_discarded(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -1922,7 +1986,8 @@ test_coordinator_preserves_long_lcn_list_across_rotation(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2092,7 +2157,8 @@ test_coordinator_preserves_large_chan_map_across_rotation(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2196,7 +2262,8 @@ test_coordinator_rotation_past_32_targets(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2302,7 +2369,8 @@ test_call_identity_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2373,7 +2441,8 @@ test_call_event_lifecycle_isolated_per_target(void) {
     dsd_call_context_snapshot context = {0};
     uint64_t ended_epoch = 0U;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2445,7 +2514,8 @@ test_call_event_current_rows_isolated_per_target(void) {
     reset_scan_opts_state(&opts, &state);
     DSD_MEMSET(event_history, 0, sizeof(event_history));
     state.event_history_s = event_history;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2554,7 +2624,8 @@ test_dmr_branding_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2641,7 +2712,8 @@ test_dmr_confidence_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2710,7 +2782,8 @@ test_dmr_service_options_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2773,7 +2846,8 @@ test_p25_targets_seed_valid_control_channel_timing(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2833,7 +2907,8 @@ test_p25_nac_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2903,7 +2978,8 @@ test_p25_conventional_grant_frequency_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -2964,7 +3040,8 @@ test_p25_target_switch_resyncs_sm_mode(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3020,7 +3097,8 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(1.0);
@@ -3097,7 +3175,8 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3167,7 +3246,8 @@ test_conventional_activity_hold_and_allowlist_block(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3199,7 +3279,8 @@ test_conventional_activity_hold_and_allowlist_block(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.trunk_use_allow_list = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
@@ -3236,7 +3317,8 @@ test_conventional_activity_encrypted_lockout_does_not_hold(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.trunk_tune_enc_calls = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3330,7 +3412,8 @@ test_nxdn_trunk_target_seeds_control_channel(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3369,7 +3452,8 @@ test_mixed_target_switch_resets_nxdn_demod_profile(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3439,7 +3523,8 @@ test_nxdn48_target_selects_2400_demod_profile(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     g_scan_tune_to_freq_ted_sps = 0;
     char err[256] = {0};
@@ -3511,7 +3596,8 @@ test_nxdn48_target_uses_rtl_output_rate_for_sps(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_rtl_stream_metrics_hooks metrics_hooks = {0};
     metrics_hooks.output_rate_hz = fake_rtl_output_rate_hz;
@@ -3546,7 +3632,8 @@ run_nxdn_decoder_warning_case(const char* label, const char* target_path, int fr
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     opts.frame_nxdn48 = frame_nxdn48;
     opts.frame_nxdn96 = frame_nxdn96;
 
@@ -3632,7 +3719,8 @@ test_nxdn_conventional_activity_hold(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -3664,7 +3752,8 @@ test_nxdn_conventional_activity_hold(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.trunk_use_allow_list = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
@@ -3684,7 +3773,8 @@ test_nxdn_conventional_activity_hold(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.trunk_tune_enc_calls = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
@@ -3747,7 +3837,8 @@ test_p25_conventional_activity_receive_policy(void) {
     int test_rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         reset_scan_opts_state(opts, state);
-        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
         if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -3814,7 +3905,8 @@ test_receive_expiry_yields_conventional_target(void) {
     }
     int test_rc = 0;
     reset_scan_opts_state(opts, state);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -3907,7 +3999,8 @@ test_p25_conventional_activity_hold(void) {
         state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
         state->rf_mod = 2;
         g_scan_tune_to_freq_ted_sps = 0;
-        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
         if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -3983,7 +4076,8 @@ run_conventional_data_call_hold_case(const char* tag, const char* body, int tune
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.trunk_tune_data_calls = tune_data_calls;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4080,7 +4174,8 @@ test_nxdn48_conventional_activity_hold(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4113,7 +4208,8 @@ test_nxdn48_conventional_activity_hold(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.trunk_use_allow_list = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
@@ -4133,7 +4229,8 @@ test_nxdn48_conventional_activity_hold(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.trunk_tune_enc_calls = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
@@ -4214,7 +4311,8 @@ run_voice_gate_header_case(const char* tag, const char* body, int data_call,
     opts.scan_voice_qualify_ms = 1000;
     opts.scan_voice_hold_ms = 2000;
     opts.trunk_tune_data_calls = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4296,7 +4394,8 @@ test_conventional_voice_gate_media_hold(void) {
     opts.scan_voice_only = 1;
     opts.scan_voice_qualify_ms = 1000;
     opts.scan_voice_hold_ms = 2000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4405,7 +4504,8 @@ test_p25_conventional_voice_gate_media_hold(void) {
     for (int has_media = 0; has_media <= 1; has_media++) {
         reset_scan_opts_state(opts, state);
         opts->scan_voice_only = 1;
-        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
         if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -4504,7 +4604,8 @@ test_conventional_voice_gate_terminator_before_first_tick(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_voice_only = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4585,7 +4686,8 @@ test_conventional_voice_gate_enc_lockout_media_rotates(void) {
     opts.scan_voice_qualify_ms = 1000;
     opts.scan_voice_hold_ms = 2000;
     opts.trunk_tune_enc_calls = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4632,7 +4734,8 @@ test_trunked_voice_gate_control_only_unchanged(void) {
     opts.scan_voice_only = 1;
     opts.scan_voice_qualify_ms = 1000;
     opts.scan_voice_hold_ms = 2000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4670,7 +4773,8 @@ test_trunked_voice_gate_control_only_unchanged(void) {
     opts.scan_voice_only = 1;
     opts.scan_voice_qualify_ms = 1000;
     opts.scan_voice_hold_ms = 2000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "voice-gate tuned scan init failed: %s\n", err);
@@ -4709,7 +4813,8 @@ run_nxdn_trunk_hold_case(const char* trunk_row, const char* label) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4777,7 +4882,8 @@ test_p25p1_mod_verdict_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4842,7 +4948,8 @@ test_p25p1_watchdog_notice_stays_with_its_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_frame_sync_off_thread_tunes_reset(NULL);
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4899,7 +5006,8 @@ test_nxdn_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -4979,7 +5087,8 @@ test_nxdn_trunk_diag_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -5064,7 +5173,8 @@ test_state_ext_cleanup_clears_scan_hooks(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -5102,7 +5212,8 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -5134,7 +5245,8 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     }
 
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     DSD_MEMSET(err, 0, sizeof err);
     trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
@@ -5172,7 +5284,8 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -5282,7 +5395,8 @@ test_nxdn48_trunk_target_parks_on_2400_control_channel(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -5368,7 +5482,8 @@ test_p25_pending_retune_holds_scan_dwell(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -5453,7 +5568,8 @@ test_nxdn_trunk_target_follows_corrected_cc(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_freq = 0;
 
@@ -5518,7 +5634,8 @@ test_p25_pending_retune_adopts_sm_retry(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_trunk_tuning_requests_reset();
 
     dsd_trunk_tuning_hooks hooks = {0};
@@ -5604,7 +5721,8 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_trunk_tuning_requests_reset();
 
     dsd_trunk_tuning_hooks hooks = {0};
@@ -5680,7 +5798,8 @@ test_generic_pending_retune_holds_and_recovers(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -5742,7 +5861,8 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -5803,7 +5923,8 @@ test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.rtl_dsp_bw_khz = 48;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_rtl_stream_metrics_hooks metrics_hooks = {0};
     metrics_hooks.output_rate_hz = fake_rtl_output_rate_hz;
@@ -5874,7 +5995,8 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -5934,7 +6056,8 @@ test_p25_encrypted_call_cache_state_isolated_per_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6029,7 +6152,8 @@ test_enc_lockout_purge_clears_scan_snapshots(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6096,7 +6220,8 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -6145,7 +6270,8 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     }
 
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_freq = 0;
     trunk_scan_test_set_now(0.0);
@@ -6194,7 +6320,8 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;
     state.rf_mod = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6249,7 +6376,8 @@ test_target_retunes_select_four_level_sps_profile(void) {
     reset_scan_opts_state(&opts, &state);
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state.sps_hunt_counter = 17;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6303,7 +6431,8 @@ test_per_target_modulation_overrides_global_lock(void) {
     opts.mod_c4fm = 0;
     opts.mod_gfsk = 0;
     state.rf_mod = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6355,7 +6484,8 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -6449,7 +6579,8 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.rtl_gain_value = 22;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6510,7 +6641,8 @@ test_live_gain_edit_becomes_scan_default(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.rtl_gain_value = 22;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6598,7 +6730,8 @@ test_live_autogain_edit_becomes_scan_default(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.rtl_gain_value = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6663,7 +6796,8 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -6719,7 +6853,8 @@ test_single_target_retune_failure_retries_after_cooldown(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -6773,7 +6908,8 @@ test_retune_failure_cooldown(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
@@ -6824,7 +6960,8 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -6892,7 +7029,8 @@ test_failed_alternate_retune_republishes_restored_target(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -6939,7 +7077,8 @@ test_target_switch_forgets_the_received_identity(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -7033,7 +7172,8 @@ test_target_switch_keeps_each_rows_site(void) {
     reset_scan_opts_state(&opts, &state);
     DSD_MEMSET(event_history, 0, sizeof(event_history));
     state.event_history_s = event_history;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
 
@@ -7132,7 +7272,8 @@ test_target_switch_and_rollback_reset_dmr_ras(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -7220,7 +7361,8 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -7292,7 +7434,8 @@ test_init_failure_restores_saved_trunk_opts(void) {
     opts.mod_c4fm = 0;
     opts.mod_qpsk = 1;
     opts.mod_gfsk = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     g_csv_import_result = -1;
     char err[256] = {0};
@@ -7348,7 +7491,8 @@ test_save_writes_configured_trunking_under_scan(void) {
         static dsd_state state;
         reset_scan_opts_state(&opts, &state);
         opts.trunk_enable = cases[i].configured;
-        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+        opts.trunk_scan_list_count = 1;
 
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
@@ -7398,7 +7542,8 @@ test_set_configured_trunk_enable(void) {
         return 1;
     }
     opts.trunk_enable = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
@@ -7442,7 +7587,8 @@ test_shutdown_keeps_modulation_changed_during_scan(void) {
     opts.mod_c4fm = 1;
     opts.mod_qpsk = 1;
     opts.mod_gfsk = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -7495,7 +7641,8 @@ test_trunk_scan_rejects_fixed_input_without_tuner(void) {
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.use_rigctl = 0;
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
@@ -7529,7 +7676,8 @@ test_trunk_scan_rejects_unopened_rtl_without_rigctl(void) {
     reset_scan_opts_state(&opts, &state);
     state.rtl_ctx = NULL;
     opts.use_rigctl = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
@@ -7567,7 +7715,8 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     reset_scan_opts_state(&opts, &state);
     opts.iq_replay_requested = 1;
     opts.use_rigctl = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
@@ -7583,7 +7732,8 @@ test_trunk_scan_rejects_iq_replay_input(void) {
 
     reset_scan_opts_state(&opts, &state);
     opts.iq_replay_active = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     err[0] = '\0';
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc == 0 || strstr(err, "IQ replay") == NULL) {
@@ -7611,7 +7761,8 @@ scan_control_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir,
         return -1;
     }
     reset_scan_opts_state(opts, state);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -8499,7 +8650,8 @@ test_target_keys_install_and_restore_across_switches(void) {
     state.K = 0xBEEFULL;
     state.rkey_array[3] = 111ULL;
     state.rkey_array_loaded[3] = 1U;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -8560,7 +8712,8 @@ test_live_target_decryption_roundtrip(void) {
     reset_scan_opts_state(&opts, &state);
     state.K = 37;
     state.keyloader = 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof(opts.trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+    opts.trunk_scan_list_count = 1;
     char error[256] = {0};
     trunk_scan_test_set_now(0.0);
     int failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
@@ -8627,7 +8780,8 @@ test_direct_target_keys_install_and_restore_across_switches(void) {
     state.aes_key[0] = 0xCCU;
     state.rkey_array[3] = 111ULL;
     state.rkey_array_loaded[3] = 1U;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -8718,7 +8872,8 @@ test_target_chan_csv_keys_are_discarded(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -8766,7 +8921,8 @@ test_target_keys_survive_failed_alternate_retune(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -8845,7 +9001,8 @@ test_target_switch_clears_received_tone(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
@@ -8914,7 +9071,8 @@ init_two_p25_targets(dsd_opts* opts, dsd_state* state, const char* body, char* d
         return -1;
     }
     reset_scan_opts_state(opts, state);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
@@ -9112,7 +9270,8 @@ test_trunk_scan_rejects_global_p25_bandplan(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     DSD_SNPRINTF(opts.p25_bandplan_in_file, sizeof opts.p25_bandplan_in_file, "%s", target_path);
 
     char err[256] = {0};
@@ -9151,7 +9310,8 @@ test_target_p25_bandplan_loads_and_survives_rotation(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[512] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
@@ -9199,7 +9359,8 @@ test_target_p25_bandplan_loads_and_survives_rotation(void) {
     /* A plan that cannot be read fails init with a message naming the target. */
     (void)remove(plan_path);
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     DSD_MEMSET(err, 0, sizeof err);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0) {
         DSD_FPRINTF(stderr, "missing per-target band plan accepted\n");
@@ -9627,7 +9788,8 @@ run_prepare_failure_timer_case(int retry) {
         return 1;
     }
     reset_scan_opts_state(opts, state);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
@@ -9697,7 +9859,8 @@ test_initial_key_allocation_failure(void) {
     state->R = 99;
     state->rkey_array_loaded[7] = 1;
     state->rkey_array[7] = 123;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     dsd_key_set_test_alloc_fail_after(0);
     char error[256];
     int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) == 0;
@@ -9743,7 +9906,8 @@ test_target_policy_options_rotate_and_restore(void) {
     reset_scan_opts_state(opts, state);
     opts->trunk_tune_data_calls = 0;
     opts->trunk_tune_enc_calls = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char error[256] = {0};
     trunk_scan_test_set_now(0.0);
     int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
@@ -9834,7 +9998,8 @@ test_target_receive_names_rotate_and_restore(void) {
     char error[256] = {0};
     int failed = read_targets_file(path, written, sizeof(written)) != 0
                  || dsd_receive_names_parse("--dcc-name 3=Configured", &opts.receive.names, error, sizeof(error)) != 0;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof(opts.trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+    opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     if (!failed) {
         failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
@@ -9914,7 +10079,8 @@ test_target_options_rotate_and_restore(void) {
     state->M = 1;
     opts->aggressive_framesync = 1;
     opts->scan_voice_hold_ms = 2000;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char error[256] = {0};
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error));
@@ -9985,7 +10151,8 @@ test_prepare_failure_keeps_outgoing_snapshot(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -10058,7 +10225,8 @@ run_target_voice_option_case(const char* name, const char* options, double media
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_voice_only = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -10517,7 +10685,8 @@ test_scan_timing_voice_gate_phases(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_voice_only = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -10583,7 +10752,8 @@ test_scan_timing_row_voice_options_override_effective_values(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_voice_only = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -10618,7 +10788,8 @@ test_scan_timing_pending_retune_then_retry_cooldown(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
@@ -10671,7 +10842,8 @@ scan_visit_init(const char* header, const char* body, int max_visit_ms, dsd_opts
     }
     reset_scan_opts_state(opts, state);
     opts->scan_max_visit_ms = max_visit_ms;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -11561,7 +11733,8 @@ test_visit_limit_pending_retune_does_not_fire(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_max_visit_ms = 1000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
@@ -11632,7 +11805,8 @@ run_visit_failed_retune_case(int max_visit_ms) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.scan_max_visit_ms = max_visit_ms;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     const unsigned want_limit = max_visit_ms >= 1000 ? (unsigned)max_visit_ms : 0U;
 
     /* Every park fails: the initial one and the alternate the init advance reaches for. */
@@ -12157,7 +12331,8 @@ squelch_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* d
     }
     reset_scan_opts_state(opts, state);
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_target_squelch};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_target_squelch_pushes = 0;
@@ -12297,7 +12472,8 @@ count_target_squelch_warnings(int audio_in_type, int* out_count, char* buf, size
         opts.use_rigctl = 1;
         state.rtl_ctx = NULL;
     }
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "trunkscansql") != 0) {
         cleanup_paths(dir, target_path, NULL);
@@ -12368,7 +12544,8 @@ test_targets_warn_unreachable_names(void) {
         cleanup_paths(dir, target_path, NULL);
         return 1;
     }
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "trunkscannames") != 0) {
         cleanup_paths(dir, target_path, NULL);
@@ -12495,7 +12672,8 @@ nfm_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, 
     opts->frame_dmr = 1;
     opts->dmr_stereo = 1;
     opts->analog_nfm_bandwidth_hz = 20000;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     g_scan_tune_to_freq_failures_remaining = 0;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
@@ -13435,7 +13613,8 @@ nfm_target_rejection_weighs_an_am_alternate(int own_am_hz) {
     opts.dmr_stereo = 1;
     opts.analog_nfm_bandwidth_hz = 0;
     opts.analog_am_bandwidth_hz = 20000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_scan_tune_refuses_unfit_width = 1;
     g_scan_tune_width_refusals = 0;
     g_scan_tune_to_freq_failures_remaining = 0;
@@ -13518,7 +13697,8 @@ test_am_target_carrier_ignores_the_tone_filter(void) {
     opts.dmr_stereo = 1;
     opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
     (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
@@ -13593,7 +13773,8 @@ test_tone_filter_warns_without_nfm_targets(void) {
         opts.analog_only = cases[i].analog_only;
         opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
         (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
-        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+        opts.trunk_scan_list_count = 1;
         dsd_test_capture_stderr cap;
         char buf[4096] = {0};
         char err[256] = {0};
@@ -13650,7 +13831,8 @@ test_nfm_target_warnings_at_scan_start(void) {
             state.rtl_ctx = NULL;
         }
         g_scan_dsp_rate_hz = rtl ? 16000 : 0;
-        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+        opts.trunk_scan_list_count = 1;
         dsd_test_capture_stderr cap;
         char buf[4096] = {0};
         char err[256] = {0};
@@ -13749,7 +13931,8 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.output_rate_hz = fake_family_output_rate_hz;
     hooks.analog_family_active = fake_family_analog_active;
@@ -13922,7 +14105,8 @@ test_nfm_target_width_rechecked_when_the_dsp_rate_changes(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_test_capture_stderr cap;
     char buf[8192] = {0};
     char err[256] = {0};
@@ -13976,7 +14160,8 @@ test_nfm_target_refused_width_skipped_quietly(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
     char err[256] = {0};
@@ -14051,7 +14236,8 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     dsd_test_capture_stderr cap;
@@ -14130,7 +14316,8 @@ test_visit_cap_with_a_width_skipped_alternate(void) {
     opts.dmr_stereo = 1;
     opts.analog_nfm_bandwidth_hz = 20000;
     opts.scan_max_visit_ms = 1000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     g_scan_tune_to_freq_failures_remaining = 0;
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -14206,7 +14393,8 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     opts.analog_nfm_bandwidth_hz = 16000;
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -14286,7 +14474,8 @@ test_am_target_configured_width_held_to_the_dsp_rate(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     opts.analog_am_bandwidth_hz = 16000;
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -14368,7 +14557,8 @@ test_nfm_target_status_counts_every_skipped_target(void) {
         return 1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     opts.analog_nfm_bandwidth_hz = 12500;
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -14450,7 +14640,8 @@ nfm_target_pending_retune_requests(int edit_hz, int* out_width_hz) {
         return -1;
     }
     reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     opts.analog_nfm_bandwidth_hz = 16000;
     dsd_trunk_tuning_requests_reset();
     const dsd_rtl_stream_metrics_hooks hooks = {.apply_analog_profile = record_live_analog_profile};
@@ -14690,7 +14881,8 @@ test_am_target_rotation_moves_between_demodulators(void) {
     opts.dmr_stereo = 1;
     opts.analog_nfm_bandwidth_hz = 20000;
     opts.analog_am_bandwidth_hz = 10000;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
@@ -14958,7 +15150,8 @@ test_target_edit_gain(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.rtl_gain_value = 22;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
@@ -15408,7 +15601,8 @@ pause_keyed_scan_init(const char* body, dsd_opts* opts, dsd_state* state, char* 
     reset_scan_opts_state(opts, state);
     state->rkey_array[3] = 111ULL;
     state->rkey_array_loaded[3] = 1U;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
@@ -15648,7 +15842,8 @@ test_paused_scan_gates_every_consumer(void) {
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.rtl_gain_value = 20;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
@@ -16032,7 +16227,8 @@ test_shutdown_after_a_pause_saves_no_manual_state(void) {
     opts.mod_c4fm = 1;
     opts.mod_qpsk = 1;
     opts.mod_gfsk = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
@@ -16854,6 +17050,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
     rc |= test_parser_reads_spreadsheet_quoted_labels();

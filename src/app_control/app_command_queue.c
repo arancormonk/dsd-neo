@@ -45,6 +45,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -8822,16 +8823,16 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
 /* What a save would write once the config (@p ctx) is applied, in @p next (the save as it stands,
    svc_check_next_start()): the fields of the trunk-scan rules a config names replace those the session would save, as
    staging, the next-start hold (cfg_restore_lifecycle_owned()) and the owner settle (cfg_settle_scan_owner()) leave
-   them. A path is named only when the config sets one. A [trunking] names the tuner owner. */
+   them. A path is named only when the config sets one; the trunk-scan lists as the config names them
+   (dsd_user_config_compose_trunk_scan_lists()). A [trunking] names the tuner owner. */
 static void
 cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
     const dsdneoUserConfig* cfg = (const dsdneoUserConfig*)ctx;
     if (cfg->has_trunk_scan) {
         next->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
-        if (cfg->trunk_scan_targets_csv[0]) {
-            DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s",
-                         cfg->trunk_scan_targets_csv);
-        }
+        /* Over the lists the save holds, those waiting for the next start included: a config naming lists_off alone
+           keeps the paths an earlier apply left waiting (issue #697). */
+        dsd_user_config_compose_trunk_scan_lists(cfg, next->trunk_scan_lists, &next->trunk_scan_list_count);
     }
     if (!cfg->has_trunking) {
         return;
@@ -8923,7 +8924,8 @@ typedef struct {
     int trunk_scan_enabled;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
-    char trunk_scan_targets_csv[sizeof(((dsd_opts*)0)->trunk_scan_targets_csv)];
+    dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    int trunk_scan_list_count;
     char chan_in_file[sizeof(((dsd_opts*)0)->chan_in_file)];
     char p25_bandplan_in_file[sizeof(((dsd_opts*)0)->p25_bandplan_in_file)];
 } cfg_lifecycle_owned;
@@ -8934,7 +8936,8 @@ cfg_capture_lifecycle_owned(const dsd_opts* opts, cfg_lifecycle_owned* out) {
     out->trunk_scan_enabled = opts->trunk_scan_enabled;
     out->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
     out->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
-    DSD_SNPRINTF(out->trunk_scan_targets_csv, sizeof out->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
+    DSD_MEMCPY(out->trunk_scan_lists, opts->trunk_scan_lists, sizeof out->trunk_scan_lists);
+    out->trunk_scan_list_count = opts->trunk_scan_list_count;
     DSD_SNPRINTF(out->chan_in_file, sizeof out->chan_in_file, "%s", opts->chan_in_file);
     DSD_SNPRINTF(out->p25_bandplan_in_file, sizeof out->p25_bandplan_in_file, "%s", opts->p25_bandplan_in_file);
 }
@@ -8964,6 +8967,32 @@ cfg_defer_path(char* live, size_t size, const char* before, int named, uint32_t*
     }
     DSD_SNPRINTF(live, size, "%s", before);
     return changed;
+}
+
+/* The same for the trunk-scan list spec (issue #697), deferred whole: paths and start states. What the config names is
+   put over the spec a save would write, the one waiting for the next start when there is one, so a config naming
+   lists_off alone keeps the paths an earlier apply left waiting; the running lists are put back. */
+static int
+cfg_defer_trunk_scan_lists(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
+    DSD_MEMCPY(opts->trunk_scan_lists, before->trunk_scan_lists, sizeof opts->trunk_scan_lists);
+    opts->trunk_scan_list_count = before->trunk_scan_list_count;
+    if (!cfg->has_trunk_scan || !dsd_user_config_names_trunk_scan_lists(cfg)) {
+        return 0; /* names none of them: what waits, waits */
+    }
+    /* Composed in place: the next-start copy is read only while its bit is set. */
+    dsd_opts_next_start* next = &opts->next_start;
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) == 0U) {
+        DSD_MEMCPY(next->trunk_scan_lists, before->trunk_scan_lists, sizeof next->trunk_scan_lists);
+        next->trunk_scan_list_count = before->trunk_scan_list_count;
+    }
+    dsd_user_config_compose_trunk_scan_lists(cfg, next->trunk_scan_lists, &next->trunk_scan_list_count);
+    if (dsd_trunk_scan_lists_equal(next->trunk_scan_lists, next->trunk_scan_list_count, before->trunk_scan_lists,
+                                   before->trunk_scan_list_count)) {
+        next->pending &= ~DSD_NEXT_START_TRUNK_SCAN_TARGETS; /* names the running lists again */
+        return 0;
+    }
+    next->pending |= DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    return 1;
 }
 
 /* The same for a number. */
@@ -9021,10 +9050,7 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const c
         changed |= CFG_RESTART_CHANNEL_MAP;
     }
     if (before->trunk_scan_enabled == 1) {
-        int list_changed =
-            cfg_defer_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
-                           before->trunk_scan_targets_csv, cfg->has_trunk_scan && cfg->trunk_scan_targets_csv[0],
-                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_TARGETS, next->trunk_scan_targets_csv);
+        int list_changed = cfg_defer_trunk_scan_lists(opts, cfg, before);
         list_changed |=
             cfg_defer_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms, cfg->has_trunk_scan,
                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL, &next->trunk_scan_idle_dwell_ms);

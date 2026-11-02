@@ -1788,7 +1788,8 @@ test_trunk_scan_nfm_target_then_trunked_target(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("nfm trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     rc |= expect_true("nfm target runs the monitor at its width", opts->analog_only == 1 && g_rtl_analog_family == 1
@@ -3734,7 +3735,8 @@ test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("family timing trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     rc |= expect_true("family timing nfm target", g_rtl_analog_family == 1 && g_rtl_tune_freq == 154330000U);
@@ -3803,7 +3805,8 @@ start_family_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t pat
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("family scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     return rc;

@@ -114,6 +114,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/core/trunk_scan_lists.h"
 #include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/runtime/config.h"
 #include "manual_tune_pending.h"
@@ -9766,7 +9767,8 @@ test_config_keeps_trunk_scan_lifecycle(void) {
         cfg.trunk_scan_idle_dwell_ms = 4321;
         if (!installed) {
             /* A trunk scan the next start can run names its list. */
-            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+            DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+            cfg.trunk_scan_list_count = 1;
         }
         rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
         rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -9815,13 +9817,15 @@ test_config_keeps_the_running_trunk_scan_list(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
         init_test_context(&opts, &state);
         opts.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", "targets.csv");
+        opts.trunk_scan_list_count = 1;
         opts.trunk_scan_idle_dwell_ms = 3000;
         opts.trunk_scan_activity_hold_ms = 1200;
         dsdneoUserConfig cfg = {0};
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", cases[i].targets);
+        DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", cases[i].targets);
+        cfg.trunk_scan_list_count = 1;
         cfg.trunk_scan_idle_dwell_ms = cases[i].dwell_ms;
         cfg.trunk_scan_activity_hold_ms = cases[i].hold_ms;
         cfg.has_trunking = 1;
@@ -9829,7 +9833,7 @@ test_config_keeps_the_running_trunk_scan_list(void) {
         DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", cases[i].bandplan_csv);
         rc |= expect_true("trunk-scan list config queued", dsd_app_command_apply_config(&cfg) > 0);
         rc |= expect_int("trunk-scan list config drained", dsd_app_drain_cmds(&opts, &state), 1);
-        int bad = expect_str("the running list stays", opts.trunk_scan_targets_csv, "targets.csv");
+        int bad = expect_str("the running list stays", opts.trunk_scan_lists[0].path, "targets.csv");
         bad |= expect_int("the running idle dwell stays", opts.trunk_scan_idle_dwell_ms, 3000);
         bad |= expect_int("the running activity hold stays", opts.trunk_scan_activity_hold_ms, 1200);
         bad |= expect_str("no global channel map", opts.chan_in_file, "");
@@ -10720,7 +10724,8 @@ test_rtl_gain_commands_edit_the_trunk_scan_default(void) {
                                     "own,p25-trunk,851000000,,3000,,own gain,10\n"
                                     "inherit,dmr-trunk,452000000,,3000,,inherits\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (init_rc != 0) {
@@ -15087,7 +15092,8 @@ test_refused_row_width_request_puts_the_edit_back(void) {
     static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
                                     "fire,nfm-conventional,154430000,,3000,,,--nfm-bandwidth-hz 12500\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     (void)dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     rc |= expect_int("row width: target on air", state.scan_row_scanner == DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 1);
@@ -17595,7 +17601,8 @@ test_trunk_scan_pause_returns_to_the_monitor(void) {
     static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
                                     "fire,nfm-conventional,154430000,,3000,,,--nfm-bandwidth-hz 12500\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_int("trunk monitor: scan init", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err), 0);
     rc |= expect_int("trunk monitor: the target's width", opts.analog_nfm_bandwidth_hz, 12500);
@@ -17724,7 +17731,8 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
                                     "own,p25-trunk,851000000,,3000,,own gain,10\n"
                                     "inherit,dmr-trunk,452000000,,3000,,inherits\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_int("pause gain init", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err), 0);
     rc |= expect_int("parked on its own gain", opts.rtl_gain_value, 10);
@@ -22964,7 +22972,8 @@ test_scan_row_edit_commands_under_trunk_scan(void) {
                                     "own,p25-trunk,851000000,,3000,,own gain,10,--squelch-db -60\n"
                                     "inherit,dmr-trunk,452000000,,3000,,inherits,,\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
+    opts.trunk_scan_list_count = 1;
     char err[256] = {0};
     const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (init_rc != 0) {
@@ -23299,6 +23308,141 @@ apply_then_save(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, d
     return rc;
 }
 
+static void
+set_trunk_scan_list(dsd_trunk_scan_list_spec* lists, int index, const char* path, int start_off) {
+    DSD_SNPRINTF(lists[index].path, sizeof lists[index].path, "%s", path);
+    lists[index].start_off = start_off ? 1U : 0U;
+}
+
+static int
+expect_trunk_scan_spec(const char* what, const dsd_trunk_scan_list_spec* lists, int count, const char* first,
+                       int first_off, const char* second, int second_off) {
+    const int ok = count == 2 && strcmp(lists[0].path, first) == 0 && (lists[0].start_off != 0U) == (first_off != 0)
+                   && strcmp(lists[1].path, second) == 0 && (lists[1].start_off != 0U) == (second_off != 0);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "%s: count=%d [%s off=%u] [%s off=%u], wanted [%s off=%d] [%s off=%d]\n", what, count,
+                    lists[0].path, lists[0].start_off, lists[1].path, lists[1].start_off, first, first_off, second,
+                    second_off);
+    }
+    return ok ? 0 : 1;
+}
+
+/*
+ * Issue #697 (D2, S6): under a running coordinator, running or paused, a config's trunk-scan lists wait for the next
+ * start as one spec, paths and start states together, built over what already waits: a config naming lists_off alone
+ * keeps the paths an earlier apply left waiting, and one naming the running spec again takes it all back. The running
+ * lists never change.
+ */
+static int
+test_config_defers_the_trunk_scan_list_spec_whole(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+
+    for (int paused = 0; paused < 2; paused++) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        state.trunk_scan_paused = (uint8_t)paused;
+        set_trunk_scan_list(opts.trunk_scan_lists, 0, "a.csv", 0);
+        set_trunk_scan_list(opts.trunk_scan_lists, 1, "b.csv", 1);
+        opts.trunk_scan_list_count = 2;
+
+        /* New paths: they wait, with the start states they are put over. */
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+        cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+        set_trunk_scan_list(cfg.trunk_scan_lists, 0, "c.csv", 0);
+        set_trunk_scan_list(cfg.trunk_scan_lists, 1, "d.csv", 0);
+        cfg.trunk_scan_list_count = 2;
+        cfg.trunk_scan_lists_named = 0x3U;
+        rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: new paths");
+        rc |= expect_trunk_scan_spec("new paths: the running lists stay", opts.trunk_scan_lists,
+                                     opts.trunk_scan_list_count, "a.csv", 0, "b.csv", 1);
+        rc |= expect_trunk_scan_spec("new paths: a save writes them", saved.trunk_scan_lists,
+                                     saved.trunk_scan_list_count, "c.csv", 0, "d.csv", 1);
+        rc |= expect_int("new paths: restart needed", dsd_app_command_test_last_restart_required(), 1);
+
+        /* lists_off alone: over the waiting paths, not the running ones. */
+        DSD_MEMSET(cfg.trunk_scan_lists, 0, sizeof cfg.trunk_scan_lists);
+        cfg.trunk_scan_list_count = 0;
+        cfg.trunk_scan_lists_named = 0U;
+        cfg.trunk_scan_lists_off_is_set = 1;
+        cfg.trunk_scan_lists[0].start_off = 1U;
+        cfg.trunk_scan_list_count = 1;
+        rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: lists_off alone");
+        rc |= expect_trunk_scan_spec("lists_off alone: the running lists stay", opts.trunk_scan_lists,
+                                     opts.trunk_scan_list_count, "a.csv", 0, "b.csv", 1);
+        rc |= expect_trunk_scan_spec("lists_off alone: keeps the waiting paths", saved.trunk_scan_lists,
+                                     saved.trunk_scan_list_count, "c.csv", 1, "d.csv", 0);
+
+        /* A config naming none of the list keys leaves what waits. */
+        DSD_MEMSET(cfg.trunk_scan_lists, 0, sizeof cfg.trunk_scan_lists);
+        cfg.trunk_scan_list_count = 0;
+        cfg.trunk_scan_lists_off_is_set = 0;
+        rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: none named");
+        rc |= expect_trunk_scan_spec("none named: what waits stays", saved.trunk_scan_lists,
+                                     saved.trunk_scan_list_count, "c.csv", 1, "d.csv", 0);
+        rc |= expect_int("none named: no restart for the lists", dsd_app_command_test_last_restart_required(), 0);
+
+        /* The running spec named again takes the whole wait back. */
+        set_trunk_scan_list(cfg.trunk_scan_lists, 0, "a.csv", 0);
+        set_trunk_scan_list(cfg.trunk_scan_lists, 1, "b.csv", 1);
+        cfg.trunk_scan_list_count = 2;
+        cfg.trunk_scan_lists_named = 0xFFU;
+        cfg.trunk_scan_lists_off_is_set = 1;
+        rc |= apply_then_save(&opts, &state, &cfg, &saved, "lists: the running spec");
+        rc |= expect_int("running spec: nothing waits",
+                         (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U, 0);
+        rc |= expect_trunk_scan_spec("running spec: a save writes it", saved.trunk_scan_lists,
+                                     saved.trunk_scan_list_count, "a.csv", 0, "b.csv", 1);
+        if (rc) {
+            DSD_FPRINTF(stderr, "  (paused=%d)\n", paused);
+        }
+        state.trunk_scan_paused = 0U;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* Issue #697: a config whose lists the next start refuses (every list off, a gap) is refused whole, as one that names
+   no list is. */
+static int
+test_config_refuses_trunk_scan_lists_the_next_start_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+    for (int gap = 0; gap < 2; gap++) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        set_trunk_scan_list(opts.trunk_scan_lists, 0, "a.csv", 0);
+        opts.trunk_scan_list_count = 1;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+        cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+        set_trunk_scan_list(cfg.trunk_scan_lists, 0, "a.csv", gap ? 0 : 1);
+        if (gap) {
+            set_trunk_scan_list(cfg.trunk_scan_lists, 2, "c.csv", 0);
+        }
+        cfg.trunk_scan_list_count = gap ? 3 : 1;
+        rc |= expect_true("refused lists queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_int("refused lists drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("refused lists: failed", dsd_app_command_test_last_failed(), 1);
+        rc |= expect_true("refused lists: the toast says why",
+                          strstr(state.ui_msg, gap ? "without gaps" : "every list off") != NULL);
+        rc |= expect_int("refused lists: nothing waits",
+                         (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U, 0);
+        freeState(&state);
+    }
+    return rc;
+}
+
 /*
  * Issue #671 (N1): a config apply that names a setting only a restart puts in place keeps the running one in force and
  * keeps the applied one for the next start: every save writes it, so the restart the toast asks for runs it. A later
@@ -23335,42 +23479,46 @@ test_config_restart_settings_wait_for_the_next_start(void) {
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     cfg.trunk_scan_idle_dwell_ms = 3000;
     cfg.trunk_scan_activity_hold_ms = 1200;
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan on");
     rc |= expect_int("trunk scan on: none runs", opts.trunk_scan_enabled, 0);
     rc |= expect_int("trunk scan on: a save writes it", saved.trunk_scan_enabled, 1);
-    rc |= expect_str("trunk scan on: with its list", saved.trunk_scan_targets_csv, "targets.csv");
+    rc |= expect_str("trunk scan on: with its list", saved.trunk_scan_lists[0].path, "targets.csv");
     freeState(&state);
 
     /* Under a coordinator: the list, its dwell and hold defaults, and the band plan. */
     init_test_context(&opts, &state);
     opts.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", "targets.csv");
+    opts.trunk_scan_list_count = 1;
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "other-targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "other-targets.csv");
+    cfg.trunk_scan_list_count = 1;
     cfg.trunk_scan_idle_dwell_ms = 4321;
     cfg.trunk_scan_activity_hold_ms = 2500;
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list");
     rc |= expect_int("trunk scan list: the running one stays",
-                     strcmp(opts.trunk_scan_targets_csv, "targets.csv") == 0 && opts.trunk_scan_idle_dwell_ms == 3000
+                     strcmp(opts.trunk_scan_lists[0].path, "targets.csv") == 0 && opts.trunk_scan_idle_dwell_ms == 3000
                          && opts.trunk_scan_activity_hold_ms == 1200 && opts.p25_bandplan_in_file[0] == '\0',
                      1);
-    rc |= expect_str("trunk scan list: a save writes the list", saved.trunk_scan_targets_csv, "other-targets.csv");
+    rc |= expect_str("trunk scan list: a save writes the list", saved.trunk_scan_lists[0].path, "other-targets.csv");
     rc |= expect_int("trunk scan list: and its defaults",
                      saved.trunk_scan_idle_dwell_ms == 4321 && saved.trunk_scan_activity_hold_ms == 2500, 1);
     /* The running values named again take every one back. */
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     cfg.trunk_scan_idle_dwell_ms = 3000;
     cfg.trunk_scan_activity_hold_ms = 1200;
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list back");
-    rc |=
-        expect_str("trunk scan list back: a save writes the running list", saved.trunk_scan_targets_csv, "targets.csv");
+    rc |= expect_str("trunk scan list back: a save writes the running list", saved.trunk_scan_lists[0].path,
+                     "targets.csv");
     rc |= expect_int("trunk scan list back: and its defaults",
                      saved.trunk_scan_idle_dwell_ms == 3000 && saved.trunk_scan_activity_hold_ms == 1200, 1);
     freeState(&state);
@@ -23433,7 +23581,7 @@ expect_refused_for_the_next_start(dsd_opts* opts, dsd_state* state, const dsdneo
                       saved.trunk_scan_enabled == before->trunk_scan_enabled
                           && strcmp(saved.trunk_chan_csv, before->trunk_chan_csv) == 0
                           && strcmp(saved.trunk_p25_bandplan_csv, before->trunk_p25_bandplan_csv) == 0
-                          && strcmp(saved.trunk_scan_targets_csv, before->trunk_scan_targets_csv) == 0
+                          && strcmp(saved.trunk_scan_lists[0].path, before->trunk_scan_lists[0].path) == 0
                           && saved.trunk_scan_idle_dwell_ms == before->trunk_scan_idle_dwell_ms,
                       1);
     if (bad) {
@@ -23464,13 +23612,15 @@ test_config_refuses_what_the_next_start_refuses(void) {
     for (int map = 0; map <= 1; map++) {
         init_test_context(&opts, &state);
         opts.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", "targets.csv");
+        opts.trunk_scan_list_count = 1;
         opts.trunk_scan_idle_dwell_ms = 3000;
         dsd_snapshot_opts_to_user_config(&opts, &state, &before);
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+        cfg.trunk_scan_list_count = 1;
         cfg.trunk_scan_idle_dwell_ms = 4321; /* would wait for the next start, but the whole config is refused */
         cfg.has_trunking = 1;
         if (map) {
@@ -23496,7 +23646,8 @@ test_config_refuses_what_the_next_start_refuses(void) {
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+        cfg.trunk_scan_list_count = 1;
         rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, map ? k_map_why : k_plan_why,
                                                 map ? "trunk scan on over a global map" : "trunk scan on over a plan");
         freeState(&state);
@@ -23540,7 +23691,8 @@ test_config_refuses_what_the_next_start_refuses(void) {
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     static dsdneoUserConfig saved;
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan on, nothing global");
     rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
@@ -23557,7 +23709,8 @@ test_config_refuses_what_the_next_start_refuses(void) {
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+        cfg.trunk_scan_list_count = 1;
         if (!session_scans) {
             cfg.has_trunking = 1;
             cfg.trunk_scanner = 1;
@@ -23578,8 +23731,9 @@ test_config_refuses_what_the_next_start_refuses(void) {
         if (waiting) {
             opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
             opts.next_start.trunk_scan_enabled = 1;
-            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
-                         "targets.csv");
+            DSD_SNPRINTF(opts.next_start.trunk_scan_lists[0].path, sizeof opts.next_start.trunk_scan_lists[0].path,
+                         "%s", "targets.csv");
+            opts.next_start.trunk_scan_list_count = 1;
         }
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunking = 1;
@@ -23587,7 +23741,8 @@ test_config_refuses_what_the_next_start_refuses(void) {
         if (!waiting) {
             cfg.has_trunk_scan = 1;
             cfg.trunk_scan_enabled = 1;
-            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+            DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+            cfg.trunk_scan_list_count = 1;
         }
         rc |= drain_config(&opts, &state, &cfg,
                            waiting ? "trunking session: scanner, trunk scan waiting"
@@ -23608,7 +23763,8 @@ test_config_refuses_what_the_next_start_refuses(void) {
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     cfg.has_trunking = 1;
     cfg.trunk_enabled = 1;
     cfg.trunk_scanner = 1;
@@ -23638,8 +23794,9 @@ test_config_judges_only_what_it_breaks(void) {
         DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
         opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
         opts.next_start.trunk_scan_enabled = 1;
-        DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+        DSD_SNPRINTF(opts.next_start.trunk_scan_lists[0].path, sizeof opts.next_start.trunk_scan_lists[0].path, "%s",
                      "targets.csv");
+        opts.next_start.trunk_scan_list_count = 1;
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunking = 1;
         if (step == 0) {
@@ -23706,7 +23863,8 @@ test_menu_refuses_what_the_next_start_refuses(void) {
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     rc |= drain_config(&opts, &state, &cfg, "menu next start: trunk scan waits");
     rc |= expect_int("menu next start: the trunk scan waits",
                      opts.trunk_scan_enabled == 0 && (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN) != 0U, 1);
@@ -24294,7 +24452,8 @@ init_running_trunk_scan(dsd_opts* opts, dsd_state* state, const char* dir, char*
                                     "a,p25-trunk,851000000,,3000,,\n"
                                     "b,dmr-trunk,452000000,,3000,,\n";
     rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", csv);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", csv);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
     if (init_rc != 0) {
@@ -24540,7 +24699,8 @@ test_config_failed_reopen_keeps_a_paused_list(void) {
        pause, which a save writes as the scanner on. Nothing waits, so the save still starts. */
     cfg.has_trunk_scan = 1;
     cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     rc |= submit_config(&opts, &state, &cfg, "paused list: scanner off, input fails");
     rc |= expect_int("paused list: scanner off, input fails: still paused",
                      state.lcn_scan_paused == 1 && opts.scanner_mode == 0, 1);
@@ -24621,8 +24781,9 @@ test_config_leaves_a_save_that_starts(void) {
                its input fails and is rolled back. */
             opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
             opts.next_start.trunk_scan_enabled = 1;
-            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
-                         "targets.csv");
+            DSD_SNPRINTF(opts.next_start.trunk_scan_lists[0].path, sizeof opts.next_start.trunk_scan_lists[0].path,
+                         "%s", "targets.csv");
+            opts.next_start.trunk_scan_list_count = 1;
             cfg.trunk_scan_enabled = 0;
             if (shape == 0) {
                 cfg.trunk_scanner = 1;
@@ -24638,7 +24799,8 @@ test_config_leaves_a_save_that_starts(void) {
             state.operator_tuned = 1U;
             state.rtl_ctx = NULL;
             cfg.trunk_scan_enabled = 1;
-            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+            DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+            cfg.trunk_scan_list_count = 1;
         }
         rc |= submit_config(&opts, &state, &cfg, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
@@ -25265,6 +25427,8 @@ main(void) {
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
     rc |= test_config_keeps_the_running_trunk_scan_list();
+    rc |= test_config_defers_the_trunk_scan_list_spec_whole();
+    rc |= test_config_refuses_trunk_scan_lists_the_next_start_refuses();
     rc |= test_config_restart_required_says_what_waits();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

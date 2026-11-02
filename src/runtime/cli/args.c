@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
@@ -524,8 +525,10 @@ cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, in
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
-    if (opts->trunk_scan_targets_csv[0] == '\0') {
-        LOG_ERROR("--trunk-scan requires a target CSV path\n");
+    char why[160];
+    if (dsd_trunk_scan_lists_describe_fault(opts->trunk_scan_lists, opts->trunk_scan_list_count, why, sizeof why)
+        != 0) {
+        LOG_ERROR("%s\n", why);
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
@@ -1026,6 +1029,45 @@ cli_value_fits(const char* option_name, const char* noun, const char* value, siz
 static int
 cli_path_fits(const char* option_name, const char* path, size_t capacity, int* out_exit_rc) {
     return cli_value_fits(option_name, "path", path, capacity, out_exit_rc);
+}
+
+/* --trunk-scan and --trunk-scan-off add one list each, in command-line order (issue #697). The first replaces the
+   lists a config file handed down, as a whole; a ninth list, a path that does not fit and a path given twice are
+   refused. */
+static int
+cli_add_trunk_scan_list(dsd_opts* opts, const char* option_name, const char* path, int start_off,
+                        int* trunk_scan_cli_seen, int* out_exit_rc) {
+    if (!*trunk_scan_cli_seen) {
+        DSD_MEMSET(opts->trunk_scan_lists, 0, sizeof opts->trunk_scan_lists);
+        opts->trunk_scan_list_count = 0;
+    }
+    if (path[0] == '\0') {
+        LOG_ERROR("%s requires a target CSV path\n", option_name);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (!cli_path_fits(option_name, path, sizeof opts->trunk_scan_lists[0].path, out_exit_rc)) {
+        return 0;
+    }
+    if (opts->trunk_scan_list_count >= DSD_TRUNK_SCAN_MAX_LISTS) {
+        LOG_ERROR("%s: at most %d trunk-scan lists\n", option_name, DSD_TRUNK_SCAN_MAX_LISTS);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    for (int k = 0; k < opts->trunk_scan_list_count; k++) {
+        if (strcmp(opts->trunk_scan_lists[k].path, path) == 0) {
+            LOG_ERROR("%s: %s is trunk-scan list %d already\n", option_name, path, k + 1);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        }
+    }
+    dsd_trunk_scan_list_spec* list = &opts->trunk_scan_lists[opts->trunk_scan_list_count++];
+    DSD_SNPRINTF(list->path, sizeof list->path, "%s", path);
+    list->start_off = start_off ? 1U : 0U;
+    opts->trunk_scan_enabled = 1;
+    *trunk_scan_cli_seen = 1;
+    opts->trunk_cli_seen = 1;
+    return 1;
 }
 
 static int
@@ -1633,32 +1675,30 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--trunk-scan") == 0) {                                                                    \
+        if (strcmp(argv[i], "--trunk-scan") == 0 || strcmp(argv[i], "--trunk-scan-off") == 0) {                        \
+            const int start_off = strcmp(argv[i], "--trunk-scan-off") == 0;                                            \
             if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--trunk-scan requires a target CSV path\n");                                                \
+                LOG_ERROR("%s requires a target CSV path\n", argv[i]);                                                 \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (!cli_path_fits("--trunk-scan", argv[i + 1], sizeof opts->trunk_scan_targets_csv, out_exit_rc)) {       \
+            if (!cli_add_trunk_scan_list(opts, argv[i], DSD_PARSE_ARGS_NEXT_ARG(), start_off, &trunk_scan_cli_seen,    \
+                                         out_exit_rc)) {                                                               \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",                      \
-                         DSD_PARSE_ARGS_NEXT_ARG());                                                                   \
-            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
-            opts->trunk_scan_enabled = 1;                                                                              \
-            trunk_scan_cli_seen = 1;                                                                                   \
-            opts->trunk_cli_seen = 1;                                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan=", 13) == 0) {                                                              \
-            if (!cli_path_fits("--trunk-scan", argv[i] + 13, sizeof opts->trunk_scan_targets_csv, out_exit_rc)) {      \
+            if (!cli_add_trunk_scan_list(opts, "--trunk-scan", argv[i] + 13, 0, &trunk_scan_cli_seen, out_exit_rc)) {  \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", argv[i] + 13);       \
-            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
-            opts->trunk_scan_enabled = 1;                                                                              \
-            trunk_scan_cli_seen = 1;                                                                                   \
-            opts->trunk_cli_seen = 1;                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan-off=", 17) == 0) {                                                          \
+            if (!cli_add_trunk_scan_list(opts, "--trunk-scan-off", argv[i] + 17, 1, &trunk_scan_cli_seen,              \
+                                         out_exit_rc)) {                                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--trunk-scan-dwell-ms") == 0) {                                                           \

@@ -117,7 +117,9 @@ keyMuteRotation(bool unmuteP25) {
     opts->unmute_encrypted_p25 = unmuteP25;
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
+                 path.toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -192,8 +194,9 @@ p25CandidateRotation(int configured) {
     opts->p25_prefer_candidates = static_cast<uint8_t>(configured);
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
                  file.fileName().toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -450,8 +453,9 @@ mixedAnalogRotation() {
     dsd_tg_policy_entry baseline{};
     check(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &baseline) == 0);
     check(dsd_tg_policy_append_exact(state, &baseline) == 0);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
                  file.fileName().toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -586,7 +590,9 @@ main(int argc, char** argv) {
     dsd_tg_policy_entry baseline{};
     check(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &baseline) == 0);
     check(dsd_tg_policy_append_exact(state, &baseline) == 0);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
+                 path.toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
