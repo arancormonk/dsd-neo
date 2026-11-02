@@ -38,7 +38,8 @@ void rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_p
 
 /**
  * @brief Whether the save the import would leave breaks a rule a trunk scan waiting for the next start needs (issue
- *        #671), as svc_check_next_start() asks it: the tuner owner it sets and the channel map it loads or clears.
+ *        #671), through the same app_check_next_start() every other change asks: the tuner owner it sets and the
+ *        channel map it loads or clears.
  *
  * @param chan_path The channel map the import loads; a frontend asking before the file exists may pass NULL or "",
  *                  which stands for "a channel map" when @p facts has_chan is set.

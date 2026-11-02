@@ -214,6 +214,23 @@ test_facts_fill(void) {
     rc |= expect_int("float symbols", input_kind_of(&opts, AUDIO_IN_SYMBOL_FLT, "cap.sym"), DSD_APP_RR_INPUT_SYMBOLS);
     /* A radio spec left behind by a switch to PCM is audio: the type decides. */
     rc |= expect_int("rtl spec on pulse", input_kind_of(&opts, AUDIO_IN_PULSE, "rtl:0"), DSD_APP_RR_INPUT_AUDIO);
+    /* A replay flag a switch to an RTL-SDR left set (an input switch does not clear it, and a failed open does not
+       reset it) is no replay: the spec in force decides, as every other import check asks it, so TETRA on that RTL-SDR
+       at 48 kHz is refused rather than passed as a replay. */
+    opts.iq_replay_active = 1;
+    rc |= expect_int("stale replay flag on rtl", input_kind_of(&opts, AUDIO_IN_RTL, "rtl:0"), DSD_APP_RR_INPUT_RTL);
+    {
+        dsd_app_rr_apply_payload stale;
+        DSD_MEMSET(&stale, 0, sizeof stale);
+        stale.decode_mode = (int32_t)DSDCFG_MODE_TETRA;
+        opts.rtl_dsp_bw_khz = 48;
+        dsd_app_rr_receiver_facts stale_facts;
+        rr_apply_receiver_facts_fill(&opts, &stale, 0, 0, 0U, &stale_facts);
+        rc |= expect_verdict("stale replay flag: tetra at 48 kHz", &stale_facts, k_tetra_rtl_bw, 1);
+    }
+    rc |= expect_int("replay with the flag", input_kind_of(&opts, AUDIO_IN_RTL, "iqreplay:cap.json"),
+                     DSD_APP_RR_INPUT_IQ_REPLAY);
+    opts.iq_replay_active = 0;
 
     dsd_app_rr_apply_payload p;
     DSD_MEMSET(&p, 0, sizeof p);

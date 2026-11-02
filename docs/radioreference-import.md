@@ -261,27 +261,32 @@ next launch. They persist now. `edacs_ea` and `edacs_esk` refine the EDACS decod
 it — they are applied after `[mode] decode`, which resets both — in the same way `dmr_mono` refines the DMR
 one.
 
-Two more limits worth knowing:
+Limits worth knowing:
 
 - Applying is asynchronous and its outcome is reported by a status message from the decoder, not by the
   wizard. A session started with `--trunk-scan` manages its own channel maps: the wizard refuses the import
   before writing anything, and the decoder-thread handler refuses the apply again if one ever reaches it.
-- The decoder checks everything it can before it changes anything: the receiver (below), a trunk scan
-  waiting for the next start, the width an AM or Analog mode needs, whether a running I/Q replay can run the
-  mode, and each CSV file. A refused import changes nothing (the call, a running `-Y` scan, the mode and the
-  files all stay, and Config -> Save writes what it would have before), and the status message gives the
-  reason, for example `Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`.
-  Something that still fails after that point (a CSV deleted in the meantime, a replay that does not reopen)
-  is reported as a partial apply that names what did take, for example
-  `Failed: RR import -> channel map not loaded; mode and talkgroups applied`. A mode change that fails keeps
-  its own message.
+- The decoder checks everything it can before it changes anything: the receiver (see
+  [Receiver requirements](#receiver-requirements)), a trunk scan waiting for the next start, the width an AM
+  or Analog mode needs, whether a running I/Q replay can run the mode, and each CSV file. A refused import
+  changes nothing (the call, a running `-Y` scan, the mode and the files all stay, and Config -> Save writes
+  what it would have before), and the status message gives the reason, for example
+  `Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`.
+- Something can still fail after those checks. A mode change that fails (a replay that does not reopen at the
+  new rate, say) keeps its own message, which names the reason, for example
+  `Failed: P25 Phase 1 -> the replay did not start at the new rate (see log)`, and the import goes no further.
+  A CSV file that cannot be loaded by then (deleted in the meantime) is reported as a partial apply that names
+  what did take, for example `Failed: RR import -> channel map not loaded; mode and talkgroups applied`.
 - An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
   frequency.
+- `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
+  never steps and the session will look stuck on the first frequency. The generator emits that warning and
+  the panel shows it.
 
 #### Receiver requirements
 
-AM needs an IQ radio input. TETRA needs a receiver that can decode it, and the import is refused, with the
-reason, when the session cannot:
+AM needs an IQ radio input. TETRA needs a receiver that can decode it; when the session has none, the import
+is refused with the reason:
 
 | Input | TETRA import |
 |---|---|
@@ -293,9 +298,6 @@ reason, when the session cannot:
 | Symbol capture (`.bin`, `.raw`, `.sym`) | Accepted |
 | PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an IQ radio input or a symbol capture |
 | A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
-- `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
-  never steps and the session will look stuck on the first frequency. The generator emits that warning and
-  the panel shows it.
 
 ## What gets generated
 

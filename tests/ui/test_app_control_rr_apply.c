@@ -22,6 +22,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -104,6 +106,8 @@ static int g_replan_check_calls = 0;
 static int g_replan_result = RR_SCRIPT_REAL;
 static int g_replan_calls = 0;
 static int g_recovery_calls = 0;
+static int g_profile_refused_width_hz = RR_SCRIPT_REAL; /* the analog width the front end refuses; others it takes */
+static int g_profile_first_width_hz = -1;               /* the width the first check asked about */
 
 int __real_rtl_stream_get_request_rate_hz(void);
 int __wrap_rtl_stream_get_request_rate_hz(void);
@@ -123,6 +127,20 @@ int __real_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
 int __wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
+int __real_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
+int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
+
+/* The running front end's answer to an analog profile: one width refused, the rest taken. */
+int
+__wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    if (g_profile_refused_width_hz == RR_SCRIPT_REAL) {
+        return __real_rtl_stream_check_analog_profile(family, kind, width_hz);
+    }
+    if (g_profile_first_width_hz < 0) {
+        g_profile_first_width_hz = width_hz;
+    }
+    return width_hz == g_profile_refused_width_hz ? -1 : 0;
+}
 
 int
 __wrap_rtl_stream_get_request_rate_hz(void) {
@@ -198,6 +216,8 @@ reset_replay_script(void) {
     g_replan_result = RR_SCRIPT_REAL;
     g_replan_calls = 0;
     g_recovery_calls = 0;
+    g_profile_refused_width_hz = RR_SCRIPT_REAL;
+    g_profile_first_width_hz = -1;
 }
 #endif
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -1265,6 +1285,51 @@ test_apply_success_keeps_the_mode_note(void) {
     return rc;
 }
 
+/* Review fix (spec §10, preflight completeness): an Analog import under a typed -Y row with its own NFM width, while the
+   configured NFM width is the default, is judged on the session the leave puts back: the default width, not the
+   row's. Before the fix the default-width path asked the front end about the row's 25 kHz, which this front end
+   refuses, and the import was refused for a width it would never run. */
+static int
+test_apply_profile_check_after_the_leave(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0");
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)g_fake_stream;
+    reset_replay_script();
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("scope", dsd_scan_mode_begin(&opts, &state), 0);
+    rc |= expect_int("nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("row width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("the row's width runs", opts.analog_nfm_bandwidth_hz, 25000);
+    rc |= expect_int("the configured width is the default",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM), 0);
+
+    g_profile_refused_width_hz = 25000;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_ANALOG;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("analog under a row queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog under a row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the preflight asked about the default width", g_profile_first_width_hz, 0);
+    rc |= expect_int("not refused for the row's width",
+                     strcmp(state.ui_msg, "Failed: RR import -> the RTL front end refused the channel (see log)") != 0,
+                     1);
+    rc |= expect_int("analog applied", dsd_infer_decode_mode_preset(&opts), DSDCFG_MODE_ANALOG);
+    state.rtl_ctx = NULL;
+    reset_replay_script();
+    freeState(&state);
+    return rc;
+}
+
 /* New behaviour (D3): the decoder thread checks a SoapySDR device at the rate the running stream committed, which a
    frontend cannot see. */
 static int
@@ -1357,6 +1422,7 @@ main(void) {
     rc |= test_apply_mode_change_failure_keeps_its_reason();
     rc |= test_apply_success_keeps_the_mode_note();
     rc |= test_apply_tetra_soapy_rate();
+    rc |= test_apply_profile_check_after_the_leave();
 #endif
 #endif
     if (rc == 0) {

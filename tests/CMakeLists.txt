@@ -2709,6 +2709,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
@@ -5524,6 +5525,7 @@ if(DSD_HAS_EXPAT)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard
@@ -8577,6 +8579,7 @@ add_executable(
     ui/test_app_control_rr_verdict.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
 )
 target_include_directories(
     dsd-neo_test_app_control_rr_verdict
@@ -8640,6 +8643,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=rtl_stream_replay_replan_check_request"
             "LINKER:--wrap=svc_rtl_replay_replan_locked"
             "LINKER:--wrap=svc_rtl_restart_recovery_locked"
+            "LINKER:--wrap=rtl_stream_check_analog_profile"
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)

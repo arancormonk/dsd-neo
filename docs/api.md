@@ -737,9 +737,11 @@ field, and the decoder refuses the rest when it applies the command.
   Airspy, on a SoapySDR device whose rate is no TETRA rate, or in a
   `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
   running I/Q replay that cannot run the mode; and a CSV that cannot be read.
-  What fails after that is reported as a partial apply naming what did take
-  (`Failed: RR import -> channel map not loaded; mode and talkgroups applied`),
-  and a mode change that fails keeps its own message. On an I/Q replay the
+  After that, a mode change that fails (a replay that does not reopen at the
+  new rate, say) keeps its own message, which names the reason, and the import
+  goes no further; a CSV that cannot be loaded by then is reported as a partial
+  apply naming what did take (`Failed: RR import -> channel map not loaded;
+  mode and talkgroups applied`). On an I/Q replay the
   import never tunes, even with a rigctl radio connected. Success reads
   `Applied: RR import (<mode>)`, with what the mode change had to say (a
   replay's new rate) in place of the reminder to save.

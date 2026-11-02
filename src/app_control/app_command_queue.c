@@ -6024,7 +6024,7 @@ ui_check_mode_receive_profile_widths(const dsd_opts* opts, const dsd_state* stat
         width_hz = nfm_hz;
     }
     if (kind < 0) {
-        return svc_check_mode_receive_profile(opts, state, mode);
+        return svc_check_mode_receive_profile_widths(opts, state, mode, nfm_hz, am_hz);
     }
 #ifdef USE_RADIO
     /* A running replay the change re-plans (leaving TETRA's rate, issue #701) runs the width at the rate the request

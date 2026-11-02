@@ -25,6 +25,7 @@ target_sources(
         frontend.c
         frontend_snr.c
         menu_services.c
+        next_start_check.c
         notification_status.c
         rigctl_connect.c
         rigctl_passband.c

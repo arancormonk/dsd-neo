@@ -3306,15 +3306,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `dsd_app_rr_receiver_facts`, `src/app_control/rr_apply_verdict.c`) refuses an import under a running trunk scan,
     AM or TETRA on audio, and TETRA where it decodes nothing (RTL-SDR/rtl_tcp off 72 kHz, an Airspy, a SoapySDR rate
     that is no TETRA rate, `--tetra-uplink`); an unknown SoapySDR rate passes. The module-private
-    `rr_apply_verdict.h` fills the facts from a `dsd_opts` and asks the next-start rule
-    (`rr_apply_next_start_refusal()`); the decoder's preflight and the frontends' advisory
-    `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured rate, no `rtl_stream_*` call) share it.
+    `rr_apply_verdict.h` fills the facts from a `dsd_opts` (a replay is `dsd_opts_input_is_iq_replay()`, never the
+    stale-prone `iq_replay_active`) and asks the next-start rule (`rr_apply_next_start_refusal()`); the decoder's
+    preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured
+    rate, no `rtl_stream_*` call) share it.
+  - Next-start rule (issue #671): `app_check_next_start()` (`src/app_control/next_start_check.{h,c}`, pure) is the
+    one body; `svc_check_next_start()` forwards to it on the decoder thread, and the RR pre-check calls it on the
+    snapshot copies.
   - Invariant: `apply_rr_import()` has one commit point. `rr_apply_preflight()` runs every deterministic check
     before the carrier boundary and the `-Y` leave (mode bound, verdict, next start, the receive profile the mode
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
-    refusal changes nothing. After it, a failure is a partial apply (`rr_apply_outcome`, "X not loaded; mode
-    applied"), a failed mode change keeps its own toast, and an I/Q replay never tunes or crosses a receiver-move
-    boundary, rigctl peer or not
+    refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
+    `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
+    and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,

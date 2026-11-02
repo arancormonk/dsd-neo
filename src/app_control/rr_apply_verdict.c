@@ -13,15 +13,14 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "next_start_check.h"
 #include "rr_apply_verdict.h"
 
 /* The reasons, as phrases a toast puts after "Failed: RR import -> " (and a frontend frames as it likes). Each fits an
@@ -105,8 +104,11 @@ dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* why, s
     return 0;
 }
 
-/* The input as the stream start classifies it (dsd_opts_analog_rate_source()), and the decode-mode input check
-   (dsd_decode_mode_runs_on_input()): a radio input is I/Q, a symbol capture is symbols, anything else is audio. */
+/* The input as the decode-mode input check sees it (dsd_decode_mode_runs_on_input()): a radio input is I/Q, a symbol
+   capture is symbols, anything else is audio. A replay is the replay spec in force (dsd_opts_input_is_iq_replay()), as
+   every other import check asks it, never dsd_opts::iq_replay_active, which an input switch does not clear; among the
+   other radio specs the device sets the rate (SoapySDR, Airspy), else the RTL DSP bandwidth does, as the stream start
+   classifies them (detect_radio_source()). */
 static int
 rr_input_kind(const dsd_opts* opts) {
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
@@ -115,13 +117,13 @@ rr_input_kind(const dsd_opts* opts) {
     if (!dsd_opts_input_is_radio(opts)) {
         return DSD_APP_RR_INPUT_AUDIO;
     }
-    switch (dsd_opts_analog_rate_source(opts)) {
-        case DSD_ANALOG_RATE_CAPTURE: return DSD_APP_RR_INPUT_IQ_REPLAY;
-        case DSD_ANALOG_RATE_DEVICE:
-            return dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? DSD_APP_RR_INPUT_AIRSPY
-                                                                            : DSD_APP_RR_INPUT_SOAPY;
-        default: return DSD_APP_RR_INPUT_RTL;
+    if (dsd_opts_input_is_iq_replay(opts)) {
+        return DSD_APP_RR_INPUT_IQ_REPLAY;
     }
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_APP_RR_INPUT_AIRSPY;
+    }
+    return dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev) ? DSD_APP_RR_INPUT_SOAPY : DSD_APP_RR_INPUT_RTL;
 }
 
 void
@@ -147,33 +149,33 @@ rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payloa
     out->scanner = (!p->trunking && p->scanner) ? 1 : 0;
 }
 
+/* What the import leaves (rr_apply_next_start_refusal()): the facts and the channel map it loads. */
+typedef struct {
+    const dsd_app_rr_receiver_facts* facts;
+    const char* chan_path;
+} rr_next_start_change;
+
+/* The tuner owner the import sets and the channel map it loads or clears (rr_apply_files()). A frontend asks before
+   the file exists; the rules only ask whether there is one. */
+static void
+rr_next_start_apply(dsdneoUserConfig* save, const void* ctx) {
+    const rr_next_start_change* change = (const rr_next_start_change*)ctx;
+    save->trunk_enabled = change->facts->trunking;
+    save->trunk_scanner = change->facts->scanner;
+    const char* chan =
+        (change->chan_path && change->chan_path[0] != '\0') ? change->chan_path : "radioreference import";
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", change->facts->has_chan ? chan : "");
+}
+
 int
 rr_apply_next_start_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_app_rr_receiver_facts* facts,
                             const char* chan_path, char* why, size_t why_size) {
-    if (why && why_size > 0U) {
-        why[0] = '\0';
-    }
-    if (!opts || !state || !facts) {
-        return -1;
-    }
-    /* Two saves (a few tens of KB each) on the heap, once per import checked. */
-    dsdneoUserConfig* before = (dsdneoUserConfig*)calloc(2, sizeof *before);
-    if (!before) {
+    if (!facts) {
         if (why && why_size > 0U) {
-            DSD_SNPRINTF(why, why_size, "%s", "out of memory");
+            why[0] = '\0';
         }
         return -1;
     }
-    dsdneoUserConfig* after = before + 1;
-    dsd_snapshot_opts_to_user_config(opts, state, before);
-    DSD_MEMCPY(after, before, sizeof *after);
-    /* What the import leaves: the tuner owner it sets and the channel map it loads or clears (rr_apply_files()). A
-       frontend asks before the file exists; the rules only ask whether there is one. */
-    after->trunk_enabled = facts->trunking;
-    after->trunk_scanner = facts->scanner;
-    const char* chan = (chan_path && chan_path[0] != '\0') ? chan_path : "radioreference import";
-    DSD_SNPRINTF(after->trunk_chan_csv, sizeof after->trunk_chan_csv, "%s", facts->has_chan ? chan : "");
-    const int rc = dsd_user_config_check_trunk_scan_startable(after, before, why, why_size);
-    free(before);
-    return rc;
+    const rr_next_start_change change = {facts, chan_path};
+    return app_check_next_start(opts, state, rr_next_start_apply, &change, why, why_size);
 }
