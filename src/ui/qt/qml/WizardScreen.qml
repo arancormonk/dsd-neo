@@ -334,12 +334,13 @@ Item {
 
     /**
      * Whether the source can run a decode flag: AM needs a radio (issue #524),
-     * TETRA a radio or a symbol capture file; network and other file audio
+     * TETRA a USB or rtl_tcp radio or a symbol capture file (an Airspy has no
+     * DSP rate TETRA decodes at, issue #803); network and other file audio
      * arrives already demodulated.
      */
     function decodeFlagRunsHere(flag) {
         if (radioSource)
-            return true;
+            return sourceType !== "airspy" || !Util.decodeFlagNeedsIqOrSymbols(flag);
         if (Util.decodeFlagNeedsRadio(flag))
             return false;
         return !Util.decodeFlagNeedsIqOrSymbols(flag) || symbolSource;
@@ -349,10 +350,19 @@ Item {
      * A source change away from the radio drops a chip the new source cannot
      * run back to Auto, rather than saving a system the engine would refuse to
      * start. Its chip is greyed out for the new source.
+     *
+     * TETRA on an Airspy is the exception: the step waits with the reason
+     * (tetraRateError()) and keeps the flag, so an imported TETRA system is
+     * still TETRA when the user switches back to a USB or rtl_tcp radio.
      */
     function dropRadioOnlyDecodeFlag() {
-        if (!decodeFlagRunsHere(decodeFlag))
+        if (!decodeFlagRunsHere(decodeFlag) && tetraRateError().length === 0)
             pickDecodeFlag("");
+    }
+
+    // The bandwidth the user asked for, or -1 for an empty field.
+    function bandwidthRequestKhz() {
+        return bwText.length > 0 ? intOr(bwText, -1) : -1;
     }
 
     /**
@@ -364,7 +374,19 @@ Item {
     function amBandwidthError() {
         if (!radioSource || !Util.decodeFlagNeedsRadio(decodeFlag))
             return "";
-        return sessionArgs.amBandwidthError(sourceType, bwText.length > 0 ? intOr(bwText, -1) : -1);
+        return sessionArgs.amBandwidthError(sourceType, bandwidthRequestKhz());
+    }
+
+    /**
+     * Why TETRA cannot run on this radio (issue #803), or empty: an Airspy
+     * cannot decode it, and a USB or rtl_tcp radio only at 72 kHz, which an
+     * empty bandwidth field gives it. The same check refuses the session at
+     * start, so the wizard says so before saving the system.
+     */
+    function tetraRateError() {
+        if (!radioSource)
+            return "";
+        return sessionArgs.tetraRateError(decodeFlag, sourceType, bandwidthRequestKhz());
     }
 
     /**
@@ -420,10 +442,10 @@ Item {
         // A system edited or imported onto a non-radio source may still carry
         // AM, which only a radio can run, or TETRA, which a radio or a symbol
         // capture can: not until another chip is picked. Nor on a radio whose
-        // bandwidth cannot filter the AM channel.
+        // bandwidth cannot filter the AM channel, or that cannot decode TETRA.
         if (step === 1)
             return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
-                && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0;
+                && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0 && tetraRateError().length === 0;
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
@@ -998,11 +1020,13 @@ Item {
 
                 // Why the AM and TETRA chips are greyed out on a network or file
                 // source, rather than leaving a dead control (issue #524).
+                // An Airspy greys out TETRA alone; with TETRA picked there, the
+                // TETRA note below gives the reason instead.
                 ReadableText {
                     objectName: "wizardDecodeIqNote"
-                    visible: !wizard.radioSource
+                    visible: !wizard.radioSource || (wizard.sourceType === "airspy" && wizard.tetraRateError().length === 0)
                     width: parent.width
-                    text: qsTr("AM needs a radio source, and TETRA one or a symbol capture (.bin): network and file audio arrives already demodulated.")
+                    text: wizard.radioSource ? qsTr("TETRA needs a USB or rtl_tcp radio: an Airspy can't decode it.") : qsTr("AM needs a radio source, and TETRA a USB or rtl_tcp radio or a symbol capture (.bin): network and file audio arrives already demodulated.")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textSecondary
@@ -1026,6 +1050,19 @@ Item {
                     visible: text.length > 0
                     width: parent.width
                     text: wizard.amBandwidthError()
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(13)
+                    color: Theme.magenta
+                    wrapMode: Text.Wrap
+                }
+
+                // TETRA on an Airspy, or on a radio whose bandwidth is not
+                // 72 kHz (issue #803): the step waits, as it does for AM.
+                ReadableText {
+                    objectName: "wizardDecodeTetraRateNote"
+                    visible: text.length > 0
+                    width: parent.width
+                    text: wizard.tetraRateError()
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(13)
                     color: Theme.magenta
@@ -1401,10 +1438,18 @@ Item {
 
                                 PlexTextField {
                                     id: bwField
+                                    objectName: "systemBandwidthField"
                                     label: qsTr("Bandwidth (kHz)")
                                     width: parent.width
                                     mono: true
-                                    placeholderText: String(prefs.bandwidthKhz)
+                                    // What an empty field runs at: 72 kHz for
+                                    // TETRA (issue #803), else the app default
+                                    // as this radio takes it.
+                                    placeholderText: {
+                                        var appDefault = prefs.bandwidthKhz; // dependency: follow a change to the default
+                                        var khz = sessionArgs.effectiveBandwidthKhz(wizard.decodeFlag, wizard.sourceType, -1);
+                                        return khz > 0 ? String(khz) : String(appDefault);
+                                    }
                                     inputMethodHints: Qt.ImhDigitsOnly
                                     input.validator: IntValidator {
                                         bottom: 1

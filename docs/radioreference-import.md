@@ -329,6 +329,11 @@ RTL-SDR or rtl_tcp radio whose bandwidth is 72 kHz or left empty (an empty field
 default bandwidth in Settings). On an Airspy, or at any other bandwidth, it is refused with the reason, because it
 would start and never decode. A bandwidth the radio does not offer counts as the 48 kHz it runs at.
 
+The add-system wizard checks the same thing before it saves. The TETRA chip is greyed out on an Airspy, and
+a TETRA system switched to an Airspy keeps TETRA but cannot continue until you pick a USB or rtl_tcp radio or
+another decode mode; the reason shows under the decode chips. The bandwidth field's hint shows what an empty
+field runs at (72 for TETRA).
+
 ## What gets generated
 
 The import produces up to two files and a decode flag. Which of them depends on the system type
