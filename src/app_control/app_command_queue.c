@@ -8078,7 +8078,7 @@ ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const st
     return UI_CMD_APPLY_COMPLETED;
 }
 
-/* The analog pause hold (issue #756; NFM and AM, #667): the analog call reconciles a held call with the value on its
+/* The analog pause hold (issues #756 and #667): the analog call reconciles a held call with the value on its
    next block or tick, so a change applies there (lowered below the pause so far, or turned off, it ends the call at its
    last audio). A value out of range is refused as typed, never clamped, as the CLI and INI refuse it. */
 static int

@@ -139,9 +139,9 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     /**
      * @brief Start or stop recording each call in the running session (issue #708, D8), into the folder the session
-     * was started with. On sends @p analogMaxGapMs (the NFM pause hold, issue #756; negative: none, the session keeps
-     * its own), @p unknownOnly and then WAV start; off sends WAV stop and then unknown-only off (unknown-only travels
-     * with Record calls: an off switch filters no recording of the user's own options).
+     * was started with. On sends @p analogMaxGapMs (the analog pause hold, issue #756; negative: none, the session
+     * keeps its own), @p unknownOnly and then WAV start; off sends WAV stop and then unknown-only off (unknown-only
+     * travels with Record calls: an off switch filters no recording of the user's own options).
      *
      * Refused without sending anything, and said in RecordingStatus::refusal(), when no session is on ("no-session"),
      * while its run is not up yet ("starting"),
@@ -158,7 +158,7 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool setRecordUnknownOnly(bool on) const;
     /**
-     * @brief The longest pause in ms one analog NFM call recording keeps going through (issue #756), sent as
+     * @brief The longest pause in ms one analog call recording keeps going through (issue #756), sent as
      * setRecordUnknownOnly() is: only while the session records each call, otherwise it travels with the next Record
      * calls on. The decoder refuses a value outside 0..10000, which the status shows as failed.
      */

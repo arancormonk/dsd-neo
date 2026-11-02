@@ -86,7 +86,7 @@ class RecordingStatus : public QObject {
     /** @brief Per-call slot files open now: bit 0 slot 1, bit 1 slot 2. */
     int slotFiles() const;
     bool unknownOnly() const;
-    /** @brief The NFM pause hold in ms (--analog-record-max-gap-ms, issue #756); 200 or less is off. */
+    /** @brief The analog pause hold in ms (--analog-record-max-gap-ms, issue #756); 200 or less is off. */
     int analogMaxGapMs() const;
     /** @brief The session records to one static WAV (-w). */
     bool staticWav() const;

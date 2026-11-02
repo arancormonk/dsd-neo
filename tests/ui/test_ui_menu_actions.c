@@ -1128,7 +1128,7 @@ test_simple_commands_and_prompts(void) {
     act_slot_pref(&ctx);
     rc |= expect_int("slot pref initial", g_prompt.initial_int, 2);
 
-    /* The analog pause hold (issue #756; NFM and AM, #667): the prompt opens on the value in force, as stored. */
+    /* The analog pause hold (issues #756 and #667): the prompt opens on the value in force, as stored. */
     reset_capture();
     opts.analog_record_max_gap_ms = 2000;
     act_analog_record_max_gap(&ctx);

@@ -1684,10 +1684,11 @@ include a sanitized `_SVC_` component. An analog recording has no talkgroup, sou
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
 `<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. The name gives the mode the call was heard in: `_NFM`, `_AM`
 for an AM call, and `_ANALOG` on audio input, where another receiver demodulated it
-(`20261021_142839_51828_ANALOG_SVC_20R_Traveler.wav`). Earlier versions named every one `_NFM`. Rdio exports use the service name in their talkgroup label field
-while preserving numeric IDs. Rdio still requires a nonzero target ID, so a conventional analog call produces ordinary
-named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
-[receive configuration](config-system.md) and [row options](csv-formats.md).
+(`20261021_142839_51828_ANALOG_SVC_20R_Traveler.wav`). Earlier versions named every one `_NFM`. Rdio exports use the
+service name in their talkgroup label field while preserving numeric IDs. Rdio still requires a nonzero target ID, so
+a conventional analog call produces ordinary named WAVs without fabricated talkgroup IDs. It is not exported, and that
+is not logged as a warning or a failure. See [receive configuration](config-system.md) and
+[row options](csv-formats.md).
 
 #### Analog calls need a squelch on a radio input
 

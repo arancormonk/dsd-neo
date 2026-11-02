@@ -637,7 +637,7 @@ Its `Service names...` row edits a naming table using options
 such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed
-history and named per-call WAVs; an NFM call is named by the CTCSS tone or DCS code it
+history and named per-call WAVs; an analog call is named by the CTCSS tone or DCS code it
 was received with. Its history row also prints that tone, named or not (see "Event History Rows").
 The single-slot DMR decoder (`-fr`, `-nm`) shows every call in its `SLOT 1` block, its one
 lane; a `--slot-name` there names the over-the-air slot the call was proven on, as the `-J`

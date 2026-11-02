@@ -52,7 +52,7 @@ struct SessionArgPrefs {
        a validation-only build) the argv names no recording at all. */
     bool recordCalls = false;
     bool recordUnknownOnly = false;
-    /* Issue #756: the longest pause one analog NFM call recording keeps going through, in ms, sent with -P
+    /* Issue #756: the longest pause one analog call recording keeps going through, in ms, sent with -P
        (--analog-record-max-gap-ms); 200 or less is off, the decoder's default. */
     int analogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     QString recordingFolder;
@@ -125,7 +125,7 @@ constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::TetraRate;
 SessionArgsError session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool noStorage = false);
 
 /**
- * @brief Whether the extra options @p tokens set the NFM pause hold themselves (--analog-record-max-gap-ms, issue
+ * @brief Whether the extra options @p tokens set the analog pause hold themselves (--analog-record-max-gap-ms, issue
  * #756), in either option form.
  *
  * The decoder takes a long option out wherever it stands, and the last one wins, so one there decides every session
@@ -217,7 +217,7 @@ QStringList session_args_build(const QVariantMap& system, const SessionArgPrefs&
 /** @brief QML-facing wrapper binding the pure builder to the live AppPrefs. */
 class SessionArgsBuilder : public QObject {
     Q_OBJECT
-    /** @brief Whether the app-wide Extra decoder arguments the builder starts every session with set the NFM pause
+    /** @brief Whether the app-wide Extra decoder arguments the builder starts every session with set the analog pause
      *  hold themselves, so Settings' row changes nothing (issue #756); see session_args_extra_sets_pause_hold(). */
     Q_PROPERTY(bool extraArgsSetPauseHold READ extraArgsSetPauseHold NOTIFY extraArgsSetPauseHoldChanged)
 

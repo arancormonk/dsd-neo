@@ -357,7 +357,8 @@ def self_test():
     inverted = {dcs_code_of(rotate(word ^ 0x7FFFFF, k)) for k in range(DCS_WORD_BITS)} - {None}
     check("the inverted D023 word reads as 047", 0o47 in inverted)
     check("the DCS table holds 104 codes", len(set(DCS_CODES)) == 104)
-    check("the CTCSS table holds the 50 EIA tones and 150.0", len(CTCSS_TONES) == 51 and 150.0 in CTCSS_TONES)
+    check("the CTCSS table holds the 51 supported tones, 150.0 among them",
+          len(CTCSS_TONES) == 51 and 150.0 in CTCSS_TONES)
 
     rate = 48000.0
     count = int(4 * rate)

@@ -1220,7 +1220,7 @@ lbl_per_call_wav(const void* vctx, char* b, size_t n) {
     return b;
 }
 
-/* The analog pause hold (issue #756; NFM and AM, #667): Off at 200 ms or less, the carrier's own hangover, which joins
+/* The analog pause hold (issues #756 and #667): Off at 200 ms or less, the carrier's own hangover, which joins
    no pause. */
 const char*
 lbl_analog_record_max_gap(const void* vctx, char* b, size_t n) {

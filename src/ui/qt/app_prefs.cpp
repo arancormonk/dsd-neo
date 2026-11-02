@@ -87,7 +87,7 @@ enum Key {
     // writes lastStarted* (issue #671): what a recreated Activity finds running, which this device's service runs.
     kAcceptedStartKind,
     kAcceptedStartUid,
-    // Issue #756: the longest pause one analog NFM call recording keeps going through (--analog-record-max-gap-ms).
+    // Issue #756: the longest pause one analog call recording keeps going through (--analog-record-max-gap-ms).
     // Portable with the other recording choices.
     kRecordingAnalogMaxGapMs,
     kKeyCount
@@ -239,7 +239,7 @@ sane_recording_limit(const QVariant& raw) {
     return offered ? mb : kDefaultRecordingLimitMb;
 }
 
-// The NFM pause holds the settings offer, in ms (200: off, the decoder's default; 200 or less is off), and the range
+// The analog pause holds the settings offer, in ms (200: off, the decoder's default; 200 or less is off), and the range
 // the decoder takes (--analog-record-max-gap-ms). A value in range but not offered is kept as it is: it came from a
 // backup or an older build, and Settings shows it as itself.
 constexpr int kAnalogMaxGapChoices[] = {DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS, 500, 1000, 2000, 3000, 5000,

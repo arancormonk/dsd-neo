@@ -365,7 +365,7 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) con
         noteRecording(QStringLiteral("static-wav"));
         return false;
     }
-    // On: the NFM pause hold and unknown-only first, so the first call recorded already follows them, and the start
+    // On: the analog pause hold and unknown-only first, so the first call recorded already follows them, and the start
     // last. Off: the stop first, so a refused second submit never leaves the session recording more than it did
     // (unknown-only cleared, the stop refused). The stop is the switch: once it is in, unknown-only follows best
     // effort, as it applies only while calls record and a later start sends it first, and the status keeps describing
