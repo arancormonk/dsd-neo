@@ -66,6 +66,7 @@
 #include <algorithm>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
@@ -2951,7 +2952,9 @@ test_record_for_uid(void) {
                 {"accessCodeText", CallHistoryModel::AccessCodeTextRole},
                 {"serviceName", CallHistoryModel::ServiceNameRole},
                 {"receivedTone", CallHistoryModel::ReceivedToneRole},
-                {"siteText", CallHistoryModel::SiteTextRole}};
+                {"siteText", CallHistoryModel::SiteTextRole},
+                {"analog", CallHistoryModel::AnalogRole},
+                {"analogMode", CallHistoryModel::AnalogModeRole}};
 
     expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
     for (const auto& key : keys) {
@@ -2967,6 +2970,9 @@ test_record_for_uid(void) {
                       == u8("P25 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21")
                && record.value(QStringLiteral("durationSecs")).toInt() == 7
                && record.value(QStringLiteral("emergency")).toBool());
+    expect("a digital row is no analog reception and has no mode",
+           !record.value(QStringLiteral("analog")).toBool()
+               && record.value(QStringLiteral("analogMode")).toString().isEmpty());
     expect("a uid no row has reads empty", model.recordFor(QString::number(uid + 1)).isEmpty());
     expect("no uid reads empty", model.recordFor(QString()).isEmpty() && model.recordFor(QStringLiteral("0")).isEmpty()
                                      && model.recordFor(QStringLiteral("x1")).isEmpty());
@@ -2997,15 +3003,15 @@ test_receive_service_identity(void) {
         expect("service names reach display without replacing the base channel",
                model.data(model.index(0), CallHistoryModel::NameRole) == "20R Traveler"
                    && model.data(model.index(0), CallHistoryModel::ChannelRole) == "Base channel");
-        expect("tone is available in history",
-               model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+        expect("tone is available in history, spelled as every other surface spells it",
+               model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "CTCSS 141.3 Hz");
     }
     {
         CallHistoryModel model;
         expect("service rows persist separately", model.count() == 3);
         expect("service and tone survive reload",
                model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "20R Traveler"
-                   && model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+                   && model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "CTCSS 141.3 Hz");
     }
 }
 
@@ -3148,45 +3154,109 @@ test_receive_only_updates_and_label_renames(void) {
     expect("two textual targets stay two rows", model.count() == 5);
 }
 
-/* Issue #637: two anonymous transmissions (no target, no source: conventional NFM) heard on different frequencies a
-   second apart are two calls; on the same frequency they still fold. */
+/* Commit a conventional analog reception (issues #637, #667): no target and no source, heard in @p mode at @p freq_hz,
+   with @p tone (a known "no tone" by default). */
+Event_History*
+commit_analog(RingFixture& ring, time_t start, time_t end, int64_t freq_hz, uint8_t mode,
+              dsd_receive_identity tone = {0, DSD_RECEIVE_NONE, 1, 0, 0}) {
+    Event_History* item = ring.commit(0, 0, 0, start, end);
+    item->systype = DSD_SYNC_ANALOG;
+    item->analog_mode = mode;
+    item->receive_identity = tone;
+    RingFixture::carrier(item, freq_hz);
+    return item;
+}
+
+/* Issue #667 (B2): the received tone reads as the event row, the terminal and the API spell it ("CTCSS 100.0 Hz",
+   "DCS D023N / D047I" with the normal polarity first), never as a bare value ("100.0", "D023N"). A digital row's
+   access code is no tone. */
 void
-test_anonymous_rows_on_different_frequencies_stay_separate(void) {
-    const time_t when = kCaptureStart + 400;
+test_received_tone_reads_as_its_label(void) {
+    const time_t when = kCaptureStart + 500;
     resetStorage();
     RingFixture ring;
     CallHistoryModel model;
-    auto nfm = [&ring](time_t start, time_t end, int64_t freq_hz) {
-        Event_History* item = ring.commit(0, 0, 0, start, end);
-        item->systype = DSD_SYNC_ANALOG;
-        item->receive_identity = {0, DSD_RECEIVE_NONE, 1, 0, 0};
-        RingFixture::carrier(item, freq_hz);
+    commit_analog(ring, when, when + 4, 154430000, DSD_ANALOG_MODE_NFM, {1000, DSD_RECEIVE_CTCSS, 1, 0, 0});
+    commit_analog(ring, when + 10, when + 14, 154445000, DSD_ANALOG_MODE_NFM, {023 * 2, DSD_RECEIVE_DCS, 1, 0, 0});
+    commit_analog(ring, when + 20, when + 24, 154460000, DSD_ANALOG_MODE_NFM, {023 * 2 + 1, DSD_RECEIVE_DCS, 1, 0, 0});
+    commit_analog(ring, when + 30, when + 34, 154475000, DSD_ANALOG_MODE_NFM, {1000, DSD_RECEIVE_CTCSS, 0, 0, 0});
+    RingFixture::carrier(ring.commit(0, 1001, 2001, when + 40, when + 44), 851012500, DSD_ACCESS_CODE_NAC, 0x293U)
+        ->receive_identity = {0x293, DSD_RECEIVE_NAC, 1, 0, 0};
+    model.refresh(ring.state);
+    // Each on its own frequency, so the count holds whatever the merge does with analog rows.
+    expect("five rows land", model.count() == 5);
+    const auto tone = [&model](int row) {
+        return model.data(model.index(row), CallHistoryModel::ReceivedToneRole).toString();
     };
-    nfm(when, when + 4, 154430000);
-    model.refresh(ring.state);
-    nfm(when + 5, when + 9, 155010000);
-    model.refresh(ring.state);
-    expect("anonymous transmissions on two frequencies stay two rows", model.count() == 2);
-    nfm(when + 10, when + 14, 155010000);
-    model.refresh(ring.state);
-    expect("anonymous fragments on one frequency still fold", model.count() == 2);
-    /* A fragment whose tone was still acquiring ("NFM") folds into the named one that confirmed it on the same
-       frequency, and the row takes the service's name. */
-    Event_History* acquiring = ring.commit(0, 0, 0, when + 40, when + 44);
-    acquiring->systype = DSD_SYNC_ANALOG;
-    acquiring->receive_identity = {0, DSD_RECEIVE_NONE, 0, 0, 0};
-    RingFixture::carrier(acquiring, 156000000);
-    model.refresh(ring.state);
-    expect("an unconfirmed fragment is a row of its own first", model.count() == 3);
-    Event_History* toned = ring.commit(0, 0, 0, when + 45, when + 49);
-    toned->systype = DSD_SYNC_ANALOG;
-    toned->receive_identity = {1413, DSD_RECEIVE_CTCSS, 1, 0, 0};
-    DSD_SNPRINTF(toned->service_label, sizeof toned->service_label, "%s", "Traveler");
-    RingFixture::carrier(toned, 156000000);
-    model.refresh(ring.state);
-    expect("a confirmed tone folds into its unconfirmed fragment", model.count() == 3);
-    expect("the folded row is named by the confirmed service",
-           model.data(model.index(0), CallHistoryModel::NameRole) == "Traveler");
+    expect("a digital row has no tone", tone(0).isEmpty());
+    expect("a tone not yet confirmed is not shown", tone(1).isEmpty());
+    expect("an inverted DCS code names its normal spelling first", tone(2) == QLatin1String("DCS D047N / D023I"));
+    expect("a DCS code reads as its label", tone(3) == QLatin1String("DCS D023N / D047I"));
+    expect("a CTCSS tone reads as its label", tone(4) == QLatin1String("CTCSS 100.0 Hz"));
+}
+
+/* Issue #667 (B1): each analog reception is a row of its own. Two receptions never fold, on two frequencies or on
+   one, a second apart, or the second confirming a tone the first was still acquiring; and an analog row never folds
+   with a digital row heard on its frequency, either way round. Read one refresh at a time or all at once. Digital
+   fragments still fold (test_receive_only_updates_and_label_renames and the merge tests above). */
+void
+test_analog_receptions_never_fold(void) {
+    const time_t when = kCaptureStart + 400;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        const auto read = [&]() {
+            if (incremental) {
+                model.refresh(ring.state);
+            }
+        };
+        commit_analog(ring, when, when + 4, 154430000, DSD_ANALOG_MODE_NFM);
+        read();
+        commit_analog(ring, when + 5, when + 9, 155010000, DSD_ANALOG_MODE_NFM);
+        read();
+        commit_analog(ring, when + 10, when + 14, 155010000, DSD_ANALOG_MODE_NFM);
+        read();
+        commit_analog(ring, when + 15, when + 19, 155010000, DSD_ANALOG_MODE_AM);
+        read();
+        /* A reception whose tone was still acquiring, then one that confirmed it and is named by it. */
+        commit_analog(ring, when + 40, when + 44, 156000000, DSD_ANALOG_MODE_NFM, {0, DSD_RECEIVE_NONE, 0, 0, 0});
+        read();
+        Event_History* toned = commit_analog(ring, when + 45, when + 49, 156000000, DSD_ANALOG_MODE_NFM,
+                                             {1413, DSD_RECEIVE_CTCSS, 1, 0, 0});
+        DSD_SNPRINTF(toned->service_label, sizeof toned->service_label, "%s", "Traveler");
+        read();
+        /* A digital row with no ids heard on the same channel and frequency, before and after an analog reception. */
+        const auto digital = [&ring](time_t start, int64_t freq_hz) {
+            RingFixture::carrier(ring.commit(0, 0, 0, start, start + 4, "", "", "Base channel"), freq_hz)->systype =
+                DSD_SYNC_DMR_BS_VOICE_POS;
+        };
+        const auto on_channel = [&ring](time_t start, int64_t freq_hz) {
+            Event_History* item = commit_analog(ring, start, start + 4, freq_hz, DSD_ANALOG_MODE_NFM);
+            DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", "Base channel");
+        };
+        digital(when + 60, 157000000);
+        read();
+        on_channel(when + 65, 157000000);
+        read();
+        on_channel(when + 90, 158000000);
+        read();
+        digital(when + 95, 158000000);
+        model.refresh(ring.state);
+        expect(incremental ? "every analog reception is a row of its own (incremental)"
+                           : "every analog reception is a row of its own (batched)",
+               model.count() == 10);
+        // Newest first: two rows from +60 s and two from +90 s sort above the pair at +40 s and +45 s.
+        const int traveler = 4;
+        expect(incremental ? "the toned reception is named by its service (incremental)"
+                           : "the toned reception is named by its service (batched)",
+               model.data(model.index(traveler), CallHistoryModel::NameRole) == "Traveler"
+                   && model.data(model.index(traveler), CallHistoryModel::DurationSecsRole).toInt() == 4);
+        expect(incremental ? "the acquiring reception keeps its own row and span (incremental)"
+                           : "the acquiring reception keeps its own row and span (batched)",
+               model.data(model.index(traveler + 1), CallHistoryModel::NameRole) == "NFM"
+                   && model.data(model.index(traveler + 1), CallHistoryModel::DurationSecsRole).toInt() == 4);
+    }
 }
 
 std::atomic<int> g_storeBuildsOnGui{0};
@@ -3422,6 +3492,244 @@ uid_at(const CallHistoryModel& model, int row) {
 bool
 has_recording(const CallHistoryModel& model, int row) {
     return model.data(model.index(row), CallHistoryModel::HasRecordingRole).toBool();
+}
+
+/* One capture's analog receptions as a replay pushes them (issue #667): three on one frequency a few seconds apart,
+   each a reception of its own. NFM ones carry a tone (CTCSS twice, as nfm_ctcss_real's do, then DCS); dsd-neo detects
+   none on AM. Returns each one's ring fragment, oldest first. */
+QStringList
+replay_analog_capture(RingFixture& ring, uint8_t mode) {
+    const bool nfm = mode == DSD_ANALOG_MODE_NFM;
+    const dsd_receive_identity none = {0, DSD_RECEIVE_NONE, 1, 0, 0};
+    const dsd_receive_identity ctcss = {1000, DSD_RECEIVE_CTCSS, 1, 0, 0};
+    const dsd_receive_identity dcs = {023 * 2, DSD_RECEIVE_DCS, 1, 0, 0};
+    QStringList fragments;
+    commit_analog(ring, kCaptureStart + 100, kCaptureStart + 104, 154430000, mode, nfm ? ctcss : none);
+    fragments.append(newest_fragment(ring, 0));
+    commit_analog(ring, kCaptureStart + 106, kCaptureStart + 109, 154430000, mode, nfm ? ctcss : none);
+    fragments.append(newest_fragment(ring, 0));
+    commit_analog(ring, kCaptureStart + 110, kCaptureStart + 113, 154430000, mode, nfm ? dcs : none);
+    fragments.append(newest_fragment(ring, 0));
+    return fragments;
+}
+
+/* The row whose recordings @p fragment's recording is, or -1. */
+int
+row_recording(const CallHistoryModel& model, FakeRecordings& recordings, const QString& fragment) {
+    recordings.recorded = {fragment};
+    int found = -1;
+    for (int i = 0; i < model.rowCount(); i++) {
+        if (has_recording(model, i)) {
+            found = found < 0 ? i : -2;
+        }
+    }
+    return found;
+}
+
+/* Issue #667 (B1): a capture's analog receptions replayed in a fresh ring, in the same app or after a reload, are
+   heard again. Each one's logged row joins the running session and takes the new ring's fragment, so both replays'
+   recordings are that row's; no row is added and none folds into another. Matched exactly: a reception of the fresh
+   ring with the same start but another tone is a reception of its own. */
+void
+test_analog_replay_heard_again(void) {
+    for (uint8_t mode : {static_cast<uint8_t>(DSD_ANALOG_MODE_NFM), static_cast<uint8_t>(DSD_ANALOG_MODE_AM)}) {
+        for (int reload = 0; reload < 2; reload++) {
+            const bool am = mode == DSD_ANALOG_MODE_AM;
+            resetStorage();
+            FakeRecordings recordings;
+            auto model = std::make_unique<CallHistoryModel>();
+            model->setRecordingProvider(&recordings);
+            auto ring = std::make_unique<RingFixture>();
+            model->beginSession();
+            const QStringList first = replay_analog_capture(*ring, mode);
+            model->refresh(ring->state);
+            expect(am ? "the first AM replay logs each reception" : "the first NFM replay logs each reception",
+                   model->count() == 3);
+            if (reload != 0) {
+                model.reset(); // destructor flushes the stores
+                model = std::make_unique<CallHistoryModel>();
+                model->setRecordingProvider(&recordings);
+            }
+            model->beginSession();
+            const qlonglong session = model->session();
+            ring = std::make_unique<RingFixture>(); // the next start's fresh state
+            const QStringList second = replay_analog_capture(*ring, mode);
+            model->refresh(ring->state);
+            expect(am ? "an AM replay heard again adds no row" : "an NFM replay heard again adds no row",
+                   model->count() == 3);
+            expect(am ? "each AM row joins the session that heard it again"
+                      : "each NFM row joins the session that heard it again",
+                   rows_in_session(*model, session) == 3);
+            for (int i = 0; i < 3; i++) {
+                const int row = row_recording(*model, recordings, first.at(i));
+                expect(reload != 0 ? "after a reload, a reception's row holds both replays' recordings"
+                                   : "a reception's row holds both replays' recordings",
+                       row == 2 - i && row_recording(*model, recordings, second.at(i)) == row);
+                expect("the row keeps its own span",
+                       model->data(model->index(row), CallHistoryModel::DurationSecsRole).toInt() == (i == 0 ? 4 : 3));
+            }
+            ring = std::make_unique<RingFixture>();
+            commit_analog(*ring, kCaptureStart + 100, kCaptureStart + 104, 154430000, mode,
+                          {1035, DSD_RECEIVE_CTCSS, 1, 0, 0});
+            model->refresh(ring->state);
+            expect("a reception at the same start with another tone is a row of its own", model->count() == 4);
+            ring = std::make_unique<RingFixture>();
+            commit_analog(*ring, kCaptureStart + 100, kCaptureStart + 104, 154445000, mode,
+                          am ? dsd_receive_identity{0, DSD_RECEIVE_NONE, 1, 0, 0}
+                             : dsd_receive_identity{1000, DSD_RECEIVE_CTCSS, 1, 0, 0});
+            model->refresh(ring->state);
+            expect("a reception at the same start on another frequency is a row of its own", model->count() == 5);
+            model->setRecordingProvider(nullptr);
+        }
+    }
+}
+
+/* Issue #667 (B1): rows an older build stored keep no fragments, so an update the running service's ring brings (the
+   reception ran on) finds its row by matching it, exactly: same start, tone and frequency. It reaches that row only,
+   which takes the fragment (its recording is the row's now) and keeps its session; the reception beside it, on the
+   same frequency with the same tone, stays apart. */
+void
+test_analog_update_of_an_old_store_row(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754800000;
+    {
+        CallHistoryModel model;
+        commit_analog(ring, when, when + 4, 154430000, DSD_ANALOG_MODE_NFM, {1000, DSD_RECEIVE_CTCSS, 1, 0, 0});
+        commit_analog(ring, when + 6, when + 9, 154430000, DSD_ANALOG_MODE_NFM, {1000, DSD_RECEIVE_CTCSS, 1, 0, 0});
+        model.refresh(ring.state);
+        expect("two receptions land", model.count() == 2);
+    } // destructor flushes the stores
+    // An older build wrote the rows: no fragments, no mode.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        row.remove(QLatin1String("fr"));
+        row.remove(QLatin1String("analogMode"));
+        rows.replace(i, row);
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+
+    FakeRecordings recordings;
+    CallHistoryModel restored;
+    restored.setRecordingProvider(&recordings);
+    expect("the older store loads both receptions", restored.count() == 2);
+    const qlonglong session = restored.data(restored.index(0), CallHistoryModel::SessionRole).toLongLong();
+    Event_History* later = &ring.rings[0].Event_History_Items[1];
+    later->event_time = when + 12;
+    ring.touchCommitted(0);
+    restored.refresh(ring.state);
+    expect("the update adds no row", restored.count() == 2);
+    expect("it reaches the reception it updates",
+           restored.data(restored.index(0), CallHistoryModel::DurationSecsRole).toInt() == 6
+               && restored.data(restored.index(0), CallHistoryModel::SessionRole).toLongLong() == session);
+    expect("the reception beside it is unchanged",
+           restored.data(restored.index(1), CallHistoryModel::DurationSecsRole).toInt() == 4);
+    expect("the updated row takes the fragment", row_recording(restored, recordings, newest_fragment(ring, 0)) == 0);
+    expect("the updated row learns the mode its stored copy lost",
+           restored.data(restored.index(0), CallHistoryModel::AnalogModeRole) == QLatin1String("NFM"));
+    expect("the row beside it keeps its stored name and no mode",
+           restored.data(restored.index(1), CallHistoryModel::NameRole) == QLatin1String("NFM")
+               && restored.data(restored.index(1), CallHistoryModel::AnalogModeRole).toString().isEmpty()
+               && restored.data(restored.index(1), CallHistoryModel::AnalogRole).toBool());
+    restored.setRecordingProvider(nullptr);
+}
+
+/* The analog roles of the row whose start is @p start, as "analog|mode|name", or "missing". */
+QString
+analog_roles_at(const CallHistoryModel& model, qint64 start) {
+    for (int i = 0; i < model.rowCount(); i++) {
+        const QModelIndex idx = model.index(i);
+        if (model.data(idx, CallHistoryModel::WhenRole).toLongLong() == start) {
+            return QStringLiteral("%1|%2|%3")
+                .arg(model.data(idx, CallHistoryModel::AnalogRole).toBool() ? 1 : 0)
+                .arg(model.data(idx, CallHistoryModel::AnalogModeRole).toString(),
+                     model.data(idx, CallHistoryModel::NameRole).toString());
+        }
+    }
+    return QStringLiteral("missing");
+}
+
+/* Issue #667: an analog row says it is one (analog) and what it was heard in (analogMode "NFM", "AM", or empty when not
+   known: audio input, or a mode byte no demodulator has), and with no other name is named by its mode ("NFM", "AM",
+   "Analog"). A digital row is neither. The detail sheet's map carries both; both survive a reload, and the store keeps
+   only a known mode. */
+void
+test_analog_roles_and_persistence(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754810000;
+    {
+        CallHistoryModel model;
+        commit_analog(ring, when, when + 4, 154430000, DSD_ANALOG_MODE_NFM, {1000, DSD_RECEIVE_CTCSS, 1, 0, 0});
+        commit_analog(ring, when + 10, when + 14, 119100000, DSD_ANALOG_MODE_AM);
+        commit_analog(ring, when + 20, when + 24, 0, DSD_ANALOG_MODE_UNKNOWN);
+        commit_analog(ring, when + 30, when + 34, 0, 0xFFU);
+        ring.commit(0, 1001, 2001, when + 40, when + 44)->analog_mode = DSD_ANALOG_MODE_AM; // a stray byte
+        model.refresh(ring.state);
+        expect("five rows land", model.count() == 5);
+        expect("an NFM row", analog_roles_at(model, when) == QLatin1String("1|NFM|NFM"));
+        expect("an AM row", analog_roles_at(model, when + 10) == QLatin1String("1|AM|AM"));
+        expect("an analog row of unknown mode", analog_roles_at(model, when + 20) == QLatin1String("1||Analog"));
+        expect("a mode byte no demodulator has reads unknown",
+               analog_roles_at(model, when + 30) == QLatin1String("1||Analog"));
+        expect("a digital row is neither, whatever its mode byte",
+               analog_roles_at(model, when + 40) == QLatin1String("0||Talkgroup 1001"));
+        const int am = 3; // newest first: +40, +30, +20, then the AM row at +10
+        const QVariantMap record =
+            model.recordFor(QString::number(model.data(model.index(am), CallHistoryModel::UidRole).toLongLong()));
+        expect("the detail map carries the analog roles",
+               record.value(QStringLiteral("analog")).toBool()
+                   && record.value(QStringLiteral("analogMode")).toString() == QLatin1String("AM"));
+    } // destructor flushes the stores
+    const QJsonArray stored = dsd_qt::json_store_load_array("call_history.json");
+    QStringList modes;
+    for (const auto& value : stored) {
+        const QJsonObject row = value.toObject();
+        modes.append(row.contains(QLatin1String("analogMode"))
+                         ? QString::number(row.value(QLatin1String("analogMode")).toInt())
+                         : QStringLiteral("-"));
+    }
+    expect("the store keeps only a known mode", modes == QStringList({"-", "-", "-", "2", "1"}));
+    {
+        CallHistoryModel restored;
+        expect("the roles survive a reload",
+               analog_roles_at(restored, when) == QLatin1String("1|NFM|NFM")
+                   && analog_roles_at(restored, when + 10) == QLatin1String("1|AM|AM")
+                   && analog_roles_at(restored, when + 20) == QLatin1String("1||Analog")
+                   && analog_roles_at(restored, when + 40) == QLatin1String("0||Talkgroup 1001"));
+    }
+
+    /* A store older builds wrote: no mode, and every analog row named "NFM" unless something else named it. Its rows
+       read unknown and keep the name they were stored with; one stored with no name is named by its mode. A hand-edited
+       mode no demodulator has, or one on a digital row, reads unknown. */
+    QJsonArray rows = stored;
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        const qint64 start = row.value(QLatin1String("when")).toVariant().toLongLong();
+        row.remove(QLatin1String("analogMode"));
+        if (start == static_cast<qint64>(when) + 10) {
+            row.insert(QLatin1String("name"), QStringLiteral("NFM"));
+        } else if (start == static_cast<qint64>(when) + 20) {
+            row.insert(QLatin1String("name"), QString());
+        } else if (start == static_cast<qint64>(when) + 30) {
+            row.insert(QLatin1String("name"), QString());
+            row.insert(QLatin1String("analogMode"), 7);
+        } else if (start == static_cast<qint64>(when) + 40) {
+            row.insert(QLatin1String("analogMode"), 2);
+        }
+        rows.replace(i, row);
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    CallHistoryModel older;
+    expect("an older NFM row reads unknown and keeps its name",
+           analog_roles_at(older, when) == QLatin1String("1||NFM"));
+    expect("its mode is never guessed from its name", analog_roles_at(older, when + 10) == QLatin1String("1||NFM"));
+    expect("an older row with no name is named by its mode",
+           analog_roles_at(older, when + 20) == QLatin1String("1||Analog"));
+    expect("a mode no demodulator has reads unknown", analog_roles_at(older, when + 30) == QLatin1String("1||Analog"));
+    expect("a mode on a digital row reads none",
+           analog_roles_at(older, when + 40) == QLatin1String("0||Talkgroup 1001"));
 }
 
 /* The detail sheet follows a row by its uid: unique, kept through merges and reloads, found by rowForUid() wherever
@@ -3938,7 +4246,8 @@ main(int argc, char** argv) {
     test_slot_proof_merges_independently_of_code();
     test_receive_only_updates_and_label_renames();
     test_unconfirmed_fragment_joins_named_service();
-    test_anonymous_rows_on_different_frequencies_stay_separate();
+    test_analog_receptions_never_fold();
+    test_received_tone_reads_as_its_label();
     test_search_by_frequency();
     test_search_matches_what_the_row_shows();
     test_frequency_search_follows_the_row();
@@ -3948,6 +4257,9 @@ main(int argc, char** argv) {
     test_save_now_mid_write_queues_the_next_save();
     test_leaving_the_screen_saves();
     test_destructor_marks_its_teardown_stage();
+    test_analog_replay_heard_again();
+    test_analog_update_of_an_old_store_row();
+    test_analog_roles_and_persistence();
     test_rows_have_stable_uids();
     test_fragments_follow_merges_reloads_and_trims();
     test_recording_roles_follow_the_provider();

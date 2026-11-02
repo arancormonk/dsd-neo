@@ -34,6 +34,9 @@
  * Issue #799: and the system and site it was heard on, with the DMR call's own channel. Fragments
  * heard on two sites stay two rows, and the site line is app-control's, spelled when read.
  *
+ * Issue #667: an analog row is one reception and never folds; heard again or updated, it is matched only by its exact
+ * start, tone and frequency, and it keeps the mode it was heard in (NFM, AM, or unknown on audio input).
+ *
  * Issue #708: each row has a stable uid, and the ring fragments it absorbed, which is how its
  * call recordings find it (call_recording_provider.h). While the app is in the background, where
  * Qt pauses this model's thread, CallHistoryTap keeps reading the ring and spills what it finds;
@@ -122,7 +125,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         UidRole,            // the row's stable identity (qint64), for rowForUid()
         RecordingsRole,     // the row's call recordings (CallRecordingProvider), oldest first
         HasRecordingRole,   // whether the row has any
-        SiteTextRole        // "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3" (site_identity_view.h), else empty
+        SiteTextRole,       // "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3" (site_identity_view.h), else empty
+        AnalogRole,         // a conventional analog (NFM/AM) reception (issue #667)
+        AnalogModeRole      // an analog row's mode, "NFM" or "AM"; empty when not known, and on every other row
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -236,8 +241,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *
      * One key per role the detail sheet shows, by the role names (uid, name, when, systemName, systemUid, channel, tg,
      * src, emergency, enc, durationSecs, detail, freqHz, accessCode, accessCodeText, serviceName, receivedTone,
-     * siteText), except the source label, which is sourceName. A sheet that follows one row by its uid reads it again
-     * when the row changes, so a fragment folded in after it opened shows.
+     * siteText, analog, analogMode), except the source label, which is sourceName. A sheet that follows one row by its
+     * uid reads it again when the row changes, so a fragment folded in after it opened shows.
      */
     Q_INVOKABLE QVariantMap recordFor(const QString& uid) const;
 
@@ -437,9 +442,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
            names given since cover. Persisted; older rows read empty. */
         QString channelName;
         QString service;
-        /* A conventional analog (NFM) transmission (issue #637): its name is only a label (the channel, "NFM" or a
-           tone's service name), never its destination. Persisted; older rows read false. */
+        /* A conventional analog (NFM/AM) transmission (issue #637): its name is only a label (the channel, the mode or
+           a tone's service name), never its destination. Persisted; older rows read false. Each analog row is one
+           reception: it never folds with another row, and is matched only by the same reception read again (issue
+           #667). */
         bool analog = false;
+        /* An analog row's mode (dsd_analog_mode, issue #667): NFM or AM as the demodulator ran, unknown (0) on audio
+           input. Persisted (`analogMode`) when known; rows older builds stored read unknown, whatever their name
+           says. */
+        uint8_t analogMode = 0;
         int receiveKind = 6;
         int receiveValue = 0;
         bool receiveKnown = false;
@@ -616,9 +627,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /**
      * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
      *        overlap within the merge window; the merged row spans both fragments.
+     *
+     * An analog row never merges. With @p sameReception (a row heard again, or an update), an analog row is still
+     * absorbed by the row that logged the same reception: an analog row with its start, tone and frequency.
      * @return Index of the row it merged into, or -1 when it is a new call.
      */
-    int tryMerge(const Row& row, int scanRows);
+    int tryMerge(const Row& row, int scanRows, bool sameReception);
 
     /** @brief Fold fragment @p row into @p existing, the row it belongs to: the span, labels, carrier, site and
      * fragments. A site that conflicts with the row's is not taken, nor is its channel (call_history_site_fold()). */
