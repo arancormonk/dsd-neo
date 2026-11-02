@@ -6,6 +6,7 @@ the pipe still open. The decoder reads stdin in bounded waits, so the stalled ca
 history row is written during the stall, stamped with the call's own end, not with the time data came back.
 """
 import argparse
+import calendar
 import math
 from pathlib import Path
 import re
@@ -42,9 +43,15 @@ def play(pipe, seconds):
             time.sleep(ahead)
 
 
-def stamp_epoch(match):
-    """The row's local-time stamp in epoch seconds, so the comparison holds across midnight."""
-    return int(time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")))
+def stamp_wall(match):
+    """The row's local wall-clock stamp as a count of seconds (timegm reads it as if UTC, so no DST rule picks between
+    two instants in a repeated hour), comparable across midnight with wall_at()."""
+    return calendar.timegm(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+
+
+def wall_at(epoch):
+    """The local wall-clock time of @p epoch on the same scale as stamp_wall()."""
+    return calendar.timegm(time.localtime(epoch))
 
 
 def rows_during_stall(events, stalled):
@@ -78,9 +85,9 @@ def main():
             during = rows_during_stall(events, stalled)
             rows = list(ANALOG_ROW.finditer(during))
             assert len(rows) == 1, f"no analog row written during the stall:\n{during}"
-            stamp = stamp_epoch(rows[0])
-            end_s = int(stalled)
-            start_s = int(started)
+            stamp = stamp_wall(rows[0])
+            end_s = wall_at(stalled)
+            start_s = wall_at(started)
             # Stamped with the call's end (the stall's start, to the second, allowing for the decoder's lag), not its
             # start three seconds before, nor the time the row was written.
             assert end_s - 1 <= stamp <= end_s + 1, f"row stamped {stamp}, call ended {end_s}:\n{during}"
