@@ -152,12 +152,22 @@ _Static_assert(offsetof(dsd_state, trunk_lcn_keys) >= UI_SNAPSHOT_FIELD_END(trun
                "trunk_lcn_keys must sit after the dibit_buf..trunk_lcn_freq copy range");
 _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state, audio_out_idx),
                "trunk_lcn_keys..scan_keys_active_set must sit before the audio_out_idx..lastsample copy range");
+/* The published trunk-scan avoid list (issue #672) is a fifth heap allocation with the same hazard. */
+_Static_assert(offsetof(dsd_state, trunk_scan_avoids) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_scan_avoids must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_scan_avoid_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_scan_avoids must sit before the audio_out_idx..lastsample copy range");
 /* The trunk-scan publication and the scan hold/avoid scalars are plain inline bytes, so
  * unlike the stores above they want to be inside a copy range -- left out of one they
  * would silently never reach the UI. */
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(scan_row_scope_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..scan_row_scope_seq must ride the vertex_ks_count..ui_msg range");
+/* The avoid stores' identities, revisions and exact count (issue #672) ride the same range: a frontend keys its avoid
+ * list on them. */
+_Static_assert(offsetof(dsd_state, state_instance) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_avoids_ok) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "state_instance..trunk_scan_avoids_ok must ride the vertex_ks_count..ui_msg range");
 /* The -Y pause flags and operator_tuned (issue #671) sit beside the scan hold, inside that range: every frontend's scan
  * state reads them. */
 _Static_assert(
@@ -275,6 +285,13 @@ ui_snapshot_copy_trunk_lcn_avoid(dsd_state* dst, const dsd_state* src) {
     }
 }
 
+/* The published trunk-scan avoid list is copied whole at every hop for now, into the destination's own store, so a
+ * snapshot never aliases the decoder's buffer; a failed reserve leaves the copy empty rather than stale. */
+static void
+ui_snapshot_copy_trunk_scan_avoids(dsd_state* dst, const dsd_state* src) {
+    (void)dsd_state_trunk_scan_avoids_set(dst, src->trunk_scan_avoids, src->trunk_scan_avoid_count);
+}
+
 static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
@@ -300,6 +317,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
     ui_snapshot_copy_trunk_lcn_name(dst, src);
     ui_snapshot_copy_trunk_lcn_avoid(dst, src);
+    ui_snapshot_copy_trunk_scan_avoids(dst, src);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
 }

@@ -126,9 +126,19 @@ static const long kCcFreq = 851012500L; // IDEN 1 base 851 MHz, 12.5 kHz spacing
 static dsd_opts g_opts;
 static dsd_state g_state;
 
+/* Issue #672: what row 0 holds before a seed, without an imported list. NONE leaves it empty (the cases above);
+   LEARNED gives it an earlier control channel, AVOIDED does too and avoids it. */
+enum { kRow0None = 0, kRow0Learned = 1, kRow0Avoided = 2 };
+
+static int g_row0_preset = kRow0None;
+/* The list identity and content revision reset() left, which a seed path is judged against. */
+static uint64_t g_reset_list_rev;
+static uint64_t g_reset_avoid_rev;
+
 /* A fresh decoder with the IDEN a CHAN-T of 0x1001 resolves through, and optionally a 3-row imported list. */
 static void
 reset(int with_list) {
+    dsd_state_trunk_lcn_free(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     g_state.p25_iden_fdma[1].base_freq = 851000000L / 5L;
@@ -143,7 +153,15 @@ reset(int with_list) {
             g_state.trunk_lcn_freq[i] = kListFreq[i];
         }
         g_state.lcn_freq_count = 3;
+    } else if (g_row0_preset != kRow0None) {
+        g_state.trunk_lcn_freq[0] = kListFreq[kRowA];
+        g_state.lcn_freq_count = 1;
+        if (g_row0_preset == kRow0Avoided) {
+            (void)dsd_state_trunk_lcn_avoid_set(&g_state, 0U, 1);
+        }
     }
+    g_reset_list_rev = g_state.lcn_list_rev;
+    g_reset_avoid_rev = g_state.lcn_avoid_rev;
 }
 
 /* The learned control channel is recorded either way; row 0 and the other rows follow the list. */
@@ -237,6 +255,38 @@ test_vpdu(int with_list, unsigned long long opcode) {
     return check(opcode == 0xFB ? "vpdu extended" : "vpdu abbreviated", with_list);
 }
 
+/* One seed path run on a state whose row 0 holds an earlier control channel (issue #672): the in-place write keeps the
+   list's identity (lcn_list_rev) and moves its content revision (lcn_avoid_rev) only when row 0 is avoided, so a
+   frontend refreshes an avoid list that shows that row and no other. The path runs its own reset(), which records the
+   stamps it leaves. */
+static int
+check_row0_seed_stamps(const char* tag, int (*seed)(int)) {
+    int rc = 0;
+    char name[96];
+    for (int preset = kRow0Learned; preset <= kRow0Avoided; preset++) {
+        g_row0_preset = preset;
+        rc |= seed(0);
+        DSD_SNPRINTF(name, sizeof(name), "%s %s keeps the list identity", tag,
+                     preset == kRow0Avoided ? "avoided" : "unavoided");
+        rc |= expect_int(name, g_state.lcn_list_rev == g_reset_list_rev, 1);
+        DSD_SNPRINTF(name, sizeof(name), "%s %s content revision moved", tag,
+                     preset == kRow0Avoided ? "avoided" : "unavoided");
+        rc |= expect_int(name, g_state.lcn_avoid_rev != g_reset_avoid_rev, preset == kRow0Avoided);
+    }
+    g_row0_preset = kRow0None;
+    return rc;
+}
+
+static int
+test_vpdu_abbreviated(int with_list) {
+    return test_vpdu(with_list, 0x7B);
+}
+
+static int
+test_vpdu_extended(int with_list) {
+    return test_vpdu(with_list, 0xFB);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -247,6 +297,12 @@ main(void) {
         rc |= test_vpdu(with_list, 0x7B);
         rc |= test_vpdu(with_list, 0xFB);
     }
+    rc |= check_row0_seed_stamps("neighbor", test_neighbor_recorder);
+    rc |= check_row0_seed_stamps("mbt", test_mbt);
+    rc |= check_row0_seed_stamps("lcw", test_lcw);
+    rc |= check_row0_seed_stamps("vpdu abbreviated", test_vpdu_abbreviated);
+    rc |= check_row0_seed_stamps("vpdu extended", test_vpdu_extended);
+    dsd_state_trunk_lcn_free(&g_state);
     return rc;
 }
 

@@ -2114,6 +2114,9 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     if (!state || !snapshot) {
         return;
     }
+    /* The target's own LCN list replaces the one on the state wholesale (issue #672). The global -Y avoid flags are
+       empty under a trunk scan; the coordinator's avoid list is not part of a target's snapshot and stays as it is. */
+    dsd_state_trunk_lcn_replace_begin(state);
     trunk_scan_restore_p25_identity_snapshot(state, snapshot);
     trunk_scan_restore_p25_metadata_snapshot(state, snapshot);
     trunk_scan_restore_p25_patch_snapshot(state, snapshot);
@@ -2566,13 +2569,13 @@ trunk_scan_seed_target_state(dsd_state* state, const dsd_trunk_scan_target* targ
     if (trunk_scan_type_anchors_p25_cc_freq(target->type)) {
         state->p25_cc_freq = (long int)target->frequency_hz;
         state->trunk_cc_freq = (long int)target->frequency_hz;
-        state->trunk_lcn_freq[0] = (long int)target->frequency_hz;
-        state->lcn_freq_count = state->lcn_freq_count < 1 ? 1 : state->lcn_freq_count;
+        (void)dsd_state_trunk_lcn_freq_write(state, 0, (long int)target->frequency_hz);
+        dsd_state_trunk_lcn_count_raise(state, 1);
     } else if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         state->p25_cc_freq = 0;
         state->trunk_cc_freq = (long int)target->frequency_hz;
-        state->trunk_lcn_freq[0] = (long int)target->frequency_hz;
-        state->lcn_freq_count = state->lcn_freq_count < 1 ? 1 : state->lcn_freq_count;
+        (void)dsd_state_trunk_lcn_freq_write(state, 0, (long int)target->frequency_hz);
+        dsd_state_trunk_lcn_count_raise(state, 1);
     } else {
         state->p25_cc_freq = 0;
         state->trunk_cc_freq = 0;

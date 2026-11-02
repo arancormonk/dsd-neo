@@ -352,10 +352,8 @@ p25p2_seed_secondary_lcn_fallback(const dsd_opts* opts, dsd_state* state, int rf
 
         for (int slot = 1; slot < 3; slot++) {
             if (state->trunk_lcn_freq[slot] == 0) {
-                state->trunk_lcn_freq[slot] = f;
-                if (state->lcn_freq_count < slot + 1) {
-                    state->lcn_freq_count = slot + 1;
-                }
+                (void)dsd_state_trunk_lcn_freq_write(state, slot, f);
+                dsd_state_trunk_lcn_count_raise(state, slot + 1);
                 break;
             }
         }
@@ -3777,7 +3775,7 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
 
     if (seed_lcn0 && !dsd_state_trunk_lcn_user_list_present(opts, state)
         && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
-        state->trunk_lcn_freq[0] = state->p25_cc_freq;
+        (void)dsd_state_trunk_lcn_freq_write(state, 0, state->p25_cc_freq);
     }
     p25_confirm_idens_for_current_site(state);
 }

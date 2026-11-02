@@ -1108,6 +1108,39 @@ suite runs under this compiler.
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- Invariant (scan-list identities and revisions, issue #672; `<dsd-neo/core/state.h>`): one process-wide counter,
+  `dsd_state_rev_next()` (`dsd_atomic_u64`, never 0, never reset), stamps four values that ride the
+  `vertex_ks_count..ui_msg` snapshot range. `state_instance` is new at every `initState()`. `lcn_list_rev` is the LCN
+  list's positional identity, new at `initState()` and at every wholesale replacement; `lcn_avoid_rev` moves whenever
+  what an LCN avoid list shows could change and is never an identity; `trunk_scan_avoid_rev` moves only at the
+  coordinator's rebuilds of `trunk_scan_avoids` and at its detach. Writer matrix: every writer of `trunk_lcn_freq[]`,
+  `trunk_lcn_freq_ext`, `lcn_freq_count` and `trunk_lcn_name` goes through a core helper.
+  `dsd_state_trunk_lcn_replace_begin()` (drop the avoid flags, new `lcn_list_rev` and `lcn_avoid_rev`) precedes a
+  wholesale replacement, after which the caller writes rows, names and count directly: `initState()` (its own stamps),
+  `chan_map_adopt()`, `svc_clear_channel_map()`, the P25 CC selection's automatic anchor (`p25_cc_selection.c`) and
+  every trunk-scan target list restore (`trunk_scan_restore_snapshot()`: a target hop, pause, resume or failed hop
+  stamps the LCN revisions but never `trunk_scan_avoid_rev`). One-row writes and appends use
+  `dsd_state_trunk_lcn_freq_write()` (moves `lcn_avoid_rev` only when the row is avoided and its value changes) and
+  `dsd_state_trunk_lcn_count_raise()` (never lowers the count; flags it brings into the list are counted and move
+  `lcn_avoid_rev`): the P25 row-0 seeds (`p25_trunk_sm.c`, `p25_lcw.c`, `p25p1_tsbk.c`, `p25p1_pdu_trunking.c`,
+  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the DMR learned-frequency append
+  (`dmr_csbk.c`), the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
+  trunk-scan target seed. `dsd_state_trunk_lcn_name_set()` moves `lcn_avoid_rev` when an avoided row's name changes.
+  `dsd_state_trunk_lcn_avoid_set()`/`_clear()` keep the saturating `lcn_avoid_count` and the exact `size_t`
+  `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
+  `_avoid_free()`, the snapshot copies and the trunk-scan list's `dsd_state_trunk_scan_avoids_reserve()`/`_set()`/
+  `_free()`) stamp nothing. The published trunk-scan list (`dsd_trunk_scan_avoid_entry`: ordinal, frequency, id,
+  label) sits in the uncopied heap gap beside the LCN stores; `dsd_state_trunk_lcn_free()` releases it, a failed
+  `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from `initState()`) says whether the coordinator's last
+  rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`, `CORE_INIT_STATE`, `P25_USER_LIST_SEED`,
+  `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the reserve helpers through
+  `dsd_state_trunk_lcn_test_alloc_fail_after()`.
+- Invariant (`initState()` allocation failures, issue #672): a failed rolling dibit, DMR payload or audio output
+  buffer, or vocoder parameter set, sets `dsd_state::init_failed`; no cursor is built over a failed buffer and
+  `freeState()` releases a partial state. The DMR soft-metric buffer and the event history ring are optional (their
+  readers take NULL); a NULL ring is left NULL rather than set up through `&event_history_s[i]`. The CLI
+  (`apps/dsd-cli/main.c`) and the Android `nativeInit` refuse to start a state with `init_failed` set. Test builds fail
+  one checked allocation at a time through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
 - API note (transmission): `dsd_call_snapshot::transmission_epoch` names the logical transmission an epoch belongs to:
   its own epoch, or for an epoch that reacquired a recoverably-ended one (`call_state_seed_reacquired_snapshot()`),
   that epoch's. `dsd_call_snapshot_transmission()` reads it (falling back to `epoch`). State bound to one call keys on

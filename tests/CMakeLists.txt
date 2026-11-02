@@ -6332,6 +6332,10 @@ target_include_directories(
     dsd-neo_test_core_state_trunk_lcn_avoid
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+target_compile_definitions(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 target_link_libraries(
     dsd-neo_test_core_state_trunk_lcn_avoid
     PRIVATE dsd-neo_runtime
@@ -7062,10 +7066,19 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
-add_executable(dsd-neo_test_core_init_state core/test_core_init_state.c)
+# Compiles dsd_init.c itself, with the test hooks, for initState()'s allocation-failure seam (issue #672).
+add_executable(
+    dsd-neo_test_core_init_state
+    core/test_core_init_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_init.c
+)
 target_include_directories(
     dsd-neo_test_core_init_state
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_init_state
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(

@@ -998,7 +998,7 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
         p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
         if (!dsd_state_trunk_lcn_user_list_present(opts, state)
             && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
-            state->trunk_lcn_freq[0] = state->p25_cc_freq;
+            (void)dsd_state_trunk_lcn_freq_write(state, 0, state->p25_cc_freq);
         }
         p25_confirm_idens_for_current_site(state);
     } else if (cc_freq > 0) {

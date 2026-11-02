@@ -10,6 +10,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -176,8 +177,175 @@ test_init_state_draws_a_ring_identity(void) {
     return rc;
 }
 
+/* Issue #672: every initState() draws a new state instance and a new LCN list revision from the process-wide counter,
+   so a frontend copy keyed on them never takes a re-initialised or replacement state's data for its own; it starts the
+   trunk-scan avoid list empty and publishable, and frees one a previous run left. */
+static int
+test_init_state_stamps_a_new_instance(void) {
+    dsd_state* a = (dsd_state*)calloc(1, sizeof(*a));
+    dsd_state* b = (dsd_state*)calloc(1, sizeof(*b));
+    if (!a || !b) {
+        free(a);
+        free(b);
+        return 50;
+    }
+    int rc = 0;
+    initState(a);
+    initState(b);
+    const uint64_t first = a->state_instance;
+    const uint64_t first_list = a->lcn_list_rev;
+    if (first == 0U || a->lcn_list_rev == 0U || a->lcn_avoid_rev == 0U || b->state_instance == first
+        || b->lcn_list_rev == first_list) {
+        DSD_FPRINTF(stderr, "initState did not draw a distinct instance and list revision per state\n");
+        rc = 51;
+    } else if (a->trunk_scan_avoids_ok != 1U || a->lcn_avoid_total != 0U || a->trunk_scan_avoid_count != 0U
+               || a->init_failed != 0U) {
+        DSD_FPRINTF(stderr, "initState did not start the avoid stores empty and publishable\n");
+        rc = 52;
+    }
+    /* What a previous run left on the state: its buffers freed, but a published list and spent flags still there. */
+    freeState(a);
+    const dsd_trunk_scan_avoid_entry entry = {.ordinal = 2U, .frequency_hz = 851012500U, .id = "B"};
+    if (rc == 0 && dsd_state_trunk_scan_avoids_set(a, &entry, 1U) != 0) {
+        rc = 53;
+    }
+    a->trunk_scan_avoids_ok = 0U;
+    a->lcn_avoid_total = 3U;
+    initState(a);
+    if (rc == 0
+        && (a->state_instance == first || a->state_instance == b->state_instance || a->lcn_list_rev == first_list)) {
+        DSD_FPRINTF(stderr, "a re-initialised state kept or reused an earlier instance\n");
+        rc = 54;
+    } else if (rc == 0
+               && (a->trunk_scan_avoids != NULL || a->trunk_scan_avoid_count != 0U || a->trunk_scan_avoids_ok != 1U
+                   || a->lcn_avoid_total != 0U)) {
+        DSD_FPRINTF(stderr, "a re-initialised state kept the previous run's avoid list\n");
+        rc = 55;
+    }
+    freeState(a);
+    freeState(b);
+    free(a);
+    free(b);
+    return rc;
+}
+
+/* initState()'s checked allocations in the order it makes them, with what a failure of each must leave behind. */
+typedef struct {
+    const char* name;
+    int required;
+} init_alloc_site;
+
+static const init_alloc_site k_init_alloc_sites[] = {
+    {"dibit_buf", 1},
+    {"dmr_payload_buf", 1},
+    {"dmr_soft_buf", 0},
+    {"audio_out_buf", 1},
+    {"audio_out_bufR", 1},
+    {"audio_out_float_buf", 1},
+    {"audio_out_float_bufR", 1},
+    {"cur_mp", 1},
+    {"prev_mp", 1},
+    {"prev_mp_enhanced", 1},
+    {"cur_mp2", 1},
+    {"prev_mp2", 1},
+    {"prev_mp_enhanced2", 1},
+    {"event_history_s", 0},
+};
+#define INIT_ALLOC_SITES ((long)(sizeof(k_init_alloc_sites) / sizeof(k_init_alloc_sites[0])))
+
+/* The first checked allocation of @p st that is NULL, in initState()'s order, or -1 when none. A buffer and its cursor
+   that disagree (one NULL, the other not) report that buffer's index plus INIT_ALLOC_SITES. */
+static long
+init_alloc_failed_site(const dsd_state* st) {
+    const void* bufs[] = {
+        st->dibit_buf,      st->dmr_payload_buf,     st->dmr_soft_buf,         st->audio_out_buf,
+        st->audio_out_bufR, st->audio_out_float_buf, st->audio_out_float_bufR,
+    };
+    const void* cursors[] = {
+        st->dibit_buf_p,
+        st->dmr_payload_p,
+        st->dmr_soft_p,
+        st->audio_out_buf_p,
+        st->audio_out_buf_pR,
+        st->audio_out_float_buf_p,
+        st->audio_out_float_buf_pR,
+    };
+    long failed = -1;
+    for (long i = 0; i < 7; i++) {
+        if ((bufs[i] == NULL) != (cursors[i] == NULL)) {
+            return i + INIT_ALLOC_SITES;
+        }
+        if (bufs[i] == NULL && failed < 0) {
+            failed = i;
+        }
+    }
+    const void* mbe[] = {
+        st->cur_mp, st->prev_mp, st->prev_mp_enhanced, st->cur_mp2, st->prev_mp2, st->prev_mp_enhanced2,
+    };
+    for (long i = 0; i < 6; i++) {
+        if (mbe[i] == NULL && failed < 0) {
+            failed = 7 + i;
+        }
+    }
+    if (st->event_history_s == NULL && failed < 0) {
+        failed = 13;
+    }
+    return failed;
+}
+
+/* Issue #672 B16: each of initState()'s checked allocations fails on its own. A required buffer marks the state
+   init_failed; the optional DMR soft buffer and event history leave it usable, the history NULL rather than a bogus
+   slot pointer; no cursor is built over a failed buffer; and freeState() releases what was allocated (ASan). */
+static int
+test_init_state_survives_each_allocation_failure(void) {
+    for (long site = 0; site < INIT_ALLOC_SITES; site++) {
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        if (!st) {
+            return 60;
+        }
+        dsd_init_test_alloc_fail_after(site);
+        initState(st);
+        dsd_init_test_alloc_fail_after(-1);
+        dsd_exitflag_store(0);
+        const long failed = init_alloc_failed_site(st);
+        const init_alloc_site* expect = &k_init_alloc_sites[site];
+        int rc = 0;
+        /* A vocoder parameter failure frees all six, so the first of them reads as the one that failed. */
+        const long want = (site >= 7 && site <= 12) ? 7 : site;
+        if (failed != want) {
+            DSD_FPRINTF(stderr, "%s failure left site %ld failed\n", expect->name, failed);
+            rc = 61;
+        } else if ((st->init_failed != 0U) != (expect->required != 0)) {
+            DSD_FPRINTF(stderr, "%s failure set init_failed=%u\n", expect->name, (unsigned)st->init_failed);
+            rc = 62;
+        }
+        freeState(st);
+        free(st);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 60;
+    }
+    initState(st);
+    const int clean = init_alloc_failed_site(st) == -1 && st->init_failed == 0U;
+    freeState(st);
+    free(st);
+    return clean ? 0 : 63;
+}
+
 int
 main(void) {
+    int instance_rc = test_init_state_stamps_a_new_instance();
+    if (instance_rc != 0) {
+        return instance_rc;
+    }
+    int alloc_rc = test_init_state_survives_each_allocation_failure();
+    if (alloc_rc != 0) {
+        return alloc_rc;
+    }
     int ring_rc = test_init_state_draws_a_ring_identity();
     if (ring_rc != 0) {
         return ring_rc;

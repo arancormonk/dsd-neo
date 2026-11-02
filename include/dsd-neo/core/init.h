@@ -22,7 +22,12 @@ extern "C" {
 
 /** @brief Initialize decoder options to defaults. */
 void initOpts(dsd_opts* opts);
-/** @brief Initialize decoder runtime state to defaults. */
+/**
+ * @brief Initialize decoder runtime state to defaults.
+ *
+ * Sets `state->init_failed` when a buffer decoding needs could not be allocated; the state is then safe to pass to
+ * freeState() but must not run.
+ */
 void initState(dsd_state* state);
 /** @brief Free dynamic allocations owned by @p state (does not free @p state itself). */
 void freeState(dsd_state* state);
@@ -38,6 +43,12 @@ void freeState(dsd_state* state);
  * opened before the clock moved is never dated after the calls it records. Either argument may be NULL.
  */
 void dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state);
+
+#ifdef DSD_NEO_TEST_HOOKS
+/* Let the next N of initState()'s checked allocations (the rolling and audio buffers, the vocoder parameters, the event
+   history) succeed, fail the one after, and disarm; -1 (the default) disables the seam. */
+void dsd_init_test_alloc_fail_after(long successful_allocations);
+#endif
 
 #ifdef __cplusplus
 }

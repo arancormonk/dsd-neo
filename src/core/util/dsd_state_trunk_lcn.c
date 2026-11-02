@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -31,6 +32,38 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The process-wide revision counter (issue #672). Only the decoder thread's semantic helpers draw from it, so the
+ * atomic only guards against a future caller elsewhere; it costs one add per mutation, never one per sample. */
+static dsd_atomic_u64 g_state_rev;
+
+uint64_t
+dsd_state_rev_next(void) {
+    return dsd_atomic_u64_fetch_add_relaxed(&g_state_rev, 1U) + 1U;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+static long trunk_lcn_alloc_fail_after = -1;
+
+void
+dsd_state_trunk_lcn_test_alloc_fail_after(long successful_allocations) {
+    trunk_lcn_alloc_fail_after = successful_allocations;
+}
+#endif
+
+/* The growth the reserve helpers below share, which the test seam's countdown can fail (every one once it runs out). */
+static void*
+trunk_lcn_realloc(void* ptr, size_t bytes) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (trunk_lcn_alloc_fail_after == 0) {
+        return NULL;
+    }
+    if (trunk_lcn_alloc_fail_after > 0) {
+        trunk_lcn_alloc_fail_after--;
+    }
+#endif
+    return realloc(ptr, bytes);
+}
 
 /* Shared geometric growth for the positional stores. Allocation and ownership
  * remain with each store (key arrays must securely erase the old allocation). */
@@ -63,7 +96,7 @@ dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (!capacity) {
         return -1;
     }
-    long int* ext = (long int*)realloc(state->trunk_lcn_freq_ext, capacity * sizeof *ext);
+    long int* ext = (long int*)trunk_lcn_realloc(state->trunk_lcn_freq_ext, capacity * sizeof *ext);
     if (!ext) {
         return -1;
     }
@@ -87,7 +120,7 @@ dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count) {
         return -1;
     }
     char (*names)[DSD_CHANNEL_LABEL_SIZE] =
-        (char (*)[DSD_CHANNEL_LABEL_SIZE])realloc(state->trunk_lcn_name, capacity * sizeof *names);
+        (char (*)[DSD_CHANNEL_LABEL_SIZE])trunk_lcn_realloc(state->trunk_lcn_name, capacity * sizeof *names);
     if (!names) {
         return -1;
     }
@@ -185,6 +218,9 @@ dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name) {
     if (dsd_state_trunk_lcn_name_reserve(state, index + 1) != 0) {
         return -1;
     }
+    if (dsd_state_trunk_lcn_avoid_get(state, index) && memcmp(state->trunk_lcn_name[index], entry, sizeof entry) != 0) {
+        state->lcn_avoid_rev = dsd_state_rev_next();
+    }
     DSD_MEMCPY(state->trunk_lcn_name[index], entry, sizeof entry);
     return 0;
 }
@@ -210,7 +246,7 @@ dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count) {
     if (!capacity) {
         return -1;
     }
-    uint8_t* flags = (uint8_t*)realloc(state->trunk_lcn_avoid, capacity);
+    uint8_t* flags = (uint8_t*)trunk_lcn_realloc(state->trunk_lcn_avoid, capacity);
     if (!flags) {
         return -1;
     }
@@ -325,6 +361,7 @@ trunk_lcn_avoid_span(const dsd_state* state) {
     return state->trunk_lcn_avoid ? span : 0;
 }
 
+/* Recount both totals over the span: lcn_avoid_total exactly, lcn_avoid_count saturated for the status line. */
 static void
 trunk_lcn_avoid_recount(dsd_state* state) {
     const size_t span = trunk_lcn_avoid_span(state);
@@ -332,6 +369,7 @@ trunk_lcn_avoid_recount(dsd_state* state) {
     for (size_t i = 0; i < span; i++) {
         count += state->trunk_lcn_avoid[i] ? 1U : 0U;
     }
+    state->lcn_avoid_total = count;
     state->lcn_avoid_count = count > UINT16_MAX ? UINT16_MAX : (uint16_t)count;
 }
 
@@ -347,7 +385,11 @@ dsd_state_trunk_lcn_avoid_set(dsd_state* state, size_t index, int avoided) {
     if (dsd_state_trunk_lcn_avoid_reserve(state, index + 1) != 0) {
         return -1;
     }
-    state->trunk_lcn_avoid[index] = avoided ? 1U : 0U;
+    const uint8_t flag = avoided ? 1U : 0U;
+    if (state->trunk_lcn_avoid[index] != flag) {
+        state->trunk_lcn_avoid[index] = flag;
+        state->lcn_avoid_rev = dsd_state_rev_next();
+    }
     trunk_lcn_avoid_recount(state);
     return 0;
 }
@@ -360,17 +402,122 @@ dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
     return state->trunk_lcn_avoid[index] ? 1 : 0;
 }
 
+/* Whether any flag in the store is set, past the list included: what a clear would change. */
+static int
+trunk_lcn_avoid_any(const dsd_state* state) {
+    for (size_t i = 0; state->trunk_lcn_avoid && i < state->trunk_lcn_avoid_capacity; i++) {
+        if (state->trunk_lcn_avoid[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 dsd_state_trunk_lcn_avoid_clear(dsd_state* state) {
     if (!state) {
         return 0;
     }
     const int cleared = state->trunk_lcn_avoid ? (int)state->lcn_avoid_count : 0;
-    if (state->trunk_lcn_avoid) {
+    if (trunk_lcn_avoid_any(state)) {
         DSD_MEMSET(state->trunk_lcn_avoid, 0, state->trunk_lcn_avoid_capacity);
+        state->lcn_avoid_rev = dsd_state_rev_next();
     }
     state->lcn_avoid_count = 0;
+    state->lcn_avoid_total = 0;
     return cleared;
+}
+
+void
+dsd_state_trunk_lcn_replace_begin(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_state_trunk_lcn_avoid_free(state);
+    state->lcn_avoid_count = 0;
+    state->lcn_avoid_total = 0;
+    state->lcn_list_rev = dsd_state_rev_next();
+    state->lcn_avoid_rev = dsd_state_rev_next();
+}
+
+int
+dsd_state_trunk_lcn_freq_write(dsd_state* state, int row, long int hz) {
+    if (!state || row < 0 || dsd_state_trunk_lcn_reserve(state, (size_t)row + 1U) != 0) {
+        return -1;
+    }
+    long int* slot = dsd_state_trunk_lcn_slot(state, row);
+    if (*slot != hz && dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+        state->lcn_avoid_rev = dsd_state_rev_next();
+    }
+    *slot = hz;
+    return 0;
+}
+
+void
+dsd_state_trunk_lcn_count_raise(dsd_state* state, int count) {
+    if (!state || state->lcn_freq_count >= count) {
+        return;
+    }
+    state->lcn_freq_count = count;
+    /* No store, nothing to bring in: the common case of an append to a list nobody avoided in. */
+    if (!state->trunk_lcn_avoid) {
+        return;
+    }
+    const size_t before = state->lcn_avoid_total;
+    trunk_lcn_avoid_recount(state);
+    if (state->lcn_avoid_total != before) {
+        state->lcn_avoid_rev = dsd_state_rev_next();
+    }
+}
+
+int
+dsd_state_trunk_scan_avoids_reserve(dsd_state* state, size_t count) {
+    if (!state) {
+        return -1;
+    }
+    if (count <= state->trunk_scan_avoid_capacity) {
+        return 0;
+    }
+    const size_t capacity =
+        trunk_lcn_grown_capacity(state->trunk_scan_avoid_capacity, count, sizeof(dsd_trunk_scan_avoid_entry));
+    if (!capacity) {
+        return -1;
+    }
+    dsd_trunk_scan_avoid_entry* entries =
+        (dsd_trunk_scan_avoid_entry*)trunk_lcn_realloc(state->trunk_scan_avoids, capacity * sizeof(*entries));
+    if (!entries) {
+        return -1;
+    }
+    state->trunk_scan_avoids = entries;
+    state->trunk_scan_avoid_capacity = capacity;
+    return 0;
+}
+
+int
+dsd_state_trunk_scan_avoids_set(dsd_state* state, const dsd_trunk_scan_avoid_entry* entries, size_t count) {
+    if (!state || (count > 0U && !entries)) {
+        return -1;
+    }
+    if (dsd_state_trunk_scan_avoids_reserve(state, count) != 0) {
+        state->trunk_scan_avoid_count = 0;
+        return -1;
+    }
+    if (count > 0U) {
+        DSD_MEMCPY(state->trunk_scan_avoids, entries, count * sizeof(*entries));
+    }
+    state->trunk_scan_avoid_count = count;
+    return 0;
+}
+
+void
+dsd_state_trunk_scan_avoids_free(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    free(state->trunk_scan_avoids);
+    state->trunk_scan_avoids = NULL;
+    state->trunk_scan_avoid_count = 0;
+    state->trunk_scan_avoid_capacity = 0;
 }
 
 int
@@ -421,6 +568,7 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     dsd_key_set_free(&state->scan_keys_baseline);
     dsd_key_set_free(&state->scan_keys_active);
     state->scan_keys_active_set = 0;
+    dsd_state_trunk_scan_avoids_free(state);
 }
 
 int

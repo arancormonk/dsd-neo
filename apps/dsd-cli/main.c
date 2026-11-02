@@ -49,7 +49,8 @@ main(int argc, char** argv) {
 
     initOpts(opts);
     initState(state);
-    if (dsd_exitflag_load() != 0) {
+    /* initState() logged which buffer it could not allocate; a state missing one cannot decode. */
+    if (state->init_failed || dsd_exitflag_load() != 0) {
         freeState(state);
         free(opts);
         free(state);
