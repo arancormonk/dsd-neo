@@ -1533,8 +1533,9 @@ suite runs under this compiler.
   the row's other per-call fields (init, push, the render context both ways, a merge that fills an unknown one, a data
   notice from its observation); trunk-scan snapshots copy whole rows and calls. On any other protocol the mode is 0 and
   means nothing. `sysid_string` is the mode's name (`dsd_analog_mode_name()`: `NFM`, `AM`, `ANALOG` when unknown), and
-  the row text (`watchdog_event_current_build_event_analog()`) is the protocol token, the mode word (none when unknown),
-  the frequency, then the receive identity's confirmed tone, copied into the render context beside the service label:
+  the row text (`watchdog_event_current_build_event_analog()`) is the protocol token, the mode word (none when unknown:
+  `dsd_analog_mode_known()`, which the live call view's name fallback uses too), the frequency, then the receive
+  identity's confirmed tone, copied into the render context beside the service label:
   `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `ANALOG NFM; FREQ: ...; DCS D023N / D047I;`
   (`dsd_dcs_format_label()` of the canonical value `value / 2`, `value % 2`: both spellings, the canonical one first),
   `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input `ANALOG; CTCSS 100.0 Hz;`. An untoned or never confirmed call
@@ -3854,7 +3855,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   decoded; `src_id`, `src_label` alone), the call `kind`, `protocol_label` (the protocol's display name from
   `dsd_synctype_to_string()`, with its frame-type and family names spelled as the protocol: `X2-TDMA`, `ProVoice`,
   `EDACS`, `D-STAR`, `M17`; empty for analog and the generic digital sync), crypto and service
-  metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
+  metadata, with the 3 s ended hold. An analog call no service or channel names is named by its `analog_mode`
+  (`NFM`, `AM`, or `Analog` when unknown on audio input; issue #667), NFM and AM calls alike. An epoch with no
+  identity reads idle, except on the
   protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
   call only from a CRC-checked carrier and publishes speech no D-SETUP named, and a direct mode DM-2-C call (whose
   security class encrypts every identity), as a voice call with no parties (issue #773). The Qt hero and second-slot
@@ -4157,7 +4160,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
     whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. An
     event row carries every field a client sees of the row, the call's `freq_hz` and access code included (issue
-    #575), and the fingerprint covers the same fields, so a row that learns one in place is sent again. While
+    #575), and the fingerprint covers the same fields, so a row that learns one in place is sent again. Event rows and
+    `call` slots carry `analog_mode` (`nfm`/`am`/`unknown` on an analog call, `""` on any other; issue #667), the
+    row's in its fingerprint; the slot's is read off the call snapshot, as `frequency_hz` is. While
     an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
     (cached for `get`). The `status` record carries what the stateful
     commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics

@@ -100,7 +100,8 @@ typedef struct {
     /**
      * What to headline the call as, in the order the call history uses: the CSV-imported
      * group name staged for this talkgroup, else a textual target, else the scan channel
-     * the call was heard on (@c channel), else @c tg_text.
+     * the call was heard on (@c channel), else @c tg_text. An analog call has no target: its service label, else
+     * @c channel, else the mode it was heard in, "NFM" or "AM", or "Analog" when the mode is unknown (audio input).
      */
     char name[DSD_APP_CALL_NAME_SIZE];
     /**

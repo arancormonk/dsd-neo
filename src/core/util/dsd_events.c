@@ -2691,8 +2691,7 @@ watchdog_event_analog_tone_text(const dsd_receive_identity* identity, char* out,
 static void
 watchdog_event_current_build_event_analog(const watchdog_event_current_ctx* ctx, const char* datestr,
                                           const char* timestr, const char* sys, char* event_string, size_t event_size) {
-    const int mode_known =
-        ctx->analog_mode == (uint8_t)DSD_ANALOG_MODE_NFM || ctx->analog_mode == (uint8_t)DSD_ANALOG_MODE_AM;
+    const int mode_known = dsd_analog_mode_known(ctx->analog_mode);
     char freq_str[40];
     freq_str[0] = '\0';
     if (ctx->freq_hz > 0 && ctx->freq_hz <= (int64_t)UINT32_MAX) {

@@ -14,6 +14,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -709,6 +710,73 @@ test_feed(void) {
         assert(strstr(g_line, "\"site_text\":\"\"") != NULL);
     }
 
+    /* Issue #667: an analog row names the mode it was heard in -- "nfm" or "am" as the demodulator ran, "unknown" on
+       audio input -- beside the sysid_string that spells it, and its confirmed tone is its receive identity; it has no
+       access code. A digital row's mode is "". A mode alone that changes in place sends the row again. */
+    {
+        Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+        const Event_History before = *row; /* the staged row, put back for the cases below */
+        row->systype = DSD_SYNC_ANALOG;
+        row->analog_mode = (uint8_t)DSD_ANALOG_MODE_NFM;
+        DSD_SNPRINTF(row->sysid_string, sizeof row->sysid_string, "%s", "NFM");
+        row->receive_identity.kind = DSD_RECEIVE_CTCSS;
+        row->receive_identity.known = 1;
+        row->receive_identity.value = 1000U; /* 100.0 Hz, in tenths */
+        row->freq_hz = 154430000;
+        commit_event(state, "Analog", 14U);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"t_name\":\"Analog\"", 3000U));
+        assert(strstr(g_line, "\"update\":false") != NULL);
+        assert(strstr(g_line, "\"sysid_string\":\"NFM\",\"analog_mode\":\"nfm\",") != NULL);
+        assert(strstr(g_line, "\"receive_kind\":4,\"receive_value\":1000,\"receive_known\":true") != NULL);
+        assert(strstr(g_line, "\"freq_hz\":154430000,\"access_code_kind\":0,\"access_code\":0,") != NULL);
+
+        static const struct {
+            dsd_analog_mode mode;
+            const char* json;
+        } k_modes[] = {
+            {DSD_ANALOG_MODE_AM, "\"analog_mode\":\"am\""},
+            {DSD_ANALOG_MODE_UNKNOWN, "\"analog_mode\":\"unknown\""},
+        };
+
+        Event_History* analog = &state->event_history_s[0].Event_History_Items[1];
+        assert(strcmp(analog->t_name, "Analog") == 0);
+        for (size_t i = 0; i < sizeof k_modes / sizeof k_modes[0]; i++) {
+            analog->analog_mode = (uint8_t)k_modes[i].mode;
+            state->event_history_s[0].commit_rev++;
+            dsd_telemetry_publish_both_and_redraw(opts, state);
+            assert(await_line(c, "event", k_modes[i].json, 3000U));
+            assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Analog\"") != NULL);
+        }
+
+        /* A digital row has no mode, whatever the byte holds. */
+        row->systype = DSD_SYNC_P25P1_POS;
+        row->analog_mode = (uint8_t)DSD_ANALOG_MODE_NFM;
+        DSD_SNPRINTF(row->sysid_string, sizeof row->sysid_string, "%s", "P25_293");
+        commit_event(state, "Digital", 15U);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"t_name\":\"Digital\"", 3000U));
+        assert(strstr(g_line, "\"sysid_string\":\"P25_293\",\"analog_mode\":\"\",") != NULL);
+        *row = before;
+    }
+
+    /* Issue #667: a live analog call names its mode as its row does; a digital call's is "". */
+    {
+        dsd_call_observation call = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+        call.analog_mode = (uint8_t)DSD_ANALOG_MODE_AM;
+        call.observed_m = dsd_decode_now_mono_s();
+        assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        int call_seen = 0;
+        for (int attempt = 0; attempt < 30 && !call_seen; attempt++) {
+            dsd_telemetry_publish_both_and_redraw(opts, state);
+            call_seen = await_line(c, "call", "\"analog_mode\":\"am\"", 100U);
+        }
+        assert(call_seen);
+        assert(strstr(g_line, "\"slot\":0,\"state\":2,\"name\":\"AM\",") != NULL);
+        assert(strstr(g_line, "\"protocol_label\":\"\",\"analog_mode\":\"am\",") != NULL);
+        assert(dsd_call_state_end(state, 0U, dsd_decode_now_mono_s()) > 0);
+    }
+
     /* Issue #773: a call slot carries the call kind once (the key the feed already had), the source radio's id and
        label apart from src_text, the target's own label and the protocol's display name. */
     {
@@ -729,7 +797,7 @@ test_feed(void) {
         assert(call_seen);
         assert(strstr(g_line, "\"src_text\":\"Engine 21 (4242)\"") != NULL);
         assert(strstr(g_line, "\"src_id\":4242,\"src_label\":\"Engine 21\",\"tg_label\":\"Dispatcher 7\","
-                              "\"protocol_label\":\"NXDN\"")
+                              "\"protocol_label\":\"NXDN\",\"analog_mode\":\"\",")
                != NULL);
         int kind_keys = 0;
         for (const char* k = strstr(g_line, "\"kind\":"); k != NULL; k = strstr(k + 1, "\"kind\":")) {

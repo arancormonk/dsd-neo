@@ -29,6 +29,12 @@ typedef enum {
     DSD_ANALOG_MODE_AM = 2,      /**< AM. */
 } dsd_analog_mode;
 
+/** Non-zero when @p mode (dsd_analog_mode) names a demodulator, NFM or AM; zero for an unknown mode or any other value. */
+static inline int
+dsd_analog_mode_known(uint8_t mode) {
+    return mode == (uint8_t)DSD_ANALOG_MODE_NFM || mode == (uint8_t)DSD_ANALOG_MODE_AM;
+}
+
 /**
  * The name of @p mode (dsd_analog_mode) that identifies an analog call's system, as its row's system identity string
  * and its recording's name do: "NFM", "AM", or "ANALOG" for an unknown mode or any other value.

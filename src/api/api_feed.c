@@ -28,6 +28,7 @@
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -296,6 +298,20 @@ encode_event_site(dsd_json_writer* w, const Event_History* e) {
     (void)dsd_json_kv_str(w, "site_text", text);
 }
 
+/* An analog call's mode as the API spells it (issue #667): "nfm" or "am" as the demodulator ran, "unknown" on audio
+   input; "" for any other protocol, whose mode byte means nothing. */
+static const char*
+api_analog_mode(int protocol, uint8_t mode) {
+    if (protocol != DSD_SYNC_ANALOG) {
+        return "";
+    }
+    switch (mode) {
+        case DSD_ANALOG_MODE_NFM: return "nfm";
+        case DSD_ANALOG_MODE_AM: return "am";
+        default: return "unknown";
+    }
+}
+
 static void
 encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t push, uint64_t instance) {
     (void)dsd_json_key(w, "row");
@@ -316,6 +332,7 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_u64(w, "sys_id4", e->sys_id4);
     (void)dsd_json_kv_u64(w, "sys_id5", e->sys_id5);
     (void)dsd_json_kv_strn(w, "sysid_string", e->sysid_string, sizeof e->sysid_string);
+    (void)dsd_json_kv_str(w, "analog_mode", api_analog_mode(e->systype, e->analog_mode));
     (void)dsd_json_kv_i64(w, "gi", e->gi);
     (void)dsd_json_kv_i64(w, "emergency", e->emergency);
     (void)dsd_json_kv_i64(w, "priority", e->priority);
@@ -449,6 +466,7 @@ row_fingerprint(const Event_History* e) {
         e->priority,
         e->enc,
         e->enc_alg,
+        e->analog_mode,
     };
     uint64_t h = UINT64_C(14695981039346656037);
     for (size_t i = 0; i < sizeof scalars / sizeof scalars[0]; i++) {
@@ -589,6 +607,10 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_strn(w, "src_label", view.src_label, sizeof view.src_label);
     (void)dsd_json_kv_strn(w, "tg_label", view.tg_label, sizeof view.tg_label);
     (void)dsd_json_kv_strn(w, "protocol_label", view.protocol_label, sizeof view.protocol_label);
+    dsd_call_snapshot snap;
+    const int has_call = (view.state == DSD_APP_CALL_LINE_ACTIVE || view.state == DSD_APP_CALL_LINE_ENDED)
+                         && dsd_call_state_get(state, (uint8_t)slot, &snap) > 0;
+    (void)dsd_json_kv_str(w, "analog_mode", has_call ? api_analog_mode(snap.protocol, snap.analog_mode) : "");
     (void)dsd_json_kv_strn(w, "channel", view.channel, sizeof view.channel);
     (void)dsd_json_kv_strn(w, "service_label", view.service, sizeof view.service);
     (void)dsd_json_kv_u64(w, "receive_kind", view.receive_identity.kind);
@@ -601,9 +623,7 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_bool(w, "emergency", view.emergency);
     (void)dsd_json_kv_u64(w, "priority", view.priority);
     (void)dsd_json_kv_bool(w, "enc", view.enc);
-    dsd_call_snapshot snap;
-    if ((view.state == DSD_APP_CALL_LINE_ACTIVE || view.state == DSD_APP_CALL_LINE_ENDED)
-        && dsd_call_state_get(state, (uint8_t)slot, &snap) > 0) {
+    if (has_call) {
         (void)dsd_json_kv_i64(w, "frequency_hz", snap.frequency_hz);
         (void)dsd_json_kv_i64(w, "protocol", snap.protocol);
         (void)dsd_json_kv_i64(w, "kind", snap.kind);
