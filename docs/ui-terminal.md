@@ -433,8 +433,10 @@ entries apart first:
 A row the map left without a frequency reads `frequency unknown`. Enter puts the highlighted entry back into the
 rotation and closes the list; the toast names the entry as the list does (`Put back row 3 (462.037500 MHz, 1
 avoided)`, `Put back target #2 County Fire (0 avoided)`; a target with no label is named by its id). Nothing retunes:
-the receiver stays where it is, and a hold, a target cooling down after a failed retune and the dwell are left as they
-were. Esc closes the list and changes nothing. **Clear avoids** puts every entry back at once.
+the receiver stays where it is, unless it is on an avoided target the scan fell back onto. It then leaves as soon as
+another target can take it, and putting one back can let it leave at once. A hold, a target cooling down after a
+failed retune and the dwell are left as they were. Esc closes the list and changes nothing. **Clear avoids** puts
+every entry back at once.
 
 The list and Clear are offered while a scan runs (with none avoided, the list says `No avoided channels`) and,
 outside one, while avoids are left. A `-Y` list's avoids outlive the scan: the DMR and NXDN control-channel hunts under

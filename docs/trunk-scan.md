@@ -419,18 +419,20 @@ During scanning:
   "Clear avoids" puts every avoided target back. The avoid and put-back messages name a target as the list does, by its
   place and its label, or its id when it has no label (`Avoiding target #2 County Fire (1 avoided)`, `Put back target
   #2 County Fire (0 avoided)`). Putting a target back does not retune, and leaves a hold, a cooldown and the dwell as
-  they were; if it was the last alternate avoided, the visit cap restarts as it does for Clear. `L` and `J` skip avoided
-  targets, targets still cooling down after a failed retune, and analog targets skipped at every visit for a width the
-  DSP rate cannot filter. A hold only pauses the idle dwell: the parked target's trunking state machine keeps following
-  calls, and `J` and `L` still move while held (the hold then applies to the new target). Avoiding the last usable
-  target is refused — the last target in a list that is on, not avoided, and not skipped at every visit for its width —
-  as are `L` and `J` on a single-target list (`Trunk scan has only one target`). When `L` or `J` cannot move (no other
-  target is eligible, the switch cannot be set up, or every other target fails to retune and the receiver falls back),
-  it says `Staying on target #<place> <label>` (the id when the target has no label). Avoids are not written back to the
-  CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune and the receiver fell
-  back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out of the rotation. The
-  receiver leaves that avoided target as soon as another can take it, ahead of its hold, dwell and any call on it,
-  unless it is put back first; `b` on it changes nothing (`Already avoided: target #<place> <label>`).
+  they were (it can let the receiver leave an avoided fallback at once, see below); if it was the last alternate
+  avoided, the visit cap restarts as it does for Clear. `L` and `J` skip avoided targets, targets still cooling down
+  after a failed retune, and analog targets skipped at every visit for a width the DSP rate cannot filter. A hold only
+  pauses the idle dwell: the parked target's trunking state machine keeps following calls, and `J` and `L` still move
+  while held (the hold then applies to the new target). Avoiding the last usable target is refused — the last target in
+  a list that is on, not avoided, and not skipped at every visit for its width — as are `L` and `J` on a single-target
+  list (`Trunk scan has only one target`). When `L` or `J` cannot move (no other target is eligible, the switch cannot
+  be set up, or every other target fails to retune and the receiver falls back), it says `Staying on target #<place>
+  <label>` (the id when the target has no label). Avoids are not written back to the CSV. The Trunk Scan row shows
+  `HOLD`, then `[avoided]` when every alternate failed to retune and the receiver fell back onto a target that was
+  avoided, and last `Avoids: N`, the number of targets currently out of the rotation. The receiver leaves that avoided
+  target as soon as another can take it, ahead of its hold, dwell and any call on it, unless it is put back first;
+  putting another target back can let it leave at once. `b` on it changes nothing (`Already avoided: target #<place>
+  <label>`).
 - **Several lists.** With more than one target list loaded, the rotation runs over the targets of the lists that are on,
   in list order and then row order; a list that is off is passed over by the rotation, `L`, `J`, the visit cap and the
   rejection rules alike, and keeps everything its targets learned, their avoids and session edits, for when it is on

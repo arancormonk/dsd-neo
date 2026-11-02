@@ -16614,9 +16614,16 @@ run_avoid_on_the_parked_fallback(const char* body, int targets, int put_back) {
                                  DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED);
     test_rc |= expect_avoid_untouched(&opts, &state, "avoid with alternates eligible", &before);
     if (!put_back) {
+        /* The hold is on: the departure goes ahead of it and the hold carries over to the new target. */
+        test_rc |= expect_control_rc("hold on before the leaving tick",
+                                     dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
         dsd_engine_trunk_scan_tick(&opts, &state);
         test_rc |= expect_active_target(&state, "the tick leaves the avoided fallback", 1U);
-        test_rc |= expect_scan_control_publication(&state, "the tick leaves the avoided fallback", 0U, 0U, 1U);
+        test_rc |= expect_scan_control_publication(&state, "the tick leaves the avoided fallback", 1U, 0U, 1U);
+        if (state.trunk_scan_hold != 1U) {
+            DSD_FPRINTF(stderr, "leaving the avoided fallback dropped the hold\n");
+            test_rc = 1;
+        }
         test_rc |= expect_avoid_list(&state, "the tick leaves the avoided fallback", "a");
         if (g_explicit_call_ends != before.call_ends + 1) {
             DSD_FPRINTF(stderr, "leaving the avoided fallback ended %d calls, want 1\n",
