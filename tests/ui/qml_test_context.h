@@ -734,7 +734,7 @@ class CommandRecorder : public QObject {
     }
 
     /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on} (and
-     * unknownOnly and analogMaxGapMs for Record calls); issue #756's NFM pause hold as {kind, ms}. */
+     * unknownOnly and analogMaxGapMs for Record calls); issue #756's analog pause hold as {kind, ms}. */
     Q_INVOKABLE bool
     setRecordCalls(bool on, bool unknownOnly, int analogMaxGapMs) {
         m_recording_requests.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")},
@@ -4164,7 +4164,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("recordUnknownOnly")] = false;
         prefs[QStringLiteral("recordingLimitMb")] = 1000;
         prefs[QStringLiteral("recordingLimitChoices")] = QVariantList({250, 500, 1000, 2000, 5000, 0});
-        /* Issue #756: the NFM pause hold off, as AppPrefs' default, with its choices. */
+        /* Issue #756: the analog pause hold off, as AppPrefs' default, with its choices. */
         prefs[QStringLiteral("analogMaxGapMs")] = 200;
         prefs[QStringLiteral("analogMaxGapChoices")] = QVariantList({200, 500, 1000, 2000, 3000, 5000, 10000});
         m_prefs = prefs;

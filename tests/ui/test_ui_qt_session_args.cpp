@@ -219,7 +219,7 @@ test_recording_args(void) {
                            QStringLiteral("200"),
                            QStringLiteral("-Z")};
     const qsizetype at = args.indexOf(QStringLiteral("-7"));
-    expect("folder, journal, -P, unknown-only and the NFM pause hold, then the extra options, after the hang time",
+    expect("folder, journal, -P, unknown-only and the analog pause hold, then the extra options, after the hang time",
            error == SessionArgsError::None && at > args.indexOf(QStringLiteral("-t"))
                && args.mid(at, want.size()) == want && args.count(QStringLiteral("-7")) == 1);
 
@@ -230,7 +230,7 @@ test_recording_args(void) {
            args.contains("-7") && args.contains("--wav-journal") && !args.contains("-P")
                && !args.contains("--record-unknown-only") && !args.contains("--analog-record-max-gap-ms"));
 
-    // Unknown-only and the NFM pause hold travel with -P: neither while Record calls is off, whatever their own
+    // Unknown-only and the analog pause hold travel with -P: neither while Record calls is off, whatever their own
     // settings say.
     for (const bool record : {false, true}) {
         for (const bool unknown : {false, true}) {
@@ -377,8 +377,8 @@ test_recording_refused_extras(void) {
     appPrefs.setExtraArgs(QString());
 }
 
-/* Issue #756: Settings shuts the NFM pause hold row only when the extra options set the hold as the decoder reads them:
- * wherever a long option stands, in either form, but never as another option's value or after a "--" that is no
+/* Issue #756: Settings shuts the analog pause hold row only when the extra options set the hold as the decoder reads
+ * them: wherever a long option stands, in either form, but never as another option's value or after a "--" that is no
  * value. Read by name alone, those two set nothing the decoder takes, and Record calls on then sent no hold. */
 void
 test_extra_sets_pause_hold(void) {

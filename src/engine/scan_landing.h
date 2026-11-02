@@ -15,8 +15,8 @@
  * every carrier boundary that moves the receiver (a manual tune among them; a step to a row of the list is the scan's
  * own, which notes its row again after it) and at the -Y scan's release, which a pause, a stop and a trunk-scan stop
  * run, so the operator's own tune (`=`) leaves none; a placeholder row, a failed, pending or unconfirmed tune and a
- * rollback note none. It reads as none once its scan no longer owns the tuner, and a -Y landing once the scan session or the
- * channel map changed (a map replacement).
+ * rollback note none. It reads as none once its scan no longer owns the tuner, and a -Y landing once the scan
+ * session or the channel map changed (a map replacement).
  *
  * Analog rows only: the tracker takes it at a reception's first block when the input names no frequency, and never for
  * a digital row (the frequency rule in dsd_opts_tuned_freq_hz() stays for those).

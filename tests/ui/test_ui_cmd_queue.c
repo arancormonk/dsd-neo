@@ -2436,9 +2436,9 @@ test_manual_scan_steps_clear_received_tone(void) {
 }
 
 /*
- * A manual step of a running untyped -Y list (Next, Previous) is the scan's own step to its own row, so a tune the front
- * end confirmed names that row's frequency for an analog call on audio input (issue #667 D9). One accepted but not
- * confirmed (a timeout), a refused one and a deferred one name none: the receiver may be anywhere. The row left's
+ * A manual step of a running untyped -Y list (Next, Previous) is the scan's own step to its own row, so a tune the
+ * front end confirmed names that row's frequency for an analog call on audio input (issue #667 D9). One accepted but
+ * not confirmed (a timeout), a refused one and a deferred one name none: the receiver may be anywhere. The row left's
  * landing never survives either.
  */
 static int

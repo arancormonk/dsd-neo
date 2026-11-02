@@ -602,8 +602,9 @@ test_recording_prefs() {
     stored.remove(limitKey);
 }
 
-/* Issue #756: the NFM pause hold. Off (200, the decoder's default) unless chosen; any value the decoder takes is kept
- * as it is, offered or not, so a restored or older value shows as itself; anything else reads and writes as off. */
+/* Issue #756: the analog pause hold. Off (200, the decoder's default) unless chosen; any value the decoder takes is
+ * kept as it is, offered or not, so a restored or older value shows as itself; anything else reads and writes as off.
+ */
 void
 test_analog_max_gap_pref() {
     QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
