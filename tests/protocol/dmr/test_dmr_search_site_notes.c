@@ -834,7 +834,8 @@ static void
 with_valid_crc(const uint8_t bytes[12], uint8_t out[12]) {
     uint8_t bits[96];
     DSD_MEMCPY(out, bytes, 12U);
-    (void)dsd_unpack_bytes_to_bits(out, 12U, bits, sizeof(bits), 12U);
+    /* The CRC covers the first 80 bits, which out copies from bytes unchanged. */
+    (void)dsd_unpack_bytes_to_bits(bytes, 12U, bits, sizeof(bits), 12U);
     const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xA5A5U);
     out[10] = (uint8_t)(crc >> 8);
     out[11] = (uint8_t)(crc & 0xFFU);
@@ -1018,7 +1019,7 @@ test_capmax_short_lc(dsd_opts* opts, dsd_state* state) {
     for (size_t i = 36; i < sizeof(crc_bits); ++i) {
         crc_bits[i] = 0;
     }
-    rc |= expect_int("reporter short lc passes its crc-8", crc8_ok(crc_bits, 36), 1);
+    rc |= expect_int("reporter short lc passes its crc-8", crc8_ok(crc_bits, 36) ? 1 : 0, 1);
 
     set_dmrla(opts, 0, 0);
     clear_record(state);
