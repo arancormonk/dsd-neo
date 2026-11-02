@@ -249,7 +249,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-100` to `0`, `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel, or `noise[+N]`, the [noise squelch](cli.md#noise-squelch---squelch-noise) opening at N dB (3 to 30, default 10) of FM quieting. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only; `noise` on `nfm` rows and `nfm-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 | `--am-bandwidth-hz <Hz>` | This analog row's or target's AM channel width, whole Hz from `5000` to `20000` (for example `8333` for 8.33 kHz airband spacing). `am` rows and `am-conventional` targets only; a digital or blank row is told it `needs mode am`, and an `nfm` row refuses it as `not supported for this mode/target`. A row carries one width. |
-| `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
+| `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is supported CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 
 Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
 `options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
@@ -414,10 +414,10 @@ row alone: a row without one runs the configured policy, `--no-tone-filter` turn
 written as on the command line, `/` between entries. A comma ends the `options` cell (the splitter has no quoting), so a
 list written with commas is refused rather than imported short: when the cell ends with the list and the field after the
 comma lies past the header's last column, or is one of the file's own columns whose whole field is a run of
-`/`-separated entries with no space, starting with a standard tone or code (`67.0`, `67.0/D023N`), alone or followed by
+`/`-separated entries with no space, starting with a supported tone or code (`67.0`, `67.0/D023N`), alone or followed by
 another row option the same comma cut off (`67.0 --squelch-db -60`), the row is refused with
 `--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. Any other name with a
-space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a standard tone or
+space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a supported tone or
 code (`100`, or `150` now that 150.0 Hz is a supported tone) reads as the list's rest. A code matches by its signal:
 `D023I` passes traffic received as
 `DCS D047N / D023I`. The polarity is part of the signal, so on a source whose audio is inverted a `D023N` transmitter

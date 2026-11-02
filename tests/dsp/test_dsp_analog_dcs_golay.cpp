@@ -125,7 +125,7 @@ test_every_word_is_a_golay24_word() {
  * The cited words, before and after the mapping:
  *   023  11101100011-100-000/010/011 = 0x763813  ->  Golay24.hpp 0x640E37
  *   023 inverted  00010011100-011-111/101/100 = 0x09C7EC  ->  0x1BF1C8
- *   047  00011111101-100-000/100/111 = 0x0FD827  ->  0x720DF8 (a standard code of its own,
+ *   047  00011111101-100-000/100/111 = 0x0FD827  ->  0x720DF8 (a supported code of its own,
  *        printed as the inverted 023 word rotated to its third 100 signature match)
  *   020  11110001001100000010000 = 0x789810  ->  0x040C8F (a word of another rotation class,
  *        so check bits that do not follow from 023's)

@@ -237,10 +237,10 @@ dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted) 
 /*
  * A code sent inverted sends the complement of its normal word, so the inverted spellings of a
  * signal are the normal spellings of its complement, and the other way round: the complement's
- * canonical member, in the other polarity, spells this signal too. In the standard set every
+ * canonical member, in the other polarity, spells this signal too. In the supported set every
  * signal has exactly one spelling in each polarity, so the complement's canonical member is its
  * normal spelling, and in the other polarity it is this signal's one inverted spelling, never
- * the canonical (normal) one. RUNTIME_ANALOG_TONES checks that over every standard code in both
+ * the canonical (normal) one. RUNTIME_ANALOG_TONES checks that over every supported code in both
  * polarities.
  */
 int
@@ -402,7 +402,7 @@ tone_entry_dcs_code(const char* text, size_t len, int* inverted) {
     return code;
 }
 
-/* The standard tone or code an entry of @p len bytes names; 0, or -1 when it names none. */
+/* The supported tone or code an entry of @p len bytes names; 0, or -1 when it names none. */
 static int
 tone_entry_read(const char* text, size_t len, tone_entry* out) {
     const int tenths = tone_entry_ctcss_tenths(text, len);
@@ -458,7 +458,7 @@ tone_list_add_dcs(tone_list_parse* parse, const tone_entry* entry, int number, c
     int canon_code = -1;
     int canon_inverted = 0;
     if (dsd_dcs_canonical(dsd_dcs_code(entry->index), entry->inverted, &canon_code, &canon_inverted) != 0) {
-        return tone_list_error(err, err_size, "internal error: a standard code has no signal");
+        return tone_list_error(err, err_size, "internal error: a supported code has no signal");
     }
     const int signal = dsd_dcs_code_index(canon_code);
     const int bit = (2 * entry->index) + entry->inverted;

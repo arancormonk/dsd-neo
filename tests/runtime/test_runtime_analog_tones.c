@@ -297,7 +297,7 @@ static const int k_inverted_alias[][2] = {
     {0703, 0565}, {0712, 0114}, {0723, 0431}, {0731, 0155}, {0732, 0261}, {0734, 0371}, {0743, 0654}, {0754, 0116},
 };
 _Static_assert((int)(sizeof(k_inverted_alias) / sizeof(k_inverted_alias[0])) == DSD_DCS_CODE_COUNT,
-               "the alias table covers every standard code");
+               "the alias table covers every supported code");
 
 #define DCS_MASK ((1U << DSD_DCS_WORD_BITS) - 1U)
 
@@ -354,7 +354,7 @@ test_dcs_table(void) {
     }
     assert(dsd_dcs_code(-1) == -1);
     assert(dsd_dcs_code(DSD_DCS_CODE_COUNT) == -1);
-    /* Not in the standard set: 000, 017, 050, 645 (offered by some radios), and non-codes. */
+    /* Not in the supported set: 000, 017, 050, 645 (offered by some radios), and non-codes. */
     assert(dsd_dcs_code_index(0) == -1);
     assert(dsd_dcs_code_index(0017) == -1);
     assert(dsd_dcs_code_index(0050) == -1);
@@ -434,7 +434,7 @@ test_dcs_words(void) {
 
 /* Every supported code's word is balanced: 11 or 12 ones of 23, in either polarity, so its level
    averages to within 1/23 of zero over any 23 bits, and the DCS detector's balance slicer can
-   slice a word against its own mean. It is a property of the standard set, not of the code: the
+   slice a word against its own mean. It is a property of the supported set, not of the code: the
    Golay (23,12) words weigh 0, 7, 8, 11, 12, 15, 16 or 23, and 000's word weighs 7. */
 static void
 test_dcs_words_are_balanced(void) {
@@ -485,7 +485,7 @@ test_dcs_aliases(void) {
         }
     }
     /* onfreq's group for 023: the rotations of its word also carry 340 and 766, and those of
-       the inverted word 047, 375 and 707, none of which (but 047) is in the standard set. */
+       the inverted word 047, 375 and 707, none of which (but 047) is in the supported set. */
     int got_code = -1;
     int got_inverted = -1;
     assert(dsd_dcs_canonical(0340, 0, &got_code, &got_inverted) == 0 && got_code == 0023 && got_inverted == 0);
@@ -499,18 +499,18 @@ test_dcs_aliases(void) {
 }
 
 /*
- * The two spellings of every signal. Of the standard codes, exactly two send each signal, one
+ * The two spellings of every signal. Of the supported codes, exactly two send each signal, one
  * in each polarity: the canonical normal code and one inverted code (D023N and D047I, D047N and
  * D023I). A receiver cannot tell which of the two a transmitter was set to, so a received code
  * is shown as both, "DCS D023N / D047I", and dsd_dcs_alias() names the inverted one from either.
- * Pinned against the golden alias table, over every standard code in both polarities.
+ * Pinned against the golden alias table, over every supported code in both polarities.
  */
 static void
 test_dcs_two_spellings(void) {
     for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
         const int code = k_inverted_alias[i][0];
         const int partner = k_inverted_alias[i][1];
-        /* Every standard spelling of code's normal signal: code itself, and partner inverted. */
+        /* Every supported spelling of code's normal signal: code itself, and partner inverted. */
         int spellings = 0;
         for (int j = 0; j < DSD_DCS_CODE_COUNT; j++) {
             for (int inverted = 0; inverted < 2; inverted++) {
@@ -543,13 +543,13 @@ test_dcs_two_spellings(void) {
         assert(strcmp(label, expected) == 0);
     }
 
-    /* A rotation outside the standard set spells a standard signal too. */
+    /* A rotation outside the supported set spells a supported signal too. */
     int alias_code = -1;
     int alias_inverted = -1;
     assert(dsd_dcs_alias(0340, 0, &alias_code, &alias_inverted) == 0);
     assert(alias_code == 0047 && alias_inverted == 1);
     assert(dsd_dcs_alias(0023, 0, NULL, NULL) == 0);
-    /* No standard code sends 000's signal, and a value past nine bits is no code: the outputs
+    /* No supported code sends 000's signal, and a value past nine bits is no code: the outputs
        are left alone. */
     alias_code = 1234;
     alias_inverted = 5678;
@@ -573,7 +573,7 @@ test_dcs_match_rejects(void) {
     assert(code == 1234 && inverted == 5678);
     /* Bits above the window are ignored, and NULL outputs are allowed. */
     assert(dsd_dcs_match(dsd_dcs_word(0023, 0) | 0xFF800000U, NULL, NULL) == 1);
-    /* Of all 2^23 windows exactly 104 x 23 are a supported signal: one class per standard code. */
+    /* Of all 2^23 windows exactly 104 x 23 are a supported signal: one class per supported code. */
     int matches = 0;
     for (uint32_t w = 0U; w <= DCS_MASK; w += 1U) {
         matches += dsd_dcs_match(w, NULL, NULL);
@@ -598,7 +598,7 @@ test_dcs_format(void) {
     assert(dsd_dcs_format(0777, 0, buf, sizeof(buf)) == 5);
     assert(strcmp(buf, "D777N") == 0);
 
-    /* The received label names the signal by both of its standard spellings, the canonical
+    /* The received label names the signal by both of its supported spellings, the canonical
        normal one first, whichever of them it is given: a receiver cannot tell which one the
        transmitter was set to. */
     assert(dsd_dcs_format_label(0023, 0, buf, sizeof(buf)) == 17);
@@ -611,8 +611,8 @@ test_dcs_format(void) {
     assert(strcmp(buf, "DCS D047N / D023I") == 0);
     assert(dsd_dcs_format_label(0754, 0, buf, sizeof(buf)) == 17);
     assert(strcmp(buf, "DCS D754N / D116I") == 0);
-    /* A code outside the standard set whose word is a rotation of a standard word names that
-       signal; one whose signal no standard code sends names nothing. */
+    /* A code outside the supported set whose word is a rotation of a supported word names that
+       signal; one whose signal no supported code sends names nothing. */
     assert(dsd_dcs_format_label(0340, 0, buf, sizeof(buf)) == 17);
     assert(strcmp(buf, "DCS D023N / D047I") == 0);
     buf[0] = 'x';
@@ -691,7 +691,7 @@ test_tone_list_parse(void) {
     set = parse_ok("D023", "D023N");
     set = parse_ok("d754n", "D754N");
     set = parse_ok("D047i", "D047I");
-    /* Every standard tone and code in one list. */
+    /* Every supported tone and code in one list. */
     char all[DSD_TONE_LIST_TEXT_MAX + 1] = "";
     size_t used = 0;
     for (int i = 0; i < DSD_CTCSS_TONE_COUNT; i++) {
@@ -726,7 +726,7 @@ test_tone_list_refusals(void) {
     parse_fails(".5", "entry 1 is not a standard CTCSS tone or DCS code");
     parse_fails(" 100.0", "entry 1 is not a standard CTCSS tone or DCS code");
     parse_fails("+100.0", "entry 1 is not a standard CTCSS tone or DCS code");
-    /* D024 is no standard code, D08 no octal code, and a code takes one polarity letter. */
+    /* D024 is no supported code, D08 no octal code, and a code takes one polarity letter. */
     parse_fails("100.0/D024N", "entry 2 is not a standard CTCSS tone or DCS code");
     parse_fails("D089", "entry 1 is not a standard CTCSS tone or DCS code");
     parse_fails("D23", "entry 1 is not a standard CTCSS tone or DCS code");
@@ -765,7 +765,7 @@ test_tone_list_match_by_signal(void) {
     assert(dsd_tone_set_contains_ctcss(&set, 1000));
     assert(dsd_tone_set_parse("D047N", &set, NULL, 0) == 0);
     assert(dsd_tone_set_contains_dcs(&set, 0023, 1) && dsd_tone_set_contains_dcs(&set, 0047, 0));
-    /* Every standard code in either polarity matches exactly the two spellings of its signal. */
+    /* Every supported code in either polarity matches exactly the two spellings of its signal. */
     for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
         const int code = dsd_dcs_code(i);
         for (int inverted = 0; inverted < 2; inverted++) {
@@ -807,7 +807,7 @@ test_tone_list_same_signals(void) {
     assert(!dsd_tone_set_same_signals(&a, &b));
     assert(dsd_tone_set_parse("100.0/D047N/D754I", &b, NULL, 0) == 0);
     assert(!dsd_tone_set_same_signals(&a, &b) && !dsd_tone_set_same_signals(&b, &a));
-    /* Every standard code in either polarity is the same signal as its other spelling, and not as its own other
+    /* Every supported code in either polarity is the same signal as its other spelling, and not as its own other
        polarity. */
     for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
         const int code = dsd_dcs_code(i);

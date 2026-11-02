@@ -443,8 +443,8 @@ only. See `docs/radioreference-import.md`.
 
 A transmission the decoder loses and regains is one call, so it beeps `voice_start` once at the
 start and `voice_end` once at the end. The end alert is held for roughly half a second after sync
-is lost, since the call may still resume; a terminator alerts immediately. Conventional analog (NFM or AM) calls sound
-no alert.
+is lost, since the call may still resume; a terminator alerts immediately. Conventional analog calls (NFM, AM, or analog
+audio input) sound no alert.
 
 **[recording] section:**
 | Key | Type | Description | Default |
@@ -521,7 +521,7 @@ A name for an identifier the `[receive]` filters or the `[analog]` tone filter r
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. On audio input with a rigctl peer (`-U`), which demodulates it, the FM passband the peer is asked for, in place of `-B`, while the FM monitor runs. Same as `--nfm-bandwidth-hz` | (unset: `16000`; on audio input with a rigctl peer, `-B`, or the peer's own passband with `-B` 0) |
 | `am_bandwidth_hz` | INT (5000-20000) | AM channel-filter width in whole Hz, likewise, for native AM (`decode = "am"`); on audio input with a rigctl peer, the AM passband an `am` row or `am-conventional` target without its own width asks the peer for. Same as `--am-bandwidth-hz` | (unset: `6000`, with a rigctl peer too) |
 | `tone_filter` | ENUM (`off`, `allow`, `block`) | CTCSS/DCS receive policy on the analog FM monitor and `nfm` scan rows: `allow` hears only traffic carrying a `tone_list` tone or code, `block` mutes it. Same as `--tone-allow`/`--tone-block`/`--no-tone-filter` | `off` |
-| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: standard CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
+| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: supported CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
 force, so within the section the key left out and the default are the same thing, and a later default reaches the

@@ -1681,7 +1681,7 @@ include a sanitized `_SVC_` component. An analog recording has no talkgroup, sou
 `<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. The name gives the mode the call was heard in: `_NFM`, `_AM`
 for an AM call, and `_ANALOG` on audio input, where another receiver demodulated it
 (`20261021_142839_51828_ANALOG_SVC_20R_Traveler.wav`). Earlier versions named every one `_NFM`. Rdio exports use the service name in their talkgroup label field
-while preserving numeric IDs. Rdio still requires a nonzero target ID, so an analog call (NFM or AM) produces ordinary
+while preserving numeric IDs. Rdio still requires a nonzero target ID, so a conventional analog call produces ordinary
 named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
 
@@ -1763,7 +1763,7 @@ setting, shown apart from what is received, and it is off by default: then the o
   `[analog] tone_filter = off|allow|block` and `tone_list` (see `docs/config-system.md`); a `-Y` channel-map row or
   `--trunk-scan` target of mode `nfm` takes the same three options for itself, and an `am` one refuses them (see
   [scoped row options](csv-formats.md#scoped-row-options)).
-- `<list>` is standard CTCSS tones (the [supported tones](#received-tone-ctcss-on-the-analog-monitor), 150.0 Hz
+- `<list>` is CTCSS tones (any of the [supported tones](#received-tone-ctcss-on-the-analog-monitor), 150.0 Hz
   included) and DCS codes separated by `/`, such as `67.0/100.0/D023N`: a tone as `100` or `100.0`, a code as `D` and
   three octal digits with `N` or `I` (any case; a bare `D023` is `D023N`). Commas are refused
   (`use / between entries, not commas`), as are a tone or code outside those sets (161.0 Hz, say), an empty

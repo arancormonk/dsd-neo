@@ -1408,7 +1408,7 @@ suite runs under this compiler.
     too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
     reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
     clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
-  - One analog recording (NFM or AM) may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held
+  - One conventional analog recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held
     call is one row and one recording, published once and linked once. Its `start` is the first burst's, and its
     `duration_ms` includes the silence written for the pause.
   - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
@@ -1480,9 +1480,9 @@ suite runs under this compiler.
   staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
   (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
   row, a trunk-scan target's empty row), exports as before. Conventional analog calls, M17 and identities wider than
-  32 bits are never judged. A conventional analog recording (NFM or AM) is not exported either way: its row has no
-  talkgroup to name an upload by, so `wav_close_export_rdio()` skips it, with no warning, and it stays a local WAV with
-  its journal link (`CORE_RECEIVE`). Neither field is shown, persisted or part of the control API's row fingerprint;
+  32 bits are never judged. A conventional analog recording (NFM, AM or audio input) is not exported either way: its
+  row has no talkgroup to name an upload by, so `wav_close_export_rdio()` skips it, with no warning, and it stays a
+  local WAV with its journal link (`CORE_RECEIVE`). Neither field is shown, persisted or part of the control API's row fingerprint;
   exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
   `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
@@ -1673,8 +1673,8 @@ suite runs under this compiler.
   and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls" below), not
   through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
-  (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
-  and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
+  (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per supported CTCSS tone; one per supported DCS
+  code and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
   scopes and frontend snapshots. Parsing, formatting and matching are runtime's (`runtime/analog_tones.h`). Any analog
   audio writer (the monitor sink in `dsd_symbol.c` today; a future analog `-w`/`-P` writer too) must consult the
   verdict through `dsd_analog_tone_gate_in_force()` and write only OFF and ALLOWED; the `-6` raw WAV stays ungated.
@@ -2693,7 +2693,7 @@ suite runs under this compiler.
     lets through, OFF and ALLOWED: the one rule for what the monitor plays and what is scan activity (a PENDING carrier
     holds a row only while it lasts, leaving no tail). Tone
     lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
-    as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
+    as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, unsupported
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
     written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit
     (`dsd_tone_display_to_ascii()` respells that mark `...` in place, the same three bytes, for ASCII surfaces: the
@@ -3977,9 +3977,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
   frequency, a DCS code that is unsupported or not the canonical member of its alias class) reads `detecting`, never a
   value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
-  signal's other standard spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first. The
-  first polarity reads normal and the second inverted for every standard code, whose
-  inverted signal is another standard code's normal one; both are kept because a code is named with its polarity
+  signal's other supported spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first.
+  The first polarity reads normal and the second inverted for every supported code, whose
+  inverted signal is another supported code's normal one; both are kept because a code is named with its polarity
   everywhere. The same view carries `configured_text`, the CTCSS/DCS receive policy in force (issue #527): `off`, or its
   mode and display list (`allow 100.0 Hz/D023N`, `dsd_tone_set_format_display()`), and while a scan row's own policy
   runs (`dsd_scan_mode_row_options()`) ` (row; default X)` naming the configured policy it shadows
@@ -4536,7 +4536,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     verdict it goes on judging: an allow list's allowed value lost goes PENDING with a fresh window, a confirmed
     nonpassing value rejects, a block list keeps a pass on loss, and a rejection holds until the reception ends except
     for a newly confirmed passing value; another confirmed nonpassing value becomes the rejection's reason (a "no tone"
-    rejection that hears an unlisted tone names it). A locked value outside the standard sets is not confirmed: it is
+    rejection that hears an unlisted tone names it). A locked value outside the supported sets is not confirmed: it is
     judged as no tone at the window's end. The tap's glue (`analog_rx.c`) configures it from `dsd_opts` on every read
     (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost; a
     list that only respells a code is the same policy, `dsd_tone_set_same_signals()`),
@@ -10776,7 +10776,7 @@ External dependencies (resolved via CMake):
   CSV splitters end the options cell at an unquoted comma, so both importers (`chan_import_options_split()` in
   `dsd_import.c`, `scan_check_options_split()` in `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the
   cell ends with a tone list and the field after it goes on with it (any text past the header; in a named column, a
-  field that is one space-free run of `/`-separated entries starting with a standard tone or code, alone or followed by
+  field that is one space-free run of `/`-separated entries starting with a supported tone or code, alone or followed by
   a row option's switch, the rest of the cell, so a name such as `100 Main St` stays the column's own) and refuse the
   row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
   import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the

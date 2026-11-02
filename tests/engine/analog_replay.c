@@ -37,7 +37,7 @@
  * own the columns; a detector that wants more adds its own field and column. The contract, which replay_ab.sh relies on
  * because it splits the line on spaces:
  *   tone=<label>        the received tone or code as the decoder names it, with no whitespace: "151.4" (Hz, one
- *                       decimal) for CTCSS; for DCS both standard spellings of the code's signal, canonical first
+ *                       decimal) for CTCSS; for DCS both supported spellings of the code's signal, canonical first
  *                       (dsd_dcs_canonical(), then dsd_dcs_alias()), joined by a slash, such as "D023N/D047I": the
  *                       log's "DCS D023N / D047I" as one token. A receiver cannot tell the two spellings apart, so
  *                       neither alone names what was received. NA when none was confirmed.
@@ -1642,7 +1642,7 @@ analog_score_block(const double* x, size_t n, double block_start_ms) {
 }
 
 /* A DCS code in the tone= field's spelling (see the file comment): the published, canonical spelling, a slash and the
- * signal's other standard spelling, "D023N/D047I". A publication that names no supported signal leaves the last
+ * signal's other supported spelling, "D023N/D047I". A publication that names no supported signal leaves the last
  * label as it was. */
 static void
 analog_format_dcs_label(int code, int inverted) {

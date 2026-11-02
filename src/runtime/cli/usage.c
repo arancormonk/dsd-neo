@@ -274,7 +274,7 @@ dsd_cli_usage_section_decode(void) {
     printf(
         "      --tone-allow <list>      Hear only analog FM traffic carrying a listed CTCSS tone or DCS code; mute\n");
     printf("                               the rest, and traffic with none after the tone check (800 ms, to 1.6 s\n");
-    printf("                               for a DCS code). <list> is '/'-separated standard tones (150.0 too) and\n");
+    printf("                               for a DCS code). <list> is '/'-separated supported tones (150.0 too) and\n");
     printf(
         "                               codes, e.g. 67.0/100.0/D023N (a bare D023 is D023N). The received tone is\n");
     printf("                               shown apart; a scanner moves on from rejected traffic.\n");

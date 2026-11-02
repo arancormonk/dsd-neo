@@ -855,7 +855,7 @@ struct dsd_analog_rx_publication {
     int ctcss_off_value;
     int dcs_code;     /**< locked DCS code as its value (023 octal = 19); 0 = none */
     int dcs_inverted; /**< 1 = the locked code is named in inverted polarity (the canonical member
-                              of its alias class, runtime/analog_tones.h: never, for the standard set) */
+                              of its alias class, runtime/analog_tones.h: never, for the supported set) */
     /** 1 while, with a carrier and nothing locked -- or only an off-value CTCSS tone (ctcss_off_value) -- the DCS
         detector holds a candidate code it has not confirmed: some slicer read a supported code's word once (issue
         #527). The tone policy waits past its window for it. Not tone_state's ACQUIRING, which turns NONE 500 ms into a

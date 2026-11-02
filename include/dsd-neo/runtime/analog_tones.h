@@ -132,7 +132,7 @@ int dsd_dcs_code(int index);
 /**
  * @brief Table index of the supported DCS code @p code.
  *
- * @return The index, or -1 when @p code is not in the standard set.
+ * @return The index, or -1 when @p code is not in the supported set.
  */
 int dsd_dcs_code_index(int code);
 
@@ -173,9 +173,9 @@ int dsd_dcs_match(uint32_t window, int* code, int* inverted);
 int dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted);
 
 /**
- * @brief The other standard spelling of the signal of @p code in the given polarity.
+ * @brief The other supported spelling of the signal of @p code in the given polarity.
  *
- * Of the standard codes, exactly two send each supported signal, one in each polarity: the
+ * Of the supported codes, exactly two send each supported signal, one in each polarity: the
  * canonical normal member (dsd_dcs_canonical()) and one inverted member. D023N and D047I are one
  * signal, D047N and D023I another. This names the inverted member, whichever spelling @p code is
  * (D023N and D047I both give D047I). Accepts any 9-bit code whose signal is a supported code's.
@@ -199,7 +199,7 @@ int dsd_dcs_format(int code, int inverted, char* buf, size_t buf_size);
 /**
  * @brief Write the display and log label for a received DCS code: "DCS D023N / D047I".
  *
- * Names the signal of @p code in the given polarity by both of its standard spellings, the
+ * Names the signal of @p code in the given polarity by both of its supported spellings, the
  * canonical one first (dsd_dcs_canonical(), then dsd_dcs_alias()), whichever of them @p code
  * is: D023N and D047I both write "DCS D023N / D047I", D023I "DCS D047N / D023I".
  *
@@ -218,7 +218,7 @@ enum { DSD_TONE_LIST_ERROR_SIZE = 96 };
 /**
  * @brief Parse a '/'-separated tone list (see the file comment) into @p out.
  *
- * Empty text, a comma anywhere, an empty entry, an entry that is no standard CTCSS tone or DCS
+ * Empty text, a comma anywhere, an empty entry, an entry that is no supported CTCSS tone or DCS
  * code, a tone or DCS signal listed twice and text longer than DSD_TONE_LIST_TEXT_MAX are
  * refused. On failure @p out is untouched and @p err (when not NULL) says why by entry number,
  * naming a duplicate by its canonical spelling, never by the text given.
@@ -264,7 +264,7 @@ int dsd_tone_set_equal(const dsd_tone_set* a, const dsd_tone_set* b);
 
 /**
  * @brief 1 when @p a and @p b pass and block the same traffic: the same CTCSS tones and the same DCS signals, a code
- * under either of its standard spellings (D023I and D047N are one signal), so a policy whose list is respelled is the
+ * under either of its supported spellings (D023I and D047N are one signal), so a policy whose list is respelled is the
  * same policy (both NULL counts as the same).
  */
 int dsd_tone_set_same_signals(const dsd_tone_set* a, const dsd_tone_set* b);
@@ -274,7 +274,7 @@ int dsd_tone_set_contains_ctcss(const dsd_tone_set* set, int tenths_hz);
 
 /**
  * @brief 1 when @p set lists the DCS signal of @p code in the given polarity, under either of
- * its standard spellings (a listed D023I matches D047N), 0 otherwise (and for NULL).
+ * its supported spellings (a listed D023I matches D047N), 0 otherwise (and for NULL).
  */
 int dsd_tone_set_contains_dcs(const dsd_tone_set* set, int code, int inverted);
 

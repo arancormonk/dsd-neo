@@ -1369,7 +1369,7 @@ test_rx_tone() {
     expect("a carrier with no tone reads none",
            model.rxToneStatus() == DSD_APP_RX_TONE_NONE && model.rxToneText() == QStringLiteral("none"));
 
-    /* A received DCS code (#523): both standard spellings of its signal, canonical first, with
+    /* A received DCS code (#523): both supported spellings of its signal, canonical first, with
        leading zeros, apart from the configured policy, which neither it nor a gate value
        moves. */
     state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
