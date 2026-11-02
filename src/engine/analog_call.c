@@ -252,13 +252,13 @@ static void
 analog_call_say_off(uint8_t notice) {
     switch (notice) {
         case ANALOG_CALL_OFF_FM:
-            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at its default "
-                     "level, so noise would hold one call open. Set --squelch <dB>, --squelch auto or noise, or "
+            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at -110 dB or "
+                     "below, so noise would hold one call open. Set --squelch <dB>, --squelch auto or noise, or "
                      "--tone-allow.\n");
             break;
         case ANALOG_CALL_OFF_AM:
-            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at its default "
-                     "level, so noise would hold one call open. Set --squelch <dB> or --squelch auto.\n");
+            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at -110 dB or "
+                     "below, so noise would hold one call open. Set --squelch <dB> or --squelch auto.\n");
             break;
         default: LOG_INFO("NOTICE: Analog call history and recordings are back on.\n"); break;
     }

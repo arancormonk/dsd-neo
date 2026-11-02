@@ -19,9 +19,11 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -2073,6 +2075,8 @@ count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
     /* Issue #667 D2's notices: paused with the FM monitor's remedies, or AM's (no --tone-allow), and back on. */
     if (level == LOG_LEVEL_INFO && text && strstr(text, "Analog call history and recordings are paused") != NULL) {
+        /* The condition as the rule has it: any level at or below the default pauses, not the default alone. */
+        assert(strstr(text, "the squelch is off or at -110 dB or below") != NULL);
         assert(strstr(text, "--squelch <dB>") != NULL && strstr(text, "--squelch auto") != NULL);
         const int fm = strstr(text, "--tone-allow") != NULL;
         assert(fm == (strstr(text, "or noise") != NULL));
@@ -2803,10 +2807,25 @@ hold_take_one_named(const hold_rig* r, const char* mode) {
     assert(named.files == 1 && dsd_test_analog_recording_name_is(named.name, mode, NULL));
 }
 
+/* @p blocks RECEPTION blocks of @p value, each read by the real analog tap first, as the symbol path hands it over, so
+   the tap publishes the carrier and the input's own stale deadline. */
+static void
+hold_tapped(hold_rig* r, int blocks, int value) {
+    static float block[HOLD_BLOCK];
+    for (int i = 0; i < HOLD_BLOCK; i++) {
+        block[i] = (float)value;
+    }
+    for (int i = 0; i < blocks; i++) {
+        dsd_analog_rx_tap(r->opts, r->state, block, HOLD_BLOCK);
+        hold_feed(r, DSD_ANALOG_CALL_RECEPTION, value);
+    }
+}
+
 /* Issue #667 D8: an AM reception on a radio input (-fM) is a call as an NFM one is, once it ran the minimum. Its row
    names AM and the frequency and no tone (dsd-neo detects none on AM), its system string is AM and its recording is
-   named _AM. An idle read (the stream gave nothing, so the read yields) lets the tick end it at its last reception
-   once the input is past its deadline, and a carrier that comes back begins a new call. */
+   named _AM. The AM tap reads its blocks and sets the live input's stale deadline, as the FM one does; once the stream
+   gives nothing (the read yields) and the deadline passes, the tick ends the call at its last reception, and a carrier
+   that comes back begins a new call. */
 static void
 test_am_call(void) {
     hold_rig r;
@@ -2817,19 +2836,26 @@ test_am_call(void) {
     set_radio_squelch(r.opts);
     r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE; /* the AM tap publishes no tone */
     assert(dsd_analog_monitor_tap_active(r.opts) && !dsd_analog_tone_detection_active(r.opts));
+    r.opts->rtl_pwr = 1.0; /* the channel power the level squelch compares: over -60 dB */
     const uint64_t commits = r.history[0].push_seq;
     const double first_m = hold_now_m(&r);
-    hold_receive(&r, 24, 1000);
+    hold_tapped(&r, 24, 1000);
     assert(!dsd_engine_analog_call_active(r.state));
-    hold_receive(&r, 1, 1000);
+    hold_tapped(&r, 1, 1000);
     assert(dsd_engine_analog_call_active(r.state));
     const double last_m = hold_now_m(&r);
-
-    r.state->analog_rx.stale_after_ms = 1U;
+    /* The live stream then gives nothing (the read yields), so no block comes. The tap's deadline is on the real clock
+       (an input that stops is a wait), and the tick leaves the call until it is past. */
+    const uint64_t deadline_ms = r.state->analog_rx.stale_after_ms;
+    assert(deadline_ms > dsd_realtime_mono_ms());
     hold_advance_ms(&r, 5000);
     dsd_engine_analog_call_tick(r.opts, r.state);
+    assert(dsd_engine_analog_call_active(r.state) || dsd_realtime_mono_ms() > deadline_ms);
+    while (dsd_realtime_mono_ms() <= deadline_ms) {
+        dsd_sleep_ms(10U);
+    }
+    dsd_engine_analog_call_tick(r.opts, r.state);
     assert(!dsd_engine_analog_call_active(r.state));
-    r.state->analog_rx.stale_after_ms = 0U;
     hold_expect_span(&r, first_m, last_m);
     assert(r.history[0].push_seq == commits + 1U);
     const Event_History* row = &r.history[0].Event_History_Items[1];
@@ -2838,7 +2864,10 @@ test_am_call(void) {
     assert(strcmp(row->sysid_string, "AM") == 0);
     hold_take_one_named(&r, "AM");
 
-    hold_receive(&r, 25, 1000);
+    /* The stream comes back: the tap's read past its deadline starts its reception over, and a new call begins. */
+    hold_tapped(&r, 24, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_tapped(&r, 1, 1000);
     assert(dsd_engine_analog_call_active(r.state));
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 2U);

@@ -184,6 +184,7 @@ def main():
             notices = [line for line in output.splitlines() if PAUSED in line]
             assert len(notices) == 1, output
             assert ("--tone-allow" in notices[0]) == remedy, notices[0]
+            assert "the squelch is off or at -110 dB or below" in notices[0], notices[0]
             print(name, "OK")
 
         # The same, from a channel-map row's options cell rather than the command line: the rows the issue asks for.

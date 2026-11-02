@@ -269,7 +269,7 @@ Windows console runs:
 - `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
   length, and the call history row it belongs to), each one deleted for holding no audio (`discard`) or kept under
   its `TEMP_` name (`error`), and `link`/`unlink` lines for a recording closed before its call's history row
-  (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
+  (a WAV stop mid-call, a conventional analog call's end) once that row commits or never will. A program that manages
   the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
   torn line gets a newline first. A journal that cannot be opened or written is turned off for the rest of the run
   with one error in the log; decoding and recording go on. A run with a journal keeps every file it uploads: while
@@ -277,13 +277,13 @@ Windows console runs:
   nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
   keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
   `docs/code_map.md` ("Recording journal").
-- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional NFM call in one
-  recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
+- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call (NFM or AM)
+  in one recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
   (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence, so the
-  recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one.
-  200 or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0
-  to 10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted,
-  and the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one. 200
+  or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0 to
+  10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted, and
+  the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
@@ -353,7 +353,7 @@ Windows console runs:
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
   before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
   and no tone. A reception shorter than 500 ms makes no analog line (see `-P` below for how it is counted), and on a
-  radio input neither does one heard while the squelch is off or at its default level (see
+  radio input neither does one heard while the squelch is off or at -110 dB or below (see
   [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input)). An analog
   line is stamped with the time its call ended, even when it is written later (an input that
   stopped sending held the end back); earlier versions stamped it when it was written. The control API's `event` text
@@ -1676,22 +1676,24 @@ squelch keeps the receiver's own noise out. The startup squelch (-110 dB) and an
 would hold one reception open for the whole session. So while the squelch is off or at -110 dB or below, analog calls
 leave no history row, no `-J` line, no live call and no recording, and dsd-neo logs once:
 
-`NOTICE: Analog call history and recordings are paused: the squelch is off or at its default level, so noise would
+`NOTICE: Analog call history and recordings are paused: the squelch is off or at -110 dB or below, so noise would
 hold one call open. Set --squelch <dB>, --squelch auto or noise, or --tone-allow.`
 
 Any one of these lifts it: a level above -110 dB (`--squelch -60`), `--squelch auto`, `--squelch noise` on NFM, or on
 NFM a `--tone-allow` list, which lets only its tones through. A `--tone-block` list does not, as noise carries no tone
 to block. On AM dsd-neo checks no tones, so the AM notice names only `--squelch <dB>` and `--squelch auto`. A squelch
 set while dsd-neo runs (the terminal's `Squelch...` row, the Qt/Android radio panel, the API) or a scan row's own
-`--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged
-once too: `NOTICE: Analog call history and recordings are back on.` The monitor audio is not affected either way.
-Audio input is never paused: another receiver may squelch it, and its silence closes the carrier. Earlier versions
-made analog calls at any squelch.
+`--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged once
+too: `NOTICE: Analog call history and recordings are back on.` The monitor audio is not affected either way. Audio input
+is never paused: another receiver may squelch it, and its silence closes the carrier. Earlier versions made analog calls
+at any squelch. A known limit: the notices follow the squelch in force, so on a `-Y` scan whose rows differ (some rows
+with their own `--squelch`, others left at the default) a paused or back-on notice is logged at each hop where that
+changes.
 
 #### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
 
-By default an NFM call ends 200 ms after its carrier drops (the carrier hangover). Every longer pause starts a new
-call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
+By default an analog call (NFM or AM) ends 200 ms after its carrier drops (the carrier hangover). Every longer pause
+starts a new call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
 analog_max_gap_ms`) keeps the call going through a pause of up to `<ms>`, so one exchange stays one row and one
 recording. It changes nothing else: the hangover, the squelch, the scan and the tone filter work as before.
 
