@@ -827,6 +827,42 @@ test_held_nfm_call_is_one_recording(void) {
     return rc;
 }
 
+/* An NFM call's end leaves the slot files alone (issue #668): its audio goes to its own recording, so the empty 8 kHz
+   slot file stays open and nothing is discarded per call. A digital call's end still rotates it. */
+static int
+test_nfm_call_end_keeps_the_slot_file(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_slot");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    SNDFILE* const slot_file = r.opts->wav_out_f;
+    char slot_name[sizeof r.opts->wav_out_file];
+    DSD_SNPRINTF(slot_name, sizeof slot_name, "%s", r.opts->wav_out_file);
+    rc |= expect_true("the slot file opened", slot_file != NULL);
+    for (int call = 0; call < 3; call++) {
+        nfm_block(r.opts, r.state);
+        nfm_block(r.opts, r.state);
+        dsd_engine_analog_call_end(r.opts, r.state);
+    }
+    reload(&r);
+    rc |= expect_int("three NFM recordings published", count_records(&g_j, "publish"), 3);
+    rc |= expect_int("no discard per NFM call", count_records(&g_j, "discard"), 0);
+    rc |= expect_true("the slot file stays open", r.opts->wav_out_f == slot_file);
+    rc |= expect_true("under its own name", strcmp(r.opts->wav_out_file, slot_name) == 0);
+
+    /* A digital call after them still rotates it: the empty file is discarded under the id it had. */
+    char id[64];
+    slot1_id(&r, id, sizeof id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("the digital call's end discards the empty slot file", count_for_id(&g_j, "discard", id), 1);
+    rc |= expect_true("a new slot file opened",
+                      r.opts->wav_out_f != NULL && strcmp(r.opts->wav_out_file, slot_name) != 0);
+    rig_close(&r);
+    return rc;
+}
+
 /* The closers that run before the call's row commits publish pending on the call's epoch, and that epoch's commit
    links them: an NFM call's end, a WAV stop mid-call, and the EDACS analog rotation (as a grant closes slot 1's file
    once it synced the call). */
@@ -1769,6 +1805,7 @@ main(void) {
     rc |= test_merge_links_pending_to_the_retained_row();
     rc |= test_drop_unlinks_the_epoch_recordings();
     rc |= test_empty_segment_is_discarded();
+    rc |= test_nfm_call_end_keeps_the_slot_file();
     rc |= test_rename_failure_is_an_error_record();
     rc |= test_b3_name_and_raw_identity();
     rc |= test_non_utf8_identity_names_the_file_published();

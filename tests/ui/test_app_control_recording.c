@@ -750,14 +750,15 @@ test_close_failure_keeps_the_temp_file(int writer) {
     const dir_count c = count_dir(r.dir);
     DSD_SNPRINTF(tag, sizeof tag, "%s: nothing published", writer_name(writer));
     rc |= expect_int(tag, c.published, 0);
-    /* A stop closes both slot files, and both keep their temp names. An NFM call's end closes its own recording, and
-       its commit rotates slot 1: that close fails too, and a new slot 1 file opens beside slot 2's. */
+    /* A stop closes both slot files, and both keep their temp names. An NFM call's end closes only its own
+       recording (it leaves the slot files open), so that one close fails and its temp name stays beside the two slot
+       files. */
     DSD_SNPRINTF(tag, sizeof tag, "%s: the recordings keep their temp names", writer_name(writer));
-    rc |= expect_int(tag, c.temp, writer == WRITER_NFM ? 4 : 2);
+    rc |= expect_int(tag, c.temp, writer == WRITER_NFM ? 3 : 2);
     dsd_wav_recording_status status;
     dsd_wav_recording_status_get(&status);
     DSD_SNPRINTF(tag, sizeof tag, "%s: each close failure counted", writer_name(writer));
-    rc |= expect_int(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE], 2);
+    rc |= expect_int(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE], writer == WRITER_NFM ? 1 : 2);
     DSD_SNPRINTF(tag, sizeof tag, "%s: the last error is the close", writer_name(writer));
     rc |= expect_int(tag, status.last_error, DSD_WAV_RECORDING_ERROR_CLOSE);
     DSD_SNPRINTF(tag, sizeof tag, "%s: one close warning", writer_name(writer));
@@ -801,6 +802,35 @@ test_failed_reopen_retries_at_the_next_call_end(void) {
     dsd_wav_test_fail_opens_after(-1);
     end_p25_call(&r, 102U);
     rc |= expect_true("slot 1 records again", r.opts->wav_out_f != NULL);
+    rc |= expect_int("nothing waits to reopen", r.opts->wav_out_reopen & 1, 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* B2: an NFM call's end leaves the slot files alone, and a slot whose reopen failed still retries at the next digital
+   call end. Main rotated slot 1's empty file at every NFM call end. */
+static int
+test_nfm_end_skips_the_slot_rotation(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_rotate");
+    setup_nfm(r.opts, r.state);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    SNDFILE* const slot_file = r.opts->wav_out_f;
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_true("the NFM end kept slot 1's file", r.opts->wav_out_f == slot_file);
+    rc |= expect_int("one recording published, two slot files open", count_dir(r.dir).files, 3);
+    dsd_wav_test_fail_opens_after(0);
+    end_p25_call(&r, 100U);
+    rc |= expect_true("a digital end rotates slot 1 (the reopen fails)", r.opts->wav_out_f == NULL);
+    rc |= expect_int("slot 1 waits to reopen", r.opts->wav_out_reopen & 1, 1);
+    dsd_wav_test_fail_opens_after(-1);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_true("an NFM end does not retry the slot", r.opts->wav_out_f == NULL);
+    end_p25_call(&r, 101U);
+    rc |= expect_true("the next digital end retries it", r.opts->wav_out_f != NULL);
     rc |= expect_int("nothing waits to reopen", r.opts->wav_out_reopen & 1, 0);
     rig_close(&r);
     return rc;
@@ -1980,6 +2010,7 @@ main(void) {
         rc |= test_close_failure_keeps_the_temp_file(writer);
     }
     rc |= test_failed_reopen_retries_at_the_next_call_end();
+    rc |= test_nfm_end_skips_the_slot_rotation();
     rc |= test_failed_static_open_keeps_the_running_recording();
     rc |= test_failed_raw_open_keeps_the_running_raw_wav();
     rc |= test_start_closes_handles_the_mode_does_not_cover();

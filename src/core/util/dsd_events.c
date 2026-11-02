@@ -511,6 +511,12 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         return;
     }
 
+    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
+       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
+    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
+        return;
+    }
+
     /* A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and a failed
        open marks the slot for the next one (issue #708). */
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {

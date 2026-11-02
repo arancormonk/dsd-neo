@@ -8884,7 +8884,8 @@ test_hold_does_not_override_stream_off(void) {
 }
 
 // Recordings the talkgroup policy never gates are never judged for the export either: a conventional NFM call (no
-// talkgroup) under the allow list, which would miss on every call, still exports.
+// talkgroup) under the allow list, which would miss on every call, is not blocked. Its recording belongs to the NFM
+// call (engine/analog_call.c), so the call's end rotates no slot file (issue #668).
 static int
 test_unjudged_recordings_export(void) {
     static dsd_opts opts;
@@ -8893,8 +8894,17 @@ test_unjudged_recordings_export(void) {
     static max_align_t wav_sentinel;
     stream_fixture(&opts, &state, event_history, &wav_sentinel);
     opts.trunk_use_allow_list = 1;
-    const int closes = run_stream_call(&opts, &state, 0U, DSD_SYNC_ANALOG, DSD_CALL_KIND_VOICE, 0U, 0U, 0U);
-    const int rc = expect_stream_close("NFM call under the allow list", closes, 1, 0U);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE, .observed_m = g_observed_m};
+    g_observed_m += 0.1;
+    int rc = expect_int("NFM call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("NFM call under the allow list: not blocked from the export",
+                     (int)event_history[0].Event_History_Items[0].stream_blocked, 0);
+    const int closes = g_close_wav_capture_count;
+    rc |= expect_int("NFM call end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("NFM call end: no slot recording closes", g_close_wav_capture_count - closes, 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
