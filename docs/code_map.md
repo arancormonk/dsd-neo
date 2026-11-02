@@ -9466,7 +9466,7 @@ Qt Quick frontend (`src/ui/qt`):
     every folder until it ends; an Idle report between a start's mark and its Starting changes nothing.
   - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
     `recordCalls`, `recordUnknownOnly`, `recordingLimitMb` and `analogMaxGapMs` (keys `recording/*`, portable; the limit
-    one of `recordingLimitChoices`, 1000 by default; the NFM pause hold any value 0..10000 the decoder takes, kept as it
+    one of `recordingLimitChoices`, 1000 by default; the analog pause hold any value 0..10000 the decoder takes, kept as it
     is when not one of `analogMaxGapChoices`, else 200, off, issue #756) map to `SessionArgPrefs`; the starter puts the
     folder `beginSession()` returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after
     `-t`/`-F` and before the extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra
@@ -9494,7 +9494,7 @@ Qt Quick frontend (`src/ui/qt`):
     on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
-  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs)` sends the NFM pause hold
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs)` sends the analog pause hold
     (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756; none when negative, so the session keeps its own),
     unknown-only, then WAV start (a refused submission sends nothing after it), or WAV stop then unknown-only off, best
     effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps describing the stop, whose outcome
@@ -9511,7 +9511,7 @@ Qt Quick frontend (`src/ui/qt`):
     view's `pending_switch_id` decides while a switch is still applying: a start counts, a stop does not, so a second
     change behind a queued start is not lost) and are otherwise inert: they travel with the next Record calls on.
     `RecordingStatus` (`recording_status.{h,cpp}`, context property `recordingStatus`, refreshed every UI tick by
-    `UiController`) reads `recording_view` for QML: per-call, slot files, unknown-only, the NFM pause hold
+    `UiController`) reads `recording_view` for QML: per-call, slot files, unknown-only, the analog pause hold
     (`analogMaxGapMs`), static WAV, `storageNamed`, journal, the last command and its state ("pending" is Settings'
     "Applying..."; the hold's command reads "analogMaxGap"), failures by kind and the last one, and the bridge's
     refusal.
@@ -9533,7 +9533,7 @@ Qt Quick frontend (`src/ui/qt`):
     `RecordingStore::selectPath()` and `releaseSelection()`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
-    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); NFM pause hold
+    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
     (issue #756) is a ChoiceSheet of `analogMaxGapChoices` that goes live through `setAnalogRecordMaxGap()`, disabled
     and travelling with Record calls the same way; it shows the preference, as the switches do, any value as itself
     (`Util.pauseHoldText()`). A hold in the app's Extra decoder arguments wins at every start
@@ -11963,7 +11963,7 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     decided on the same samples. Reconciliation runs first on every block and tick, and again right after a hold begins:
     a held call ends when the hold is off (per-call recording stopped included) or its gap is over the max gap (equal
     still joins), so a live change (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, API `analog_record_max_gap_set`, the
-    terminal's Recording & logs > WAV files > `NFM pause hold...` row) applies at the next block or tick and never
+    terminal's Recording & logs > WAV files > `Analog pause hold...` row) applies at the next block or tick and never
     reopens an ended call. A RECEPTION block resumes a held call unless its identity is confirmed different (known
     against known, `dsd_receive_identity_changed()`), which ends it and begins a new call with the block. A resumed call
     writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short

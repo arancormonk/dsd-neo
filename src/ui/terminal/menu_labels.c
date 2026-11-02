@@ -1220,15 +1220,16 @@ lbl_per_call_wav(const void* vctx, char* b, size_t n) {
     return b;
 }
 
-/* The NFM max gap (issue #756): Off at 200 ms or less, the carrier's own hangover, which joins no pause. */
+/* The analog pause hold (issue #756; NFM and AM, #667): Off at 200 ms or less, the carrier's own hangover, which joins
+   no pause. */
 const char*
 lbl_analog_record_max_gap(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
     const int ms = (c && c->opts) ? c->opts->analog_record_max_gap_ms : 0;
     if (ms > DSD_ANALOG_CARRIER_HANGOVER_MS) {
-        DSD_SNPRINTF(b, n, "NFM pause hold... [%d ms]", ms);
+        DSD_SNPRINTF(b, n, "Analog pause hold... [%d ms]", ms);
     } else {
-        DSD_SNPRINTF(b, n, "NFM pause hold... [Off]");
+        DSD_SNPRINTF(b, n, "Analog pause hold... [Off]");
     }
     return b;
 }

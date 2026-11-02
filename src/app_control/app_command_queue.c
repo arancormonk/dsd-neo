@@ -8064,9 +8064,9 @@ ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const st
     return UI_CMD_APPLY_COMPLETED;
 }
 
-/* The NFM max gap (issue #756): the analog call reconciles a held call with the value on its next block or tick, so a
-   change applies there (lowered below the pause so far, or turned off, it ends the call at its last audio). A value out
-   of range is refused as typed, never clamped, as the CLI and INI refuse it. */
+/* The analog pause hold (issue #756; NFM and AM, #667): the analog call reconciles a held call with the value on its
+   next block or tick, so a change applies there (lowered below the pause so far, or turned off, it ends the call at its
+   last audio). A value out of range is refused as typed, never clamped, as the CLI and INI refuse it. */
 static int
 ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t ms = 0;
@@ -8074,15 +8074,15 @@ ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const 
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     if (ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
-        ui_set_toast(state, 5, "Refused: NFM pause hold must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
+        ui_set_toast(state, 5, "Refused: Analog pause hold must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
                      (long)ms);
         return UI_CMD_APPLY_FAILED;
     }
     opts->analog_record_max_gap_ms = (int)ms;
     if (ms > DSD_ANALOG_CARRIER_HANGOVER_MS) {
-        ui_set_toast(state, 3, "Applied: NFM pause hold -> %d ms", (int)ms);
+        ui_set_toast(state, 3, "Applied: Analog pause hold -> %d ms", (int)ms);
     } else {
-        ui_set_toast(state, 3, "Applied: NFM pause hold -> Off");
+        ui_set_toast(state, 3, "Applied: Analog pause hold -> Off");
     }
     return UI_CMD_APPLY_COMPLETED;
 }

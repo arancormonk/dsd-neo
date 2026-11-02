@@ -1553,7 +1553,8 @@ test_max_gap_set_applies_and_reports(void) {
     rc |= expect_int("max gap applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
     rc |= expect_int("the max gap is set", r.opts->analog_record_max_gap_ms, 2000);
     rc |= expect_int("the view shows it", v.analog_max_gap_ms, 2000);
-    rc |= expect_true("the toast names the value", strstr(r.state->ui_msg, "2000 ms") != NULL);
+    rc |= expect_true("the toast names the setting and the value",
+                      strstr(r.state->ui_msg, "Applied: Analog pause hold -> 2000 ms") != NULL);
     rc |= expect_int("recording itself stays off", v.mode, DSD_APP_RECORDING_MODE_OFF);
 
     static const int32_t k_refused[] = {-1, 10001, INT32_MIN, INT32_MAX};
@@ -1567,7 +1568,7 @@ test_max_gap_set_applies_and_reports(void) {
         DSD_SNPRINTF(tag, sizeof tag, "%ld changes nothing", (long)k_refused[i]);
         rc |= expect_int(tag, r.opts->analog_record_max_gap_ms, 2000);
         DSD_SNPRINTF(tag, sizeof tag, "%ld says why", (long)k_refused[i]);
-        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused") != NULL && strstr(r.state->ui_msg, "10000") != NULL);
+        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused: Analog pause hold must be 0..10000 ms") != NULL);
     }
     rc |= expect_int("the view still shows it", view_now().analog_max_gap_ms, 2000);
 
@@ -1576,7 +1577,7 @@ test_max_gap_set_applies_and_reports(void) {
     rc |= expect_int("10000 applies", r.opts->analog_record_max_gap_ms, 10000);
     (void)set_max_gap(&r, 150);
     rc |= expect_int("150 is stored as given", r.opts->analog_record_max_gap_ms, 150);
-    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "Off") != NULL);
+    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "Applied: Analog pause hold -> Off") != NULL);
     (void)set_max_gap(&r, 0);
     v = view_now();
     rc |= expect_int("0 applies", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
