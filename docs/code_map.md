@@ -9743,10 +9743,12 @@ Qt Quick frontend (`src/ui/qt`):
     part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
-    first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`), so it
-    happens once; a store lost alone is reseeded from the rows, each with its text's digest, and re-reads nothing); a
-    row saved by an older build has none and loads with an unknown site and channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its
-    field loads as unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
+    first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`; when the
+    background tap reads it, its digest goes through the spill as a `settled` line, `settledSeenLine()`, which the next
+    fold gives the model's entry), so it happens once; a store lost alone is reseeded from the rows, each with its
+    text's digest, and re-reads nothing); a row saved by an older build has none and loads with an unknown site and
+    channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its field loads as
+    unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
     `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only

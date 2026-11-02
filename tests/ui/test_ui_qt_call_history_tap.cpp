@@ -21,7 +21,9 @@
  * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. A read that fails
  * partway keeps the spill whole for the next fold. A session that changes while the tap runs hidden hands it off and
  * starts it again: the old session's calls keep its attribution, the new session's take theirs. A spilled row keeps
- * its site and call channel (issue #799), within the spill's size per row. The deliberate failures' warnings are
+ * its site and call channel (issue #799), within the spill's size per row. A site text digest an older build's seen
+ * entry takes from the tap's read reaches the seen store through the spill, so a text that changes alone after it is
+ * read again at the next launch (issue #40). The deliberate failures' warnings are
  * counted, not printed. */
 
 #include <QByteArray>
@@ -30,6 +32,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -729,6 +732,91 @@ test_spill_with_site_under_size_cap(void) {
     expect("site: a row with the longest DMR texts stays within the spill's size", lines > 0 && bytes / lines <= 1536);
 }
 
+/* Issue #40: a Tier III site of the reporter's network (Large, raw NET 1, SITE 1) under @p text: the standard text or
+ * the one naming Capacity Max carry the same raw parts. */
+dsd_received_identity
+t3_large_site(const char* text) {
+    dsd_received_identity site = {};
+    site.family = DSD_RXID_FAMILY_DMR;
+    site.dmr_trunk = DSD_RXID_DMR_TRUNK_TIER3;
+    site.valid = DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT;
+    site.dmr_net = 1U;
+    site.dmr_site = 1U;
+    site.dmr_t3_model = 2U;
+    DSD_SNPRINTF(site.dmr_site_text, sizeof(site.dmr_site_text), "%s", text);
+    return site;
+}
+
+/* The site text digest each entry of the seen store records, by key (-1 when it records none). */
+QHash<QString, qint64>
+seen_digests(void) {
+    QHash<QString, qint64> digests;
+    for (const auto& value : dsd_qt::json_store_load_array("call_history_seen.json")) {
+        const QJsonObject entry = value.toObject();
+        digests.insert(entry.value(QLatin1String("key")).toString(),
+                       entry.contains(QLatin1String("stx")) ? entry.value(QLatin1String("stx")).toInteger() : -1);
+    }
+    return digests;
+}
+
+/* A seen entry an older build stored has no site text digest. When the background tap is the first to read its row,
+ * the digest it takes reaches the seen store through the spill, without the row read again: a text that changes alone
+ * after that (the call's reacquired segment naming Capacity Max) re-reads the row at the next launch rather than being
+ * taken silently again. */
+void
+test_tap_saves_a_settled_site_text_digest(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754846000;
+    const char standard[] = "TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101";
+    const char capmax[] = "TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS 2101";
+    decoder.commit(0, 37001U, 701U, when);
+    decoder.siteNewest(0, t3_large_site(standard), DSD_CALL_CHANNEL_LPCN, 38U);
+    decoder.publish();
+    {
+        CallHistoryModel model;
+        gui_ingest(model);
+        expect("digest: the call lands", model.count() == 1);
+    } // destructor flushes the stores
+    QJsonArray older = dsd_qt::json_store_load_array("call_history_seen.json");
+    for (int i = 0; i < older.size(); i++) {
+        QJsonObject entry = older.at(i).toObject();
+        entry.remove(QLatin1String("stx"));
+        older.replace(i, entry);
+    }
+    expect("digest: an older build's seen store saved",
+           older.size() == 1 && dsd_qt::json_store_save_array("call_history_seen.json", older));
+
+    {
+        CallHistoryModel model;
+        start_tap(model);
+        set_app_state(Qt::ApplicationSuspended);
+        model.waitForBackgroundPollForTest();
+        expect("digest: only the background tap read the ring", model.count() == 1 && spill_lines() == 0);
+    } // the tap stops with the model and writes what it holds
+    expect("digest: the tap spilled the digest it took, and no row", spill_lines() == 1);
+
+    /* The text changes alone while the app is down. */
+    decoder.siteNewest(0, t3_large_site(capmax), DSD_CALL_CHANNEL_LPCN, 38U);
+    decoder.state->event_history_s[0].commit_rev++;
+    decoder.state->event_history_s[0].revision++;
+    decoder.publish();
+    set_app_state(Qt::ApplicationActive);
+    CallHistoryModel relaunched;
+    expect("digest: the relaunch logs nothing again", relaunched.count() == 1);
+    relaunched.saveNow();
+    settle_save(relaunched);
+    const QHash<QString, qint64> digests = seen_digests();
+    expect("digest: the seen store has the digest the tap took",
+           digests.size() == 1 && digests.constBegin().value() >= 0);
+    gui_ingest(relaunched);
+    expect("digest: the text changed since is read",
+           relaunched.count() == 1
+               && relaunched.data(relaunched.index(0), CallHistoryModel::SiteTextRole).toString()
+                      == QString::fromUtf8("DMR \xC2\xB7 TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 "
+                                           "Site 1 \xC2\xB7 SYS 2101 \xC2\xB7 LPCN 38"));
+}
+
 /* A spill line as the tap writes one (CallHistoryModel::spillLine()) for a row of @p kind first read on @p slot of
  * ring 0x708 at push stamp @p seq, 4 s long; with @p again, the tap judged it heard again. */
 QByteArray
@@ -1148,6 +1236,7 @@ main(int argc, char** argv) {
     test_session_change_while_hidden();
     test_session_fields_change_together_while_hidden();
     test_tap_attributes_by_row_stamp();
+    test_tap_saves_a_settled_site_text_digest();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

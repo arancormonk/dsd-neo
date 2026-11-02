@@ -1120,6 +1120,9 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         if (verdict == SeenSettled && walk.seenSettled != nullptr) {
             *walk.seenSettled = true;
         }
+        if (verdict == SeenSettled && walk.settledKeys != nullptr) {
+            walk.settledKeys->append(key);
+        }
         if (verdict == SeenUnchanged || verdict == SeenSettled) {
             continue;
         }
@@ -2807,6 +2810,8 @@ CallHistoryModel::foldSpillLine(const QByteArray& line, bool cleared, quint64* t
     const QString key = obj.value(QLatin1String("key")).toString();
     const QJsonObject rowObj = obj.value(QLatin1String("row")).toObject();
     if (key.isEmpty() || rowObj.isEmpty()) {
+        // No row: at most a seen entry the tap settled (settledSeenLine()).
+        foldSettledSeen(key, obj, folded);
         return false;
     }
     const Row row = row_from_json(rowObj);
@@ -2869,6 +2874,33 @@ CallHistoryModel::pruneSeenWhileFolding() {
         }
     }
     m_noticeTwinsTaken.intersect(recorded);
+}
+
+void
+CallHistoryModel::foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded) {
+    if (key.isEmpty() || !line.value(QLatin1String("settled")).toBool()) {
+        return;
+    }
+    // Only an entry still without a digest takes it: one this model read since knows the text as it is now, and an
+    // entry it no longer has holds nothing to settle. No row is read again.
+    const SeenState seen = seenEntryFromJson(line.value(QLatin1String("seen")).toObject());
+    const auto entry = m_seen.find(key);
+    if (!seen.siteTextKnown || entry == m_seen.end() || entry->siteTextKnown) {
+        return;
+    }
+    entry->siteText = seen.siteText;
+    entry->siteTextKnown = true;
+    *folded = true; // the seen store is owed a save
+}
+
+QByteArray
+CallHistoryModel::settledSeenLine(const QString& key, const SeenState& seen) {
+    QJsonObject obj;
+    obj.insert(QLatin1String("v"), 1);
+    obj.insert(QLatin1String("key"), key);
+    obj.insert(QLatin1String("seen"), seenEntryToJson(seen));
+    obj.insert(QLatin1String("settled"), true);
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
 }
 
 QByteArray

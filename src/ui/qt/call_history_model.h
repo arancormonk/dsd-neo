@@ -585,10 +585,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         SeenMap* seen = nullptr;
         qint64 session = 0;
         QString sessionLabel;
-        QString systemUid;              // the attribution uid, empty unless the session is single-system
-        bool cleared = false;           // the clear mark covers this ring...
-        qulonglong clearedThrough = 0U; // ...up to this push stamp of the walked slot
-        bool* seenSettled = nullptr;    // set when a seen entry changed with nothing to ingest (SeenSettled)
+        QString systemUid;                     // the attribution uid, empty unless the session is single-system
+        bool cleared = false;                  // the clear mark covers this ring...
+        qulonglong clearedThrough = 0U;        // ...up to this push stamp of the walked slot
+        bool* seenSettled = nullptr;           // set when a seen entry changed with nothing to ingest (SeenSettled)
+        QList<QString>* settledKeys = nullptr; // the keys of those entries, for the background tap to spill
     };
 
     /** @brief noteSeen() verdicts. */
@@ -705,6 +706,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static SeenState seenEntryFromJson(const QJsonObject& obj);
     /** @brief One spill line (a JSON object and its newline) for a row the background tap found. */
     static QByteArray spillLine(const FreshRow& fresh);
+    /**
+     * @brief One spill line for a seen entry the background tap settled (SeenSettled): its key and entry, no row.
+     *
+     * The tap's seen map is a copy that its stop discards, so this is how the site text digest an older build's entry
+     * took reaches the seen store. A build that predates it skips the line (no row).
+     */
+    static QByteArray settledSeenLine(const QString& key, const SeenState& seen);
     /** @brief Bound @p seen once it is well past what the ring could resurrect. */
     static void pruneSeenMap(SeenMap& seen);
 
@@ -748,6 +756,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * the ring whose twins taken are restored, and @p folded is set when the line folded. @return whether rows
      * changed. */
     bool foldSpillLine(const QByteArray& line, bool cleared, quint64* twinsRing, bool* folded);
+    /** @brief For a settled spill @p line (settledSeenLine()), give the seen entry @p key the site text digest it
+     * carries, if the entry has none; any other line is passed over. */
+    void foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded);
     /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
     bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
     /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
