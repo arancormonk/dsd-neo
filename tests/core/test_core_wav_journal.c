@@ -1225,6 +1225,58 @@ test_nfm_start_is_its_first_block(void) {
     return rc;
 }
 
+/* One NFM block of 960 at 48 kHz that ends now: @p input, eligible from @p eligible_from (silent before it). */
+static void
+nfm_block_ending_now(dsd_opts* opts, dsd_state* state, int input, size_t eligible_from) {
+    static float block[960];
+    for (size_t i = 0; i < 960; i++) {
+        block[i] = i < eligible_from ? 0.0f : 3000.0f;
+    }
+    const dsd_analog_call_block call = {
+        .samples = block,
+        .heard = block,
+        .count = 960,
+        .sample_rate = 48000,
+        .input = input,
+        .eligible_from = eligible_from,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+        .wall_end_s = dsd_decode_now_realtime_s(),
+    };
+    dsd_engine_analog_call_block(opts, state, &call);
+}
+
+/* Issue #668: a recording that opens with a pre-roll starts where its first sample was heard: 100 ms of pre-roll
+   before a block that ends 50 ms into a second began in the second before. A block whose tone turned allowed inside it
+   (its first 10 ms not) drops the pre-roll, and the recording starts at the eligible point: 5 ms into the second the
+   block ended in, where its whole span reaches back into the one before. */
+static int
+test_nfm_start_moves_back_by_its_preroll(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_preroll");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_preroll_ms = 200;
+    submit(&r, DSD_APP_CMD_WAV_START);
+    for (int i = 0; i < 5; i++) {
+        clock_at_ms(k_t0 + 39, 930 + (uint64_t)i * 20);
+        nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    }
+    clock_at_ms(k_t0 + 40, 50);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 0);
+    clock_at(k_t0 + 41);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 49, 990);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    clock_at_ms(k_t0 + 50, 15);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 480);
+    clock_at(k_t0 + 51);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("the pre-roll's first sample", nfm_start(0), (long long)k_t0 + 39);
+    rc |= expect_int("an unclean opening's eligible point", nfm_start(1), (long long)k_t0 + 50);
+    rig_close(&r);
+    return rc;
+}
+
 /* The start a recorder stamped itself (the NFM call, issue #668) is the one the journal and the rdio-scanner sidecar
    both record, over the open time and the row's start; with none, both keep the later of the two. */
 static int
@@ -1729,6 +1781,7 @@ main(void) {
     rc |= test_start_across_midnight();
     rc |= test_start_on_the_replay_clock();
     rc |= test_nfm_start_is_its_first_block();
+    rc |= test_nfm_start_moves_back_by_its_preroll();
     rc |= test_stamped_start_is_the_journal_and_sidecar_start();
     rc |= test_torn_tail_gets_a_newline();
     rc |= test_write_failure_latches_the_journal_off();

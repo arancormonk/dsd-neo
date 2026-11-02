@@ -1514,6 +1514,92 @@ test_folder_change_while_nfm_held(void) {
     return rc;
 }
 
+/* Issue #668: @p blocks clean blocks after the NFM carrier went, its tone allowed, with no call running: they fill the
+   pre-roll. */
+static void
+nfm_quiet(rig* r, int blocks) {
+    static float heard[960];
+    for (int i = 0; i < 960; i++) {
+        heard[i] = 777.0f;
+    }
+    r->state->analog_rx.carrier_open = 0;
+    for (int i = 0; i < blocks; i++) {
+        dsd_test_analog_call_feed(r->opts, r->state, heard, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+    }
+    r->state->analog_rx.carrier_open = 1;
+}
+
+/* What happens between the pre-roll filling and the reception after it. */
+enum {
+    PREROLL_NOTHING,
+    PREROLL_FOLDER_MOVED,   /* a config moves the per-call folder */
+    PREROLL_STOP_START,     /* P then p, drained together */
+    PREROLL_CONFIG_OFF_ON,  /* a config turns per-call recording off, a start turns it back on, drained together */
+    PREROLL_SETTING_UNDONE, /* the pre-roll set to 0 and back to 200 at apply, as its command does */
+    PREROLL_FOLDER_FAILED,  /* a config whose new folder does not open */
+    PREROLL_CASES,
+};
+
+static void
+preroll_transition(rig* r, int what, const char* other) {
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = what == PREROLL_CONFIG_OFF_ON ? 0 : 1;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s",
+                 what == PREROLL_CONFIG_OFF_ON ? r->dir : other);
+    if (what == PREROLL_FOLDER_MOVED || what == PREROLL_FOLDER_FAILED || what == PREROLL_CONFIG_OFF_ON) {
+        dsd_wav_test_fail_opens_after(what == PREROLL_FOLDER_FAILED ? 0 : -1);
+        (void)dsd_app_command_apply_config(&cfg);
+    }
+    if (what == PREROLL_STOP_START) {
+        submit(DSD_APP_CMD_WAV_STOP);
+    }
+    if (what == PREROLL_STOP_START || what == PREROLL_CONFIG_OFF_ON) {
+        submit(DSD_APP_CMD_WAV_START);
+    }
+    (void)drain(r);
+    dsd_wav_test_fail_opens_after(-1);
+    if (what == PREROLL_SETTING_UNDONE) {
+        r->opts->analog_record_preroll_ms = 0;
+        dsd_engine_analog_call_preroll_changed(r->opts, r->state);
+        r->opts->analog_record_preroll_ms = 200;
+        dsd_engine_analog_call_preroll_changed(r->opts, r->state);
+    }
+}
+
+/* Issue #668: every recording transition that commits drops the pre-roll, with no recording open: a folder change, a
+   stop and start inside one drain (per-call recording is on again by the next block, with the same pre-roll), a
+   config apply, and the setting turned off and on at apply. The next reception's recording holds it alone. A
+   transition that fails changes nothing, so the pre-roll stays and opens that recording. */
+static int
+test_preroll_across_recording_transitions(void) {
+    int rc = 0;
+    for (int what = 0; what < PREROLL_CASES; what++) {
+        rig r;
+        char other[DSD_TEST_PATH_MAX];
+        char tag[96];
+        rc |= rig_open(&r, "dsdneo_rec_preroll");
+        rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_preroll_b") != NULL);
+        setup_nfm(r.opts, r.state);
+        r.opts->analog_record_preroll_ms = 200;
+        submit(DSD_APP_CMD_WAV_START);
+        (void)drain(&r);
+        nfm_quiet(&r, 3);
+        preroll_transition(&r, what, other);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: per-call recording on", what);
+        rc |= expect_int(tag, r.opts->dmr_stereo_wav, 1);
+        nfm_block(r.opts, r.state);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        const int kept = what == PREROLL_NOTHING || what == PREROLL_FOLDER_FAILED;
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the recording", what);
+        rc |= expect_int(tag, take_nfm_frames(what == PREROLL_FOLDER_MOVED ? other : r.dir), kept ? 4 * 960 : 960);
+        rig_close(&r);
+        remove_folder(other);
+    }
+    return rc;
+}
+
 static int
 set_max_gap(rig* r, int32_t ms) {
     const int queued = dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ms);
@@ -1911,6 +1997,7 @@ main(void) {
     rc |= test_stop_and_start_while_nfm_held();
     rc |= test_nfm_hold_off_without_recording();
     rc |= test_folder_change_while_nfm_held();
+    rc |= test_preroll_across_recording_transitions();
     rc |= test_max_gap_set_applies_and_reports();
     rc |= test_max_gap_set_while_nfm_held();
     rc |= test_full_segment_table_is_reported_once_per_run();

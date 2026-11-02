@@ -243,7 +243,8 @@ Generated (do not edit/commit):
     analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
     `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open. Under the CTCSS/DCS receive policy (issue
     #527) the probe is only traffic the policy passes (`dsd_analog_tone_gate_passes()` in `runtime/analog_tones.c`:
-    OFF or ALLOWED, the one rule the monitor sink and its -Y hangtime stamp in `dsd_symbol.c` follow too), and
+    OFF or ALLOWED, the one rule the monitor sink and its -Y hangtime stamp in `dsd_symbol.c` follow too, and the NFM
+    recording's pre-roll in `engine/analog_call.c`, which takes only blocks that stayed under it throughout), and
     `dsd_scan_analog_tone_gate()` reads the policy's verdict on the carrier heard (OFF without one). A PENDING carrier
     is no activity: it holds the row only while it lasts, with no window, and leaves every clock where it was, so a
     check its carrier ends before a verdict adds no tail and short bursts the policy never passes cannot park a
@@ -4659,7 +4660,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   converter restart inside a write that no mark announced (a new rate, a moved reception, the first conversion, or
   history the per-call WAV's sink-rate writes passed by). A per-call WAV write at the sink rate counts as written: the
   lane runs on unbroken, and its converter starts from silence at its next conversion. Asking for a generation
-  allocates the sinks' state, so breaks are counted at every rate from then on. `analog_sink.c` stays apart from `analog_audio.c`, which `DSP_SYMBOL_REPLAY` replaces
+  allocates the sinks' state, so breaks are counted at every rate from then on; only the engine's NFM pre-roll asks,
+  and only with a pre-roll on, reading the CALL_WAV lane's generation before and after each append (a move inside a
+  write is a restart no mark announced). `analog_sink.c` stays apart from `analog_audio.c`, which `DSP_SYMBOL_REPLAY` replaces
   with its own copy. The `-6` WAV is written at int16 scale (issue #643): `symbol_write_raw_wav_block()` scales the
   native and the converted path alike (`dsd_analog_sink_write()`'s `gain`, which the monitor passes as 1.0) by
   `dsd_analog_audio_int16_scale()` of the block's source, 32924 for RTL monitor audio at its 1/pi output scale and 1.0
@@ -11813,20 +11816,49 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each as a `dsd_analog_call_block`
   descriptor with its input (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a
   RECEPTION block continues or begins the call, and a BREAK ends it. The state splits the logical call (`active`, `held`, the gap counters,
-  `last_m`, `boundaries_seen`, the identity) from its recording segment (`analog_call_recording`: file, folder, open
-  stamp, `started`, `spans_pause`), which a stop or folder change closes while the call goes on. The extension exists
-  from the first block, call or not, since `boundaries_seen` is kept for every block.
+  `last_m`, `boundaries_seen`, the identity, the pre-roll ring and what a hold put in it) from its recording segment
+  (`analog_call_recording`: file, folder, open stamp, `started`, `spans_pause`), which a stop or folder change closes
+  while the call goes on. The extension exists from the first block, call or not, since `boundaries_seen` is kept for
+  every block.
   - Begin (issue #668, B1): a RECEPTION block begins a call only when it carries `qualified_carrier` (a tap read past
     the block's tone-eligible point found the carrier itself). A block that holds only the carrier's 200 ms hangover,
     as when a short burst's tone verdict lands after the carrier went, begins nothing: no row, no file (main published
     an all-zero WAV and an NFM row for it). Such a block still goes on with a call already running, held or not; a
     new identity's end (D4) does not begin a call on one either.
-  - Recording start (issue #668): `analog_call_recording_start()` takes the opening block's `wall_end_s` less its span,
-    floored once to whole seconds (with 1 us of slack for the clock's double rounding), into `rec.started` and
+  - Recording start (issue #668): `analog_call_recording_start()` takes the opening block's `wall_end_s` less the part
+    of the block the file keeps and the pre-roll written before it, floored once to whole seconds (with 1 us of slack for the clock's double rounding), into `rec.started` and
     `rec.opened`; no clock is read, so a slow disk or a recording closed first does not move it. The close passes it
     to `close_and_publish_call_wav_ex()`, so the journal and the sidecar file the recording at its first sample, before
     the row's start (the row starts at the block's end). A block with no wall time (only with `-P` off) keeps the old
     open stamp, read after the open.
+  - Pre-roll (issue #668, `opts->analog_record_preroll_ms`, only while `-P` records; 0 is off and records what main
+    did, byte for byte). `engine/analog_preroll.{c,h}` is the ring: int16 at 48 kHz, `ms * 48` samples, allocated by
+    `analog_call_preroll_sync()` at the first block that needs it, freed with `-P` or the setting off and sized anew
+    when the setting changes; no allocation per block, clears reset two indexes. Without memory there is no pre-roll
+    (one log line), never a failed call. It is filled from `heard` (the block before the sink gate) of every clean
+    HOLDABLE block (`eligible_from == 0`; D2: a block whose tone was PENDING or REJECTED at any read never enters it,
+    the OFF/ALLOWED rule above), call or no call, through the CALL_WAV lane's converter (`dsd_analog_sink_write()` with
+    the ring as writer), so the lane stays continuous from the ring into the file. The ring and the lane share one
+    fate: `analog_call_preroll_invalidate()` drops the ring and ends the lane (`dsd_analog_sink_end_call()`), and the
+    ring keeps the lane's continuity generation (`dsd_analog_sink_generation()`), read before each append and release
+    and after each append, so any lane break drops the ring (a restart inside an append keeps only that block). It is
+    dropped by a HOLDABLE block that is not clean, a BREAK, a block with a moved epoch, a RECEPTION that begins no call
+    (B1), every call end (`analog_call_finish()` clears it before the block that caused the end is looked at, so an
+    allowed HOLDABLE block that ended the call starts the ring afresh), `dsd_engine_analog_call_end()` with no call, the
+    tick with no call on a moved epoch, `dsd_engine_analog_call_stop_recording()` (every recording transition that
+    commits: P, p, a menu or config change, a folder change, file open or not; a transition that fails never calls it),
+    and `dsd_engine_analog_call_preroll_changed()` (the setting applied, at once, so `200 -> 0 -> 200` inside one drain
+    drops it too). Release, on a RECEPTION block that heard its carrier (`qualified_carrier`): a new recording (a new
+    call, or a new segment after a stop or folder change) writes the ring, then the block from `heard` (no ramp-in);
+    an opening block that is not clean drops the ring instead and the file starts at its `eligible_from`, the silenced
+    start trimmed, and the start stamp counts from there. A held call resumed into the file that spans its pause, with
+    the lane unbroken since the hold began (`hold_buffering`), writes `held_frames` (what the lane made of the held
+    blocks, those fallen out of the ring too) as silence up to the newest the ring kept, then those, then the block
+    from `heard`: the file equals one conversion frame for frame (at 44.1 kHz three receptions, four held blocks and
+    three receptions are 10,449 frames). Any drop inside a hold, or a resumed block that is not a clean reception of its
+    carrier, ends the buffering for that hold, and the resume writes `owed48` zeros and starts the lane over, exactly as
+    without a pre-roll. A RECEPTION block written into a call consumes the ring (it empties; the lane's history is the
+    file's).
   - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
     It is a recording setting: it holds a call only while per-call recording is on (`opts->dmr_stereo_wav`, `-P`), and
     is off otherwise (`analog_call_max_gap48()`). With the hold off a HOLDABLE block ends the call, as every
@@ -11843,13 +11875,13 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     against known, `dsd_receive_identity_changed()`), which ends it and begins a new call with the block. A resumed call
     writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short
     write's latch stops the rest), only into a file written before the pause (`spans_pause`; a file opened after a stop
-    or folder change starts at the resumed block). The CALL_WAV lane starts over at the resumed block on its own, as no
-    held block was written to it. The tick ends a call, held or not, first on a moved epoch (B6 below), then on
+    or folder change starts at the resumed block). Without a pre-roll the CALL_WAV lane starts over at the resumed block
+    on its own, as no held block was written to it (with one, see Pre-roll). The tick ends a call, held or not, first on a moved epoch (B6 below), then on
     detection off, a REJECTED tone or a boundary not current; with the hold off also on a closed carrier or a tone
     check; and on the stale deadline. With the hold on a closed carrier waits for the next block.
     `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()`
     (every scan leave, retune, input switch, mode change, Stop, finalize) ends a held call at once without the pause;
-    `dsd_engine_analog_call_stop_recording()` closes the segment only. A held call then ends at its next block or tick
+    `dsd_engine_analog_call_stop_recording()` closes the segment (and drops the pre-roll) only. A held call then ends at its next block or tick
     if recording stays off; a folder change (stop and start inside one recording transition) keeps it held, and the next
     file starts at the resumed block.
   - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
@@ -11867,9 +11899,14 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     as the last block's, so the first block after the reset is dropped as well. Tests: `CORE_RECEIVE` (the hold at
     48 kHz, 8192 Hz and 44100 Hz, tone checks, identity, ends, tick order, live changes, the hold off without per-call
     recording, the default's payloads, the write latch, teardown, B1, B6 on a block and on the tick, issue #668's B1,
-    B5 and B7), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its first block),
-    `APP_CONTROL_RECORDING` (a stop while held ends the call, a folder change keeps it; no hold without per-call
-    recording; the max gap command's states, refusals, and raising, lowering and turning it off while held),
+    B5 and B7; the pre-roll: a new recording at 48 kHz, 44.1 kHz, 8192 Hz and an approximated ratio against one
+    continuous conversion, overflow, resumes as one conversion, a broken hold or unclean resume byte for byte as
+    pre-roll 0, lane breaks, every drop with no call, the tick, every call end at 44.1 kHz, the trimmed opening, no
+    work while off, no memory), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its first block,
+    moved back by its pre-roll or to an unclean opening's eligible point), `APP_CONTROL_RECORDING` (a stop while held
+    ends the call, a folder change keeps it; no hold without per-call recording; the max gap command's states,
+    refusals, and raising, lowering and turning it off while held; the pre-roll dropped by a folder change, P and p in
+    one drain, a config apply and the setting undone at apply, kept by a failed transition),
     `APP_COMMAND_QUEUE` (the command waits while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`,
     `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`; end to end through the real engine,
     `DECODE_PCM_ANALOG_RECORD_GAP_*` (files, journal links and rows per max gap; a call still held when the input ends
