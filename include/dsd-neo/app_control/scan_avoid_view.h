@@ -13,10 +13,10 @@
  * and the control API ask: which store, how many entries, whether the copy is whole enough to act on, and which
  * entries, each with the identity DSD_APP_CMD_SCAN_AVOID_REMOVE takes and a label.
  *
- * The summary costs a constant amount (no walk of either store), so a frontend reads it every frame and rebuilds its list only when the
- * summary's key moves (dsd_app_scan_avoid_summary_same_key()). The list build and the raw collection walk the store
- * once and allocate; they run on the caller's thread, the raw collection being the half the API feed runs on the
- * decoder thread (no formatting there).
+ * The summary costs a constant amount (no walk of either store), so a frontend reads it every frame and rebuilds its
+ * list only when the summary's key moves (dsd_app_scan_avoid_summary_same_key()). The list build and the raw
+ * collection walk the store once and allocate; they run on the caller's thread, the raw collection being the half the
+ * API feed runs on the decoder thread (no formatting there).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SCAN_AVOID_VIEW_H_

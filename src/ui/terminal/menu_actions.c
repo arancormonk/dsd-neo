@@ -2225,9 +2225,16 @@ act_scan_avoid_list(void* v) {
         return;
     }
     dsd_app_scan_avoid_list list;
-    if (dsd_app_scan_avoid_list_build(c->opts, c->state, &list) != 0 || list.count > (size_t)INT_MAX) {
+    if (dsd_app_scan_avoid_list_build(c->opts, c->state, &list) != 0) {
         dsd_app_scan_avoid_list_free(&list);
         ui_statusf("Out of memory");
+        return;
+    }
+    /* The chooser counts its rows in an int; like the trunk-scan target loader's "Too many" refusal, a list past that
+       says so rather than showing part of it. */
+    if (list.count > (size_t)INT_MAX) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Too many avoided channels to list; Clear avoids still works");
         return;
     }
     if (!list.summary.available) {

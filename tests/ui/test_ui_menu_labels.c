@@ -230,7 +230,8 @@ test_predicates(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_int("scan rotation trunk scan", scan_rotation_active(&ctx), 1);
-    /* A paused scan has no rotation on air: hold, avoid and clear avoids are refused there (issue #671). */
+    /* A paused scan has no rotation on air: hold and avoid are refused there (issue #671). The list and Clear avoids
+       stay offered while avoids are left (issue #672 D3), below. */
     state.trunk_scan_paused = 1;
     rc |= expect_int("scan rotation paused trunk scan", scan_rotation_active(&ctx), 0);
     state.trunk_scan_paused = 0;
