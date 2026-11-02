@@ -5,8 +5,9 @@
 
 /*
  * The CTCSS table and its text (issue #522). The table is pinned value by value against the
- * published EIA/TIA 50-tone list and 150.0 Hz, the tone many radios offer as a 51st (issue #518
- * follow-up), so a transposed digit cannot hide behind a count check.
+ * 50 tones radios commonly offer (the 39 of TIA-603-E and 11 more) and 150.0 Hz, the tone many
+ * radios offer as a 51st (issue #518 follow-up), so a transposed digit cannot hide behind a count
+ * check.
  */
 
 #include <assert.h>
@@ -262,7 +263,7 @@ test_gate_passes(void) {
  * DCS (issue #523)
  * ---------------------------------------------------------------------------------------- */
 
-/* The standard 104-code set, as published (octal), ascending. */
+/* The 104 codes radios commonly offer (the 83 standard codes and 21 more), as published (octal), ascending. */
 static const int k_expected_dcs[] = {
     0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073, 0074, 0114, 0115,
     0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162, 0165, 0172, 0174, 0205, 0212, 0223,
@@ -272,7 +273,7 @@ static const int k_expected_dcs[] = {
     0627, 0631, 0632, 0654, 0662, 0664, 0703, 0712, 0723, 0731, 0732, 0734, 0743, 0754,
 };
 _Static_assert((int)(sizeof(k_expected_dcs) / sizeof(k_expected_dcs[0])) == DSD_DCS_CODE_COUNT,
-               "the expected DCS table lists every standard code");
+               "the expected DCS table lists every supported code");
 
 /*
  * The alias golden table: every supported code sent in inverted polarity is the signal of

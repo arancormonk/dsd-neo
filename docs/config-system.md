@@ -443,7 +443,8 @@ only. See `docs/radioreference-import.md`.
 
 A transmission the decoder loses and regains is one call, so it beeps `voice_start` once at the
 start and `voice_end` once at the end. The end alert is held for roughly half a second after sync
-is lost, since the call may still resume; a terminator alerts immediately.
+is lost, since the call may still resume; a terminator alerts immediately. Conventional analog (NFM or AM) calls sound
+no alert.
 
 **[recording] section:**
 | Key | Type | Description | Default |
@@ -472,7 +473,7 @@ unchanged. Applying a config in a running session changes it at once.
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a
 running session changes it from the next block of audio: a lower value, or off, ends an analog call already paused
 longer than that. The hold works only while `per_call_wav` is on; with it off, analog calls end as before. How pauses
-are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
+are counted, and the limits, are in `docs/cli.md`, "Pauses in an analog recording".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.

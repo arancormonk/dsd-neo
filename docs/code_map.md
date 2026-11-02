@@ -1408,9 +1408,9 @@ suite runs under this compiler.
     too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
     reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
     clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
-  - One NFM recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held call is one row
-    and one recording, published once and linked once. Its `start` is the first burst's, and its `duration_ms`
-    includes the silence written for the pause.
+  - One analog recording (NFM or AM) may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held
+    call is one row and one recording, published once and linked once. Its `start` is the first burst's, and its
+    `duration_ms` includes the silence written for the pause.
   - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
     escaped (quotes, backslashes, control characters, U+2028/U+2029; a byte that starts no UTF-8 character becomes
     U+FFFD). A reader skips a line that does not parse (a torn tail) and a record whose `v` it does not know. Every
@@ -1480,9 +1480,11 @@ suite runs under this compiler.
   staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
   (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
   row, a trunk-scan target's empty row), exports as before. Conventional analog calls, M17 and identities wider than
-  32 bits are never judged. Neither field is shown, persisted or part of the control API's row fingerprint; exports
-  already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`,
-  `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  32 bits are never judged. A conventional analog recording (NFM or AM) is not exported either way: its row has no
+  talkgroup to name an upload by, so `wav_close_export_rdio()` skips it, with no warning, and it stays a local WAV with
+  its journal link (`CORE_RECEIVE`). Neither field is shown, persisted or part of the control API's row fingerprint;
+  exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
+  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -1547,7 +1549,9 @@ suite runs under this compiler.
   land in the 48 kHz monitor stream; on UDP an alert goes to the digital port, never the analog one (base port + 2).
   Tests: `CORE_RECEIVE` (`test_analog_row_text`, `test_analog_mode_rows`), `CORE_CALL_ALERT_HISTORY`
   (`test_analog_call_sounds_no_alerts`, `test_digital_end_sounds_when_an_analog_call_takes_the_slot`,
-  `test_digital_call_after_an_analog_call_sounds_only_its_start`), `CORE_VOICE_CHAIN` (the alert's UDP port).
+  `test_digital_call_after_an_analog_call_sounds_only_its_start`), `CORE_VOICE_CHAIN` (the alert's UDP port),
+  `DECODE_IQ_ANALOG_NO_CALL_ALERT` (end to end: `-a` leaves `-o -` byte-identical and sends nothing to the UDP digital
+  port). The row text end to end: `DECODE_IQ_ANALOG_CTCSS_1000_ROW`, `_DCS_023N_ROW`, `_AM_ROW`, `_KERCHUNK_NO_ROW`.
 - Explicit BEGIN (issue #667; `call_state.c`, `dsd_events.c`). Two optional observation fields let the analog tracker
   begin a call it qualified late with what it saw first. `has_receive_seed` + `receive_seed`: on a BEGIN the seed is
   the identity the call is heard with, instead of the live publication (`call_state_observed_identity()`); a CONTINUE
@@ -2673,7 +2677,8 @@ suite runs under this compiler.
     and elsewhere it clears them; the frame sync's throttled UI publish calls it. Tests: `RUNTIME_SQUELCH`,
     `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
-    the standard 50-tone CTCSS table and 150.0 Hz in tenths of a hertz, index lookup and the
+    the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
+    lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
     the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_monitor_tap_active()`, the
     one answer to "does the receive tap run": the analog monitor of either kind, FM or AM, on PCM input, or on an RTL
@@ -2701,11 +2706,12 @@ suite runs under this compiler.
     list, off takes one or none, the parser refuses the rest with its entry-numbered reason; the tone-filter command and
     the Qt editor's inline message both ask it.
     `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
-    the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check bits;
+    the 104 codes radios commonly offer (the 83 standard codes and 21 more), `dsd_dcs_word()` (any 9-bit code's
+    23-bit Golay word: code, the fixed 100, 11 check bits;
     bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the signal
     in 23 received bits when some rotation, in either polarity, is a supported code's word), `dsd_dcs_canonical()` (the
-    alias rule: normal polarity first, then the lowest code, so every inverted standard code is named by its one normal
-    alias, D023I by D047N), `dsd_dcs_alias()` (the signal's other standard spelling, its one inverted code: D047I for
+    alias rule: normal polarity first, then the lowest code, so every inverted supported code is named by its one normal
+    alias, D023I by D047N), `dsd_dcs_alias()` (the signal's other supported spelling, its one inverted code: D047I for
     D023N) and the `D023N` / `DCS D023N / D047I` formatters, leading zeros always. A received code is labelled with both
     spellings, canonical first, because a receiver cannot tell which one a transmitter was set to. The DSP detector
     cannot link `dsd-neo_fec`, so runtime has its own encoder; `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against

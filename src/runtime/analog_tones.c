@@ -17,10 +17,10 @@
 #include <string.h>
 
 /*
- * The standard 50-tone EIA/TIA CTCSS table in tenths of a hertz, ascending, with 150.0 Hz, the
- * tone many radios offer as a 51st, in its place between 146.2 and 151.4 Hz. It sits 1.4 Hz from
- * 151.4 Hz, closer than any other two tones; the detector keeps the two apart with gates of half
- * that distance (src/dsp/analog_ctcss.c).
+ * The 50 CTCSS tones radios commonly offer (the 39 of TIA-603-E and 11 more) in tenths of a hertz,
+ * ascending, with 150.0 Hz, the tone many radios offer as a 51st, in its place between 146.2 and
+ * 151.4 Hz. It sits 1.4 Hz from 151.4 Hz, closer than any other two tones; the detector keeps the
+ * two apart with gates of half that distance (src/dsp/analog_ctcss.c).
  */
 static const uint16_t k_ctcss_tones_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
@@ -29,7 +29,7 @@ static const uint16_t k_ctcss_tones_tenths[] = {
 };
 
 _Static_assert(sizeof(k_ctcss_tones_tenths) / sizeof(k_ctcss_tones_tenths[0]) == DSD_CTCSS_TONE_COUNT,
-               "the CTCSS table holds the standard 50 tones and 150.0 Hz");
+               "the CTCSS table holds the 50 common tones and 150.0 Hz");
 
 int
 dsd_ctcss_tone_count(void) {
@@ -94,7 +94,8 @@ dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size) {
  * DCS (issue #523)
  * ---------------------------------------------------------------------------------------- */
 
-/* The standard 104-code DCS set, ascending, each code as its value (023 octal = 19). */
+/* The 104 DCS codes radios commonly offer (the 83 standard codes and 21 more), ascending, each code as its value
+ * (023 octal = 19). */
 static const uint16_t k_dcs_codes[] = {
     0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073, 0074, 0114, 0115,
     0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162, 0165, 0172, 0174, 0205, 0212, 0223,
@@ -105,7 +106,7 @@ static const uint16_t k_dcs_codes[] = {
 };
 
 _Static_assert(sizeof(k_dcs_codes) / sizeof(k_dcs_codes[0]) == DSD_DCS_CODE_COUNT,
-               "the DCS table holds exactly the standard 104 codes");
+               "the DCS table holds exactly the 104 common codes");
 
 /* Golay (23,12) generator x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1, bit i the coefficient of x^i. */
 #define DCS_GOLAY_GENERATOR 0xC75U

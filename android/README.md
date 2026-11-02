@@ -283,7 +283,7 @@ off ends a paused call at its last audio. Digital calls are not affected.
 - `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows
   the row disabled, with a line that says so, and turning Record calls on leaves the session's own hold alone. A saved
   system's own Extra decoder arguments win the same way, but Settings cannot see them. The details are in
-  [Pauses in an NFM recording](../docs/cli.md#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  [Pauses in an analog recording](../docs/cli.md#pauses-in-an-analog-recording---analog-record-max-gap-ms).
 
 ### Where the files are
 

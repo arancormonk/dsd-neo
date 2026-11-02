@@ -115,10 +115,10 @@ dsd_cli_usage_section_io(void) {
     printf(
         "  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
     printf("                 (Per Call works with everything now and doesn't require terminal frontend!)\n");
-    printf("                 (Also records conventional NFM transmissions, named by their service.)\n");
+    printf("                 (Also records conventional NFM and AM transmissions, named by their service.)\n");
     printf("      --wav-journal <file>  Append a JSON line for each per-call WAV published, discarded or failed\n");
     printf("      --record-unknown-only  Record only calls whose talkgroup has no row in the group list (-G)\n");
-    printf("      --analog-record-max-gap-ms <ms>  Keep an NFM call in one recording through pauses up to <ms>\n");
+    printf("      --analog-record-max-gap-ms <ms>  Keep an analog call in one recording through pauses up to <ms>\n");
     printf("                 (0 to 10000; the pause is saved as silence; 200 or less is off, the default)\n");
     printf("                 (Works only while -P per-call recording is on)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");

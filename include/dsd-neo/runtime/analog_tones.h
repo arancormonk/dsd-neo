@@ -7,32 +7,32 @@
  * @file
  * @brief Sub-audible signalling tables and text shared by the detectors, the views and the policy.
  *
- * CTCSS (issue #522): the standard 50-tone EIA/TIA table, 67.0-254.1 Hz, and 150.0 Hz, the tone
- * many radios offer as a 51st (issue #518 follow-up), held in tenths of a hertz so every consumer
- * compares integers. 150.0 Hz sits 1.4 Hz from 151.4 Hz, the closest pair in the table: the
- * detector gives each of the two a snap and hold gate of half that distance, so no estimate is
- * within reach of both, and locks either only after a third agreeing hop while its estimate leans
- * toward the other (src/dsp/analog_ctcss.c). A noisy estimate, or a radio set well off its tone
- * toward the other, can still now and then name the other for a few hops
- * (<dsd-neo/dsp/analog_rx.h>).
+ * CTCSS (issue #522): the 50 tones radios commonly offer, 67.0-254.1 Hz (the 39 of TIA-603-E and
+ * 11 more), and 150.0 Hz, the tone many radios offer as a 51st (issue #518 follow-up), held in
+ * tenths of a hertz so every consumer compares integers. 150.0 Hz sits 1.4 Hz from 151.4 Hz, the
+ * closest pair in the table: the detector gives each of the two a snap and hold gate of half that
+ * distance, so no estimate is within reach of both, and locks either only after a third agreeing
+ * hop while its estimate leans toward the other (src/dsp/analog_ctcss.c). A noisy estimate, or a
+ * radio set well off its tone toward the other, can still now and then name the other for a few
+ * hops (<dsd-neo/dsp/analog_rx.h>).
  *
- * DCS (issue #523): the standard 104-code set (023 ... 754), each code a 9-bit value written as
- * three octal digits and held as that value (023 octal = 19). A code's 23-bit word is the Golay
- * (23,12) code word of the 12 data bits "code, then 100": in the dsd_dcs_word() layout bits 0-8
- * are the code (least significant first), bits 9-11 are 0, 0, 1 and bits 12-22 the 11 check
- * bits, and bit 0 is the first bit sent. As a polynomial with bit i the coefficient of x^i the
- * word is a multiple of g(x) = x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1. The transmitter repeats
- * the word at 134.4 bit/s, a one as positive deviation in normal (N) polarity and as negative
- * deviation in inverted (I) polarity, which sends the word's complement. Every supported code's
- * word carries 11 or 12 ones, so its level averages to within 1/23 of zero over any 23 bits,
- * in either polarity (the DCS detector's balance slicer relies on it).
+ * DCS (issue #523): the 104 codes radios commonly offer (023 ... 754; the 83 standard codes and 21
+ * more), each code a 9-bit value written as three octal digits and held as that value (023 octal =
+ * 19). A code's 23-bit word is the Golay (23,12) code word of the 12 data bits "code, then 100":
+ * in the dsd_dcs_word() layout bits 0-8 are the code (least significant first), bits 9-11 are 0,
+ * 0, 1 and bits 12-22 the 11 check bits, and bit 0 is the first bit sent. As a polynomial with bit
+ * i the coefficient of x^i the word is a multiple of g(x) = x^11 + x^10 + x^6 + x^5 + x^4 + x^2 +
+ * 1. The transmitter repeats the word at 134.4 bit/s, a one as positive deviation in normal (N)
+ * polarity and as negative deviation in inverted (I) polarity, which sends the word's complement.
+ * Every supported code's word carries 11 or 12 ones, so its level averages to within 1/23 of zero
+ * over any 23 bits, in either polarity (the DCS detector's balance slicer relies on it).
  *
  * A receiver cannot tell where a word starts, so every rotation of a word is the same signal,
  * and every complement is a code word too: each supported code shares its waveform with other
- * codes, in the standard set always with exactly one other code of the opposite polarity (D023N
+ * codes, in the supported set always with exactly one other code of the opposite polarity (D023N
  * is D047I). dsd_dcs_canonical() names such a class by one member, normal polarity first, then
  * the lowest code, so every inverted code is named by its normal alias (D023I by D047N), and
- * dsd_dcs_alias() by the other standard spelling. Nothing in the signal says which of the two
+ * dsd_dcs_alias() by the other supported spelling. Nothing in the signal says which of the two
  * a transmitter was set to, so a received code is shown as both, canonical first:
  * "DCS D047N / D023I" (dsd_dcs_format_label()).
  *
@@ -40,8 +40,8 @@
  * receive policy (#527) parses them, and neither may depend on the DSP module.
  *
  * Tone lists (issue #527): the configured receive policy's list, written the same way on the CLI,
- * in the INI and in a scan row's options: entries separated by '/', each a standard CTCSS tone
- * ("100" or "100.0") or a standard DCS code ("D023", "D023N" or "D023I", any case; a bare code is
+ * in the INI and in a scan row's options: entries separated by '/', each a supported CTCSS tone
+ * ("100" or "100.0") or a supported DCS code ("D023", "D023N" or "D023I", any case; a bare code is
  * N), for example 67.0/100.0/D023N. Commas are refused (the channel-map splitter would cut a
  * list at them). A list holds a signal once: a tone written twice, or both spellings of one DCS
  * signal (D023N and D047I), are refused. Diagnostics name entries by position and never repeat
@@ -62,7 +62,7 @@
 extern "C" {
 #endif
 
-/** @brief Number of supported CTCSS tones (the standard 50-tone table and 150.0 Hz). */
+/** @brief Number of supported CTCSS tones (the 50 tones radios commonly offer and 150.0 Hz). */
 enum { DSD_CTCSS_TONE_COUNT = 51 };
 
 /** @brief Longest text dsd_ctcss_format_label() writes, terminator included ("CTCSS 254.1 Hz"). */
@@ -105,7 +105,7 @@ int dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size);
  */
 int dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size);
 
-/** @brief Number of supported DCS codes (the standard 104-code set). */
+/** @brief Number of supported DCS codes (the 104 codes radios commonly offer). */
 enum { DSD_DCS_CODE_COUNT = 104 };
 
 /** @brief Bits in a DCS word. */

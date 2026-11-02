@@ -292,7 +292,7 @@ Windows console runs:
   recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one. 200
   or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0 to
   10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted, and
-  the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  the limits, are under [Pauses in an analog recording](#pauses-in-an-analog-recording---analog-record-max-gap-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
@@ -358,8 +358,9 @@ Windows console runs:
   do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
   `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input an analog line names the
   frequency a `-Y` row or a conventional `--trunk-scan` target confirmed it tuned its rigctl peer to; digital lines on
-  audio input still name none, and a frequency changed on the peer itself is not seen. Last comes the CTCSS tone or DCS code the call
-  was received with, as Call Info's `Rx tone:` line writes it: `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
+  audio input still name none, and a frequency changed on the peer itself is not seen. Last comes the CTCSS tone or DCS
+  code the call was received with, as Call Info's `Rx tone:` line writes it:
+  `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
   before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
@@ -1347,8 +1348,9 @@ for a CTCSS (PL) tone and reports what it hears. Detection only reports: it neve
 tone setting, and it runs with `-o null` too. Muting by tone is the separate
 [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
-- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1), and 150.0 Hz,
-  which many radios offer as a 51st. A tone is confirmed from estimates within 0.5 Hz of a table value, or further off
+- Supported tones: the 50 tones radios commonly offer (the 39 of TIA-603-E and 11 more), 67.0-254.1 Hz (67.0, 69.3,
+  71.9 ... 250.3, 254.1), and 150.0 Hz, which many radios offer as a 51st. A tone is confirmed from estimates within
+  0.5 Hz of a table value, or further off
   by a transmitter's tone error (below), and a confirmed tone is held only while it stays within 0.8 Hz of it, or 0.5 %
   of it from 162.2 Hz up while its estimate is steady enough to say so -- 0.7 Hz for 150.0 and 151.4 Hz, which sit 1.4
   Hz apart, so no estimate is ever within reach of both. Any other frequency within the sub-audible band, such as 68.2
@@ -1369,7 +1371,7 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   only while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
   folds down from the voice band and far below any real CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
-  each, tones of the standard table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
+  each, tones of the table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
   all starts and on all but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest
   at 553 ms); 150.0 and 151.4 Hz set off toward each other take a little longer (above). Encoders are specified to
   0.5 % of their tone, and some radios run near that: the ones in issue #643 sent 150.6 Hz for 150.0. A tone up to 0.5 %
@@ -1491,25 +1493,28 @@ Beside the CTCSS tone, the analog FM monitor listens for a DCS code (Digital-Cod
 detection it only reports: it never mutes or gates audio, it needs no setting, and it runs with `-o null` too. Muting by
 code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
-- Supported codes: the standard 104-code set, 023, 025, 026, 031, 032, 036, 043, 047, 051, 053, 054, 065, 071, 072,
+- Supported codes: the 104 codes radios commonly offer (the 83 standard codes and 21 more), 023, 025, 026, 031, 032,
+  036, 043, 047, 051, 053, 054, 065, 071, 072,
   073, 074, 114, 115, 116, 122, 125, 131, 132, 134, 143, 145, 152, 155, 156, 162, 165, 172, 174, 205, 212, 223, 225,
   226, 243, 244, 245, 246, 251, 252, 255, 261, 263, 265, 266, 271, 274, 306, 311, 315, 325, 331, 332, 343, 346, 351,
   356, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 446, 452, 454, 455, 462, 464, 465, 466, 503, 506, 516, 523,
   526, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743 and 754. A code is
   written as `D`, its three octal digits with leading zeros, and its polarity, `N` (normal) or `I` (inverted), such as
   `D023N`. A received code is shown by both spellings of its signal, the normal one first: `DCS D023N / D047I` (see
-  Aliases).
+  Aliases). A code outside these reads as no code: the eight more some scanners detect (006, 007, 015, 017, 021, 050,
+  141 and 214) are signals of their own and show none. 645, which some radios and decoders offer, sends the signal of
+  D526N, so a radio set to D645N reads `DCS D526N / D325I`.
 - What is sent: a DCS transmitter repeats one 23-bit word at 134.4 bit/s, the code's nine bits (least significant
   first), the fixed bits 0, 0, 1 and 11 Golay (23,12) check bits. Normal polarity sends a one as positive deviation (the
   carrier above the tuned frequency); inverted polarity sends the complement of the word. This convention and the bit
   order follow the published reference words; checking them on the air against a transmitter with a known code, in
   both polarities, is still to be done.
 - Aliases: a receiver cannot tell where a word starts, and the complement of a code's word is another code's word
-  shifted in time, so every standard code sent in inverted polarity is exactly the signal of one standard code in
-  normal polarity: D023I is D047N, and D047I is D023N. Every signal therefore has two standard spellings, one in each
+  shifted in time, so every supported code sent in inverted polarity is exactly the signal of one supported code in
+  normal polarity: D023I is D047N, and D047I is D023N. Every signal therefore has two supported spellings, one in each
   polarity, and nothing in it says which of the two a transmitter was set to. DSD-neo shows both, the normal one first:
   a radio set to D023N or to D047I reads `DCS D023N / D047I`, and one set to D023I or to D047N reads
-  `DCS D047N / D023I`. Every standard code appears twice below, once in each polarity; find a radio's setting to see
+  `DCS D047N / D023I`. Every supported code appears twice below, once in each polarity; find a radio's setting to see
   what it reads as:
 
 | Shown as | Shown as | Shown as | Shown as |
@@ -1582,8 +1587,8 @@ code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
   Unfiltered speech 10 dB above the code (a voice fundamental in the band, which a transmitter's voice high-pass
   removes) is outside these bounds: it lost the lock about 7 times a minute, each time confirming the code again, so the
   code showed 96% of the time.
-- Rejection: in the tests random bits, the Golay code words that carry no standard code, every CTCSS tone and speech
-  never read as a code. A signal one bit from a standard code's word may read as that code, the way DCS decoders
+- Rejection: in the tests random bits, the Golay code words that carry no supported code, every CTCSS tone and speech
+  never read as a code. A signal one bit from a supported code's word may read as that code, the way DCS decoders
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
   in 6 x 10^8 bits for each of the detector's four droop slicers, some 50 days of continuous noise each, and about 2.3
   times as often for its balance slicer, which reads noise in windows balanced the way a code's words are; any of the
@@ -1671,12 +1676,12 @@ Earlier versions made a row and a recording of every reception, however short, a
 row when the tone was allowed.
 Carrier end (200 ms after the carrier drops, or after a longer pause with `--analog-record-max-gap-ms`, below),
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
-include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
+include a sanitized `_SVC_` component. An analog recording has no talkgroup, source or call type, so it is named
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
 `<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. The name gives the mode the call was heard in: `_NFM`, `_AM`
 for an AM call, and `_ANALOG` on audio input, where another receiver demodulated it
 (`20261021_142839_51828_ANALOG_SVC_20R_Traveler.wav`). Earlier versions named every one `_NFM`. Rdio exports use the service name in their talkgroup label field
-while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
+while preserving numeric IDs. Rdio still requires a nonzero target ID, so an analog call (NFM or AM) produces ordinary
 named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
 
@@ -1701,7 +1706,7 @@ at any squelch. A known limit: the notices follow the squelch in force, so on a 
 with their own `--squelch`, others left at the default) a paused or back-on notice is logged at each hop where that
 changes.
 
-#### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
+#### Pauses in an analog recording (`--analog-record-max-gap-ms`)
 
 By default an analog call (NFM or AM) ends 200 ms after its carrier drops (the carrier hangover). Every longer pause
 starts a new call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
@@ -1721,8 +1726,8 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   applies from the next block of audio: a lower limit, or off, ends a call already paused longer than that, and a
   higher one lets it wait longer. A call that already ended stays ended.
 - While a call is paused it still shows as active, and its timer keeps running, in the terminal, the app and the API.
-  Its history row, the call-end alert (`-a`) and the event log entry come when the pause is decided. The row ends at
-  the last audio received, not when the wait ran out.
+  Its history row and the event log entry come when the pause is decided (an analog call sounds no `-a` alert). The
+  row ends at the last audio received, not when the wait ran out.
 - A tone check counts as part of the pause. Under a tone filter, the decoder checks the tone again each time the
   carrier comes back, which takes about 0.4 to 0.8 seconds, and that time is saved as silence too. So a short limit,
   such as 500 ms, rarely joins transmissions under a tone filter; allow for the check.
@@ -1744,8 +1749,9 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   keeps sending the channel's noise).
 - A scan leaving the channel, a retune, an input switch, a decode mode change or stopping the decoder ends a paused
   call at once, with no silence added. Scanning is not held up by a paused call.
-- AM (`-fM`) has no per-call recording, and EDACS analog calls have their own; neither has this hold. There is no
-  minimum or maximum file length.
+- AM (`-fM`) calls are held the same way. EDACS analog calls have their own recording and do not have this hold.
+  There is no maximum file length. The shortest call is the 500 ms a reception needs to count as one (see
+  [Receive filters and service names](#receive-filters-and-service-names)).
 
 ### Tone filter (CTCSS/DCS receive policy)
 

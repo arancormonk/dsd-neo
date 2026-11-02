@@ -1213,7 +1213,11 @@ row, audio input included, and no tone. An ended analog row is stamped with the 
 input that stopped sending held the row back. Analog rows sound no call alert (`-a`). On a radio input an analog call
 needs a squelch above the -110 dB default (Input > `Squelch...`): at the default, or off, the receiver's noise would
 hold one call open, so no analog row is made and dsd-neo logs one notice until a squelch is set (see
-[Analog calls need a squelch](cli.md#analog-calls-need-a-squelch-on-a-radio-input)).
+[Analog calls need a squelch](cli.md#analog-calls-need-a-squelch-on-a-radio-input)). A reception becomes a row only
+once it has lasted 500 ms, the 200 ms hangover included, so a kerchunk with less than about 300 ms of signal leaves none
+(see [Receive filters and service names](cli.md#receive-filters-and-service-names)). Analog rows are kept with slot 1's
+rows: each slot keeps its last 254 rows, so in a session that hears both (a `-Y` list with analog and digital rows),
+analog calls and slot 1's digital calls push each other's older rows out.
 
 ### Scoped scan controls and loaded keys
 
