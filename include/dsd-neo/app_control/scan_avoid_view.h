@@ -102,7 +102,9 @@ int dsd_app_scan_avoid_summary_same_key(const dsd_app_scan_avoid_summary* a, con
  * @brief Collect the avoided entries in list order (rows ascending, targets in target-list order), identities and
  * stored text only. Zeroes @p out first, then fills its summary.
  *
- * An unavailable store yields no entries (the caller says the list is not ready).
+ * An unavailable store yields no entries (the caller says the list is not ready). On success the summary's @c total is
+ * the number of entries collected, which the constant-cost summary can overstate when the -Y list shrank without a
+ * recount.
  *
  * @return 0 (also with no entries), or -1 for NULL arguments or a failed allocation (no entries).
  */

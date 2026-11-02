@@ -175,8 +175,13 @@ dsd_app_scan_avoid_raw_collect(const dsd_opts* opts, const dsd_state* state, dsd
         free(out->entries);
         out->entries = NULL;
         out->count = 0U;
+        return rc;
     }
-    return rc;
+    /* What was found, not what the store counted: a writer that shrank lcn_freq_count without a recount leaves an
+       avoided row past the list, which the walk skips, and a total that still counted it would name an entry no page
+       or list can reach. */
+    out->summary.total = out->count;
+    return 0;
 }
 
 void

@@ -314,6 +314,43 @@ test_more_than_65535_avoids(dsd_opts* opts, dsd_state* state) {
     dsd_app_scan_avoid_list_free(&list);
 }
 
+/* A collected list reports as its total the entries it holds. lcn_avoid_total counts the rows within lcn_freq_count
+   as of the last recount; a writer that shrinks the list without one leaves an avoided row past the end, which the
+   collection rightly skips. A page or list total that still counted it would promise an entry no page reaches. */
+static void
+test_collected_total_matches_entries(dsd_opts* opts, dsd_state* state) {
+    reset(opts, state);
+    seed_rows(state, 8);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 5U, 1) == 0);
+    state->lcn_freq_count = 4; /* no recount: lcn_avoid_total still says 2 */
+    assert(state->lcn_avoid_total == 2U);
+    dsd_app_scan_avoid_raw raw;
+    assert(dsd_app_scan_avoid_raw_collect(opts, state, &raw) == 0);
+    assert(raw.count == 1U && raw.entries[0].identity.row == 2);
+    if (raw.summary.total != raw.count || !raw.summary.total_known) {
+        DSD_FPRINTF(stderr, "collected %zu entries under total %zu\n", raw.count, raw.summary.total);
+        assert(0);
+    }
+    dsd_app_scan_avoid_raw_free(&raw);
+    dsd_app_scan_avoid_list list;
+    assert(dsd_app_scan_avoid_list_build(opts, state, &list) == 0);
+    assert(list.count == 1U && list.summary.total == 1U);
+    dsd_app_scan_avoid_list_free(&list);
+
+    /* The trunk-scan list holds what it counts; its total is the same either way. */
+    reset(opts, state);
+    opts->trunk_scan_enabled = 1;
+    static const dsd_trunk_scan_avoid_entry k_targets[] = {
+        {1U, 0U, 851012500U, "a", ""},
+        {2U, 0U, 852012500U, "b", ""},
+    };
+    assert(dsd_state_trunk_scan_avoids_set(state, k_targets, 2U) == 0);
+    assert(dsd_app_scan_avoid_raw_collect(opts, state, &raw) == 0);
+    assert(raw.count == 2U && raw.summary.total == 2U);
+    dsd_app_scan_avoid_raw_free(&raw);
+}
+
 /* The decoder's LCN identity check: every part must match, the row is range-checked first, and a matching row that is
    no longer avoided says so. */
 static void
@@ -377,6 +414,7 @@ main(void) {
     test_key(opts, state);
     test_more_than_65535_avoids(opts, state);
     test_lcn_match(opts, state);
+    test_collected_total_matches_entries(opts, state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
     free(state);
