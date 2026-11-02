@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -255,9 +256,10 @@ int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
  * On DSD_TRUNK_SCAN_CONTROL_OK only the flag changed: no retune, and the hold, every retry cooldown and the dwell stay;
  * the visit cap restarts only when the target is the first eligible alternate again, as clear's does. The avoid list
  * and the target are republished, and the timing as a control publishes it. Allowed while paused. Decoder thread only.
+ * On OK and NOT_AVOIDED, @p name (may be NULL) receives the target's 1-based list position and label column.
  */
 int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session,
-                                         const char* target_id);
+                                         const char* target_id, dsd_trunk_scan_target_name* name);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**

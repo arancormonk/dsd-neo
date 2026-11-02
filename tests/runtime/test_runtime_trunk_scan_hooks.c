@@ -70,9 +70,13 @@ static uint32_t g_unavoid_session = 0U;
 static const char* g_unavoid_target = NULL;
 static int g_unavoid_result = 0;
 
+static dsd_trunk_scan_target_name* g_unavoid_name;
+
 static int
-fake_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+fake_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+             dsd_trunk_scan_target_name* name) {
     g_unavoid_calls++;
+    g_unavoid_name = name;
     g_last_opts = opts;
     g_last_state = state;
     g_unavoid_session = session;
@@ -255,7 +259,7 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 0);
-    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a") == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a", NULL) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_unavoid_calls == 0);
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 0);
@@ -296,17 +300,21 @@ main(void) {
 
     /* The control slot alone answers the put back unavailable; installed, the put back reaches its own slot with the
        identity and result intact (issue #672). */
-    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a") == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a", NULL) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     hooks.unavoid = fake_unavoid;
     dsd_trunk_scan_hooks_set(&hooks);
     static const char k_target[] = "north";
     g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_STALE;
-    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 0xFFFFFFFFU, k_target) == DSD_TRUNK_SCAN_CONTROL_STALE);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 0xFFFFFFFFU, k_target, NULL) == DSD_TRUNK_SCAN_CONTROL_STALE);
     assert(g_unavoid_calls == 1 && g_unavoid_session == 0xFFFFFFFFU && g_unavoid_target == k_target);
     assert(g_last_opts == &opts && g_last_state == &state);
     g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_OK;
-    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target) == DSD_TRUNK_SCAN_CONTROL_OK);
+    dsd_trunk_scan_target_name name;
+    DSD_MEMSET(&name, 0x5A, sizeof name);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target, &name) == DSD_TRUNK_SCAN_CONTROL_OK);
     assert(g_unavoid_calls == 2 && g_unavoid_session == 7U);
+    /* The name reaches the implementation, zeroed first, so one that fills nothing leaves no garbage behind. */
+    assert(g_unavoid_name == &name && name.ordinal == 0U && name.label[0] == '\0');
     assert(g_control_calls == 5);
 
     /* Uninstalling (NULL clears every slot) restores the unavailable answer. */
@@ -316,8 +324,9 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 5);
-    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
-    assert(g_unavoid_calls == 2);
+    DSD_MEMSET(&name, 0x5A, sizeof name);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target, &name) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(g_unavoid_calls == 2 && name.ordinal == 0U && name.label[0] == '\0');
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
     test_recovery_ownership();

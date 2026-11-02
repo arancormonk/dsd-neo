@@ -5282,8 +5282,22 @@ trunk_scan_edit_find(const dsd_trunk_scan_coord* coord, uint32_t session, const 
     return -1;
 }
 
+/* The target at @p index as a person knows it: its list position and label column, what the avoid list shows. */
+static void
+trunk_scan_target_name_fill(const dsd_trunk_scan_coord* coord, size_t index, dsd_trunk_scan_target_name* name) {
+    if (!name) {
+        return;
+    }
+    name->ordinal = (uint32_t)(index + 1U);
+    DSD_SNPRINTF(name->label, sizeof name->label, "%s", coord->targets[index].target.label);
+}
+
 int
-dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                     dsd_trunk_scan_target_name* name) {
+    if (name) {
+        DSD_MEMSET(name, 0, sizeof(*name));
+    }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
@@ -5292,6 +5306,7 @@ dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uin
     if (index < 0) {
         return DSD_TRUNK_SCAN_CONTROL_STALE;
     }
+    trunk_scan_target_name_fill(coord, (size_t)index, name);
     if (!coord->targets[index].avoided) {
         return DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED;
     }

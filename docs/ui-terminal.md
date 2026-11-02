@@ -409,7 +409,7 @@ A refused entry reopens the prompt with the text typed and the reason inside it,
 names the frequency the receiver took, `Accepted: frequency -> 851.012500 MHz (pending)` one still being applied,
 `Deferred; retry: frequency -> ...` one the receiver could not take yet (retry it), and `Failed: ...` one that did
 not tune; `; scan paused` follows a tune that paused a running scan, or took back a `-Y` resume still waiting on its
-row. A manual tune from Qt/Android or the control API (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
+row. A manual tune from Qt/Android or the control API (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding row 2 (769.768750 MHz, 1 avoided)`) name their frequency
 the same way. During single-system P25 trunking the entry selects a new control channel
 (`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`).
 
@@ -431,10 +431,10 @@ entries apart first:
   frequency, its label if it has one).
 
 A row the map left without a frequency reads `frequency unknown`. Enter puts the highlighted entry back into the
-rotation and closes the list; the toast confirms it (`Put back 462.037500 MHz (1 avoided)`, `Put back target
-county-p25 (0 avoided)`). Nothing retunes: the receiver stays where it is, and a hold, a target cooling down after a
-failed retune and the dwell are left as they were. Esc closes the list and changes nothing. **Clear avoids** puts
-every entry back at once.
+rotation and closes the list; the toast names the entry as the list does (`Put back row 3 (462.037500 MHz, 1
+avoided)`, `Put back target #2 County Fire (0 avoided)`; a target with no label is named by its id). Nothing retunes:
+the receiver stays where it is, and a hold, a target cooling down after a failed retune and the dwell are left as they
+were. Esc closes the list and changes nothing. **Clear avoids** puts every entry back at once.
 
 The list and Clear are offered while a scan runs (with none avoided, the list says `No avoided channels`) and,
 outside one, while avoids are left. A `-Y` list's avoids outlive the scan: the DMR and NXDN control-channel hunts under

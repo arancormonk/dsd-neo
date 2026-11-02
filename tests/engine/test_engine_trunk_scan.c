@@ -15808,6 +15808,17 @@ avoid_scan_init(const char* body, int max_visit_ms, dsd_opts* opts, dsd_state* s
     return scan_visit_init(k_avoid_header, body, max_visit_ms, opts, state, dir, dir_sz, target_path, path_sz);
 }
 
+/* The name a put back reports for its toast: the target's list position and label column (issue #672). */
+static int
+expect_target_name(const char* tag, const dsd_trunk_scan_target_name* name, uint32_t ordinal, const char* label) {
+    if (name->ordinal != ordinal || strcmp(name->label, label) != 0) {
+        DSD_FPRINTF(stderr, "%s: target name #%u \"%s\", want #%u \"%s\"\n", tag, (unsigned)name->ordinal, name->label,
+                    (unsigned)ordinal, label);
+        return 1;
+    }
+    return 0;
+}
+
 /* One avoided target put back by its identity: only that flag moves, the list is rebuilt under a new revision, and the
    hold, the dwell and the receiver stay. A stale session, an unknown id and a target not avoided change nothing; the
    detach empties the list under a new revision and takes the session down. */
@@ -15848,8 +15859,10 @@ test_unavoid_puts_one_target_back(void) {
     const int tunes = g_counting_tune_to_cc_calls;
     rev = state.trunk_scan_avoid_rev;
     trunk_scan_test_set_now(0.20);
-    test_rc |= expect_control_rc("put back a", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a"),
+    dsd_trunk_scan_target_name name;
+    test_rc |= expect_control_rc("put back a", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a", &name),
                                  DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_target_name("put back a", &name, 1U, "North");
     test_rc |= expect_avoid_list(&state, "put back a", "b");
     test_rc |= expect_avoid_rev(&state, "put back a", rev, 1);
     test_rc |= expect_scan_control_publication(&state, "put back a", 1U, 0U, 1U);
@@ -15859,15 +15872,18 @@ test_unavoid_puts_one_target_back(void) {
 
     /* Nothing to do: each answer leaves the list and its revision alone. */
     rev = state.trunk_scan_avoid_rev;
-    test_rc |= expect_control_rc("put back a again", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a"),
+    test_rc |= expect_control_rc("put back a again", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a", &name),
                                  DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED);
-    test_rc |= expect_control_rc("another session", dsd_trunk_scan_hook_unavoid(&opts, &state, session + 1U, "b"),
+    test_rc |= expect_target_name("put back a again", &name, 1U, "North");
+    test_rc |=
+        expect_control_rc("another session", dsd_trunk_scan_hook_unavoid(&opts, &state, session + 1U, "b", &name),
+                          DSD_TRUNK_SCAN_CONTROL_STALE);
+    test_rc |= expect_target_name("another session", &name, 0U, "");
+    test_rc |= expect_control_rc("session 0", dsd_trunk_scan_hook_unavoid(&opts, &state, 0U, "b", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_STALE);
-    test_rc |= expect_control_rc("session 0", dsd_trunk_scan_hook_unavoid(&opts, &state, 0U, "b"),
+    test_rc |= expect_control_rc("unknown id", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "zz", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_STALE);
-    test_rc |= expect_control_rc("unknown id", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "zz"),
-                                 DSD_TRUNK_SCAN_CONTROL_STALE);
-    test_rc |= expect_control_rc("no id", dsd_trunk_scan_hook_unavoid(&opts, &state, session, NULL),
+    test_rc |= expect_control_rc("no id", dsd_trunk_scan_hook_unavoid(&opts, &state, session, NULL, NULL),
                                  DSD_TRUNK_SCAN_CONTROL_STALE);
     test_rc |= expect_avoid_list(&state, "refused put backs", "b");
     test_rc |= expect_avoid_rev(&state, "refused put backs", rev, 0);
@@ -15895,10 +15911,11 @@ test_unavoid_puts_one_target_back(void) {
                     (unsigned)state.trunk_scan_session, (unsigned)state.trunk_scan_avoids_ok);
         test_rc = 1;
     }
-    test_rc |= expect_control_rc("put back after shutdown", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "b"),
-                                 DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    test_rc |=
+        expect_control_rc("put back after shutdown", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "b", NULL),
+                          DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     test_rc |= expect_control_rc("engine put back after shutdown",
-                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b"),
+                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -15996,8 +16013,9 @@ run_avoid_on_the_parked_fallback(const char* body, int targets) {
 
     /* Put back: the receiver stays and its call goes on, only the avoided mark goes. */
     trunk_scan_test_set_now(2.60);
-    test_rc |= expect_control_rc("put back the fallback", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a"),
-                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |=
+        expect_control_rc("put back the fallback", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a", NULL),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_active_target(&state, "put back the fallback", 0U);
     test_rc |= expect_scan_control_publication(&state, "put back the fallback", 0U, 0U, 0U);
     test_rc |= expect_avoid_list(&state, "put back the fallback", "");
@@ -16036,9 +16054,10 @@ test_unavoid_keeps_the_cooldowns(void) {
     opts.trunk_is_tuned = 0;
     const int tunes = g_counting_tune_to_cc_calls;
     trunk_scan_test_set_now(0.60);
-    test_rc |= expect_control_rc("put back the fallback",
-                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a"),
-                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |=
+        expect_control_rc("put back the fallback",
+                          dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
     /* The idle dwell starts at the first tick and has run out well before the cooldowns do. */
     trunk_scan_test_set_now(0.65);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -16083,9 +16102,10 @@ test_unavoid_of_the_fallback_keeps_the_visit_cap(void) {
     test_rc |= expect_scan_visit(&state, "fallback past the cooldowns", 10000U, 10.0);
     const int tunes = g_counting_tune_to_cc_calls;
     trunk_scan_test_set_now(4.00);
-    test_rc |= expect_control_rc("put back the fallback",
-                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a"),
-                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |=
+        expect_control_rc("put back the fallback",
+                          dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_scan_control_publication(&state, "put back the fallback", 0U, 0U, 0U);
     test_rc |= expect_scan_visit(&state, "put back the fallback", 10000U, 10.0);
     test_rc |= expect_no_tune_since("put back the fallback", tunes);
@@ -16122,9 +16142,9 @@ test_unavoid_keeps_the_dwell(void) {
     test_rc |= expect_scan_timing_window(&state, "dwell on b", 0.0, 250U);
     const int tunes = g_counting_tune_to_cc_calls;
     trunk_scan_test_set_now(0.20);
-    test_rc |= expect_control_rc("put back mid-dwell",
-                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a"),
-                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_control_rc(
+        "put back mid-dwell", dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
+        DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_same_timing(&state, "put back mid-dwell", &before);
     test_rc |= expect_no_tune_since("put back mid-dwell", tunes);
     trunk_scan_test_set_now(0.24);
@@ -16167,7 +16187,7 @@ test_unavoid_restarts_the_visit_cap_only_from_none(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_scan_visit(&state, "nowhere to go", 1000U, -1.0);
     trunk_scan_test_set_now(10.0);
-    test_rc |= expect_control_rc("put back b", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b"),
+    test_rc |= expect_control_rc("put back b", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_scan_visit(&state, "put back b", 1000U, 11.0);
     trunk_scan_test_set_now(10.5);
@@ -16195,9 +16215,9 @@ test_unavoid_restarts_the_visit_cap_only_from_none(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_scan_visit(&state, "c counts toward a", 1000U, 1.0);
     trunk_scan_test_set_now(0.60);
-    test_rc |=
-        expect_control_rc("put back b beside a", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b"),
-                          DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_control_rc("put back b beside a",
+                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "b", NULL),
+                                 DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_scan_visit(&state, "put back b beside a", 1000U, 1.0);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -16237,7 +16257,7 @@ test_paused_put_back_and_clear(void) {
     }
     const int tunes = g_counting_tune_to_cc_calls;
     trunk_scan_test_set_now(5.0);
-    test_rc |= expect_control_rc("paused put back", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a"),
+    test_rc |= expect_control_rc("paused put back", dsd_trunk_scan_hook_unavoid(&opts, &state, session, "a", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_avoid_list(&state, "paused put back", "b");
     test_rc |= expect_avoid_rev(&state, "paused put back", rev, 1);
@@ -16312,7 +16332,7 @@ test_avoid_list_rebuilt_only_at_membership_changes(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_avoid_rev(&state, "hops, steps, hold, pause, edit and resumes", rev, 0);
     test_rc |= expect_avoid_list(&state, "hops, steps, hold, pause, edit and resumes", "a");
-    test_rc |= expect_control_rc("put back", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "a"),
+    test_rc |= expect_control_rc("put back", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "a", NULL),
                                  DSD_TRUNK_SCAN_CONTROL_OK);
     const uint64_t cleared_rev = state.trunk_scan_avoid_rev;
     test_rc |= expect_control_rc("clear with nothing avoided",
@@ -16400,8 +16420,9 @@ test_controls_publish_timing_only_under_the_guard(void) {
     state.scan_timing.reason = 0xEEU;
     test_rc |= expect_control_rc("busy hold",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
-    test_rc |= expect_control_rc("busy put back", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "a"),
-                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |=
+        expect_control_rc("busy put back", dsd_engine_trunk_scan_unavoid_target(&opts, &state, session, "a", NULL),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
     test_rc |= expect_control_rc("busy clear",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
     if (state.scan_timing.reason != 0xEEU) {

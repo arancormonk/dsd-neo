@@ -7811,16 +7811,34 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
-/* An avoided -Y row as the avoid and put-back toasts name it (issue #672): its frequency to the Hz, as every frequency
-   is shown (issue #670), or "row N" for a placeholder with no frequency yet. A stored row is within the trunk ceiling,
-   so a frequency fits the uint32_t text. */
+/* An avoided -Y row's frequency as its avoid and put-back toasts show it (issue #672), after the row number the avoided
+   channel list leads with (two rows can share a frequency): to the Hz, as every frequency is shown (issue #670), or
+   "frequency unknown" for a placeholder, as the list says. A stored row is within the trunk ceiling, so a frequency
+   fits the uint32_t text. */
 static const char*
-scan_avoid_lcn_toast_name(uint64_t hz, int row, char* out, size_t out_size) {
+scan_avoid_lcn_toast_freq(uint64_t hz, char* out, size_t out_size) {
     if (hz > 0U && hz <= UINT32_MAX) {
         char mhz[16];
         DSD_SNPRINTF(out, out_size, "%s MHz", ui_toast_mhz((uint32_t)hz, mhz, sizeof mhz));
     } else {
-        DSD_SNPRINTF(out, out_size, "row %d", row + 1);
+        DSD_SNPRINTF(out, out_size, "%s", "frequency unknown");
+    }
+    return out;
+}
+
+/* "#65535 " and a 63-byte label or id, terminated. */
+#define DSD_TRUNK_SCAN_TOAST_NAME_SIZE 80
+
+/* A --trunk-scan target as its avoid and put-back toasts name it (issue #672): "#<ordinal> <label>", the list position
+   and label column the avoided channel list shows, or the id when the target has no label. The id alone names nothing
+   on Android, whose target ids are entry UIDs. An ordinal of 0 (none known) leaves the position out. */
+static const char*
+trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size) {
+    const char* shown = (label && label[0]) ? label : (id ? id : "");
+    if (ordinal > 0U) {
+        DSD_SNPRINTF(out, out_size, "#%u %s", (unsigned)ordinal, shown);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", shown);
     }
     return out;
 }
@@ -7846,10 +7864,10 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "No scan channel on air to avoid");
         return;
     }
-    char name[32];
-    (void)scan_avoid_lcn_toast_name(freq > 0 ? (uint64_t)freq : 0U, row, name, sizeof name);
+    char mhz[32];
+    (void)scan_avoid_lcn_toast_freq(freq > 0 ? (uint64_t)freq : 0U, mhz, sizeof mhz);
     if (dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
-        ui_set_toast(state, 3, "Already avoided: %s", name);
+        ui_set_toast(state, 3, "Already avoided: row %d (%s)", row + 1, mhz);
         return;
     }
     if (dsd_state_trunk_lcn_usable_count(state) <= 1) {
@@ -7860,7 +7878,7 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;
     }
-    ui_set_toast(state, 3, "Avoiding %s (%zu avoided)", name, scan_avoid_lcn_total(opts, state));
+    ui_set_toast(state, 3, "Avoiding row %d (%s, %zu avoided)", row + 1, mhz, scan_avoid_lcn_total(opts, state));
     if (scan_control_tuner_present(opts)) {
         (void)apply_manual_lcn_cycle(opts, state);
     }
@@ -7882,9 +7900,10 @@ static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
    (scan_control_tuner_present()). */
 static const char k_channel_cycle_no_tuner[] = "No tuner to change channel: use a radio input or a rigctl peer";
 
-/* The toast for an op the coordinator answered. @p target_id is the target that was on air before the op. */
+/* The toast for an op the coordinator answered. @p target names the target that was on air before the op
+   (trunk_scan_toast_name()). */
 static void
-trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id) {
+trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
             if (rc >= 0) {
@@ -7896,9 +7915,9 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
                 ui_set_toast(state, 3, "Cannot avoid the last usable trunk scan target");
             } else if (rc == DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED) {
                 /* The receiver fell back onto an avoided target; nothing changed (issue #672 B4). */
-                ui_set_toast(state, 3, "Already avoided: target %s", target_id);
+                ui_set_toast(state, 3, "Already avoided: target %s", target);
             } else {
-                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target_id,
+                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target,
                              (unsigned)state->trunk_scan_avoided_count);
             }
             break;
@@ -7924,8 +7943,9 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
 /* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
 static int
 apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
-    char target_id[sizeof(state->trunk_scan_active_id)];
-    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
+    char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                state->trunk_scan_active_id, target, sizeof target);
     const int rc = dsd_trunk_scan_hook_control(opts, state, op);
     if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
         ui_set_toast(state, 3, "Trunk scan busy; try again");
@@ -7939,7 +7959,7 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
         ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
         return UI_CMD_APPLY_FAILED;
     }
-    trunk_scan_control_toast(state, op, rc, target_id);
+    trunk_scan_control_toast(state, op, rc, target);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7969,16 +7989,16 @@ apply_scan_avoid_remove_lcn(const dsd_opts* opts, dsd_state* state, const dsd_ap
         ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale);
         return UI_CMD_APPLY_FAILED;
     }
-    char name[32];
-    (void)scan_avoid_lcn_toast_name(p->frequency_hz, p->row, name, sizeof name);
+    char mhz[32];
+    (void)scan_avoid_lcn_toast_freq(p->frequency_hz, mhz, sizeof mhz);
     if (match == DSD_APP_SCAN_AVOID_MATCH_NOT_AVOIDED) {
-        ui_set_toast(state, 3, "Already put back: %s", name);
+        ui_set_toast(state, 3, "Already put back: row %d (%s)", p->row + 1, mhz);
         return UI_CMD_APPLY_FAILED;
     }
     if (dsd_state_trunk_lcn_avoid_set(state, (size_t)p->row, 0) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
-    ui_set_toast(state, 3, "Put back %s (%zu avoided)", name, scan_avoid_lcn_total(opts, state));
+    ui_set_toast(state, 3, "Put back row %d (%s, %zu avoided)", p->row + 1, mhz, scan_avoid_lcn_total(opts, state));
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7986,15 +8006,16 @@ apply_scan_avoid_remove_lcn(const dsd_opts* opts, dsd_state* state, const dsd_ap
    coordinator's own (trunk_scan_avoided_count, which a failed list allocation leaves exact). */
 static int
 apply_scan_avoid_remove_trunk_scan(const dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* p) {
-    const int rc = dsd_trunk_scan_hook_unavoid(opts, state, p->session, p->target_id);
+    dsd_trunk_scan_target_name named;
+    const int rc = dsd_trunk_scan_hook_unavoid(opts, state, p->session, p->target_id, &named);
+    char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)trunk_scan_toast_name(named.ordinal, named.label, p->target_id, target, sizeof target);
     switch (rc) {
         case DSD_TRUNK_SCAN_CONTROL_OK:
-            ui_set_toast(state, 3, "Put back target %s (%u avoided)", p->target_id,
+            ui_set_toast(state, 3, "Put back target %s (%u avoided)", target,
                          (unsigned)state->trunk_scan_avoided_count);
             return UI_CMD_APPLY_COMPLETED;
-        case DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED:
-            ui_set_toast(state, 3, "Already put back: target %s", p->target_id);
-            break;
+        case DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED: ui_set_toast(state, 3, "Already put back: target %s", target); break;
         case DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE: ui_set_toast(state, 3, "Trunk scan is not running"); break;
         default: ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale); break;
     }

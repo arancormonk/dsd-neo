@@ -823,6 +823,10 @@ field, and the decoder refuses the rest when it applies the command.
   the live list: an entry from a replaced list, a restarted decoder or the
   other scanner changes nothing (`status.message` says `Scan list changed;
   nothing put back`), and one already back says `Already put back: ...`.
+  The messages name an entry as the list shows it: a `-Y` row by its row and
+  frequency (`Put back row 3 (851.012500 MHz, 1 avoided)`), a trunk-scan
+  target by its place in the list and its label, or its id when it has none
+  (`Put back target #2 County Fire (0 avoided)`).
 * **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
   scan on the row it would have stepped to next, a trunk scan on the target it
   left, with fresh timers. A running scan is left as it is (`Not paused: the

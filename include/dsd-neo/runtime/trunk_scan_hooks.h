@@ -63,6 +63,16 @@ enum {
      * many avoids it cleared. */
 };
 
+/**
+ * @brief What names a --trunk-scan target to a person (issue #672): its 1-based position in the target list, as the
+ * avoid list leads with it, and its label column ("" when it has none). The id alone names nothing on Android, whose
+ * target ids are entry UIDs.
+ */
+typedef struct {
+    uint32_t ordinal;
+    char label[64]; /**< dsd_trunk_scan_target::label, NUL-terminated */
+} dsd_trunk_scan_target_name;
+
 typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
@@ -76,7 +86,8 @@ typedef struct {
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
-    int (*unavoid)(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id);
+    int (*unavoid)(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                   dsd_trunk_scan_target_name* name);
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
@@ -191,10 +202,13 @@ int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
  * the visit cap restarts only when the target is the first eligible alternate again, as AVOID_CLEAR's does. Allowed
  * while the scan is paused (the timing stays cleared then). Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk
  * scan is not installed; otherwise DSD_TRUNK_SCAN_CONTROL_OK, DSD_TRUNK_SCAN_CONTROL_STALE when the session is not
- * this scan's or has no such target, or DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED when the target is not avoided. Decoder
- * thread only, like dsd_trunk_scan_hook_control().
+ * this scan's or has no such target, or DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED when the target is not avoided. On
+ * DSD_TRUNK_SCAN_CONTROL_OK and DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED, @p name (may be NULL) receives the target's
+ * position and label for the caller's message; otherwise it is left zeroed. Decoder thread only, like
+ * dsd_trunk_scan_hook_control().
  */
-int dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id);
+int dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                dsd_trunk_scan_target_name* name);
 
 #ifdef __cplusplus
 }

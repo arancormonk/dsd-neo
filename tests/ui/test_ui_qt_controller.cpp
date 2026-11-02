@@ -977,12 +977,17 @@ static uint32_t g_unavoid_session = 0;
 static QString g_unavoid_target;
 
 static int
-record_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id) {
+record_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+               dsd_trunk_scan_target_name* name) {
     (void)opts;
     (void)state;
     g_unavoid_calls++;
     g_unavoid_session = session;
     g_unavoid_target = QString::fromUtf8(target_id);
+    if (name) {
+        name->ordinal = 2U;
+        DSD_SNPRINTF(name->label, sizeof name->label, "%s", "County Fire");
+    }
     return DSD_TRUNK_SCAN_CONTROL_OK;
 }
 
@@ -1075,11 +1080,11 @@ test_scan_avoid_restore_bridge() {
     state.ui_msg[0] = '\0';
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(!dsd_state_trunk_lcn_avoid_get(&state, 1U) && dsd_state_trunk_lcn_avoid_get(&state, 2U));
-    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Put back 851.025000 MHz (1 avoided)"));
+    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Put back row 2 (851.025000 MHz, 1 avoided)"));
     /* Sent twice before the list moves: the second names a row already back, and the decoder says so. */
     check(bridge.restoreScanAvoid(key));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
-    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Already put back: 851.025000 MHz"));
+    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Already put back: row 2 (851.025000 MHz)"));
     metrics.refresh(&opts, &state);
     check(!bridge.restoreScanAvoid(key));
     check(dsd_app_drain_cmds(&opts, &state) == 0);
@@ -1101,6 +1106,8 @@ test_scan_avoid_restore_bridge() {
     check(bridge.restoreScanAvoid(QStringLiteral("trunk:9:county-p25")));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(g_unavoid_calls == 1 && g_unavoid_session == 9U && g_unavoid_target == QStringLiteral("county-p25"));
+    /* The Monitor shows the decoder's answer: the target as the sheet lists it, never its entry UID. */
+    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Put back target #2 County Fire (0 avoided)"));
     dsd_app_frontend_runtime_stop();
     dsd_trunk_scan_hooks_set(nullptr);
     bridge.setScanAvoids(nullptr);

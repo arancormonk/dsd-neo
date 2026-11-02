@@ -3083,8 +3083,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   - A paused scan takes clear alone (a flag edit, issue #672); the other ops answer "paused".
 - `dsd_trunk_scan_hook_unavoid()` — put one avoided target back by its identity, `(session, target id)` (issue #672):
   `DSD_TRUNK_SCAN_CONTROL_OK`, `_STALE` (another session, session 0 or no such id), `_NOT_AVOIDED`, or "unavailable"
-  when trunk scan is not installed (a NULL slot); also while paused. Its own slot beside `control`, so
-  `APP_COMMAND_QUEUE` fakes it as it fakes `control`.
+  when trunk scan is not installed (a NULL slot); also while paused. On OK and `_NOT_AVOIDED` it fills the caller's
+  `dsd_trunk_scan_target_name` (the target's 1-based list position and label column) for the toast; the wrapper zeroes
+  it first. Its own slot beside `control`, so `APP_COMMAND_QUEUE` fakes it as it fakes `control`.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl
@@ -3404,8 +3405,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
-    the `-Y` avoid (`Avoiding <MHz> (<n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads stay Hz (the
-    Qt diagnostics redaction matches the log templates). A success names `rtlsdr_center_freq` as
+    the `-Y` avoid (`Avoiding row <N> (<MHz>, <n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads
+    stay Hz (the Qt diagnostics redaction matches the log templates). A success names `rtlsdr_center_freq` as
     `io_control_set_freq()` left it, the frequency the controller applied when requests coalesced; pending, deferred
     (`RTL_STREAM_TUNE_DEFERRED`: `Deferred; retry: ...`, a failed command) and failed tunes name the one asked for.
     `ui_cmd_freq_payload_refused()` is the payload check `RTL_SET_FREQ` and `MANUAL_TUNE` share, after their own
@@ -3471,8 +3472,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). The `-Y`
     avoid, clear and put-back toasts count through the view (`size_t`, B6: `lcn_avoid_count` saturates at 65,535);
     the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its list
-    failed to allocate. Toasts name a row by its MHz (`row N` with no frequency) and a target by its id. Tests:
-    `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`.
+    failed to allocate. Toasts name an entry as the avoided channel list does: a `-Y` row as `row N (<MHz>, ...)`
+    (`frequency unknown` for a placeholder), since two rows can share a frequency, and a target as `#<ordinal> <label>`
+    (`trunk_scan_toast_name()`; the id when it has no label, since Android's ids are entry UIDs), from the published
+    `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put
+    back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result

@@ -375,11 +375,13 @@ During scanning:
   `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target now, `J`
   moves one eligible target back (the rotation then carries on forward from there), Trunking > Avoids > "Avoided
   channels..." lists the avoided targets (`#2  county-p25  851.012500 MHz  County Fire`) and Enter puts one back, and
-  "Clear avoids" puts every avoided target back. Putting a target back does not retune, and leaves a hold, a cooldown
-  and the dwell as they were; if it was the last alternate avoided, the visit cap restarts as it does for Clear. `L` and
-  `J` skip avoided targets and targets still cooling down after a failed retune. A hold only pauses the idle dwell: the
-  parked target's trunking state machine keeps following calls, and `J` and `L` still move while held (the hold then
-  applies to the new target). Avoiding the last usable target is refused, as are `L` and `J` on a single-target list
+  "Clear avoids" puts every avoided target back. The avoid and put-back messages name a target as the list does, by its
+  place and its label, or its id when it has no label (`Avoiding target #2 County Fire (1 avoided)`, `Put back target
+  #2 County Fire (0 avoided)`). Putting a target back does not retune, and leaves a hold, a cooldown and the dwell as
+  they were; if it was the last alternate avoided, the visit cap restarts as it does for Clear. `L` and `J` skip avoided
+  targets and targets still cooling down after a failed retune. A hold only pauses the idle dwell: the parked target's
+  trunking state machine keeps following calls, and `J` and `L` still move while held (the hold then applies to the new
+  target). Avoiding the last usable target is refused, as are `L` and `J` on a single-target list
   (`Trunk scan has only one target`). When `L` or `J` cannot move (no other target is eligible, the switch cannot be set
   up, or every other target fails to retune and the receiver falls back), it says `Staying on target <id>`. Avoids are
   not written back to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune

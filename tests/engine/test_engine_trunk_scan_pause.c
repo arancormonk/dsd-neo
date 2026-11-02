@@ -1060,7 +1060,7 @@ controls_beside_the_watchdog(void) {
         rc |= expect(strcmp(g_state.trunk_scan_active_id, "p25") == 0 && g_state.trunk_scan_avoid_count == 1U,
                      "on P25 with the DMR system avoided");
         releaser_ran();
-        rc |= expect(dsd_trunk_scan_hook_unavoid(&g_opts, &g_state, session, "tiii") == DSD_TRUNK_SCAN_CONTROL_OK,
+        rc |= expect(dsd_trunk_scan_hook_unavoid(&g_opts, &g_state, session, "tiii", NULL) == DSD_TRUNK_SCAN_CONTROL_OK,
                      "put the DMR system back");
         releaser_ran();
         rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 0, "hold off");
