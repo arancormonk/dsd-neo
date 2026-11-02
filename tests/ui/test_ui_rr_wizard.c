@@ -2229,7 +2229,10 @@ test_trunk_scan_blocks_the_preview(void) {
     expect("trunkscan: preview reason", strcmp(plan->blocked_reason, k_trunk_scan_reason) == 0);
 
     expect("trunkscan: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
-    expect("trunkscan: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    /* A session refusal is not an error: the fetch is kept for when the session can take it. */
+    expect("trunkscan: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("trunkscan: the system is kept", rr_wizard_core_system(ic.c.core) != NULL);
+    expect("trunkscan: the status repeats the reason", strcmp(ic.c.h.last_status, k_trunk_scan_reason) == 0);
     dsd_stat_t st;
     expect("trunkscan: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
     expect("trunkscan: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
@@ -2243,7 +2246,9 @@ test_trunk_scan_blocks_the_preview(void) {
  * The second half of the gate: the snapshot is published AFTER the last plan
  * rebuild, so the preview never saw it and plan->ok is still 1. Only the
  * re-check inside import_now() can refuse here - no mutator runs in between,
- * which is exactly the window the panel's Enter key sits in.
+ * which is exactly the window the panel's Enter key sits in. The refusal keeps
+ * the user on the site list with the fetch (issue #803): once the session can
+ * take the import, the same plan goes through.
  */
 static void
 test_import_now_rechecks_the_session_gate(void) {
@@ -2263,14 +2268,26 @@ test_import_now_rechecks_the_session_gate(void) {
     expect("recheck: the stale preview still says yes", plan->ok == 1);
 
     expect("recheck: import refused anyway", rr_wizard_core_import_now(ic.c.core) == -1);
-    expect("recheck: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
-    expect("recheck: trunk-scan message", strcmp(rr_wizard_core_error_text(ic.c.core), k_trunk_scan_reason) == 0);
+    expect("recheck: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("recheck: trunk-scan status", strcmp(ic.c.h.last_status, k_trunk_scan_reason) == 0);
+    plan = rr_wizard_core_plan(ic.c.core);
+    expect("recheck: the preview now says no",
+           plan != NULL && plan->ok == 0 && strcmp(plan->blocked_reason, k_trunk_scan_reason) == 0);
     dsd_stat_t st;
     expect("recheck: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
     expect("recheck: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
     expect_ll("recheck: apply never called", g_hook_apply_count, 0);
 
+    /* The trunk scan stops. The selection and the fetch were kept, and the
+       panel hands Enter on a session refusal to the core, which asks again: one
+       Enter imports it, with no other key in between. */
     g_stub_opts_published = 0;
+    expect("recheck: the refusal is the session's", rr_wizard_core_session_blocked(ic.c.core) == 1);
+    expect("recheck: imports once the session can", rr_wizard_core_import_now(ic.c.core) == 0);
+    expect("recheck: no longer the session's", rr_wizard_core_session_blocked(ic.c.core) == 0);
+    expect("recheck: the group file is written then", dsd_stat_path(ic.group_path, &st) == 0);
+    expect_ll("recheck: applied once", g_hook_apply_count, 1);
+
     imp_case_close(&ic);
 }
 
@@ -2342,9 +2359,8 @@ test_next_start_blocks_the_import(void) {
     expect("next-start: preview reason", plan != NULL && strcmp(plan->blocked_reason, k_next_start_map_reason) == 0);
 
     expect("next-start: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
-    expect("next-start: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
-    expect("next-start: the rule is the message",
-           strcmp(rr_wizard_core_error_text(ic.c.core), k_next_start_map_reason) == 0);
+    expect("next-start: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("next-start: the rule is the status", strcmp(ic.c.h.last_status, k_next_start_map_reason) == 0);
     dsd_stat_t st;
     expect("next-start: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
     expect("next-start: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
@@ -2403,8 +2419,11 @@ test_tetra_receiver_blocks_the_plan(void) {
     /* Enter re-checks: the session went back to audio after the last rebuild. */
     publish_session(AUDIO_IN_PULSE, "pulse");
     expect("tetra gate: import refused", rr_wizard_core_import_now(c.core) == -1);
-    expect("tetra gate: the reason is the message",
-           strcmp(rr_wizard_core_error_text(c.core), k_tetra_on_audio_reason) == 0);
+    expect("tetra gate: stays on the site list", rr_wizard_core_step(c.core) == RR_STEP_SYSTEM);
+    expect("tetra gate: the reason is the status", strcmp(c.h.last_status, k_tetra_on_audio_reason) == 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: the preview shows it",
+           plan != NULL && strcmp(plan->blocked_reason, k_tetra_on_audio_reason) == 0);
     expect_ll("tetra gate: apply never called", g_hook_apply_count, 0);
 
     unpublish_session();
@@ -2479,6 +2498,58 @@ tetra_sites_with_long_name(char* label_out, size_t label_sz) {
     return body;
 }
 
+/* A loaded TETRA system with no file to write, its site named with the longest label, importing into @p scratch. */
+typedef struct {
+    wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    char label[sizeof(((dsd_rr_import_plan*)0)->site_label)];
+    char* sites;
+} nofile_case;
+
+static void
+nofile_case_close(nofile_case* nc) {
+    wiz_case_close(&nc->c);
+    free(nc->sites);
+    nc->sites = NULL;
+    expect_scratch_removed(nc->scratch); /* nothing was written there */
+}
+
+static int
+nofile_case_open(nofile_case* nc, int apply_result) {
+    DSD_MEMSET(nc, 0, sizeof(*nc));
+    nc->sites = tetra_sites_with_long_name(nc->label, sizeof(nc->label));
+    expect("no files: the long-name sites body is built", nc->sites != NULL);
+    if (nc->sites == NULL) {
+        return 0;
+    }
+    if (dsd_test_mkdtemp(nc->scratch, sizeof(nc->scratch), "dsdneo_rr_nofile") == NULL) {
+        expect("no files: scratch dir created", 0);
+        free(nc->sites);
+        return 0;
+    }
+    if (!wiz_case_open(&nc->c)) {
+        free(nc->sites);
+        expect_scratch_removed(nc->scratch);
+        return 0;
+    }
+    g_hook_apply_count = 0;
+    g_hook_apply_result = apply_result;
+    DSD_MEMSET(&g_hook_apply_payload, 0, sizeof(g_hook_apply_payload));
+    nc->c.fake.talkgroups_body = k_tetra_all_too_big_tgs_body;
+    nc->c.fake.sites_body = nc->sites;
+    if (!drive_sid_to_system(&nc->c, "10880")) {
+        expect("no files: reached the system stage", 0);
+        nofile_case_close(nc);
+        return 0;
+    }
+    rr_wizard_core_set_imports_dir_for_test(nc->c.core, nc->scratch);
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(nc->c.core);
+    expect("no files: the plan is importable", plan != NULL && plan->ok == 1);
+    expect("no files: nothing to write", plan != NULL && plan->group_csv_text == NULL && plan->chan_csv_text == NULL);
+    expect("no files: the label is the long site name", plan != NULL && strcmp(plan->site_label, nc->label) == 0);
+    return 1;
+}
+
 /*
  * D1 (issue #803): a TETRA system whose talkgroups all lie past its ID range
  * has no group list, and TETRA writes no channel map, so the import saves no
@@ -2489,50 +2560,78 @@ tetra_sites_with_long_name(char* label_out, size_t label_sz) {
  */
 static void
 test_import_with_no_files_says_so(void) {
-    static wiz_case c;
-    char scratch[DSD_TEST_PATH_MAX];
-    char label[sizeof(((dsd_rr_import_plan*)0)->site_label)];
-    char* sites = tetra_sites_with_long_name(label, sizeof(label));
-    expect("no files: the long-name sites body is built", sites != NULL);
-    if (sites == NULL) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, 1)) { /* queued; what the decoder makes of it never reaches the wizard */
         return;
     }
-    expect_ll("no files: the label is as long as a label gets", (long long)strlen(label), (long long)sizeof(label) - 1);
-    if (dsd_test_mkdtemp(scratch, sizeof(scratch), "dsdneo_rr_nofile") == NULL || !wiz_case_open(&c)) {
-        expect("no files: case opened", 0);
-        free(sites);
-        return;
-    }
-    g_hook_apply_count = 0;
-    g_hook_apply_result = 1; /* queued; what the decoder makes of it never reaches the wizard */
-    DSD_MEMSET(&g_hook_apply_payload, 0, sizeof(g_hook_apply_payload));
-    c.fake.talkgroups_body = k_tetra_all_too_big_tgs_body;
-    c.fake.sites_body = sites;
-    if (!drive_sid_to_system(&c, "10880")) {
-        expect("no files: reached the system stage", 0);
-        wiz_case_close(&c);
-        free(sites);
-        expect_scratch_removed(scratch);
-        return;
-    }
-    rr_wizard_core_set_imports_dir_for_test(c.core, scratch);
-    const dsd_rr_import_plan* plan = rr_wizard_core_plan(c.core);
-    expect("no files: the plan is importable", plan != NULL && plan->ok == 1);
-    expect("no files: nothing to write", plan != NULL && plan->group_csv_text == NULL && plan->chan_csv_text == NULL);
-    expect("no files: the label is the long site name", plan != NULL && strcmp(plan->site_label, label) == 0);
-
-    expect("no files: import queued", rr_wizard_core_import_now(c.core) == 0);
+    expect_ll("no files: the label is as long as a label gets", (long long)strlen(nc.label),
+              (long long)sizeof(nc.label) - 1);
+    expect("no files: import queued", rr_wizard_core_import_now(nc.c.core) == 0);
     expect_ll("no files: apply posted", g_hook_apply_count, 1);
     expect("no files: the apply loads no file",
            g_hook_apply_payload.has_group == 0U && g_hook_apply_payload.has_chan == 0U);
     char want[256];
-    (void)DSD_SNPRINTF(want, sizeof(want), "Imported %s; no files to save.", label);
-    expect("no files: the status says nothing was saved", strcmp(c.h.last_status, want) == 0);
-    expect("no files: the status never says applied", strstr(c.h.last_status, "pplied") == NULL);
+    (void)DSD_SNPRINTF(want, sizeof(want), "Imported %s; no files to save.", nc.label);
+    expect("no files: the status says nothing was saved", strcmp(nc.c.h.last_status, want) == 0);
+    expect("no files: the status never says applied", strstr(nc.c.h.last_status, "pplied") == NULL);
+    nofile_case_close(&nc);
+}
 
-    wiz_case_close(&c);
-    free(sites);
-    expect_scratch_removed(scratch); /* nothing was written there */
+/*
+ * The one apply failure the wizard sees (the command queue said no) for an
+ * import that saved nothing: the message must not say it "was written", and
+ * there is no Imported Systems row to retry from, so it says to import again.
+ */
+static void
+test_no_file_import_rejected_says_nothing_was_saved(void) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, -1)) { /* DSD_APP_COMMAND_SUBMIT_REJECTED */
+        return;
+    }
+    expect("no files rejected: import failed", rr_wizard_core_import_now(nc.c.core) == -1);
+    expect_ll("no files rejected: the apply was tried", g_hook_apply_count, 1);
+    expect("no files rejected: error step", rr_wizard_core_step(nc.c.core) == RR_STEP_ERROR);
+    expect("no files rejected: the message says nothing was saved",
+           strcmp(rr_wizard_core_error_text(nc.c.core),
+                  "The import could not be applied to this session, and it had no files to save; import it again.")
+               == 0);
+    nofile_case_close(&nc);
+}
+
+/*
+ * An import that writes nothing needs no file name: every stem it would take
+ * is held by a hand-made file, which refuses an import that writes ("A
+ * different system is already imported under this name."), and this one still
+ * goes through and leaves those files alone.
+ */
+static void
+test_no_file_import_needs_no_name(void) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, 1)) {
+        return;
+    }
+    const dsd_rr_system_info* info = rr_wizard_core_system(nc.c.core);
+    char stem[192];
+    (void)rr_wizard_core_stem_for_test(info != NULL ? info->name : "", nc.label, stem, sizeof(stem));
+    char seeds[9][DSD_TEST_PATH_MAX];
+    for (int i = 0; i < 9; i++) {
+        char leaf[256];
+        if (i == 0) {
+            (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s group.csv", stem);
+        } else {
+            (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s (%d) group.csv", stem, i + 1);
+        }
+        expect("no name: seed path built", dsd_test_path_join(seeds[i], sizeof(seeds[0]), nc.scratch, leaf) == 0);
+        seed_foreign_csv(seeds[i], 0, "group");
+    }
+
+    expect("no name: import queued", rr_wizard_core_import_now(nc.c.core) == 0);
+    expect_ll("no name: apply posted", g_hook_apply_count, 1);
+    for (int i = 0; i < 9; i++) {
+        expect_file_matches("no name: hand-made file untouched", seeds[i], k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+        (void)remove(seeds[i]);
+    }
+    nofile_case_close(&nc);
 }
 
 /* Write 1 is the group sidecar, so the group CSV has already landed when the
@@ -3369,6 +3468,8 @@ main(void) {
     test_tetra_receiver_blocks_the_plan();
     test_browser_gates();
     test_import_with_no_files_says_so();
+    test_no_file_import_rejected_says_nothing_was_saved();
+    test_no_file_import_needs_no_name();
     test_import_now_unwinds_a_failed_write();
     test_import_now_keeps_files_when_apply_is_rejected();
     test_refresh_needs_a_sidecar();

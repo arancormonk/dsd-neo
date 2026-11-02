@@ -43,6 +43,13 @@ typedef void (*app_next_start_change_fn)(dsdneoUserConfig* save, const void* ctx
 int app_check_next_start(const dsd_opts* opts, const dsd_state* state, app_next_start_change_fn change, const void* ctx,
                          char* why, size_t why_size);
 
+/**
+ * @brief The change loading a channel map makes, and nothing else: @p ctx is its path (const char*). The decoder's
+ *        channel-map import (svc_import_channel_map()) and a frontend's pre-check of loading files alone
+ *        (dsd_app_rr_files_block_reason()) both ask it, so the two cannot drift apart.
+ */
+void app_next_start_load_channel_map(dsdneoUserConfig* save, const void* ctx);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

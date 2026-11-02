@@ -38,3 +38,8 @@ app_check_next_start(const dsd_opts* opts, const dsd_state* state, app_next_star
     free(before);
     return rc;
 }
+
+void
+app_next_start_load_channel_map(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
+}

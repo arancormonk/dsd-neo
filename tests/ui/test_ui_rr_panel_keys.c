@@ -181,6 +181,14 @@ rr_wizard_core_plan(const RrWizardCore* w) {
     return &g_plan;
 }
 
+static int g_session_blocked = 0;
+
+int
+rr_wizard_core_session_blocked(const RrWizardCore* w) {
+    (void)w;
+    return g_session_blocked;
+}
+
 int
 rr_wizard_core_import_now(RrWizardCore* w) {
     (void)w;
@@ -354,6 +362,7 @@ static void
 open_system_view(void) {
     DSD_MEMSET(&g_plan, 0, sizeof g_plan);
     g_plan.ok = 1;
+    g_session_blocked = 0;
     g_import_calls = 0;
     rr_panel_open_import(NULL, NULL);
     assert(rr_panel_active() == 1);
@@ -539,6 +548,19 @@ main(void) {
     test_use_this_system_is_checked_for_its_kind();
     test_load_these_files_is_still_checked();
     browser_teardown();
+
+    /* A blocked plan: the planner's block is said here, a session refusal goes
+       to the core, which asks the session again (issue #803). */
+    open_system_view();
+    g_plan.ok = 0;
+    DSD_SNPRINTF(g_plan.blocked_reason, sizeof g_plan.blocked_reason, "%s", "No control channel.");
+    g_status[0] = '\0';
+    assert(rr_panel_handle_key('\n') == 1);
+    assert(g_import_calls == 0);
+    assert(strcmp(g_status, "No control channel.") == 0);
+    g_session_blocked = 1;
+    assert(rr_panel_handle_key('\n') == 1);
+    assert(g_import_calls == 1);
 
     rr_panel_shutdown();
     assert(rr_panel_active() == 0);

@@ -262,7 +262,9 @@ rr_panel_refresh_queue_start_next(void) {
 
 /* Widest a system name gets inside a status toast. The fixed wording of every
    toast below stays under 40 columns so that, with this, the whole message
-   fits one row of an 80-column terminal's panel and two rows of the menu. */
+   fits one row of an 80-column terminal's panel and two rows of the menu. A
+   session refusal is a sentence of its own, without a name: the longest
+   (about 60 columns) takes the menu's two rows, as the panel's status does. */
 #define RR_STATUS_NAME_MAX       28
 
 /* Columns the chooser spends on itself: a border either side and two columns of
@@ -308,10 +310,10 @@ rr_browse_adopt(const RrLibrarySystem* s, const char* named, const char* chan, c
         return;
     }
     const int rc = dsd_app_command_set_rr_apply(&payload);
-    /* Names are clipped so the wording always fits one status row
-       (the menu offers ~39 columns after "Status: "); a failure
-       drops the name entirely - it was the title of the list the
-       user just left - and keeps the cause and the way out. */
+    /* Names are clipped to RR_STATUS_NAME_MAX so the wording always survives
+       the menu's two status rows (~39 columns each after "Status: "); a failure
+       drops the name entirely - it was the title of the list the user just
+       left - and keeps the cause and the way out. */
     if (rc > 0) {
         ui_statusf("Applying %.*s to this session.", RR_STATUS_NAME_MAX, named);
     } else {
@@ -1220,7 +1222,10 @@ rr_panel_handle_option_key(int ch) {
 static void
 rr_panel_try_import(void) {
     const dsd_rr_import_plan* plan = rr_wizard_core_plan(g_rr_panel.core);
-    if (plan == NULL || plan->ok == 0 || plan->blocked_reason[0] != '\0') {
+    /* A session refusal goes to the core, which asks the session again: it may
+       take the import by now, and if not it says why and stays on the list. */
+    const int session_blocked = rr_wizard_core_session_blocked(g_rr_panel.core);
+    if (plan == NULL || (!session_blocked && (plan->ok == 0 || plan->blocked_reason[0] != '\0'))) {
         ui_statusf("%s",
                    (plan != NULL && plan->blocked_reason[0] != '\0') ? plan->blocked_reason : "Nothing to import yet.");
         return;

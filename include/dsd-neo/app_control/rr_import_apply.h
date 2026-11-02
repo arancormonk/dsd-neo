@@ -60,6 +60,20 @@ typedef struct {
 int dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_path, const char* group_path,
                                   dsd_app_rr_apply_payload* out);
 
+/**
+ * @brief Map only what an import selects for the session - its decode mode and its one tuner owner (trunking, or the
+ *        -Y scanner) - onto the payload. Pure; no session.
+ *
+ * dsd_app_rr_fill_apply_payload() starts from it. A frontend uses it alone to ask dsd_app_rr_apply_block_reason()
+ * about a plan that is not finished yet (still waiting for its selection), whose decode mode and tuner owner are
+ * already known.
+ *
+ * @param plan Any plan from dsd_rr_import_plan_build() or dsd_rr_recipe_to_plan(); plan->ok is not required.
+ * @param out  Zeroed, then filled with decode_mode, trunking and scanner.
+ * @return 0 on success, -1 when the protocol has no decode mode (@p out is then untouched).
+ */
+int dsd_app_rr_fill_apply_mode(const dsd_rr_import_plan* plan, dsd_app_rr_apply_payload* out);
+
 /** @brief What delivers the samples an import's decode mode would run on (dsd_app_rr_receiver_facts::input_kind). */
 typedef enum {
     DSD_APP_RR_INPUT_AUDIO = 0,     /**< demodulated audio: PulseAudio, a WAV file, TCP/UDP PCM, stdin */

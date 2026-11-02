@@ -206,6 +206,17 @@ const dsd_rr_import_options* rr_wizard_core_options(const RrWizardCore* w);
  */
 const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
 
+/**
+ * @brief Whether the plan's blocked_reason is the session's refusal
+ *        (rr_wizard_core_apply_block_reason()) rather than the planner's.
+ *
+ * The session can change under an unchanged plan (a trunk scan stops, the DSP
+ * bandwidth is set), so a presenter hands Enter to rr_wizard_core_import_now()
+ * on such a plan, which asks the session again, and refuses a planner's block
+ * itself.
+ */
+int rr_wizard_core_session_blocked(const RrWizardCore* w);
+
 /* --- Stage 8: committing the import --------------------------------------- */
 
 /**
@@ -233,10 +244,16 @@ const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
  * must retry. Staging both halves before committing either would double the
  * disk traffic to cover a case one retry already fixes.
  *
- * @return 0 when every file landed AND the apply was accepted, -1 otherwise;
- *         on -1 the core is at RR_STEP_ERROR and rr_wizard_core_error_text()
- *         explains why. A rejected apply does NOT unwind - the files stay on
- *         disk so the apply can be retried.
+ * A plan with no file to write (a TETRA system with no usable talkgroups)
+ * resolves no imports folder and no stem; it is only applied.
+ *
+ * @return 0 when every file landed AND the apply was accepted, -1 otherwise.
+ *         On -1 the core is at RR_STEP_ERROR and rr_wizard_core_error_text()
+ *         explains why - except when nothing is selected yet or the session
+ *         refuses the import (rr_wizard_core_apply_block_reason()): the core
+ *         then stays on RR_STEP_SYSTEM with the reason in the plan preview and
+ *         the status line, and the loaded system is kept. A rejected apply does
+ *         NOT unwind - the files stay on disk so the apply can be retried.
  */
 int rr_wizard_core_import_now(RrWizardCore* w);
 

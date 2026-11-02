@@ -3322,7 +3322,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     stale-prone `iq_replay_active`) and asks the next-start rule (`rr_apply_next_start_refusal()`); the decoder's
     preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured
     rate, no `rtl_stream_*` call) share it. `dsd_app_rr_files_block_reason()` is the files-only form (no decode mode,
-    the next-start rule for a channel map alone, as `svc_import_channel_map()` asks it).
+    the next-start rule for a channel map alone, through the same `app_next_start_load_channel_map()` change
+    `svc_import_channel_map()` asks). `dsd_app_rr_fill_apply_mode()` maps a plan's decode mode and one tuner owner
+    without needing a finished plan; `dsd_app_rr_fill_apply_payload()` starts from it.
   - Next-start rule (issue #671): `app_check_next_start()` (`src/app_control/next_start_check.{h,c}`, pure) is the
     one body; `svc_check_next_start()` forwards to it on the decoder thread, and the RR pre-check calls it on the
     snapshot copies.
@@ -8931,8 +8933,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     it after `dsd_rr_recipe_to_plan()` ("Use this system", the recipe's decode mode), or
     `rr_wizard_core_files_block_reason()` for "Load these files" (a running trunk scan, and the next-start rule for
     the channel map it loads). Both wrap app-control's `dsd_app_rr_apply_block_reason()` /
-    `dsd_app_rr_files_block_reason()` and turn the reason phrase into a sentence. The wizard's status is posted when
-    the apply is queued, so it never says "applied"; an import that wrote no file says "no files to save"
+    `dsd_app_rr_files_block_reason()` and turn the reason phrase into a sentence. A session refusal is not an error:
+    the wizard stays on the site list with its fetch, shows it in the preview (`rr_wizard_core_session_blocked()`)
+    and on the status line, and the panel hands the next Enter back to the core, which asks the session again. The
+    wizard's status is posted when the apply is queued, so it never says "applied"; an import that wrote no file
+    resolves no folder or stem and says "no files to save" (and, if the queue refuses it, that nothing was saved)
   - Imported RadioReference systems: `rr_library.{h,c}` is the curses-free model of the imports directory
     (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the

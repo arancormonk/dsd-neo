@@ -63,20 +63,35 @@ rr_simulcast_qpsk(const dsd_rr_import_plan* plan) {
 }
 
 int
-dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_path, const char* group_path,
-                              dsd_app_rr_apply_payload* out) {
-    if (!plan || !out || !plan->ok) {
+dsd_app_rr_fill_apply_mode(const dsd_rr_import_plan* plan, dsd_app_rr_apply_payload* out) {
+    if (!plan || !out) {
         return -1;
     }
     int mode = 0;
     if (dsd_rr_protocol_decode_mode(plan->protocol, &mode) != 0) {
         return -1;
     }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->decode_mode = (int32_t)mode;
+    /* Exactly one automatic tuner owner, matching ui_handle_trunk_set/
+       ui_handle_scanner_toggle in src/app_control/actions/actions_trunk.c. */
+    out->trunking = plan->trunking ? 1U : 0U;
+    out->scanner = (!plan->trunking && plan->scan_list) ? 1U : 0U;
+    return 0;
+}
+
+int
+dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_path, const char* group_path,
+                              dsd_app_rr_apply_payload* out) {
+    if (!plan || !out || !plan->ok) {
+        return -1;
+    }
     if (plan->tune_hz < 0 || plan->tune_hz > (long long)UINT32_MAX) {
         return -1;
     }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    out->decode_mode = (int32_t)mode;
+    if (dsd_app_rr_fill_apply_mode(plan, out) != 0) {
+        return -1;
+    }
     out->edacs_ea = dsd_rr_protocol_edacs_ea(plan->protocol) ? 1U : 0U;
     out->edacs_esk = plan->esk ? 1U : 0U;
     out->simulcast_qpsk = rr_simulcast_qpsk(plan);
@@ -84,10 +99,6 @@ dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_p
        map sets p25_has_user_lcn_list(), which would otherwise disable the
        decoder's own learned SCCB candidates (rr_generate.c, k_protocols[]). */
     out->p25_prefer_candidates = (plan->trunking && plan->protocol == DSD_RR_PROTO_P25) ? 1U : 0U;
-    /* Exactly one automatic tuner owner, matching ui_handle_trunk_set/
-       ui_handle_scanner_toggle in src/app_control/actions/actions_trunk.c. */
-    out->trunking = plan->trunking ? 1U : 0U;
-    out->scanner = (!plan->trunking && plan->scan_list) ? 1U : 0U;
     out->tune_hz = (uint32_t)plan->tune_hz;
     out->has_chan = rr_copy_path(out->chan_path, sizeof out->chan_path, chan_path);
     out->has_group = rr_copy_path(out->group_path, sizeof out->group_path, group_path);
@@ -122,12 +133,6 @@ dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, 
     return 0;
 }
 
-/* Loading a channel map on its own, as svc_import_channel_map() asks the next-start rule: only the map changes. */
-static void
-rr_files_next_start_change(dsdneoUserConfig* save, const void* ctx) {
-    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
-}
-
 int
 dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size) {
     if (why && why_size > 0U) {
@@ -150,7 +155,8 @@ dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size)
     if (chan_path == NULL || chan_path[0] == '\0' || snap == NULL) {
         return 0;
     }
-    if (app_check_next_start(osnap, snap, rr_files_next_start_change, chan_path, why, why_size) != 0) {
+    /* Loading a channel map on its own, as svc_import_channel_map() asks the next-start rule: only the map changes. */
+    if (app_check_next_start(osnap, snap, app_next_start_load_channel_map, chan_path, why, why_size) != 0) {
         if (why && why_size > 0U) {
             why[strcspn(why, ";")] = '\0';
         }

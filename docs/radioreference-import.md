@@ -272,8 +272,9 @@ Limits worth knowing:
   anything, the wizard checks the session the way the decoder will, and the preview shows `Blocked:` with the
   reason: the receiver for the system's decode mode (see [Receiver requirements](#receiver-requirements)), a
   running trunk scan (it manages its own channel maps), and a trunk scan waiting for the next start beside the
-  channel map or the `-Y` scanner the import would set. The decoder checks again when the apply arrives; only
-  it can see a SoapySDR device's rate.
+  channel map or the `-Y` scanner the import would set. A refused import stays on the site list with the
+  system still loaded, so once the session can take it (the trunk scan stopped, the DSP bandwidth set), `Enter`
+  imports it. The decoder checks again when the apply arrives; only it can see a SoapySDR device's rate.
 - An import that has nothing to write (a TETRA system with no talkgroup a TETRA group list can carry writes no
   group list, and TETRA has no channel map) is still sent to the session, and the wizard says
   `Imported <site>; no files to save.` Such an import has no row in the Imported Systems browser, so it cannot

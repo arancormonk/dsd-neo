@@ -798,11 +798,6 @@ svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) 
 }
 
 static void
-svc_next_start_channel_map(dsdneoUserConfig* save, const void* ctx) {
-    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
-}
-
-static void
 svc_next_start_p25_bandplan(dsdneoUserConfig* save, const void* ctx) {
     DSD_SNPRINTF(save->trunk_p25_bandplan_csv, sizeof save->trunk_p25_bandplan_csv, "%s", (const char*)ctx);
 }
@@ -819,7 +814,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     /* Nor beside a trunk scan a config left for the next start: the save would write both, which startup refuses. */
     char why[256];
-    if (svc_check_next_start(opts, state, svc_next_start_channel_map, path, why, sizeof why) != 0) {
+    if (svc_check_next_start(opts, state, app_next_start_load_channel_map, path, why, sizeof why) != 0) {
         return svc_refuse_import_for_next_start(state, "Channel map", why);
     }
     char old_path[sizeof(opts->chan_in_file)];

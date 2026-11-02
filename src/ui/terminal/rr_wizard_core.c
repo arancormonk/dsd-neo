@@ -140,6 +140,10 @@ static const char k_rr_err_no_imports_dir[] =
 static const char k_rr_err_mkdir[] = "The imports folder could not be created.";
 static const char k_rr_err_write[] = "The import files could not be written.";
 static const char k_rr_err_apply[] = "The import was written but could not be applied to this session.";
+/* The same failure for an import that wrote nothing: there is no file to say
+ * was written, and no Imported Systems row to re-apply it from. */
+static const char k_rr_err_apply_unsaved[] =
+    "The import could not be applied to this session, and it had no files to save; import it again.";
 /* Two clauses, one per selection model: a trunked import is one site and the
  * obvious next move is another site, while a conventional one already carries
  * every repeater the user marked. Both name what was written, because the
@@ -320,6 +324,9 @@ struct RrWizardCore {
 
     dsd_rr_import_plan plan;
     int plan_valid;
+    /* 1 while the plan's blocked_reason is the session's refusal, not the
+     * planner's: a change of session can lift it without a rebuild by the user. */
+    int session_blocked;
 
     /* Stage 8: what the last import wrote. `written` is the unwind list - two
      * entries because one import is at most one group CSV and one chan CSV. */
@@ -444,6 +451,7 @@ static void
 rr_core_release_system(RrWizardCore* w) {
     dsd_rr_import_plan_free(&w->plan);
     w->plan_valid = 0;
+    w->session_blocked = 0;
     dsd_rr_site_list_free(&w->sites);
     dsd_rr_talkgroup_list_free(&w->talkgroups);
     free(w->site_mark);
@@ -1700,31 +1708,6 @@ rr_block_sentence(const char* why, char* out, size_t out_sz) {
     }
 }
 
-/**
- * @brief The payload the gate asks about: the plan's own, before any file exists.
- *
- * A plan still waiting for its selection is not ok and has no payload yet, but
- * its decode mode and tuner owner are already known, and a session that cannot
- * take them should say so before the user picks sites.
- *
- * @return 0 when @p out holds the plan's decode mode, -1 when it has none.
- */
-static int
-rr_gate_payload(const dsd_rr_import_plan* plan, dsd_app_rr_apply_payload* out) {
-    if (dsd_app_rr_fill_apply_payload(plan, NULL, NULL, out) == 0) {
-        return 0;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    int mode = 0;
-    if (dsd_rr_protocol_decode_mode(plan->protocol, &mode) != 0) {
-        return -1;
-    }
-    out->decode_mode = (int32_t)mode;
-    out->trunking = plan->trunking ? 1U : 0U;
-    out->scanner = (!plan->trunking && plan->scan_list) ? 1U : 0U;
-    return 0;
-}
-
 /* Exported, not static: the Imported Systems browser posts the same
  * DSD_APP_CMD_RR_APPLY_IMPORT from rr_panel.c and needs the identical pre-check
  * and the identical wording, rather than a second copy that can drift. */
@@ -1735,9 +1718,13 @@ rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group,
         return 0;
     }
     char why[DSD_APP_RR_VERDICT_WHY_MAX];
+    /* Only the decode mode and tuner owner matter here, and they are known
+     * before the plan is finished: a plan still waiting for its selection is
+     * asked too, so a session that cannot take it says so before the user
+     * picks sites. */
     dsd_app_rr_apply_payload payload;
     int blocked = 0;
-    if (rr_gate_payload(plan, &payload) == 0) {
+    if (dsd_app_rr_fill_apply_mode(plan, &payload) == 0) {
         blocked = dsd_app_rr_apply_block_reason(&payload, has_group, has_chan, why, sizeof(why));
     } else {
         /* No decode mode (a protocol the planner refuses anyway): what refuses any import still does. */
@@ -1766,15 +1753,22 @@ rr_core_session_block_reason(const RrWizardCore* w, char* out, size_t out_sz) {
                                              out, out_sz);
 }
 
+/* Show a session refusal in the preview. */
+static void
+rr_core_block_plan(RrWizardCore* w, const char* reason) {
+    w->session_blocked = 1;
+    w->plan.ok = 0;
+    /* A refusal, not a question: the preview styles it as one ("Blocked: ..."). */
+    w->plan.awaiting_selection = 0;
+    (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof(w->plan.blocked_reason), "%s", reason);
+}
+
 static void
 rr_core_apply_session_gate(RrWizardCore* w) {
     char reason[256];
     reason[0] = '\0';
     if (rr_core_session_block_reason(w, reason, sizeof(reason)) != 0) {
-        w->plan.ok = 0;
-        /* A refusal, not a question: the preview styles it as one ("Blocked: ..."). */
-        w->plan.awaiting_selection = 0;
-        (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof(w->plan.blocked_reason), "%s", reason);
+        rr_core_block_plan(w, reason);
     }
 }
 
@@ -1855,6 +1849,7 @@ rr_plan_rebuild(RrWizardCore* w) {
     w->plan_valid = 1;
     /* Before the notify, never after: the redraw it triggers must already see
      * the blocked plan. */
+    w->session_blocked = 0;
     rr_core_apply_session_gate(w);
     rr_core_panel_changed(w);
 }
@@ -2562,6 +2557,11 @@ rr_wizard_core_plan(const RrWizardCore* w) {
     return (w != NULL && w->plan_valid) ? &w->plan : NULL;
 }
 
+int
+rr_wizard_core_session_blocked(const RrWizardCore* w) {
+    return (w != NULL && w->plan_valid && w->session_blocked) ? 1 : 0;
+}
+
 /* ---- Stage 8: committing the import -------------------------------------- */
 
 /**
@@ -2872,10 +2872,26 @@ rr_import_check_ready(RrWizardCore* w) {
     char reason[256];
     reason[0] = '\0';
     /* Re-run rather than trust the plan: the snapshot may have changed since
-     * the last rebuild. */
+     * the last rebuild. A refusal is the session's, not a failed import, so it
+     * is not an error either: RR_STEP_ERROR's dismissal cancels the core and
+     * would throw away the fetch, while the session can change (stop the trunk
+     * scan, set the DSP bandwidth) and the same plan go through. The preview
+     * shows the refusal and the status line repeats it. */
     if (rr_core_session_block_reason(w, reason, sizeof(reason)) != 0) {
-        rr_core_fail(w, reason);
+        rr_core_block_plan(w, reason);
+        rr_core_panel_changed(w);
+        rr_core_status_notify(w, reason);
         return -1;
+    }
+    if (w->session_blocked) {
+        /* The session refused this plan earlier and takes it now: rebuild, so
+         * the plan is the planner's own again. A block of the planner's that the
+         * refusal was covering is said, not failed on, as the panel says it. */
+        rr_plan_rebuild(w);
+        if (w->plan.ok == 0) {
+            rr_core_status_notify(w, (w->plan.blocked_reason[0] != '\0') ? w->plan.blocked_reason : k_rr_err_write);
+            return -1;
+        }
     }
     if (w->plan.ok == 0) {
         if (w->plan.awaiting_selection) {
@@ -2951,15 +2967,9 @@ rr_import_land_back_on_the_site_list(RrWizardCore* w) {
     rr_core_status_notify(w, text);
 }
 
-int
-rr_wizard_core_import_now(RrWizardCore* w) {
-    if (w == NULL || w->step != RR_STEP_SYSTEM) {
-        return -1;
-    }
-    if (rr_import_check_ready(w) != 0) {
-        return -1;
-    }
-
+/** @brief Resolve the folder and a free stem, then write the plan's files. Calls rr_core_fail() itself. */
+static int
+rr_import_write_files(RrWizardCore* w) {
     char dir[RR_WIZ_PATH_MAX];
     if (rr_import_resolve_dir(w, dir, sizeof(dir)) != 0) {
         return -1; /* rr_import_resolve_dir() already called rr_core_fail() */
@@ -2978,17 +2988,37 @@ rr_wizard_core_import_now(RrWizardCore* w) {
         return -1;
     }
 
-    rr_import_reset_write_state(w);
     if (rr_import_emit_pair(w, group_path, chan_path) != 0) {
         rr_import_unwind(w);
         rr_core_fail(w, k_rr_err_write);
         return -1;
     }
+    return 0;
+}
+
+int
+rr_wizard_core_import_now(RrWizardCore* w) {
+    if (w == NULL || w->step != RR_STEP_SYSTEM) {
+        return -1;
+    }
+    if (rr_import_check_ready(w) != 0) {
+        return -1;
+    }
+
+    rr_import_reset_write_state(w);
+    /* A plan with nothing to write needs no folder and no name: resolving them
+     * could only refuse an import that saves nothing (no config directory, a
+     * stem another system holds). */
+    const int has_files = (w->plan.group_csv_text != NULL || w->plan.chan_csv_text != NULL);
+    if (has_files && rr_import_write_files(w) != 0) {
+        return -1; /* rr_import_write_files() already called rr_core_fail() */
+    }
 
     /* A rejected apply deliberately does NOT unwind: the files are good, and
-     * the user can retry the apply from the panel. */
+     * the user can retry the apply from the Imported Systems browser. An import
+     * with no files has no row there, so its message says to import it again. */
     if (rr_import_apply(w) != 0) {
-        rr_core_fail(w, k_rr_err_apply);
+        rr_core_fail(w, has_files ? k_rr_err_apply : k_rr_err_apply_unsaved);
         return -1;
     }
     rr_import_land_back_on_the_site_list(w);
