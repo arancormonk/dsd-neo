@@ -13,7 +13,8 @@
  *  - the carrier boundary a Signal search pause or failure runs discards a candidate;
  *  - D9: an analog call on audio input is heard on the frequency a scan confirmed it landed its rigctl peer on (a typed
  *    or untyped -Y row's commit, a trunk-scan conventional target's completed retune), and on none after a failed tune,
- *    a placeholder row, a map replacement, a manual takeover or a rollback.
+ *    a placeholder row, a map replacement, a manual takeover, a rollback, or a rigctl reconnect or disconnect
+ *    (svc_rigctl_connect(), with Connect() stood in for too).
  * A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS; a candidate shows by what follows it: one that was carried
  * on qualifies on blocks that alone are too short, and one discarded does not.
  */
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -46,6 +48,7 @@
 #include <time.h>
 
 #include "scan_landing.h"
+#include "services.h"
 #include "test_support.h"
 
 static int g_failures = 0;
@@ -62,11 +65,14 @@ expect(const char* label, int cond) {
 
 static int g_setfreq_ok = 1;
 static long g_setfreq_freq = 0;
+/* What the next rigctl connect returns. */
+static dsd_socket_t g_connect_result = DSD_INVALID_SOCKET;
 /* The key preparations to let through before one fails (-1: none fails). */
 static int g_key_prepare_fail_after = -1;
 
 // GNU ld --wrap requires these exact external symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dsd_socket_t __wrap_Connect(char* hostname, int portno);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 bool __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth);
 bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
@@ -75,6 +81,13 @@ bool __wrap_RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, 
 void __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
 int __real_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
 int __wrap_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
+
+dsd_socket_t
+__wrap_Connect(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    return g_connect_result;
+}
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
@@ -162,7 +175,11 @@ session_new(dsd_opts** out_opts, dsd_state** out_state) {
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->setmod_bw = 0;
     opts->trunk_hangtime = 1;
+    /* A squelch the scanners hear no noise through, so they warn of none; on audio input it gates no analog call. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
     g_setfreq_ok = 1;
+    g_connect_result = DSD_INVALID_SOCKET;
     g_key_prepare_fail_after = -1;
     /* engine.c keeps the last rigctl frequency it sent across cases. */
     dsd_engine_rigctl_tune_cache_forget();
@@ -302,6 +319,34 @@ test_scan_landing(int typed) {
     expect("landing: a step lands before the takeover", landed > 0 && call_row_hz(opts, state) == landed);
     (void)dsd_engine_channel_scan_pause(opts, state, 1);
     expect("landing: a manual takeover names no frequency", call_row_hz(opts, state) == 0);
+    session_free(opts, state);
+}
+
+/* A rigctl connection change: the peer the scan tuned is not the one heard now (a new one, or the same one restarted),
+   or there is none. */
+static void
+test_rigctl_connection_change_forgets_landing(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (session_new(&opts, &state) != 0) {
+        expect("rigctl change: a session", 0);
+        return;
+    }
+    scan_list(opts, state, 965012500L, 965037500L, 0);
+    expect("rigctl change: a step lands", landing_step(opts, state) == 965012500L);
+    g_connect_result = (dsd_socket_t)77;
+    expect("rigctl change: the reconnect succeeds", svc_rigctl_connect(opts, state, "localhost", 4532) == 0);
+    expect("rigctl change: a reconnect names no frequency", call_row_hz(opts, state) == 0);
+
+    const long landed = landing_step(opts, state);
+    expect("rigctl change: a step lands on the new connection", landed > 0 && call_row_hz(opts, state) == landed);
+    expect("rigctl change: the landing is in force", dsd_engine_scan_landing_hz(opts, state) == (uint32_t)landed);
+    /* The connection dropped; a connect that fails leaves rigctl off. */
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    g_connect_result = DSD_INVALID_SOCKET;
+    expect("rigctl change: the connect fails",
+           svc_rigctl_connect(opts, state, "localhost", 4532) == -1 && opts->use_rigctl == 0);
+    expect("rigctl change: a disconnect names no frequency", call_row_hz(opts, state) == 0);
     session_free(opts, state);
 }
 
@@ -504,6 +549,7 @@ main(void) {
     test_scan_landing(1);
     test_scan_landing(0);
     test_landing_taken_once();
+    test_rigctl_connection_change_forgets_landing();
     test_scan_leave_ends_reception();
     test_search_boundary_discards_candidate();
     test_trunk_scan_departure(0);

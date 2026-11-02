@@ -86,7 +86,8 @@
  * --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS (issue #667) replays the first AT_MS of the --iq-replay capture, then
  * a GAP_MS gap in the radio stream as a USB recovery records one (a RETUNE to the same centre, the muted samples and a
  * RESET, each named usb_recovery), then the first THEN_MS of FIXTURE, another committed 48 kHz capture named without
- * its .iq.json. The joined copy goes to the private directory, as the scaled copy does.
+ * its .iq.json and found by its directory entry there, as the scaled copy's capture is. The joined copy goes to the
+ * private directory, as the scaled copy does.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -1431,10 +1432,13 @@ analog_make_gap_copy(const char* meta_path) {
     DSD_MEMSET(&after, 0, sizeof after);
     DSD_MEMSET(&joined, 0, sizeof joined);
     int rc = -1;
-    const int n =
-        DSD_SNPRINTF(then_meta, sizeof then_meta, "%s/%s.iq.json", DSD_NEO_TEST_IQ_FIXTURE_DIR, g_gap_join.then);
-    if (n <= 0 || (size_t)n >= sizeof then_meta || analog_capture_load(meta_path, &before) != 0
-        || analog_capture_load(then_meta, &after) != 0 || analog_gap_join_captures(&before, &after, &joined) != 0
+    /* FIXTURE is looked up by its directory entry in tests/fixtures/iq, never used as a path. */
+    char then_name[sizeof g_gap_join.then + 16];
+    const int n = DSD_SNPRINTF(then_name, sizeof then_name, "%s.iq.json", g_gap_join.then);
+    if (n <= 0 || (size_t)n >= sizeof then_name
+        || analog_fixture_path(then_name, (size_t)n, then_meta, sizeof then_meta) != 0
+        || analog_capture_load(meta_path, &before) != 0 || analog_capture_load(then_meta, &after) != 0
+        || analog_gap_join_captures(&before, &after, &joined) != 0
         || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_gap") == NULL) {
         DSD_FPRINTF(stderr, "analog replay: %s cannot join '%s' and '%s'\n", k_gap_join_arg, meta_path,
                     g_gap_join.then);

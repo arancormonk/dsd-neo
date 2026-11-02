@@ -176,6 +176,11 @@ dsd_engine_rigctl_tune_cache_forget(void) {
 }
 
 void
+dsd_engine_rigctl_landing_forget(const dsd_state* state) {
+    dsd_engine_scan_landing_forget(state);
+}
+
+void
 dsd_engine_legacy_tune_caches_forget(void) {
     s_last_rigctl_freq = -1;
 #ifdef USE_RADIO

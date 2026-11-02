@@ -11849,11 +11849,14 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     trunk-scan conventional target's (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's
     control channel). It is forgotten before every row start (`channel_scan_start_row()`, the untyped steps), every
     target switch after its preparation, at every carrier boundary but a stream gap (a manual tune among them) and at
-    the -Y release (a leave, a pause, a trunk-scan pause or stop); a placeholder row, a failed or pending tune and a
-    rollback note none. `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing
-    once the scan session or channel map (`trunk_chan_map_seq`, a map replacement) moved. Analog rows only: digital rows
-    on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS`,
-    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps).
+    the -Y release (a leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
+    (`dsd_engine_rigctl_landing_forget()`, which `svc_rigctl_connect()` calls on a reconnect, a new peer and a connect
+    that leaves rigctl off); a placeholder row, a failed or pending tune and a rollback note none.
+    `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing once the scan
+    session or channel map (`trunk_chan_map_seq`, a map replacement) moved. As with `dsd_opts_tuned_freq_hz()`, a
+    frequency changed on the peer itself is not seen. Analog rows only: digital rows on a rigctl -Y channel keep the
+    `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
+    real service included), `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps), `UI_RIGCTL_CONNECT`.
   - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
     discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
     preparation fails leaves either running, and a rollback or a revisit restores neither; the carrier boundary a

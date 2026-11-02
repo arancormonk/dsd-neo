@@ -28,7 +28,7 @@
 #include "services.h"
 
 /* The calls the service made, in order: C Connect(), G/g the P25 SM tick guard entered/left, R RigctlRebindPeer(),
- * X dsd_socket_close(), F the engine forget, A the session passband ask. */
+ * X dsd_socket_close(), F the engine's tune cache forget, L its scan landing forget, A the session passband ask. */
 static char g_calls[16];
 static size_t g_call_count = 0;
 
@@ -46,6 +46,9 @@ static dsd_socket_t g_closed_sock = 0;
 static dsd_socket_t g_ask_sock = 0;
 static int g_ask_use_rigctl = -1;
 static const dsd_state* g_ask_state = NULL;
+
+/* The state the scan landing forget was handed (issue #667 D9). */
+static const dsd_state* g_landing_state = NULL;
 
 /* The decoder state the service is given (static: dsd_state is multi-megabyte). */
 static dsd_state g_state;
@@ -72,6 +75,7 @@ reset_fakes(void) {
     g_ask_sock = 0;
     g_ask_use_rigctl = -1;
     g_ask_state = NULL;
+    g_landing_state = NULL;
 }
 
 dsd_socket_t
@@ -100,6 +104,12 @@ dsd_socket_close(dsd_socket_t sock) {
 void
 dsd_engine_rigctl_tune_cache_forget(void) {
     note_call('F');
+}
+
+void
+dsd_engine_rigctl_landing_forget(const dsd_state* state) {
+    note_call('L');
+    g_landing_state = state;
 }
 
 /* The NXDN control-channel hunt forgets which frequency the receiver is on: the new connection's peer may sit
@@ -160,7 +170,7 @@ test_same_endpoint_hands_the_record_over_then_closes(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 1);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRXFNAg") == 0);
+    assert(strcmp(g_calls, "CGRXFLNAg") == 0 && g_landing_state == &g_state);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(strcmp(g_connect_host, "localhost") == 0 && g_connect_port == 4532);
     assert(g_rebind_old == (dsd_socket_t)41 && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 1);
@@ -184,7 +194,7 @@ test_another_endpoint_closes_the_old_socket(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 1);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "10.0.0.2", 4532) == 0);
-    assert(strcmp(g_calls, "CGRXFNAg") == 0);
+    assert(strcmp(g_calls, "CGRXFLNAg") == 0);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(g_rebind_old == (dsd_socket_t)41 && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 0);
     assert(g_closed_sock == (dsd_socket_t)41);
@@ -207,7 +217,7 @@ test_first_connection_closes_nothing(void) {
     seed_opts(&opts, "localhost", 4532, DSD_INVALID_SOCKET, 0);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFNAg") == 0);
+    assert(strcmp(g_calls, "CGRFLNAg") == 0);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(g_rebind_old == DSD_INVALID_SOCKET && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 0);
     expect_reconnected(&opts, "localhost", 4532, (dsd_socket_t)42);
@@ -216,14 +226,14 @@ test_first_connection_closes_nothing(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 0);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
+    assert(strcmp(g_calls, "CGRFLNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
 
     reset_fakes();
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.use_rigctl = 1;
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
+    assert(strcmp(g_calls, "CGRFLNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
     expect_reconnected(&opts, "localhost", 4532, (dsd_socket_t)42);
 }
 
@@ -255,7 +265,7 @@ test_failed_first_connection_records_the_endpoint(void) {
     opts.rigctl_sent_freq_hz = 851012500U; /* sent on a connection since dropped */
     g_connect_result = DSD_INVALID_SOCKET;
     assert(svc_rigctl_connect(&opts, &g_state, "rig.local", 4532) == -1);
-    assert(strcmp(g_calls, "CGg") == 0);
+    assert(strcmp(g_calls, "CGLg") == 0 && g_landing_state == &g_state);
     assert(strcmp(opts.rigctlhostname, "rig.local") == 0);
     assert(opts.rigctlportno == 4532);
     assert(opts.rigctl_sockfd == DSD_INVALID_SOCKET);

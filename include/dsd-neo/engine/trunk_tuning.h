@@ -127,6 +127,11 @@ void dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_stat
  * here: the client's record of the peer skips a repeat, and RigctlRebindPeer() hands a reconnect that record (issue
  * #621). */
 void dsd_engine_rigctl_tune_cache_forget(void);
+/** @brief Forget the frequency a scan confirmed it landed the rigctl peer on (issue #667 D9), which an analog call on
+ * audio input is heard on: it describes the connection the tune went out on. Call it whenever opts->rigctl_sockfd
+ * becomes a new connection or none (the rigctl reconnect service does, on a reconnect, a new peer and a connect that
+ * leaves rigctl off). The record lives in the engine's scan state, not in @p state itself; NULL does nothing. */
+void dsd_engine_rigctl_landing_forget(const dsd_state* state);
 /** @brief Forget the frequencies the legacy legs last sent, rigctl's and the RTL stream's (issue #671): the untyped -Y
  * step and the direct control-channel return skip a repeat of them, which holds only while nothing else moved the
  * receiver. A manual tune moves it without writing them, so every accepted one forgets them: the carrier boundary of a

@@ -2847,6 +2847,7 @@ test_am_call(void) {
     /* The live stream then gives nothing (the read yields), so no block comes. The tap's deadline is on the real clock
        (an input that stops is a wait), and the tick leaves the call until it is past. */
     const uint64_t deadline_ms = r.state->analog_rx.stale_after_ms;
+    assert(deadline_ms != 0U);
     hold_advance_ms(&r, 5000);
     dsd_engine_analog_call_tick(r.opts, r.state);
     assert(dsd_engine_analog_call_active(r.state) || dsd_realtime_mono_ms() > deadline_ms);

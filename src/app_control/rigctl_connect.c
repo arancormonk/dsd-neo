@@ -48,14 +48,17 @@ svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int
         opts->rigctl_sockfd = DSD_INVALID_SOCKET;
         opts->use_rigctl = 0;
         opts->rigctl_sent_freq_hz = 0U;
+        /* No peer is tuned now: a scan's landing no longer names a call's frequency (issue #667 D9). */
+        dsd_engine_rigctl_landing_forget(state);
         p25_sm_tick_guard_leave();
         return -1;
     }
 
     /* Issue #589: the new socket opens while the old one is still open, so their numbers differ; it takes what the
        old socket knew of its peer (the same peer when the host and port are), and the old one is closed before
-       anything is sent on the new one. The engine's legacy tune cache described the old connection. The old peer is
-       sent nothing: it keeps what a scan last set on it. */
+       anything is sent on the new one. The engine's legacy tune cache and the frequency a scan landed the peer on
+       (issue #667 D9) described the old connection. The old peer is sent nothing: it keeps what a scan last set on
+       it. */
     const dsd_socket_t old_sockfd = live ? opts->rigctl_sockfd : DSD_INVALID_SOCKET;
     const int same_endpoint =
         live && dsd_strcasecmp(opts->rigctlhostname, next_host) == 0 && opts->rigctlportno == port;
@@ -65,6 +68,7 @@ svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int
         dsd_socket_close(old_sockfd);
     }
     dsd_engine_rigctl_tune_cache_forget();
+    dsd_engine_rigctl_landing_forget(state);
     nxdn_cc_hunt_forget_attribution(state);
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", next_host);
     opts->rigctlportno = port;

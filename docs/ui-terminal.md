@@ -1203,8 +1203,10 @@ are the same lines.
 An analog call row names its mode after the `ANALOG` token, then the frequency and the received tone:
 `2026-04-30 09:12:04 ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `... ANALOG NFM; FREQ: 154.430000 MHz;
 DCS D023N / D047I;`, `... ANALOG AM; FREQ: 119.100000 MHz;`. The mode is `NFM` or `AM` as dsd-neo demodulated it. On
-audio input another receiver demodulated the audio, so the row names no mode and, as dsd-neo tuned nothing, no
-frequency: `... ANALOG; CTCSS 100.0 Hz;`. The tone is the CTCSS tone or DCS code the call was confirmed on, written as
+audio input another receiver demodulated the audio, so the row names no mode and, unless dsd-neo tuned that receiver,
+no frequency: `... ANALOG; CTCSS 100.0 Hz;`. When a `-Y` row or a conventional `--trunk-scan` target confirmed it
+tuned the rigctl peer, the analog row names that frequency; digital rows on audio input still name none, and a
+frequency changed on the peer itself is not seen. The tone is the CTCSS tone or DCS code the call was confirmed on, written as
 Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone, or one never confirmed, has none. Two
 receptions on one channel that differ only by tone now read differently. Earlier versions wrote `NFM` on every analog
 row, audio input included, and no tone. An ended analog row is stamped with the time its call ended, even when an
