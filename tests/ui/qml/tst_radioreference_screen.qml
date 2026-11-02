@@ -293,6 +293,24 @@ Item {
             closeReview(review)
         }
 
+        // Regression (#803 D-B6): the custom band plan advice sends the user
+        // to a P25 band plan CSV, which only a P25 system reads.
+        function test_21_the_band_plan_advice_is_for_p25_only() {
+            loadTetraSystem(1)
+            var details = Object.assign({}, radioReference.systemDetails)
+            details.hasCustomBandplan = true
+            testContext.setRadioReference("systemDetails", details)
+            var bandplan = findChild(tc.screen, "radioReferenceBandplanNote")
+            verify(bandplan !== null, "the band plan note has no name to find it by")
+            wait(50)
+            verify(!bandplan.visible, "a TETRA system was told to import a P25 band plan")
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 6673, "name": "Test System", "typeDescr": "Project 25",
+                                              "flavorDescr": "Phase II", "protocolToken": "p25",
+                                              "hasCustomBandplan": true })
+            tryVerify(function () { return bandplan.visible }, 2000, "a P25 system lost its band plan advice")
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")

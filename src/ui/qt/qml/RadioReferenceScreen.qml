@@ -1462,9 +1462,11 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
+                    // P25 advice: only a P25 system reads a band plan CSV.
                     ReadableText {
+                        objectName: "radioReferenceBandplanNote"
                         width: parent.width
-                        visible: radioReference.systemDetails.hasCustomBandplan === true
+                        visible: screen.isP25 && radioReference.systemDetails.hasCustomBandplan === true
                         text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(12)

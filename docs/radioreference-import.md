@@ -368,7 +368,8 @@ Two things the preview will warn about rather than silently paper over:
   quiet control channel) while the
   channel numbers themselves are inert. They are purged within seconds of control-channel lock,
   when the site's first `IDEN_UP` invalidates that band's slots.
-- **Custom band plans are not carried.** When RadioReference publishes one the preview says so.
+- **Custom band plans are not carried.** When RadioReference publishes one for a P25 system the preview says
+  so.
   The decoder takes a band plan as a P25 band plan CSV (`--p25-bandplan`, the Imports library's
   **P25 band plan** kind, or the terminal's **Import P25 band plan CSV...**; format in
   `docs/csv-formats.md`), which is one row per identifier rather than one per channel. Generating
