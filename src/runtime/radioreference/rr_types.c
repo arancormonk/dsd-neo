@@ -15,6 +15,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -58,13 +59,7 @@ rr_array_reserve(void** items, size_t* cap, size_t needed, size_t elem_size) {
     return 0;
 }
 
-/**
- * @brief Skip leading ASCII whitespace.
- *
- * @param p Input pointer.
- * @return First non-space character.
- */
-static const char*
+const char*
 rr_skip_ws(const char* p) {
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') {
         p++;
@@ -74,7 +69,20 @@ rr_skip_ws(const char* p) {
 
 int
 rr_parse_long_strict(const char* text, long* out) {
-    if (text == NULL || out == NULL) {
+    if (out == NULL) {
+        return -1;
+    }
+    long long value = 0;
+    if (rr_parse_ll_range_strict(text, LONG_MIN, LONG_MAX, &value) != 0) {
+        return -1;
+    }
+    *out = (long)value;
+    return 0;
+}
+
+int
+rr_parse_ll_range_strict(const char* text, long long min_value, long long max_value, long long* out) {
+    if (text == NULL || out == NULL || min_value > max_value) {
         return -1;
     }
 
@@ -85,11 +93,11 @@ rr_parse_long_strict(const char* text, long* out) {
 
     char* end = NULL;
     errno = 0;
-    const long value = strtol(start, &end, 10);
-    if (errno != 0 || end == start) {
+    const long long value = strtoll(start, &end, 10);
+    if (errno != 0 || end == start || *rr_skip_ws(end) != '\0') {
         return -1;
     }
-    if (*rr_skip_ws(end) != '\0') {
+    if (value < min_value || value > max_value) {
         return -1;
     }
 

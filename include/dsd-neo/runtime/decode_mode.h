@@ -201,11 +201,11 @@ const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
 
 /** @brief Why AM is refused on an input that delivers already demodulated audio (issue #524). */
 #define DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT                                                                               \
-    "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
+    "AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA"
 
 /** @brief Why TETRA is refused on an input that delivers already demodulated audio. */
 #define DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT                                                                            \
-    "TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated audio"
+    "TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated audio"
 
 /**
  * @brief Why @p mode cannot run on an input that delivers demodulated audio: DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT for AM,

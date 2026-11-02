@@ -340,11 +340,54 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
         map.insert(QStringLiteral("esk"), info.record_says_esk != 0);
     }
     map.insert(QStringLiteral("protocol"), static_cast<int>(info.protocol));
+    /* QML tells a protocol by its stable provenance token ("tetra"), never by the enum's number or the type text;
+       empty for an unsupported system. */
+    const char* token = dsd_rr_protocol_token(info.protocol);
+    map.insert(QStringLiteral("protocolToken"), token != nullptr ? QString::fromLatin1(token) : QString());
     map.insert(QStringLiteral("supported"), info.protocol != DSD_RR_PROTO_UNSUPPORTED);
 
     dsd_rr_trs_details_free(details);
     free(details);
     return map;
+}
+
+/**
+ * @brief Fill @p summary's count, encryption counts and sample from the talkgroups the group file would hold.
+ *
+ * As the writer does: a row it skips (dsd_rr_talkgroup_writable(): no usable ID, or one the protocol cannot carry)
+ * and a repeated ID after its first row never reach the file, so the preview neither counts nor shows them.
+ */
+void
+summarize_talkgroups(const dsd_rr_talkgroup_list& talkgroups, dsd_rr_protocol protocol, QVariantMap* summary) {
+    QSet<uint32_t> seen;
+    int count = 0;
+    int encCount = 0;
+    int partialCount = 0;
+    QVariantList sample;
+    for (size_t i = 0; i < talkgroups.count; i++) {
+        const dsd_rr_talkgroup& tg = talkgroups.items[i];
+        if (dsd_rr_talkgroup_writable(&tg, protocol) == 0 || seen.contains(tg.tg_dec)) {
+            continue;
+        }
+        seen.insert(tg.tg_dec);
+        count++;
+        if (tg.enc >= 2) {
+            encCount++;
+        } else if (tg.enc == 1) {
+            partialCount++;
+        }
+        if (sample.size() < kTalkgroupSampleMax) {
+            QVariantMap row;
+            row.insert(QStringLiteral("dec"), static_cast<qulonglong>(tg.tg_dec));
+            row.insert(QStringLiteral("name"), tg.alpha_tag[0] != '\0' ? field(tg.alpha_tag) : field(tg.description));
+            row.insert(QStringLiteral("enc"), tg.enc);
+            sample.append(row);
+        }
+    }
+    summary->insert(QStringLiteral("count"), count);
+    summary->insert(QStringLiteral("encCount"), encCount);
+    summary->insert(QStringLiteral("partialEncCount"), partialCount);
+    summary->insert(QStringLiteral("sample"), sample);
 }
 
 } // namespace
@@ -1090,28 +1133,7 @@ RadioReferenceModel::finishSystemLoad() {
     }
     m_sites = rows;
 
-    int encCount = 0;
-    int partialCount = 0;
-    QVariantList sample;
-    for (size_t i = 0; i < m_talkgroupData.count; i++) {
-        const dsd_rr_talkgroup& tg = m_talkgroupData.items[i];
-        if (tg.enc >= 2) {
-            encCount++;
-        } else if (tg.enc == 1) {
-            partialCount++;
-        }
-        if (sample.size() < kTalkgroupSampleMax) {
-            QVariantMap row;
-            row.insert(QStringLiteral("dec"), static_cast<qulonglong>(tg.tg_dec));
-            row.insert(QStringLiteral("name"), tg.alpha_tag[0] != '\0' ? field(tg.alpha_tag) : field(tg.description));
-            row.insert(QStringLiteral("enc"), tg.enc);
-            sample.append(row);
-        }
-    }
-    m_talkgroupSummary.insert(QStringLiteral("count"), static_cast<int>(m_talkgroupData.count));
-    m_talkgroupSummary.insert(QStringLiteral("encCount"), encCount);
-    m_talkgroupSummary.insert(QStringLiteral("partialEncCount"), partialCount);
-    m_talkgroupSummary.insert(QStringLiteral("sample"), sample);
+    summarize_talkgroups(m_talkgroupData, m_protocol, &m_talkgroupSummary);
     if (!m_talkgroupSummary.contains(QStringLiteral("categories"))) {
         m_talkgroupSummary.insert(QStringLiteral("categories"), QVariantList());
     }
@@ -1163,7 +1185,7 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, int encrypt
     char* groupText = nullptr;
     size_t groupLen = 0;
     if (m_talkgroupData.count > 0
-        && dsd_rr_generate_group_csv_with_policy(m_talkgroupData.items, m_talkgroupData.count,
+        && dsd_rr_generate_group_csv_with_policy(m_protocol, m_talkgroupData.items, m_talkgroupData.count,
                                                  static_cast<dsd_rr_encrypted_tg_policy>(encryptionPolicy), &groupText,
                                                  &groupLen, &generated)
                == 0
@@ -1655,7 +1677,13 @@ RadioReferenceModel::completeRefresh() {
     const bool isChan = (m_refreshKind == QLatin1String("chan"));
     const QString text = plan.value(isChan ? QStringLiteral("chanCsvText") : QStringLiteral("groupCsvText")).toString();
     if (text.isEmpty()) {
-        setError(ParseError, tr("RadioReference has no data for this file any more."));
+        /* The writer skips every talkgroup it cannot give an ID, so a list can
+         * come back empty while RadioReference still lists talkgroups; the
+         * stored copy is kept either way, and the message says which. */
+        setError(ParseError, (!isChan && m_talkgroupData.count > 0)
+                                 ? tr("None of the talkgroups RadioReference lists has an ID dsd-neo can use, so "
+                                      "the stored copy was kept.")
+                                 : tr("RadioReference has no data for this file any more."));
         endRefresh(result);
         return;
     }

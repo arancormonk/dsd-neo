@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "next_start_check.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/input_failure.h>
@@ -238,21 +239,15 @@ int svc_set_pulse_input(dsd_opts* opts, dsd_state* state, const char* device);
 /** @brief Configure UDP audio output endpoint and enable it. */
 int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port);
 
-/**
- * The save the session would write after a change: @p save holds the one it would write now
- * (dsd_snapshot_opts_to_user_config(), the values a config left for the next start included), which the callback edits
- * as the change would leave it. @p ctx is the caller's.
- */
-typedef void (*svc_next_start_change_fn)(dsdneoUserConfig* save, const void* ctx);
+/** The save a change leaves, edited by the callback (app_next_start_change_fn, next_start_check.h). */
+typedef app_next_start_change_fn svc_next_start_change_fn;
 
 /**
- * @brief Whether a change keeps the next start one that starts (issue #671).
+ * @brief Whether a change keeps the next start one that starts (issue #671): app_check_next_start() on the decoder
+ * thread's options and state.
  *
- * Every save writes what the session runs and what a config left for the next start, so a change must not make that
- * save one startup refuses: the save @p change leaves is held to dsd_user_config_check_trunk_scan_startable(), and only
- * a rule the change newly breaks refuses it (a rule the session's own save breaks already, kept or fixed, does not).
  * Asked before the change touches anything. A config apply, a channel-map or P25 band-plan import, the scanner toggle
- * and a RadioReference import each ask it.
+ * and a RadioReference import each ask it (the import through rr_apply_next_start_refusal(), which frontends share).
  *
  * @return 0 when the change may go ahead; -1 when it may not, with the rule's reason in @p why.
  */
@@ -447,6 +442,10 @@ int svc_publish_symbol_profile_after_scan_leave(const dsd_opts* opts, dsd_state*
  *         M17 encoder, no running RTL stream, or a scope update that defers the publish); -1 when it would refuse it.
  */
 int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode);
+/** svc_check_mode_receive_profile() with the configured widths @p nfm_hz and @p am_hz the change keeps, in place of the
+ *  ones in force: for a check made before a scan leave puts the configured widths back (an RR import's preflight). */
+int svc_check_mode_receive_profile_widths(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode,
+                                          int nfm_hz, int am_hz);
 
 /**
  * @brief Note the configured digital decode modes with a running RTL front end.

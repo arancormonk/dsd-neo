@@ -2958,7 +2958,7 @@ test_decode_mode_set_refuses_tetra_on_pcm(void) {
     rc |= expect_int("pcm tetra decoder stays off", opts.frame_tetra, 0);
     rc |=
         expect_str("pcm tetra says why", state.ui_msg,
-                   "Refused: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read "
+                   "Refused: TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read "
                    "from demodulated audio");
 
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
@@ -2975,7 +2975,7 @@ test_decode_mode_set_refuses_tetra_on_pcm(void) {
     rc |= expect_int("tetra on pcm drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tetra on pcm kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
     rc |= expect_str("tetra on pcm says so", state.ui_msg,
-                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+                     "TETRA decodes nothing here: it needs an I/Q radio input or a symbol capture");
     state.ui_msg[0] = '\0';
     (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
     rc |= expect_int("tetra on pcm drained again", dsd_app_drain_cmds(&opts, &state), 1);
@@ -2989,7 +2989,7 @@ test_decode_mode_set_refuses_tetra_on_pcm(void) {
     (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_str("tetra on pcm said again", state.ui_msg,
-                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+                     "TETRA decodes nothing here: it needs an I/Q radio input or a symbol capture");
     (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
     (void)dsd_app_drain_cmds(&opts, &state);
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
@@ -14334,7 +14334,7 @@ test_input_switch_to_pcm_leaves_am(void) {
     rc |= expect_int("pcm switch: fell back to Analog", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
     rc |= expect_int("pcm switch: FM detector", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("pcm switch: toast gives the reason",
-                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
+                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an I/Q radio input") != NULL, 1);
     rc |= expect_int("pcm switch: autosave stays on", state.config_autosave_enabled, 1);
     state.config_autosave_enabled = 0;
 
@@ -14346,7 +14346,7 @@ test_input_switch_to_pcm_leaves_am(void) {
     rc |=
         expect_int("pcm switch: AM refused after replay", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
     rc |= expect_int("pcm switch: refusal toast",
-                     strstr(state.ui_msg, "Refused: AM demodulation needs an IQ radio input") != NULL, 1);
+                     strstr(state.ui_msg, "Refused: AM demodulation needs an I/Q radio input") != NULL, 1);
     opts.iq_replay_requested = 0;
     freeState(&state);
     return rc;
@@ -14389,7 +14389,7 @@ test_tcp_switch_leaves_am_with_unfit_nfm_width(void) {
     rc |= expect_int("tcp switch: FM detector", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("tcp switch: NFM width kept", opts.analog_nfm_bandwidth_hz, 25000);
     rc |= expect_int("tcp switch: toast gives the reason",
-                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
+                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an I/Q radio input") != NULL, 1);
 
     /* A width set on the PCM session is stored, not held to the old device's rate (22 kHz does not fit 24 kHz). */
     rc |= submit_nfm_width(&opts, &state, 22000, "tcp switch: pcm width");
@@ -22684,7 +22684,7 @@ test_am_refused_on_pcm_input(void) {
     rc |= expect_int("pcm am: still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
     rc |= expect_int("pcm am: detector left alone", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("pcm am: toast gives the reason",
-                     strstr(state.ui_msg, "AM demodulation needs an IQ radio input") != NULL, 1);
+                     strstr(state.ui_msg, "AM demodulation needs an I/Q radio input") != NULL, 1);
 
     /* A config's decode = am applies, and the session falls back to the Analog monitor with the reason, as a start
      * with it does: a shared config must not break a PCM session, nor be refused whole for it. */
@@ -22694,7 +22694,7 @@ test_am_refused_on_pcm_input(void) {
         expect_int("pcm am: config fell back to Analog", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
     rc |= expect_int("pcm am: config detector is FM", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("pcm am: config toast",
-                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
+                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an I/Q radio input") != NULL, 1);
 
     /* Config > Load makes the loaded file the autosave target, then applies it. Its decode = am must survive the
      * session, as it does a start with it: autosave is turned off, with a toast, rather than writing the Analog

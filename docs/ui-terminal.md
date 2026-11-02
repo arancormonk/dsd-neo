@@ -426,7 +426,7 @@ preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` o
 
 AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
 choosing it sends nothing: the footer gives the reason
-(`AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). TETRA (`-fT`) needs an
+(`AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA`). TETRA (`-fT`) needs an
 I/Q radio input or a symbol capture: elsewhere its row reads `TETRA (needs an I/Q radio input)` and choosing it gives
 its reason the same way. A running AM session
 whose input is switched to a PCM one falls back to Analog, and the footer says why. **Input -> AM bandwidth...
@@ -469,7 +469,10 @@ RadioReference import:
   `p`/`s`/`e` cycle the partial-encryption, simulcast and ESK options, `Enter` imports, `Esc` goes back.
 - An import leaves you on the site list with the selection released, so importing a second site of the
   same system — a second county of a statewide network — costs one more `Enter` and no second fetch.
-  Each site is stored as its own set of files.
+  Each site is stored as its own set of files. An import with nothing to write says
+  `Imported <site>; no files to save.` and has no row in the Imported Systems browser.
+- The preview reads `Blocked: <reason>` when this session cannot take the import (for example TETRA on an audio
+  input, or a trunk scan running or waiting for the next start); nothing is written until it can.
 - The password is asked once per program run and held in memory only. The username, and in a build without
   a baked application key the key itself, are set from **RadioReference username...** and **RadioReference
   application key...** in the same submenu and stored in the config file under `[radioreference]`.

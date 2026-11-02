@@ -26,6 +26,7 @@ Item {
             loader.item.openForAdd(false);
         }
         property string libraryPath: ""
+        property var libraryPaths: []
         function cleanup() {
             home.active = false;
             while (savedSystems.count)
@@ -33,6 +34,9 @@ Item {
             if (libraryPath.length)
                 importedFiles.remove(importedFiles.rowForPath(libraryPath));
             libraryPath = "";
+            for (var path of libraryPaths)
+                importedFiles.remove(importedFiles.rowForPath(path));
+            libraryPaths = [];
         }
         function test_legacy_hint_and_manual_rows() {
             var path = testContext.writeFixtureCsv("site-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
@@ -202,6 +206,169 @@ Item {
             compare(savedSystems.get(0).freqMhz, "853");
             compare(savedSystems.get(0).rrSiteId, 0);
             compare(savedSystems.get(1).rrSiteId, 48391);
+        }
+
+        // Issue #803: stale files on adoption. A library file the way a
+        // RadioReference import adopts one, or the way the CSV picker does.
+        function libraryFile(name, kind, generated) {
+            // Distinct contents, so the library keeps every file as its own row.
+            var n = libraryPaths.length + 1;
+            var text = kind === "chan" ? "channel,frequency,mode,options\n" + n + ",85" + n + "012500,p25,\n" : "Decimal,Mode,Alpha Tag\n" + (100 + n) + ",A,Dispatch\n";
+            var path = testContext.writeFixtureCsv(name, text);
+            var result = generated ? importedFiles.importGeneratedFile(path, name, kind, {
+                origin: "radioreference",
+                rrSid: 6673,
+                rrSiteIds: "16863",
+                rrKind: kind
+            }) : importedFiles.importFile(path, name, kind);
+            verify(result.ok, "could not add " + name + " to the library");
+            libraryPaths = libraryPaths.concat([result.path]);
+            return result.path;
+        }
+        function p25Import() {
+            return {
+                name: "County radio",
+                freqMhz: "851.0125",
+                decodeFlag: "-f1",
+                trunking: true,
+                chanCsvPath: libraryFile("county-chan.csv", "chan", true),
+                groupCsvPath: libraryFile("county-group.csv", "group", true),
+                rrSid: 6673,
+                rrSiteId: 16863,
+                siteName: "Central"
+            };
+        }
+        // performImport()'s answer for a TETRA system that lists no
+        // talkgroups: no file at all, so neither path key is present.
+        function tetraSite(id) {
+            return {
+                ok: true,
+                name: "KorKor — Cell " + id,
+                freqMhz: "390.0125",
+                decodeFlag: "-fT",
+                trunking: true,
+                rrSid: 10880,
+                rrSiteId: id,
+                siteName: "Cell " + id
+            };
+        }
+        function compareFiles(row, chan, group, why) {
+            compare(savedSystems.get(row).chanCsvPath, chan, why + ": channel map");
+            compare(savedSystems.get(row).groupCsvPath, group, why + ": talkgroup list");
+        }
+
+        // Regression (#803): adopting a no-file import after an earlier one in
+        // the same wizard kept the earlier system's talkgroup list and channel
+        // map, and the mismatch then dropped the new import's RadioReference
+        // identity on save.
+        function test_adoption_replaces_files_of_an_earlier_import() {
+            loader.item.applyRadioReference(p25Import());
+            verify(loader.item.groupCsvPath.length > 0);
+            loader.item.applyRadioReference(tetraSite(5));
+            compare(loader.item.chanCsvPath, "", "an earlier import's channel map stayed");
+            compare(loader.item.groupCsvPath, "", "an earlier import's talkgroup list stayed");
+            loader.item.commit();
+            compare(savedSystems.count, 1);
+            compareFiles(0, "", "", "the TETRA system was saved with another system's files");
+            compare(savedSystems.get(0).decodeFlag, "-fT");
+            compare(savedSystems.get(0).rrSid, 10880, "the import lost its RadioReference identity");
+            compare(savedSystems.get(0).rrSiteId, 5);
+        }
+
+        // The same, as a per-site batch: every site's files are its own, and a
+        // site with none must not take the wizard's (site 0) or the earlier
+        // import's (the rest).
+        function test_batch_adoption_replaces_files_of_an_earlier_import() {
+            loader.item.applyRadioReference(p25Import());
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [tetraSite(5), tetraSite(6)]
+            });
+            loader.item.commit();
+            compare(savedSystems.count, 2);
+            for (var row = 0; row < 2; ++row) {
+                compareFiles(row, "", "", "site " + row + " was saved with another system's files");
+                compare(savedSystems.get(row).rrSiteId, 5 + row, "site " + row + " lost its RadioReference identity");
+            }
+        }
+
+        // Editing a saved system and importing it again: a file the user picked
+        // for it stays when the import supplies none (the import does not know
+        // about it), and a file an earlier import generated for it goes. A
+        // stale bandwidth that cannot decode TETRA goes too: an empty field
+        // runs it at 72 kHz.
+        function test_editing_keeps_picked_files_and_drops_generated_ones() {
+            savedSystems.add({
+                name: "Mine",
+                sourceType: "usb",
+                freqMhz: "851.0125",
+                decodeFlag: "-f1",
+                trunking: true,
+                bandwidthKhz: 48,
+                chanCsvPath: libraryFile("old-chan.csv", "chan", true),
+                groupCsvPath: libraryFile("picked-group.csv", "group", false)
+            });
+            var picked = savedSystems.get(0).groupCsvPath;
+            loader.item.openForEdit(0);
+            compare(loader.item.bwText, "48");
+            loader.item.applyRadioReference(tetraSite(5));
+            compare(loader.item.groupCsvPath, picked, "a file picked for the system being edited was dropped");
+            compare(loader.item.chanCsvPath, "", "a file generated by an earlier import stayed");
+            compare(loader.item.bwText, "", "a bandwidth TETRA cannot decode at stayed");
+            verify(loader.item.stepValid());
+            loader.item.commit();
+            compare(savedSystems.count, 1);
+            compareFiles(0, "", picked, "the edit");
+            compare(savedSystems.get(0).bandwidthKhz, -1);
+        }
+
+        // Not the same system: a new one being added, or a per-site batch,
+        // which saves new systems. A picked file is then the earlier answer to
+        // a question the import has now answered.
+        function test_picked_files_go_when_not_editing_the_same_system() {
+            loader.item.assignCsvPath("group", libraryFile("picked-new.csv", "group", false), false);
+            loader.item.applyRadioReference(tetraSite(5));
+            compare(loader.item.groupCsvPath, "", "a new system kept a file the import replaced");
+
+            savedSystems.add({
+                name: "Mine",
+                sourceType: "usb",
+                freqMhz: "851.0125",
+                decodeFlag: "-f1",
+                trunking: true,
+                groupCsvPath: libraryFile("picked-batch.csv", "group", false)
+            });
+            loader.item.openForEdit(0);
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [tetraSite(5), tetraSite(6)]
+            });
+            loader.item.commit();
+            compare(savedSystems.count, 3);
+            compareFiles(1, "", "", "a batch site took the edited system's picked file");
+            compareFiles(2, "", "", "a batch site took the edited system's picked file");
+        }
+
+        // A file the import does supply replaces whatever was there, picked or
+        // not, and a later picker choice is the user's own again.
+        function test_supplied_files_replace_and_a_pick_after_is_kept() {
+            savedSystems.add({
+                name: "Mine",
+                sourceType: "usb",
+                freqMhz: "851.0125",
+                decodeFlag: "-f1",
+                trunking: true,
+                groupCsvPath: libraryFile("picked-replaced.csv", "group", false)
+            });
+            loader.item.openForEdit(0);
+            var imported = p25Import();
+            loader.item.applyRadioReference(imported);
+            compare(loader.item.groupCsvPath, imported.groupCsvPath);
+            var picked = libraryFile("picked-after.csv", "group", false);
+            loader.item.assignCsvPath("group", picked, false);
+            loader.item.applyRadioReference(tetraSite(5));
+            compare(loader.item.groupCsvPath, picked, "a file picked after the first import was dropped");
+            compare(loader.item.chanCsvPath, "", "the first import's channel map stayed");
         }
     }
 }

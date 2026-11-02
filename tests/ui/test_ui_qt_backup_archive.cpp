@@ -560,6 +560,58 @@ test_round_trip(const Fixture& f) {
                               && map.value("app").toString() == snapshot.app && map.contains("notIncluded"));
 }
 
+/* Issue #803: a saved TETRA system, as a RadioReference import saves one - -fT, trunking, the system and site it came
+ * from, and no files of its own (TETRA needs no channel map, and an import may list no talkgroups) - survives a backup
+ * and its restore unchanged, and counts as no extra options. The row is removed again so the later cases see the
+ * fixture's two systems. */
+void
+test_saved_tetra_system_round_trip() {
+    dsd_qt::SavedSystemsModel systems;
+    const int row = systems.rowCount();
+    expect("add a saved TETRA system", systems.add({{"name", "Kordia KorKor"},
+                                                    {"sourceType", "usb"},
+                                                    {"freqMhz", "425.1375"},
+                                                    {"decodeFlag", "-fT"},
+                                                    {"trunking", true},
+                                                    {"rrSid", 10880},
+                                                    {"rrSiteId", 81234},
+                                                    {"siteName", "Auckland"}}));
+    const QString uid = systems.get(row).value("uid").toString();
+
+    const auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    const auto built = build(snapshot);
+    expect("tetra backup: builds", built.error == BackupError::None);
+    expect("tetra backup: counted, with no extra options",
+           built.summary.systems == 3 && built.summary.systemsWithExtraArgs == 1);
+    int status = 0;
+    const QByteArray sealed =
+        dsd_qt::backup::backup_seal(built.archive, QStringLiteral("kordia tetra"), test_kdf(), &status);
+    expect("tetra backup: seals", status == DSD_BACKUP_OK && !sealed.isEmpty());
+    const QByteArray opened = dsd_qt::backup::backup_open(sealed, QStringLiteral("kordia tetra"), &status);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(opened, snapshot.root);
+    expect("tetra backup: the restore accepts it", status == DSD_BACKUP_OK && parsed.error == BackupError::None);
+
+    const QJsonArray exported = expected_after_export(snapshot).value("saved_systems.json");
+    const QJsonArray restoredRows = parsed.stores.value("saved_systems.json");
+    const int exportedAt = row_where(exported, "uid", uid);
+    const int restoredAt = row_where(restoredRows, "uid", uid);
+    expect("tetra backup: the system is restored", exportedAt >= 0 && restoredAt >= 0);
+    const QJsonObject restored = restoredRows.at(restoredAt).toObject();
+    expect("tetra backup: the restored row is the saved one", restored == exported.at(exportedAt).toObject());
+    expect("tetra backup: it still decodes TETRA and follows calls",
+           restored.value("decodeFlag").toString() == "-fT" && restored.value("trunking").toBool());
+    expect("tetra backup: it still names the RadioReference system and site",
+           restored.value("rrSid").toInt() == 10880 && restored.value("rrSiteId").toInt() == 81234
+               && restored.value("siteName").toString() == "Auckland");
+    expect("tetra backup: it gained no files",
+           restored.value("chanCsvPath").toString().isEmpty() && restored.value("groupCsvPath").toString().isEmpty());
+    expect("tetra backup: restore summary counts it with no extra options",
+           parsed.summary.systems == 3 && parsed.summary.systemsWithExtraArgs == 1);
+
+    systems.remove(row);
+    expect("tetra backup: the fixture is back to two systems", systems.rowCount() == row);
+}
+
 void
 test_foreign_root() {
     auto snapshot = dsd_qt::backup::backup_take_snapshot();
@@ -1592,6 +1644,7 @@ main(int argc, char** argv) {
         TestHost host;
         const Fixture fixture = populate(host);
         test_round_trip(fixture);
+        test_saved_tetra_system_round_trip();
         test_foreign_root();
         const auto base = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
         expect("base archive builds", base.error == BackupError::None);

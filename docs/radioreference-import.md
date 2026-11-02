@@ -120,6 +120,13 @@ settings you choose. Frequency, protocol and channel/group CSV edits in that wiz
 site; the other sites retain their individual import settings. A single-site import records the same
 site identity. Identity uses RadioReference's database site ID, not the RF site number.
 
+An import fills the wizard's **Channel map** and **Talkgroups** rows with the files it generated. When it
+generates none for a row (a TETRA system that lists no talkgroups, a single conventional repeater), that
+row is emptied if it held a file an earlier import generated, so a system never keeps another system's
+files. A file you picked yourself stays only while you are editing that saved system; a new system and
+each site of a per-site import keep only the files their own import generated. A bandwidth that cannot
+decode TETRA is emptied too, so a TETRA import runs at 72 kHz.
+
 Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
 foreground fix, names the nearest eligible saved site in this system, and orders the available sites by
 distance. Avoided sites appear last; sites without coordinates are explained and cannot be ranked.
@@ -200,8 +207,12 @@ Selecting a system offers three actions:
 
 "Use this system" is possible because each generated file's sidecar now records *how* the import was
 applied — the protocol, the start frequency, and the trunking, scanning, simulcast and ESK answers — next
-to the *where it came from* provenance a refresh already uses. A session started with `--trunk-scan`
-manages its own channel maps, so the decoder refuses the apply and reports it, the same as a fresh import.
+to the *where it came from* provenance a refresh already uses. Both actions check the session first, as the
+wizard does, and post nothing when it cannot take them; the status line says why. **Use this system** is
+checked for the stored system's own decode mode (see [Receiver requirements](#receiver-requirements)), a
+running trunk scan, and a trunk scan waiting for the next start. **Load these files** leaves the decode mode
+alone, so it is checked only for a running trunk scan and, when it loads a channel map, a trunk scan waiting
+for the next start.
 
 ### Picking a CSV to import
 
@@ -261,14 +272,78 @@ next launch. They persist now. `edacs_ea` and `edacs_esk` refine the EDACS decod
 it — they are applied after `[mode] decode`, which resets both — in the same way `dmr_mono` refines the DMR
 one.
 
-Two more limits worth knowing:
+Limits worth knowing:
 
 - Applying is asynchronous and its outcome is reported by a status message from the decoder, not by the
-  wizard. A session started with `--trunk-scan` manages its own channel maps: the wizard refuses the import
-  before writing anything, and the decoder-thread handler refuses the apply again if one ever reaches it.
-- `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
-  never steps and the session will look stuck on the first frequency. The generator emits that warning and
-  the panel shows it.
+  wizard: the wizard's `Imported <site>.` means the files were written and the apply was sent. Before it writes
+  anything, the wizard checks the session the way the decoder will, and the preview shows `Blocked:` with the
+  reason: the receiver for the system's decode mode (see [Receiver requirements](#receiver-requirements)), a
+  running trunk scan (it manages its own channel maps), and a trunk scan waiting for the next start beside the
+  channel map or the `-Y` scanner the import would set. A refused import stays on the site list with the
+  system still loaded, so once the session can take it (the trunk scan stopped, the DSP bandwidth set), `Enter`
+  imports it. The decoder checks again when the apply arrives; only it can see a SoapySDR device's rate.
+- An import that has nothing to write (a TETRA system with no talkgroup a TETRA group list can carry writes no
+  group list, and TETRA has no channel map) is still sent to the session, and the wizard says
+  `Imported <site>; no files to save.` Such an import has no row in the Imported Systems browser, so it cannot
+  be re-applied offline: import it again from RadioReference.
+- The decoder checks everything it can before it changes anything: the receiver (see
+  [Receiver requirements](#receiver-requirements)), a trunk scan waiting for the next start, the width an AM
+  or Analog mode needs, whether a running I/Q replay can run the mode, and each CSV file. A refused import
+  changes nothing (the call, a running `-Y` scan, the mode and the files all stay, and Config -> Save writes
+  what it would have before), and the status message gives the reason, for example
+  `Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`.
+- Something can still fail after those checks. A mode change that fails (a replay that does not reopen at the
+  new rate, say) keeps its own message, which names the reason, for example
+  `Failed: P25 Phase 1 -> the replay did not start at the new rate (see log)`, and the import goes no further.
+  A CSV file that cannot be loaded by then (deleted in the meantime) is reported as a partial apply that names
+  what did take, for example `Failed: RR import -> channel map not loaded; mode and talkgroups applied`.
+- The tune to the system's frequency reports how it went. A tune that fails is a partial apply
+  (`Failed: RR import -> tune to 851.012500 MHz failed; mode applied`). A tuner that is busy (for example
+  while auto-PPM trains) takes nothing: the rest applies and the message asks for a retry
+  (`Deferred; retry: RR import -> tune to 851.012500 MHz deferred (tuner busy); mode applied`); a manual tune
+  still waiting to land keeps the receiver. A tune that is still on its way says so at the end of the import's
+  message (`...; tuning to 851.012500 MHz`), and when it ends the message changes: `...; tuned to 851.012500
+  MHz`, the failure (with what else the import applied), or `Interrupted: RR import -> tune to 851.012500 MHz; a
+  newer tune took over` (or `; the radio input stopped`). A failure is always shown; a landing or an
+  interruption only replaces the import's own message while it is still shown, never a newer one. When trunking
+  or the scanner takes the receiver on from there (a control-channel hunt, a grant, a scan step, or the P25
+  Return-to-CC and Candidate cycle actions), nothing more is said. A session with no tuner (a WAV file, UDP
+  audio) says nothing about a tune.
+- An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
+  frequency.
+- `-Y` scanning needs a live radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a rigctl-controlled radio.
+  On a WAV, UDP or TCP source, or an I/Q replay, the scanner never steps and the session will look stuck on the
+  first frequency. The generator emits that warning and the panel shows it.
+
+#### Receiver requirements
+
+AM needs an I/Q radio input. TETRA needs a receiver that can decode it; when the session has none, the import
+is refused with the reason:
+
+| Input | TETRA import |
+|---|---|
+| RTL-SDR or rtl_tcp at a 72 kHz DSP bandwidth | Accepted |
+| RTL-SDR or rtl_tcp at any other DSP bandwidth | Refused: set the DSP bandwidth to 72 kHz (or start with `-fT`), then import again. The import does not change it itself, because reopening the radio would restart an `--iq-capture` from the beginning |
+| SoapySDR | Accepted when the rate the device runs at is a TETRA rate (a multiple of 18 kHz from 36 to 144 kHz), refused with advice otherwise. The wizard cannot see that rate, so only the decoder decides |
+| Airspy | Refused: no Airspy rate decodes TETRA yet |
+| I/Q replay | Accepted; the replay is re-planned to a TETRA rate, or the import is refused when the capture cannot be resampled to one |
+| Symbol capture (`.bin`, `.raw`, `.sym`) | Accepted |
+| PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an I/Q radio input or a symbol capture |
+| A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
+
+In the Android and Qt app, a saved TETRA system is checked when it starts, as an AM one is. It starts on a USB
+RTL-SDR or rtl_tcp radio whose bandwidth is 72 kHz or left empty (an empty field runs TETRA at 72 kHz, whatever the
+default bandwidth in Settings). On an Airspy, or at any other bandwidth, it is refused with the reason, because it
+would start and never decode. A bandwidth the radio does not offer counts as the 48 kHz it runs at.
+
+The add-system wizard checks the same thing before it saves. The TETRA chip is greyed out on an Airspy, and
+a TETRA system switched to an Airspy keeps TETRA but cannot continue until you pick a USB or rtl_tcp radio or
+another decode mode; the reason shows under the decode chips. The bandwidth field's hint shows what an empty
+field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in
+the review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo
+cannot decode. The terminal wizard says the same in three lines under the site list of a TETRA system: an
+I/Q radio at a TETRA rate (72 kHz on an RTL-SDR or rtl_tcp) or a symbol capture, no Airspy yet, and the
+Tetrapol caveat.
 
 ## What gets generated
 
@@ -287,7 +362,15 @@ list — RadioReference adds rows over time.
 | EDACS Standard / Networked / Narrowband | `-fh`, or `-fH` with ESK | Yes, strictly positional |
 | EDACS Extended Addressing | `-fe`, or `-fE` with ESK | Yes, strictly positional |
 | P25 / DMR / NXDN **Conventional Networked** | see below | Only with two or more repeaters, each row named |
-| Everything else (LTR, Motorola, OpenSky, iDEN, TETRA, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
+| TETRA | `-fT`, with trunking on | Never — the decoder learns the cell's carriers from its control channel |
+| Everything else (LTR, Motorola, OpenSky, iDEN, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
+
+The talkgroup list keeps only IDs the system can carry. A talkgroup whose RadioReference ID is
+missing, not a number or too large to be one is skipped, and so is a TETRA group above 16777215
+(TETRA group IDs are 24 bits; 16777215 itself, the broadcast group, is kept, and so is 0). The
+preview counts each kind of skipped row in its own warning, and its talkgroup count, encryption counts and
+sample show only the talkgroups the list will hold. When no talkgroup is left, the import
+writes no talkgroup list and the warnings say why.
 
 `-^` rides with every P25 import on purpose. Supplying a channel map tells the decoder a user LCN
 list exists, which otherwise disables its own learned control-channel candidates; `-^` puts the
@@ -301,7 +384,8 @@ Two things the preview will warn about rather than silently paper over:
   quiet control channel) while the
   channel numbers themselves are inert. They are purged within seconds of control-channel lock,
   when the site's first `IDEN_UP` invalidates that band's slots.
-- **Custom band plans are not carried.** When RadioReference publishes one the preview says so.
+- **Custom band plans are not carried.** When RadioReference publishes one for a P25 system the preview says
+  so.
   The decoder takes a band plan as a P25 band plan CSV (`--p25-bandplan`, the Imports library's
   **P25 band plan** kind, or the terminal's **Import P25 band plan CSV...**; format in
   `docs/csv-formats.md`), which is one row per identifier rather than one per channel. Generating
@@ -327,11 +411,39 @@ multi-select list, sorted by name, showing each repeater's frequency and colour 
   is deliberate: a one-entry scan list makes the scanner retune to the frequency it is already on
   at every hangtime expiry.
 - Duplicate frequencies are dropped, with a warning: two repeaters can share one output.
-- **Scanning needs an RTL-SDR or a rigctl-controlled radio.** On a WAV, UDP or TCP source the
-  scanner never steps, so the session looks stuck on one frequency. The preview says so.
+- **Scanning needs a live radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a rigctl-controlled
+  radio.** On a WAV, UDP or TCP source, or an I/Q replay, the scanner never steps, so the session looks stuck
+  on one frequency. The preview says so.
 
 The repeater's **colour code is shown but never written to a file**. `dsd_opts` has no colour-code
 field, because DMR reads it off the air; it is in the list only to help you recognise a repeater.
+
+## TETRA systems
+
+A TETRA import sets `-fT` with trunking on and writes at most one file, the talkgroup list. RadioReference's
+decimal talkgroup ID is the group's TETRA ID, so the list works as it is. There is no channel map: every carrier of
+a TETRA cell says where the cell's control channel is, so the decoder learns that from the air. Many TETRA systems
+on RadioReference list no talkgroups at all; such an import writes no file (see
+[What applying does](#what-applying-does-and-what-a-save-keeps)).
+
+- **The start frequency.** As for every trunked system, the session starts on the frequency RadioReference marks
+  as the site's control channel, else on the first frequency it lists, with a warning. Many TETRA sites mark none.
+  The start frequency should be one the cell sends on (its downlink). RadioReference does not always list that:
+  some systems list the frequencies the radios send on (the uplink), some list rounded values, and some list
+  carrier numbers instead of frequencies. dsd-neo skips a value that is not a frequency it can tune, but it does
+  not correct the others: check the frequency against the system's own listing.
+- **Moving to the main carrier.** Calls are set up on the cell's main carrier. A session that starts on another
+  carrier of the same cell moves to the main carrier by itself, once it has decoded a block there whose CRC
+  passed. That needs a radio dsd-neo can tune (an I/Q replay stays where it is), and it only works from a carrier
+  dsd-neo can already decode. dsd-neo does not search for a control channel: a start frequency that is silent,
+  an uplink, or another system's stays where it is, and so does a session whose main carrier it cannot receive.
+  Tune the cell's downlink yourself (in the app, edit the saved system's frequency), or pick another site. The
+  TETRA entry under "Modes & Decoders" in `docs/cli.md` gives the details and the log lines.
+- **The receiver.** See [Receiver requirements](#receiver-requirements). An Airspy cannot decode TETRA yet.
+- **Tetrapol.** Some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo cannot decode.
+  Nothing in RadioReference's data tells the two apart, so such a system imports like any other and then decodes
+  nothing.
+- **Trunk scan.** TETRA is not a `--trunk-scan` target type; follow one site at a time.
 
 ## Refreshing
 
@@ -354,6 +466,8 @@ browser reports that no imports were found there.
 - A refreshed file is pushed into a running session only when that session is actually using it.
   Applying a channel map replaces the live one wholesale and discards what the decoder had learned
   on the air — see `docs/csv-formats.md`.
+- A talkgroup-list refresh in which none of RadioReference's talkgroups has a usable ID keeps the
+  stored list and says so, rather than replacing it with an empty one.
 - The "treat partly encrypted as encrypted" answer is recorded with the file, so a refresh
   regenerates the talkgroup list with the answer the original import was given rather than the
   UI default.
@@ -409,5 +523,6 @@ and legacy generation API retain their previous default behavior.
 
 Country/state/county and site/repeater pickers support search. Selection is retained
 while filtering, and the final review lists sites, modulation, source requirements,
-policy and generated files before import. Cancelling a request keeps earlier search
-results available. Location denial leaves ZIP, Browse and direct system ID usable.
+policy and generated files (or that there are none) before import. Cancelling a
+request keeps earlier search results available. Location denial leaves ZIP, Browse
+and direct system ID usable.

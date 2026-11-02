@@ -188,8 +188,8 @@ typedef struct {
     int lcn;            /**< -1 when absent or nil. */
     char ch_id[16];     /**< NXDN Channel ID / DMR channel number text; "" when absent. */
     char color_code[8]; /**< DMR colour code, text; "" when absent. */
-    int is_control;     /**< use == "d" */
-    int is_alt_control; /**< use == "a" */
+    int is_control;     /**< use is "d" (any case, surrounding spaces ignored) */
+    int is_alt_control; /**< use is "a" (any case, surrounding spaces ignored) */
     char use[8];
 } dsd_rr_site_freq;
 
@@ -222,6 +222,10 @@ typedef struct {
 
 typedef struct {
     uint32_t tg_dec;
+    /** 1 when tg_dec holds a tgDec value that parsed in range; 0 when the element
+     * was absent, nil, malformed or above UINT32_MAX (tg_dec is then 0 and means
+     * nothing). A zeroed struct is invalid, so a hand-built talkgroup sets it. */
+    int tg_dec_valid;
     int tg_cid;
     char alpha_tag[64];
     char description[160];

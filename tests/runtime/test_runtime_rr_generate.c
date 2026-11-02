@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -290,12 +291,17 @@ test_protocol_table(void) {
 
     /* -Y is conventional-only: a trunked import must never pick it up. */
     expect_str("trunked ignores scan_list", dsd_rr_decode_flag(DSD_RR_PROTO_DMR_TIER3, 0, 0, 1), "-fs");
+    /* Trunking is the recipe's own switch: -T never rides inside the flag. */
+    expect_str("TETRA flag", dsd_rr_decode_flag(DSD_RR_PROTO_TETRA, 0, 0, 0), "-fT");
+    expect_str("TETRA ignores every answer", dsd_rr_decode_flag(DSD_RR_PROTO_TETRA, 1, 1, 1), "-fT");
 
     expect("P25 map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_P25) == 1);
     expect("Tier3 map required", dsd_rr_chan_map_need(DSD_RR_PROTO_DMR_TIER3) == 2);
     expect("EDACS map required", dsd_rr_chan_map_need(DSD_RR_PROTO_EDACS_STD) == 2);
     expect("NXDN map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_NXDN48) == 1);
     expect("conv map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_DMR_CONV) == 1);
+    expect("TETRA map none", dsd_rr_chan_map_need(DSD_RR_PROTO_TETRA) == 0);
+    expect("TETRA is trunked", dsd_rr_protocol_is_trunked(DSD_RR_PROTO_TETRA) == 1);
     expect("unsupported map none", dsd_rr_chan_map_need(DSD_RR_PROTO_UNSUPPORTED) == 0);
 
     expect("DMR conv is conventional", dsd_rr_protocol_is_conventional(DSD_RR_PROTO_DMR_CONV) == 1);
@@ -333,6 +339,7 @@ test_protocol_tokens(void) {
         {DSD_RR_PROTO_DMR_CONV, "dmr_conv", "DMR conv"},
         {DSD_RR_PROTO_NXDN48_CONV, "nxdn48_conv", "NXDN48 conv"},
         {DSD_RR_PROTO_NXDN96_CONV, "nxdn96_conv", "NXDN96 conv"},
+        {DSD_RR_PROTO_TETRA, "tetra", "TETRA"},
     };
 
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
@@ -351,7 +358,7 @@ test_protocol_tokens(void) {
     expect("unsupported has no short name", dsd_rr_protocol_short_name(DSD_RR_PROTO_UNSUPPORTED) == NULL);
     /* A token this build does not know is a future protocol, not an error:
      * the caller degrades to "files only" rather than refusing the sidecar. */
-    expect("unknown token is unsupported", dsd_rr_protocol_from_token("tetra") == DSD_RR_PROTO_UNSUPPORTED);
+    expect("unknown token is unsupported", dsd_rr_protocol_from_token("tetra_future") == DSD_RR_PROTO_UNSUPPORTED);
     expect("empty token is unsupported", dsd_rr_protocol_from_token("") == DSD_RR_PROTO_UNSUPPORTED);
     expect("NULL token is unsupported", dsd_rr_protocol_from_token(NULL) == DSD_RR_PROTO_UNSUPPORTED);
     /* Tokens are exact: case is part of the identity. */
@@ -404,7 +411,12 @@ test_classify_strings(void) {
         {"Motorola", "Type II SmartZone", "Analog", DSD_RR_PROTO_UNSUPPORTED},
         {"LTR", "Standard", "", DSD_RR_PROTO_UNSUPPORTED},
         {"OpenSky", "", "", DSD_RR_PROTO_UNSUPPORTED},
-        {"TETRA", "", "", DSD_RR_PROTO_UNSUPPORTED},
+        /* RR's one TETRA flavor is "Standard"; the type alone decides, so a
+         * flavor it adds later still imports. */
+        {"TETRA", "Standard", "Tetra Digital", DSD_RR_PROTO_TETRA},
+        {"TETRA", "", "", DSD_RR_PROTO_TETRA},
+        /* Only the type names TETRA: a flavor or voice mention does not. */
+        {"Other", "TETRA-ish", "Tetra Digital", DSD_RR_PROTO_UNSUPPORTED},
         {"MPT-1327", "", "", DSD_RR_PROTO_UNSUPPORTED},
         {"iDEN", "", "", DSD_RR_PROTO_UNSUPPORTED},
         {"SmarTrunk", "", "", DSD_RR_PROTO_UNSUPPORTED},
@@ -462,6 +474,10 @@ test_classify_from_fixtures(void) {
     /* Namespacing: flavor 8 is EDACS "Networked Standard", not a DMR row. */
     expect_str("flavor 8 under EDACS", dsd_rr_support_lookup(&maps.flavors, 2, 8), "Networked Standard");
     expect_str("flavor 8 absent under DMR", dsd_rr_support_lookup(&maps.flavors, 12, 8), "");
+    /* The only TETRA rows RadioReference publishes. */
+    expect_str("type 5 is TETRA", dsd_rr_support_lookup(&maps.types, 5, 5), "TETRA");
+    expect_str("TETRA flavor 17", dsd_rr_support_lookup(&maps.flavors, 5, 17), "Standard");
+    expect_str("TETRA voice 13", dsd_rr_support_lookup(&maps.voices, 5, 13), "Tetra Digital");
 
     static const struct {
         const char* leaf;
@@ -473,6 +489,7 @@ test_classify_from_fixtures(void) {
         {"trs_details_nxdn.xml", DSD_RR_PROTO_NXDN48},
         {"trs_details_edacs.xml", DSD_RR_PROTO_EDACS_STD},
         {"trs_details_dmr_conv.xml", DSD_RR_PROTO_DMR_CONV},
+        {"trs_details_tetra.xml", DSD_RR_PROTO_TETRA},
     };
 
     for (size_t i = 0; i < sizeof(systems) / sizeof(systems[0]); i++) {
@@ -511,6 +528,7 @@ static void
 tg_set(dsd_rr_talkgroup* tg, uint32_t dec, const char* alpha, const char* descr, int enc) {
     DSD_MEMSET(tg, 0, sizeof(*tg));
     tg->tg_dec = dec;
+    tg->tg_dec_valid = 1;
     if (alpha != NULL) {
         (void)DSD_SNPRINTF(tg->alpha_tag, sizeof(tg->alpha_tag), "%s", alpha);
     }
@@ -566,7 +584,7 @@ test_group_csv(void) {
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
 
-    expect("group csv generated", dsd_rr_generate_group_csv(tgs, 8U, 1, &text, &len, &warnings) == 0);
+    expect("group csv generated", dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, tgs, 8U, 1, &text, &len, &warnings) == 0);
     expect_str("group csv golden", text, want);
     expect_size("group csv length", len, strlen(want));
     expect("duplicate warned", warned(&warnings, "duplicate talkgroup ID"));
@@ -590,7 +608,8 @@ test_group_csv(void) {
     dsd_rr_talkgroup partial[2];
     tg_set(&partial[0], 250U, "Partial", "", 1);
     tg_set(&partial[1], 260U, "Full", "", 2);
-    expect("partial csv generated", dsd_rr_generate_group_csv(partial, 2U, 0, &text, &len, &warnings) == 0);
+    expect("partial csv generated",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 2U, 0, &text, &len, &warnings) == 0);
     expect_str("partial enc kept clear", text,
                "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                "250,A,Partial\n"
@@ -598,8 +617,134 @@ test_group_csv(void) {
     free(text);
     dsd_rr_warning_list_free(&warnings);
 
-    expect("group csv rejects empty input", dsd_rr_generate_group_csv(partial, 0U, 0, &text, &len, NULL) != 0);
-    expect("group csv rejects NULL out", dsd_rr_generate_group_csv(partial, 2U, 0, NULL, &len, NULL) != 0);
+    expect("group csv rejects empty input",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 0U, 0, &text, &len, NULL) != 0);
+    expect("group csv rejects NULL out",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 2U, 0, NULL, &len, NULL) != 0);
+}
+
+/**
+ * @brief Regression: a tgDec that does not parse never becomes a written ID.
+ *
+ * Parsed end to end from SOAP text. The old parser wrapped 4294967309 to 13 and
+ * left "12x" at its zeroed 0, and the writer emitted both: a "0" row, and an
+ * aliased 13 that - being first in input order - beat the real TG 13 in the
+ * duplicate pass and was reported as a duplicate the user never had.
+ */
+static void
+test_group_csv_skips_unusable_ids(void) {
+    static const char k_body[] = "<?xml version=\"1.0\"?><Envelope><Body><getTrsTalkgroupsResponse><return>"
+                                 "<item><tgDec>4294967309</tgDec><tgAlpha>Wrapped</tgAlpha></item>"
+                                 "<item><tgDec>12x</tgDec><tgAlpha>Junk</tgAlpha></item>"
+                                 "<item><tgAlpha>Absent</tgAlpha></item>"
+                                 "<item><tgDec>13</tgDec><tgAlpha>Real 13</tgAlpha></item>"
+                                 "</return></getTrsTalkgroupsResponse></Body></Envelope>";
+    dsd_rr_talkgroup_list list;
+    dsd_rr_error err;
+    DSD_MEMSET(&list, 0, sizeof(list));
+    DSD_MEMSET(&err, 0, sizeof(err));
+    expect("unusable-id body parses",
+           rr_soap_parse(k_body, sizeof(k_body) - 1U, RR_SHAPE_TALKGROUP_LIST, &list, &err, NULL) == 0);
+    expect_size("four talkgroups parsed", list.count, 4U);
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("unusable-id csv generated",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, list.count, 1, &text, &len, &warnings) == 0);
+    expect_str("only the real talkgroup is written", text,
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
+               "13,A,Real 13\n");
+    expect("unusable ids are counted",
+           warned(&warnings, "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("an unusable id is not reported as a duplicate", !warned(&warnings, "duplicate"));
+    expect("the written count excludes skipped rows", warned(&warnings, "1 talkgroup(s) written."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Nothing usable at all: no file, and the warning still says why. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("all-unusable generation succeeds",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, 3U, 1, &text, &len, &warnings) == 0);
+    expect("all-unusable writes no file", text == NULL && len == 0U);
+    expect("all-unusable keeps the skip warning",
+           warned(&warnings, "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("all-unusable claims nothing written", !warned(&warnings, "written"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+    dsd_rr_talkgroup_list_free(&list);
+}
+
+/**
+ * @brief A protocol's ID ceiling drops the IDs it cannot carry (new feature).
+ *
+ * A TETRA group is a 24-bit GSSI, so 16777215 (the all-ones broadcast group)
+ * is the last one written and 16777216 is skipped. 0 stays: no rule makes it
+ * unusable for an import. Skipping happens before duplicate selection, so two
+ * out-of-range rows count as two skipped, never as one plus a duplicate.
+ */
+static void
+test_group_csv_protocol_id_ceiling(void) {
+    dsd_rr_talkgroup tgs[6];
+    tg_set(&tgs[0], 16777216U, "Over A", "", 0);
+    tg_set(&tgs[1], 16777215U, "All Call", "", 0);
+    tg_set(&tgs[2], 0U, "Zero", "", 0);
+    tg_set(&tgs[3], 16777216U, "Over B", "", 0);
+    tg_set(&tgs[4], 4294967295U, "Over C", "", 0);
+    tg_set(&tgs[5], 1017000U, "No ID", "", 0);
+    tgs[5].tg_dec_valid = 0;
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tetra ceiling csv generated",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_TETRA, tgs, 6U, 1, &text, &len, &warnings) == 0);
+    expect_str("tetra keeps 0 and the broadcast group", text,
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
+               "0,A,Zero\n"
+               "16777215,A,All Call\n");
+    expect("tetra over-range warning",
+           warned(&warnings, "3 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    expect("tetra no-id warning",
+           warned(&warnings, "1 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("skipped rows are not duplicates", !warned(&warnings, "duplicate"));
+    expect("tetra written count", warned(&warnings, "2 talkgroup(s) written."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* The same rows for P25 have no ceiling: only the bad ID goes, and the two
+     * 16777216 rows meet in the duplicate pass. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("p25 csv generated", dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, tgs, 6U, 1, &text, &len, &warnings) == 0);
+    expect("p25 keeps 16777216", text != NULL && strstr(text, "\n16777216,A,Over A\n") != NULL);
+    expect("p25 keeps UINT32_MAX", text != NULL && strstr(text, "\n4294967295,A,Over C\n") != NULL);
+    expect("p25 has no ceiling warning", !warned(&warnings, "larger than"));
+    expect("p25 reports the duplicate", warned(&warnings, "1 duplicate talkgroup ID(s) were dropped"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Every row out of range: no file, and both counts still say why. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    dsd_rr_talkgroup none[2];
+    tg_set(&none[0], 16777216U, "Over", "", 0);
+    tg_set(&none[1], 20000000U, "Way over", "", 2);
+    expect("all-over generation succeeds",
+           dsd_rr_generate_group_csv_with_policy(DSD_RR_PROTO_TETRA, none, 2U, DSD_RR_TG_EXCLUDE_FULL, &text, &len,
+                                                 &warnings)
+               == 0);
+    expect("all-over writes no file", text == NULL && len == 0U);
+    expect("all-over keeps the warning",
+           warned(&warnings, "2 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
 }
 
 /**
@@ -624,7 +769,7 @@ test_group_csv_fixture(void) {
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
     expect("fixture group csv generated",
-           dsd_rr_generate_group_csv(list.items, list.count, 1, &text, &len, &warnings) == 0);
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, list.count, 1, &text, &len, &warnings) == 0);
 
     if (text != NULL) {
         /* The alpha tag "CR MERCY ER O-slash" is the fixture's only non-ASCII
@@ -1220,7 +1365,8 @@ test_chan_conventional_small(void) {
                "1,451275000,Marion\n"
                "2,464525000,North Liberty\n");
     expect("conventional never seeds 999", strstr(text, "999,") == NULL);
-    expect("scan source warned", warned(&warnings, "RTL-SDR or a rigctl-controlled radio"));
+    expect("scan source warned",
+           warned(&warnings, "needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a rigctl-controlled radio"));
 
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof(counts));
@@ -1494,20 +1640,115 @@ test_chan_argument_validation(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+/* ------------------------------------------------------------------------- */
+/* TETRA                                                                      */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Build a TETRA plan for one fixture site. */
+static int
+tetra_fixture_plan(const dsd_rr_site_list* sites, size_t site, const dsd_rr_talkgroup_list* tgs,
+                   dsd_rr_import_plan* plan) {
+    dsd_rr_system_info info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.protocol = DSD_RR_PROTO_TETRA;
+    info.supported = 1;
+    info.trunked = 1;
+    const size_t selected[] = {site};
+    const dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
+    DSD_MEMSET(plan, 0, sizeof(*plan));
+    return dsd_rr_import_plan_build(&info, sites->items, sites->count, selected, 1U, (tgs != NULL) ? tgs->items : NULL,
+                                    (tgs != NULL) ? tgs->count : 0U, &options, plan);
+}
+
+/**
+ * @brief Plan the captured TETRA system (Kordia KorKor, sid 10880) site by site.
+ *
+ * Its nine sites hold every shape RadioReference gives TETRA: a `d` on the
+ * first carrier (site 2), a `d` on a later one (site 1), no mark at all (the
+ * rest), and carrier numbers where frequencies belong (site 29).
+ */
+static void
+test_plan_tetra_fixture(void) {
+    dsd_rr_site_list sites;
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    if (parse_fixture("trs_sites_tetra.xml", RR_SHAPE_SITE_LIST, &sites) != 0 || sites.count != 9U
+        || parse_fixture("trs_talkgroups_tetra.xml", RR_SHAPE_TALKGROUP_LIST, &tgs) != 0) {
+        expect("tetra fixture has nine sites", sites.count == 9U);
+        dsd_rr_site_list_free(&sites);
+        dsd_rr_talkgroup_list_free(&tgs);
+        return;
+    }
+    expect("fixture site order", sites.items[0].site_number == 1 && sites.items[1].site_number == 2
+                                     && sites.items[2].site_number == 29 && sites.items[3].site_number == 9991);
+
+    dsd_rr_import_plan plan;
+    expect("sky tower plan built", tetra_fixture_plan(&sites, 1U, &tgs, &plan) == 0);
+    expect("sky tower ok", plan.ok == 1);
+    expect("sky tower trunking", plan.trunking == 1 && plan.conventional == 0);
+    expect_str("sky tower flag", plan.decode_flag, "-fT");
+    expect("sky tower has no channel map", plan.chan_csv_text == NULL && plan.chan_csv_len == 0U);
+    expect("sky tower tunes its marked carrier", plan.tune_hz == 858062500LL);
+    expect_str("sky tower label", plan.site_label, "Sky Tower");
+    expect_str("sky tower provenance", plan.site_ids, "35613");
+    expect("sky tower has a talkgroup list", plan.group_csv_text != NULL);
+    if (plan.group_csv_text != NULL) {
+        expect("sky tower keeps the GSSI as written",
+               strstr(plan.group_csv_text, "\n1093000,A,Debt 1093000\n") != NULL);
+        dsd_csv_validation counts;
+        DSD_MEMSET(&counts, 0, sizeof(counts));
+        if (validate_generated(plan.group_csv_text, 1, &counts) == 0) {
+            expect_counts("tetra group round-trip", &counts, 16U, 0U);
+        }
+    }
+    /* The group writer's own count is the only note. */
+    if (plan.warnings.count != 1U) {
+        dump_warnings(&plan.warnings);
+    }
+    expect_size("sky tower warns only the talkgroup count", plan.warnings.count, 1U);
+    expect("sky tower talkgroup count noted", warned(&plan.warnings, "16 talkgroup(s) written."));
+    dsd_rr_import_plan_free(&plan);
+
+    /* The mark wins over the carrier listed before it. */
+    expect("waiatarua plan built", tetra_fixture_plan(&sites, 0U, NULL, &plan) == 0);
+    expect("waiatarua tunes its marked carrier", plan.ok == 1 && plan.tune_hz == 858087500LL);
+    expect("waiatarua without talkgroups writes nothing", plan.group_csv_text == NULL && plan.chan_csv_text == NULL);
+    expect_size("waiatarua is silent", plan.warnings.count, 0U);
+    dsd_rr_import_plan_free(&plan);
+
+    expect("redoubt road plan built", tetra_fixture_plan(&sites, 3U, NULL, &plan) == 0);
+    expect("redoubt road ok", plan.ok == 1);
+    expect("redoubt road starts on its first carrier", plan.tune_hz == 863737500LL);
+    expect("redoubt road says nothing is marked",
+           warned(&plan.warnings, "RadioReference marks no control channel for this site"));
+    dsd_rr_import_plan_free(&plan);
+
+    expect("silverdale plan built", tetra_fixture_plan(&sites, 2U, &tgs, &plan) == 0);
+    expect("silverdale is blocked", plan.ok == 0 && plan.awaiting_selection == 0);
+    expect_str("silverdale wording", plan.blocked_reason,
+               "This site lists no frequency to start on, so the session would have nothing to tune.");
+    dsd_rr_import_plan_free(&plan);
+
+    dsd_rr_talkgroup_list_free(&tgs);
+    dsd_rr_site_list_free(&sites);
+}
+
 static void
 test_group_listening_policy(void) {
     dsd_rr_talkgroup groups[3] = {{0}};
     for (int i = 0; i < 3; ++i) {
         groups[i].tg_dec = (uint32_t)(100 + i);
+        groups[i].tg_dec_valid = 1;
         groups[i].enc = i;
     }
     for (int policy = DSD_RR_TG_KEEP_ENABLED; policy <= DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL; ++policy) {
         char* text = NULL;
         size_t length = 0;
-        expect(
-            "explicit policy generates groups",
-            dsd_rr_generate_group_csv_with_policy(groups, 3, (dsd_rr_encrypted_tg_policy)policy, &text, &length, NULL)
-                == 0);
+        expect("explicit policy generates groups",
+               dsd_rr_generate_group_csv_with_policy(DSD_RR_PROTO_P25, groups, 3, (dsd_rr_encrypted_tg_policy)policy,
+                                                     &text, &length, NULL)
+                   == 0);
         if (text != NULL) {
             expect("clear group always remains enabled", strstr(text, "100,A,") != NULL);
             expect("partly encrypted policy is explicit",
@@ -1527,6 +1768,8 @@ main(void) {
     test_classify_from_fixtures();
     test_group_listening_policy();
     test_group_csv();
+    test_group_csv_skips_unusable_ids();
+    test_group_csv_protocol_id_ceiling();
     test_group_csv_fixture();
     test_chan_p25_ranking();
     test_chan_p25_drops_frequencies_past_the_trunk_ceiling();
@@ -1547,6 +1790,7 @@ main(void) {
     test_chan_conventional_duplicate_freq_names();
     test_simulcast();
     test_chan_argument_validation();
+    test_plan_tetra_fixture();
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

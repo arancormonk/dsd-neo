@@ -282,22 +282,25 @@ typedef struct {
        sidecars. */
     const char* token;
     const char* short_name;
+    /* Largest talkgroup ID the protocol can carry, inclusive; 0 sets none. */
+    uint32_t id_max;
 } rr_protocol_entry;
 
 static const rr_protocol_entry k_protocols[] = {
-    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL, "p25", "P25"},
-    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_conplus", "DMR Con+"},
-    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_capplus", "DMR Cap+"},
-    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_tier3", "DMR TIII"},
-    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_xpt", "DMR XPT"},
-    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL, "nxdn48", "NXDN48"},
-    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL, "nxdn96", "NXDN96"},
-    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL, "edacs_std", "EDACS"},
-    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL, "edacs_ea", "EDACS EA"},
-    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y", "p25_conv", "P25 conv"},
-    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL, "dmr_conv", "DMR conv"},
-    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL, "nxdn48_conv", "NXDN48 conv"},
-    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL, "nxdn96_conv", "NXDN96 conv"},
+    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL, "p25", "P25", 0U},
+    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_conplus", "DMR Con+", 0U},
+    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_capplus", "DMR Cap+", 0U},
+    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_tier3", "DMR TIII", 0U},
+    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_xpt", "DMR XPT", 0U},
+    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL, "nxdn48", "NXDN48", 0U},
+    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL, "nxdn96", "NXDN96", 0U},
+    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL, "edacs_std", "EDACS", 0U},
+    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL, "edacs_ea", "EDACS EA", 0U},
+    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y", "p25_conv", "P25 conv", 0U},
+    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL, "dmr_conv", "DMR conv", 0U},
+    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL, "nxdn48_conv", "NXDN48 conv", 0U},
+    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL, "nxdn96_conv", "NXDN96 conv", 0U},
+    {DSD_RR_PROTO_TETRA, 0U, 0U, RR_ALT_NEVER, "-fT", NULL, NULL, NULL, "tetra", "TETRA", 0xFFFFFFU},
 };
 
 /**
@@ -332,6 +335,21 @@ int
 dsd_rr_chan_map_need(dsd_rr_protocol protocol) {
     const rr_protocol_entry* row = rr_protocol_row(protocol);
     return (row != NULL) ? (int)row->map_need : 0;
+}
+
+uint32_t
+dsd_rr_protocol_id_max(dsd_rr_protocol protocol) {
+    const rr_protocol_entry* row = rr_protocol_row(protocol);
+    return (row != NULL) ? row->id_max : 0U;
+}
+
+int
+dsd_rr_talkgroup_writable(const dsd_rr_talkgroup* talkgroup, dsd_rr_protocol protocol) {
+    if (talkgroup == NULL || !talkgroup->tg_dec_valid) {
+        return 0;
+    }
+    const uint32_t id_max = dsd_rr_protocol_id_max(protocol);
+    return (id_max == 0U || talkgroup->tg_dec <= id_max) ? 1 : 0;
 }
 
 const char*
@@ -480,6 +498,11 @@ dsd_rr_protocol_classify(const char* type_descr, const char* flavor_descr, const
     }
     if (rr_contains_ci(type, "EDACS")) {
         return rr_classify_edacs(flavor);
+    }
+    /* RadioReference has one TETRA flavor ("Standard"); the type alone decides
+     * so a flavor it adds later still imports. */
+    if (rr_contains_ci(type, "TETRA")) {
+        return DSD_RR_PROTO_TETRA;
     }
     if (rr_contains_ci(type, "DMR") || rr_contains_ci(flavor, "MOTOTRBO")) {
         return rr_classify_dmr(flavor);
@@ -1156,8 +1179,10 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
                            shortened);
         rr_warn(warnings, msg);
     }
-    rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any other input the "
-                      "session stays on the first frequency.");
+    /* Every live radio input retunes for -Y; an I/Q replay or an audio input does not, unless rigctl drives the radio
+       behind it. */
+    rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                      "rigctl-controlled radio; on any other input the session stays on the first frequency.");
     free(chosen);
     free(chosen_site);
     return 0;
@@ -1212,7 +1237,10 @@ dsd_rr_generate_chan_csv(dsd_rr_protocol protocol, const dsd_rr_site* sites, siz
         if (site_count > 1U) {
             rr_warn(warnings, "This system is trunked, so only the first selected site was used.");
         }
-        rc = rr_chan_trunked(protocol, &sites[0], &text, warnings);
+        /* A kind with no channel map (TETRA, which learns its carriers from the
+         * control channel) emits no rows, so the header-only check below
+         * returns the valid "no -C file" result. */
+        rc = (dsd_rr_chan_map_need(protocol) == 0) ? 0 : rr_chan_trunked(protocol, &sites[0], &text, warnings);
     }
 
     if (rc != 0 || text.failed) {
@@ -1412,6 +1440,8 @@ rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* 
 
 /** What a group-CSV pass did, so the warnings can be worded once at the end. */
 typedef struct {
+    size_t no_id;
+    size_t over_max;
     size_t duplicates;
     size_t shortened;
     size_t emitted;
@@ -1454,12 +1484,26 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted
 /**
  * @brief Emit the group-CSV preview warnings.
  *
+ * @param protocol Protocol the IDs were checked against.
  * @param warnings Warning list, or NULL.
  * @param counts   Tallies from the emit pass.
  */
 static void
-rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
+rr_group_warn(dsd_rr_protocol protocol, dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
     char msg[DSD_RR_WARNING_TEXT_MAX];
+    if (counts->over_max > 0U) {
+        const char* name = dsd_rr_protocol_short_name(protocol);
+        (void)DSD_SNPRINTF(
+            msg, sizeof(msg), "%zu talkgroup(s) were skipped because their IDs are larger than %s allows (%lu).",
+            counts->over_max, (name != NULL) ? name : "this system", (unsigned long)dsd_rr_protocol_id_max(protocol));
+        rr_warn(warnings, msg);
+    }
+    if (counts->no_id > 0U) {
+        (void)DSD_SNPRINTF(msg, sizeof(msg),
+                           "%zu talkgroup(s) were skipped because RadioReference lists no usable ID for them.",
+                           counts->no_id);
+        rr_warn(warnings, msg);
+    }
     if (counts->duplicates > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu duplicate talkgroup ID(s) were dropped; the first one wins.",
                            counts->duplicates);
@@ -1470,20 +1514,57 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
                            counts->shortened);
         rr_warn(warnings, msg);
     }
-    (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu talkgroup(s) written.", counts->emitted);
-    rr_warn(warnings, msg);
+    if (counts->emitted > 0U) {
+        (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu talkgroup(s) written.", counts->emitted);
+        rr_warn(warnings, msg);
+    }
+}
+
+/**
+ * @brief Collect the sort keys of the talkgroups that can be written.
+ *
+ * Runs before duplicate selection, so a row with no usable ID - or one the
+ * protocol cannot carry - can never be the "first" of a duplicate pair and push
+ * a real one out (dsd_rr_talkgroup_writable(), the rule a preview shares).
+ *
+ * @param protocol   Protocol the IDs are written for.
+ * @param talkgroups Talkgroups.
+ * @param count      Number of talkgroups.
+ * @param keys       Receives the keys, sized for @p count.
+ * @param counts     Running tallies; the skip counts are filled in.
+ * @return The number of keys written.
+ */
+static size_t
+rr_group_keys(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys,
+              rr_group_counts* counts) {
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!dsd_rr_talkgroup_writable(&talkgroups[i], protocol)) {
+            /* One rule, two warnings: no usable ID, or one above the ceiling. */
+            if (talkgroups[i].tg_dec_valid) {
+                counts->over_max++;
+            } else {
+                counts->no_id++;
+            }
+            continue;
+        }
+        keys[kept].dec = talkgroups[i].tg_dec;
+        keys[kept].order = i;
+        kept++;
+    }
+    return kept;
 }
 
 int
-dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
-                          size_t* out_len, dsd_rr_warning_list* warnings) {
+dsd_rr_generate_group_csv(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
+                          int partial_enc_as_de, char** out, size_t* out_len, dsd_rr_warning_list* warnings) {
     return dsd_rr_generate_group_csv_with_policy(
-        talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL, out,
-        out_len, warnings);
+        protocol, talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL,
+        out, out_len, warnings);
 }
 
 int
-dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+dsd_rr_generate_group_csv_with_policy(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
                                       dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
                                       dsd_rr_warning_list* warnings) {
     if (out == NULL || out_len == NULL) {
@@ -1500,17 +1581,20 @@ dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t
     if (keys == NULL) {
         return -1;
     }
-    for (size_t i = 0; i < count; i++) {
-        keys[i].dec = talkgroups[i].tg_dec;
-        keys[i].order = i;
+    rr_group_counts counts = {0U, 0U, 0U, 0U, 0U};
+    const size_t kept = rr_group_keys(protocol, talkgroups, count, keys, &counts);
+    if (kept == 0U) {
+        /* Nothing writable: no file, but the skip counts still say why. */
+        free(keys);
+        rr_group_warn(protocol, warnings, &counts);
+        return 0;
     }
-    qsort(keys, count, sizeof(*keys), rr_tg_key_cmp);
+    qsort(keys, kept, sizeof(*keys), rr_tg_key_cmp);
 
     rr_text text = {NULL, 0U, 0U, 0};
     rr_text_add(&text, RR_GROUP_HEADER);
 
-    rr_group_counts counts = {0U, 0U, 0U};
-    for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < kept; i++) {
         if (i > 0U && keys[i].dec == keys[i - 1U].dec) {
             counts.duplicates++;
             continue;
@@ -1523,7 +1607,7 @@ dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t
         rr_text_free(&text);
         return -1;
     }
-    rr_group_warn(warnings, &counts);
+    rr_group_warn(protocol, warnings, &counts);
 
     *out = text.data;
     *out_len = text.len;

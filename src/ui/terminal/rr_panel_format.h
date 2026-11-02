@@ -47,4 +47,21 @@ void rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_pane
  */
 int rr_panel_plan_line(const dsd_rr_import_plan* plan, char* out, size_t out_sz);
 
+/** @brief Most lines rr_panel_plan_note() writes. */
+#define RR_PANEL_NOTE_LINES_MAX 3
+
+/**
+ * @brief The note the system view shows for the plan's protocol, one sentence per line.
+ *
+ * TETRA only, mirroring the Qt import screen's note: what dsd-neo needs to
+ * receive TETRA, and that some systems RadioReference lists as TETRA run
+ * Tetrapol, which nothing in the record tells apart. Each line fits the panel of
+ * an 80-column terminal (74 columns) without wrapping.
+ *
+ * @param lines     Receives up to @p max_lines static strings.
+ * @param max_lines Capacity of @p lines.
+ * @return Lines written: 0 for any other protocol or a NULL plan.
+ */
+size_t rr_panel_plan_note(const dsd_rr_import_plan* plan, const char** lines, size_t max_lines);
+
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_PANEL_FORMAT_H_ */

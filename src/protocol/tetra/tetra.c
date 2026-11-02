@@ -1096,6 +1096,8 @@ tetra_pub_trunk_state(const tetra_state_t* ts) {
     switch ((tetra_sm_state_e)ts->sm.state) {
         case TETRA_SM_TUNED: return DSD_TETRA_TRUNK_ON_TRAFFIC;
         case TETRA_SM_ON_CC: return DSD_TETRA_TRUNK_ON_CONTROL;
+        /* Not on the control channel until the main carrier's own SYSINFO says so. */
+        case TETRA_SM_ACQUIRING:
         case TETRA_SM_IDLE:
         default: return DSD_TETRA_TRUNK_IDLE;
     }
@@ -1139,14 +1141,19 @@ tetra_publish(dsd_state* state) {
 
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
  * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show, and end the burst
- * for them with that publication (tetra_burst_done()), whichever burst it was and however its decode ended. Returns 1
- * when the burst decoded a block whose CRC passed. */
+ * for them with that publication (tetra_burst_done()), whichever burst it was and however its decode ended. Last, the
+ * move to the main carrier a SYSINFO of the burst staged, if one did (tetra_sm_after_burst()): every other burst costs
+ * the flag read. Returns 1 when the burst decoded a block whose CRC passed. */
 static int
 tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
     tetra_publish(state);
     tetra_burst_done(opts, state);
-    return tetra_confirm_burst_end(state);
+    const int proven = tetra_confirm_burst_end(state);
+    if (ts->sm.acq.staged_hz != 0) {
+        tetra_sm_after_burst(opts, state);
+    }
+    return proven;
 }
 
 /* Open the burst the frame sync just locked, captured on the carrier of the current evidence epoch. The trunking state

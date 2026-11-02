@@ -66,6 +66,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+#include "next_start_check.h"
 #include "services.h"
 
 /* Radio streams svc_rtl_restart_locked() started (svc_rtl_start_count()). Decoder thread only, as every restart is. */
@@ -782,27 +783,7 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
 int
 svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
                      char* why, size_t why_size) {
-    if (why && why_size > 0U) {
-        why[0] = '\0';
-    }
-    if (!opts || !state || !change) {
-        return -1;
-    }
-    /* Two saves (a few tens of KB each) on the heap, once per change that can touch the trunk-scan rules. */
-    dsdneoUserConfig* before = (dsdneoUserConfig*)calloc(2, sizeof *before);
-    if (!before) {
-        if (why && why_size > 0U) {
-            DSD_SNPRINTF(why, why_size, "%s", "out of memory");
-        }
-        return -1;
-    }
-    dsdneoUserConfig* after = before + 1;
-    dsd_snapshot_opts_to_user_config(opts, state, before);
-    DSD_MEMCPY(after, before, sizeof *after);
-    change(after, ctx);
-    const int rc = dsd_user_config_check_trunk_scan_startable(after, before, why, why_size);
-    free(before);
-    return rc;
+    return app_check_next_start(opts, state, change, ctx, why, why_size);
 }
 
 /* An import the next start would refuse (svc_check_next_start()): the rule, without its advice, fits the status line
@@ -814,11 +795,6 @@ svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) 
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s not imported: %s", what, why);
     state->ui_msg_expire = dsd_realtime_time() + 5;
     return SVC_REFUSED_FOR_NEXT_START;
-}
-
-static void
-svc_next_start_channel_map(dsdneoUserConfig* save, const void* ctx) {
-    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
 }
 
 static void
@@ -838,7 +814,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     /* Nor beside a trunk scan a config left for the next start: the save would write both, which startup refuses. */
     char why[256];
-    if (svc_check_next_start(opts, state, svc_next_start_channel_map, path, why, sizeof why) != 0) {
+    if (svc_check_next_start(opts, state, app_next_start_load_channel_map, path, why, sizeof why) != 0) {
         return svc_refuse_import_for_next_start(state, "Channel map", why);
     }
     char old_path[sizeof(opts->chan_in_file)];

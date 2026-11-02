@@ -302,7 +302,7 @@ dsd_cli_usage_section_decode(void) {
     printf("                               over the input spec's sql field; works with --iq-replay. Off on digital\n");
     printf("                               channels. On audio input (PCM) noise learns the noise above voice from\n");
     printf("                               the input and gates the FM monitor; auto needs a radio input.\n");
-    printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
+    printf("  -fM           Native AM receiver (I/Q inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");
     printf("                               rate (e.g. 20000 needs a 24 or 48 kHz DSP bandwidth). On PCM input it\n");

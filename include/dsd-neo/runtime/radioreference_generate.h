@@ -14,8 +14,8 @@
  * tighter contract than "valid CSV" - see the per-protocol notes below.
  *
  * The same three constraints that shape radioreference.h apply here: every
- * entry point is declared unconditionally, nothing but <stddef.h> and dsd-neo
- * headers is included, and no curl, expat or Qt type is named.
+ * entry point is declared unconditionally, nothing but <stddef.h>, <stdint.h>
+ * and dsd-neo headers is included, and no curl, expat or Qt type is named.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RADIOREFERENCE_GENERATE_H_H
@@ -23,6 +23,7 @@
 
 #include <dsd-neo/runtime/radioreference.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,9 @@ extern "C" {
  * under three system types - P25 (48), DMR (43) and NXDN (45) - and the NXDN
  * pair is split by rate for the same reason the trunked pair is: the decode flag
  * differs (-fi vs -fn).
+ *
+ * New kinds go just before DSD_RR_PROTO_UNSUPPORTED, so no earlier value moves
+ * and every loop over 0..UNSUPPORTED-1 picks them up.
  */
 typedef enum {
     DSD_RR_PROTO_P25 = 0,
@@ -53,6 +57,7 @@ typedef enum {
     DSD_RR_PROTO_DMR_CONV,    /**< DMR flavor 43 "Conventional Networked". */
     DSD_RR_PROTO_NXDN48_CONV, /**< NXDN flavor 45, 4800 bps. */
     DSD_RR_PROTO_NXDN96_CONV, /**< NXDN flavor 45, 9600 bps. */
+    DSD_RR_PROTO_TETRA,       /**< TETRA (type 5): trunked, no channel map. */
     DSD_RR_PROTO_UNSUPPORTED
 } dsd_rr_protocol;
 
@@ -173,9 +178,36 @@ const char* dsd_rr_decode_flag(dsd_rr_protocol protocol, int simulcast, int esk,
  * @return 2 when trunking cannot tune without one, 1 when it is useful but
  *         optional (P25, where the map is the control-channel hunt list; NXDN,
  *         which falls back to DFA; conventional, which needs one only for two
- *         or more repeaters), 0 when no file should be produced.
+ *         or more repeaters), 0 when no file should be produced (TETRA,
+ *         which learns its carriers from the control channel).
  */
 int dsd_rr_chan_map_need(dsd_rr_protocol protocol);
+
+/**
+ * @brief The largest talkgroup ID the protocol can carry.
+ *
+ * TETRA group addresses are 24-bit GSSIs, so a RadioReference tgDec above
+ * 0xFFFFFF cannot be one of its groups.
+ *
+ * @param protocol Protocol.
+ * @return The inclusive ceiling, or 0 when the protocol sets none (every kind
+ *         but TETRA, and DSD_RR_PROTO_UNSUPPORTED).
+ */
+uint32_t dsd_rr_protocol_id_max(dsd_rr_protocol protocol);
+
+/**
+ * @brief Whether the group-CSV writer keeps a talkgroup for @p protocol.
+ *
+ * The writer's one skip rule, shared with any preview of what it writes: a
+ * talkgroup with no usable ID (tg_dec_valid 0), or one above
+ * dsd_rr_protocol_id_max() for @p protocol, never reaches the file. 0 is
+ * kept. Duplicate IDs are the writer's to drop afterwards (the first wins).
+ *
+ * @param talkgroup Talkgroup, or NULL.
+ * @param protocol  Protocol the IDs are written for.
+ * @return 1 when it can be written, 0 otherwise (and for NULL).
+ */
+int dsd_rr_talkgroup_writable(const dsd_rr_talkgroup* talkgroup, dsd_rr_protocol protocol);
 
 /**
  * @brief The site's control-channel frequency.
@@ -220,10 +252,18 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
  * fields. No space follows a comma, because the importer does not trim the name
  * column. Category shortening is not included in talkgroup-name warnings.
  *
+ * A talkgroup whose tg_dec_valid is 0 has no ID to write, and one above
+ * dsd_rr_protocol_id_max() for @p protocol is an ID that protocol cannot carry
+ * (a TETRA group is 24 bits); both are skipped before duplicate selection and
+ * each kind is counted in its own warning. When every talkgroup is
+ * skipped this returns 0 with `*out == NULL` and `*out_len == 0` - "no group
+ * file", with the warnings saying why - and the caller must not write one.
+ *
+ * @param protocol        Protocol the IDs are written for.
  * @param talkgroups      Talkgroups to emit.
  * @param count           Number of talkgroups.
  * @param partial_enc_as_de Treat enc == 1 (partially encrypted) as blocked.
- * @param out             Receives the heap text; caller frees. Never NULL on 0.
+ * @param out             Receives the heap text, or NULL when nothing was writable; caller frees.
  * @param out_len         Receives the text length in bytes.
  * @param warnings        Optional; receives preview warnings.
  * @return 0 on success, -1 on invalid argument or allocation failure.
@@ -237,12 +277,12 @@ typedef enum {
 
 /** Explicit whole-talkgroup policy. KEEP_ENABLED delegates individual calls to
  * the canonical listening/key-availability policy; exclusions emit DE rows. */
-int dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+int dsd_rr_generate_group_csv_with_policy(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
                                           dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
                                           dsd_rr_warning_list* warnings);
 
-int dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
-                              size_t* out_len, dsd_rr_warning_list* warnings);
+int dsd_rr_generate_group_csv(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
+                              int partial_enc_as_de, char** out, size_t* out_len, dsd_rr_warning_list* warnings);
 
 /**
  * @brief Generate a channel-map CSV.

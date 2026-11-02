@@ -12,6 +12,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -57,6 +58,10 @@ trunk_enable_on(dsd_opts* opts, dsd_state* state) {
      * scan ends here as a running one does (issue #671). A trunk-scan target's
      * scope is never this command's to leave. */
     p25_sm_tick_guard_enter();
+    if (opts->trunk_enable != 1) {
+        /* Trunking turned on again: the TETRA machine's moves to a main carrier start over. */
+        tetra_sm_forget_moves(state);
+    }
     opts->trunk_enable = 1;
     if (opts->trunk_scan_enabled != 1) {
         (void)svc_leave_channel_scan(opts, state);

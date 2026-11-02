@@ -214,7 +214,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "default; an explicit value, 16000 included, always runs the channel filter and must fit the DSP rate",
      "16000", NULL, DSDCFG_TYPE_INT, 8000, 25000},
     {"analog", "am_bandwidth_hz",
-     "AM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth; decode = am needs an IQ "
+     "AM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth; decode = am needs an I/Q "
      "radio input. Leave it out for the default; it must fit the DSP rate",
      "6000", NULL, DSDCFG_TYPE_INT, 5000, 20000},
     {"analog", "tone_filter",

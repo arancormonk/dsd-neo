@@ -724,8 +724,36 @@ field, and the decoder refuses the rest when it applies the command.
   `12` M17, `13` TDMA, `14` analog, `15` DMR mono, `16` AM, `17` TETRA). AM on
   an input that delivers demodulated audio, and TETRA on one that is neither an
   I/Q radio nor a symbol capture, are refused, and `status.message` says why;
-  TETRA at a DSP rate that is not a multiple of 18 kHz from 36 to 144 kHz is
-  kept, with a message naming the fix (`rtl_set_bw` 72 on an RTL-SDR).
+  for `decode_mode_set`, TETRA at a DSP rate that is not a multiple of 18 kHz
+  from 36 to 144 kHz is kept, with a message naming the fix (`rtl_set_bw` 72 on
+  an RTL-SDR).
+* **`rr_apply_import`**: the response only acknowledges the queue; the outcome
+  arrives in `status.message`. Everything the decoder can check is checked
+  before anything changes, and a refused import changes nothing (`Failed: RR
+  import -> <reason>`): a running trunk scan, or one waiting for the next start
+  beside a channel map or the scanner; AM or TETRA on demodulated audio; TETRA
+  on an RTL-SDR or rtl_tcp radio off the 72 kHz DSP bandwidth (`Failed: RR
+  import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`), on an
+  Airspy, on a SoapySDR device whose rate is no TETRA rate, or in a
+  `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
+  running I/Q replay that cannot run the mode; and a CSV that cannot be read.
+  After that, a mode change that fails (a replay that does not reopen at the
+  new rate, say) keeps its own message, which names the reason, and the import
+  goes no further; a CSV that cannot be loaded by then is reported as a partial
+  apply naming what did take (`Failed: RR import -> channel map not loaded;
+  mode and talkgroups applied`). On an I/Q replay the
+  import never tunes, even with a rigctl radio connected. Success reads
+  `Applied: RR import (<mode>)`, with what the mode change had to say (a
+  replay's new rate) in place of the reminder to save. The tune's outcome
+  arrives in `status.message` too, never in the response: a tune that fails is
+  a partial apply (`Failed: RR import -> tune to <MHz> MHz failed; mode
+  applied`); a busy tuner takes nothing (`Deferred; retry: RR import -> tune to
+  <MHz> MHz deferred (tuner busy); ...`); a tune still on its way ends the
+  import's message in `tuning to <MHz> MHz`. A later failure always arrives in
+  `status.message` (`Failed: RR import -> tune to <MHz> MHz failed; ...`); a
+  landing (`...; tuned to <MHz> MHz`) or an interruption (`Interrupted: RR
+  import -> tune to <MHz> MHz; ...`) replaces the import's message only while
+  it is still up.
 * **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
   terminal's frequency entry does. It is refused during an I/Q replay and for
   `0`. With single-system P25 trunking on and no scan it selects that control

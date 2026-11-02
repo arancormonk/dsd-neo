@@ -110,6 +110,7 @@
 #include "commands_internal.h"
 #include "key_commands.h"
 #include "recording_view_internal.h"
+#include "rr_apply_verdict.h"
 #include "scan_row_edit.h"
 #include "services.h"
 #include "snapshot_internal.h"
@@ -3426,9 +3427,10 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
 
 /* The TETRA trunking state machine likewise, once a manual tune moved the receiver and the calls were ended
    (reset_call_tracking()): it lets go of the call it follows, which its next tick would otherwise release again with a
-   return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
+   return of its own, of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
    leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
-   otherwise put that call and its voice channel back onto the carrier the operator chose. */
+   otherwise put that call and its voice channel back onto the carrier the operator chose, and of a move to the main
+   carrier (ACQUIRING), in flight or landed, whose late completion is then ignored. */
 /* An operator move gives up a call the DMR machine followed, whose release clears the talkgroup policy's followed-call
    ledger: under the P25 SM tick guard, which the watchdog's releases write it under (talkgroup_policy.h). A DMR or
    NXDN trunk's manual retune runs unguarded (p25_sm_owns_trunk()), so the guard is taken here unless held. */
@@ -6001,11 +6003,12 @@ decode_mode_republish(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMo
  * put it back (ui_revert_analog_entry()), or, for a typed row's leave, leave an analog decoder on a front end running
  * something else with nothing but a log line to say so. The unset NFM default, which no rate refuses, is asked about as
  * before (svc_check_mode_receive_profile()). @p why receives a reason for the toast when there is one beyond the front
- * end's log.
+ * end's log. @p nfm_hz and @p am_hz are the widths the mode keeps: the ones in force, or for a check made before a
+ * scan leave (an RR import's preflight, issue #803) the configured ones the leave puts back.
  */
 static int
-ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode, char* why,
-                              size_t why_size) {
+ui_check_mode_receive_profile_widths(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode,
+                                     int nfm_hz, int am_hz, char* why, size_t why_size) {
     if (why && why_size > 0U) {
         why[0] = '\0';
     }
@@ -6015,13 +6018,13 @@ ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdn
     int width_hz = 0;
     if (mode == DSDCFG_MODE_AM && opts->m17encoder != 1) {
         kind = DSD_ANALOG_DEMOD_AM;
-        width_hz = opts->analog_am_bandwidth_hz;
-    } else if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && opts->analog_nfm_bandwidth_hz > 0) {
+        width_hz = am_hz;
+    } else if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && nfm_hz > 0) {
         kind = DSD_ANALOG_DEMOD_FM;
-        width_hz = opts->analog_nfm_bandwidth_hz;
+        width_hz = nfm_hz;
     }
     if (kind < 0) {
-        return svc_check_mode_receive_profile(opts, state, mode);
+        return svc_check_mode_receive_profile_widths(opts, state, mode, nfm_hz, am_hz);
     }
 #ifdef USE_RADIO
     /* A running replay the change re-plans (leaving TETRA's rate, issue #701) runs the width at the rate the request
@@ -6033,6 +6036,13 @@ ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdn
     }
 #endif
     return svc_check_analog_bandwidth(opts, state, kind, width_hz, why, why_size);
+}
+
+static int
+ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode, char* why,
+                              size_t why_size) {
+    return ui_check_mode_receive_profile_widths(opts, state, mode, opts->analog_nfm_bandwidth_hz,
+                                                opts->analog_am_bandwidth_hz, why, why_size);
 }
 
 /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session collects
@@ -6139,26 +6149,34 @@ decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode
 
 /* The toast a mode change that took posts. TETRA switched on where the DSP rate is no multiple of 18 kHz is kept, but
    decodes nothing until the rate changes, so the toast says so and the log names the fix in full
-   (svc_tetra_rate_advice()). A replay the change reopened at another rate says so (issue #701). */
+   (svc_tetra_rate_advice()). A replay the change reopened at another rate says so (issue #701). That note is also
+   copied to @p note (when not NULL; "" for none), for a caller whose own toast replaces this one to carry it (an RR
+   import, issue #803). */
 static void
 decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int replay_reopened,
-                          uint32_t replay_rate_hz, int replay_resampled) {
+                          uint32_t replay_rate_hz, int replay_resampled, char* note, size_t note_size) {
+    char text[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    text[0] = '\0';
+    int ttl_s = 3;
     if (replay_reopened && replay_rate_hz > 0U) {
         char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format((int)replay_rate_hz, rate, sizeof rate);
-        ui_set_toast(state, 5, "Decoding %s: replay %s %s", dsd_decode_mode_display_name(mode),
-                     replay_resampled ? "resampled to" : "runs at", rate);
-        return;
-    }
-    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
-    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        DSD_SNPRINTF(text, sizeof text, "replay %s %s", replay_resampled ? "resampled to" : "runs at", rate);
+        ttl_s = 5;
+    } else if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, text, sizeof text) == 1) {
         char advice[DSD_TETRA_RATE_ADVICE_MAX];
         (void)svc_tetra_rate_advice(opts, state, 0, advice, sizeof advice);
         LOG_WARN("WARNING: %s.\n", advice);
-        ui_set_toast(state, 8, "Decoding TETRA: %s", brief);
-        return;
+        ttl_s = 8;
     }
-    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
+    if (note && note_size > 0U) {
+        DSD_SNPRINTF(note, note_size, "%s", text);
+    }
+    if (text[0] != '\0') {
+        ui_set_toast(state, ttl_s, "Decoding %s: %s", dsd_decode_mode_display_name(mode), text);
+    } else {
+        ui_set_toast(state, ttl_s, "Decoding %s", dsd_decode_mode_display_name(mode));
+    }
 }
 
 /* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
@@ -6240,10 +6258,12 @@ decode_mode_ensure_output(dsd_opts* opts, const dsd_state* state) {
  *
  * Callers that already hold a dsdneoUserDecodeMode use this directly; it does no
  * payload decoding, so nothing has to synthesize a struct dsd_app_command to
- * reach it.
+ * reach it. @p note (may be NULL) receives what the applied toast adds after the
+ * mode's name (decode_mode_toast_applied()).
  */
 static int
-decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, char* note,
+                              size_t note_size) {
     /* The presets also carry an audio layout, but the output stream was opened
        once at session start with the layout in force then (openAudioOutput()
        reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes
@@ -6335,8 +6355,13 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     }
     /* After the outgoing calls ended and froze their identity. */
     ui_commit_mode_identity(opts, state);
-    decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled);
+    decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled, note, note_size);
     return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    return decode_mode_apply_value_noted(opts, state, mode, NULL, 0U);
 }
 
 static int
@@ -6352,49 +6377,85 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     return decode_mode_apply_value(opts, state, mode);
 }
 
-/* The save an import leaves (svc_check_next_start()): the tuner owner it sets (rr_apply_tuner_owner()) and the channel
-   map it imports or clears (rr_apply_files()). */
-static void
-rr_apply_next_start(dsdneoUserConfig* save, const void* ctx) {
-    const dsd_app_rr_apply_payload* p = (const dsd_app_rr_apply_payload*)ctx;
-    save->trunk_enabled = p->trunking ? 1 : 0;
-    save->trunk_scanner = (!p->trunking && p->scanner) ? 1 : 0;
-    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", p->has_chan ? p->chan_path : "");
+/* An import refused before its commit point: the reason in the toast and the log, nothing changed. */
+static int
+rr_apply_refuse(dsd_state* state, const char* why) {
+    LOG_WARN("RR import not applied: %s.\n", why);
+    ui_set_toast(state, 5, "Failed: RR import -> %s", why);
+    return UI_CMD_APPLY_FAILED;
 }
 
-/**
- * @brief Everything that can refuse a RadioReference apply before it mutates anything.
- *
- * After this returns COMPLETED the sequence is best-effort and cannot roll back;
- * Each channel-map import validates before adoption and preserves its previous path on failure.
- */
+/* The session can take the import at all, and decode what it selects (dsd_app_rr_receiver_verdict(), issue #803), and
+   it leaves a save that a trunk scan waiting for the next start can start with (issue #671). Same code the frontends'
+   pre-check runs (dsd_app_rr_apply_block_reason()), here with the running stream's committed rate. */
 static int
-rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    // Same invariant svc_import_channel_map() enforces for -C: a trunk-scan run
-    // gets its channel maps per target. Refusing the whole apply (rather than
-    // just the channel-map half, which is all svc_import_group_list would leave)
-    // is what keeps a half-applied import off a live session.
-    if (opts->trunk_scan_enabled == 1) {
-        ui_set_toast(state, 4, "Failed: RR import -> trunk scan owns the channel map");
-        return UI_CMD_APPLY_FAILED;
+rr_apply_check_session(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    uint32_t rate_hz = 0U;
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        const int request_hz = rtl_stream_get_request_rate_hz();
+        rate_hz = request_hz > 0 ? (uint32_t)request_hz : 0U;
     }
-    /* Nor may it leave a save a trunk scan waiting for the next start cannot start with (issue #671). */
+#endif
+    dsd_app_rr_receiver_facts facts;
+    rr_apply_receiver_facts_fill(opts, p, p->has_group, p->has_chan, rate_hz, &facts);
     char why[256];
-    if (svc_check_next_start(opts, state, rr_apply_next_start, p, why, sizeof why) != 0) {
+    if (dsd_app_rr_receiver_verdict(&facts, why, sizeof why) != 0) {
+        return rr_apply_refuse(state, why);
+    }
+    if (rr_apply_next_start_refusal(opts, state, &facts, p->has_chan ? p->chan_path : NULL, why, sizeof why) != 0) {
         LOG_WARN("RR import not applied: %s.\n", why);
         why[strcspn(why, ";")] = '\0';
         ui_set_toast(state, 4, "Failed: RR import -> %s", why);
         return UI_CMD_APPLY_FAILED;
     }
-    /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
-       would run dsd_apply_decode_mode_preset() and republish a symbol profile for
-       "no mode". Neither producer can emit it today; the guard is what keeps that
-       true. */
-    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_TETRA
-        || !dsd_decode_mode_runs_on_input((dsdneoUserDecodeMode)p->decode_mode, opts)) {
-        ui_set_toast(state, 4, "Failed: RR import -> decode mode");
-        return UI_CMD_APPLY_FAILED;
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/* The front end takes the receive profile the import's mode publishes (decode_mode_check_receive_profile()), asked of
+   the session the import's scan leave leaves: the configured widths, not a -Y row's own. */
+static int
+rr_apply_check_receive_profile(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char why[128];
+    const int nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    const int am_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM);
+    if (ui_check_mode_receive_profile_widths(opts, state, mode, nfm_hz, am_hz, why, sizeof why) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
     }
+    return rr_apply_refuse(state, why[0] != '\0' ? why : "the RTL front end refused the channel (see log)");
+}
+
+#ifdef USE_RADIO
+/* A running I/Q replay can run the mode (issue #701): the re-plan the mode change makes, asked dry, so a capture no
+   chain resamples to the mode's rate is refused before anything changes. TETRA's refusal names the rate the replay
+   keeps, as the mode change's own does (decode_mode_replan_replay()). */
+static int
+rr_apply_check_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const rtl_stream_replay_request req = {
+        opts->rtl_dsp_bw_khz,
+        opts->rtl_dsp_bw_source,
+        mode == DSDCFG_MODE_TETRA ? 1 : 0,
+    };
+    char why[192];
+    why[0] = '\0';
+    if (rtl_stream_replay_replan_check_request(opts, &req, NULL, NULL, why, sizeof why) != RTL_STREAM_REPLAN_REFUSED) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        LOG_WARN("IQ replay: the TETRA decoder needs a rate chain this capture cannot run: %s.\n", why);
+        return rr_apply_refuse(state, brief);
+    }
+    return rr_apply_refuse(state, why[0] != '\0' ? why : "this replay cannot run that mode");
+}
+#endif
+
+/* Each CSV is read and has a row the import can use. */
+static int
+rr_apply_check_files(dsd_state* state, const dsd_app_rr_apply_payload* p) {
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof counts);
     if (p->has_chan && (dsd_csv_validate_chan_file(p->chan_path, &counts) != 0 || counts.accepted == 0U)) {
@@ -6407,6 +6468,37 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
         return UI_CMD_APPLY_FAILED;
     }
     return UI_CMD_APPLY_COMPLETED;
+}
+
+/**
+ * @brief Everything that can refuse a RadioReference apply before it mutates anything: the import's commit point.
+ *
+ * Every deterministic check runs here, before the carrier boundary and the scan leave (issue #803): the payload's mode,
+ * the receiver verdict and the next-start rule, the receive profile the mode publishes, a running replay's re-plan,
+ * and each CSV. What can still fail after it (a replay reopen, a CSV gone between here and its load, a tune) is
+ * reported as a partial apply, never as success.
+ */
+static int
+rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
+       would run dsd_apply_decode_mode_preset() and republish a symbol profile for
+       "no mode". Neither producer can emit it today; the guard is what keeps that
+       true. */
+    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_TETRA) {
+        ui_set_toast(state, 4, "Failed: RR import -> decode mode");
+        return UI_CMD_APPLY_FAILED;
+    }
+    const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p->decode_mode;
+    int rc = rr_apply_check_session(opts, state, p);
+    if (rc == UI_CMD_APPLY_COMPLETED) {
+        rc = rr_apply_check_receive_profile(opts, state, mode);
+    }
+#ifdef USE_RADIO
+    if (rc == UI_CMD_APPLY_COMPLETED) {
+        rc = rr_apply_check_replay(opts, state, mode);
+    }
+#endif
+    return rc == UI_CMD_APPLY_COMPLETED ? rr_apply_check_files(state, p) : rc;
 }
 
 /* decode_mode_apply_edacs_pv() resets both fields to 0, so the variant has to be
@@ -6464,6 +6556,8 @@ rr_apply_tuner_owner(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_pa
     }
 }
 
+enum { RR_APPLY_CHAN_FAILED = 1, RR_APPLY_GROUP_FAILED = 2 };
+
 /* A half the import did not write CLEARS the live one rather than leaving it:
    this command re-points the session at a different system, and a stale channel
    map is not merely out of date, it resolves the new system's voice grants
@@ -6471,33 +6565,105 @@ rr_apply_tuner_owner(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_pa
    protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
    this is an ordinary outcome, not an edge case. services.h says the same thing
    about why the clear counterparts exist: "the previous file would otherwise
-   stay live for the session". */
+   stay live for the session". Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED,
+   or 0. */
 static int
 rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    int rc = UI_CMD_APPLY_COMPLETED;
+    int failed = 0;
     if (p->has_chan) {
         if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
-            rc = UI_CMD_APPLY_FAILED;
+            failed |= RR_APPLY_CHAN_FAILED;
         }
     } else {
         (void)svc_clear_channel_map(opts, state);
     }
     if (p->has_group) {
         if (svc_import_group_list(opts, state, p->group_path) != 0) {
-            rc = UI_CMD_APPLY_FAILED;
+            failed |= RR_APPLY_GROUP_FAILED;
         }
     } else {
         (void)svc_clear_group_list(opts, state);
     }
-    return rc;
+    return failed;
 }
 
-/* io_control_set_freq() is compiled unconditionally and dispatches rigctl
+/* What an import did and did not do after its commit point (rr_apply_preflight()), for a partial apply's toast: what
+   failed, as phrases ("channel map not loaded"), and what was applied, as nouns ("mode"). */
+#define RR_APPLY_OUTCOME_ITEMS 3U
+
+typedef struct {
+    const char* items[RR_APPLY_OUTCOME_ITEMS];
+    size_t count;
+} rr_apply_list;
+
+typedef struct {
+    rr_apply_list failed;
+    rr_apply_list applied;
+} rr_apply_outcome;
+
+static void
+rr_apply_list_add(rr_apply_list* list, const char* text) {
+    if (list->count < RR_APPLY_OUTCOME_ITEMS) {
+        list->items[list->count] = text;
+        list->count++;
+    }
+}
+
+/* @p list joined as a list is read: "a", "a and b", "a, b and c". */
+static void
+rr_apply_join(char* out, size_t out_size, const rr_apply_list* list) {
+    out[0] = '\0';
+    for (size_t i = 0; i < list->count && i < RR_APPLY_OUTCOME_ITEMS; i++) {
+        const size_t used = strlen(out);
+        const char* sep = ", ";
+        if (i == 0U) {
+            sep = "";
+        } else if (i + 1U == list->count) {
+            sep = " and ";
+        }
+        DSD_SNPRINTF(out + used, out_size - used, "%s%s", sep, list->items[i]);
+    }
+}
+
+/* "Failed: RR import -> channel map not loaded; mode and talkgroups applied": a partial apply is never reported as
+   success, and says what did take. @p category leads it ("Failed", or "Deferred; retry" when only the tune was
+   deferred). */
+static void
+rr_apply_outcome_text(char* out, size_t out_size, const char* category, const rr_apply_outcome* outcome) {
+    char failed[128];
+    char applied[64];
+    rr_apply_join(failed, sizeof failed, &outcome->failed);
+    rr_apply_join(applied, sizeof applied, &outcome->applied);
+    DSD_SNPRINTF(out, out_size, "%s: RR import -> %s; %s applied", category, failed,
+                 applied[0] != '\0' ? applied : "nothing");
+}
+
+/* The files' half of an outcome: one phrase for what did not load, the rest among what was applied. */
+static void
+rr_apply_outcome_files(rr_apply_outcome* outcome, const dsd_app_rr_apply_payload* p, int files_failed) {
+    const int chan_failed = (files_failed & RR_APPLY_CHAN_FAILED) != 0;
+    const int group_failed = (files_failed & RR_APPLY_GROUP_FAILED) != 0;
+    if (chan_failed && group_failed) {
+        rr_apply_list_add(&outcome->failed, "channel map and talkgroups not loaded");
+    } else if (chan_failed) {
+        rr_apply_list_add(&outcome->failed, "channel map not loaded");
+    } else if (group_failed) {
+        rr_apply_list_add(&outcome->failed, "talkgroups not loaded");
+    }
+    if (p->has_chan && !chan_failed) {
+        rr_apply_list_add(&outcome->applied, "channel map");
+    }
+    if (p->has_group && !group_failed) {
+        rr_apply_list_add(&outcome->applied, "talkgroups");
+    }
+}
+
+/* io_control_set_freq_tagged() is compiled unconditionally and dispatches rigctl
    (opts->use_rigctl == 1) and RTL (opts->audio_in_type == AUDIO_IN_RTL) itself,
    returning -1 when neither owns the tuner. 0 is applied and
-   RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
-   cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
-   about and which must not fail the whole apply. It takes the payload's
+   RTL_STREAM_TUNE_TIMEOUT is accepted-pending. A session that cannot retune
+   (WAV, stdin, UDP, symbol file) is no failure: the preview already warned about
+   it, and the import says nothing of a tune (rr_apply_tune()). It takes the payload's
    uint32_t as it is on every build (issue #671), so only 0 is no frequency. */
 static int
 rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
@@ -6505,18 +6671,62 @@ rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
 }
 
 /* Whether the import moves the receiver to its system's channel: it carries a frequency the tuner takes, and the
-   session owns a tuner (a radio input, or a connected rigctl peer). */
+   session owns a tuner (a radio input, or a connected rigctl peer). An I/Q replay retunes nothing, rigctl peer or not
+   (issue #803): the capture decides the frequency, and the replay defers every live retune. */
 static int
 rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
-    return rr_apply_tune_frequency_fits(p) && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
+    return rr_apply_tune_frequency_fits(p) && !dsd_opts_input_is_iq_replay(opts)
+           && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
 }
 
-static void
+/* What the import's tune did (issue #803). */
+typedef enum {
+    RR_TUNE_NONE = 0, /* no tune asked, or no tuner to take one: nothing to say, as the preview warned */
+    RR_TUNE_APPLIED,  /* the receiver is on the channel, or the tune was accepted with nothing to follow */
+    RR_TUNE_PENDING,  /* the wait timed out: the manual-tune tracker follows it under pending_id */
+    RR_TUNE_DEFERRED, /* the tuner was busy and queued nothing */
+    RR_TUNE_FAILED,
+} rr_apply_tune_outcome;
+
+typedef struct {
+    rr_apply_tune_outcome outcome;
+    uint64_t pending_id;
+    uint32_t prior_hz; /* the centre in force before the tune */
+} rr_apply_tune_result;
+
+/* The import's tune, through io_control_set_freq_tagged(). Only a request the tuner took decides where the receiver
+   goes, so only that supersedes a manual tune still pending (issue #671): one applied or accepted, or an RTL request
+   that failed in its wait after the controller queued it (a coalesced one among them). A rigctl refusal, an RTL input
+   with no stream, and a deferral queued nothing, and an older pending tune keeps the receiver. A timed-out request is
+   noted once the import has posted its toast (rr_apply_report()). */
+static rr_apply_tune_result
 rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    if (rr_apply_tune_frequency_fits(p) && io_control_set_freq(opts, state, p->tune_hz) != RTL_STREAM_TUNE_DEFERRED) {
-        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+    rr_apply_tune_result r = {RR_TUNE_NONE, 0U, opts->rtlsdr_center_freq};
+    /* Before the RTL and rigctl alternatives io_control_set_freq_tagged() dispatches to: a replay's import would
+       otherwise move a connected rigctl peer the replay does not hear (issue #803). */
+    if (dsd_opts_input_is_iq_replay(opts) || !rr_apply_tune_frequency_fits(p)) {
+        return r;
+    }
+    const int rtl_queues = opts->use_rigctl != 1 && dsd_opts_input_is_radio(opts) && state->rtl_ctx != NULL;
+    const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
+    if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        r.outcome = RR_TUNE_DEFERRED;
+        return r;
+    }
+    if (rc == RTL_STREAM_TUNE_TIMEOUT && r.pending_id != 0U) {
+        r.outcome = RR_TUNE_PENDING;
+        return r;
+    }
+    const int accepted = rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT;
+    if (accepted || rtl_queues) {
         dsd_engine_manual_tune_supersede(state);
     }
+    if (accepted) {
+        r.outcome = RR_TUNE_APPLIED;
+    } else if (rr_apply_moves_the_receiver(opts, p)) {
+        r.outcome = RR_TUNE_FAILED;
+    }
+    return r;
 }
 
 /* The session was just re-pointed at a different system, so the old system's CC
@@ -6529,6 +6739,7 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
     nxdn_cc_hunt_note_system_replaced(state);
     dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // an XPT site the old system was is not the new one
+    tetra_sm_forget_moves(state);                  // the main carriers the TETRA machine moved to were the old system's
     /* An owner the new decode mode no longer decodes proves nothing about the new system and would keep its startup
        hunt from running (P25 or DMR before an NXDN import, say). */
     if ((state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25 && !opts->frame_p25p1 && !opts->frame_p25p2)
@@ -6542,6 +6753,131 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
         dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
+}
+
+/* The tuner owner an applied import names in its toast. */
+static const char*
+rr_apply_owner_text(const dsd_app_rr_apply_payload* p) {
+    if (p->trunking) {
+        return " +trunking";
+    }
+    return p->scanner ? " +scanner" : "";
+}
+
+/* The import's mode, after the commit point: the mode change posts its own toast when it fails (its reason: a replay
+   reopen that failed, a front end that refused the profile where it landed), which is kept; one that posted none gets
+   a toast saying the mode did not change. @p note receives what the mode change's applied toast added. */
+static int
+rr_apply_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, char* note, size_t note_size) {
+    state->ui_msg[0] = '\0';
+    if (decode_mode_apply_value_noted(opts, state, mode, note, note_size) == UI_CMD_APPLY_COMPLETED) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (state->ui_msg[0] == '\0') {
+        ui_set_toast(state, 5, "Failed: RR import -> %s not applied", dsd_decode_mode_display_name(mode));
+    }
+    return UI_CMD_APPLY_FAILED;
+}
+
+/* The tune's half of an outcome: a tune that failed or was deferred is among what failed, its phrase written to
+   @p phrase, which the outcome then points at. */
+static void
+rr_apply_outcome_tune(rr_apply_outcome* outcome, rr_apply_tune_outcome tune, const char* mhz, char* phrase,
+                      size_t phrase_size) {
+    phrase[0] = '\0';
+    if (tune == RR_TUNE_FAILED || tune == RR_TUNE_DEFERRED) {
+        DSD_SNPRINTF(phrase, phrase_size, "tune to %s MHz %s", mhz,
+                     tune == RR_TUNE_FAILED ? "failed" : "deferred (tuner busy)");
+        rr_apply_list_add(&outcome->failed, phrase);
+    }
+}
+
+/* The import's toast text: a partial apply's (@p category, what failed, what applied) or the applied one with the mode
+   change's note or the reminder to save, then @p tune_tail ("tuning to X MHz") when the tune is still on its way. */
+static void
+rr_apply_toast_text(char* out, size_t out_size, const dsd_app_rr_apply_payload* p, dsdneoUserDecodeMode mode,
+                    const rr_apply_outcome* outcome, const char* category, const char* note, const char* tune_tail) {
+    if (outcome->failed.count != 0U) {
+        rr_apply_outcome_text(out, out_size, category, outcome);
+    } else {
+        /* What the mode change had to say (a replay's new rate, TETRA's rate advice) outranks the reminder to save,
+           which a tune still on its way takes the place of. */
+        const char* tail = note;
+        if (note[0] == '\0') {
+            tail = tune_tail ? NULL : "save via Config menu";
+        }
+        DSD_SNPRINTF(out, out_size, "Applied: RR import (%s)%s%s%s", dsd_decode_mode_display_name(mode),
+                     rr_apply_owner_text(p), tail ? "; " : "", tail ? tail : "");
+    }
+    const size_t used = strlen(out);
+    if (tune_tail && used < out_size) {
+        DSD_SNPRINTF(out + used, out_size - used, "; %s", tune_tail);
+    }
+}
+
+/* A pending tune, noted once the import's toast naming it is up: what its late failure posts (the import's outcome
+   with the tune among what failed) and what its landing posts (that toast with the tune landed). */
+static void
+rr_apply_note_pending_tune(dsd_state* state, const dsd_app_rr_apply_payload* p, dsdneoUserDecodeMode mode,
+                           const rr_apply_tune_result* tune, int files_failed, const char* note) {
+    char mhz[16];
+    (void)ui_toast_mhz(p->tune_hz, mhz, sizeof mhz);
+    char tune_failed[64];
+    rr_apply_outcome outcome;
+    DSD_MEMSET(&outcome, 0, sizeof outcome);
+    rr_apply_outcome_tune(&outcome, RR_TUNE_FAILED, mhz, tune_failed, sizeof tune_failed);
+    rr_apply_list_add(&outcome.applied, "mode");
+    rr_apply_outcome_files(&outcome, p, files_failed);
+    char failure_text[sizeof state->ui_msg];
+    rr_apply_outcome_text(failure_text, sizeof failure_text, "Failed", &outcome);
+
+    rr_apply_outcome landed;
+    DSD_MEMSET(&landed, 0, sizeof landed);
+    rr_apply_list_add(&landed.applied, "mode");
+    rr_apply_outcome_files(&landed, p, files_failed);
+    char tuned[48];
+    DSD_SNPRINTF(tuned, sizeof tuned, "tuned to %s MHz", mhz);
+    char landed_text[sizeof state->ui_msg];
+    rr_apply_toast_text(landed_text, sizeof landed_text, p, mode, &landed, "Failed", note, tuned);
+    dsd_engine_manual_tune_note_rr_import(state, tune->pending_id, p->tune_hz, tune->prior_hz, failure_text,
+                                          landed_text);
+}
+
+/* The import's toast, after everything it changed, and its tune's follow-up. A tune that failed or was deferred, or a
+   file that did not load, is a partial apply naming what took; otherwise the import applied. A tune still on its way
+   is named in either, and noted so its outcome is reported (issue #803). */
+static int
+rr_apply_report(dsd_state* state, const dsd_app_rr_apply_payload* p, dsdneoUserDecodeMode mode, const char* note,
+                int files_failed, const rr_apply_tune_result* tune) {
+    char mhz[16];
+    (void)ui_toast_mhz(p->tune_hz, mhz, sizeof mhz);
+    char tune_phrase[64];
+    rr_apply_outcome outcome;
+    DSD_MEMSET(&outcome, 0, sizeof outcome);
+    rr_apply_outcome_tune(&outcome, tune->outcome, mhz, tune_phrase, sizeof tune_phrase);
+    rr_apply_list_add(&outcome.applied, "mode");
+    rr_apply_outcome_files(&outcome, p, files_failed);
+    const int partial = outcome.failed.count != 0U;
+    const int pending = tune->outcome == RR_TUNE_PENDING;
+    const int only_deferred = tune->outcome == RR_TUNE_DEFERRED && files_failed == 0;
+    char tuning[48];
+    DSD_SNPRINTF(tuning, sizeof tuning, "tuning to %s MHz", mhz);
+    char text[sizeof state->ui_msg];
+    rr_apply_toast_text(text, sizeof text, p, mode, &outcome, only_deferred ? "Deferred; retry" : "Failed", note,
+                        pending ? tuning : NULL);
+    if (partial) {
+        LOG_WARN("%s\n", text);
+    }
+    /* A pending tune's toast stays up long enough for its outcome to replace it. */
+    int ttl = partial ? 6 : 4;
+    if (pending || note[0] != '\0') {
+        ttl = 8;
+    }
+    ui_set_toast(state, ttl, "%s", text);
+    if (pending) {
+        rr_apply_note_pending_tune(state, p, mode, tune, files_failed, note);
+    }
+    return partial ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
 }
 
 /**
@@ -6568,6 +6904,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     if (pre != UI_CMD_APPLY_COMPLETED) {
         return pre;
     }
+    /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
     if (rr_apply_moves_the_receiver(opts, &p)) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
@@ -6577,8 +6914,9 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
     }
     (void)svc_leave_channel_scan(opts, state);
-    if (decode_mode_apply_value(opts, state, mode) != UI_CMD_APPLY_COMPLETED) {
-        ui_set_toast(state, 4, "Failed: RR import -> decode mode");
+    char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    note[0] = '\0';
+    if (rr_apply_mode(opts, state, mode, note, sizeof note) != UI_CMD_APPLY_COMPLETED) {
         return UI_CMD_APPLY_FAILED;
     }
     rr_apply_edacs_variants(state, &p, mode);
@@ -6588,21 +6926,14 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     rr_apply_simulcast(opts, state, &p);
     opts->p25_prefer_candidates = p.p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
     rr_apply_tuner_owner(opts, state, &p);
-    const int files_rc = rr_apply_files(opts, state, &p);
+    const int files_failed = rr_apply_files(opts, state, &p);
     /* Unconditional, and after every write to state->rf_mod: svc_publish_symbol_profile()
        reads it, so the simulcast override needs a second publish, and a re-apply
        onto an already-matching mode needs the first one. */
     (void)decode_mode_republish(opts, state, mode);
-    rr_apply_tune(opts, state, &p);
+    const rr_apply_tune_result tune = rr_apply_tune(opts, state, &p);
     rr_apply_reacquire(opts, state);
-
-    if (files_rc != UI_CMD_APPLY_COMPLETED) {
-        ui_set_toast(state, 4, "Failed: RR import -> CSV import");
-        return UI_CMD_APPLY_FAILED;
-    }
-    ui_set_toast(state, 4, "Applied: RR import (%s)%s; save via Config menu", dsd_decode_mode_display_name(mode),
-                 p.trunking ? " +trunking" : (p.scanner ? " +scanner" : ""));
-    return UI_CMD_APPLY_COMPLETED;
+    return rr_apply_report(state, &p, mode, note, files_failed, &tune);
 }
 
 /* The UI thread never writes dsd_opts: the opts pointer a menu action receives
@@ -9417,7 +9748,7 @@ apply_cmd_note_tetra_on_pcm(const dsd_opts* opts, dsd_state* state) {
     }
     g_tetra_on_pcm_noted = 1;
     LOG_WARN("WARNING: %s. Nothing decodes on this input.\n", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
-    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an I/Q radio input or a symbol capture");
 }
 
 /* The configured width of each analog kind (dsd_scan_mode_configured_analog_width()). */

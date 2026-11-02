@@ -102,12 +102,15 @@ enum class SessionArgsError {
     /* Issue #708: a static WAV (-w) among the extra options while Record calls is on; the two cannot run together. */
     CallRecordingStaticWav,
     /* Issue #708: a per-call -P among the extra options while no storage is available for call recordings. */
-    CallRecordingNoStorage
+    CallRecordingNoStorage,
+    /* Issue #803: a TETRA system (-fT) on a radio where it cannot decode: an Airspy, or a USB or rtl_tcp radio whose
+       DSP bandwidth is not a TETRA rate (session_args_tetra_runs_on()). */
+    TetraRate
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::CallRecordingNoStorage;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::TetraRate;
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
@@ -172,6 +175,36 @@ bool session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz)
 QString session_args_am_bandwidth_choices();
 
 /**
+ * @brief The DSP bandwidth, in kHz, a system with @p decodeFlag runs at on @p sourceType (issue #803).
+ *
+ * The bandwidth asked for is the system's own (@p systemKhz above 0), else 72 kHz for TETRA (-fT, which runs only at a
+ * multiple of 18 kHz), else the app-wide default @p prefsKhz. A USB or rtl_tcp radio runs a value it does not select
+ * at its 48 kHz default (36 runs at 48), and an Airspy at the nearest one it takes (72 at 48); any other source has
+ * no DSP bandwidth, so the request is returned as it is. The one rule the start check, the wizard's gate and its
+ * bandwidth placeholder share.
+ */
+int session_args_effective_bandwidth_khz(const QString& decodeFlag, const QString& sourceType, int systemKhz,
+                                         int prefsKhz);
+
+/**
+ * @brief Whether TETRA decodes on a radio of @p sourceType running at @p bandwidthKhz (issue #803).
+ *
+ * A USB or rtl_tcp radio decodes it only where its DSP bandwidth, as the engine runs it, is a TETRA rate
+ * (dsd_tetra_dsp_rate_runs(): 72 kHz among the selectable ones). An Airspy never does: none of its sample rates
+ * halves to a multiple of 18 kHz. Any other source is TetraNeedsIq's to judge, so it passes here.
+ */
+bool session_args_tetra_runs_on(const QString& sourceType, int bandwidthKhz);
+
+/**
+ * @brief Why TETRA cannot decode on @p sourceType at @p bandwidthKhz, or empty when it can (issue #803).
+ *
+ * Unlike session_args_error_text(SessionArgsError::TetraRate), which covers both cases, the text names the one fix
+ * for this source: another radio for an Airspy, the 72 kHz bandwidth for a USB or rtl_tcp radio. A start refused
+ * with TetraRate carries the same text for its system's source as its "errorText".
+ */
+QString session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz);
+
+/**
  * @brief The CLI-shaped argv for @p system, or an empty list with @p error set.
  *
  * Per-system overrides fall back to the app-wide defaults (-1 / empty string
@@ -228,6 +261,22 @@ class SessionArgsBuilder : public QObject {
      * The wizard's step gating for an AM pick; see session_args_am_fits_bandwidth().
      */
     Q_INVOKABLE QString amBandwidthError(const QString& sourceType, int bandwidthKhz) const;
+
+    /**
+     * @brief The DSP bandwidth a system with @p decodeFlag runs at on @p sourceType when it asks for @p bandwidthKhz
+     *        (0 or less: none of its own), with the live app-wide default; see session_args_effective_bandwidth_khz().
+     *
+     * The wizard's bandwidth placeholder: 72 for a blank TETRA field.
+     */
+    Q_INVOKABLE int effectiveBandwidthKhz(const QString& decodeFlag, const QString& sourceType, int bandwidthKhz) const;
+
+    /**
+     * @brief Why a system with @p decodeFlag cannot decode TETRA on @p sourceType at @p bandwidthKhz (0 or less: none
+     *        of its own), or empty: always empty unless the flag names -fT.
+     *
+     * The wizard's step gating for a TETRA pick; see session_args_tetra_rate_error().
+     */
+    Q_INVOKABLE QString tetraRateError(const QString& decodeFlag, const QString& sourceType, int bandwidthKhz) const;
 
     /**
      * Safe encryption-only validation; never builds or returns secret argv. A non-empty @p protocol (a profile

@@ -772,6 +772,16 @@ __wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
     __real_dsd_engine_manual_tune_supersede(state);
 }
 
+/* Stream opens and stops, moved by a case that stops the stream (issue #803). */
+static uint32_t g_session_generation_bump = 0U;
+uint32_t __real_rtl_stream_session_generation(void);
+uint32_t __wrap_rtl_stream_session_generation(void);
+
+uint32_t
+__wrap_rtl_stream_session_generation(void) {
+    return __real_rtl_stream_session_generation() + g_session_generation_bump;
+}
+
 int
 __wrap_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
     if (!out_freq_hz || g_rtl_last_applied_hz == 0U) {
@@ -828,6 +838,8 @@ static int g_frame_script = 0;
 static int g_frame_syncs_left = 0;
 static int g_frame_land_at = -1;
 static dsd_trunk_tune_result g_frame_land_result = DSD_TRUNK_TUNE_RESULT_OK; /* how the tune at g_frame_land_at ends */
+/* What happens at g_frame_land_at instead of the landing, when set (issue #803: another tune, a stream stop). */
+static void (*g_frame_land_action)(dsd_opts* opts, dsd_state* state) = NULL;
 static int g_frame_count = 0;
 static int g_frame_roll[FAKE_FRAMES_MAX];
 static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
@@ -861,12 +873,15 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
         (void)dsd_channel_label_current(opts, state, g_frame_label[g_frame_count], sizeof g_frame_label[0]);
     }
 #ifdef USE_RADIO
-    if (g_frame_count == g_frame_land_at) {
+    if (g_frame_count == g_frame_land_at && g_frame_land_action) {
+        g_frame_land_action(opts, state);
+    } else if (g_frame_count == g_frame_land_at) {
         land_outstanding_tune(&g_retune_in_flight, g_frame_land_result);
     }
 #else
     (void)g_frame_land_at;
     (void)g_frame_land_result;
+    (void)g_frame_land_action;
 #endif
     g_frame_count++;
 }
@@ -2673,6 +2688,145 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     rc |= expect_true("late-failure-centre-back", opts->rtlsdr_center_freq == 980012500U);
     rc |= expect_true("late-failure-toast", strcmp(state->ui_msg, "Failed: frequency -> 981.012500 MHz") == 0);
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #803 (T5, through the live loop): a RadioReference import's tune that timed out, noted as the import notes it.
+   A control channel keeps sync, so the synced-frames pass must hand back to the outer pass at each outcome the import
+   reports, or the report waits for the sync to drop and then comes out of nowhere. While frame 2 decodes, the tune
+   lands, fails, is superseded by a newer tune, or its stream stops: the reception ends there, and the outer pass posts
+   the landing, the failure (the centre back), or the drop. The owner's own tune (a trunk hunt's or a grant's, after an
+   import that turned trunking on) is its continuation: while the import's tune is still in flight the reception goes on
+   and nothing is said; when the controller lands the import's tune first (it runs its queue in order), the landing is
+   what is said. */
+enum {
+    RR_SYNC_LANDS,
+    RR_SYNC_FAILS,
+    RR_SYNC_SUPERSEDED,
+    RR_SYNC_STREAM_STOPS,
+    RR_SYNC_OWNER_TUNES,
+    RR_SYNC_OWNER_AFTER_LANDING,
+    RR_SYNC_CASES,
+};
+
+static void
+rr_sync_newer_tune(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_engine_manual_tune_supersede(state); /* a command pumped between frames: another manual tune */
+}
+
+static void
+rr_sync_stream_stops(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_session_generation_bump++; /* the stop moves the session, then fails the request it queued */
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+}
+
+static void
+rr_sync_owner_tunes(dsd_opts* opts, dsd_state* state) {
+    /* Queued behind the import's tune, which is still in flight: it times out as well. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    (void)dsd_engine_trunk_tune_to_cc_request(opts, state, 982012500, 10, 0U);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+}
+
+static void
+rr_sync_owner_tunes_after_landing(dsd_opts* opts, dsd_state* state) {
+    (void)dsd_engine_trunk_tune_to_cc_request(opts, state, 982012500, 10, 0U); /* lands the import's tune first */
+}
+
+static const char*
+rr_sync_want(int how) {
+    switch (how) {
+        case RR_SYNC_LANDS:
+        case RR_SYNC_OWNER_AFTER_LANDING: return "Applied: RR import (P25 Phase 1) +trunking; tuned to 981.012500 MHz";
+        case RR_SYNC_FAILS: return "Failed: RR import -> tune to 981.012500 MHz failed; mode applied";
+        case RR_SYNC_SUPERSEDED: return "Interrupted: RR import -> tune to 981.012500 MHz; a newer tune took over";
+        case RR_SYNC_STREAM_STOPS: return "Interrupted: RR import -> tune to 981.012500 MHz; the radio input stopped";
+        default: return "Applied: RR import (P25 Phase 1) +trunking; tuning to 981.012500 MHz";
+    }
+}
+
+static int
+rr_sync_case(int how) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 980012500U;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_last_applied_hz = 980012500U;
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    uint64_t pending_id = 0U;
+    rc |= expect_true("rr-import-tune-times-out",
+                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                          && pending_id != 0U);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", rr_sync_want(RR_SYNC_OWNER_TUNES));
+    state->ui_msg_expire = dsd_realtime_time() + 8;
+    dsd_engine_manual_tune_note_rr_import(state, pending_id, 981012500U, 980012500U, rr_sync_want(RR_SYNC_FAILS),
+                                          rr_sync_want(RR_SYNC_LANDS));
+
+    /* The carrier keeps sync for 8 more frames; the outcome comes while frame 2 decodes. */
+    g_frame_land_result = how == RR_SYNC_FAILS ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK;
+    if (how == RR_SYNC_SUPERSEDED) {
+        g_frame_land_action = rr_sync_newer_tune;
+    } else if (how == RR_SYNC_STREAM_STOPS) {
+        g_frame_land_action = rr_sync_stream_stops;
+    } else if (how == RR_SYNC_OWNER_TUNES) {
+        g_frame_land_action = rr_sync_owner_tunes;
+    } else if (how == RR_SYNC_OWNER_AFTER_LANDING) {
+        g_frame_land_action = rr_sync_owner_tunes_after_landing;
+    }
+    run_synced_frames(opts, state, 8, 2);
+    g_frame_land_action = NULL;
+    const int want_frames = how == RR_SYNC_OWNER_TUNES ? 9 : 3;
+    if (g_frame_count != want_frames) {
+        DSD_FPRINTF(stderr, "rr import case %d: %d frames decoded in the reception (want %d)\n", how, g_frame_count,
+                    want_frames);
+    }
+    rc |= expect_true("rr-import-outcome-ends-the-reception", g_frame_count == want_frames);
+    const int polled = dsd_engine_scan_untyped_poll(opts, state);
+    int want_polled = DSD_MANUAL_TUNE_DROPPED;
+    if (how == RR_SYNC_LANDS) {
+        want_polled = DSD_MANUAL_TUNE_LANDED;
+    } else if (how == RR_SYNC_FAILS) {
+        want_polled = DSD_MANUAL_TUNE_FAILED;
+    }
+    const char* want = rr_sync_want(how);
+    if (polled != want_polled || strcmp(state->ui_msg, want) != 0) {
+        DSD_FPRINTF(stderr, "rr import case %d: polled %d, toast \"%s\" (want %d, \"%s\")\n", how, polled,
+                    state->ui_msg, want_polled, want);
+    }
+    rc |= expect_true("rr-import-outcome-polled", polled == want_polled);
+    rc |= expect_true("rr-import-outcome-posted", strcmp(state->ui_msg, want) == 0);
+    if (how == RR_SYNC_FAILS) {
+        rc |= expect_true("rr-import-failure-centre-back", opts->rtlsdr_center_freq == 980012500U);
+    }
+    g_session_generation_bump = 0U;
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_rr_import_tune_outcome_ends_a_synced_reception(void) {
+    int rc = 0;
+    for (int how = 0; how < RR_SYNC_CASES; how++) {
+        rc |= rr_sync_case(how);
+    }
     return rc;
 }
 
@@ -8602,6 +8756,7 @@ main(void) {
     rc |= test_untyped_step_drops_a_previous_retry();
     rc |= test_untyped_resume_says_a_deferral();
     rc |= test_entry_late_failure_ends_a_synced_reception();
+    rc |= test_rr_import_tune_outcome_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();
     rc |= test_running_step_dropped_keeps_the_windows();

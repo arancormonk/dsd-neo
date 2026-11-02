@@ -72,6 +72,10 @@ and its files are ordinary CSVs in the formats below — nothing reads them diff
   as encrypted" answer the import was given). A picked file has none of them, and a row missing any of them loads
   with it defaulted.
 
+An import writes a channel map only for a system that needs one (never for TETRA, whose decoder learns the carriers
+from the air), and a group list only when at least one talkgroup has an ID the protocol can carry (a TETRA group ID
+is 24 bits, so 0 to 16777215). An import can therefore write no file at all.
+
 ## Channel Map CSV (`-C <file>` / `[trunking] chan_csv`)
 
 Purpose: Map a trunking channel number to an RF frequency.

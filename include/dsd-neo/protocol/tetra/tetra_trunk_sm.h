@@ -10,9 +10,10 @@
  * hooks, returns to the control channel when the followed call is released or falls silent, and keeps all of its
  * state in the session's TETRA state extension, so two sessions never share it.
  *
- *   TETRA_SM_IDLE   not trunking, or no control channel known yet
- *   TETRA_SM_ON_CC  on the control channel, waiting for a grant
- *   TETRA_SM_TUNED  on the followed traffic channel (a tune in flight included)
+ *   TETRA_SM_IDLE       not trunking, or no control channel known yet, or off the main carrier and not moving there
+ *   TETRA_SM_ACQUIRING  moving to the main carrier a SYSINFO heard elsewhere named, or on it until its own SYSINFO
+ *   TETRA_SM_ON_CC      on the control channel, waiting for a grant
+ *   TETRA_SM_TUNED      on the followed traffic channel (a tune in flight included)
  *
  * The engine ticks it between frames and after every frame, under the P25 SM tick guard. Decoder thread only.
  */
@@ -28,9 +29,10 @@ extern "C" {
 #endif
 
 typedef enum {
-    TETRA_SM_IDLE = 0, /**< not trunking, or no control channel known */
-    TETRA_SM_ON_CC,    /**< on the control channel, awaiting grants */
-    TETRA_SM_TUNED,    /**< on the followed traffic channel */
+    TETRA_SM_IDLE = 0,  /**< not trunking, or no control channel known */
+    TETRA_SM_ACQUIRING, /**< moving to the main carrier, or on it before its SYSINFO */
+    TETRA_SM_ON_CC,     /**< on the control channel, awaiting grants */
+    TETRA_SM_TUNED,     /**< on the followed traffic channel */
 } tetra_sm_state_e;
 
 /** One traffic channel the caller decided to follow (the caller has already applied talkgroup policy). */
@@ -47,6 +49,10 @@ typedef struct {
 /** Seconds without decoded speech on the followed timeslots after which the speech counts as ended and the hangtime
  * (opts->trunk_hangtime) starts: longer than the frame 18 gap of a speech timeslot (two frames, 113 ms). */
 #define TETRA_SM_SPEECH_GAP_S    0.25
+/** Seconds a move to the main carrier the backend deferred waits before a later SYSINFO may stage it again. */
+#define TETRA_SM_MOVE_HOLD_S     2.0
+/** Seconds on the main carrier without its SYSINFO after which the state machine says so, once per move. */
+#define TETRA_SM_MOVE_SILENT_S   10.0
 
 /**
  * @brief Start the session's state machine over: IDLE, no followed call, no tune in flight.
@@ -61,10 +67,48 @@ void tetra_sm_init(dsd_opts* opts, dsd_state* state);
  * @brief CRC-passed MCCH signalling named the control channel (SYSINFO with a valid main carrier, after the caller set
  * state->trunk_cc_freq to it).
  *
- * IDLE becomes ON_CC while trunking is on; ON_CC takes the frequency as its return destination. A traffic channel's
- * SYSINFO names the same main carrier and changes nothing while TUNED.
+ * Every carrier of a cell broadcasts the SYSINFO of its main carrier (EN 300 392-2 clauses 3.1, 21.4.4.1), so it says
+ * where the control channel is, not where the receiver is. While trunking is on:
+ * - On the main carrier (tetra_sm_receiver_freq() equals it; with no frequency known, an audio input, unless the state
+ *   machine can move the receiver, a rigctl peer, when the frequency last sent to the peer or its own completed move
+ *   says so), IDLE and ACQUIRING become ON_CC, the control channel is a trunking candidate and its sync is stamped
+ *   (dsd_mark_cc_sync()).
+ * - Off it, nothing of that happens: ON_CC and a landed ACQUIRING drop to IDLE (the carrier is no control channel, and
+ *   a move that reached it is over), and the move there is staged for the end of the burst (tetra_sm_after_burst()),
+ *   but only on a carrier a CRC-passed downlink block proved before this SYSINFO's own block, so a SYSINFO never
+ *   vouches for itself.
+ * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate.
  */
 void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief The end of a burst whose SYSINFO staged a move to the main carrier (tetra_sm_on_cc_sync()); the decoder calls
+ * it once the burst's bookkeeping is done (tetra.c), only while a move is staged.
+ *
+ * The move is the trunk-tuning hooks' return to the control channel, made as a release's is (the P25 alias cleared for
+ * it), and is asked for only when all of these hold: no carrier reset since the SYSINFO; trunking on a downlink
+ * (not --tetra-uplink); a receiver the state machine can move (a live radio stream, not an I/Q replay, or a connected
+ * rigctl peer behind an audio input); nothing followed and no request of its own in flight; the receiver not on the main
+ * carrier; the main carrier still the control channel; the tuner free (dsd_trunk_tuning_hook_tuner_free(): no manual or
+ * correlated tune pending, no scan owning it); and the main carrier's history allowing it. The history keeps
+ * TETRA_SM_MOVES main carriers: one moved to is never moved to again (so a move there and back stops, said once), a
+ * refused or failed move waits 5 s, 15 s, then 60 s at most before the next to the same carrier, a deferred one
+ * TETRA_SM_MOVE_HOLD_S and counts as none (its entry is free again once the hold is over), and with every entry taken
+ * by moves made or failed nothing more is moved to (said once). An accepted
+ * move enters ACQUIRING with no control-channel sync stamped (the engine's stamp is taken back); its completion forgets
+ * the carrier left (tetra_forget_carrier()) and keeps the history. ACQUIRING becomes ON_CC at the main carrier's own
+ * SYSINFO; a SYSINFO there naming another main carrier is one more move. A failure puts back what the request changed,
+ * the receiver included (tetra_sm_settle()), and counts. Nothing moves back to the carrier left.
+ */
+void tetra_sm_after_burst(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Forget the history of moves to the main carrier (tetra_sm_after_burst()): the session now receives another
+ * system or through another receiver (a RadioReference import applied, another input or radio source). A move in
+ * flight stays the state machine's. tetra_sm_init(), a decode-mode change (which drops the TETRA state) and trunking
+ * turned back on forget it too; a tune elsewhere does not.
+ */
+void tetra_sm_forget_moves(dsd_state* state);
 
 /**
  * @brief Follow @p grant.
@@ -127,9 +171,11 @@ void tetra_sm_note_maintenance(dsd_state* state);
  * another owner released the shared tuning state (no tune), on the grant timeout or after the hangtime that follows the
  * last speech. With trunking off the receiver stays on the followed channel, as DMR's and P25's machines leave it (the
  * engine's return tunes nothing without trunking): TUNED keeps the channel and its timers, no call record (as
- * tetra_sm_retire_call() leaves it), and asks for no return until trunking is on again. ON_CC drops to IDLE once
- * trunking is off or no control channel is known (a BSCH of another cell dropped it). The session's call records age on
- * the same tick (tetra_calls_tick()), trunking or not.
+ * tetra_sm_retire_call() leaves it), and asks for no return until trunking is on again. ON_CC and ACQUIRING drop to
+ * IDLE once trunking is off or no control channel is known (a BSCH of another cell dropped it); trunking on again
+ * forgets the history of moves to the main carrier (tetra_sm_after_burst()). ACQUIRING on the main carrier without its
+ * SYSINFO for TETRA_SM_MOVE_SILENT_S says so once, and moves nowhere. The session's call records age on the same tick
+ * (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 
@@ -162,9 +208,11 @@ tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);
 
 /**
  * @brief 1 while the state machine owns the receiver's way back to the control channel: TUNED (a tune in flight, and a
- * grant still waiting for its first speech, included) or a return of its own in flight. Its tick then decides when to
- * return (the grant timeout, the hangtime after the last speech), so the engine's generic no-carrier recovery must not
- * return first. 0 otherwise, and for a session without TETRA state.
+ * grant still waiting for its first speech, included), ACQUIRING (a move to the main carrier in flight or completed and
+ * waiting for its SYSINFO), or a return of its own in flight. Its tick then decides when to return (the grant timeout,
+ * the hangtime after the last speech), so the engine's generic no-carrier recovery must not return first, and a tune
+ * elsewhere lets go of it (tetra_sm_on_external_cc_return(), tetra_sm_abandon_carrier()). 0 otherwise, and for a
+ * session without TETRA state.
  */
 int tetra_sm_owns_return(const dsd_state* state);
 

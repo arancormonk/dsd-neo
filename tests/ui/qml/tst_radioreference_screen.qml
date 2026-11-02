@@ -201,6 +201,194 @@ Item {
             screenLoader.z = 0
         }
 
+        // Issue #803. A TETRA system and its import as buildImportPlan()
+        // answers it: one trunked site, -fT, and here no talkgroups listed, so
+        // nothing to write (17 of the 47 TETRA systems on RadioReference list
+        // none).
+        function loadTetraSystem(siteCount) {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 10880,
+                                              "name": "KorKor",
+                                              "typeDescr": "TETRA",
+                                              "flavorDescr": "Standard",
+                                              "protocolToken": "tetra"
+                                          })
+            var sites = []
+            for (var i = 0; i < siteCount; i++)
+                sites.push({ "siteNumber": i + 1, "descr": "Cell " + (i + 1), "freqCount": 2,
+                             "controlFreqMhz": "390.0125", "simulcast": false,
+                             "freqMhz": "390.0125", "colorCode": "" })
+            testContext.setRadioReference("sites", sites)
+            tryVerify(function () { return tc.screen.systemLoaded })
+        }
+        function reviewBody() {
+            var body = findChild(tc.screen, "radioReferenceReviewBody")
+            verify(body !== null, "the review text has no name to find it by")
+            return body
+        }
+        function openReview() {
+            var review = findChild(tc.screen, "radioReferenceReviewSheet")
+            screenLoader.z = 1
+            review.visible = true
+            waitForRendering(review)
+            return review
+        }
+        function closeReview(review) {
+            review.visible = false
+            screenLoader.z = 0
+        }
+
+        // New feature (#803): a lone TETRA cell picks itself like any trunked
+        // site, and the preview and the review both say what the import needs
+        // to decode, before and at the last step. The note is read by its own
+        // words, so TalkBack reaches it.
+        function test_18_a_tetra_import_says_what_it_needs() {
+            loadTetraSystem(1)
+            tryVerify(function () { return tc.screen.selectedSites.length === 1 },
+                      2000, "the only cell of a TETRA system was not selected")
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true,
+                              scanList: false, warnings: []}
+            var note = findChild(tc.screen, "radioReferenceTetraNote")
+            verify(note !== null, "the TETRA note is missing")
+            tryVerify(function () { return note.visible }, 2000, "the TETRA note is not shown for a TETRA system")
+            for (var word of ["USB", "rtl_tcp", "72 kHz", "Airspy", "Tetrapol"])
+                verify(note.text.indexOf(word) >= 0, "the TETRA note does not mention " + word + ": " + note.text)
+            compare(note.Accessible.name, note.text, "the TETRA note is not read by its own words")
+
+            var review = openReview()
+            var body = reviewBody()
+            verify(body.text.indexOf(note.text) >= 0, "the review does not repeat the TETRA note: " + body.text)
+            compare(body.Accessible.name, body.text)
+            closeReview(review)
+
+            // Any other system says nothing about TETRA.
+            loadTwoSiteSystem()
+            tryVerify(function () { return !note.visible }, 2000, "a P25 system shows the TETRA note")
+            tc.screen.toggleSite(0)
+            tc.screen.plan = {ok: true, freqMhz: "851.0125", decodeFlag: "-f1", trunking: true,
+                              scanList: false, warnings: []}
+            review = openReview()
+            verify(body.text.indexOf("TETRA") < 0, "a P25 review mentions TETRA: " + body.text)
+            closeReview(review)
+        }
+
+        // Regression (#803 D-B4): an import that writes no file said
+        // "Generated files:" over an empty list. Reachable on main with a lone
+        // conventional repeater on a system without talkgroups, and now with
+        // any TETRA system without them. The preview says what a trunked
+        // import with no files does instead of "simply tunes".
+        function test_19_an_import_without_files_says_so() {
+            loadTetraSystem(1)
+            tryVerify(function () { return tc.screen.selectedSites.length === 1 })
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true,
+                              scanList: false, warnings: []}
+            var files = findChild(tc.screen, "radioReferencePlanFiles")
+            verify(files !== null && files.visible)
+            verify(files.text.indexOf("follows calls from this control channel") >= 0,
+                   "a trunked import without files reads as a plain tune: " + files.text)
+            var review = openReview()
+            var body = reviewBody()
+            verify(body.text.indexOf("Generated files:") < 0, "the review lists generated files that do not exist: " + body.text)
+            verify(body.text.indexOf("No files are generated.") >= 0, "the review does not say no file is written: " + body.text)
+            closeReview(review)
+
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true, scanList: false,
+                              warnings: [], groupCsvText: "Decimal,Mode,Alpha Tag\n170001,A,Ops\n"}
+            review = openReview()
+            verify(body.text.indexOf("Generated files:\nTalkgroup list") >= 0, "a written file is not listed: " + body.text)
+            verify(body.text.indexOf("No files are generated.") < 0)
+            closeReview(review)
+            verify(files.text.indexOf("talkgroup list") >= 0)
+
+            // A conventional repeater has no control channel: it still just tunes.
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            tc.screen.plan = {ok: true, freqMhz: "444.525", decodeFlag: "-ft", trunking: false,
+                              scanList: false, warnings: []}
+            verify(files.text.indexOf("simply tunes this frequency") >= 0, files.text)
+        }
+
+        // Regression (#803 D-B5): the scanning sentence named only a USB
+        // RTL-SDR and rtl_tcp, but -Y scans on an Airspy too, as the shared
+        // import warning shown beside it says. The warning is the generator's
+        // own string (rr_generate.c), as buildImportPlan() hands it over.
+        function test_20_the_scanning_note_names_every_radio_that_scans() {
+            var scanWarning = "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                    + "rigctl-controlled radio; on any other input the session stays on the first frequency."
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            loadTwoSiteSystem()
+            tc.screen.toggleSite(0)
+            tc.screen.toggleSite(1)
+            tc.screen.plan = {ok: true, freqMhz: "851.0125", decodeFlag: "-ft -Y", trunking: false,
+                              scanList: true, warnings: [scanWarning]}
+            var warning = null
+            tryVerify(function () {
+                warning = findChild(tc.screen, "radioReferencePlanWarning")
+                return warning !== null && warning.visible
+            }, 2000, "the preview does not show the scan warning")
+            compare(warning.text, "• " + scanWarning)
+            var review = openReview()
+            var body = reviewBody()
+            for (var radio of ["USB RTL-SDR", "rtl_tcp", "Airspy"])
+                verify(body.text.indexOf(radio) >= 0, "the scanning note does not name " + radio + ": " + body.text)
+            // The note and the warning beside it agree on the Airspy.
+            verify(warning.text.indexOf("Airspy") >= 0 && body.text.indexOf("Airspy") >= 0)
+            closeReview(review)
+        }
+
+        // Regression (#803 D-B6): the custom band plan advice sends the user
+        // to a P25 band plan CSV, which only a P25 system reads.
+        function test_21_the_band_plan_advice_is_for_p25_only() {
+            var bandplan = findChild(tc.screen, "radioReferenceBandplanNote")
+            verify(bandplan !== null, "the band plan note has no name to find it by")
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 6673, "name": "Test System", "typeDescr": "Project 25",
+                                              "flavorDescr": "Phase II", "protocolToken": "p25",
+                                              "hasCustomBandplan": true })
+            tryVerify(function () { return bandplan.visible }, 2000, "a P25 system lost its band plan advice")
+            // The same band plan flag on a TETRA system: the note goes.
+            loadTetraSystem(1)
+            var details = Object.assign({}, radioReference.systemDetails)
+            details.hasCustomBandplan = true
+            testContext.setRadioReference("systemDetails", details)
+            tryVerify(function () { return !bandplan.visible }, 2000, "a TETRA system was told to import a P25 band plan")
+        }
+
+        // The per-site button and the conventional notes under the search
+        // field are spaced and inset like the card's other controls: the
+        // button ran full card width, flush against the field, and read as a
+        // site row rather than a control.
+        function test_22_the_controls_under_the_site_search_are_spaced() {
+            loadTetraSystem(2)
+            var search = findChild(tc.screen, "radioReferenceSiteSearch")
+            var each = findChild(tc.screen, "radioReferenceEachSiteButton")
+            verify(search !== null && each !== null)
+            tryVerify(function () { return each.visible })
+            verify(each.y >= search.y + search.height + 10,
+                   "the per-site button touches the search field: " + each.y + " < " + (search.y + search.height + 10))
+            compare(each.x, search.x, "the per-site button is not inset like the search field")
+            compare(each.width, search.width, "the per-site button is not as wide as the search field")
+            // A site row is the card's full width; its divider stays inside the
+            // card's content padding, edge to edge with the search field.
+            var divider = findChild(tc.screen, "radioReferenceSiteDivider")
+            verify(divider !== null, "the site divider has no name to find it by")
+            var left = divider.mapToItem(search.parent, 0, 0).x
+            var right = divider.mapToItem(search.parent, divider.width, 0).x
+            compare(left, search.x, "the site divider does not start at the content padding")
+            verify(right <= search.x + search.width,
+                   "the site divider runs past the content padding: " + right + " > " + (search.x + search.width))
+
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            loadTwoSiteSystem()
+            var count = findChild(tc.screen, "radioReferenceRepeaterCount")
+            tryVerify(function () { return count.visible && !each.visible })
+            verify(count.y >= search.y + search.height + 10, "the repeater count touches the search field")
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
@@ -245,6 +433,8 @@ Item {
 
         function cleanup() {
             accountCommit.target = null;
+            // A failed review case must not leave its sheet over the next case's taps.
+            findChild(tc.screen, "radioReferenceReviewSheet").visible = false;
             testContext.useRadioReferenceModel(null);
             testContext.setPrefs("rrUsername", previousRrUsername);
             screenLoader.z = 0;

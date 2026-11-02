@@ -33,10 +33,23 @@ typedef struct {
     int trunk_is_tuned;
 } tetra_sm_tune_snapshot;
 
-/* Everything a tune puts back when it fails: the shared tuning state, the state machine's own, and the followed call's
- * proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps (confirm_epoch). */
+/* Where the receiver is as the decoder reads it: the tuned centre (opts->rtlsdr_center_freq, which an RTL tune the
+ * backend reports in flight has already set to its target, dsd_engine_tune_rtl()) and the P25 control-channel alias
+ * the shared return prefers (state->p25_cc_freq, which a TETRA return clears). Kept as they were before a request and
+ * as the request left them, so a failure puts back only what nobody changed since (sm_restore_receiver()). */
+typedef struct {
+    long p25_cc_freq;
+    long staged_p25_cc_freq;
+    uint32_t center_hz;
+    uint32_t staged_center_hz;
+} tetra_sm_receiver_snapshot;
+
+/* Everything a tune puts back when it fails: the shared tuning state, the receiver, the state machine's own, and the
+ * followed call's proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps
+ * (confirm_epoch). */
 typedef struct {
     tetra_sm_tune_snapshot tuning;
+    tetra_sm_receiver_snapshot receiver;
     tetra_sm_grant followed;
     double t_tune_m;
     double t_voice_m;
@@ -48,16 +61,43 @@ typedef struct {
     uint8_t state;
 } tetra_sm_rollback;
 
+/* Moves to the main carrier a SYSINFO names (tetra_trunk_sm.c): one entry per main carrier moved to, or tried. */
+typedef struct {
+    long hz;          /* the main carrier's downlink frequency; 0 for a free entry */
+    double next_m;    /* no move to it before this decode-clock time (a backoff or a deferral's hold); 0 none */
+    uint8_t failures; /* failed moves to it in a row */
+    uint8_t consumed; /* a move to it completed: never moved to again until the history is forgotten */
+} tetra_sm_move;
+
+#define TETRA_SM_MOVES 8
+
+/* The move a SYSINFO staged for the end of its burst, the moves made, and the one the receiver is on (ACQUIRING). The
+ * history outlives the carrier resets the moves themselves cause; tetra_sm_forget_moves(), tetra_sm_init() and trunking
+ * turned back on clear it. */
+typedef struct {
+    tetra_sm_move moves[TETRA_SM_MOVES];
+    long staged_hz;        /* main carrier a SYSINFO with prior evidence named off it this burst; 0 none */
+    uint32_t staged_epoch; /* the carrier evidence epoch it was named in (tetra_confirm_carrier_epoch()) */
+    long target_hz;        /* the main carrier the last move went to, while ACQUIRING */
+    double landed_m;       /* when that move completed; 0 while in flight */
+    uint8_t silent_noted;  /* the "no SYSINFO on the main carrier" line was printed for this move */
+    uint8_t full_noted;    /* the "no room" line was printed since the history was last forgotten */
+    uint8_t stay_noted;    /* the "moved there once already" line was printed since the last move */
+    uint8_t trunk_off;     /* trunking was seen off since: turning it on again forgets the history */
+} tetra_sm_acquire;
+
 /* The trunking state machine (tetra_trunk_sm.c). Times are decode-clock monotonic seconds. */
 typedef struct {
     tetra_sm_rollback pending_prev; /* what the tune in flight puts back if it fails */
+    tetra_sm_acquire acq;           /* moves to the main carrier */
     tetra_sm_grant followed;        /* the call followed while TUNED */
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
     double t_maint_m; /* last channel maintenance event before the first speech (tetra_sm_note_maintenance()); 0 none */
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
-    uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
+    uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel,
+                                    3 move to the main carrier */
     uint8_t followed_retired;    /* the followed call's identifier names another call now (tetra_sm_retire_call());
                                  read while TUNED, cleared by every new follow */
 } tetra_sm_t;

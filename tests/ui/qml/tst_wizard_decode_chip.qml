@@ -100,7 +100,8 @@ Item {
             tc.wizard.dropRadioOnlyDecodeFlag()
             verify(!chip.enabled, "the TETRA chip is offered for TCP audio")
             compare(tc.wizard.decodeFlag, "", "TETRA stays picked on TCP audio")
-            verify(note.text.indexOf("TETRA one or a symbol capture") > 0, "the note does not name TETRA's reason")
+            verify(note.text.indexOf("TETRA a USB or rtl_tcp radio or a symbol capture") > 0,
+                   "the note does not name TETRA's reason: " + note.text)
             tc.wizard.sourceType = "file"
             tc.wizard.fileText = "/tmp/capture.wav"
             verify(!chip.enabled, "the TETRA chip is offered for an audio file")
@@ -112,6 +113,83 @@ Item {
             tc.wizard.sourceType = "usb"
             verify(chip.enabled)
             tc.wizard.pickDecodeFlag("")
+        }
+
+        // Regression (#803 D-B1): an Airspy cannot decode TETRA, yet its chip
+        // was offered there and the system saved, to start and stay silent.
+        // The chip is greyed out on an Airspy with the reason under the row.
+        // Switching an imported TETRA system's source to an Airspy keeps -fT
+        // (the import's answer, not Auto) and holds step 1 with the reason;
+        // switching back to USB clears the hold.
+        function test_01d_tetra_waits_on_an_airspy() {
+            var chip = tc.chipFor("TETRA")
+            var rate = findChild(tc.wizard, "wizardDecodeTetraRateNote")
+            var iq = findChild(tc.wizard, "wizardDecodeIqNote")
+            verify(rate !== null, "the wizard has no TETRA rate note")
+            tc.wizard.applyRadioReference({ "name": "KorKor", "freqMhz": "390.0125", "decodeFlag": "-fT",
+                                            "trunking": true, "rrSid": 10880, "rrSiteId": 1 })
+            compare(tc.wizard.step, 1)
+            verify(tc.wizard.stepValid(), "an imported TETRA system on USB is held")
+            verify(!rate.visible)
+
+            findChild(tc.wizard, "wizardSource_airspy").clicked()
+            compare(tc.wizard.sourceType, "airspy")
+            compare(tc.wizard.decodeFlag, "-fT", "switching to an Airspy dropped the imported TETRA flag")
+            verify(!chip.enabled, "the TETRA chip is offered on an Airspy")
+            verify(!tc.wizard.stepValid(), "TETRA on an Airspy passes step 1")
+            verify(rate.visible, "the hold on an Airspy is not explained")
+            verify(rate.text.indexOf("Airspy") >= 0 && rate.text.indexOf("USB or rtl_tcp") >= 0, rate.text)
+            compare(rate.Accessible.name, rate.text)
+            verify(!iq.visible, "two notes give the one reason")
+
+            findChild(tc.wizard, "wizardSource_usb").clicked()
+            compare(tc.wizard.decodeFlag, "-fT")
+            verify(chip.enabled)
+            verify(tc.wizard.stepValid(), "switching back to USB did not clear the hold")
+            verify(!rate.visible)
+
+            // Another chip picked on the Airspy: the greyed TETRA chip still
+            // says why, as AM's does on network audio.
+            findChild(tc.wizard, "wizardSource_airspy").clicked()
+            tc.wizard.pickDecodeFlag("-fs")
+            verify(tc.wizard.stepValid())
+            verify(!rate.visible)
+            verify(iq.visible, "the greyed-out TETRA chip is not explained on an Airspy")
+            verify(iq.text.indexOf("Airspy") >= 0, iq.text)
+            findChild(tc.wizard, "wizardSource_usb").clicked()
+            verify(!iq.visible)
+            // A fresh wizard for the next case: this one imported a system.
+            tc.wizard.openForAdd(false)
+        }
+
+        // Regression (#803 D-B2/D-B3): TETRA decodes only at a 72 kHz
+        // bandwidth, and an empty field runs at 72 for it. The placeholder
+        // showed the app default instead, and a bandwidth that cannot decode
+        // TETRA passed step 1.
+        function test_01e_tetra_bandwidth_on_usb_and_rtl_tcp() {
+            var rate = findChild(tc.wizard, "wizardDecodeTetraRateNote")
+            var bw = findChild(tc.wizard, "systemBandwidthField")
+            verify(bw !== null, "the bandwidth field has no name to find it by")
+            tc.wizard.step = 1
+            tc.wizard.pickDecodeFlag("-fT")
+            compare(bw.placeholderText, "72", "an empty bandwidth runs TETRA at 72 kHz")
+            for (var source of ["usb", "rtltcp"]) {
+                tc.wizard.sourceType = source
+                tc.wizard.bwText = "48"
+                verify(!tc.wizard.stepValid(), source + ": TETRA at 48 kHz passes step 1")
+                verify(rate.visible && rate.text.indexOf("72 kHz") >= 0, rate.text)
+                tc.wizard.bwText = "72"
+                verify(tc.wizard.stepValid(), source + ": TETRA at 72 kHz is held")
+                tc.wizard.bwText = ""
+                verify(tc.wizard.stepValid(), source + ": TETRA at an empty bandwidth is held")
+                verify(!rate.visible)
+            }
+            tc.wizard.sourceType = "usb"
+            tc.wizard.pickDecodeFlag("-fs")
+            compare(bw.placeholderText, String(sessionArgs.effectiveBandwidthKhz("-fs", "usb", -1)),
+                    "another mode's placeholder is not what an empty field runs at")
+            // A fresh wizard for the next case: this one left a source and a flag.
+            tc.wizard.openForAdd(false)
         }
 
         // The simulcast import. "-mq -^" is what dsd_rr_decode_flag() answers

@@ -3292,7 +3292,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     case 'a': LOG_INFO("NOTICE: Decoding AUTO: all digital modes with multi-rate SPS hunting\n");      \
                         break;                                                                                         \
                     case 'A': LOG_INFO("NOTICE: Only Monitoring Passive Analog Signal\n"); break;                      \
-                    case 'M': LOG_INFO("NOTICE: AM receiver (IQ radio inputs)\n"); break;                              \
+                    case 'M': LOG_INFO("NOTICE: AM receiver (I/Q radio inputs)\n"); break;                             \
                     case 'd': LOG_INFO("NOTICE: Decoding only DSTAR frames.\n"); break;                                \
                     case 'x': LOG_INFO("NOTICE: Decoding only X2-TDMA frames.\n"); break;                              \
                     case '1': LOG_INFO("NOTICE: Decoding only P25 Phase 1 frames.\n"); break;                          \

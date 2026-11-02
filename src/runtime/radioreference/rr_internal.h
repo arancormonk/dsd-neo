@@ -32,6 +32,16 @@ extern "C" {
 int rr_array_reserve(void** items, size_t* cap, size_t needed, size_t elem_size);
 
 /**
+ * @brief Skip leading ASCII whitespace (space, \t, \n, \r, \f, \v).
+ *
+ * The one whitespace set for RR text nodes, so every parser trims alike.
+ *
+ * @param p Input pointer; must not be NULL.
+ * @return First non-space character.
+ */
+const char* rr_skip_ws(const char* p);
+
+/**
  * @brief Strict base-10 parse of a whole token.
  *
  * Rejects trailing junk, an empty token and out-of-range values, which the bare
@@ -43,6 +53,22 @@ int rr_array_reserve(void** items, size_t* cap, size_t needed, size_t elem_size)
  * @return 0 on success, -1 on invalid input.
  */
 int rr_parse_long_strict(const char* text, long* out);
+
+/**
+ * @brief Strict base-10 parse of a whole token into [min_value, max_value].
+ *
+ * The same whitespace and trailing-junk rules as rr_parse_long_strict(), but
+ * always 64-bit: `long` is 32 bits on Windows, so a long parse there fails from
+ * 2^31 while on LP64 the caller's cast silently wraps a value past its type.
+ * Bounding here is what lets a caller narrow without either failure.
+ *
+ * @param text      Token to parse.
+ * @param min_value Smallest accepted value.
+ * @param max_value Largest accepted value.
+ * @param out       Receives the value; untouched on failure.
+ * @return 0 on success, -1 on invalid or out-of-range input.
+ */
+int rr_parse_ll_range_strict(const char* text, long long min_value, long long max_value, long long* out);
 
 /**
  * @brief Copy a NUL-terminated string into a fixed-size field, truncating safely.

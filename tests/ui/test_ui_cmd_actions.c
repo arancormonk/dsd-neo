@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
@@ -141,6 +142,15 @@ static int g_trunk_pause_calls;
 static int g_trunk_resume_calls;
 static int g_trunk_resume_rc;
 static int g_trunk_pause_fails; /* a coordinator whose pause fails: it names no target to leave */
+
+/* Trunking turned on again forgets the TETRA machine's moves to a main carrier, whether or not a tick sees the toggle. */
+static int g_tetra_forget_moves_calls;
+
+void
+tetra_sm_forget_moves(dsd_state* state) {
+    (void)state;
+    g_tetra_forget_moves_calls++;
+}
 
 int
 svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state) {
@@ -474,6 +484,30 @@ test_trunk_ownership_guard(void) {
         g_guard_opts = NULL;
         g_guard_state = NULL;
     }
+    return rc;
+}
+
+/* Trunking turned on, by the toggle or the set command, forgets the TETRA machine's moves to a main carrier, so a toggle
+   no tick of the machine sees still starts them over; turning it off, or on while on, forgets nothing. */
+static int
+test_trunk_on_forgets_tetra_moves(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command cmd;
+    cmd.id = DSD_APP_CMD_TRUNK_TOGGLE;
+    cmd.n = 0;
+    g_tetra_forget_moves_calls = 0;
+    dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+    rc |= expect_int("trunking on forgets the TETRA moves", g_tetra_forget_moves_calls, 1);
+    dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+    rc |= expect_int("trunking off forgets nothing", g_tetra_forget_moves_calls, 1);
+    cmd = cmd_i32(DSD_APP_CMD_TRUNK_SET, 1);
+    dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+    dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+    rc |= expect_int("trunk set on forgets the moves once, not again while on", g_tetra_forget_moves_calls, 2);
     return rc;
 }
 
@@ -950,6 +984,7 @@ main(void) {
     int rc = 0;
     rc |= test_audio_actions();
     rc |= test_trunk_actions();
+    rc |= test_trunk_on_forgets_tetra_moves();
     rc |= test_trunk_ownership_guard();
     rc |= test_scanner_toggle_pauses_and_resumes();
     rc |= test_scanner_start_held_to_the_next_start();

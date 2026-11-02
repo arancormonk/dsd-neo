@@ -94,6 +94,14 @@ Item {
     }
     readonly property bool isP25: screen.typeDescr.indexOf("Project 25") >= 0
     readonly property bool isEdacs: screen.typeDescr.indexOf("EDACS") >= 0
+    // The runtime's stable token rather than the type name, which the runtime
+    // matches without regard to case (issue #803).
+    readonly property bool isTetra: radioReference.systemDetails.protocolToken === "tetra"
+    // What a TETRA import needs to decode, said in the preview before the
+    // review and again in the review itself. An empty bandwidth runs TETRA at
+    // 72 kHz; the Airspy and the Tetrapol systems RadioReference lists as
+    // TETRA are the two things no setting fixes.
+    readonly property string tetraNote: qsTr("TETRA needs a USB or rtl_tcp radio at a 72 kHz bandwidth (leave the bandwidth empty for that). An Airspy can't decode it. Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
 
     // Re-run per visit and whenever a new system's sites land: the options and
     // the selection belong to the system in hand, not to the screen.
@@ -252,6 +260,30 @@ Item {
     function systemName() {
         var name = radioReference.systemDetails.name;
         return name !== undefined ? name : "";
+    }
+
+    // The review sheet's one text: the system, the sites, the options, what
+    // the session needs, then the files the import writes, or that it writes
+    // none (issue #803: an empty "Generated files:" list read as a failure).
+    function reviewText() {
+        var sites = screen.selectedSites.map(function (index) {
+            return screen.siteList[index] ? screen.siteList[index].descr : "";
+        }).join("\n");
+        var text = screen.systemName() + "\n" + screen.typeDescr + "\n" + sites + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls."));
+        if (screen.isP25)
+            text += "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25"));
+        // The radios -Y retunes, as the scan warning in the preview names them.
+        if (radioReference.conventional && screen.selectedSites.length > 1)
+            text += "\n" + qsTr("Scanning these repeaters needs a USB RTL-SDR, rtl_tcp or Airspy radio.");
+        // Its own paragraph: three sentences read as part of the options above.
+        if (screen.isTetra)
+            text += "\n\n" + screen.tetraNote;
+        var files = [];
+        if (screen.planField("groupCsvText", "").length > 0)
+            files.push(qsTr("Talkgroup list"));
+        if (screen.planField("chanCsvText", "").length > 0)
+            files.push(qsTr("Channel map"));
+        return text + "\n\n" + (files.length > 0 ? qsTr("Generated files:") + "\n" + files.join("\n") : qsTr("No files are generated."));
     }
 
     function refreshPlan() {
@@ -1133,22 +1165,47 @@ Item {
                     }
 
                     PlexTextField {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceSiteSearch"
+
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
                         placeholderText: radioReference.conventional ? qsTr("Search repeaters") : qsTr("Search sites")
                         text: screen.siteSearch
                         onTextChanged: screen.siteSearch = text
                     }
-                    // Two things a conventional import has to say, because
-                    // neither is guessable from the list itself. The third — that
-                    // scanning needs an RTL-SDR or a rigctl radio — rides in
-                    // plan.warnings with every other warning.
-                    OutlineButton {
+
+                    // The column runs at spacing 0 so the site rows sit flush;
+                    // the controls under the search field keep the 10 px the
+                    // card's other controls are spaced by, and its padding.
+                    Item {
                         width: parent.width
+                        height: 10
+                    }
+
+                    // Inset like the search field above it: full card width,
+                    // its outline ran into the card's edges and read as a row.
+                    OutlineButton {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceEachSiteButton"
+
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
                         visible: radioReference.trunked
                         text: (screen.eachSite ? "✓ " : "") + qsTr("Import each selected site as its own system")
                         onClicked: screen.eachSite = !screen.eachSite
                     }
+
+                    Item {
+                        width: parent.width
+                        height: 4
+                        visible: radioReference.trunked
+                    }
+
+                    // Two things a conventional import has to say, because
+                    // neither is guessable from the list itself. The third — which
+                    // radios can scan the repeaters — rides in plan.warnings with
+                    // every other warning.
 
                     ReadableText {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
@@ -1278,11 +1335,18 @@ Item {
                                 border.color: siteRow.chosen ? Theme.cyan : Theme.controlBorder
                             }
 
+                            // Inset on both sides to the card's content: the
+                            // row is the card's full width, and a divider run to
+                            // its right edge met the card's border.
                             Rectangle {
+                                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                                objectName: "radioReferenceSiteDivider"
+
                                 anchors.bottom: parent.bottom
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.leftMargin: Theme.cardPadding
+                                anchors.rightMargin: Theme.cardPadding
                                 height: 1
                                 color: Theme.divider
                             }
@@ -1401,15 +1465,21 @@ Item {
                     }
 
                     ReadableText {
+                        objectName: "radioReferencePlanFiles"
                         width: parent.width
                         visible: screen.planOk()
+                        // A trunked import with no files (a TETRA system that
+                        // lists no talkgroups) still follows calls: it does
+                        // more than tune.
                         text: {
                             var files = [];
                             if (screen.planField("groupCsvText", "").length > 0)
                                 files.push(qsTr("talkgroup list"));
                             if (screen.planField("chanCsvText", "").length > 0)
                                 files.push(qsTr("channel map"));
-                            return files.length > 0 ? qsTr("Generates: %1").arg(files.join(" · ")) : qsTr("No files — the session simply tunes this frequency.");
+                            if (files.length > 0)
+                                return qsTr("Generates: %1").arg(files.join(" · "));
+                            return screen.planField("trunking", false) ? qsTr("No files — the session follows calls from this control channel.") : qsTr("No files — the session simply tunes this frequency.");
                         }
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
@@ -1436,8 +1506,21 @@ Item {
                     }
 
                     ReadableText {
+                        objectName: "radioReferenceTetraNote"
                         width: parent.width
-                        visible: radioReference.systemDetails.hasCustomBandplan === true
+                        visible: screen.isTetra
+                        text: screen.tetraNote
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        color: Theme.textSubdued
+                        wrapMode: Text.Wrap
+                    }
+
+                    // P25 advice: only a P25 system reads a band plan CSV.
+                    ReadableText {
+                        objectName: "radioReferenceBandplanNote"
+                        width: parent.width
+                        visible: screen.isP25 && radioReference.systemDetails.hasCustomBandplan === true
                         text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(12)
@@ -1450,6 +1533,9 @@ Item {
 
                         ReadableText {
                             id: warningLine
+
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "radioReferencePlanWarning"
 
                             required property var modelData
 
@@ -1496,10 +1582,9 @@ Item {
         // Back or Escape leaves it, never a stray tap beside it.
         closesOnOutsideTap: false
         ReadableText {
+            objectName: "radioReferenceReviewBody"
             width: parent.width
-            text: screen.systemName() + "\n" + screen.typeDescr + "\n" + screen.selectedSites.map(function (index) {
-                return screen.siteList[index] ? screen.siteList[index].descr : "";
-            }).join("\n") + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls.")) + (screen.isP25 ? "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25")) : "") + (radioReference.conventional && screen.selectedSites.length > 1 ? qsTr("\nA USB RTL-SDR or RTL-TCP source is required to scan these repeaters.") : "") + "\n\n" + qsTr("Generated files:") + (screen.plan.groupCsvText ? qsTr("\nTalkgroup list") : "") + (screen.plan.chanCsvText ? qsTr("\nChannel map") : "")
+            text: screen.reviewText()
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: Theme.textPrimary

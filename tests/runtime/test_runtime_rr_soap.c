@@ -813,6 +813,80 @@ test_talkgroup_categories(void) {
     dsd_rr_talkgroup_cat_list_free(&cats);
 }
 
+/**
+ * @brief The captured TETRA system (Kordia KorKor, sid 10880) parses whole.
+ *
+ * Its own quirks are the reason it is here: no sysid record at all, a `use`
+ * mark on only two of nine sites, and one site whose "frequencies" are carrier
+ * numbers (2341, 2351) that convert as MHz without complaint.
+ */
+static void
+test_tetra_system(void) {
+    dsd_rr_error err;
+    dsd_rr_trs_details details;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&details, 0, sizeof(details));
+    if (parse_fixture("trs_details_tetra.xml", RR_SHAPE_TRS_DETAILS, &details, &err) == 0) {
+        expect_str("tetra name", details.name, "Kordia KorKor");
+        expect_ll("tetra type", details.type_id, 5);
+        expect_ll("tetra flavor", details.flavor_id, 17);
+        expect_ll("tetra voice", details.voice_id, 13);
+        expect_ll("tetra has no sysid record", (long long)details.sysid_count, 0);
+    }
+    dsd_rr_trs_details_free(&details);
+
+    dsd_rr_site_list sites;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    if (parse_fixture("trs_sites_tetra.xml", RR_SHAPE_SITE_LIST, &sites, &err) == 0) {
+        expect_ll("tetra site count", (long long)sites.count, 9);
+        size_t freqs = 0;
+        size_t marked = 0;
+        for (size_t i = 0; i < sites.count; i++) {
+            freqs += sites.items[i].freq_count;
+            for (size_t f = 0; f < sites.items[i].freq_count; f++) {
+                marked += (sites.items[i].freqs[f].is_control != 0) ? 1U : 0U;
+                expect("no alternate control channel on TETRA", sites.items[i].freqs[f].is_alt_control == 0);
+            }
+        }
+        expect_ll("tetra frequency count", (long long)freqs, 24);
+        expect_ll("tetra marked carriers", (long long)marked, 2);
+        if (sites.count == 9U && sites.items[1].freq_count == 4U && sites.items[2].freq_count == 2U) {
+            expect_str("tetra site 2", sites.items[1].descr, "Sky Tower");
+            expect_ll("tetra site 2 carrier", sites.items[1].freqs[0].freq_hz, 858062500LL);
+            expect_ll("tetra site 2 carrier marked", sites.items[1].freqs[0].is_control, 1);
+            expect_ll("tetra site 29", sites.items[2].site_number, 29);
+            expect_ll("tetra carrier number reads as MHz", sites.items[2].freqs[0].freq_hz, 2341000000LL);
+        }
+    }
+    dsd_rr_site_list_free(&sites);
+
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    if (parse_fixture("trs_talkgroups_tetra.xml", RR_SHAPE_TALKGROUP_LIST, &tgs, &err) == 0) {
+        expect_ll("tetra talkgroup count", (long long)tgs.count, 16);
+        if (tgs.count > 0U) {
+            expect_ll("tetra first tgDec", (long long)tgs.items[0].tg_dec, 1017000);
+            expect_str("tetra first alpha tag", tgs.items[0].alpha_tag, "Tow 1017000");
+            expect_str("tetra first mode", tgs.items[0].mode, "T");
+        }
+    }
+    dsd_rr_talkgroup_list_free(&tgs);
+
+    dsd_rr_talkgroup_cat_list cats;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&cats, 0, sizeof(cats));
+    if (parse_fixture("trs_talkgroup_cats_tetra.xml", RR_SHAPE_TALKGROUP_CAT_LIST, &cats, &err) == 0) {
+        expect_ll("tetra category count", (long long)cats.count, 1);
+        if (cats.count == 1U) {
+            expect_ll("tetra category id", cats.items[0].tg_cid, 29992);
+            expect_str("tetra category name", cats.items[0].name, "All");
+        }
+    }
+    dsd_rr_talkgroup_cat_list_free(&cats);
+}
+
 static void
 test_fault_classification(void) {
     char* body = NULL;
@@ -1009,6 +1083,135 @@ test_list_free_contract(void) {
     }
 }
 
+/** @brief Parse an in-memory talkgroup list built from bare `<item>` bodies. */
+static int
+parse_talkgroup_items(const char* items, dsd_rr_talkgroup_list* out) {
+    char body[2048];
+    dsd_rr_error err;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    const int n = DSD_SNPRINTF(body, sizeof(body),
+                               "<?xml version=\"1.0\"?><Envelope><Body><getTrsTalkgroupsResponse><return>%s"
+                               "</return></getTrsTalkgroupsResponse></Body></Envelope>",
+                               items);
+    if (n <= 0 || (size_t)n >= sizeof(body)) {
+        expect("talkgroup body fits", 0);
+        return -1;
+    }
+    return rr_soap_parse(body, (size_t)n, RR_SHAPE_TALKGROUP_LIST, out, &err, NULL);
+}
+
+/**
+ * @brief Regression: a numeric field never narrows into a different value.
+ *
+ * The old parse read a long and cast it: on LP64 tgDec 4294967309 wrapped to 13
+ * and aliased a real talkgroup, 2^32 became 0, and an INT field above INT_MAX
+ * wrapped negative; on LLP64 strtol failed from 2^31 instead. Text that does not
+ * parse left the zeroed 0 behind, which the group writer then emitted as TG 0.
+ * Now every out-of-range or malformed value is rejected, and a talkgroup whose
+ * tgDec is missing or bad says so through tg_dec_valid.
+ */
+static void
+test_integer_fields_are_bounded(void) {
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    const int rc = parse_talkgroup_items("<item><tgDec>16777215</tgDec><tgAlpha>max24</tgAlpha></item>"
+                                         "<item><tgDec>4294967295</tgDec><tgAlpha>max32</tgAlpha></item>"
+                                         "<item><tgDec>4294967296</tgDec><tgAlpha>wrap0</tgAlpha></item>"
+                                         "<item><tgDec>4294967309</tgDec><tgAlpha>wrap13</tgAlpha></item>"
+                                         "<item><tgDec>12x</tgDec><tgAlpha>junk</tgAlpha></item>"
+                                         "<item><tgDec>2147483648</tgDec><tgAlpha>int-edge</tgAlpha></item>"
+                                         "<item><tgDec>-1</tgDec><tgAlpha>negative</tgAlpha></item>"
+                                         "<item><tgAlpha>absent</tgAlpha></item>"
+                                         "<item><tgDec> 0 </tgDec><tgAlpha>zero</tgAlpha>"
+                                         "<tgCid>2147483648</tgCid></item>"
+                                         "<item><tgDec>7</tgDec><tgCid>-2147483648</tgCid></item>",
+                                         &tgs);
+    expect("bounded talkgroups parse", rc == 0);
+    expect_ll("bounded talkgroup count", (long long)tgs.count, 10);
+    if (rc != 0 || tgs.count != 10U) {
+        dsd_rr_talkgroup_list_free(&tgs);
+        return;
+    }
+    expect_ll("24-bit max kept", (long long)tgs.items[0].tg_dec, 16777215);
+    expect_ll("24-bit max valid", tgs.items[0].tg_dec_valid, 1);
+    expect_ll("UINT32_MAX kept", (long long)tgs.items[1].tg_dec, 4294967295LL);
+    expect_ll("UINT32_MAX valid", tgs.items[1].tg_dec_valid, 1);
+    expect_ll("2^32 is not narrowed to 0", tgs.items[2].tg_dec_valid, 0);
+    expect_ll("2^32 leaves no ID", (long long)tgs.items[2].tg_dec, 0);
+    expect_ll("2^32+13 does not alias TG 13", tgs.items[3].tg_dec_valid, 0);
+    expect("2^32+13 is never 13", tgs.items[3].tg_dec != 13U);
+    expect_ll("trailing junk is not an ID", tgs.items[4].tg_dec_valid, 0);
+    /* Past LONG_MAX on LLP64: the 64-bit parse is what keeps this one. */
+    expect_ll("2^31 kept", (long long)tgs.items[5].tg_dec, 2147483648LL);
+    expect_ll("2^31 valid", tgs.items[5].tg_dec_valid, 1);
+    expect_ll("a negative ID is rejected", tgs.items[6].tg_dec_valid, 0);
+    expect_ll("an absent tgDec is not valid", tgs.items[7].tg_dec_valid, 0);
+    expect_ll("0 with spaces is a real ID", tgs.items[8].tg_dec_valid, 1);
+    expect_ll("an INT above INT_MAX is rejected, not wrapped", tgs.items[8].tg_cid, 0);
+    expect_ll("INT_MIN itself is kept", tgs.items[9].tg_cid, -2147483647LL - 1LL);
+    dsd_rr_talkgroup_list_free(&tgs);
+
+    /* getStateInfo's enclosing stid takes the same bounded parse. */
+    static const char* const k_stids[] = {"4294967296", "4294967297", "2147483648"};
+    for (size_t i = 0; i < sizeof(k_stids) / sizeof(k_stids[0]); i++) {
+        char body[1024];
+        const int n = DSD_SNPRINTF(body, sizeof(body),
+                                   "<?xml version=\"1.0\"?><Envelope><Body><getStateInfoResponse><return>"
+                                   "<stid>%s</stid><stateName>Nowhere</stateName><countyList>"
+                                   "<item><ctid>5</ctid><countyName>Edge</countyName></item>"
+                                   "</countyList></return></getStateInfoResponse></Body></Envelope>",
+                                   k_stids[i]);
+        dsd_rr_county_list counties;
+        dsd_rr_error err;
+        DSD_MEMSET(&counties, 0, sizeof(counties));
+        DSD_MEMSET(&err, 0, sizeof(err));
+        const int parsed = (n > 0 && (size_t)n < sizeof(body))
+                               ? rr_soap_parse(body, (size_t)n, RR_SHAPE_COUNTY_LIST, &counties, &err, NULL)
+                               : -1;
+        expect("out-of-range stid still parses the counties", parsed == 0 && counties.count == 1U);
+        if (parsed == 0 && counties.count == 1U) {
+            expect_ll("an out-of-range stid is not narrowed", counties.items[0].stid, 0);
+            expect_str("the state name still lands", counties.items[0].state_name, "Nowhere");
+        }
+        dsd_rr_county_list_free(&counties);
+    }
+}
+
+/**
+ * @brief Regression: the control-channel mark is read case- and space-blind.
+ *
+ * RadioReference documents lowercase 'd'/'a', but the WSDL types `use` as a free
+ * string and a live TETRA site (IRIS, sid 2169) carries an uppercase 'D'. The old
+ * exact compare dropped that mark, so the site read as having no control channel.
+ */
+static void
+test_control_marks_ignore_case_and_spaces(void) {
+    static const char k_sites[] = "<?xml version=\"1.0\"?><Envelope><Body><getTrsSitesResponse><return>"
+                                  "<item><siteId>1</siteId><siteFreqs>"
+                                  "<item><freq>851.0125</freq><use>D</use></item>"
+                                  "<item><freq>851.0250</freq><use> a </use></item>"
+                                  "<item><freq>851.0375</freq><use>d </use></item>"
+                                  "<item><freq>851.0500</freq><use>da</use></item>"
+                                  "<item><freq>851.0625</freq><use></use></item>"
+                                  "</siteFreqs></item></return></getTrsSitesResponse></Body></Envelope>";
+    dsd_rr_site_list sites;
+    dsd_rr_error err;
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    DSD_MEMSET(&err, 0, sizeof(err));
+    const int rc = rr_soap_parse(k_sites, sizeof(k_sites) - 1U, RR_SHAPE_SITE_LIST, &sites, &err, NULL);
+    expect("marked site parses", rc == 0 && sites.count == 1U && sites.items[0].freq_count == 5U);
+    if (rc == 0 && sites.count == 1U && sites.items[0].freq_count == 5U) {
+        const dsd_rr_site_freq* f = sites.items[0].freqs;
+        expect("uppercase D is the control channel", f[0].is_control == 1 && f[0].is_alt_control == 0);
+        expect("a padded a is an alternate", f[1].is_alt_control == 1 && f[1].is_control == 0);
+        expect("a trailing space does not hide d", f[2].is_control == 1);
+        expect("two letters are not a mark", f[3].is_control == 0 && f[3].is_alt_control == 0);
+        expect("an empty use is voice", f[4].is_control == 0 && f[4].is_alt_control == 0);
+        expect_str("the raw use text is kept", f[0].use, "D");
+    }
+    dsd_rr_site_list_free(&sites);
+}
+
 static void
 test_warning_list(void) {
     dsd_rr_warning_list warnings;
@@ -1043,6 +1246,9 @@ main(void) {
     test_nil_and_nonzoned_sites();
     test_talkgroups();
     test_talkgroup_categories();
+    test_tetra_system();
+    test_integer_fields_are_bounded();
+    test_control_marks_ignore_case_and_spaces();
     test_fault_classification();
     test_hostile_and_malformed_input();
     test_unknown_elements_are_ignored();

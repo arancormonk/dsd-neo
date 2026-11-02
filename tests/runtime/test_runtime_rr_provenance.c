@@ -328,6 +328,63 @@ expect_recipe_round_trip(void) {
     return rc;
 }
 
+/* TETRA writes `protocol = tetra` and reads it back as an applicable recipe:
+   trunked, no channel map, -fT. */
+static int
+expect_tetra_recipe_round_trip(void) {
+    char scratch[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    char rr[DSD_TEST_PATH_MAX];
+    if (make_paths(scratch, sizeof scratch, csv, sizeof csv, rr, sizeof rr, "dsd_neo_rr_tetra") != 0) {
+        return 1;
+    }
+
+    dsd_rr_provenance p;
+    fill_sample(&p);
+    p.sid = 10880;
+    DSD_STRNCPY(p.site_ids, "35613", sizeof p.site_ids - 1);
+    fill_recipe(&p.recipe);
+    p.recipe.protocol = DSD_RR_PROTO_TETRA;
+    p.recipe.tune_hz = 858062500LL;
+    p.recipe.simulcast = 0;
+
+    int rc = dsd_rr_provenance_write(csv, &p) == 0 ? 0 : 1;
+
+    int saw_token = 0;
+    FILE* fp = dsd_fopen_private(rr, "r");
+    rc |= fp != NULL ? 0 : 1;
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof line, fp)) {
+            /* The token, whole: not a prefix of some longer one. */
+            saw_token |= strncmp(line, "protocol = tetra", 16) == 0 && (line[16] == '\n' || line[16] == '\r') ? 1 : 0;
+        }
+        (void)fclose(fp);
+    }
+    rc |= saw_token ? 0 : 1;
+
+    dsd_rr_provenance got;
+    DSD_MEMSET(&got, 0, sizeof got);
+    rc |= dsd_rr_provenance_read(csv, &got) == 0 ? 0 : 1;
+    rc |= got.recipe.present == 1 ? 0 : 1;
+    rc |= got.recipe.protocol == DSD_RR_PROTO_TETRA ? 0 : 1;
+    rc |= got.recipe.tune_hz == 858062500LL ? 0 : 1;
+    rc |= got.recipe.trunking == 1 ? 0 : 1;
+    rc |= got.sid == 10880 ? 0 : 1;
+
+    dsd_rr_import_plan back;
+    DSD_MEMSET(&back, 0, sizeof back);
+    rc |= dsd_rr_recipe_to_plan(&got.recipe, 0, &back) == 0 ? 0 : 1;
+    rc |= back.ok == 1 && back.trunking == 1 && back.conventional == 0 ? 0 : 1;
+    rc |= back.chan_need == 0 ? 0 : 1;
+    rc |= strcmp(back.decode_flag, "-fT") == 0 ? 0 : 1;
+    rc |= strcmp(back.freq_mhz, "858.0625") == 0 ? 0 : 1;
+
+    (void)remove(rr);
+    (void)DSD_TEST_RMDIR(scratch);
+    return rc;
+}
+
 /* A sidecar written before the recipe existed still reads, with no recipe. */
 static int
 expect_sidecar_without_recipe_reads_as_files_only(void) {
@@ -563,6 +620,7 @@ main(void) {
     rc |= expect_unknown_keys_are_ignored();
     rc |= expect_malformed_values_fail();
     rc |= expect_recipe_round_trip();
+    rc |= expect_tetra_recipe_round_trip();
     rc |= expect_sidecar_without_recipe_reads_as_files_only();
     rc |= expect_unknown_protocol_token_degrades_to_files_only();
     rc |= expect_recipe_malformed_values_fail();

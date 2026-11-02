@@ -91,6 +91,12 @@ Item {
     // Imported trunking-data files; stored library paths, empty = none.
     property string chanCsvPath: ""
     property string groupCsvPath: ""
+    // Whether each of the two came from a RadioReference import (this one's,
+    // or one the edited system was saved with) rather than the user's own
+    // pick: the next import replaces the first kind, and keeps the second
+    // only for the system being edited. See applyRadioReference().
+    property bool chanCsvGenerated: false
+    property bool groupCsvGenerated: false
     property string keyCsvPath: ""
     property bool keyCsvHex: false
     // WP-D2: the editor is the sole owner of the draft key text.
@@ -162,6 +168,14 @@ Item {
     function resetImport() {
         importedSite = null;
         importedSites = [];
+        chanCsvGenerated = false;
+        groupCsvGenerated = false;
+    }
+
+    // Whether a library file is one a RadioReference import generated.
+    function generatedByRadioReference(path) {
+        var row = path.length > 0 ? importedFiles.rowForPath(path) : -1;
+        return row >= 0 && importedFiles.get(row).origin === "radioreference";
     }
 
     function openForAdd(preferNetwork) {
@@ -296,6 +310,8 @@ Item {
         nameField.text = sys.name;
         chanCsvPath = sys.chanCsvPath;
         groupCsvPath = sys.groupCsvPath;
+        chanCsvGenerated = generatedByRadioReference(chanCsvPath);
+        groupCsvGenerated = generatedByRadioReference(groupCsvPath);
         keyCsvPath = sys.keyCsvPath;
         keyCsvHex = sys.keyCsvHex;
         encryptionEditor.reset();
@@ -334,12 +350,13 @@ Item {
 
     /**
      * Whether the source can run a decode flag: AM needs a radio (issue #524),
-     * TETRA a radio or a symbol capture file; network and other file audio
+     * TETRA a USB or rtl_tcp radio or a symbol capture file (an Airspy has no
+     * DSP rate TETRA decodes at, issue #803); network and other file audio
      * arrives already demodulated.
      */
     function decodeFlagRunsHere(flag) {
         if (radioSource)
-            return true;
+            return sourceType !== "airspy" || !Util.decodeFlagNeedsIqOrSymbols(flag);
         if (Util.decodeFlagNeedsRadio(flag))
             return false;
         return !Util.decodeFlagNeedsIqOrSymbols(flag) || symbolSource;
@@ -349,10 +366,19 @@ Item {
      * A source change away from the radio drops a chip the new source cannot
      * run back to Auto, rather than saving a system the engine would refuse to
      * start. Its chip is greyed out for the new source.
+     *
+     * TETRA on an Airspy is the exception: the step waits with the reason
+     * (tetraRateError()) and keeps the flag, so an imported TETRA system is
+     * still TETRA when the user switches back to a USB or rtl_tcp radio.
      */
     function dropRadioOnlyDecodeFlag() {
-        if (!decodeFlagRunsHere(decodeFlag))
+        if (!decodeFlagRunsHere(decodeFlag) && tetraRateError().length === 0)
             pickDecodeFlag("");
+    }
+
+    // The bandwidth the user asked for, or -1 for an empty field.
+    function bandwidthRequestKhz() {
+        return bwText.length > 0 ? intOr(bwText, -1) : -1;
     }
 
     /**
@@ -364,7 +390,19 @@ Item {
     function amBandwidthError() {
         if (!radioSource || !Util.decodeFlagNeedsRadio(decodeFlag))
             return "";
-        return sessionArgs.amBandwidthError(sourceType, bwText.length > 0 ? intOr(bwText, -1) : -1);
+        return sessionArgs.amBandwidthError(sourceType, bandwidthRequestKhz());
+    }
+
+    /**
+     * Why TETRA cannot run on this radio (issue #803), or empty: an Airspy
+     * cannot decode it, and a USB or rtl_tcp radio only at 72 kHz, which an
+     * empty bandwidth field gives it. The same check refuses the session at
+     * start, so the wizard says so before saving the system.
+     */
+    function tetraRateError() {
+        if (!radioSource)
+            return "";
+        return sessionArgs.tetraRateError(decodeFlag, sourceType, bandwidthRequestKhz());
     }
 
     /**
@@ -420,10 +458,10 @@ Item {
         // A system edited or imported onto a non-radio source may still carry
         // AM, which only a radio can run, or TETRA, which a radio or a symbol
         // capture can: not until another chip is picked. Nor on a radio whose
-        // bandwidth cannot filter the AM channel.
+        // bandwidth cannot filter the AM channel, or that cannot decode TETRA.
         if (step === 1)
             return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
-                && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0;
+                && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0 && tetraRateError().length === 0;
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
@@ -529,8 +567,10 @@ Item {
         csvNoticeIsProblem = false;
         if (target === "chan") {
             chanCsvPath = path;
+            chanCsvGenerated = false;
         } else if (target === "group") {
             groupCsvPath = path;
+            groupCsvGenerated = false;
         } else if (target === "keys") {
             keyCsvPath = path;
             keyCsvHex = hex;
@@ -544,29 +584,56 @@ Item {
     /**
      * Fill the tune answers from a finished RadioReference import.
      *
-     * The generated files go through the same seam a hand-picked one does, so
-     * the wizard stays the single writer of the saved system and the user's
-     * source, gain and ppm answers survive. @a result is performImport()'s map;
-     * chanCsvPath is absent when no channel map was generated, which is a valid
-     * outcome for a single conventional repeater. An absent file therefore
-     * leaves whatever the user had already picked alone — clearing it would
-     * silently strip a hand-picked -C from a system they were only editing.
+     * The wizard stays the single writer of the saved system, so the user's
+     * source, gain and ppm answers survive. @a result is performImport()'s map,
+     * or a per-site batch's {rows}; a file the import did not generate is
+     * absent from it, which is a valid outcome: a single conventional repeater
+     * has no channel map, and a TETRA system listing no talkgroups has no file
+     * at all.
+     *
+     * The import answers both files (issue #803). One it supplies replaces
+     * whatever was there. One it does not clears a file an earlier import
+     * generated, which belongs to that system: kept, it would tie this system
+     * to another one's talkgroups, and drop the import's RadioReference
+     * identity at save. A file the user picked is kept only while editing the
+     * same saved system — clearing it would silently strip a hand-picked -C
+     * from a system they were only editing. A per-site batch saves new
+     * systems, so each site keeps only its own files.
      */
     function applyRadioReference(result) {
-        importedSites = result.rows || [];
+        importedSites = (result.rows || []).map(function (row) {
+            return Object.assign({
+                chanCsvPath: "",
+                groupCsvPath: ""
+            }, row);
+        });
         if (importedSites.length > 0) {
             editRow = -1;
             result = importedSites[0];
         }
         importedSite = result;
 
-        if (result.chanCsvPath !== undefined && result.chanCsvPath.length > 0)
-            wizard.assignCsvPath("chan", result.chanCsvPath, false);
-        if (result.groupCsvPath !== undefined && result.groupCsvPath.length > 0)
-            wizard.assignCsvPath("group", result.groupCsvPath, false);
+        var keepPicked = editRow >= 0;
+        var chan = result.chanCsvPath || "";
+        if (chan.length > 0 || chanCsvGenerated || !keepPicked) {
+            chanCsvPath = chan;
+            chanCsvGenerated = chan.length > 0;
+        }
+        var group = result.groupCsvPath || "";
+        if (group.length > 0 || groupCsvGenerated || !keepPicked) {
+            groupCsvPath = group;
+            groupCsvGenerated = group.length > 0;
+        }
         if (result.freqMhz && result.freqMhz.length > 0)
             freqField.text = result.freqMhz;
         wizard.decodeFlag = result.decodeFlag;
+        // A bandwidth kept from an edited system that cannot decode TETRA:
+        // an empty field runs it at the 72 kHz it needs. On an Airspy, where
+        // the field is hidden, any stored bandwidth is cleared: TETRA is held
+        // there anyway, and the 72 kHz is then ready for a switch to USB or
+        // rtl_tcp.
+        if (bwText.length > 0 && tetraRateError().length > 0)
+            bwText = "";
         // The database's answer, and an answer: a chip tap after the import
         // must not second-guess what the record says the system is.
         wizard.answerTrunking(result.trunking);
@@ -998,11 +1065,13 @@ Item {
 
                 // Why the AM and TETRA chips are greyed out on a network or file
                 // source, rather than leaving a dead control (issue #524).
+                // An Airspy greys out TETRA alone; with TETRA picked there, the
+                // TETRA note below gives the reason instead.
                 ReadableText {
                     objectName: "wizardDecodeIqNote"
-                    visible: !wizard.radioSource
+                    visible: !wizard.radioSource || (wizard.sourceType === "airspy" && wizard.tetraRateError().length === 0)
                     width: parent.width
-                    text: qsTr("AM needs a radio source, and TETRA one or a symbol capture (.bin): network and file audio arrives already demodulated.")
+                    text: wizard.radioSource ? qsTr("TETRA needs a USB or rtl_tcp radio: an Airspy can't decode it.") : qsTr("AM needs a radio source, and TETRA a USB or rtl_tcp radio or a symbol capture (.bin): network and file audio arrives already demodulated.")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textSecondary
@@ -1026,6 +1095,19 @@ Item {
                     visible: text.length > 0
                     width: parent.width
                     text: wizard.amBandwidthError()
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(13)
+                    color: Theme.magenta
+                    wrapMode: Text.Wrap
+                }
+
+                // TETRA on an Airspy, or on a radio whose bandwidth is not
+                // 72 kHz (issue #803): the step waits, as it does for AM.
+                ReadableText {
+                    objectName: "wizardDecodeTetraRateNote"
+                    visible: text.length > 0
+                    width: parent.width
+                    text: wizard.tetraRateError()
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(13)
                     color: Theme.magenta
@@ -1401,10 +1483,18 @@ Item {
 
                                 PlexTextField {
                                     id: bwField
+                                    objectName: "systemBandwidthField"
                                     label: qsTr("Bandwidth (kHz)")
                                     width: parent.width
                                     mono: true
-                                    placeholderText: String(prefs.bandwidthKhz)
+                                    // What an empty field runs at: 72 kHz for
+                                    // TETRA (issue #803), else the app default
+                                    // as this radio takes it.
+                                    placeholderText: {
+                                        var appDefault = prefs.bandwidthKhz; // dependency: follow a change to the default
+                                        var khz = sessionArgs.effectiveBandwidthKhz(wizard.decodeFlag, wizard.sourceType, -1);
+                                        return khz > 0 ? String(khz) : String(appDefault);
+                                    }
                                     inputMethodHints: Qt.ImhDigitsOnly
                                     input.validator: IntValidator {
                                         bottom: 1

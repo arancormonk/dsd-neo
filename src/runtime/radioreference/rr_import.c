@@ -105,7 +105,7 @@ static const rr_decode_mode_row k_decode_modes[] = {
     {DSD_RR_PROTO_NXDN96, (int)DSDCFG_MODE_NXDN96},      {DSD_RR_PROTO_EDACS_STD, (int)DSDCFG_MODE_EDACS_PV},
     {DSD_RR_PROTO_EDACS_EA, (int)DSDCFG_MODE_EDACS_PV},  {DSD_RR_PROTO_P25_CONV, (int)DSDCFG_MODE_TDMA},
     {DSD_RR_PROTO_DMR_CONV, (int)DSDCFG_MODE_DMR},       {DSD_RR_PROTO_NXDN48_CONV, (int)DSDCFG_MODE_NXDN48},
-    {DSD_RR_PROTO_NXDN96_CONV, (int)DSDCFG_MODE_NXDN96},
+    {DSD_RR_PROTO_NXDN96_CONV, (int)DSDCFG_MODE_NXDN96}, {DSD_RR_PROTO_TETRA, (int)DSDCFG_MODE_TETRA},
 };
 
 int
@@ -332,6 +332,17 @@ dsd_rr_system_info_resolve(dsd_rr_client* client, const dsd_rr_auth* auth, const
     return 0;
 }
 
+/** @brief Whether any frequency of @p site carries a 'd' or 'a' mark, usable or not. */
+static int
+rr_site_has_control_mark(const dsd_rr_site* site) {
+    for (size_t i = 0; site->freqs != NULL && i < site->freq_count; i++) {
+        if (site->freqs[i].is_control || site->freqs[i].is_alt_control) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 long long
 dsd_rr_tune_frequency_hz(dsd_rr_protocol protocol, const dsd_rr_site* site, dsd_rr_warning_list* warnings) {
     if (site == NULL) {
@@ -349,9 +360,17 @@ dsd_rr_tune_frequency_hz(dsd_rr_protocol protocol, const dsd_rr_site* site, dsd_
 
     const long long first = dsd_rr_site_first_freq_hz(site);
     if (first > 0 && warnings != NULL) {
-        (void)dsd_rr_warning_list_add(warnings, "RadioReference marks no control channel for this site, so the session "
-                                                "starts on its first listed frequency. Check it against the system's "
-                                                "own listing.");
+        /* A mark that is there but unusable is a different story from no mark:
+         * telling the user RadioReference marked nothing would send them to a
+         * listing that plainly shows a control channel. */
+        (void)dsd_rr_warning_list_add(warnings,
+                                      rr_site_has_control_mark(site)
+                                          ? "RadioReference's control channel for this site is not a frequency "
+                                            "dsd-neo can tune, so the session starts on its first usable frequency "
+                                            "instead. Check it against the system's own listing."
+                                          : "RadioReference marks no control channel for this site, so the session "
+                                            "starts on its first listed frequency. Check it against the system's "
+                                            "own listing.");
     }
     return first;
 }
@@ -500,8 +519,9 @@ rr_plan_generate_files(dsd_rr_import_plan* plan, const dsd_rr_site* chosen_sites
     if (talkgroups != NULL && talkgroup_count > 0U) {
         /* A group-generator failure is not fatal: the channel map and the tune
          * frequency are still worth having. */
-        if (dsd_rr_generate_group_csv_with_policy(talkgroups, talkgroup_count, plan->encrypted_tg_policy,
-                                                  &plan->group_csv_text, &plan->group_csv_len, &plan->warnings)
+        if (dsd_rr_generate_group_csv_with_policy(plan->protocol, talkgroups, talkgroup_count,
+                                                  plan->encrypted_tg_policy, &plan->group_csv_text,
+                                                  &plan->group_csv_len, &plan->warnings)
             != 0) {
             plan->group_csv_text = NULL;
             plan->group_csv_len = 0;

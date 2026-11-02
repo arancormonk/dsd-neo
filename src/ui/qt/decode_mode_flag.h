@@ -70,7 +70,7 @@ decode_mode_for_flag(const QString& flag) {
  *   and systemForHit()): -ft -fs -fa -fd -fi -fn -fm -fz -fy -fp -fA -fM;
  * - the RadioReference generator (src/runtime/radioreference/rr_generate.c
  *   k_protocols, through dsd_rr_decode_flag() into radio_reference_model.cpp's
- *   plan): -ft -mq -^ -fs -fi -fn -Y and the EDACS selectors -fh -fH -fe -fE.
+ *   plan): -ft -mq -^ -fs -fi -fn -fT -Y and the EDACS selectors -fh -fH -fe -fE.
  * No producer writes any other -f selector (-fx, -f2, ...), so those count.
  */
 inline bool

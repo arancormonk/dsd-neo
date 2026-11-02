@@ -29,6 +29,14 @@ dsd_trunk_tune_result dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_st
                                                           uint64_t request_id);
 dsd_trunk_tune_result dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id);
 /**
+ * @brief Whether a protocol state machine may move the tuner on its own initiative now: no manual tune of any kind is
+ * pending (<dsd-neo/engine/manual_tune.h>), no correlated tune is in flight or awaiting recovery
+ * (dsd_trunk_tuning_pending_request()), trunk scan does not own the tuner and -Y does not scan
+ * (<dsd-neo/runtime/tuner_owner.h>). The engine installs it as the tuner_free_for_protocol trunk-tuning hook. Decoder
+ * thread.
+ */
+int dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state);
+/**
  * @brief Mark (non-zero) or unmark the calling thread as the decoder thread, which owns dsd_state::rx_id.
  *
  * An accepted retune the decoder thread makes drops the received identity's access code at once, under the P25 SM tick

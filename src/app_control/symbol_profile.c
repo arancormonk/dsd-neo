@@ -231,6 +231,14 @@ svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state) {
 
 int
 svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode) {
+    return opts ? svc_check_mode_receive_profile_widths(opts, state, mode, opts->analog_nfm_bandwidth_hz,
+                                                        opts->analog_am_bandwidth_hz)
+                : 0;
+}
+
+int
+svc_check_mode_receive_profile_widths(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode,
+                                      int nfm_hz, int am_hz) {
     if (!opts || !state || (mode != DSDCFG_MODE_ANALOG && mode != DSDCFG_MODE_AM) || opts->m17encoder == 1
         || dsd_scan_mode_updating(state)) {
         return 0;
@@ -242,10 +250,12 @@ svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsd
     /* What svc_publish_symbol_profile() will request once the preset has run: Analog selects NFM and AM the AM
        detector (dsd_apply_decode_mode_preset() sets analog_demod), each with the configured width of its kind. */
     if (mode == DSDCFG_MODE_AM) {
-        return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+        return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, am_hz);
     }
-    return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz);
+    return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, nfm_hz);
 #else
+    (void)nfm_hz;
+    (void)am_hz;
     return 0;
 #endif
 }

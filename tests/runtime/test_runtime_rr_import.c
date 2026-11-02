@@ -89,6 +89,7 @@ static void
 tg_set(dsd_rr_talkgroup* tg, uint32_t dec, const char* alpha, const char* descr, int enc) {
     DSD_MEMSET(tg, 0, sizeof(*tg));
     tg->tg_dec = dec;
+    tg->tg_dec_valid = 1;
     if (alpha != NULL) {
         (void)DSD_SNPRINTF(tg->alpha_tag, sizeof(tg->alpha_tag), "%s", alpha);
     }
@@ -156,13 +157,21 @@ test_decode_mode(void) {
         {DSD_RR_PROTO_NXDN96, (int)DSDCFG_MODE_NXDN96},      {DSD_RR_PROTO_EDACS_STD, (int)DSDCFG_MODE_EDACS_PV},
         {DSD_RR_PROTO_EDACS_EA, (int)DSDCFG_MODE_EDACS_PV},  {DSD_RR_PROTO_P25_CONV, (int)DSDCFG_MODE_TDMA},
         {DSD_RR_PROTO_DMR_CONV, (int)DSDCFG_MODE_DMR},       {DSD_RR_PROTO_NXDN48_CONV, (int)DSDCFG_MODE_NXDN48},
-        {DSD_RR_PROTO_NXDN96_CONV, (int)DSDCFG_MODE_NXDN96},
+        {DSD_RR_PROTO_NXDN96_CONV, (int)DSDCFG_MODE_NXDN96}, {DSD_RR_PROTO_TETRA, (int)DSDCFG_MODE_TETRA},
     };
 
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         int mode = -999;
         expect("decode mode for every classified protocol",
                dsd_rr_protocol_decode_mode(rows[i].protocol, &mode) == 0 && mode == rows[i].mode);
+    }
+    /* The table above lists rows by hand, so a kind added to k_protocols
+     * without a k_decode_modes row would slip past it - and every apply of that
+     * kind would then fail in dsd_app_rr_fill_apply_payload(). */
+    for (int p = 0; p < (int)DSD_RR_PROTO_UNSUPPORTED; p++) {
+        int any = -999;
+        expect("every importable protocol has a decode mode",
+               dsd_rr_protocol_decode_mode((dsd_rr_protocol)p, &any) == 0 && any != -999);
     }
     int mode = -999;
     expect("unsupported has no decode mode",
@@ -308,6 +317,24 @@ test_tune_frequency(void) {
     expect_str("fallback wording", warnings.items[0].text,
                "RadioReference marks no control channel for this site, so the session starts on "
                "its first listed frequency. Check it against the system's own listing.");
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Regression: RadioReference DID mark the site - a 'd' dsd-neo cannot tune
+     * (50 kHz) and an 'a' whose MHz text did not convert (0) - and the old copy
+     * still said it marked nothing. */
+    dsd_rr_site_freq marked[3];
+    freq_set(&marked[0], 1, 50000LL, "d", NULL);
+    freq_set(&marked[1], 2, 0LL, "a", NULL);
+    freq_set(&marked[2], 3, 390012500LL, "", NULL);
+    dsd_rr_site unusable;
+    site_init(&unusable, marked, 3U);
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("an unusable mark falls back to the first usable frequency",
+           dsd_rr_tune_frequency_hz(DSD_RR_PROTO_P25, &unusable, &warnings) == 390012500LL);
+    expect_size("unusable mark warned exactly once", warnings.count, 1U);
+    expect_str("unusable mark wording", warnings.count == 1U ? warnings.items[0].text : "",
+               "RadioReference's control channel for this site is not a frequency dsd-neo can tune, so the "
+               "session starts on its first usable frequency instead. Check it against the system's own listing.");
     dsd_rr_warning_list_free(&warnings);
 
     dsd_rr_warning_list empty;
@@ -485,8 +512,8 @@ test_plan_conventional(void) {
     expect_str("duplicate warning", plan.warnings.items[0].text,
                "1 selected repeater(s) share a frequency already in the list and were dropped.");
     expect_str("scanning warning", plan.warnings.items[1].text,
-               "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any "
-               "other input the session stays on the first frequency.");
+               "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+               "rigctl-controlled radio; on any other input the session stays on the first frequency.");
     dsd_rr_import_plan_free(&plan);
 
     /* One repeater: a one-entry scan list is churn, so no file and no -Y. */
@@ -825,6 +852,178 @@ test_plan_site_ids_overflow(void) {
     dsd_rr_import_plan_free(&plan);
 }
 
+/*
+ * TETRA, registered here rather than in RUNTIME_RR_GENERATE so the no-expat
+ * build checks it too. RadioReference files every TETRA system as type
+ * "TETRA", flavor "Standard", voice "Tetra Digital"; the decoder learns the
+ * cell's carriers from its control channel, so there is no channel map, and
+ * trunking is the recipe's separate switch rather than a -T inside the flag.
+ */
+static void
+test_tetra_kind(void) {
+    expect("TETRA classifies", dsd_rr_protocol_classify("TETRA", "Standard", "Tetra Digital") == DSD_RR_PROTO_TETRA);
+    expect("TETRA classifies on the type alone", dsd_rr_protocol_classify("tetra", "", "") == DSD_RR_PROTO_TETRA);
+    expect_str("TETRA token", dsd_rr_protocol_token(DSD_RR_PROTO_TETRA), "tetra");
+    expect("TETRA token round-trips", dsd_rr_protocol_from_token("tetra") == DSD_RR_PROTO_TETRA);
+    expect_str("TETRA short name", dsd_rr_protocol_short_name(DSD_RR_PROTO_TETRA), "TETRA");
+    expect("TETRA is trunked", dsd_rr_protocol_is_trunked(DSD_RR_PROTO_TETRA) == 1);
+    expect("TETRA is not conventional", dsd_rr_protocol_is_conventional(DSD_RR_PROTO_TETRA) == 0);
+    expect("TETRA needs no channel map", dsd_rr_chan_map_need(DSD_RR_PROTO_TETRA) == 0);
+    expect("TETRA is the last importable kind", (int)DSD_RR_PROTO_TETRA + 1 == (int)DSD_RR_PROTO_UNSUPPORTED);
+
+    /* No answer the wizard can give changes the flag. */
+    for (int simulcast = 0; simulcast <= 1; simulcast++) {
+        for (int esk = 0; esk <= 1; esk++) {
+            for (int scan_list = 0; scan_list <= 1; scan_list++) {
+                expect_str("TETRA flag", dsd_rr_decode_flag(DSD_RR_PROTO_TETRA, simulcast, esk, scan_list), "-fT");
+            }
+        }
+    }
+
+    /* Group IDs are 24-bit GSSIs; every other kind carries no ceiling. */
+    expect("TETRA group IDs stop at 24 bits", dsd_rr_protocol_id_max(DSD_RR_PROTO_TETRA) == 0xFFFFFFU);
+    for (int p = 0; p < (int)DSD_RR_PROTO_TETRA; p++) {
+        expect("other kinds have no ID ceiling", dsd_rr_protocol_id_max((dsd_rr_protocol)p) == 0U);
+    }
+    expect("unsupported has no ID ceiling", dsd_rr_protocol_id_max(DSD_RR_PROTO_UNSUPPORTED) == 0U);
+
+    /* The writer's skip rule, which a preview shares: a usable ID within the ceiling, 0 and 0xFFFFFF included. */
+    dsd_rr_talkgroup tg;
+    DSD_MEMSET(&tg, 0, sizeof(tg));
+    expect("NULL is not writable", dsd_rr_talkgroup_writable(NULL, DSD_RR_PROTO_P25) == 0);
+    tg.tg_dec = 1017000U;
+    expect("no usable ID is not writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_P25) == 0);
+    tg.tg_dec_valid = 1;
+    tg.tg_dec = 0U;
+    expect("ID 0 is writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 1);
+    tg.tg_dec = 0xFFFFFFU;
+    expect("the TETRA ceiling is writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 1);
+    tg.tg_dec = 0x1000000U;
+    expect("above the TETRA ceiling is not writable", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_TETRA) == 0);
+    tg.tg_dec = UINT32_MAX;
+    expect("no ceiling for P25", dsd_rr_talkgroup_writable(&tg, DSD_RR_PROTO_P25) == 1);
+}
+
+/* map_need 0 is a successful generate with no file, for one site or several;
+ * several still say that only the first was used. */
+static void
+test_tetra_no_channel_map(void) {
+    dsd_rr_site_freq freqs[2];
+    freq_set(&freqs[0], 1, 858062500LL, "d", NULL);
+    freq_set(&freqs[1], 2, 858312500LL, "", NULL);
+    dsd_rr_site sites[2];
+    site_init(&sites[0], &freqs[0], 2U);
+    site_init(&sites[1], &freqs[1], 1U);
+
+    char* text = (char*)0x1;
+    size_t len = 99U;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("one TETRA site generates",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_TETRA, sites, 1U, &text, &len, &warnings) == 0);
+    expect("one TETRA site has no channel map", text == NULL && len == 0U);
+    expect_size("one TETRA site is silent", warnings.count, 0U);
+    dsd_rr_warning_list_free(&warnings);
+
+    text = (char*)0x1;
+    len = 99U;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("two TETRA sites generate",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_TETRA, sites, 2U, &text, &len, &warnings) == 0);
+    expect("two TETRA sites have no channel map", text == NULL && len == 0U);
+    expect_size("two TETRA sites warn once", warnings.count, 1U);
+    expect("the multi-site warning is kept",
+           warned(&warnings, "This system is trunked, so only the first selected site was used."));
+    dsd_rr_warning_list_free(&warnings);
+}
+
+/* Hand-built copies of the shapes the KorKor fixture carries (sid 10880). */
+static void
+test_plan_tetra(void) {
+    dsd_rr_site_freq marked[4];
+    freq_set(&marked[0], 1, 858062500LL, "d", NULL);
+    freq_set(&marked[1], 2, 858312500LL, "", NULL);
+    freq_set(&marked[2], 3, 858562500LL, "", NULL);
+    freq_set(&marked[3], 4, 863762500LL, "", NULL);
+    dsd_rr_site_freq unmarked[3];
+    freq_set(&unmarked[0], 1, 863737500LL, "", NULL);
+    freq_set(&unmarked[1], 2, 858737500LL, "", NULL);
+    freq_set(&unmarked[2], 3, 858237500LL, "", NULL);
+    /* RadioReference lists this site's carriers as "2341" and "2351", which
+     * read as MHz and land past the trunking ceiling. */
+    dsd_rr_site_freq carrier_numbers[2];
+    freq_set(&carrier_numbers[0], 1, 2341000000LL, "", NULL);
+    freq_set(&carrier_numbers[1], 2, 2351000000LL, "", NULL);
+
+    dsd_rr_site sites[3];
+    site_init(&sites[0], marked, 4U);
+    sites[0].site_db_id = 35613;
+    sites[0].site_number = 2;
+    (void)DSD_SNPRINTF(sites[0].descr, sizeof(sites[0].descr), "%s", "Sky Tower");
+    site_init(&sites[1], unmarked, 3U);
+    sites[1].site_db_id = 35655;
+    site_init(&sites[2], carrier_numbers, 2U);
+    sites[2].site_db_id = 39468;
+
+    dsd_rr_talkgroup tgs[2];
+    tg_set(&tgs[0], 1017000U, "Tow 1017000", "", 0);
+    tg_set(&tgs[1], 1093000U, "Debt 1093000", "", 0);
+
+    dsd_rr_system_info info;
+    info_set(&info, DSD_RR_PROTO_TETRA, 0);
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
+    dsd_rr_import_plan plan;
+
+    const size_t first[] = {0U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("tetra plan built", dsd_rr_import_plan_build(&info, sites, 3U, first, 1U, tgs, 2U, &options, &plan) == 0);
+    expect("tetra ok", plan.ok == 1);
+    expect_str("tetra not blocked", plan.blocked_reason, "");
+    expect("tetra trunking", plan.trunking == 1 && plan.conventional == 0);
+    expect("tetra needs no map", plan.chan_need == 0);
+    expect_str("tetra decode flag", plan.decode_flag, "-fT");
+    expect("tetra has no channel map", plan.chan_csv_text == NULL && plan.chan_csv_len == 0U);
+    expect("tetra talkgroup list generated", plan.group_csv_text != NULL && plan.group_csv_len > 0U);
+    expect("tetra tunes the marked carrier", plan.tune_hz == 858062500LL);
+    expect_str("tetra frequency text", plan.freq_mhz, "858.0625");
+    expect_str("tetra provenance", plan.site_ids, "35613");
+    expect_str("tetra label", plan.site_label, "Sky Tower");
+    /* The group writer's own count is the only note. */
+    expect_size("tetra warns only the talkgroup count", plan.warnings.count, 1U);
+    expect("tetra talkgroup count noted", warned(&plan.warnings, "2 talkgroup(s) written."));
+    dsd_rr_import_plan_free(&plan);
+
+    /* No talkgroups: a plan with no file at all is still a usable import. */
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("tetra no-talkgroup plan built",
+           dsd_rr_import_plan_build(&info, sites, 3U, first, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("tetra no-talkgroup plan ok", plan.ok == 1);
+    expect("tetra no-talkgroup plan has no files", plan.chan_csv_text == NULL && plan.group_csv_text == NULL);
+    expect("tetra no-talkgroup plan tunes", plan.tune_hz == 858062500LL);
+    expect_size("tetra no-talkgroup plan is silent", plan.warnings.count, 0U);
+    dsd_rr_import_plan_free(&plan);
+
+    const size_t second[] = {1U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("unmarked tetra plan built",
+           dsd_rr_import_plan_build(&info, sites, 3U, second, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("unmarked tetra ok", plan.ok == 1);
+    expect("unmarked tetra starts on the first listed carrier", plan.tune_hz == 863737500LL);
+    expect_size("unmarked tetra warns once", plan.warnings.count, 1U);
+    expect("unmarked tetra says so", warned(&plan.warnings, "RadioReference marks no control channel for this site"));
+    dsd_rr_import_plan_free(&plan);
+
+    const size_t third[] = {2U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("carrier-number tetra plan built",
+           dsd_rr_import_plan_build(&info, sites, 3U, third, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("carrier-number tetra is blocked", plan.ok == 0 && plan.awaiting_selection == 0);
+    expect_str("carrier-number tetra wording", plan.blocked_reason,
+               "This site lists no frequency to start on, so the session would have nothing to tune.");
+    expect("carrier-number tetra tunes nothing", plan.tune_hz == 0);
+    dsd_rr_import_plan_free(&plan);
+}
+
 static void
 test_plan_argument_validation(void) {
     dsd_rr_site_freq freqs[1];
@@ -869,6 +1068,9 @@ main(void) {
     test_plan_awaiting_a_selection_is_not_a_refusal();
     test_plan_site_ids_large_selection();
     test_plan_site_ids_overflow();
+    test_tetra_kind();
+    test_tetra_no_channel_map();
+    test_plan_tetra();
     test_plan_argument_validation();
 
     if (g_failures != 0) {

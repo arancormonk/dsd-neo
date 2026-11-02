@@ -40,6 +40,9 @@ typedef struct {
     dsd_trunk_tune_result (*tune_to_cc_request)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                 uint64_t request_id);
     dsd_trunk_tune_result (*return_to_cc_request)(dsd_opts* opts, dsd_state* state, uint64_t request_id);
+    /* Whether a protocol state machine may move the tuner on its own initiative now (a TETRA move to the main carrier
+       its SYSINFO names): no manual or correlated tune is pending and no scan owns the tuner. NULL reads as free. */
+    int (*tuner_free_for_protocol)(const dsd_opts* opts, const dsd_state* state);
 } dsd_trunk_tuning_hooks;
 
 void dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks);
@@ -88,6 +91,19 @@ void dsd_trunk_tuning_requests_reset(void);
  * left compares it to tell whether any correlated tune has been issued since.
  */
 uint64_t dsd_trunk_tuning_last_request(void);
+
+/**
+ * @brief Whether a correlated tune begun after @p request_id may have moved the receiver.
+ *
+ * Every request begun since counts except one its owner completed as refused or deferred before the backend took it
+ * (dsd_trunk_tuning_request_complete() with a failed or deferred result, before any readiness or backend answer): such
+ * a request moved nothing. A request whose record the bounded history no longer holds counts, so the answer errs
+ * towards "moved". For an owner that puts the receiver back after its own request failed, unless another tune decided
+ * where it is since.
+ *
+ * @return 1 when one may have, 0 when none did.
+ */
+int dsd_trunk_tuning_retuned_since(uint64_t request_id);
 
 /**
  * @brief Retire terminal failed requests after correlated recovery is abandoned.
@@ -201,6 +217,9 @@ dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_sta
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                        uint64_t* out_request_id);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t* out_request_id);
+
+/** @brief The installed tuner_free_for_protocol() answer; 1 (free) when no hook is installed (headless and test builds). */
+int dsd_trunk_tuning_hook_tuner_free(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_trunk_tune_result_is_ok(dsd_trunk_tune_result result) {

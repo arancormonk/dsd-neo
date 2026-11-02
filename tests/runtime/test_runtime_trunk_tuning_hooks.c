@@ -54,6 +54,13 @@ fake_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     return g_tune_to_cc_request_result;
 }
 
+static int
+fake_tuner_busy(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
 int
 main(void) {
     dsd_trunk_tuning_hooks hooks = {0};
@@ -365,6 +372,48 @@ main(void) {
     assert(dsd_trunk_tuning_request_status(stamped_request, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK);
     dsd_decode_clock_test_set_ns(UINT64_C(1005000000000));
     assert(dsd_decode_now_mono_s() - completed_m >= 4.0);
+
+    // Whether a tune begun after a request may have moved the receiver: one refused or deferred where it was asked for
+    // did not; one in flight, answered, or merely begun may have.
+    hooks = (dsd_trunk_tuning_hooks){0};
+    hooks.tune_to_freq_request = fake_tune_to_freq;
+    hooks.tune_to_cc_request = fake_tune_to_cc;
+    hooks.return_to_cc_request = fake_return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_trunk_tuning_requests_reset();
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    uint64_t owner_request = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 852000000, 0, &owner_request)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(!dsd_trunk_tuning_retuned_since(owner_request));
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 853000000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_trunk_tuning_retuned_since(owner_request));
+    const uint64_t begun = dsd_trunk_tuning_request_begin();
+    assert(dsd_trunk_tuning_retuned_since(owner_request));
+    dsd_trunk_tuning_request_complete(begun, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_trunk_tuning_retuned_since(owner_request));
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    uint64_t newer = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 854000000, 0, &newer) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_trunk_tuning_retuned_since(owner_request) && !dsd_trunk_tuning_retuned_since(newer));
+    // A failure the backend answered was a request it took, whatever the owner does with it after.
+    dsd_trunk_tuning_request_publish(newer, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_trunk_tuning_request_complete(newer, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_retuned_since(owner_request));
+    dsd_trunk_tuning_request_publish(owner_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_trunk_tuning_request_complete(owner_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // No tuner-free hook installed reads as free; an installed one answers.
+    assert(dsd_trunk_tuning_hook_tuner_free(&opts, &state) == 1);
+    hooks.tuner_free_for_protocol = fake_tuner_busy;
+    dsd_trunk_tuning_hooks_set(hooks);
+    assert(dsd_trunk_tuning_hook_tuner_free(&opts, &state) == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_OK));
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_PENDING));

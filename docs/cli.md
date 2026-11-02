@@ -647,7 +647,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
   `.sym`, holds them as the CQPSK demodulator recovered them, outer levels ±3 and inner ±1, and TETRA reads them as
   they are, where the other modes scale a float symbol file by 10000): discriminator audio has lost the
   phase steps of its pi/4-DQPSK, so `-fT` on a PCM input (Pulse, a WAV file, stdin, TCP or UDP audio) stops at startup
-  with `-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
+  with `-fT: TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
   audio`, as `-fM` does. A config whose `[mode] decode = tetra` meets such an input keeps the mode and logs that nothing
   decodes there. A switch to TETRA on one (terminal picker, Qt chip, API) is refused with that reason; the terminal
   picker's entry reads `TETRA (needs an I/Q radio input)` there and the Qt setup wizard greys its chip out (it offers it
@@ -666,7 +666,23 @@ Android session whose saved extra arguments carry one refuses to start the same 
   signalling (the transmission grant), or from three ACCESS-ASSIGN PDUs in a row carrying its usage marker on its
   traffic channel, until three without it or 18 frames without one (EN 300 392-2 clause 23.8.2.3.2). A call followed
   onto another carrier plays that way, its traffic slot carrying no signalling of it (direct mode speech always
-  plays). Without `-T` one
+  plays). Calls are set up on the cell's main carrier, the one its SYSINFO names (every carrier of the cell sends that
+  SYSINFO). A `-T` session started on another carrier of the cell (a secondary carrier, a rounded or wrong start
+  frequency) moves there once a block whose CRC passed has proved the carrier it is on: it logs `[TETRA SM] on a
+  secondary carrier (X Hz); moving to the main carrier Y Hz` and counts as on the control channel only once that main
+  carrier's own SYSINFO is heard. The move needs a radio it can tune: a live RTL-SDR, rtl_tcp, SoapySDR or Airspy
+  stream, or a rigctl peer (`-U`) behind an audio input; an I/Q replay or a symbol capture stays where it is. A replay
+  whose recorded centre is within 8 kHz of the main carrier (the receive chain's tracking range) shows the control
+  channel there; one further off, or on another carrier, shows the trunk state as idle, though it still decodes what
+  the capture holds. The
+  move waits while a manual tune is still pending or a scan owns the tuner. A move the radio refuses or fails is tried again after
+  5 seconds, then 15, then every 60; one it defers after 2 seconds. A rigctl peer is taken to be on the frequency
+  DSD-neo last sent it, so one already on the main carrier is not moved. Each main carrier is moved to once, so a cell
+  whose carriers name each other is not followed back and forth (it logs `[TETRA SM] main carrier Y Hz was moved to once
+  already; staying on this carrier` once), until an import, another radio or input, or trunking turned off and on
+  again starts over. Nothing moves back to the carrier the session started on: when the main carrier cannot be
+  received there, it logs `[TETRA SM] no SYSINFO on main carrier Y Hz after 10 s` once; start on a carrier this receiver
+  hears, or leave trunking off. To monitor one traffic carrier on purpose, run without `-T`. Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
@@ -1237,7 +1253,7 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   1`). A DSP bandwidth asked for (a config `[input]` `rtl_bw_khz`) re-plans such a replay with `post_downsample` 1.
   PCM inputs (Pulse, WAV and
   other files, stdin, symbol files, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup
-  with `AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`. That is the
+  with `AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA`. That is the
   existing contract for such audio: `-fA` plays PCM input as it arrives, whatever demodulated it (an SDR program's AM
   output over TCP, say). A config whose `[mode] decode = am` meets a PCM input logs the same text and runs the Analog
   monitor for that session instead, with autosave off so the saved `decode = am` is kept; a toast says so, since

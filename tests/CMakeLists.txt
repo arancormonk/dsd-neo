@@ -2709,6 +2709,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
@@ -2914,7 +2915,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
-    # The real panel; the wizard core, prompt widgets and app-control commands are stubbed in the test.
+    # The real panel and library; the wizard core, prompt widgets and app-control commands are stubbed in the test.
     add_executable(
         dsd-neo_test_ui_rr_panel_keys
         ui/test_ui_rr_panel_keys.c
@@ -2931,7 +2932,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_panel_keys
-        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_runtime dsd-neo_test_support ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
 
@@ -5523,6 +5524,8 @@ if(DSD_HAS_EXPAT)
         ui/test_ui_rr_wizard.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard
@@ -7125,6 +7128,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
+            "-Wl,--wrap=rtl_stream_session_generation"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -8568,6 +8572,36 @@ target_link_libraries(
 )
 add_test(NAME APP_P25_CC_SELECTION COMMAND dsd-neo_test_app_p25_cc_selection)
 
+# The RR import's receiver verdict (issue #803), compiled directly like UI_RR_WIZARD's copy of rr_import_apply.c so it
+# needs no engine, stream or link seam and runs on every platform. The protocol and codec2 libraries are what
+# initState()/freeState() and dsd-neo_core reach (as CORE_MBE_TRANSFORM_CONTEXT links them).
+add_executable(
+    dsd-neo_test_app_control_rr_verdict
+    ui/test_app_control_rr_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rr_verdict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rr_verdict
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(
+    NAME APP_CONTROL_RR_VERDICT
+    COMMAND dsd-neo_test_app_control_rr_verdict
+)
+
 add_executable(dsd-neo_test_app_control_rr_apply ui/test_app_control_rr_apply.c)
 target_include_directories(
     dsd-neo_test_app_control_rr_apply
@@ -8592,8 +8626,12 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+        PRIVATE
+            DSD_NEO_TEST_IO_CONTROL_WRAP
+            DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+            DSD_NEO_TEST_RR_APPLY_WRAP
     )
+    # The running-replay and file-load steps an import can fail at after its commit point (issue #803).
     target_link_options(
         dsd-neo_test_app_control_rr_apply
         PRIVATE
@@ -8601,6 +8639,12 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
+            "LINKER:--wrap=svc_import_channel_map"
+            "LINKER:--wrap=rtl_stream_get_request_rate_hz"
+            "LINKER:--wrap=rtl_stream_replay_replan_check_request"
+            "LINKER:--wrap=svc_rtl_replay_replan_locked"
+            "LINKER:--wrap=svc_rtl_restart_recovery_locked"
+            "LINKER:--wrap=rtl_stream_check_analog_profile"
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
@@ -13328,6 +13372,23 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(dsd-neo_bench_tetra_viterbi PRIVATE dsd-neo_proto_tetra)
+
+# What a TETRA trunking session does per burst for the move to the main carrier (opt-in, not a test).
+add_executable(
+    dsd-neo_bench_tetra_sysinfo_move
+    EXCLUDE_FROM_ALL
+    protocol/tetra/bench_tetra_sysinfo_move.c
+)
+target_include_directories(
+    dsd-neo_bench_tetra_sysinfo_move
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_bench_tetra_sysinfo_move
+    PRIVATE dsd-neo_proto_tetra dsd-neo_test_support
+)
 
 # The air signalling test encrypts its blocks with the TEA, TB5 and TA61 wrappers.
 target_link_libraries(dsd-neo_test_tetra_air_signalling PRIVATE dsd-neo_crypto)

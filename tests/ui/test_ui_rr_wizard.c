@@ -22,6 +22,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -58,6 +59,15 @@ dsd_app_get_latest_opts_snapshot(void) {
     return g_stub_opts_published ? &g_stub_opts : NULL;
 }
 
+/* The state half of the published pair, which dsd_app_rr_apply_block_reason() (rr_import_apply.c) reads for the
+ * next-start rule. Heap-allocated by the case that publishes it: a dsd_state is multi-megabyte. */
+static dsd_state* g_stub_state = NULL;
+
+const dsd_state*
+dsd_app_get_latest_snapshot(void) {
+    return g_stub_state;
+}
+
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
 #error "DSD_NEO_TEST_RR_FIXTURE_DIR must be defined by the build"
 #endif
@@ -92,6 +102,39 @@ static const char k_empty_cats_body[] =
     "<ns1:getTrsTalkgroupCatsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\">"
     "<return xsi:type=\"SOAP-ENC:Array\" SOAP-ENC:arrayType=\"tns:TalkgroupCat[0]\"></return>"
     "</ns1:getTrsTalkgroupCatsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
+/* Talkgroups none of which has a usable ID: one past UINT32_MAX, one that is
+ * not a number, one with no tgDec at all. */
+static const char k_unusable_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>4294967296</tgDec><tgAlpha>Wrapped</tgAlpha></item>"
+    "<item><tgDec>12x</tgDec><tgAlpha>Junk</tgAlpha></item>"
+    "<item><tgAlpha>Absent</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
+/* TETRA groups straddling the 24-bit ceiling: the broadcast group 16777215 is
+ * the last one a TETRA group list can carry. */
+static const char k_tetra_ceiling_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>16777216</tgDec><tgAlpha>Too big</tgAlpha></item>"
+    "<item><tgDec>16777215</tgDec><tgAlpha>All Call</tgAlpha></item>"
+    "<item><tgDec>1017000</tgDec><tgAlpha>Tow 1017000</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
+/* TETRA groups every one of which lies past the 24-bit ceiling: the group list
+ * has no row to write, and a TETRA system has no channel map, so the import
+ * writes no file at all. */
+static const char k_tetra_all_too_big_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>16777216</tgDec><tgAlpha>Too big</tgAlpha></item>"
+    "<item><tgDec>20000000</tgDec><tgAlpha>Far too big</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
 /** @return The first index at or after @p from whose call was @p method, or -1. */
 static int
@@ -194,6 +237,10 @@ typedef struct {
      * already arrived" deterministic instead of a race with the worker. */
     char fault_method[64];
     char last_method[64];
+    /* When set, served for getTrsTalkgroups instead of the system's fixture. */
+    const char* talkgroups_body;
+    /* When set, served for getTrsSites instead of the system's fixture. */
+    const char* sites_body;
 } wiz_fake;
 
 static void
@@ -250,6 +297,7 @@ suffix_for_sid(int sid) {
         case 8697: return "dmr_tier3";
         case 12918: return "nxdn";
         case 220: return "edacs";
+        case 10880: return "tetra";
         default: return "dmr_conv";
     }
 }
@@ -295,6 +343,23 @@ fixture_for(const char* method, int sid, char* out, size_t out_sz) {
     return -1;
 }
 
+/** @brief Serve @p text as a 200 response body. */
+static int
+wiz_serve_text(dsd_rr_response* resp, const char* text) {
+    const size_t len = strlen(text);
+    char* copy = (char*)malloc(len + 1U);
+    if (copy == NULL) {
+        resp->status = DSD_RR_ERR_NOMEM;
+        return -1;
+    }
+    DSD_MEMCPY(copy, text, len + 1U);
+    resp->http_status = 200;
+    resp->body = copy;
+    resp->body_len = len;
+    resp->status = DSD_RR_OK;
+    return 0;
+}
+
 static int
 wiz_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
     wiz_fake* fake = (wiz_fake*)ctx;
@@ -315,6 +380,13 @@ wiz_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
 
     const int fault_now =
         fake->serve_fault || (fake->fault_method[0] != '\0' && strcmp(fake->fault_method, fake->last_method) == 0);
+
+    if (!fault_now && fake->talkgroups_body != NULL && strcmp(fake->last_method, "getTrsTalkgroups") == 0) {
+        return wiz_serve_text(resp, fake->talkgroups_body);
+    }
+    if (!fault_now && fake->sites_body != NULL && strcmp(fake->last_method, "getTrsSites") == 0) {
+        return wiz_serve_text(resp, fake->sites_body);
+    }
 
     /* Only sid 6673 has a captured cats file; every other system gets a valid
      * empty one so the four-fetch batch still completes. */
@@ -1187,6 +1259,83 @@ test_trunked_plan_and_options(void) {
     wiz_case_close(&c);
 }
 
+/*
+ * Regression: the preview's group half comes from a cache, and the splice that
+ * copies it into the plan returned early when there was no text - taking the
+ * warnings with it. With every talkgroup skipped for want of a usable ID there
+ * is no file, and the skip warning is the only thing that says why.
+ */
+static void
+test_plan_keeps_group_warnings_without_text(void) {
+    static wiz_case c;
+    if (!wiz_case_open(&c)) {
+        return;
+    }
+    c.fake.talkgroups_body = k_unusable_tgs_body;
+    expect("no-id: ladder reaches the search chooser", drive_to_search_mode(&c));
+    expect("no-id: reached the systems list", drive_zip_to_results(&c));
+    rr_wizard_core_on_chooser_done(c.core, 1); /* sid 6673 */
+    expect("no-id: reached the system stage", pump_until_step(c.core, RR_STEP_SYSTEM, 5000U));
+
+    const dsd_rr_import_plan* p = rr_wizard_core_plan(c.core);
+    expect("no-id: the plan is published", p != NULL);
+    if (p == NULL) {
+        wiz_case_close(&c);
+        return;
+    }
+    expect_ll("no-id: three talkgroups loaded", (long long)rr_wizard_core_talkgroups(c.core)->count, 3);
+    expect("no-id: the plan stays importable", p->ok == 1);
+    expect("no-id: no group file", p->group_csv_text == NULL && p->group_csv_len == 0U);
+    expect("no-id: the channel map is still there", p->chan_csv_text != NULL);
+    expect("no-id: the preview says why",
+           warnings_contain(&p->warnings,
+                            "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+
+    /* A rebuild reuses the cache rather than regenerating: the warning must
+     * survive that path too. */
+    rr_wizard_core_cycle_option(c.core, 1);
+    p = rr_wizard_core_plan(c.core);
+    expect("no-id: the warning survives a rebuild",
+           warnings_contain(&p->warnings,
+                            "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    wiz_case_close(&c);
+}
+
+/*
+ * The preview's cached group half is written for the loaded system's protocol:
+ * a TETRA group list drops the ID past 24 bits and says so (new feature).
+ */
+static void
+test_plan_applies_the_protocol_id_ceiling(void) {
+    static wiz_case c;
+    if (!wiz_case_open(&c)) {
+        return;
+    }
+    c.fake.talkgroups_body = k_tetra_ceiling_tgs_body;
+    expect("ceiling: ladder reaches the search chooser", drive_to_search_mode(&c));
+    rr_wizard_core_on_chooser_done(c.core, 2); /* Enter a system ID */
+    rr_wizard_core_on_prompt_done(c.core, "10880");
+    expect("ceiling: reached the system stage", pump_until_step(c.core, RR_STEP_SYSTEM, 5000U));
+
+    const dsd_rr_import_plan* p = rr_wizard_core_plan(c.core);
+    expect("ceiling: the plan is published", p != NULL);
+    if (p == NULL) {
+        wiz_case_close(&c);
+        return;
+    }
+    expect("ceiling: TETRA system", p->protocol == DSD_RR_PROTO_TETRA);
+    expect("ceiling: group file present", p->group_csv_text != NULL);
+    expect("ceiling: the broadcast group is kept",
+           p->group_csv_text != NULL && strstr(p->group_csv_text, "\n16777215,A,All Call\n") != NULL);
+    expect("ceiling: the 25-bit ID is dropped",
+           p->group_csv_text != NULL && strstr(p->group_csv_text, "16777216") == NULL);
+    expect("ceiling: the preview says why",
+           warnings_contain(&p->warnings,
+                            "1 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    expect("ceiling: the written count", warnings_contain(&p->warnings, "2 talkgroup(s) written."));
+    wiz_case_close(&c);
+}
+
 static void
 test_conventional_plan(void) {
     static wiz_case c;
@@ -1230,8 +1379,8 @@ test_conventional_plan(void) {
     }
     expect("conv: scanning warning",
            warnings_contain(&p->warnings,
-                            "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any "
-                            "other input the session stays on the first frequency."));
+                            "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                            "rigctl-controlled radio; on any other input the session stays on the first frequency."));
 
     /* Multi-select removes without disturbing the order of the rest. */
     rr_wizard_core_toggle_site(c.core, 0);
@@ -1452,6 +1601,36 @@ read_whole_file(const char* path, char** out, size_t* out_len) {
     }
     *out = buf;
     *out_len = (got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES;
+    return 0;
+}
+
+/*
+ * read_whole_file() fills its buffer to the cap with no room for a terminator,
+ * so strstr() or "%s" on it would run past the bytes fread() wrote (the MSVC
+ * debug heap fills that tail with 0xCD). Anything read as text uses this
+ * reader, which keeps one spare byte for the terminator.
+ */
+static int
+read_whole_file_text(const char* path, char** out) {
+    *out = NULL;
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
+    if (buf == NULL) {
+        fclose(fp);
+        return -1;
+    }
+    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
+    fclose(fp);
+    if (hit_cap) {
+        free(buf);
+        return -1;
+    }
+    buf[(got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES] = '\0';
+    *out = buf;
     return 0;
 }
 
@@ -2050,7 +2229,8 @@ test_import_now_hard_collision(void) {
     imp_case_close(&ic);
 }
 
-static const char k_trunk_scan_reason[] = "Stop trunk-scan first; it manages its own channel maps.";
+/* app-control's reason (dsd_app_rr_receiver_verdict()) as the panel frames it: a sentence. */
+static const char k_trunk_scan_reason[] = "Stop the trunk scan first; it keeps its own channel maps.";
 
 /*
  * A trunk-scan session refuses the apply on the decoder thread, and the command
@@ -2079,7 +2259,10 @@ test_trunk_scan_blocks_the_preview(void) {
     expect("trunkscan: preview reason", strcmp(plan->blocked_reason, k_trunk_scan_reason) == 0);
 
     expect("trunkscan: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
-    expect("trunkscan: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    /* A session refusal is not an error: the fetch is kept for when the session can take it. */
+    expect("trunkscan: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("trunkscan: the system is kept", rr_wizard_core_system(ic.c.core) != NULL);
+    expect("trunkscan: the status repeats the reason", strcmp(ic.c.h.last_status, k_trunk_scan_reason) == 0);
     dsd_stat_t st;
     expect("trunkscan: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
     expect("trunkscan: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
@@ -2093,7 +2276,9 @@ test_trunk_scan_blocks_the_preview(void) {
  * The second half of the gate: the snapshot is published AFTER the last plan
  * rebuild, so the preview never saw it and plan->ok is still 1. Only the
  * re-check inside import_now() can refuse here - no mutator runs in between,
- * which is exactly the window the panel's Enter key sits in.
+ * which is exactly the window the panel's Enter key sits in. The refusal keeps
+ * the user on the site list with the fetch (issue #803): once the session can
+ * take the import, the same plan goes through.
  */
 static void
 test_import_now_rechecks_the_session_gate(void) {
@@ -2113,15 +2298,370 @@ test_import_now_rechecks_the_session_gate(void) {
     expect("recheck: the stale preview still says yes", plan->ok == 1);
 
     expect("recheck: import refused anyway", rr_wizard_core_import_now(ic.c.core) == -1);
-    expect("recheck: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
-    expect("recheck: trunk-scan message", strcmp(rr_wizard_core_error_text(ic.c.core), k_trunk_scan_reason) == 0);
+    expect("recheck: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("recheck: trunk-scan status", strcmp(ic.c.h.last_status, k_trunk_scan_reason) == 0);
+    plan = rr_wizard_core_plan(ic.c.core);
+    expect("recheck: the preview now says no",
+           plan != NULL && plan->ok == 0 && strcmp(plan->blocked_reason, k_trunk_scan_reason) == 0);
     dsd_stat_t st;
     expect("recheck: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
     expect("recheck: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
     expect_ll("recheck: apply never called", g_hook_apply_count, 0);
 
+    /* The trunk scan stops. The selection and the fetch were kept, and the
+       panel hands Enter on a session refusal to the core, which asks again: one
+       Enter imports it, with no other key in between. */
     g_stub_opts_published = 0;
+    expect("recheck: the refusal is the session's", rr_wizard_core_session_blocked(ic.c.core) == 1);
+    expect("recheck: imports once the session can", rr_wizard_core_import_now(ic.c.core) == 0);
+    expect("recheck: no longer the session's", rr_wizard_core_session_blocked(ic.c.core) == 0);
+    expect("recheck: the group file is written then", dsd_stat_path(ic.group_path, &st) == 0);
+    expect_ll("recheck: applied once", g_hook_apply_count, 1);
+
     imp_case_close(&ic);
+}
+
+/* ---- The session gate, as app-control decides it (issue #803) ----------- */
+
+static const char k_next_start_map_reason[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled.";
+static const char k_tetra_on_audio_reason[] = "TETRA needs an I/Q radio input or a symbol capture.";
+
+/* Publish a session on @p type / @p dev, with nothing else set. Zeroed rather than initOpts(): dsd_init.c would
+ * drag the vocoder libraries into this target. */
+static void
+publish_session(int type, const char* dev) {
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    g_stub_opts.audio_in_type = type;
+    (void)DSD_SNPRINTF(g_stub_opts.audio_in_dev, sizeof(g_stub_opts.audio_in_dev), "%s", dev);
+    g_stub_opts_published = 1;
+}
+
+/* A trunk scan a config left for the next start (issue #671), with the state half of the snapshot pair. */
+static int
+publish_next_start_trunk_scan(void) {
+    g_stub_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    g_stub_opts.next_start.trunk_scan_enabled = 1;
+    (void)DSD_SNPRINTF(g_stub_opts.next_start.trunk_scan_targets_csv,
+                       sizeof(g_stub_opts.next_start.trunk_scan_targets_csv), "%s", "targets.csv");
+    /* Zeroed, like the options: the rule reads no state the session would have set. */
+    g_stub_state = (dsd_state*)calloc(1U, sizeof(*g_stub_state));
+    if (g_stub_state == NULL) {
+        expect("state snapshot allocated", 0);
+        return 0;
+    }
+    return 1;
+}
+
+static void
+unpublish_session(void) {
+    g_stub_opts_published = 0;
+    if (g_stub_state != NULL) {
+        free(g_stub_state);
+        g_stub_state = NULL;
+    }
+}
+
+/*
+ * Regression (issue #803 T2): a trunk scan a config left for the next start
+ * makes the decoder refuse an import that loads a channel map, and the gate
+ * asked only about a RUNNING trunk scan - so the wizard wrote both files, said
+ * "Imported", and the decoder then refused the apply. The gate now asks the same
+ * rule with the outputs the plan will write, before any file exists.
+ */
+static void
+test_next_start_blocks_the_import(void) {
+    static imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(ic.c.core);
+    expect("next-start: the plan writes a channel map", plan != NULL && plan->ok == 1 && plan->chan_csv_text != NULL);
+    publish_session(AUDIO_IN_RTL, "rtl");
+    if (!publish_next_start_trunk_scan()) {
+        unpublish_session();
+        imp_case_close(&ic);
+        return;
+    }
+
+    rr_wizard_core_cycle_option(ic.c.core, 0); /* any mutator re-runs the rebuild and the gate */
+    plan = rr_wizard_core_plan(ic.c.core);
+    expect("next-start: preview refuses", plan != NULL && plan->ok == 0);
+    expect("next-start: preview reason", plan != NULL && strcmp(plan->blocked_reason, k_next_start_map_reason) == 0);
+
+    expect("next-start: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("next-start: stays on the site list", rr_wizard_core_step(ic.c.core) == RR_STEP_SYSTEM);
+    expect("next-start: the rule is the status", strcmp(ic.c.h.last_status, k_next_start_map_reason) == 0);
+    dsd_stat_t st;
+    expect("next-start: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
+    expect("next-start: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("next-start: apply never called", g_hook_apply_count, 0);
+
+    unpublish_session();
+    imp_case_close(&ic);
+}
+
+/*
+ * The gate asks the receiver verdict for the plan's decode mode (new with
+ * TETRA): a session that cannot decode the import refuses it before a file is
+ * written, and the reason is app-control's, framed as a sentence.
+ */
+static void
+test_tetra_receiver_blocks_the_plan(void) {
+    static wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(scratch, sizeof(scratch), "dsdneo_rr_tetra_gate") == NULL) {
+        expect("tetra gate: scratch dir created", 0);
+        return;
+    }
+    if (!wiz_case_open(&c)) {
+        (void)dsd_test_rmdir(scratch);
+        return;
+    }
+    g_hook_apply_count = 0;
+    if (!drive_sid_to_system(&c, "10880")) {
+        expect("tetra gate: reached the system stage", 0);
+        wiz_case_close(&c);
+        (void)dsd_test_rmdir(scratch);
+        return;
+    }
+    rr_wizard_core_set_imports_dir_for_test(c.core, scratch);
+
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    rr_wizard_core_cycle_option(c.core, 0);
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: a TETRA plan", plan != NULL && plan->protocol == DSD_RR_PROTO_TETRA);
+    expect("tetra gate: audio input refused", plan != NULL && plan->ok == 0);
+    expect("tetra gate: audio reason", plan != NULL && strcmp(plan->blocked_reason, k_tetra_on_audio_reason) == 0);
+
+    publish_session(AUDIO_IN_RTL, "rtl");
+    g_stub_opts.rtl_dsp_bw_khz = 48;
+    rr_wizard_core_cycle_option(c.core, 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: rtl at 48 kHz reason",
+           plan != NULL
+               && strcmp(plan->blocked_reason, "TETRA needs 72 kHz DSP bandwidth; set it and import again.") == 0);
+
+    g_stub_opts.rtl_dsp_bw_khz = 72;
+    rr_wizard_core_cycle_option(c.core, 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: rtl at 72 kHz passes", plan != NULL && plan->ok == 1 && plan->blocked_reason[0] == '\0');
+
+    /* Enter re-checks: the session went back to audio after the last rebuild. */
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    expect("tetra gate: import refused", rr_wizard_core_import_now(c.core) == -1);
+    expect("tetra gate: stays on the site list", rr_wizard_core_step(c.core) == RR_STEP_SYSTEM);
+    expect("tetra gate: the reason is the status", strcmp(c.h.last_status, k_tetra_on_audio_reason) == 0);
+    plan = rr_wizard_core_plan(c.core);
+    expect("tetra gate: the preview shows it",
+           plan != NULL && strcmp(plan->blocked_reason, k_tetra_on_audio_reason) == 0);
+    expect_ll("tetra gate: apply never called", g_hook_apply_count, 0);
+
+    unpublish_session();
+    wiz_case_close(&c);
+    expect_scratch_removed(scratch);
+}
+
+/*
+ * The Imported Systems browser's two pre-checks: "Use this system" is checked
+ * for the stored recipe's own decode mode, and "Load these files" only for what
+ * loading the files meets - a running trunk scan, and the next-start rule for
+ * a channel map - never for a decode mode it leaves alone.
+ */
+static void
+test_browser_gates(void) {
+    dsd_rr_recipe recipe;
+    DSD_MEMSET(&recipe, 0, sizeof(recipe));
+    recipe.present = 1;
+    recipe.protocol = DSD_RR_PROTO_TETRA;
+    recipe.tune_hz = 858087500LL;
+    recipe.trunking = 1;
+    dsd_rr_import_plan plan;
+    expect("browser: the recipe rebuilds a plan", dsd_rr_recipe_to_plan(&recipe, 1, &plan) == 0);
+
+    char why[256];
+    publish_session(AUDIO_IN_PULSE, "pulse");
+    expect_ll("browser: TETRA recipe on audio refused",
+              rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 1);
+    expect("browser: TETRA recipe reason", strcmp(why, k_tetra_on_audio_reason) == 0);
+    expect_ll("browser: files alone pass on audio", rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)),
+              0);
+
+    if (publish_next_start_trunk_scan()) {
+        expect_ll("browser: a channel map beside the next start refused",
+                  rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)), 1);
+        expect("browser: next-start reason", strcmp(why, k_next_start_map_reason) == 0);
+        expect_ll("browser: a group list alone passes", rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 0);
+    }
+    g_stub_opts.trunk_scan_enabled = 1;
+    expect_ll("browser: files refused while a trunk scan runs",
+              rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 1);
+    expect("browser: trunk-scan reason", strcmp(why, k_trunk_scan_reason) == 0);
+
+    unpublish_session();
+    expect_ll("browser: nothing published passes", rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 0);
+}
+
+/* A TETRA site whose description fills the plan's whole site label. */
+static char*
+tetra_sites_with_long_name(char* label_out, size_t label_sz) {
+    char path[DSD_TEST_PATH_MAX];
+    char* fixture = NULL;
+    if (dsd_test_path_join(path, sizeof(path), DSD_NEO_TEST_RR_FIXTURE_DIR, "trs_sites_tetra.xml") != 0
+        || read_whole_file_text(path, &fixture) != 0) {
+        return NULL;
+    }
+    const size_t len = strlen(fixture);
+    /* Single spaces, so the label is the description's first 95 bytes as is. */
+    char name[160];
+    (void)DSD_SNPRINTF(name, sizeof(name), "%s",
+                       "Waiatarua Ridge Road Communications Tower North Face Repeater Building Annex "
+                       "Cabinet Four Rack Two Shelf One");
+    (void)DSD_SNPRINTF(label_out, label_sz, "%.*s", (int)(label_sz - 1U), name);
+    const char* at = strstr(fixture, ">Waiatarua<");
+    char* body = (at != NULL) ? (char*)malloc(len + sizeof(name)) : NULL;
+    if (body != NULL) {
+        const size_t head = (size_t)(at - fixture) + 1U;
+        DSD_MEMCPY(body, fixture, head);
+        (void)DSD_SNPRINTF(body + head, len + sizeof(name) - head, "%s%s", name, at + 1U + strlen("Waiatarua"));
+    }
+    free(fixture);
+    return body;
+}
+
+/* A loaded TETRA system with no file to write, its site named with the longest label, importing into @p scratch. */
+typedef struct {
+    wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    char label[sizeof(((dsd_rr_import_plan*)0)->site_label)];
+    char* sites;
+} nofile_case;
+
+static void
+nofile_case_close(nofile_case* nc) {
+    wiz_case_close(&nc->c);
+    free(nc->sites);
+    nc->sites = NULL;
+    expect_scratch_removed(nc->scratch); /* nothing was written there */
+}
+
+static int
+nofile_case_open(nofile_case* nc, int apply_result) {
+    DSD_MEMSET(nc, 0, sizeof(*nc));
+    nc->sites = tetra_sites_with_long_name(nc->label, sizeof(nc->label));
+    expect("no files: the long-name sites body is built", nc->sites != NULL);
+    if (nc->sites == NULL) {
+        return 0;
+    }
+    if (dsd_test_mkdtemp(nc->scratch, sizeof(nc->scratch), "dsdneo_rr_nofile") == NULL) {
+        expect("no files: scratch dir created", 0);
+        free(nc->sites);
+        return 0;
+    }
+    if (!wiz_case_open(&nc->c)) {
+        free(nc->sites);
+        expect_scratch_removed(nc->scratch);
+        return 0;
+    }
+    g_hook_apply_count = 0;
+    g_hook_apply_result = apply_result;
+    DSD_MEMSET(&g_hook_apply_payload, 0, sizeof(g_hook_apply_payload));
+    nc->c.fake.talkgroups_body = k_tetra_all_too_big_tgs_body;
+    nc->c.fake.sites_body = nc->sites;
+    if (!drive_sid_to_system(&nc->c, "10880")) {
+        expect("no files: reached the system stage", 0);
+        nofile_case_close(nc);
+        return 0;
+    }
+    rr_wizard_core_set_imports_dir_for_test(nc->c.core, nc->scratch);
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(nc->c.core);
+    expect("no files: the plan is importable", plan != NULL && plan->ok == 1);
+    expect("no files: nothing to write", plan != NULL && plan->group_csv_text == NULL && plan->chan_csv_text == NULL);
+    expect("no files: the label is the long site name", plan != NULL && strcmp(plan->site_label, nc->label) == 0);
+    return 1;
+}
+
+/*
+ * D1 (issue #803): a TETRA system whose talkgroups all lie past its ID range
+ * has no group list, and TETRA writes no channel map, so the import saves no
+ * file. It is still sent to the session, and Imported Systems will have no row
+ * for it, so the status says so - and never "applied": it is posted when the
+ * apply is queued, and the decoder's own message reports how the apply went,
+ * a refusal included. The longest site label still fits the status buffer.
+ */
+static void
+test_import_with_no_files_says_so(void) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, 1)) { /* queued; what the decoder makes of it never reaches the wizard */
+        return;
+    }
+    expect_ll("no files: the label is as long as a label gets", (long long)strlen(nc.label),
+              (long long)sizeof(nc.label) - 1);
+    expect("no files: import queued", rr_wizard_core_import_now(nc.c.core) == 0);
+    expect_ll("no files: apply posted", g_hook_apply_count, 1);
+    expect("no files: the apply loads no file",
+           g_hook_apply_payload.has_group == 0U && g_hook_apply_payload.has_chan == 0U);
+    char want[256];
+    (void)DSD_SNPRINTF(want, sizeof(want), "Imported %s; no files to save.", nc.label);
+    expect("no files: the status says nothing was saved", strcmp(nc.c.h.last_status, want) == 0);
+    expect("no files: the status never says applied", strstr(nc.c.h.last_status, "pplied") == NULL);
+    nofile_case_close(&nc);
+}
+
+/*
+ * The one apply failure the wizard sees (the command queue said no) for an
+ * import that saved nothing: the message must not say it "was written", and
+ * there is no Imported Systems row to retry from, so it says to import again.
+ */
+static void
+test_no_file_import_rejected_says_nothing_was_saved(void) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, -1)) { /* DSD_APP_COMMAND_SUBMIT_REJECTED */
+        return;
+    }
+    expect("no files rejected: import failed", rr_wizard_core_import_now(nc.c.core) == -1);
+    expect_ll("no files rejected: the apply was tried", g_hook_apply_count, 1);
+    expect("no files rejected: error step", rr_wizard_core_step(nc.c.core) == RR_STEP_ERROR);
+    expect("no files rejected: the message says nothing was saved",
+           strcmp(rr_wizard_core_error_text(nc.c.core),
+                  "The import could not be applied to this session, and it had no files to save; import it again.")
+               == 0);
+    nofile_case_close(&nc);
+}
+
+/*
+ * An import that writes nothing needs no file name: every stem it would take
+ * is held by a hand-made file, which refuses an import that writes ("A
+ * different system is already imported under this name."), and this one still
+ * goes through and leaves those files alone.
+ */
+static void
+test_no_file_import_needs_no_name(void) {
+    static nofile_case nc;
+    if (!nofile_case_open(&nc, 1)) {
+        return;
+    }
+    const dsd_rr_system_info* info = rr_wizard_core_system(nc.c.core);
+    char stem[192];
+    (void)rr_wizard_core_stem_for_test(info != NULL ? info->name : "", nc.label, stem, sizeof(stem));
+    char seeds[9][DSD_TEST_PATH_MAX];
+    for (int i = 0; i < 9; i++) {
+        char leaf[256];
+        if (i == 0) {
+            (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s group.csv", stem);
+        } else {
+            (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s (%d) group.csv", stem, i + 1);
+        }
+        expect("no name: seed path built", dsd_test_path_join(seeds[i], sizeof(seeds[0]), nc.scratch, leaf) == 0);
+        seed_foreign_csv(seeds[i], 0, "group");
+    }
+
+    expect("no name: import queued", rr_wizard_core_import_now(nc.c.core) == 0);
+    expect_ll("no name: apply posted", g_hook_apply_count, 1);
+    for (int i = 0; i < 9; i++) {
+        expect_file_matches("no name: hand-made file untouched", seeds[i], k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+        (void)remove(seeds[i]);
+    }
+    nofile_case_close(&nc);
 }
 
 /* Write 1 is the group sidecar, so the group CSV has already landed when the
@@ -2233,35 +2773,6 @@ sentinel_free(void) {
     free(g_sentinel_csv);
     g_sentinel_csv = NULL;
     g_sentinel_len = 0;
-}
-
-/*
- * read_whole_file() fills its buffer to the cap with no room for a terminator,
- * so strstr() on it would run past the bytes fread() wrote. The substring
- * helpers below get their own reader with one spare byte instead.
- */
-static int
-read_whole_file_text(const char* path, char** out) {
-    *out = NULL;
-    FILE* fp = fopen(path, "rb");
-    if (fp == NULL) {
-        return -1;
-    }
-    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
-    if (buf == NULL) {
-        fclose(fp);
-        return -1;
-    }
-    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
-    const int hit_cap = (feof(fp) == 0);
-    fclose(fp);
-    if (hit_cap) {
-        free(buf);
-        return -1;
-    }
-    buf[(got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES] = '\0';
-    *out = buf;
-    return 0;
 }
 
 static void
@@ -2590,6 +3101,43 @@ test_refresh_keeps_the_file_when_one_site_survives(void) {
     ref_case_close(&rc);
 }
 
+/*
+ * Regression: a refresh whose talkgroups all lack a usable ID used to write
+ * them anyway, as TG 0 rows. Now the writer skips them, the refresh has
+ * nothing to put in the file, and the stored list is kept with a reason.
+ */
+static void
+test_refresh_keeps_the_file_when_no_talkgroup_is_usable(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    static const char k_seed[] = "DEC,Mode,Name,(generated from RadioReference)\n52031,A,Seeded\n";
+    ref_prov(&prov, "group", 6673, "16863", 1);
+    if (!ref_case_open(&rc, "sara group.csv", k_seed, strlen(k_seed), &prov)) {
+        return;
+    }
+    rc.c.fake.talkgroups_body = k_unusable_tgs_body;
+    sentinel_take(rc.csv_path);
+    if (!ref_drive(&rc)) {
+        expect("no-id refresh: finished", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    expect("no-id refresh: lands on the error step", rr_wizard_core_step(rc.c.core) == RR_STEP_ERROR);
+    expect("no-id refresh: says why",
+           strcmp(rr_wizard_core_error_text(rc.c.core), "None of the talkgroups RadioReference lists has an ID "
+                                                        "dsd-neo can use, so the stored copy was kept.")
+               == 0);
+    expect_file_matches("no-id refresh: stored bytes untouched", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    dsd_rr_provenance after;
+    DSD_MEMSET(&after, 0, sizeof(after));
+    expect_ll("no-id refresh: sidecar still readable", (long long)dsd_rr_provenance_read(rc.csv_path, &after), 0);
+    expect_ll("no-id refresh: sidecar timestamp untouched", after.imported_at, 1700000000LL);
+    expect_ll("no-id refresh: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
 static void
 test_refresh_honours_the_stored_partial_encryption_answer(void) {
     static ref_case rc;
@@ -2898,6 +3446,8 @@ main(void) {
     test_browse_statewide();
     test_system_load_call_sequence();
     test_trunked_plan_and_options();
+    test_plan_keeps_group_warnings_without_text();
+    test_plan_applies_the_protocol_id_ceiling();
     test_conventional_plan();
     test_conventional_selection_order();
     test_restart_retires_the_loaded_system();
@@ -2915,6 +3465,12 @@ main(void) {
     test_import_now_hard_collision();
     test_trunk_scan_blocks_the_preview();
     test_import_now_rechecks_the_session_gate();
+    test_next_start_blocks_the_import();
+    test_tetra_receiver_blocks_the_plan();
+    test_browser_gates();
+    test_import_with_no_files_says_so();
+    test_no_file_import_rejected_says_nothing_was_saved();
+    test_no_file_import_needs_no_name();
     test_import_now_unwinds_a_failed_write();
     test_import_now_keeps_files_when_apply_is_rejected();
     test_refresh_needs_a_sidecar();
@@ -2925,6 +3481,7 @@ main(void) {
     test_refresh_skips_a_vanished_site();
     test_refresh_keeps_the_file_when_no_site_matches();
     test_refresh_keeps_the_file_when_one_site_survives();
+    test_refresh_keeps_the_file_when_no_talkgroup_is_usable();
     test_refresh_honours_the_stored_partial_encryption_answer();
     test_refresh_pushes_only_the_file_the_session_uses();
     test_refresh_pushes_a_group_file_as_a_group_list();

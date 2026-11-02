@@ -2736,8 +2736,13 @@ suite runs under this compiler.
     multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its
     own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
-    the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
-    `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
+    the rate. Qt refuses such a start instead (issue #803): `session_args_effective_bandwidth_khz()` is the DSP
+    bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized as the engine reads a USB
+    or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`, or snapped for an Airspy), the one rule the start check,
+    the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
+    `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on an Airspy and on a USB or rtl_tcp
+    radio off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`). Tests: `RUNTIME_DECODE_MODE`,
+    `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
@@ -2776,6 +2781,21 @@ suite runs under this compiler.
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
+    Each importable kind is one row of `k_protocols[]` in `radioreference/rr_generate.c` (trunked or
+    conventional, channel-map need, decode flags, sidecar token, short name, talkgroup-ID ceiling `id_max`, read
+    through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
+    just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
+    over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
+    returns 0 with no text and keeps the trunked "first site only" warning.
+    The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
+    (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
+    value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
+    is read case- and space-blind. The group writer (`dsd_rr_generate_group_csv*()`) takes the protocol: it drops
+    rows with no valid ID and rows above the kind's `id_max` before duplicate selection
+    (`dsd_rr_talkgroup_writable()`, the one rule a preview shares), with one counted warning per class, and when
+    nothing is left it returns 0 with no text. Every caller passes the system's protocol;
+    the terminal wizard's group cache copies the writer's warnings into the plan even when there is no text, and
+    a refresh (terminal and Qt) that would leave a talkgroup list empty keeps the stored file and says why.
     The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
     selection, Hz-to-MHz text, the baked-key rule and the output filename stem — lives in
     `radioreference/rr_import.c` behind `include/dsd-neo/runtime/radioreference_import.h` and compiles with
@@ -2951,30 +2971,51 @@ reached is not read as the receiver's. It retires only through the request it in
 that fails after the read waits for the next pass. The synced-frames loop then gates with
 `dsd_trunk_tuning_frame_is_current()`, never with `dsd_trunk_tuning_frame_is_dispatchable()`, whose retirement does not
 reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`).
+`dsd_trunk_tuning_retuned_since()` tells an owner whose request failed whether a correlated tune begun since may have
+moved the receiver: every one counts except one its owner completed as refused or deferred before the backend took it
+(the record's `refused` flag, set by `dsd_trunk_tuning_request_complete()` when neither readiness nor a backend answer
+came first), and one the bounded history no longer holds counts. The table's fourth entry,
+`tuner_free_for_protocol()`, answers whether a protocol state machine may move the tuner on its own initiative (the
+TETRA move to the main carrier): the engine installs `dsd_engine_tuner_free_for_protocol()` (no manual tune of any kind
+noted, `dsd_engine_manual_tune_noted()`; no correlated request unresolved, `dsd_trunk_tuning_pending_request()`; no
+trunk scan or `-Y` owning the tuner, `<dsd-neo/runtime/tuner_owner.h>`), and a table without it (headless and test
+builds) answers free (`dsd_trunk_tuning_hook_tuner_free()`).
 
 A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manual_tune.h`,
 `src/engine/manual_tune_pending.c`). `io_control_set_freq_tagged()` tags each RTL leg with an ID from its own space
 (`RTL_STREAM_TUNE_ID_MANUAL_BIT`, bit 63, above any ledger ID). On `RTL_STREAM_TUNE_TIMEOUT` it hands the ID back, and
 the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `svc_rtl_tune()` for the frequency entry,
-tap-to-tune and the Airspy live apply). The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
-manual IDs into a small ring of atomic slots (eight; the poll looks for its record's ID, so an older tune finishing late
-never hides the completion awaited) and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
-waits on a manual tune. The decoder loop polls (`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`,
-one atomic load while nothing is pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied
-centre and, for an entry, toasts `Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. The
-cached centre follows a tune that fails inside its wait the same way: `io_control_set_freq_tagged()` (and
-`dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a target an earlier timeout cached,
-which the failed request may have coalesced over, was never reached. Every other tune of the receiver that reached the
-controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual tune, an owner tune
-(`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its own record), the
-direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the RadioReference
-apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the queued request
-under its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A dropped record
-is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so
-its owner settles what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver,
-and the older drop goes unreported. The record is process-wide, as the controller and its callback are. Tests:
-`ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
-coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, and what ends a synced reception),
+tap-to-tune and the Airspy live apply; `dsd_engine_manual_tune_note_rr_import()` for a RadioReference import's tune,
+kind `DSD_MANUAL_TUNE_RR_IMPORT`, issue #803). A deferred tune has no ID and is never noted: the plain note supersedes
+the older record before it rejects ID 0, and a tune that queued nothing must not drop one. The engine's one RTL
+completion callback (`trunk_tuning_hooks_install.c`) sends manual IDs into a small ring of atomic slots (eight; the poll
+looks for its record's ID, so an older tune finishing late never hides the completion awaited) and every other ID to the
+ledger, so `dsd_trunk_tuning_frame_is_current()` never waits on a manual tune. The decoder loop polls
+(`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`, one atomic load while nothing is pending). A
+late failure puts `opts->rtlsdr_center_freq` back on the stream's applied centre and, for an entry, toasts `Failed:
+frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. An RR import's record reports every outcome:
+its late failure posts the text the import composed (the tune among what failed, and what the import applied); its
+landing (the import's toast with the tune landed) and its drop (superseded, or the stream stopped) replace the import's
+own toast only while it is up, never a newer message or a cleared line. An owner's own tune (`dsd_engine_tune_rtl()`,
+`no_carrier_tune_rtl_if_needed()`: a trunk hunt, a grant, a scan step, after an import that turned it on) marks itself
+first (`dsd_engine_manual_tune_owner_takes_over()`, atomic, since the P25 watchdog's thread tunes too), and its drop
+says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC, Candidate cycle and a
+block's return to the control channel (`request_manual_tune()` with a P25 symbol rate) tune through the same hook, so
+they count as owner tunes as well: an import's tune they drop is not announced (accepted limit; their own toasts say
+where the receiver went). The cached centre follows a tune that fails inside its wait the same way:
+`io_control_set_freq_tagged()` (and `dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a
+target an earlier timeout cached, which the failed request may have coalesced over, was never reached. Every other tune
+of the receiver that reached the controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual
+tune, an owner tune (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its
+own record), the direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the
+RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the
+queued request under its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A
+dropped record is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in
+`dsd_engine_manual_tune_last_settled()`), so its owner settles what it was waiting on (an untyped resume, below); a
+newer tune noted in its place owns the receiver, and the older drop goes unreported. The record is process-wide, as the
+controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late
+failure, late success, a newer entry, coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report,
+what ends a synced reception, and an RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes),
 `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
@@ -2989,23 +3030,23 @@ clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan
 moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
 resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
 loop checks before every frame for a completion the poll will act on (`dsd_engine_manual_tune_settled_ready()`, one
-atomic load while nothing is noted: a step's landing, or any noted tune's late failure) and ends the reception when it
-has come, so at most the frame in flight decodes under the row left, and a carrier that keeps sync (a control channel)
-never goes on decoding under an entry's frequency the receiver did not reach. The outer pass's poll then commits the
-row (boundary, then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no
-modes, the same session and map, the row still on the frequency tuned. Otherwise nothing commits and only the frequency
-stands; a landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only
-the carrier it left). A late failure abandons the row as a failure inside the wait does: the cursor moves past the
-row the front end refused (issue #666), the scan's windows reopen, no toast; a drop leaves the cursor and the windows
-as they are. A failure after the rigctl leg moved still runs the outgoing boundary and resets the received tone, moves
-the cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs
-the same pieces with the boundary inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency
-they last sent; a manual tune moves the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the
-`TUNE` carrier boundary and at every tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET`
-(a step back to a row after an entry, a timed-out row's landing and late failure, a landing in the middle of a
-reception, a landing after a rigctl move, under a hold, after a stop, a list replacement or a pause in place, a
-failure's centre, an entry's late failure on a carrier that keeps sync, an empty or all-avoided list, the find and
-enter pieces), `APP_COMMAND_QUEUE`.
+atomic load while nothing is noted: a step's landing, an RR import's landing, announced drop or stream stop, or any
+noted tune's late failure) and ends the reception when it has come, so at most the frame in flight decodes under the row
+left, and a carrier that keeps sync (a control channel) never goes on decoding under an entry's frequency the receiver
+did not reach. The outer pass's poll then commits the row (boundary, then install), but only while the scan is still
+that one: `-Y` on (or a resume pending, below), no modes, the same session and map, the row still on the frequency
+tuned. Otherwise nothing commits and only the frequency stands; a landing still moved the receiver, so the `SCAN_STEP`
+boundary runs for the move (a pause in place forgot only the carrier it left). A late failure abandons the row as a
+failure inside the wait does: the cursor moves past the row the front end refused (issue #666), the scan's windows
+reopen, no toast; a drop leaves the cursor and the windows as they are. A failure after the rigctl leg moved still runs
+the outgoing boundary and resets the received tone, moves the cursor past the row and keeps the deadline.
+`dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the no-carrier
+pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
+`dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
+direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and
+late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop, a list
+replacement or a pause in place, a failure's centre, an entry's late failure on a carrier that keeps sync, an empty or
+all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -3279,6 +3320,34 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     and the pure plan-to-payload mapper; `src/app_control/rr_import_apply.c` implements it, and the
     `DSD_APP_CMD_RR_APPLY_IMPORT` / `DSD_APP_CMD_RR_ACCOUNT_SET` handlers run on the decoder thread so no
     frontend ever writes `dsd_opts` itself
+  - RadioReference receiver verdict (issue #803): `dsd_app_rr_receiver_verdict()` (pure, plain
+    `dsd_app_rr_receiver_facts`, `src/app_control/rr_apply_verdict.c`) refuses an import under a running trunk scan,
+    AM or TETRA on audio, and TETRA where it decodes nothing (RTL-SDR/rtl_tcp off 72 kHz, an Airspy, a SoapySDR rate
+    that is no TETRA rate, `--tetra-uplink`); an unknown SoapySDR rate passes. The module-private
+    `rr_apply_verdict.h` fills the facts from a `dsd_opts` (a replay is `dsd_opts_input_is_iq_replay()`, never the
+    stale-prone `iq_replay_active`) and asks the next-start rule (`rr_apply_next_start_refusal()`); the decoder's
+    preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured
+    rate, no `rtl_stream_*` call) share it. `dsd_app_rr_files_block_reason()` is the files-only form (no decode mode,
+    the next-start rule for a channel map alone, through the same `app_next_start_load_channel_map()` change
+    `svc_import_channel_map()` asks). `dsd_app_rr_fill_apply_mode()` maps a plan's decode mode and one tuner owner
+    without needing a finished plan; `dsd_app_rr_fill_apply_payload()` starts from it.
+  - Next-start rule (issue #671): `app_check_next_start()` (`src/app_control/next_start_check.{h,c}`, pure) is the
+    one body; `svc_check_next_start()` forwards to it on the decoder thread, and the RR pre-check calls it on the
+    snapshot copies.
+  - Invariant: `apply_rr_import()` has one commit point. `rr_apply_preflight()` runs every deterministic check
+    before the carrier boundary and the `-Y` leave (mode bound, verdict, next start, the receive profile the mode
+    publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
+    refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
+    `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
+    and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+  - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
+    tuner took supersedes a pending manual tune: one applied or accepted, or an RTL request that failed in its wait
+    after the controller queued it; a rigctl refusal, an RTL input with no stream and a deferral leave it. A failure or
+    a deferral is a partial apply ("tune to X MHz failed" / "deferred (tuner busy)", "Deferred; retry" when it is the
+    only one); a timeout ends the import's toast, applied or partial, in "tuning to X MHz", is noted after it
+    (`dsd_engine_manual_tune_note_rr_import()`, with the failure text and the same toast ending "tuned to X MHz"), and
+    the poll posts its outcome; no tuner says nothing
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,
@@ -7947,8 +8016,10 @@ the second half slot; a fragmented TM-SDU; a reduced key; the key epoch; the rep
 #### Trunking
 
 `src/protocol/tetra/tetra_trunk_sm.c` behind `include/dsd-neo/protocol/tetra/tetra_trunk_sm.h` follows at most one
-traffic channel off a TETRA control channel (the MCCH, EN 300 392-2 clause 9.4.2.1), with three states: IDLE (not
-trunking, or no control channel known), ON_CC and TUNED (on the followed channel, a tune in flight included). Its state
+traffic channel off a TETRA control channel (the MCCH, EN 300 392-2 clause 9.4.2.1), with four states: IDLE (not
+trunking, no control channel known, or off the main carrier and not moving there), ACQUIRING (moving to the main
+carrier, or on it before its own SYSINFO; published as idle), ON_CC and TUNED (on the followed channel, a tune in flight
+included). Its state
 is `tetra_state_t::sm` in the session's TETRA state extension (`DSD_STATE_EXT_PROTO_TETRA`), so two sessions never share
 it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk scan never runs it.
 
@@ -7971,12 +8042,59 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's symbol
   rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`, whose
   QPSK value would otherwise read as P25 CQPSK.
+- The main carrier. Every carrier of a cell broadcasts its SYSINFO, which names the main carrier, the carrier of the
+  MCCH (EN 300 392-2 clauses 3.1, 19.3.2.1.1, 21.4.4.1 -- the downlink frequency -- and 23.3.1.2.1), so a SYSINFO says
+  where the control channel is, not where the receiver is. `tetra_sm_on_cc_sync()` (from `apply_sysinfo()` in
+  `tetra_mac.c`, only for a valid main carrier) makes IDLE or ACQUIRING ON_CC, adds the control-channel candidate and
+  stamps its sync only on the main carrier (`sm_on_main_carrier()`: `tetra_sm_receiver_freq()` equal to it for a
+  receiver the machine can move, within `DSD_TETRA_PREMIX_LIMIT_HZ` of it, the TETRA chain's tracking range, for an
+  I/Q replay, whose recorded centre a capture made off-centre leaves a few kHz off the carrier; with no
+  frequency known, an audio input, yes unless the machine can move the receiver, a rigctl peer, when the frequency
+  last sent to the peer, `opts->rigctl_sent_freq_hz`, or its own completed move says so). Off it
+  (`sm_off_main_carrier()`), ON_CC, which a tune elsewhere rests in, and a landed ACQUIRING, whose carrier is now
+  heard, drop to IDLE, so ON_CC is never claimed on a carrier that is not the control channel, and it stages a move
+  there (`tetra_sm_acquire`: `staged_hz` and the carrier evidence epoch), but only when a CRC-passed downlink block
+  proved the carrier before the SYSINFO's own block (`tetra_confirm_downlink_proven()`, read during MAC parsing,
+  before `tetra.c` notes the block), so a SYSINFO never vouches for itself. The burst's end runs it
+  (`tetra_frame_leave()` reads `staged_hz`, the only per-burst cost, and calls `tetra_sm_after_burst()`): only with
+  the epoch unchanged (no carrier reset in the burst), trunking on a downlink, a receiver the machine can move (a live
+  radio stream, not an I/Q replay, or a connected rigctl peer behind an audio input; a symbol capture neither),
+  nothing followed and no request of its own in flight, the receiver off the main carrier, which is still
+  `trunk_cc_freq`, and the engine's `tuner_free_for_protocol()` saying free. The move is `sm_request_cc_return()`, as
+  a release's return (the P25 alias cleared, rigctl routing as any trunk tune), with `sm_capture()` before it and
+  `SM_PENDING_ACQUIRE` when in flight; the control-channel sync the engine stamps at the request
+  (`dsd_engine_trunk_tune_to_cc_request()`) is put back, since only the main carrier's own SYSINFO proves it. An
+  accepted move enters ACQUIRING (narrated "on a secondary carrier (X Hz); moving to the main carrier Y Hz"); its
+  completion forgets the carrier left (`tetra_forget_carrier()`), and the next SYSINFO naming it makes ON_CC. A valid
+  BSCH there without SYSINFO does not. A SYSINFO there naming another main carrier (a shared or umbrella channel,
+  Annex S, or a changed cell) is one more move under the same rules. The history (`tetra_sm_acquire::moves`,
+  `TETRA_SM_MOVES` = 8 entries {main carrier, consumed, failures, next allowed}) makes each main carrier a target
+  once: a completed move consumes it (so Y, Z, Y stops at the second Y, IDLE on Z, saying once that Y was moved to
+  already); a refused or failed one waits 5 s, 15 s, then 60 s at most (decode clock, counted across the carrier
+  resets of other hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S` and counts as none, its entry reusable once the
+  hold is over; a table of consumed and failed entries moves to nothing new (said once) and gives no entry up.
+  `tetra_sm_init()`, a decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` in
+  the tick, the SYSINFO entry and the burst's end, before a request in flight is settled, and the trunk toggle and set
+  commands, `trunk_enable_on()` in `actions_trunk.c`, for a toggle none of them sees), another radio source or input
+  (`dsd_engine_carrier_boundary()` for `DSD_CARRIER_BOUNDARY_SOURCE` and `_INPUT_SWITCH`) and an applied
+  RadioReference import (`rr_apply_reacquire()`) forget it (`tetra_sm_forget_moves()`); a tune elsewhere does not.
+  ACQUIRING owns the return (`tetra_sm_owns_return()`), so the no-carrier pass ticks the machine instead of a generic
+  return, and an external return or carrier boundary lets go of it and of its request in flight, whose late completion
+  is ignored. Nothing moves back to the carrier left: on the main carrier with no SYSINFO at all for
+  `TETRA_SM_MOVE_SILENT_S` (10 s) the tick says so once (a documented reception limit; the cell may run D-CTT/MCCH
+  sharing, minimum mode or another cell's shared channel, clauses 4.11.2, 19.3.3, Annex S). Deliberate monitoring of a
+  traffic carrier runs with trunking off. Tests: `TETRA_TRUNK_SM` (SYSINFO through the MAC, the burst's end as
+  `tetra.c` runs it), `ENGINE_TETRA_TRUNK` (the engine's tuner-free answer, its boundaries and no-carrier pass, the
+  engine's own return to a rigctl peer with a stale P25 alias); `dsd-neo_bench_tetra_sysinfo_move` measures the
+  per-burst cost.
 - Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (a release of
   the followed call, a "go to the MCCH" allocation to it, its channel allocated to a call the state machine does not
   follow, or its turning undecryptable; see Calls). A traffic timeslot of the control
   channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
-  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
-  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again. With
+  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared (`sm_request_cc_return()`), so no
+  P25 alias or its symbol profile comes along; the alias comes back at once when the return is refused or deferred, and
+  through the rollback when one in flight fails. A return the backend refuses or defers keeps the call, and the next
+  tick tries again. With
   trunking off nothing returns (`sm_release()`): the engine's return tunes nothing without trunking
   (`dsd_engine_return_to_cc_request()`) yet answers OK, so a return asked for then would report the receiver back on
   the control channel while it stays on the traffic channel.
@@ -8005,7 +8123,18 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   With trunking on again the hangtime or the grant timeout returns from the channel.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
-  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
+  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`),
+  and the receiver as the decoder reads it (`tetra_sm_receiver_snapshot`): the tuned centre
+  `opts->rtlsdr_center_freq`, which an RTL tune that timed out has already set to its target
+  (`dsd_engine_tune_rtl()`), and the P25 alias `p25_cc_freq` a return cleared, both as they were before the request
+  and as it left them. A failure puts each back only when no correlated tune begun since may have moved the receiver
+  (`dsd_trunk_tuning_retuned_since()`: one refused or deferred where it was asked for moved nothing) and the value is
+  still the one the request left (`sm_restore_receiver()`): a tune begun since, or a centre or alias written since by
+  another owner, decides where the receiver is. Without this a failed grant's target stayed cached, so
+  `tetra_sm_receiver_freq()` named a carrier the receiver never reached and the same grant was then followed without a
+  retune. Both fields are `dsd_opts`/`dsd_state` fields protocol code already reads and writes, so no runtime hook is
+  involved; the engine reconciles the centre with the stream itself only when no trunking owner is active
+  (`dsd_engine_retire_inactive_tune_failures()`).
   Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
   with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. It is settled
   once it is answered -- a completion commits, a failure restores the rollback first and completes the request after,
@@ -8806,7 +8935,20 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
-    `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`)
+    `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`). The system view's text
+    comes from the pure formatters in `rr_panel_format.{h,c}` (`UI_RR_PANEL`), the TETRA note under the site list
+    included (`rr_panel_plan_note()`, mirroring the Qt screen's; the window grows by its rows)
+  - Invariant (issue #803): nothing posts an RR apply, or writes its files, before the session gate says yes. The
+    wizard asks `rr_wizard_core_apply_block_reason()` with the plan's own outputs (has group / has chan from the
+    generated text, before any path exists) on every rebuild and again at Enter; the Imported Systems browser asks
+    it after `dsd_rr_recipe_to_plan()` ("Use this system", the recipe's decode mode), or
+    `rr_wizard_core_files_block_reason()` for "Load these files" (a running trunk scan, and the next-start rule for
+    the channel map it loads). Both wrap app-control's `dsd_app_rr_apply_block_reason()` /
+    `dsd_app_rr_files_block_reason()` and turn the reason phrase into a sentence. A session refusal is not an error:
+    the wizard stays on the site list with its fetch, shows it in the preview (`rr_wizard_core_session_blocked()`)
+    and on the status line, and the panel hands the next Enter back to the core, which asks the session again. The
+    wizard's status is posted when the apply is queued, so it never says "applied"; an import that wrote no file
+    resolves no folder or stem and says "no files to save" (and, if the queue refuses it, that nothing was saved)
   - Imported RadioReference systems: `rr_library.{h,c}` is the curses-free model of the imports directory
     (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
@@ -9901,7 +10043,17 @@ Qt Quick frontend (`src/ui/qt`):
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
-  provenance, while the add-system wizard stays the single writer of a saved system. See
+  provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
+  (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
+  encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
+  row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in
+  the review), the band plan note (P25 only) and the review's "No files are generated." line read that token and the
+  plan. `WizardScreen.applyRadioReference()` answers both CSV rows from the import: a supplied file replaces the row,
+  and an absent one clears a file an earlier import generated (`chanCsvGenerated`/`groupCsvGenerated`, seeded on an
+  edit from the library row's `radioreference` origin), keeping a hand-picked file only while editing that saved
+  system; a per-site batch's rows carry their own (possibly empty) paths. `tetraRateError()` holds the wizard's tune
+  step for `-fT` on an Airspy or off 72 kHz, and a source switch to an Airspy keeps `-fT` (issue #803;
+  `tst_wizard_sites.qml`, `tst_wizard_decode_chip.qml`, `tst_radioreference_screen.qml`). See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
   acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed
