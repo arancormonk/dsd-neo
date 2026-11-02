@@ -319,6 +319,24 @@ test_tune_frequency(void) {
                "its first listed frequency. Check it against the system's own listing.");
     dsd_rr_warning_list_free(&warnings);
 
+    /* Regression: RadioReference DID mark the site - a 'd' dsd-neo cannot tune
+     * (50 kHz) and an 'a' whose MHz text did not convert (0) - and the old copy
+     * still said it marked nothing. */
+    dsd_rr_site_freq marked[3];
+    freq_set(&marked[0], 1, 50000LL, "d", NULL);
+    freq_set(&marked[1], 2, 0LL, "a", NULL);
+    freq_set(&marked[2], 3, 390012500LL, "", NULL);
+    dsd_rr_site unusable;
+    site_init(&unusable, marked, 3U);
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("an unusable mark falls back to the first usable frequency",
+           dsd_rr_tune_frequency_hz(DSD_RR_PROTO_P25, &unusable, &warnings) == 390012500LL);
+    expect_size("unusable mark warned exactly once", warnings.count, 1U);
+    expect_str("unusable mark wording", warnings.count == 1U ? warnings.items[0].text : "",
+               "RadioReference's control channel for this site is not a frequency dsd-neo can tune, so the "
+               "session starts on its first usable frequency instead. Check it against the system's own listing.");
+    dsd_rr_warning_list_free(&warnings);
+
     dsd_rr_warning_list empty;
     DSD_MEMSET(&empty, 0, sizeof(empty));
     dsd_rr_site_freq none[1];

@@ -332,6 +332,17 @@ dsd_rr_system_info_resolve(dsd_rr_client* client, const dsd_rr_auth* auth, const
     return 0;
 }
 
+/** @brief Whether any frequency of @p site carries a 'd' or 'a' mark, usable or not. */
+static int
+rr_site_has_control_mark(const dsd_rr_site* site) {
+    for (size_t i = 0; site->freqs != NULL && i < site->freq_count; i++) {
+        if (site->freqs[i].is_control || site->freqs[i].is_alt_control) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 long long
 dsd_rr_tune_frequency_hz(dsd_rr_protocol protocol, const dsd_rr_site* site, dsd_rr_warning_list* warnings) {
     if (site == NULL) {
@@ -349,9 +360,17 @@ dsd_rr_tune_frequency_hz(dsd_rr_protocol protocol, const dsd_rr_site* site, dsd_
 
     const long long first = dsd_rr_site_first_freq_hz(site);
     if (first > 0 && warnings != NULL) {
-        (void)dsd_rr_warning_list_add(warnings, "RadioReference marks no control channel for this site, so the session "
-                                                "starts on its first listed frequency. Check it against the system's "
-                                                "own listing.");
+        /* A mark that is there but unusable is a different story from no mark:
+         * telling the user RadioReference marked nothing would send them to a
+         * listing that plainly shows a control channel. */
+        (void)dsd_rr_warning_list_add(warnings,
+                                      rr_site_has_control_mark(site)
+                                          ? "RadioReference's control channel for this site is not a frequency "
+                                            "dsd-neo can tune, so the session starts on its first usable frequency "
+                                            "instead. Check it against the system's own listing."
+                                          : "RadioReference marks no control channel for this site, so the session "
+                                            "starts on its first listed frequency. Check it against the system's "
+                                            "own listing.");
     }
     return first;
 }
