@@ -352,7 +352,8 @@ list — RadioReference adds rows over time.
 The talkgroup list keeps only IDs the system can carry. A talkgroup whose RadioReference ID is
 missing, not a number or too large to be one is skipped, and so is a TETRA group above 16777215
 (TETRA group IDs are 24 bits; 16777215 itself, the broadcast group, is kept, and so is 0). The
-preview counts each kind of skipped row in its own warning. When no talkgroup is left, the import
+preview counts each kind of skipped row in its own warning, and its talkgroup count, encryption counts and
+sample show only the talkgroups the list will hold. When no talkgroup is left, the import
 writes no talkgroup list and the warnings say why.
 
 `-^` rides with every P25 import on purpose. Supplying a channel map tells the decoder a user LCN

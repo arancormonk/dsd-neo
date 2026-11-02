@@ -10037,7 +10037,10 @@ Qt Quick frontend (`src/ui/qt`):
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
-  provenance, while the add-system wizard stays the single writer of a saved system. See
+  provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
+  (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
+  encryption counts, sample) holds only the rows the group writer keeps (`tg_dec_valid`, `dsd_rr_protocol_id_max()`),
+  so the preview agrees with the file. See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
   acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed

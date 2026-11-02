@@ -340,11 +340,59 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
         map.insert(QStringLiteral("esk"), info.record_says_esk != 0);
     }
     map.insert(QStringLiteral("protocol"), static_cast<int>(info.protocol));
+    /* QML tells a protocol by its stable provenance token ("tetra"), never by the enum's number or the type text;
+       empty for an unsupported system. */
+    const char* token = dsd_rr_protocol_token(info.protocol);
+    map.insert(QStringLiteral("protocolToken"), token != nullptr ? QString::fromLatin1(token) : QString());
     map.insert(QStringLiteral("supported"), info.protocol != DSD_RR_PROTO_UNSUPPORTED);
 
     dsd_rr_trs_details_free(details);
     free(details);
     return map;
+}
+
+/**
+ * @brief Whether the group-CSV writer keeps @p tg for a protocol whose IDs stop at @p idMax (0: no ceiling).
+ *
+ * The writer's own skip rule (rr_group_keys()): a row with no usable ID, or one the protocol cannot carry (a TETRA
+ * group is 24 bits), never reaches the file, so the preview must not count or show it either.
+ */
+bool
+talkgroup_writable(const dsd_rr_talkgroup& tg, uint32_t idMax) {
+    return tg.tg_dec_valid != 0 && (idMax == 0U || tg.tg_dec <= idMax);
+}
+
+/** @brief Fill @p summary's count, encryption counts and sample from the talkgroups the group file would hold. */
+void
+summarize_talkgroups(const dsd_rr_talkgroup_list& talkgroups, dsd_rr_protocol protocol, QVariantMap* summary) {
+    const uint32_t idMax = dsd_rr_protocol_id_max(protocol);
+    int count = 0;
+    int encCount = 0;
+    int partialCount = 0;
+    QVariantList sample;
+    for (size_t i = 0; i < talkgroups.count; i++) {
+        const dsd_rr_talkgroup& tg = talkgroups.items[i];
+        if (!talkgroup_writable(tg, idMax)) {
+            continue;
+        }
+        count++;
+        if (tg.enc >= 2) {
+            encCount++;
+        } else if (tg.enc == 1) {
+            partialCount++;
+        }
+        if (sample.size() < kTalkgroupSampleMax) {
+            QVariantMap row;
+            row.insert(QStringLiteral("dec"), static_cast<qulonglong>(tg.tg_dec));
+            row.insert(QStringLiteral("name"), tg.alpha_tag[0] != '\0' ? field(tg.alpha_tag) : field(tg.description));
+            row.insert(QStringLiteral("enc"), tg.enc);
+            sample.append(row);
+        }
+    }
+    summary->insert(QStringLiteral("count"), count);
+    summary->insert(QStringLiteral("encCount"), encCount);
+    summary->insert(QStringLiteral("partialEncCount"), partialCount);
+    summary->insert(QStringLiteral("sample"), sample);
 }
 
 } // namespace
@@ -1090,28 +1138,7 @@ RadioReferenceModel::finishSystemLoad() {
     }
     m_sites = rows;
 
-    int encCount = 0;
-    int partialCount = 0;
-    QVariantList sample;
-    for (size_t i = 0; i < m_talkgroupData.count; i++) {
-        const dsd_rr_talkgroup& tg = m_talkgroupData.items[i];
-        if (tg.enc >= 2) {
-            encCount++;
-        } else if (tg.enc == 1) {
-            partialCount++;
-        }
-        if (sample.size() < kTalkgroupSampleMax) {
-            QVariantMap row;
-            row.insert(QStringLiteral("dec"), static_cast<qulonglong>(tg.tg_dec));
-            row.insert(QStringLiteral("name"), tg.alpha_tag[0] != '\0' ? field(tg.alpha_tag) : field(tg.description));
-            row.insert(QStringLiteral("enc"), tg.enc);
-            sample.append(row);
-        }
-    }
-    m_talkgroupSummary.insert(QStringLiteral("count"), static_cast<int>(m_talkgroupData.count));
-    m_talkgroupSummary.insert(QStringLiteral("encCount"), encCount);
-    m_talkgroupSummary.insert(QStringLiteral("partialEncCount"), partialCount);
-    m_talkgroupSummary.insert(QStringLiteral("sample"), sample);
+    summarize_talkgroups(m_talkgroupData, m_protocol, &m_talkgroupSummary);
     if (!m_talkgroupSummary.contains(QStringLiteral("categories"))) {
         m_talkgroupSummary.insert(QStringLiteral("categories"), QVariantList());
     }

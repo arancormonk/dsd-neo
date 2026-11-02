@@ -152,6 +152,8 @@ struct Fake {
      * a refresh. Empty `from` leaves every fixture byte-exact. */
     QByteArray replaceFrom;
     QByteArray replaceTo;
+    /* More rewrites of the same kind, each applied after the one above. */
+    QList<QPair<QByteArray, QByteArray>> replacements;
 };
 
 QByteArray
@@ -271,6 +273,9 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
                                                        : fixture_for(method, sid_of(fake->lastRequest)));
     if (!fake->replaceFrom.isEmpty()) {
         payload.replace(fake->replaceFrom, fake->replaceTo);
+    }
+    for (const auto& edit : fake->replacements) {
+        payload.replace(edit.first, edit.second);
     }
     if (payload.isEmpty()) {
         resp->status = DSD_RR_ERR_HTTP;
@@ -486,6 +491,8 @@ test_trunked_system(void) {
     expect_str("resolved type", details.value(QStringLiteral("typeDescr")).toString(), QStringLiteral("Project 25"));
     expect_str("resolved flavor", details.value(QStringLiteral("flavorDescr")).toString(), QStringLiteral("Phase II"));
     expect("system is supported", details.value(QStringLiteral("supported")).toBool());
+    expect_str("the protocol token names P25", details.value(QStringLiteral("protocolToken")).toString(),
+               QStringLiteral("p25"));
     expect("no custom band plan in this capture", !details.value(QStringLiteral("hasCustomBandplan")).toBool());
 
     const QVariantMap firstSite = h.model.sites().at(0).toMap();
@@ -1067,6 +1074,88 @@ test_refresh_of_a_tetra_group_list(void) {
     expect("tetra: the old name is gone", !refreshed.contains("Tow 1017000"));
 }
 
+/** @brief The talkgroup sample row whose ID is @p dec, or an empty map. */
+QVariantMap
+sample_row(const QVariantMap& summary, qulonglong dec) {
+    for (const QVariant& value : summary.value(QStringLiteral("sample")).toList()) {
+        const QVariantMap row = value.toMap();
+        if (row.value(QStringLiteral("dec")).toULongLong() == dec) {
+            return row;
+        }
+    }
+    return QVariantMap();
+}
+
+/** @brief Whether the talkgroup sample shows a row named @p name. */
+bool
+sample_names(const QVariantMap& summary, const QString& name) {
+    const QVariantList sample = summary.value(QStringLiteral("sample")).toList();
+    return std::any_of(sample.cbegin(), sample.cend(), [&name](const QVariant& value) {
+        return value.toMap().value(QStringLiteral("name")).toString() == name;
+    });
+}
+
+/**
+ * @brief A TETRA system names itself to QML by its protocol token (new feature).
+ */
+void
+test_tetra_system_token(void) {
+    Harness h;
+    h.model.loadSystem(10880);
+    pump(h.model);
+    expect("tetra token: loaded", h.model.errorKind() == dsd_qt::RadioReferenceModel::NoError);
+    expect_str("tetra token: the protocol token names TETRA",
+               h.model.systemDetails().value(QStringLiteral("protocolToken")).toString(), QStringLiteral("tetra"));
+}
+
+/**
+ * @brief The talkgroup preview counts and shows only the talkgroups the group file holds.
+ *
+ * Regression: the preview's count, sample and encryption counts read every row
+ * RadioReference lists, while the writer skips a row with no usable ID and, for
+ * TETRA, an ID above the 24-bit ceiling (0xFFFFFF). Such rows showed in the
+ * preview but never reached the file. Three TETRA rows are rewritten: one to
+ * 0x1000000 and fully encrypted (skipped), one to 0xFFFFFF and partially
+ * encrypted (kept: the ceiling is inclusive), one past any 32-bit ID and fully
+ * encrypted (no usable ID, skipped).
+ */
+void
+test_talkgroup_preview_matches_the_file(void) {
+    Harness h;
+    const QByteArray encTail =
+        QByteArrayLiteral("</tgAlpha><tgMode xsi:type=\"xsd:string\">T</tgMode><enc xsi:type=\"xsd:int\">");
+    h.fake.replacements = {
+        {QByteArrayLiteral(">1017000</tgDec>"), QByteArrayLiteral(">16777216</tgDec>")},
+        {"Tow 1017000" + encTail + '0', "Tow 1017000" + encTail + '2'},
+        {QByteArrayLiteral(">1025000</tgDec>"), QByteArrayLiteral(">16777215</tgDec>")},
+        {"Bin 1025000" + encTail + '0', "Bin 1025000" + encTail + '1'},
+        {QByteArrayLiteral(">1025001</tgDec>"), QByteArrayLiteral(">99999999999</tgDec>")},
+        {"Trucking 1025001" + encTail + '0', "Trucking 1025001" + encTail + '2'},
+    };
+    h.model.loadSystem(10880);
+    pump(h.model);
+
+    const QVariantMap summary = h.model.talkgroupSummary();
+    expect_int("preview: the two skipped rows are not counted", summary.value(QStringLiteral("count")).toInt(), 14);
+    expect_int("preview: neither skipped encrypted row is counted", summary.value(QStringLiteral("encCount")).toInt(),
+               0);
+    expect_int("preview: the kept partially encrypted row is counted",
+               summary.value(QStringLiteral("partialEncCount")).toInt(), 1);
+    expect("preview: an ID above 0xFFFFFF is not shown",
+           sample_row(summary, 16777216ULL).isEmpty() && !sample_names(summary, QStringLiteral("Tow 1017000")));
+    expect("preview: 0xFFFFFF is shown",
+           sample_row(summary, 16777215ULL).value(QStringLiteral("name")).toString() == QStringLiteral("Bin 1025000"));
+    expect("preview: a row with no usable ID is not shown", !sample_names(summary, QStringLiteral("Trucking 1025001")));
+
+    /* The file agrees with the preview. */
+    const QString groupCsv =
+        h.model.buildImportPlan(QVariantList{0}, QVariantMap()).value(QStringLiteral("groupCsvText")).toString();
+    expect("preview: the file holds 0xFFFFFF", groupCsv.contains(QStringLiteral("\n16777215,")));
+    expect("preview: the file skips the same rows",
+           !groupCsv.contains(QStringLiteral("16777216")) && !groupCsv.contains(QStringLiteral("Trucking 1025001")));
+    expect_int("preview: the file holds as many rows as the preview counts", row_count(groupCsv), 15);
+}
+
 /**
  * @brief A trunked site with no marked control channel is still importable.
  *
@@ -1375,6 +1464,8 @@ main(int argc, char** argv) {
     test_refresh_uses_the_recorded_tower();
     test_refresh_keeps_a_group_list_when_no_id_is_usable();
     test_refresh_of_a_tetra_group_list();
+    test_tetra_system_token();
+    test_talkgroup_preview_matches_the_file();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_results_and_loaded_system_stay_exclusive();
