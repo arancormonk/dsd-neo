@@ -1949,10 +1949,17 @@ setting, shown apart from what is received, and it is off by default: then the o
 - DMR Tier III location area (DMRLA): `-D <0–10>`. A radio is programmed with how many of the top Site ID bits form
   its location area (ETSI TS 102 361-4 §6.3.2.2.3); no message sends it, so `-D n` tells dsd-neo. With `-D n` the top
   n bits are the area and the rest the site in it, shown `Site area.site`; with no `-D` or `-D 0` the Site ID is
-  shown whole. A value past the model's Site ID width (Tiny 3, Small 5, Large 8, Huge 10 bits) is treated as that
-  width, which leaves nothing to split. dsd-neo counts every Tier III number shown from 1 (the network, the site, the
-  area and the site in it are the value sent + 1, Capacity Max included), so raw Small network 2, site 27 (11011₂)
-  reads `Net 3 · Site 28`, or `Net 3 · Site 4.4` with `-D 2`. Sites are told apart by the values sent, never by this
+  shown whole. `-D n` at or past the model's Site ID width (Tiny 3, Small 5, Large 8, Huge 10 bits) makes the whole
+  Site ID the area, shown `Site <area+1>.1`.
+  How Tier III numbers are shown depends on the maker's numbering. Standard numbering is the value sent + 1 (the
+  network, the site and, with `-D`, the area and the site in it), as Hytera's programming software numbers them: system
+  code `105B` (Small, network 2, site 27 = 11011₂ as sent) reads `TIII Small · Net 3 · Site 28 · SYS 105B`, `Site 4.4`
+  with `-D 2` and `Site 28.1` with `-D 5`. A network dsd-neo recognises as Motorola Capacity Max, from its Motorola
+  C_ALOHA (under `-F` also when RAS hides that message's CRC), shows the network and site as sent and the site whole,
+  and ignores `-D`, because Motorola numbers them that way and Capacity Max uses no location area. Its site text says
+  so: system code `2101` (Large, network 1, site 1 as sent) reads
+  `TIII Large · Capacity Max · Net 1 · Site 1 · SYS 2101`. A RAS Capacity Max system decoded without `-F`, and the
+  first moments before its C_ALOHA arrives, read as standard. Sites are told apart by the values sent, never by this
   text. Capacity Plus and Connect Plus numbers are shown as sent.
 - Env (CQPSK timing):
   - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.

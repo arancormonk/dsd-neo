@@ -528,6 +528,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         uint32_t siteMask = 0;
         uint32_t callChannel = 0;
         uint8_t callChannelKind = 0;
+        /* The digest of the site text last read (call_history_site_text_digest(), 0 for none). The core can change the
+         * text alone in place (a reacquisition merge's union preferring the text that names Capacity Max), so any
+         * change is an advance. Not known in a seen entry an older build stored: the first read then takes the digest
+         * without counting as an advance, and the seen store is saved with it (SeenSettled). */
+        uint32_t siteText = 0;
+        bool siteTextKnown = false;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -579,13 +585,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         SeenMap* seen = nullptr;
         qint64 session = 0;
         QString sessionLabel;
-        QString systemUid;              // the attribution uid, empty unless the session is single-system
-        bool cleared = false;           // the clear mark covers this ring...
-        qulonglong clearedThrough = 0U; // ...up to this push stamp of the walked slot
+        QString systemUid;                     // the attribution uid, empty unless the session is single-system
+        bool cleared = false;                  // the clear mark covers this ring...
+        qulonglong clearedThrough = 0U;        // ...up to this push stamp of the walked slot
+        bool* seenSettled = nullptr;           // set when a seen entry changed with nothing to ingest (SeenSettled)
+        QList<QString>* settledKeys = nullptr; // the keys of those entries, for the background tap to spill
     };
 
     /** @brief noteSeen() verdicts. */
-    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3 };
+    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3, SeenSettled = 4 };
 
     static QString keyFor(const Row& row);
 
@@ -596,7 +604,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *             acKind, ac); its session, ring and twin are ignored.
      * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
      *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
-     *         row already ingested has since learned something, SeenUnchanged otherwise.
+     *         row already ingested has since learned something, SeenSettled when nothing advanced but an
+     *         entry an older build stored took the site text digest it lacked (the seen store is owed a
+     *         save, or every launch would take it again), SeenUnchanged otherwise.
      */
     static int noteSeen(SeenMap& seenMap, qint64 session, const QString& key, quint64 ring, const SeenState& read,
                         bool voice);
@@ -611,7 +621,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static void walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
-    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
+    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
+                                 bool* seenSettled);
 
     /**
      * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
@@ -695,6 +706,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static SeenState seenEntryFromJson(const QJsonObject& obj);
     /** @brief One spill line (a JSON object and its newline) for a row the background tap found. */
     static QByteArray spillLine(const FreshRow& fresh);
+    /**
+     * @brief One spill line for a seen entry the background tap settled (SeenSettled): its key and entry, no row.
+     *
+     * The tap's seen map is a copy that its stop discards, so this is how the site text digest an older build's entry
+     * took reaches the seen store. A build that predates it skips the line (no row).
+     */
+    static QByteArray settledSeenLine(const QString& key, const SeenState& seen);
     /** @brief Bound @p seen once it is well past what the ring could resurrect. */
     static void pruneSeenMap(SeenMap& seen);
 
@@ -738,6 +756,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * the ring whose twins taken are restored, and @p folded is set when the line folded. @return whether rows
      * changed. */
     bool foldSpillLine(const QByteArray& line, bool cleared, quint64* twinsRing, bool* folded);
+    /** @brief For a settled spill @p line (settledSeenLine()), give the seen entry @p key the site text digest it
+     * carries, if the entry has none; any other line is passed over. */
+    void foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded);
     /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
     bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
     /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
