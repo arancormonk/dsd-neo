@@ -16055,6 +16055,91 @@ test_unavoid_keeps_the_cooldowns(void) {
     return test_rc;
 }
 
+/* The parked fallback put back under a running visit cap: it is no alternate of its own visit, so the cap's deadline
+   stays where it was. A long dwell keeps the fallback on air past the alternates' cooldowns, so the cap counts. */
+static int
+test_unavoid_of_the_fallback_keeps_the_visit_cap(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (avoid_scan_init("a,p25-trunk,851000000,,30000,,,North\n"
+                        "b,p25-trunk,852000000,,30000,,,East\n"
+                        "c,p25-trunk,853000000,,30000,,,South\n",
+                        10000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    test_rc |= expect_control_rc("fallback avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_scan_control_publication(&state, "fallback", 0U, 1U, 1U);
+    /* The alternates eligible again: the cap counts from the fallback's park, at 0. */
+    trunk_scan_test_set_now(2.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fallback past the cooldowns", 0U);
+    test_rc |= expect_scan_visit(&state, "fallback past the cooldowns", 10000U, 10.0);
+    const int tunes = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(4.00);
+    test_rc |= expect_control_rc("put back the fallback",
+                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a"),
+                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_scan_control_publication(&state, "put back the fallback", 0U, 0U, 0U);
+    test_rc |= expect_scan_visit(&state, "put back the fallback", 10000U, 10.0);
+    test_rc |= expect_no_tune_since("put back the fallback", tunes);
+    trunk_scan_test_set_now(4.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_visit(&state, "tick after the put back", 10000U, 10.0);
+    trunk_scan_test_set_now(10.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the cap expires on time", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A put back mid-dwell on an unheld target leaves the idle dwell where it was: the same window start and deadline in
+   the control's own publication and in the next tick's, and the rotation leaves at the old deadline. */
+static int
+test_unavoid_keeps_the_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (avoid_scan_init(k_avoid_body3, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    int test_rc = expect_control_rc(
+        "avoid a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    /* b's park at 0 armed its dwell. */
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const dsd_scan_timing_publication before = state.scan_timing;
+    test_rc |= expect_scan_timing(&state, "dwell on b", DSD_SCAN_STAY_IDLE_DWELL, 0.25, 250U, 0U);
+    test_rc |= expect_scan_timing_window(&state, "dwell on b", 0.0, 250U);
+    const int tunes = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_control_rc("put back mid-dwell",
+                                 dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a"),
+                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_same_timing(&state, "put back mid-dwell", &before);
+    test_rc |= expect_no_tune_since("put back mid-dwell", tunes);
+    trunk_scan_test_set_now(0.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "before the old deadline", 1U);
+    test_rc |= expect_same_timing(&state, "tick before the old deadline", &before);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "at the old deadline", 2U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* The visit cap restarts on a put back only when the target is the first eligible alternate again (0 -> 1), as clear's
    does; one more alternate when there was one already leaves the deadline. */
 static int
@@ -16576,6 +16661,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_unavoid_puts_one_target_back);
     rc |= run_with_default_tune_hook(test_avoid_on_the_parked_fallback);
     rc |= run_with_default_tune_hook(test_unavoid_keeps_the_cooldowns);
+    rc |= run_with_default_tune_hook(test_unavoid_of_the_fallback_keeps_the_visit_cap);
+    rc |= run_with_default_tune_hook(test_unavoid_keeps_the_dwell);
     rc |= run_with_default_tune_hook(test_unavoid_restarts_the_visit_cap_only_from_none);
     rc |= run_with_default_tune_hook(test_paused_put_back_and_clear);
     rc |= run_with_default_tune_hook(test_avoid_list_rebuilt_only_at_membership_changes);

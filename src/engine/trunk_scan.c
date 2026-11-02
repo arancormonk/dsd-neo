@@ -341,9 +341,6 @@ typedef struct {
     /* The published avoid list (dsd_state::trunk_scan_avoids, issue #672) could not allocate at its last rebuild: the
        tick rebuilds it again, paused or not, until one allocates (trunk_scan_publish_avoids()). */
     int avoids_publish_retry;
-    /* A control found the P25 SM tick guard held and left its timing unpublished: the next tick's publication owes it
-       (trunk_scan_control_publish_timing()). */
-    int timing_dirty;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -4211,7 +4208,6 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     const double now_m = trunk_scan_now_m();
     trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     trunk_scan_publish_timing(opts, state, coord, now_m);
-    coord->timing_dirty = 0;
 }
 
 void
@@ -4338,20 +4334,19 @@ trunk_scan_control_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coor
 /* The timing a control leaves behind (B5). The command queue publishes right after a control, possibly while input is
    stalled, so the label and the timing should already describe the same visit. The report reads the parked target's
    P25 machine, which the watchdog thread changes under the P25 SM tick guard, so it is built only with the guard held;
-   a control that finds it held leaves the publication to the next tick, which takes it. The caller holds no guard
-   (avoid, advance and retreat leave theirs first): the guard is not re-entrant. A paused scan publishes no timing. */
+   a control that finds it held publishes nothing. The caller holds no guard (avoid, advance and retreat leave theirs
+   first): the guard is not re-entrant. A paused scan publishes no timing. */
 static void
-trunk_scan_control_publish_timing(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+trunk_scan_control_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord) {
     if (coord->paused) {
         dsd_scan_timing_clear(state);
         return;
     }
     if (!p25_sm_tick_guard_try_enter()) {
-        coord->timing_dirty = 1;
+        /* The next tick that takes the guard publishes the timing anyway, as every tick does. */
         return;
     }
     trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
-    coord->timing_dirty = 0;
     p25_sm_tick_guard_leave();
 }
 
