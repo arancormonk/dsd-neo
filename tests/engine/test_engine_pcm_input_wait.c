@@ -312,6 +312,12 @@ run_reconnect_ends_the_reception(serve_kind second, int blocks, const char* labe
         return 1;
     }
     int rc = 0;
+    /* The first connection's close is already on the client socket before the reception starts, so the read below
+       meets it at once, well inside the running reception's stale deadline, however the server thread ran. */
+    const uint64_t ready_by_ms = dsd_realtime_mono_ms() + 5000U;
+    while ((atomic_load(&s.srv.accepts) < 1 || dsd_socket_wait(s.opts->tcp_sockfd, DSD_SOCKET_WAIT_READ, 10U) <= 0)
+           && dsd_realtime_mono_ms() < ready_by_ms) {}
+    rc |= expect(atomic_load(&s.srv.accepts) >= 1, "the server accepted and closed the first connection");
     receive_blocks(&s, blocks);
     rc |= expect(dsd_engine_analog_call_active(s.state) == (blocks * k_block >= DSD_ANALOG_CALL_MIN_MS * 48),
                  "the reception runs");

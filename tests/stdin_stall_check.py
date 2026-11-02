@@ -16,7 +16,10 @@ import time
 
 RATE = 48000
 CHUNK = RATE // 50  # 20 ms
-ANALOG_ROW = re.compile(r"^\d{4}-\d\d-\d\d (\d\d):(\d\d):(\d\d) .*ANALOG;.*CTCSS 100\.0 Hz;", re.M)
+ANALOG_ROW = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) .*ANALOG;.*CTCSS 100\.0 Hz;", re.M)
+# The longest the row may take to appear once the pipe went quiet: the decoder catching up on what the pipe held,
+# a stream pause, then the stale deadline, with room for a sanitizer build on a loaded host.
+STALL_DEADLINE_S = 8.0
 
 
 def chunks(seconds):
@@ -39,8 +42,20 @@ def play(pipe, seconds):
             time.sleep(ahead)
 
 
-def seconds_of_day(match):
-    return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + int(match.group(3))
+def stamp_epoch(match):
+    """The row's local-time stamp in epoch seconds, so the comparison holds across midnight."""
+    return int(time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")))
+
+
+def rows_during_stall(events, stalled):
+    """Poll the event log, the pipe still quiet, until a row appears or the deadline passes."""
+    during = ""
+    while time.time() < stalled + STALL_DEADLINE_S:
+        during = events.read_text() if events.exists() else ""
+        if ANALOG_ROW.search(during):
+            break
+        time.sleep(0.1)
+    return during
 
 
 def main():
@@ -60,15 +75,12 @@ def main():
             play(decoder.stdin, 3.0)
             stalled = time.time()
             # The pipe stays open and quiet. The call's stale deadline is half a second after its last block.
-            time.sleep(2.5)
-            during = events.read_text() if events.exists() else ""
+            during = rows_during_stall(events, stalled)
             rows = list(ANALOG_ROW.finditer(during))
             assert len(rows) == 1, f"no analog row written during the stall:\n{during}"
-            stamp = seconds_of_day(rows[0])
-            end = time.localtime(stalled)
-            start = time.localtime(started)
-            end_s = end.tm_hour * 3600 + end.tm_min * 60 + end.tm_sec
-            start_s = start.tm_hour * 3600 + start.tm_min * 60 + start.tm_sec
+            stamp = stamp_epoch(rows[0])
+            end_s = int(stalled)
+            start_s = int(started)
             # Stamped with the call's end (the stall's start, to the second, allowing for the decoder's lag), not its
             # start three seconds before, nor the time the row was written.
             assert end_s - 1 <= stamp <= end_s + 1, f"row stamped {stamp}, call ended {end_s}:\n{during}"

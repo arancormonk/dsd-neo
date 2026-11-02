@@ -37,16 +37,27 @@ def run(binary, mode, source, cwd, stdin=None):
     return result.stdout.decode(errors="replace")
 
 
+# The decoder reached the connection's end: the symbol path's reconnect, or the fallback after it failed.
+CONNECTION_END = re.compile(r"Connection to TCP Server (Interrupted|Disconnected)")
+
+
 def run_tcp(binary, mode, pcm, cwd):
     """Serve the audio over a loopback connection, in 20 ms chunks a little faster than real time, then close it. An
-    M17-only session retries a lost server without end, so the decoder is stopped (SIGINT, as Ctrl-C) a while after."""
+    M17-only session retries a lost server without end, so once the log shows the decoder reached the connection's
+    end it is stopped (SIGINT, as Ctrl-C) if it has not ended by itself."""
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
+    # A decoder that dies before it connects must not hold the test until the CTest timeout.
+    server.settimeout(60)
     port = server.getsockname()[1]
 
     def serve():
-        connection, _ = server.accept()
+        try:
+            connection, _ = server.accept()
+        except OSError:
+            server.close()
+            return
         for start in range(0, len(pcm), 1920):
             connection.sendall(pcm[start:start + 1920])
             time.sleep(0.004)
@@ -63,8 +74,14 @@ def run_tcp(binary, mode, pcm, cwd):
             cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
         try:
             thread.join()
+            # Generous: a sanitizer build on a loaded host decodes the socket's backlog slowly.
+            deadline = time.monotonic() + 90
+            while decoder.poll() is None and time.monotonic() < deadline:
+                if CONNECTION_END.search(log_path.read_text(errors="replace")):
+                    break
+                time.sleep(0.1)
             try:
-                decoder.wait(timeout=3)
+                decoder.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 decoder.send_signal(signal.SIGINT)
                 decoder.wait(timeout=60)
