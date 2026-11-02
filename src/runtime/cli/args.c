@@ -3749,7 +3749,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case 'D': {                                                                                                    \
-            /* Manually set DMR TIII Location Area n-bit length */                                                     \
+            /* DMR Tier III DMRLA: the top n SITE bits are the location area (TS 102 361-4 6.3.2.2.3); 0, no split */  \
             long n = 0;                                                                                                \
             if (!cli_parse_long_option("-D", optarg, 10, &n, out_exit_rc)) {                                           \
                 return DSD_PARSE_ERROR;                                                                                \
@@ -3762,7 +3762,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             opts->dmr_dmrla_is_set = 1;                                                                                \
             opts->dmr_dmrla_n = (uint8_t)n;                                                                            \
-            LOG_INFO("NOTICE: DMR TIII Location Area n-bit length set to %ld\n", n);                                   \
+            LOG_INFO("NOTICE: DMR Tier III location area (DMRLA) set to the top %ld site bits (0: no split)\n", n);    \
             break;                                                                                                     \
         }                                                                                                              \
         case '4':                                                                                                      \

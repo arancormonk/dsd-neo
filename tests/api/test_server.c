@@ -12,13 +12,16 @@
 #include <assert.h>
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -613,6 +616,96 @@ test_feed(void) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
         assert(await_line(c, "event", crc_cases[i].json, 3000U));
         assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+    }
+
+    /* Issue #799: a row names the site it was heard on and the numbering of its channel, each part only when its valid
+       bit is set, after the keys that were always there; an identity that changes alone is sent again. */
+    {
+        Event_History* site_row = untuned;
+        site_row->site_id.family = (uint8_t)DSD_RXID_FAMILY_P25;
+        site_row->site_id.valid = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+        site_row->site_id.p25_wacn = 0xBEE00U;
+        site_row->site_id.p25_sysid = 0x293U;
+        site_row->site_id.p25_rfss = 1U;
+        site_row->site_id.p25_site = 7U;
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"site\":{\"family\":2,", 3000U));
+        /* An identity-only change sends the row again. */
+        assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+        assert(strstr(g_line, "\"site\":{\"family\":2,\"wacn\":781824,\"sysid\":659,\"rfss\":1,\"site\":7}") != NULL);
+        assert(strstr(g_line, "\"lra\"") == NULL && strstr(g_line, "\"dmr_net\"") == NULL);
+        assert(strstr(g_line, "\"channel_kind\":\"none\"") != NULL);
+        assert(strstr(g_line, "\"site_text\":\"P25 \xC2\xB7 ") != NULL);
+        /* The pinned neighbours of channel and access code are untouched. */
+        assert(strstr(g_line, "\"channel\":0,\"freq_hz\":852000000,\"access_code_kind\":3,\"access_code\":23,")
+               != NULL);
+
+        /* Capacity Plus: a site number and no network number; the channel's numbering is an LSN. */
+        DSD_MEMSET(&site_row->site_id, 0, sizeof site_row->site_id);
+        site_row->site_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+        site_row->site_id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND;
+        site_row->site_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS;
+        site_row->site_id.dmr_site = 2U;
+        DSD_SNPRINTF(site_row->site_id.dmr_site_text, sizeof site_row->site_id.dmr_site_text, "%s",
+                     "Cap+ \xC2\xB7 Site 2");
+        DSD_SNPRINTF(site_row->site_id.dmr_brand, sizeof site_row->site_id.dmr_brand, "%s", "Capacity Plus");
+        site_row->channel = 5U;
+        site_row->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"channel_kind\":\"lsn\"", 3000U));
+        assert(strstr(g_line, "\"update\":true") != NULL);
+        assert(strstr(g_line, "\"dmr_site\":2") != NULL && strstr(g_line, "\"dmr_net\"") == NULL);
+        assert(strstr(g_line, "\"dmr_trunk\":2") != NULL);
+        assert(strstr(g_line, "\"dmr_site_text\":\"Cap+ \xC2\xB7 Site 2\"") != NULL);
+        assert(strstr(g_line, "\"dmr_brand\":\"Capacity Plus\"") != NULL);
+        assert(strstr(g_line, "\"wacn\"") == NULL);
+        assert(
+            strstr(g_line, "\"site_text\":\"DMR \xC2\xB7 Cap+ \xC2\xB7 Site 2 \xC2\xB7 Capacity Plus \xC2\xB7 LSN 5\"")
+            != NULL);
+
+        /* The channel's numbering alone is an update too. */
+        site_row->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LCN;
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"channel_kind\":\"lcn\"", 3000U));
+        assert(strstr(g_line, "\"update\":true") != NULL);
+
+        /* The longest DMR line the record can hold: every text field full and every part set. The API sends it
+           whole, as the frontends spell it into a DSD_APP_SITE_HISTORY_TEXT_SIZE buffer. */
+        DSD_MEMSET(&site_row->site_id, 0, sizeof site_row->site_id);
+        site_row->site_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+        site_row->site_id.valid = DSD_RXID_ACCESS | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND
+                                  | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_RAS;
+        site_row->site_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+        site_row->site_id.access_kind = (uint8_t)DSD_ACCESS_CODE_COLOR_CODE;
+        site_row->site_id.access = 15U;
+        site_row->site_id.dmr_rest_lsn = 255U;
+        site_row->site_id.dmr_xpt_free_lcn = 15U;
+        DSD_MEMSET(site_row->site_id.dmr_site_text, 'S', sizeof site_row->site_id.dmr_site_text - 1U);
+        DSD_MEMSET(site_row->site_id.dmr_brand, 'B', sizeof site_row->site_id.dmr_brand - 1U);
+        site_row->channel = UINT32_MAX;
+        site_row->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
+        char want[DSD_APP_SITE_HISTORY_TEXT_SIZE];
+        const size_t want_len = dsd_app_site_history_text(&site_row->site_id, site_row->call_channel_kind,
+                                                          site_row->channel, want, sizeof want);
+        assert(want_len > 0U && want_len + 1U < sizeof want);
+        char want_json[DSD_APP_SITE_HISTORY_TEXT_SIZE + 16];
+        DSD_SNPRINTF(want_json, sizeof want_json, "\"site_text\":\"%s\"", want);
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"channel_kind\":\"lpcn\"", 3000U));
+        assert(strstr(g_line, want_json) != NULL);
+        assert(strstr(want, "LPCN 4294967295") != NULL);
+
+        DSD_MEMSET(&site_row->site_id, 0, sizeof site_row->site_id);
+        site_row->channel = 0U;
+        site_row->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", "\"site\":{\"family\":0}", 3000U));
+        assert(strstr(g_line, "\"site_text\":\"\"") != NULL);
     }
 
     /* Issue #773: a call slot carries the call kind once (the key the feed already had), the source radio's id and

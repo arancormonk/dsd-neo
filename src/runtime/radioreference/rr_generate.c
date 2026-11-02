@@ -926,7 +926,7 @@ rr_chan_dmr_lcn(dsd_rr_protocol protocol, const dsd_rr_site* site, rr_text* text
  *
  * Both consumers index by LSN, and each RR LCN n covers the two timeslots
  * 2n-1 and 2n on the same frequency: dmr_cspdu_xpt_try_tune() walks
- * trunk_chan_map[slot_idx + 1], and dmr_slco_xpt_lcn_to_lsn() converts an
+ * trunk_chan_map[slot_idx + 1], and dmr_xpt_lcn_to_lsn() converts an
  * announced LCN with LSN = 2n-1. There is no control channel to seed.
  *
  * @param site     Site.

@@ -5,10 +5,15 @@
 
 /* Unit tests: merge and re-ingest policy behind the Qt call history. The Qt
  * Quick frontend only builds for Android, so the decisions live in a Qt-free
- * header (call_history_merge.h) exactly to be testable here. */
+ * header (call_history_merge.h) exactly to be testable here. Issue #799: a
+ * fragment's site folds into its row only when the two agree, the seen ratchet
+ * reads a site part gained or any channel change as an advance, and the merge
+ * order limit (L7) is pinned as documented. */
 
 #include <algorithm>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/received_identity.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -16,6 +21,7 @@
 #include "dsd-neo/core/safe_api.h"
 
 using dsd_qt::call_history_access_code_known;
+using dsd_qt::call_history_call_channel_known;
 using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
@@ -23,7 +29,9 @@ using dsd_qt::call_history_merge_within_window;
 using dsd_qt::call_history_provenance_compare;
 using dsd_qt::call_history_seen_absorb;
 using dsd_qt::call_history_seen_absorb_fill;
+using dsd_qt::call_history_seen_absorb_site;
 using dsd_qt::call_history_seen_row_advanced;
+using dsd_qt::call_history_site_fold;
 using dsd_qt::CallHistoryProvenance;
 using dsd_qt::kCallHistoryMaxPlausibleDurationSecs;
 using dsd_qt::kCallMergeWindowSrcMatchedSecs;
@@ -381,6 +389,125 @@ test_seen_fill_ratchet(void) {
     expect_int("the code survives an unknown read", acKind, DSD_ACCESS_CODE_COLOR_CODE);
 }
 
+/* A P25 site of system 0x1A3: its system alone (site 0), or with RFSS 1 and @p site. */
+dsd_received_identity
+p25_site(uint8_t site) {
+    dsd_received_identity id = {};
+    id.family = DSD_RXID_FAMILY_P25;
+    id.valid = DSD_RXID_P25_SYSID;
+    id.p25_sysid = 0x1A3U;
+    if (site != 0U) {
+        id.valid |= DSD_RXID_P25_SITE;
+        id.p25_rfss = 1U;
+        id.p25_site = site;
+    }
+    return id;
+}
+
+void
+test_site_fold_rules(void) {
+    dsd_received_identity row = p25_site(0U);
+    const dsd_received_identity site1 = p25_site(1U);
+    const dsd_received_identity site2 = p25_site(2U);
+    expect("a site that knows more folds in", call_history_site_fold(&row, DSD_CALL_CHANNEL_NONE, &site1, 0U), true);
+    expect("and the row keeps every part", row.valid == (DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE) && row.p25_site == 1U,
+           true);
+    expect("a conflicting site is refused", call_history_site_fold(&row, DSD_CALL_CHANNEL_NONE, &site2, 0U), false);
+    expect("and the row's site is as it was", row.p25_site == 1U && row.valid == site1.valid, true);
+    const dsd_received_identity none = {};
+    dsd_received_identity channelOnly = {};
+    expect("two channel kinds are two numberings",
+           call_history_site_fold(&channelOnly, DSD_CALL_CHANNEL_LPCN, &none, DSD_CALL_CHANNEL_LSN), false);
+    expect("a channel kind beside a P25 site is refused",
+           call_history_site_fold(&row, DSD_CALL_CHANNEL_NONE, &none, DSD_CALL_CHANNEL_LSN), false);
+    expect("a channel is known with a numbering and a number",
+           call_history_call_channel_known(DSD_CALL_CHANNEL_LCN, 3U), true);
+    expect("channel 0 is unknown", call_history_call_channel_known(DSD_CALL_CHANNEL_LCN, 0U), false);
+    expect("no numbering is unknown", call_history_call_channel_known(DSD_CALL_CHANNEL_NONE, 7U), false);
+    expect("a numbering no enum names is unknown", call_history_call_channel_known(9U, 7U), false);
+}
+
+void
+test_seen_site_ratchet(void) {
+    uint32_t mask = 0U;
+    uint32_t channel = 0U;
+    uint8_t kind = DSD_CALL_CHANNEL_NONE;
+    expect("nothing read is no advance", call_history_seen_absorb_site(&mask, &channel, &kind, 0U, 0U, 0U), false);
+    expect("a part gained advances", call_history_seen_absorb_site(&mask, &channel, &kind, DSD_RXID_P25_SYSID, 0U, 0U),
+           true);
+    expect("a part read again does not",
+           call_history_seen_absorb_site(&mask, &channel, &kind, DSD_RXID_P25_SYSID, 0U, 0U), false);
+    expect("a part lost is not recorded", call_history_seen_absorb_site(&mask, &channel, &kind, 0U, 0U, 0U), false);
+    expect_int("and the recorded parts stay", static_cast<int>(mask), static_cast<int>(DSD_RXID_P25_SYSID));
+    expect("a channel filled advances",
+           call_history_seen_absorb_site(&mask, &channel, &kind, mask, 12U, DSD_CALL_CHANNEL_LPCN), true);
+    expect("another channel number advances",
+           call_history_seen_absorb_site(&mask, &channel, &kind, mask, 14U, DSD_CALL_CHANNEL_LPCN), true);
+    expect("so does another numbering",
+           call_history_seen_absorb_site(&mask, &channel, &kind, mask, 14U, DSD_CALL_CHANNEL_LCN), true);
+    expect_int("the channel read is recorded", static_cast<int>(channel), 14);
+    expect_int("with its numbering", kind, DSD_CALL_CHANNEL_LCN);
+    expect("the same channel again is no advance",
+           call_history_seen_absorb_site(&mask, &channel, &kind, mask, 14U, DSD_CALL_CHANNEL_LCN), false);
+}
+
+/* One History row as the fold below builds it: its site and the fragments (by bit) it holds. */
+struct SiteRow {
+    dsd_received_identity site;
+    int fragments;
+};
+
+/* Fold @p count fragments in @p order as tryMerge() does: each joins the newest compatible row, else starts its own.
+ * Returns the rows, newest last. */
+int
+fold_sites(const dsd_received_identity* fragments, const int* order, int count, SiteRow* rows) {
+    int made = 0;
+    for (int i = 0; i < count; i++) {
+        const int fragment = order[i];
+        int joined = -1;
+        for (int r = made - 1; r >= 0 && joined < 0; r--) {
+            if (call_history_site_fold(&rows[r].site, DSD_CALL_CHANNEL_NONE, &fragments[fragment],
+                                       DSD_CALL_CHANNEL_NONE)) {
+                joined = r;
+            }
+        }
+        if (joined < 0) {
+            rows[made].site = fragments[fragment];
+            rows[made].fragments = 0;
+            joined = made++;
+        }
+        rows[joined].fragments |= 1 << fragment;
+    }
+    return made;
+}
+
+/* Limit L7, as documented on call_history_site_fold(): with a split on conflicting parts, a fragment that knows fewer
+ * parts joins whichever compatible row it meets first, so a live session (oldest first) and a backlog (newest first)
+ * group the same three fragments differently. Pinned so a change to the rule is a decision, not an accident. */
+void
+test_site_fold_order_limit(void) {
+    const int live[] = {0, 1, 2};
+    const int backlog[] = {2, 1, 0};
+    SiteRow rows[3];
+    /* A on site 1, B with no site, C on site 2. */
+    const dsd_received_identity unsited[] = {p25_site(1U), dsd_received_identity{}, p25_site(2U)};
+    expect_int("live: two rows", fold_sites(unsited, live, 3, rows), 2);
+    expect_int("live: the site-less fragment joins the first site", rows[0].fragments, 0x3);
+    expect_int("live: the second site stands alone", rows[1].fragments, 0x4);
+    expect_int("backlog: two rows", fold_sites(unsited, backlog, 3, rows), 2);
+    expect_int("backlog: the site-less fragment joins the second site", rows[0].fragments, 0x6);
+    expect_int("backlog: the first site stands alone", rows[1].fragments, 0x1);
+    /* A knows the system only: which site its row ends up naming is the order's. */
+    const dsd_received_identity systemOnly[] = {p25_site(0U), p25_site(1U), p25_site(2U)};
+    expect_int("live: two rows again", fold_sites(systemOnly, live, 3, rows), 2);
+    expect_int("live: the system-only fragment's row names site 1", rows[0].site.p25_site, 1);
+    expect_int("live: it holds the system-only fragment and site 1", rows[0].fragments, 0x3);
+    const int systemFirst[] = {2, 0, 1};
+    expect_int("site 2 first: two rows", fold_sites(systemOnly, systemFirst, 3, rows), 2);
+    expect_int("site 2 first: the system-only fragment's row names site 2", rows[0].site.p25_site, 2);
+    expect_int("site 2 first: it holds the system-only fragment and site 2", rows[0].fragments, 0x5);
+}
+
 } // namespace
 
 int
@@ -396,6 +523,9 @@ main(void) {
     test_equal_provenance_adopts();
     test_known_predicates();
     test_seen_fill_ratchet();
+    test_site_fold_rules();
+    test_seen_site_ratchet();
+    test_site_fold_order_limit();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

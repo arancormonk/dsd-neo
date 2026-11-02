@@ -1486,6 +1486,10 @@ class CallLogStore : public QAbstractListModel {
         qint64 freqHz = 0;
         QString accessCode;
         QString accessCodeText;
+        /* The decoded service name, the received tone ("100.0 Hz") and the site line (issue #799), each empty without. */
+        QString serviceName;
+        QString receivedTone;
+        QString siteText;
         /* Issue #708: the stable row identity and the row's call recordings (the provider's maps), oldest first. */
         qint64 uid = 0;
         QVariantList recordings;
@@ -1598,6 +1602,9 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::FreqHzRole: return row.freqHz;
             case CallHistoryModel::AccessCodeRole: return row.accessCode;
             case CallHistoryModel::AccessCodeTextRole: return row.accessCodeText;
+            case CallHistoryModel::ServiceNameRole: return row.serviceName;
+            case CallHistoryModel::ReceivedToneRole: return row.receivedTone;
+            case CallHistoryModel::SiteTextRole: return row.siteText;
             case CallHistoryModel::UidRole: return row.uid;
             case CallHistoryModel::RecordingsRole: return row.recordings;
             case CallHistoryModel::HasRecordingRole: return !row.recordings.isEmpty();
@@ -1626,6 +1633,9 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::FreqHzRole, "freqHz"},
                 {CallHistoryModel::AccessCodeRole, "accessCode"},
                 {CallHistoryModel::AccessCodeTextRole, "accessCodeText"},
+                {CallHistoryModel::ServiceNameRole, "serviceName"},
+                {CallHistoryModel::ReceivedToneRole, "receivedTone"},
+                {CallHistoryModel::SiteTextRole, "siteText"},
                 {CallHistoryModel::UidRole, "uid"},
                 {CallHistoryModel::RecordingsRole, "recordings"},
                 {CallHistoryModel::HasRecordingRole, "hasRecording"}};
@@ -1647,6 +1657,74 @@ class CallLogStore : public QAbstractListModel {
     recordingsForUid(qint64 uid) const {
         const int row = rowForUid(uid);
         return row >= 0 ? m_rows.at(row).recordings : QVariantList();
+    }
+
+    /** @brief CallHistoryModel::recordFor(): the detail sheet's keys for the row with @p uid now, or an empty map. */
+    Q_INVOKABLE QVariantMap
+    recordFor(const QString& uid) const {
+        static const struct {
+            const char* key;
+            int role;
+        } kRecordRoles[] = {
+            {"uid", CallHistoryModel::UidRole},
+            {"name", CallHistoryModel::NameRole},
+            {"when", CallHistoryModel::WhenRole},
+            {"systemName", CallHistoryModel::SystemNameRole},
+            {"systemUid", CallHistoryModel::SystemUidRole},
+            {"channel", CallHistoryModel::ChannelRole},
+            {"tg", CallHistoryModel::TgRole},
+            {"src", CallHistoryModel::SrcRole},
+            {"sourceName", CallHistoryModel::SourceNameRole},
+            {"emergency", CallHistoryModel::EmergencyRole},
+            {"enc", CallHistoryModel::EncRole},
+            {"durationSecs", CallHistoryModel::DurationSecsRole},
+            {"detail", CallHistoryModel::DetailRole},
+            {"freqHz", CallHistoryModel::FreqHzRole},
+            {"accessCode", CallHistoryModel::AccessCodeRole},
+            {"accessCodeText", CallHistoryModel::AccessCodeTextRole},
+            {"serviceName", CallHistoryModel::ServiceNameRole},
+            {"receivedTone", CallHistoryModel::ReceivedToneRole},
+            {"siteText", CallHistoryModel::SiteTextRole},
+        };
+
+        bool parsed = false;
+        const qint64 id = uid.toLongLong(&parsed);
+        const int row = parsed ? rowForUid(id) : -1;
+        QVariantMap record;
+        if (row < 0) {
+            return record;
+        }
+        const QModelIndex idx = index(row);
+        for (const auto& entry : kRecordRoles) {
+            record.insert(QLatin1String(entry.key), data(idx, entry.role));
+        }
+        return record;
+    }
+
+    /**
+     * @brief Change the row with @p uid in place, as a fragment folded into it does: each of @p fields (by role name:
+     * name, srcName, durationSecs, freqHz, serviceName, receivedTone, siteText) is set, then one dataChanged on that
+     * row names the roles set. False when no row has @p uid or a field is not one of those.
+     */
+    Q_INVOKABLE bool
+    updateRow(qint64 uid, const QVariantMap& fields) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        StoreRow& stored = m_rows[row];
+        const QHash<int, QByteArray> names = roleNames();
+        QList<int> roles;
+        for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+            const int role = names.key(it.key().toUtf8(), -1);
+            if (!setRowField(stored, role, it.value())) {
+                return false;
+            }
+            roles.append(role);
+        }
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, roles);
+        return true;
     }
 
     bool
@@ -1880,6 +1958,21 @@ class CallLogStore : public QAbstractListModel {
     void rowPositionsChanged();
 
   private:
+    /* updateRow()'s fields; false for a role it does not set. */
+    static bool
+    setRowField(StoreRow& row, int role, const QVariant& value) {
+        switch (role) {
+            case CallHistoryModel::NameRole: row.name = value.toString(); return true;
+            case CallHistoryModel::SourceNameRole: row.sourceName = value.toString(); return true;
+            case CallHistoryModel::DurationSecsRole: row.durationSecs = value.toInt(); return true;
+            case CallHistoryModel::FreqHzRole: row.freqHz = value.toLongLong(); return true;
+            case CallHistoryModel::ServiceNameRole: row.serviceName = value.toString(); return true;
+            case CallHistoryModel::ReceivedToneRole: row.receivedTone = value.toString(); return true;
+            case CallHistoryModel::SiteTextRole: row.siteText = value.toString(); return true;
+            default: return false;
+        }
+    }
+
     /* Stamps the newest row with its ids, channel, frequency and access code, and announces every role it set. */
     void
     tuneNewest(qulonglong tg, qulonglong src, const QString& channel, qint64 freqHz, const QString& accessCode,

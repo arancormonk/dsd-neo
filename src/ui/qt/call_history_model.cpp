@@ -24,12 +24,17 @@
 #include <QPair>
 #include <QVariant>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/app_control/access_code_view.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
 #include <limits>
@@ -310,7 +315,15 @@ access_code_fits(qint64 kind, qint64 code) {
     return kind >= 0 && kind <= UINT8_MAX && code >= 0 && code <= UINT16_MAX;
 }
 
-/** @brief The frequency and access-code roles. The code's text is app-control's, spelled at read time. */
+/** @brief The row's site line (issue #799): its site in the Monitor's words, then the call's channel. */
+QString
+row_site_text(const CallHistoryModel::Row& row) {
+    char text[DSD_APP_SITE_HISTORY_TEXT_SIZE];
+    (void)dsd_app_site_history_text(&row.siteId, row.callChannelKind, row.callChannel, text, sizeof(text));
+    return QString::fromUtf8(text);
+}
+
+/** @brief The frequency, access-code and site roles. Their texts are app-control's, spelled at read time. */
 QVariant
 row_carrier_value(const CallHistoryModel::Row& row, int role) {
     switch (role) {
@@ -326,6 +339,7 @@ row_carrier_value(const CallHistoryModel::Row& row, int role) {
             dsd_app_access_code_format(kind, fits ? static_cast<uint32_t>(row.code) : 0U, form, text, sizeof(text));
             return QString::fromLatin1(text);
         }
+        case CallHistoryModel::SiteTextRole: return row_site_text(row);
         default: return row_identity_value(row, role);
     }
 }
@@ -403,6 +417,48 @@ QVariantList
 CallHistoryModel::recordingsForUid(qint64 uid) const {
     const int row = rowForUid(uid);
     return row >= 0 ? data(index(row), RecordingsRole).toList() : QVariantList();
+}
+
+QVariantMap
+CallHistoryModel::recordFor(const QString& uid) const {
+    // The keys the detail sheet's entry points have always passed, each read through its role as their delegates did.
+    static const struct {
+        const char* key;
+        int role;
+    } kRecordRoles[] = {
+        {"uid", UidRole},
+        {"name", NameRole},
+        {"when", WhenRole},
+        {"systemName", SystemNameRole},
+        {"systemUid", SystemUidRole},
+        {"channel", ChannelRole},
+        {"tg", TgRole},
+        {"src", SrcRole},
+        {"sourceName", SourceNameRole},
+        {"emergency", EmergencyRole},
+        {"enc", EncRole},
+        {"durationSecs", DurationSecsRole},
+        {"detail", DetailRole},
+        {"freqHz", FreqHzRole},
+        {"accessCode", AccessCodeRole},
+        {"accessCodeText", AccessCodeTextRole},
+        {"serviceName", ServiceNameRole},
+        {"receivedTone", ReceivedToneRole},
+        {"siteText", SiteTextRole},
+    };
+
+    bool parsed = false;
+    const qint64 id = uid.toLongLong(&parsed);
+    const int row = parsed ? rowForUid(id) : -1;
+    QVariantMap record;
+    if (row < 0) {
+        return record;
+    }
+    const QModelIndex idx = index(row);
+    for (const auto& entry : kRecordRoles) {
+        record.insert(QLatin1String(entry.key), data(idx, entry.role));
+    }
+    return record;
 }
 
 void
@@ -487,6 +543,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(UidRole, QByteArrayLiteral("uid"));
     roles.insert(RecordingsRole, QByteArrayLiteral("recordings"));
     roles.insert(HasRecordingRole, QByteArrayLiteral("hasRecording"));
+    roles.insert(SiteTextRole, QByteArrayLiteral("siteText"));
     return roles;
 }
 
@@ -794,6 +851,38 @@ row_take_carrier(CallHistoryModel::Row& row, const Event_History* item) {
     row.acSlot = row.slot;
 }
 
+/** @brief A ring item's call channel (issue #799): its number and numbering when it has a DMR one, else 0 and NONE. */
+struct ItemChannel {
+    uint32_t channel = 0U;
+    uint8_t kind = DSD_CALL_CHANNEL_NONE;
+};
+
+ItemChannel
+item_call_channel(const Event_History* item) {
+    ItemChannel channel;
+    if (call_history_call_channel_known(item->call_channel_kind, item->channel)) {
+        channel.channel = item->channel;
+        channel.kind = item->call_channel_kind;
+    }
+    return channel;
+}
+
+/** @brief Give a voice @p row its item's site and call channel, the channel from the row's own fragment. A notice names
+ * no call's site. Pure, as everything the background tap's walk calls must be. */
+void
+row_take_site(CallHistoryModel::Row& row, const Event_History* item) {
+    if (row.kind != CallHistoryModel::KindVoice) {
+        return;
+    }
+    dsd_rxid_site_snapshot(&item->site_id, &row.siteId);
+    const ItemChannel channel = item_call_channel(item);
+    row.callChannel = channel.channel;
+    row.callChannelKind = channel.kind;
+    row.cchWhen = row.when;
+    row.cchSeq = row.seq;
+    row.cchSlot = row.slot;
+}
+
 /** @brief One committed ring item as a display row. */
 void
 row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
@@ -875,6 +964,7 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.sourceNameSeq = seq;
     row.sourceNameSlot = slot;
     row_take_carrier(row, item);
+    row_take_site(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
         row.durationSecs = call_history_duration_secs(start, end);
     }
@@ -894,6 +984,13 @@ CallHistoryModel::absorbSeenReceive(SeenState& seen, const SeenState& read) {
         seen.service = read.service.isEmpty() ? seen.service : read.service;
     }
     return received;
+}
+
+// Record the site parts and call channel @p read gained in @p seen; returns whether it gained any (issue #799).
+bool
+CallHistoryModel::absorbSeenSite(SeenState& seen, const SeenState& read) {
+    return call_history_seen_absorb_site(&seen.siteMask, &seen.callChannel, &seen.callChannelKind, read.siteMask,
+                                         read.callChannel, read.callChannelKind);
 }
 
 int
@@ -950,7 +1047,8 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     const bool filled =
         call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
     const bool received = absorbSeenReceive(*seen, read);
-    if (!advanced && !labelAdvanced && !filled && !received) {
+    const bool sited = absorbSeenSite(*seen, read);
+    if (!advanced && !labelAdvanced && !filled && !received && !sited) {
         return SeenUnchanged;
     }
     if (labelAdvanced) {
@@ -1003,6 +1101,11 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         read.receiveKnown = item->receive_identity.known != 0;
         read.receiveSlot = item->receive_identity.slot;
         read.service = QString::fromUtf8(item->service_label);
+        // A mask read only: the walk reads every committed row, and nothing is formatted here.
+        read.siteMask = item->site_id.valid;
+        const ItemChannel channel = item_call_channel(item);
+        read.callChannel = channel.channel;
+        read.callChannelKind = channel.kind;
         // Must match keyFor() on the equivalent Row, or a relaunched UI would
         // re-ingest every row its predecessor already logged.
         const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
@@ -1136,6 +1239,10 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
         || existing.systemUid != row.systemUid || existing.channel != row.channel) {
         return false;
     }
+    // Two sites, or two channel numberings, are two calls (issue #799): a radio that roams calls again on another site.
+    if (dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) == 0) {
+        return false;
+    }
     if (!target_less_rows_same_destination(existing, row)) {
         return false;
     }
@@ -1220,6 +1327,30 @@ fold_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
 }
 
 /**
+ * @brief Fold @p row's site and call channel into @p existing (issue #799).
+ *
+ * The site is the union of both fragments' parts; the channel is the newest fragment's known one, as the frequency is.
+ * A site that conflicts with the row's (an update of a fragment the row already holds, filled by the core with another
+ * site) is discarded whole, its channel with it (call_history_site_fold()).
+ */
+void
+fold_site(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (!call_history_site_fold(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind)) {
+        return;
+    }
+    if (call_history_fold_adopts(call_history_call_channel_known(existing.callChannelKind, existing.callChannel),
+                                 provenance(existing.cchWhen, existing.cchSeq, existing.cchSlot),
+                                 call_history_call_channel_known(row.callChannelKind, row.callChannel),
+                                 provenance(row.cchWhen, row.cchSeq, row.cchSlot))) {
+        existing.callChannel = row.callChannel;
+        existing.callChannelKind = row.callChannelKind;
+        existing.cchWhen = row.cchWhen;
+        existing.cchSeq = row.cchSeq;
+        existing.cchSlot = row.cchSlot;
+    }
+}
+
+/**
  * @brief Fill what @p existing does not know of its frequency and access code from @p row; keep what it knows.
  *
  * For a notice heard again: the same delivery, so it can only fill in. Across rings the push stamps say nothing
@@ -1245,36 +1376,60 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows) {
         return -1;
     }
     for (int i = 0; i < m_rows.size() && i < scanRows; i++) {
-        Row& existing = m_rows[i];
-        if (!rows_mergeable(existing, row)) {
-            continue;
+        if (rows_mergeable(m_rows.at(i), row)) {
+            foldRow(m_rows[i], row);
+            return i;
         }
+    }
+    return -1;
+}
+
+void
+CallHistoryModel::foldRow(Row& existing, const Row& row) {
+    // A row keeps one radio and that radio's name. The merge never folds two known sources, but an update found by
+    // its fragment (ingestRow()) is not merged again: a fragment of unknown source that joined one radio's row and
+    // then learned another radio keeps the row's radio, so it must not bring that other radio's name.
+    if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
         merge_source_label(existing, row);
-        if (receive_adopt_identity(existing, row)) {
-            existing.service = row.service;
-            /* A service name outranks every other name a row has (row_take_name()). */
-            if (!row.service.isEmpty()) {
-                existing.name = row.service;
-            }
+    }
+    if (receive_adopt_identity(existing, row)) {
+        existing.service = row.service;
+        /* A service name outranks every other name a row has (row_take_name()). */
+        if (!row.service.isEmpty()) {
+            existing.name = row.service;
         }
-        fold_carrier(existing, row);
-        const qint64 start = qMin(existing.when, row.when);
-        const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
-        existing.when = start;
-        if ((existing.durationSecs >= 0 || row.durationSecs >= 0) && span <= kCallHistoryMaxPlausibleDurationSecs) {
-            existing.durationSecs = static_cast<int>(span);
+    }
+    fold_carrier(existing, row);
+    fold_site(existing, row);
+    const qint64 start = qMin(existing.when, row.when);
+    const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
+    existing.when = start;
+    if ((existing.durationSecs >= 0 || row.durationSecs >= 0) && span <= kCallHistoryMaxPlausibleDurationSecs) {
+        existing.durationSecs = static_cast<int>(span);
+    }
+    existing.enc = existing.enc || row.enc;
+    existing.emergency = existing.emergency || row.emergency;
+    if (existing.src == 0) {
+        existing.src = row.src;
+    }
+    // A call heard again in a later session is part of that session too: its views show
+    // the merged row, and a full log keeps it as that session's.
+    existing.session = qMax(existing.session, row.session);
+    // The fragment's recordings are the merged row's now.
+    unionFragments(existing, row.fragments);
+}
+
+int
+CallHistoryModel::rowHoldingFragment(const Row& row) const {
+    if (row.kind != KindVoice) {
+        return -1;
+    }
+    for (const QString& fragment : row.fragments) {
+        const auto held = m_fragmentIndex.constFind(fragment);
+        const int at = held != m_fragmentIndex.constEnd() ? rowForUid(held.value()) : -1;
+        if (at >= 0 && m_rows.at(at).kind == KindVoice) {
+            return at;
         }
-        existing.enc = existing.enc || row.enc;
-        existing.emergency = existing.emergency || row.emergency;
-        if (existing.src == 0) {
-            existing.src = row.src;
-        }
-        // A call heard again in a later session is part of that session too: its views show
-        // the merged row, and a full log keeps it as that session's.
-        existing.session = qMax(existing.session, row.session);
-        // The fragment's recordings are the merged row's now.
-        unionFragments(existing, row.fragments);
-        return i;
     }
     return -1;
 }
@@ -1330,16 +1485,35 @@ CallHistoryModel::keyFor(const Row& row) {
     return seen_key(row.slot, row.seq, row.when, row.tg, row.kind);
 }
 
+void
+CallHistoryModel::settleMerged(int merged) {
+    static const QVector<int> mergeRoles = {
+        WhenRole,        SrcRole,          SourceNameRole, EncRole,        DurationSecsRole, DayLabelRole,
+        TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,   AccessCodeTextRole,
+        ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole, SiteTextRole};
+    (void)nameChannel(m_rows[merged]);
+    const QModelIndex idx = index(merged);
+    Q_EMIT dataChanged(idx, idx, mergeRoles);
+    // A merge can only pull the absorbing row's start earlier, which may
+    // now sort below newer rows beneath it; restore the newest-first
+    // invariant the insertion scan and day sections depend on.
+    int newPos = merged;
+    while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {
+        newPos++;
+    }
+    if (newPos != merged) {
+        beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos + 1);
+        m_rows.move(merged, newPos);
+        endMoveRows();
+    }
+}
+
 bool
 CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // Coalesce fragments into the call they belong to, with granular model
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
-    static const QVector<int> mergeRoles = {
-        WhenRole,        SrcRole,          SourceNameRole, EncRole,        DurationSecsRole, DayLabelRole,
-        TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,   AccessCodeTextRole,
-        ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole};
     // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
     // folds any overlapping fragment, so that row joins the running session and no new row is logged.
     // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
@@ -1350,23 +1524,17 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // so a call the first replay logged as two rows, its fragments landing apart under newer rows, stays
     // two, and the repeat folds into the newer of them.
     const bool wholeLog = again || isUpdate;
-    const int merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
+    // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
+    // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
+    // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.
+    int merged = isUpdate ? rowHoldingFragment(row) : -1;
     if (merged >= 0) {
-        (void)nameChannel(m_rows[merged]);
-        const QModelIndex idx = index(merged);
-        Q_EMIT dataChanged(idx, idx, mergeRoles);
-        // A merge can only pull the absorbing row's start earlier, which may
-        // now sort below newer rows beneath it; restore the newest-first
-        // invariant the insertion scan and day sections depend on.
-        int newPos = merged;
-        while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {
-            newPos++;
-        }
-        if (newPos != merged) {
-            beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos + 1);
-            m_rows.move(merged, newPos);
-            endMoveRows();
-        }
+        foldRow(m_rows[merged], row);
+    } else {
+        merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
+    }
+    if (merged >= 0) {
+        settleMerged(merged);
         return false;
     }
     // Notices never merge, but one decoded again is the same delivery, not a second one: the logged
@@ -1692,6 +1860,225 @@ json_access_code(const QJsonObject& obj, const char* kindKey, const char* codeKe
 }
 
 /**
+ * @brief A stored integer that fits @p T, or false when the key is missing, holds no integer or does not fit.
+ *
+ * For values a ring row carries in fields of that width, so a hand-edited store cannot wrap one into another value.
+ */
+template <typename T>
+bool
+json_field_fits(const QJsonObject& obj, const char* key, T* out) {
+    constexpr qint64 kNone = std::numeric_limits<qint64>::min();
+    const QJsonValue value = obj.value(QLatin1String(key));
+    const qint64 n = value.isDouble() ? value.toInteger(kNone) : kNone;
+    if (n < static_cast<qint64>(std::numeric_limits<T>::min())
+        || n > static_cast<qint64>(std::numeric_limits<T>::max())) {
+        return false;
+    }
+    *out = static_cast<T>(n);
+    return true;
+}
+
+/* Issue #799: a row's site is stored by its parts (`site`), each key only with its part. The DMR texts are stored as
+   the record holds them, so a reloaded row shows what it showed; no compare reads them. */
+constexpr uint32_t kSiteDmrParts =
+    DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE;
+constexpr uint32_t kSiteEdacsParts = DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM;
+
+/** @brief One stored value of a site: written and read while any of @c parts is valid. */
+template <typename T>
+struct SiteField {
+    uint32_t parts;
+    const char* key;
+    T dsd_received_identity::* member;
+};
+
+const SiteField<uint32_t> kSiteFields32[] = {
+    {DSD_RXID_P25_WACN, "wacn", &dsd_received_identity::p25_wacn},
+    {DSD_RXID_NXDN_LOCATION, "nxdn_sys", &dsd_received_identity::nxdn_sys},
+    {DSD_RXID_NXDN_TYPED_SYSTEM, "nxdn_typed_sys", &dsd_received_identity::nxdn_typed_sys},
+};
+
+const SiteField<uint16_t> kSiteFields16[] = {
+    {DSD_RXID_P25_SYSID, "sysid", &dsd_received_identity::p25_sysid},
+    {DSD_RXID_NXDN_LOCATION, "nxdn_site", &dsd_received_identity::nxdn_site},
+    {DSD_RXID_DMR_T3_SYSCODE, "dmr_t3_syscode", &dsd_received_identity::dmr_t3_syscode},
+    {DSD_RXID_DMR_NET, "dmr_net", &dsd_received_identity::dmr_net},
+    {DSD_RXID_DMR_SITE, "dmr_site", &dsd_received_identity::dmr_site},
+    {DSD_RXID_EDACS_SITE, "edacs_site", &dsd_received_identity::edacs_site},
+    {DSD_RXID_EDACS_AREA, "edacs_area", &dsd_received_identity::edacs_area},
+    {DSD_RXID_EDACS_SYSTEM, "edacs_system", &dsd_received_identity::edacs_system},
+    {DSD_RXID_TETRA_NET, "tetra_mcc", &dsd_received_identity::tetra_mcc},
+    {DSD_RXID_TETRA_NET, "tetra_mnc", &dsd_received_identity::tetra_mnc},
+    {DSD_RXID_TETRA_LA, "tetra_la", &dsd_received_identity::tetra_la},
+};
+
+const SiteField<uint8_t> kSiteFields8[] = {
+    {DSD_RXID_P25_SITE, "rfss", &dsd_received_identity::p25_rfss},
+    {DSD_RXID_P25_SITE, "site", &dsd_received_identity::p25_site},
+    {DSD_RXID_P25_LRA, "lra", &dsd_received_identity::p25_lra},
+    {DSD_RXID_NXDN_LOCATION, "nxdn_category", &dsd_received_identity::nxdn_category},
+    {DSD_RXID_NXDN_IDAS_AREA, "idas_area", &dsd_received_identity::nxdn_idas_area},
+    {DSD_RXID_NXDN_IDAS_SITE, "idas_site_type", &dsd_received_identity::nxdn_idas_site_type},
+    {DSD_RXID_NXDN_IDAS_SITE, "idas_site_code", &dsd_received_identity::nxdn_idas_site_code},
+    {DSD_RXID_NXDN_TYPED_SYSTEM, "nxdn_typed_site", &dsd_received_identity::nxdn_typed_site},
+    {kSiteDmrParts, "dmr_trunk", &dsd_received_identity::dmr_trunk},
+    {DSD_RXID_DMR_SITE, "dmr_t3_model", &dsd_received_identity::dmr_t3_model},
+    {DSD_RXID_TETRA_NET, "tetra_colour", &dsd_received_identity::tetra_colour},
+};
+
+const SiteField<int8_t> kSiteFieldsSigned8[] = {
+    {kSiteEdacsParts, "edacs_ea_mode", &dsd_received_identity::edacs_ea_mode},
+};
+
+template <typename T, size_t N>
+void
+site_fields_to_json(const dsd_received_identity& id, const SiteField<T> (&fields)[N], QJsonObject& obj) {
+    for (const SiteField<T>& field : fields) {
+        if ((id.valid & field.parts) != 0U) {
+            obj.insert(QLatin1String(field.key), static_cast<qint64>(id.*field.member));
+        }
+    }
+}
+
+/** @brief Read every value of @p fields a part @p id holds valid has; false when one is missing or does not fit. */
+template <typename T, size_t N>
+bool
+site_fields_from_json(const QJsonObject& obj, const SiteField<T> (&fields)[N], dsd_received_identity& id) {
+    return std::all_of(std::begin(fields), std::end(fields), [&obj, &id](const SiteField<T>& field) {
+        return (id.valid & field.parts) == 0U || json_field_fits(obj, field.key, &(id.*field.member));
+    });
+}
+
+/** @brief A text the record holds in @p capacity bytes, copied into zeroed @p out; false when it does not fit. */
+bool
+json_text_fits(const QJsonObject& obj, const char* key, char* out, size_t capacity) {
+    const QJsonValue value = obj.value(QLatin1String(key));
+    const QByteArray text = value.isString() ? value.toString().toUtf8() : QByteArray();
+    if (!value.isString() || static_cast<size_t>(text.size()) >= capacity || text.contains('\0')) {
+        return false;
+    }
+    DSD_MEMCPY(out, text.constData(), static_cast<size_t>(text.size()));
+    return true;
+}
+
+/**
+ * @brief The length of the first @p len bytes of @p text without a UTF-8 character its field cut short.
+ *
+ * The decoder bounds a text to its field, which can cut a character. Decoded, the cut bytes read as U+FFFD, three
+ * bytes, so the stored text could no longer fit its field and the whole site would be refused on reload.
+ */
+size_t
+utf8_whole_length(const char* text, size_t len) {
+    size_t start = len;
+    while (start > 0U && len - start < 3U && (static_cast<unsigned char>(text[start - 1U]) & 0xC0U) == 0x80U) {
+        start--;
+    }
+    if (start == 0U) {
+        return len;
+    }
+    const unsigned char lead = static_cast<unsigned char>(text[start - 1U]);
+    size_t need = 1U;
+    if ((lead & 0xE0U) == 0xC0U) {
+        need = 2U;
+    } else if ((lead & 0xF0U) == 0xE0U) {
+        need = 3U;
+    } else if ((lead & 0xF8U) == 0xF0U) {
+        need = 4U;
+    }
+    return len - (start - 1U) < need ? start - 1U : len;
+}
+
+QString
+site_text_value(const char* text, size_t capacity) {
+    return QString::fromUtf8(text, static_cast<qsizetype>(utf8_whole_length(text, qstrnlen(text, capacity))));
+}
+
+QJsonObject
+site_to_json(const dsd_received_identity& id) {
+    QJsonObject site;
+    site.insert(QLatin1String("valid"), static_cast<qint64>(id.valid));
+    site.insert(QLatin1String("family"), id.family);
+    site_fields_to_json(id, kSiteFields32, site);
+    site_fields_to_json(id, kSiteFields16, site);
+    site_fields_to_json(id, kSiteFields8, site);
+    site_fields_to_json(id, kSiteFieldsSigned8, site);
+    if ((id.valid & DSD_RXID_DMR_SITE_TEXT) != 0U) {
+        site.insert(QLatin1String("dmr_site_text"), site_text_value(id.dmr_site_text, sizeof(id.dmr_site_text)));
+    }
+    if ((id.valid & DSD_RXID_DMR_BRAND) != 0U) {
+        site.insert(QLatin1String("dmr_brand"), site_text_value(id.dmr_brand, sizeof(id.dmr_brand)));
+    }
+    return site;
+}
+
+/**
+ * @brief A stored site, or none when it is missing (a store an older build wrote) or is no site a record could hold.
+ *
+ * Every value must fit its field, and the whole must pass the record's own rules (dsd_rxid_site_consistent(): the
+ * family's parts only, the value ranges, the cross parts, the NXDN codes the standard reserves): a corrupt or
+ * hand-edited site loads as no site rather than as one nobody received.
+ */
+dsd_received_identity
+site_from_json(const QJsonObject& obj) {
+    dsd_received_identity id = {};
+    dsd_received_identity checked = {};
+    const QJsonValue value = obj.value(QLatin1String("site"));
+    if (!value.isObject()) {
+        return checked;
+    }
+    const QJsonObject site = value.toObject();
+    const bool read = json_field_fits(site, "valid", &id.valid) && json_field_fits(site, "family", &id.family)
+                      && site_fields_from_json(site, kSiteFields32, id)
+                      && site_fields_from_json(site, kSiteFields16, id) && site_fields_from_json(site, kSiteFields8, id)
+                      && site_fields_from_json(site, kSiteFieldsSigned8, id)
+                      && ((id.valid & DSD_RXID_DMR_SITE_TEXT) == 0U
+                          || json_text_fits(site, "dmr_site_text", id.dmr_site_text, sizeof(id.dmr_site_text)))
+                      && ((id.valid & DSD_RXID_DMR_BRAND) == 0U
+                          || json_text_fits(site, "dmr_brand", id.dmr_brand, sizeof(id.dmr_brand)));
+    if (read && dsd_rxid_site_consistent(&id) != 0) {
+        dsd_rxid_site_snapshot(&id, &checked);
+    }
+    return checked;
+}
+
+/**
+ * @brief Read a stored row's site and call channel (issue #799), and the fragment the channel came from.
+ *
+ * A channel in no DMR numbering, wider than its field, or in another numbering than its site's trunking system's is
+ * no channel. A channel written without its provenance takes the row's own, as the frequency's does.
+ */
+void
+row_site_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    row.siteId = site_from_json(obj);
+    uint32_t channel = 0U;
+    uint8_t kind = DSD_CALL_CHANNEL_NONE;
+    if (json_field_fits(obj, "cch", &channel) && json_field_fits(obj, "cchKind", &kind)
+        && call_history_call_channel_known(kind, channel)
+        && dsd_call_site_compatible(&row.siteId, kind, nullptr, DSD_CALL_CHANNEL_NONE) != 0) {
+        row.callChannel = channel;
+        row.callChannelKind = kind;
+    }
+    row.cchWhen = json_i64_or(obj, "cchWhen", row.when);
+    row.cchSeq = static_cast<qulonglong>(json_i64_or(obj, "cchSeq", static_cast<qint64>(row.seq)));
+    row.cchSlot = static_cast<int>(json_i64_or(obj, "cchSlot", row.slot));
+}
+
+/** @brief Write a row's site by its parts and its call channel with the fragment it came from; nothing unknown. */
+void
+row_site_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
+    if (row.siteId.valid != 0U) {
+        obj.insert(QLatin1String("site"), site_to_json(row.siteId));
+    }
+    if (call_history_call_channel_known(row.callChannelKind, row.callChannel)) {
+        obj.insert(QLatin1String("cch"), static_cast<qint64>(row.callChannel));
+        obj.insert(QLatin1String("cchKind"), row.callChannelKind);
+        obj.insert(QLatin1String("cchWhen"), row.cchWhen);
+        obj.insert(QLatin1String("cchSeq"), static_cast<qint64>(row.cchSeq));
+        obj.insert(QLatin1String("cchSlot"), row.cchSlot);
+    }
+}
+
+/**
  * @brief Read a stored row's frequency and access code, and the fragment each came from.
  *
  * Unknown values are never written, so a missing key reads as unknown. A known value written without its
@@ -1748,6 +2135,9 @@ row_from_json(const QJsonObject& obj) {
     row.sourceNameSlot = obj.value(QLatin1String("srcNameSlot")).toInt(row.slot);
     row.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
     row_carrier_from_json(row, obj);
+    if (row.kind == CallHistoryModel::KindVoice) {
+        row_site_from_json(row, obj);
+    }
     // Issue #708; absent in stores older builds wrote (a uid is then assigned at load).
     row.uid = qMax<qint64>(json_i64_or(obj, "uid", 0), 0);
     for (const auto& fragment : obj.value(QLatin1String("fr")).toArray()) {
@@ -1824,6 +2214,7 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("seq"), static_cast<qint64>(row.seq));
     obj.insert(QLatin1String("session"), row.session);
     row_carrier_to_json(row, obj);
+    row_site_to_json(row, obj);
     if (row.uid > 0) {
         obj.insert(QLatin1String("uid"), row.uid);
     }
@@ -1862,10 +2253,10 @@ CallHistoryModel::load() {
         // for a row of one fragment only. A merged row keeps one fragment's slot and seq but the earliest
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
-        m_seen.insert(keyFor(*it),
-                      SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency, it->enc,
-                                it->sourceName, it->freqHz, it->codeKind, it->code, it->receiveKnown, it->receiveSlot,
-                                it->service, it->session, 0U, QString()});
+        m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
+                                             it->enc, it->sourceName, it->freqHz, it->codeKind, it->code,
+                                             it->receiveKnown, it->receiveSlot, it->service, it->siteId.valid,
+                                             it->callChannel, it->callChannelKind, it->session, 0U, QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -1918,6 +2309,13 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     state.receiveKnown = obj.value(QLatin1String("rxKnown")).toBool();
     state.receiveSlot = obj.value(QLatin1String("rxSlot")).toInt();
     state.service = obj.value(QLatin1String("svc")).toString();
+    // Absent when nothing was read, and in stores older builds wrote; a value that does not fit reads as nothing.
+    (void)json_field_fits(obj, "sm", &state.siteMask);
+    if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
+        || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
+        state.callChannel = 0U;
+        state.callChannelKind = DSD_CALL_CHANNEL_NONE;
+    }
     state.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
     // Hex text: a nonce can use all 64 bits, more than a JSON number holds exactly.
     bool ringOk = false;
@@ -2014,6 +2412,13 @@ CallHistoryModel::seenEntryToJson(const SeenState& state) {
     }
     if (!state.service.isEmpty()) {
         obj.insert(QLatin1String("svc"), state.service);
+    }
+    if (state.siteMask != 0U) {
+        obj.insert(QLatin1String("sm"), static_cast<qint64>(state.siteMask));
+    }
+    if (state.callChannel != 0U || state.callChannelKind != DSD_CALL_CHANNEL_NONE) {
+        obj.insert(QLatin1String("cch"), static_cast<qint64>(state.callChannel));
+        obj.insert(QLatin1String("cchKind"), state.callChannelKind);
     }
     obj.insert(QLatin1String("session"), state.session);
     obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));

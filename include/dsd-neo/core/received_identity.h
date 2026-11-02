@@ -20,17 +20,18 @@
  * has its own valid bit, so a carrier that sent some parts shows those alone, and a fresh bit, which the no-carrier
  * pass clears, so a retained value never reads as live.
  *
- * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, Connect Plus or
- * XPT site, NXDN location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one:
- * the parts that bind to it and the control-channel frequency. An IDAS carrier names its site twice, in the SCCH site
- * ID and in a Type-D SRV_INFO: when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a
- * location ID) and IDAS Type-D (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops
- * what the other sent and the control channel. A RAN is Type-C's (a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3,
- * NXDN TS 1-E 4.2.3, none of which carries one): a Type-D note drops a Type-C location and a RAN, and a RAN drops the
- * IDAS parts (a Type-C location keeps the RAN its own channel's check noted just before). So are the DMR trunking systems (Tier III, Capacity Plus,
- * Connect Plus, Hytera XPT): a note that names another one than the record's parts belong to (its brand, site text
- * prefix, rest LSN, system code or free LCN; dsd_rxid_dmr_trunk) drops those parts and the control channel; the colour
- * code is the carrier's and stays.
+ * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, DMR site, NXDN
+ * location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one: the parts that bind
+ * to it and the control-channel frequency. A DMR site is told apart by its raw network and site numbers, never by the
+ * display text built from them. An IDAS carrier names its site twice, in the SCCH site ID and in a Type-D SRV_INFO:
+ * when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a location ID) and IDAS Type-D
+ * (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops what the other sent and the
+ * control channel. A RAN is Type-C's (a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of
+ * which carries one): a Type-D note drops a Type-C location and a RAN, and a RAN drops the IDAS parts (a Type-C
+ * location keeps the RAN its own channel's check noted just before). So are the DMR trunking systems (Tier III,
+ * Capacity Plus, Connect Plus, Hytera XPT): a note that names another one than the record's parts belong to (its brand,
+ * the trunking system its site note names, rest LSN, system code or free LCN; dsd_rxid_dmr_trunk) drops those parts and
+ * the control channel; the colour code is the carrier's and stays.
  *
  * Another access code on the same carrier is another system sharing the channel (co-channel DMR or dPMR colour codes,
  * P25 NACs, NXDN RANs): a valid access code that changes drops every other part of the family with the
@@ -129,12 +130,17 @@ enum {
      * confirmed it (dmr_ras_note_signature()). A property of the codewords received, never a decoded field; carrier
      * scoped, so the DMR RAS reset (dmr_ras_reset()) drops it at every carrier change, a trunk tune included. */
     DSD_RXID_DMR_RAS = 1U << 22,
+    /** dmr_net: the Tier III or Connect Plus network number as the message sends it (Capacity Plus names none). */
+    DSD_RXID_DMR_NET = 1U << 23,
+    /** dmr_site: the Tier III, Capacity Plus or Connect Plus site number as the message sends it, with dmr_t3_model for
+     * Tier III. */
+    DSD_RXID_DMR_SITE = 1U << 24,
 };
 
 /** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
 typedef struct dsd_received_identity {
-    /* The fields go by size (32-bit, 16-bit, 8-bit, then text), each size in protocol order, so the record carries one
-       byte of padding. 32-bit parts: */
+    /* The fields go by size (32-bit, 16-bit, 8-bit, then text), each size in protocol order, so the record carries no
+       padding. 32-bit parts: */
     /** Bumped by every dsd_rxid_reset() and family replacement, and whenever a note invalidates parts because it names
      * another system, site, cell or subtype (another access code on the carrier included): a reader can tell one
      * identity from the next, and a call's history row keeps the one it was heard under. A note that only adds or
@@ -153,6 +159,12 @@ typedef struct dsd_received_identity {
     uint16_t nxdn_site; /**< Location ID site code. */
     uint16_t dmr_rest_lsn;
     uint16_t dmr_t3_syscode;
+    /** The raw network number (Tier III: the C_SYS_PARMS/C_ALOHA Net field; Connect Plus: the short LC network ID). The
+     * site text shows Tier III's +1; this is the value as sent. */
+    uint16_t dmr_net;
+    /** The raw site number (Tier III: the whole Site field before any -D sub-site split; Capacity Plus and Connect
+     * Plus: the site ID). Network and site, never the text, tell one DMR site from another. */
+    uint16_t dmr_site;
     uint16_t edacs_site;
     uint16_t edacs_area;
     uint16_t edacs_system;
@@ -173,9 +185,12 @@ typedef struct dsd_received_identity {
     uint8_t nxdn_idas_site_code; /**< 1..250 (NXDN TS 1-E 6.6.5). */
     uint8_t nxdn_typed_site;     /**< Type-D SRV_INFO site code. */
     uint8_t dmr_xpt_free_lcn;    /**< 0..15, as the XPT message sends it. */
-    /** dsd_rxid_dmr_trunk the DMR trunking parts (rest LSN, site text, brand, system code, free LCN) belong to;
-     * meaningful while one of them is valid. */
+    /** dsd_rxid_dmr_trunk the DMR trunking parts (rest LSN, site text, network and site numbers, brand, system code,
+     * free LCN) belong to; meaningful while one of them is valid. */
     uint8_t dmr_trunk;
+    /** The Tier III system model (0 Tiny, 1 Small, 2 Large, 3 Huge) dmr_net/dmr_site were read under, valid with
+     * DSD_RXID_DMR_SITE while dmr_trunk is Tier III; 0 for another trunking system. */
+    uint8_t dmr_t3_model;
     /** The manufacturer's feature set ID (FID) a checked LC or CSBK carried, e.g. 0x68 Hytera, 0x58 Tait, 0x10 or 0x06
      * Motorola; no trunking type rule touches it. */
     uint8_t dmr_vendor;
@@ -185,11 +200,12 @@ typedef struct dsd_received_identity {
     uint8_t tetra_colour;
 
     /* Text: */
-    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F",
-     * "Cap+ · Site 2", "Con+ · Net 3 · Site 5"; NUL-terminated. The view shows each part as a token, the "Net n" and
-     * "Site n" parts on the compact line. */
+    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 13 · Site 4 · SYS 1183" (Tier III
+     * one-based, "Site 1.4" with a -D split), "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"; NUL-terminated, zero past
+     * the NUL (equal notes leave equal bytes). The view shows each part as a token, the "Net n" and "Site n" parts on
+     * the compact line. Presentation only, always noted with the raw numbers, which every compare reads instead. */
     char dmr_site_text[64];
-    char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated. */
+    char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated, zero past the NUL. */
 } dsd_received_identity;
 
 /** The family a `DSD_SYNC_*` value belongs to: NONE for no sync, OTHER for a protocol without system identity. */
@@ -236,8 +252,15 @@ void dsd_rxid_note_p25_site(dsd_state* state, uint16_t sysid, uint8_t rfss, uint
 void dsd_rxid_note_p25_lra(dsd_state* state, uint16_t sysid, uint8_t lra);
 
 void dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn);
-/** @p text is display text for the site (copied, truncated to the record's capacity). */
-void dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text);
+/** A checked DMR site of trunking system @p trunk (dsd_rxid_dmr_trunk, NONE or an unknown value is ignored): the raw
+ * network number @p net when @p has_net (Capacity Plus has none), the raw site number @p site, the Tier III model
+ * @p t3_model (0..3, kept only for Tier III) and @p text, the display text the caller built from them (copied,
+ * truncated to the record's capacity; NULL or empty drops the record's text). Another trunking system drops the old
+ * one's parts first; another site (any raw part other than a valid one's: network presence or value, site, model)
+ * drops the site, its rest LSN and free channel and the control channel, and moves the epoch. Another text for the
+ * same raw parts is the same site: the text is replaced and nothing else changes. */
+void dsd_rxid_note_dmr_site(dsd_state* state, uint8_t trunk, int has_net, uint16_t net, uint16_t site, uint8_t t3_model,
+                            const char* text);
 void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
 /** The manufacturer's feature set ID @p mfid of a checked full LC or CSBK (0, the standard set, names none). */
 void dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid);
@@ -251,7 +274,8 @@ void dsd_rxid_forget_dmr_ras(dsd_state* state);
  * 4-bit field as sent). It changes with the site's traffic, so each note replaces the last. */
 void dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn);
 
-/** A confirmed Type-C location ID of category 0..2 (3 is reserved and ignored). */
+/** A confirmed Type-C location ID of category 0..2. One dsd_nxdn_location_valid() refuses (the reserved category 3,
+ * or a system or site code the standard reserves) is ignored and drops nothing. */
 void dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site);
 /** A confirmed IDAS SCCH area bit. It tells adjacent co-channel sites apart (NXDN TS 1-E 6.6.3): another value than a
  * valid one drops the SCCH site ID, the Type-D system ID and the control-channel frequency. */

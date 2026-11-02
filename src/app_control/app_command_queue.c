@@ -6627,7 +6627,7 @@ apply_rr_account_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
 }
 
 static int
-apply_dmr_reset(dsd_opts* opts, dsd_state* state) {
+apply_dmr_reset(dsd_state* state) {
     if (!state) {
         return 1;
     }
@@ -6636,8 +6636,6 @@ apply_dmr_reset(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "");
     DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "");
     DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "");
-    opts->dmr_dmrla_is_set = 0;
-    opts->dmr_dmrla_n = 0;
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
     DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
@@ -6664,7 +6662,7 @@ apply_dmr_reset(dsd_opts* opts, dsd_state* state) {
 static int
 apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case DSD_APP_CMD_DMR_RESET: return apply_dmr_reset(opts, state);
+        case DSD_APP_CMD_DMR_RESET: return apply_dmr_reset(state);
         case DSD_APP_CMD_TCP_CONNECT_AUDIO: {
             /* A copy: the switch rewrites tcp_hostname once it connects. */
             char host[sizeof opts->tcp_hostname];

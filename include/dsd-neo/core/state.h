@@ -369,7 +369,7 @@ typedef struct {
     int8_t systype;      //indentifier of which decoded system type this is from (P25, DMR, etc)
     int8_t subtype;      //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
     uint32_t sys_id1;    //sys_id1 through 5 will be a hierarchy of system identifiers
-    uint32_t sys_id2;    // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
+    uint32_t sys_id2;    // For example, trunked P25 has WACN:SYS:NAC:RFSS:SITE
     uint32_t sys_id3;    //conventional may only use NAC, RAN, or Color Codes
     uint32_t sys_id4;    //
     uint32_t sys_id5;    //
@@ -416,6 +416,15 @@ typedef struct {
     uint8_t operator_tuned;
     uint8_t scan_member;
     uint32_t channel; // If this occurs on a trunking channel, which channel
+    // The numbering channel was named in, a dsd_call_channel_kind (<dsd-neo/core/call_channel.h>): the DMR call's own
+    // LSN, LPCN or LCN; DSD_CALL_CHANNEL_NONE for other protocols. Meaningful only with channel != 0, and set with it.
+    uint8_t call_channel_kind;
+    // The system and site the call was heard on: the site parts (dsd_rxid_site_snapshot(),
+    // <dsd-neo/core/received_identity_site.h>) of the received identity record the sys_id parts come from, taken under
+    // the same rule and frozen with them -- what the carrier sent while the call was heard, never a part of the moment
+    // (access code, rest or free channel, RAS, vendor, control channel). Family NONE when nothing was received, and for
+    // M17, dPMR, a TETRA direct mode call and --playfiles.
+    dsd_received_identity site_id;
     // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
     // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned
     // frequency, taken once, on the epoch's first render while the call is active, and kept for the

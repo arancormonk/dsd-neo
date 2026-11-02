@@ -127,6 +127,7 @@ typedef struct {
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
     uint32_t channel;
+    uint8_t channel_kind; /**< dsd_call_channel_kind of @ref channel; ignored without a channel. */
     int64_t frequency_hz;
     uint16_t service_options;
     uint8_t emergency;
@@ -253,6 +254,12 @@ typedef struct {
     int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     dsd_call_kind kind;
     uint32_t channel;
+    /**
+     * dsd_call_channel_kind of @ref channel (a DMR trunked call's LSN, LPCN or LCN), meaningful with a nonzero channel.
+     * Set with the channel it names and never replaced afterwards: once a call has a channel of a known kind, neither
+     * changes for the epoch (a reacquired epoch keeps them). NONE: another protocol's channel, replaced as observed.
+     */
+    uint8_t channel_kind;
     dsd_call_crypto_state crypto;
     uint16_t service_options;
     uint16_t kid;
@@ -302,9 +309,24 @@ typedef struct {
      * while the record was still the one of the carrier the call began on (rx_id_epoch); otherwise, and while the
      * call is active, empty (family DSD_RXID_FAMILY_NONE). Call history freezes an ended call's system and site at it,
      * so identity received after the last render and before the end counts, and identity received after the end, or
-     * on another carrier, does not.
+     * on another carrier, does not. Reacquisition compares reacquire_rx_id instead, which outlives a record that moved
+     * before the end.
      */
     dsd_received_identity ended_rx_id;
+    /**
+     * The record a reopen of this call is compared with (dsd_call_record_site_compatible(), whole, so the trunking
+     * system a Capacity Plus rest LSN or an XPT free LCN names stays): dsd_state::rx_id as of the epoch's last
+     * observation, or its end, made while the record was still the call's (its epoch equal to rx_id_epoch). A record
+     * that moved later (another system named, a reset, a sync of another protocol family wiping it) leaves it as it
+     * was, so a call heard again under an empty record reopens and one heard under another identity does not. A
+     * reacquired epoch starts with the ending one's and keeps it while the live record names no site, so a second
+     * fade still compares with the site the call was heard on. After such a heal a live record that names only part
+     * of the earlier site replaces the retained copy, so the missing parts drop out of later comparisons until they
+     * are noted again (a decided limit). Refreshed only at an observation and at the end: identity learned after the
+     * last observation of a call whose end captured nothing compares as compatible (a decided limit). Empty while
+     * nothing was received.
+     */
+    dsd_received_identity reacquire_rx_id;
     /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
      * call history marks the ended row direct mode from it. */
     uint8_t ended_tetra_direct;

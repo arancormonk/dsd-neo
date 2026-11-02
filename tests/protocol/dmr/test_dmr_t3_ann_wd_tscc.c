@@ -268,8 +268,8 @@ main(void) {
     init_env(&opts, &state);
     build_c_aloha_small(bits, bytes, 2U, 27U);
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
-    rc |= expect_true("C_ALOHA applies default DMRLA split",
-                      strcmp(state.dmr_site_parms, "TIII Small:3-1.28;105B; ") == 0);
+    /* No -D: the site is shown whole, network and site one-based (issue #799 D1, D2). */
+    rc |= expect_true("C_ALOHA shows no split without -D", strcmp(state.dmr_site_parms, "TIII Small:3-28;105B; ") == 0);
 
     dsd_state_ext_free_all(&state);
     init_env(&opts, &state);
@@ -277,7 +277,16 @@ main(void) {
     opts.dmr_dmrla_n = 0;
     build_c_aloha_small(bits, bytes, 2U, 27U);
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
-    rc |= expect_true("C_ALOHA honors raw DMRLA override", strcmp(state.dmr_site_parms, "TIII Small:2-27;105B; ") == 0);
+    rc |= expect_true("C_ALOHA -D 0 shows no split", strcmp(state.dmr_site_parms, "TIII Small:3-28;105B; ") == 0);
+
+    /* -D 2: the top two SITE bits (11 of 11011) are the area, the other three (011) the site in it. */
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    opts.dmr_dmrla_is_set = 1;
+    opts.dmr_dmrla_n = 2;
+    build_c_aloha_small(bits, bytes, 2U, 27U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("C_ALOHA -D 2 splits the top bits", strcmp(state.dmr_site_parms, "TIII Small:3-4.4;105B; ") == 0);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);

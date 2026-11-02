@@ -3,6 +3,7 @@
 
 /* Issue #496: exercise real header/assembler/service/event-log paths, not emitter stubs. */
 #include <assert.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
@@ -17,7 +18,10 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -262,11 +266,12 @@ put_bits(uint8_t* bits, size_t offset, unsigned width, uint32_t value) {
     }
 }
 
-// An MBC TV_GRANT to absolute channel 0xFFF: the header (RAS-accepted, or checked) and its checked continuation both go
-// through the burst handler. Learning the channel posts a notice from inside the MBC's CRC scope, which is the only
-// place the MBC's provenance becomes visible.
+// An MBC TV_GRANT (TG 1001, source 2002, TS1) to absolute channel 0xFFF: the header (RAS-accepted, or checked) and its
+// continuation (checked, or failing its CRC16 when @p continuation_ok is 0) both go through the burst handler. Learning
+// the channel posts a notice from inside the MBC's CRC scope, which is the only place the MBC's provenance becomes
+// visible.
 static void
-send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn) {
+send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn, int continuation_ok) {
     uint8_t hdr[12] = {0x31, 0x00, 0xFF, 0xF0, 0x00, 0x03, 0xE9, 0x00, 0x07, 0xD2, 0, 0};
     uint8_t bits[96];
     unpack(hdr, bits, sizeof hdr);
@@ -284,7 +289,7 @@ send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn) {
     put_bits(block, 22, 12, lpcn); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
-    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80) ^ (continuation_ok ? 0U : 1U));
     send_burst_bits(opts, state, block, k_no_reserved, 0x05);
 }
 
@@ -361,7 +366,7 @@ test_ras_data_provenance(dsd_opts* opts, dsd_state* state) {
     // MBC: a RAS-accepted header with a checked continuation keeps RAS (not a failure) through the MBC's CRC scope.
     for (int ras = 1; ras >= 0; --ras) {
         const uint16_t lpcn = ras ? 291U : 292U;
-        send_mbc_grant(opts, state, ras, lpcn);
+        send_mbc_grant(opts, state, ras, lpcn, 1);
         expect_event(state, slot, before++, 1, ras ? DSD_CRC_RAS_UNVERIFIED : 0U,
                      ras ? "Learned LCN 0291 -> 851.012500 MHz" : "Learned LCN 0292 -> 851.012500 MHz");
     }
@@ -378,6 +383,57 @@ test_ras_data_provenance(dsd_opts* opts, dsd_state* state) {
     expect_event(state, slot, before++, 1, DSD_CRC_FAILED, "Unknown PDU");
     opts->aggressive_framesync = 0;
     opts->dmr_crc_relaxed_default = 0;
+}
+
+static dsd_trunk_tune_result
+grant_tune(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)ted_sps;
+    (void)request_id;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+// An absolute grant's channel rides the assembler's decision on its MBC: a failed continuation dispatches nothing (no
+// follow, no channel learned), and a RAS-accepted header with a checked continuation under -F is followed on the
+// channel its CdefParms name, the call keeping the header's RAS provenance.
+static int
+test_t3_mbc_grant_channel_provenance(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 1;
+    state->trunk_cc_freq = 852000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = grant_tune});
+    dmr_sm_init(opts, state);
+
+    send_mbc_grant(opts, state, 1, 301U, 0);
+    int rc = state->trunk_vc_freq[0] == 0 && state->trunk_chan_map[301] == 0 && dmr_sm_get_ctx()->state != DMR_SM_TUNED
+                 ? 0
+                 : 1;
+
+    send_mbc_grant(opts, state, 1, 302U, 1);
+    rc |= state->trunk_vc_freq[0] == 851012500L && state->trunk_chan_map[302] == 851012500L ? 0 : 1;
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    rc |= dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE ? 0 : 1;
+    rc |= call.ota_target_id == 1001U && call.channel == 302U && call.channel_kind == DSD_CALL_CHANNEL_LPCN ? 0 : 1;
+    rc |= call.crc_invalid == DSD_CRC_RAS_UNVERIFIED ? 0 : 1;
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: absolute grant channel provenance (channel %u kind %u crc %u)\n", call.channel,
+                    call.channel_kind, call.crc_invalid);
+    }
+
+    (void)dsd_call_state_end(state, 0U, dsd_decode_now_mono_s());
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    opts->trunk_enable = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    return rc;
 }
 
 // A RAS-accepted voice LC header publishes the call marked [RAS] at the voice row's ordinary severity, which the
@@ -776,6 +832,7 @@ main(void) {
     rc |= test_sap3_ars_real_path(opts, state);
     rc |= test_sap3_lrrp_location_rows(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
+    rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);

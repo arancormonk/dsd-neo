@@ -7,7 +7,8 @@
  * Signal search site notes from NXDN: the current-site location ID of a SITE_INFO, SRV_INFO or CCH_INFO, which the
  * channel decoders pass on only after its CRC, notes the site and system once the transmission is confirmed (a short
  * SACCH CRC alone does not confirm it). An adjacent site notes nothing. The decoder keeps the location (category,
- * system, site and the RAN the site code gives) under the same rule, and never for the reserved category.
+ * system, site and the RAN the site code gives) under the same rule, and never for the reserved category or a system or
+ * site code the standard reserves (NXDN TS 1-A 6.5.2 Table 6.5-1).
  */
 
 #include <dsd-neo/core/access_code.h>
@@ -22,6 +23,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "../../test_support/test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -272,6 +275,136 @@ test_received_identity(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* One location category of NXDN TS 1-A 6.5.2 Table 6.5-1: its category bits, record category, code widths and the
+   largest system and site codes it gives (the all-ones code is reserved). */
+typedef struct {
+    const char* name;
+    uint32_t bits;
+    long rxid_category;
+    int site_width;
+    uint32_t sys_max;
+    uint32_t site_max;
+} location_category;
+
+static const location_category k_categories[3] = {
+    {"Global", 0U, 0, 12, 1022U, 4094U},
+    {"Regional", 2U, 1, 8, 16382U, 254U},
+    {"Local", 1U, 2, 5, 131070U, 30U},
+};
+
+static uint32_t
+location_id(const location_category* c, uint32_t sys, uint32_t site) {
+    return (c->bits << 22) | (sys << c->site_width) | site;
+}
+
+/* The decoder's view of a location it kept: the RAN the site code gives, the legacy location fields, the received
+   identity and the access code a call row would read. */
+static int
+expect_location_kept(const char* tag, const dsd_state* state, const location_category* c, uint32_t sys, uint32_t site) {
+    int rc = 0;
+    char label[96];
+    uint8_t kind = 0U;
+    uint16_t code = 0U;
+    const int has_code = dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, &kind, &code);
+    DSD_SNPRINTF(label, sizeof(label), "%s %s RAN", tag, c->name);
+    rc |= expect_int(label, (long)state->nxdn_last_ran, (long)(site % 64U));
+    DSD_SNPRINTF(label, sizeof(label), "%s %s access code", tag, c->name);
+    rc |= expect_int(label, has_code && kind == (uint8_t)DSD_ACCESS_CODE_RAN ? (long)code : -1L, (long)(site % 64U));
+    DSD_SNPRINTF(label, sizeof(label), "%s %s legacy site", tag, c->name);
+    rc |= expect_int(label, state->nxdn_location_site_code, (long)site);
+    DSD_SNPRINTF(label, sizeof(label), "%s %s legacy system", tag, c->name);
+    rc |= expect_int(label, (long)state->nxdn_location_sys_code, (long)sys);
+    DSD_SNPRINTF(label, sizeof(label), "%s %s legacy category", tag, c->name);
+    rc |= expect_int(label, strcmp(state->nxdn_location_category, c->name), 0);
+    DSD_SNPRINTF(label, sizeof(label), "%s %s record", tag, c->name);
+    const dsd_received_identity* id = &state->rx_id;
+    rc |= expect_int(label,
+                     id->valid == DSD_RXID_NXDN_LOCATION && id->nxdn_category == c->rxid_category && id->nxdn_sys == sys
+                         && id->nxdn_site == site,
+                     1);
+    return rc;
+}
+
+/* The location ID values the standard reserves name no site: each category's all-zero and all-ones system and site
+   codes (all-ones is the largest code plus one) are printed, then give no RAN, no access code, no search note and no
+   record, and leave the location an earlier valid message kept. */
+static int
+test_nxdn_location_reserved_refused(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    for (int i = 0; i < 3; ++i) {
+        const location_category* c = &k_categories[i];
+        const uint32_t reserved[4][2] = {
+            {0U, 1U},
+            {c->sys_max + 1U, 1U},
+            {1U, 0U},
+            {1U, c->site_max + 1U},
+        };
+        for (int r = 0; r < 4; ++r) {
+            char label[96];
+            const uint32_t sys = reserved[r][0];
+            const uint32_t site = reserved[r][1];
+
+            // Alone: nothing kept, but the decoder log still shows what was received.
+            clear_state(state);
+            state->nxdn_confirmed = 1;
+            g_notes = 0;
+            dsd_test_capture_stderr cap;
+            char log[512];
+            const int captured = dsd_test_capture_stderr_begin(&cap, "nxdn_reserved_location") == 0;
+            message(opts, state, 0x18, location_id(c, sys, site));
+            if (captured) {
+                (void)dsd_test_capture_stderr_end(&cap);
+            }
+            char want[128];
+            DSD_SNPRINTF(want, sizeof(want), "Location Information - Cat: %s - Sys Code: %u - Site Code %u", c->name,
+                         (unsigned)sys, (unsigned)site);
+            DSD_SNPRINTF(label, sizeof(label), "reserved %s sys %u site %u printed", c->name, (unsigned)sys,
+                         (unsigned)site);
+            rc |= expect_int(
+                label,
+                captured && dsd_test_capture_stderr_read(&cap, log, sizeof(log)) == 0 && strstr(log, want) != NULL, 1);
+            DSD_SNPRINTF(label, sizeof(label), "reserved %s sys %u site %u", c->name, (unsigned)sys, (unsigned)site);
+            rc |= expect_nothing_kept(label, state);
+            rc |= expect_int(label, g_notes, 0);
+            rc |= expect_int(label, (long)state->rx_id.valid, 0);
+            rc |= expect_int(label, dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, NULL, NULL), 0);
+
+            // After a valid location: that one stays.
+            clear_state(state);
+            state->nxdn_confirmed = 1;
+            message(opts, state, 0x18, location_id(c, 3U, 12U));
+            g_notes = 0;
+            message(opts, state, 0x18, location_id(c, sys, site));
+            rc |= expect_location_kept(label, state, c, 3U, 12U);
+            rc |= expect_int(label, g_notes, 0);
+        }
+    }
+    return rc;
+}
+
+/* The bounds of each category's ranges name a site: 1 and the largest system and site codes. */
+static int
+test_nxdn_location_bounds_accepted(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    for (int i = 0; i < 3; ++i) {
+        const location_category* c = &k_categories[i];
+        const uint32_t bounds[2][2] = {{1U, 1U}, {c->sys_max, c->site_max}};
+        for (int b = 0; b < 2; ++b) {
+            const uint32_t sys = bounds[b][0];
+            const uint32_t site = bounds[b][1];
+            clear_state(state);
+            state->nxdn_confirmed = 1;
+            g_notes = 0;
+            message(opts, state, 0x18, location_id(c, sys, site));
+            rc |= expect_location_kept(b == 0 ? "lowest" : "highest", state, c, sys, site);
+            rc |= expect_int("bound notes once", g_notes, 1);
+            rc |= expect_int("bound note system", (long)g_note.nxdn_sys, (long)sys);
+            rc |= expect_int("bound note site", g_note.nxdn_site, (long)site);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -333,6 +466,8 @@ main(void) {
     rc |= expect_int("adjacent site notes nothing", g_notes, 0);
 
     rc |= test_received_identity(opts, state);
+    rc |= test_nxdn_location_reserved_refused(opts, state);
+    rc |= test_nxdn_location_bounds_accepted(opts, state);
 
     dsd_signal_search_site_set(NULL);
     dsd_state_ext_free_all(state);

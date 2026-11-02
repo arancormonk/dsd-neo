@@ -3,11 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -19,6 +22,7 @@
 
 #include <ctype.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -474,6 +478,20 @@ dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
     return call->ended_m > 0.0 && now_m >= call->ended_m && (now_m - call->ended_m) <= gap;
 }
 
+// Whether the ending call @p previous could have been heard on the system and site @p live (dsd_state::rx_id) names:
+// the record it retained (dsd_call_snapshot::reacquire_rx_id), with its channel's kind, against the live record with
+// the reopening observation's channel kind (dsd_call_record_site_compatible(); an identity-less side fits). A reopen
+// under another system's identity would seed that system's call with this one's channel, frequency, crypto and
+// transmission, and a channel the reopened epoch inherits is never replaced (call_state_apply_channel()).
+static int
+call_state_reacquire_site_fits(const dsd_call_snapshot* previous, const dsd_received_identity* live,
+                               const dsd_call_observation* observation) {
+    const uint8_t previous_kind = previous->channel != 0U ? previous->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    const uint8_t observed_kind =
+        observation->channel != 0U ? observation->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    return dsd_call_record_site_compatible(&previous->reacquire_rx_id, previous_kind, live, observed_kind);
+}
+
 // True when this observation reopens an epoch that a recoverable end closed moments ago while
 // describing the same call -- one transmission the decoder lost and regained, not two
 // transmissions. The boundary token is deliberately not consulted: the paths that reopen
@@ -482,7 +500,7 @@ dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
 // other re-announcing protocols pass CONTINUE. Both must arm.
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
-                                  double now_m) {
+                                  const dsd_received_identity* live, double now_m) {
     if (!dsd_call_snapshot_may_reacquire(current, now_m)) {
         return 0;
     }
@@ -498,7 +516,8 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
         && call_state_observation_has_identity(observation)) {
         return 0;
     }
-    return !call_state_observation_changes_identity(current, observation);
+    return !call_state_observation_changes_identity(current, observation)
+           && call_state_reacquire_site_fits(current, live, observation);
 }
 
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
@@ -515,7 +534,9 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->kind = previous->kind;
     snapshot->protocol = previous->protocol;
     snapshot->channel = previous->channel;
+    snapshot->channel_kind = previous->channel_kind;
     snapshot->frequency_hz = previous->frequency_hz;
+    snapshot->reacquire_rx_id = previous->reacquire_rx_id;
     snapshot->crypto = previous->crypto;
     snapshot->algid = previous->algid;
     snapshot->kid = previous->kid;
@@ -561,6 +582,40 @@ call_state_apply_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
     }
 }
 
+/* A channel and its kind arrive together and are fill-only once named in a kind (a DMR call's channel is the one the
+   grant or move that tuned its follow named): a later channel never replaces it, and none (0) never clears it. A
+   channel of no kind (another protocol's) is replaced as observed. */
+static void
+call_state_apply_channel(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
+    if (observation->channel == 0U || snapshot->channel_kind != (uint8_t)DSD_CALL_CHANNEL_NONE) {
+        return;
+    }
+    snapshot->channel = observation->channel;
+    snapshot->channel_kind = observation->channel_kind;
+}
+
+/* Whether record @p id names something a reopen is compared on: a site part, or a DMR trunking system by its rest LSN
+   or free LCN alone. */
+static int
+call_state_rx_id_names_site(const dsd_received_identity* id) {
+    return !dsd_rxid_site_empty(id)
+           || (id->family == (uint8_t)DSD_RXID_FAMILY_DMR
+               && (id->valid & (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN)) != 0U);
+}
+
+/* Refresh the record a reopen is compared with (dsd_call_snapshot::reacquire_rx_id) from @p live while it is still the
+   call's. A reacquired epoch, seeded with the ending one's, keeps it while the live record names nothing (a record a
+   cross-family sync or a reset wiped), and takes the live one once that names a site the reopen was found to fit. */
+static void
+call_state_retain_rx_id(dsd_call_snapshot* snapshot, const dsd_received_identity* live) {
+    if (live->epoch != snapshot->rx_id_epoch) {
+        return;
+    }
+    if (call_state_rx_id_names_site(live) || !call_state_rx_id_names_site(&snapshot->reacquire_rx_id)) {
+        snapshot->reacquire_rx_id = *live;
+    }
+}
+
 static void
 call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
     if (observation->protocol != DSD_SYNC_NONE) {
@@ -584,9 +639,7 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     call_state_apply_text(snapshot->target_text, observation->target_text);
     call_state_apply_text(snapshot->route_text[0], observation->route_text[0]);
     call_state_apply_text(snapshot->route_text[1], observation->route_text[1]);
-    if (observation->channel != 0U) {
-        snapshot->channel = observation->channel;
-    }
+    call_state_apply_channel(snapshot, observation);
     if (observation->frequency_hz != 0) {
         snapshot->frequency_hz = observation->frequency_hz;
     }
@@ -635,7 +688,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     const int begins_epoch = service_changed || call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
     const int reacquires_ended_epoch =
-        begins_epoch && !service_changed && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
+        begins_epoch && !service_changed
+        && call_state_reacquires_ended_epoch(snapshot, observation, &state->rx_id, now_m);
     // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
     // must not execute under the canonical lock. Every read is dominated by the begins_epoch
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
@@ -683,6 +737,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
+    call_state_retain_rx_id(snapshot, &state->rx_id);
     snapshot->crc_invalid |= state->event_crc_invalid[slot];
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
@@ -956,6 +1011,7 @@ call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* sna
     } else {
         DSD_MEMSET(&snapshot->ended_rx_id, 0, sizeof(snapshot->ended_rx_id));
     }
+    call_state_retain_rx_id(snapshot, &state->rx_id);
     const uint8_t mode = state->tetra_pub.mode;
     snapshot->ended_tetra_direct = (DSD_SYNC_IS_TETRA(snapshot->protocol) && mode >= DSD_TETRA_MODE_DMO_DIRECT
                                     && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY)

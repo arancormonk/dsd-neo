@@ -1175,6 +1175,26 @@ call heard on a scan-list row with no name stays unlabelled rather than picking 
 next channel. The bracketed name is for reading, not for parsing: a channel name may itself contain
 `]`.
 
+A call row also names the system and site the call was heard on and, on a DMR trunked system, the call's own
+channel. These are the parts the carrier sent while the call was heard, taken from the same record the Monitor's site
+line reads. A part that was never received is left out, never printed as 0. The parts are frozen once the call ends,
+so a row keeps them after a retune, a trunk-scan step or a later carrier. They follow the protocol's access code:
+
+| Protocol | Tokens |
+|---|---|
+| DMR | `SYS: 0A3F;` (Tier III system code, four hex digits), `SITE: Net 13 Site 28;` (the network and site the Monitor shows, with Tier III's one-based numbers and its `-D` split; `SITE: Site 2;` on Capacity Plus, `SITE: Net 1234 Site 5;` on Connect Plus), then the call's channel by its numbering: `LSN: 5;` (Capacity Plus, Hytera XPT), `LPCN: 12;` (Tier III), `LCN: 3;` (Connect Plus) |
+| P25 | `NET_STS: BEE00:1A3:3.21;` (WACN:SYS:RFSS.SITE), `NET_STS: BEE00:1A3;` before an RFSS status names the site, `SYS: 1A3; SITE: 3.21;` without a WACN |
+| NXDN | Type-C `SYS: 40.9;` (system.site); IDAS `SITE: 5;`, and `SYS: 12345;` once a Type-D system ID is received |
+| TETRA | `MCC: 901; MNC: 9999; LA: 12;` after `CARRIER:`/`FREQ:` (the carrier number now prints without a known frequency too) |
+| EDACS | extended addressing `SITE: 7:2.1234;` (site:area.system, the system in hex) with only the parts received (`SITE: 7:2;`, or `SYS: 1234;` before a site); standard `Site: 12;` |
+
+M17, dPMR, TETRA direct mode and `--playfiles` rows name no site; an I/Q replay names the site of the capture's
+carrier. Two segments of a transmission reacquired after a sync loss join into one row only when their sites agree: a
+radio heard under two sites inside the reacquire window gives two rows. Earlier versions printed the DMR system code
+without padding (`SYS: A3F;`), `:0.0` for a P25 site not yet received, nothing of a P25 system without a WACN,
+`SYS: 0.5;` for an IDAS site, and an EDACS part never received as 0. The `-J` log and the control API's `event` text
+are the same lines.
+
 ### Scoped scan controls and loaded keys
 
 The Input/Output pane reports loaded Motorola BP, RC4/DES and NXDN/dPMR scrambler keys while no forcing is active,

@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -382,6 +383,142 @@ test_matched_move_policy(dsd_opts* opts, dsd_state* state) {
     assert(state->dmrburstL == 16 && state->dmrburstR == 16);
 }
 
+/* ---- The call's channel (its LPCN): one resolved value for the machine, the slot record (the policy route) and the
+   call ---- */
+
+#define CH_F4 855000000L // 855 MHz: RX INT 855, RX STEP 0
+
+/* A grant or C_MOVE whose channel is the absolute escape (0xFFF), defined by the MBC's CdefParms: LPCN @p apcn on
+   @p rx_int MHz plus @p rx_step 125 Hz steps. */
+static void
+csbk_absolute(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, uint16_t rx_int, uint16_t rx_step,
+              uint8_t slot, uint32_t target) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, slot, target);
+    bytes[0] = opcode;
+    put_bits(bits, 56U, 1234U, 24U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+/* The slot's call, the followed context and the slot's record (what the policy route is built from) name @p channel of
+   @p kind. */
+static void
+expect_channel(const dsd_state* state, int slot, uint32_t channel, uint8_t kind) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.channel == channel && call.channel_kind == kind);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->vc_lpcn == (int)channel && ctx->vc_channel_kind == kind);
+    assert(ctx->slots[slot].channel == (int)channel && ctx->slots[slot].channel_kind == kind);
+}
+
+/* A logical grant names its LPCN, 1..4094 alike; LPCN 0 (CHNULL) names no channel, and nothing to tune. */
+static void
+test_t3_grant_lpcn_kind(dsd_opts* opts, dsd_state* state) {
+    static const uint16_t lpcns[] = {12U, 1U, 4094U};
+    for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
+        move_env(opts, state);
+        state->trunk_chan_map[lpcns[i]] = CH_F4;
+        csbk_grant_or_move(opts, state, 49U, lpcns[i], 0, 101, 1234);
+        assert(state->trunk_vc_freq[0] == CH_F4);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        expect_channel(state, 0, lpcns[i], DSD_CALL_CHANNEL_LPCN);
+    }
+    move_env(opts, state);
+    csbk_grant_or_move(opts, state, 49U, 0U, 0, 101, 1234);
+    assert(state->trunk_vc_freq[0] == 0 && dmr_sm_get_ctx()->state != DMR_SM_TUNED);
+}
+
+/* An absolute grant (0xFFF) is on the channel its MBC defines: CdefParms LPCN 1..4094, which the channel map learns. */
+static void
+test_t3_absolute_grant_uses_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
+    static const uint16_t lpcns[] = {37U, 1U, 4094U};
+    for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
+        move_env(opts, state);
+        csbk_absolute(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        assert(state->trunk_vc_freq[0] == CH_F4);
+        assert(state->trunk_chan_map[lpcns[i]] == CH_F4);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        expect_channel(state, 0, lpcns[i], DSD_CALL_CHANNEL_LPCN);
+    }
+}
+
+/* An absolute grant whose CdefParms LPCN is no channel (0, 4095) is still followed on its frequency, but names no
+   channel, and the channel map learns nothing from it. */
+static void
+test_t3_absolute_grant_invalid_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
+    static const uint16_t lpcns[] = {0U, 4095U};
+    for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
+        move_env(opts, state);
+        csbk_absolute(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        assert(state->trunk_vc_freq[0] == CH_F4);
+        assert(state->trunk_chan_map[0] == 0 && state->trunk_chan_map[4095] == 0);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        expect_channel(state, 0, 0U, DSD_CALL_CHANNEL_NONE);
+    }
+}
+
+/* A C_MOVE of the followed call to another carrier names the move's LPCN (a logical one, or the MBC's for the absolute
+   escape: 1..4094); one whose CdefParms LPCN is 0 or 4095 moves the call but names no channel, and is not learned. */
+static void
+test_t3_cmove_lpcn_bounds(dsd_opts* opts, dsd_state* state) {
+    move_env(opts, state);
+    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
+    clock_at(0.5);
+    accepted_voice(opts, state, 0);
+    expect_channel(state, 0, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
+    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 101, 1234);
+    assert(state->trunk_vc_freq[0] == MV_F2);
+    clock_at(1.0);
+    accepted_voice(opts, state, 0);
+    expect_channel(state, 0, MV_LPCN2, DSD_CALL_CHANNEL_LPCN);
+
+    static const struct {
+        uint16_t apcn;
+        uint32_t channel;
+        uint8_t kind;
+    } cases[] = {
+        {1U, 1U, DSD_CALL_CHANNEL_LPCN},
+        {4094U, 4094U, DSD_CALL_CHANNEL_LPCN},
+        {0U, 0U, DSD_CALL_CHANNEL_NONE},
+        {4095U, 0U, DSD_CALL_CHANNEL_NONE},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        move_env(opts, state);
+        csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        csbk_absolute(opts, state, 57U, cases[i].apcn, 855U, 0U, 0, 101);
+        assert(state->trunk_vc_freq[0] == CH_F4);
+        assert(state->trunk_chan_map[0] == 0 && state->trunk_chan_map[4095] == 0);
+        clock_at(1.0);
+        accepted_voice(opts, state, 0);
+        expect_channel(state, 0, cases[i].channel, cases[i].kind);
+    }
+}
+
+/* L9: a same-carrier move to the other slot under another LPCN keeps the channel the follow published first. */
+static void
+test_same_freq_cmove_keeps_channel(dsd_opts* opts, dsd_state* state) {
+    move_env(opts, state);
+    state->trunk_chan_map[0x13] = MV_F1;
+    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
+    clock_at(0.5);
+    accepted_voice(opts, state, 0);
+    expect_channel(state, 0, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
+    const unsigned int tunes = state->p25_sm_tune_count;
+    csbk_grant_or_move(opts, state, 57U, 0x13U, 1, 101, 1234);
+    assert(state->trunk_vc_freq[0] == MV_F1 && state->p25_sm_tune_count == tunes && dmr_sm_get_ctx()->vc_slot == 1);
+    clock_at(1.0);
+    accepted_voice(opts, state, 1);
+    expect_channel(state, 1, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
+}
+
 static void
 test_move_admission(dsd_opts* opts, dsd_state* state) {
     dsd_decode_clock_use_test(k_t0_ns);
@@ -391,6 +528,11 @@ test_move_admission(dsd_opts* opts, dsd_state* state) {
     test_move_in_place_vacates(opts, state);
     test_move_carries_lc_identity(opts, state);
     test_matched_move_policy(opts, state);
+    test_t3_grant_lpcn_kind(opts, state);
+    test_t3_absolute_grant_uses_mbc_lpcn(opts, state);
+    test_t3_absolute_grant_invalid_mbc_lpcn(opts, state);
+    test_t3_cmove_lpcn_bounds(opts, state);
+    test_same_freq_cmove_keeps_channel(opts, state);
     dsd_decode_clock_use_system();
 }
 

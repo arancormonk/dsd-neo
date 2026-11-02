@@ -96,7 +96,7 @@ While a search runs, the screen is laid out for what is on the air now:
   site, the access code and tone, the call (**Slot 2 · Target 100 · Source 2001**,
   the slot on two-slot systems only), then its encryption
   (**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567**;
-  **TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 ·
+  **TIII Small · Net 13 · Site 4 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 ·
   ALG 21 · KID 0001**), breaking lines only between values. Values that do not
   fit the two lines are left off whole, the detail then ending in **· …**. Other
   lines that do not fit end in an ellipsis, and the full text is available to
@@ -117,7 +117,7 @@ While a search runs, the screen is laid out for what is on the air now:
   no search running it shows above the setup instead.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
   verdict a row shows the checked site and encryption the detection last had
-  (**TIII Small · Net 12 · Site 3 · SYS 1183 · Encrypted**). Each row's
+  (**TIII Small · Net 13 · Site 4 · SYS 1183 · Encrypted**). Each row's
   actions button (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
   it matched, **Save as system**, **Avoid this session** (while a search runs),
@@ -154,7 +154,7 @@ during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SY
 RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
 **WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2**; a DMR Tier III identity from a C_ALOHA or a
 C_SYS_PARMS/P_SYS_PARMS short LC that passed its checks, read as
-**TIII Small · Net 12 · Site 3 · SYS 1183**; or the NXDN location of a CRC-checked site,
+**TIII Small · Net 13 · Site 4 · SYS 1183**; or the NXDN location of a CRC-checked site,
 service or control channel message once the transmission is confirmed, read as
 **Site 12 · Sys 3**. A P25 RFSS status joins only the system its SYSID names, and a
 network status of another system replaces what was shown. Voice link control (whose

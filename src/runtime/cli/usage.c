@@ -363,9 +363,9 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("Advanced Decoder options:\n");
     printf("  -X <hex>      Manually Set P2 Parameters (WACN, SYSID, CC/NAC)\n");
     printf("                 (-X BEE00ABC123)\n");
-    printf("  -D <dec>      Manually Set TIII DMR Location Area n bit len (0-10)(10 max)\n");
-    printf("                 (Value defaults to max n bit value for site model size)\n");
-    printf("                 (Setting 0 will show full Site ID, no area/subarea)\n");
+    printf("  -D <dec>      DMR Tier III location area (DMRLA) bits, 0-10: the top n Site ID bits\n");
+    printf("                 are the area, shown as Site area.site (both counted from 1)\n");
+    printf("                 (Default and 0: no split, the whole Site ID is shown)\n");
     printf("\n");
     printf("  -ma           Auto-select modulation optimizations\n");
     printf("  -mc           Only C4FM optimizations (locks demod; no auto override)\n");

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -6831,6 +6833,120 @@ test_target_switch_forgets_the_received_identity(void) {
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #799: a row keeps the site its call was heard on and the numbering of its channel. A target's staged row rides
+ * its snapshot whole, so a revisit brings back its own site and channel kind, a fresh target's row holds none, and a
+ * rolled-back switch leaves the row as it was; the committed rows, in the one ring, keep theirs through all of it. */
+static int expect_active_target(const dsd_state* state, const char* stage, size_t want);
+
+static int
+expect_row_site_bytes(const char* stage, const Event_History* row, const dsd_received_identity* site, uint8_t kind) {
+    if (memcmp(&row->site_id, site, sizeof(*site)) != 0 || row->call_channel_kind != kind) {
+        DSD_FPRINTF(stderr, "row site after %s: family %u valid %08X kind %u, want family %u valid %08X kind %u\n",
+                    stage, (unsigned)row->site_id.family, (unsigned)row->site_id.valid,
+                    (unsigned)row->call_channel_kind, (unsigned)site->family, (unsigned)site->valid, (unsigned)kind);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_target_switch_keeps_each_rows_site(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[DSD_CALL_STATE_SLOT_COUNT];
+    reset_scan_opts_state(&opts, &state);
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    state.event_history_s = event_history;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "row site scan init failed: %s\n", err);
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    dsd_received_identity none;
+    dsd_received_identity site_a;
+    dsd_received_identity site_b;
+    dsd_received_identity site_committed;
+    DSD_MEMSET(&none, 0, sizeof none);
+    dsd_rxid_note_p25_network(&state, 0x12345U, 0x111U);
+    dsd_rxid_site_snapshot(&state.rx_id, &site_committed);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_p25_site(&state, 0x1A3U, 3U, 21U);
+    dsd_rxid_site_snapshot(&state.rx_id, &site_a);
+
+    Event_History* current = &event_history[0].Event_History_Items[0];
+    Event_History* committed = &event_history[0].Event_History_Items[1];
+    DSD_MEMCPY(&committed->site_id, &site_committed, sizeof site_committed);
+    committed->channel = 7U;
+    committed->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LCN;
+    DSD_MEMCPY(&current->site_id, &site_a, sizeof site_a);
+    current->channel = 5U;
+    current->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row site switch to b", 1U);
+    test_rc |= expect_row_site_bytes("the switch to a fresh target", current, &none, DSD_CALL_CHANNEL_NONE);
+    test_rc |= expect_row_site_bytes("the switch, committed row", committed, &site_committed, DSD_CALL_CHANNEL_LCN);
+
+    dsd_rxid_note_p25_network(&state, 0xBEE01U, 0x2B4U);
+    dsd_rxid_site_snapshot(&state.rx_id, &site_b);
+    DSD_MEMCPY(&current->site_id, &site_b, sizeof site_b);
+    current->channel = 3U;
+    current->call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row site revisit of a", 0U);
+    test_rc |= expect_row_site_bytes("the revisit of a", current, &site_a, DSD_CALL_CHANNEL_LSN);
+    test_rc |= expect_row_site_bytes("the revisit, committed row", committed, &site_committed, DSD_CALL_CHANNEL_LCN);
+
+    /* b's saved row comes back with its own site, and a's again after it. */
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row site revisit of b", 1U);
+    test_rc |= expect_row_site_bytes("the revisit of b", current, &site_b, DSD_CALL_CHANNEL_LPCN);
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row site second revisit of a", 0U);
+    test_rc |= expect_row_site_bytes("the second revisit of a", current, &site_a, DSD_CALL_CHANNEL_LSN);
+
+    /* Both retunes of the next advance fail: the receiver stays on a, its row as it was. */
+    g_counting_tune_to_cc_failures_remaining = 2;
+    trunk_scan_test_set_now(1.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row site rollback", 0U);
+    test_rc |= expect_row_site_bytes("the rollback", current, &site_a, DSD_CALL_CHANNEL_LSN);
+    test_rc |= expect_row_site_bytes("the rollback, committed row", committed, &site_committed, DSD_CALL_CHANNEL_LCN);
+    if (g_counting_tune_to_cc_failures_remaining != 0) {
+        DSD_FPRINTF(stderr, "row site rollback: the advance tried %d retunes too few\n",
+                    g_counting_tune_to_cc_failures_remaining);
+        test_rc = 1;
+    }
+
+cleanup:
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -15709,6 +15825,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
+    rc |= run_with_default_tune_hook(test_target_switch_keeps_each_rows_site);
     rc |= run_with_default_tune_hook(test_target_switch_and_rollback_reset_dmr_ras);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_save_writes_configured_trunking_under_scan);

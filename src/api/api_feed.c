@@ -26,11 +26,14 @@
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -172,6 +175,127 @@ end_line(dsd_json_buf* b, dsd_json_writer* w) {
     return 0;
 }
 
+/* The row's site parts by name, each only while its valid bit is set (Tier III's network and site numbers raw, as the
+   record keeps them; Capacity Plus has a site and no network). */
+static void
+encode_site_p25(dsd_json_writer* w, const dsd_received_identity* id) {
+    if ((id->valid & DSD_RXID_P25_WACN) != 0U) {
+        (void)dsd_json_kv_u64(w, "wacn", id->p25_wacn);
+    }
+    if ((id->valid & DSD_RXID_P25_SYSID) != 0U) {
+        (void)dsd_json_kv_u64(w, "sysid", id->p25_sysid);
+    }
+    if ((id->valid & DSD_RXID_P25_SITE) != 0U) {
+        (void)dsd_json_kv_u64(w, "rfss", id->p25_rfss);
+        (void)dsd_json_kv_u64(w, "site", id->p25_site);
+    }
+    if ((id->valid & DSD_RXID_P25_LRA) != 0U) {
+        (void)dsd_json_kv_u64(w, "lra", id->p25_lra);
+    }
+}
+
+static void
+encode_site_dmr(dsd_json_writer* w, const dsd_received_identity* id) {
+    if ((id->valid
+         & (DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT
+            | DSD_RXID_DMR_BRAND))
+        != 0U) {
+        (void)dsd_json_kv_u64(w, "dmr_trunk", id->dmr_trunk);
+    }
+    if ((id->valid & DSD_RXID_DMR_SITE) != 0U && id->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        (void)dsd_json_kv_u64(w, "dmr_t3_model", id->dmr_t3_model);
+    }
+    if ((id->valid & DSD_RXID_DMR_NET) != 0U) {
+        (void)dsd_json_kv_u64(w, "dmr_net", id->dmr_net);
+    }
+    if ((id->valid & DSD_RXID_DMR_SITE) != 0U) {
+        (void)dsd_json_kv_u64(w, "dmr_site", id->dmr_site);
+    }
+    if ((id->valid & DSD_RXID_DMR_T3_SYSCODE) != 0U) {
+        (void)dsd_json_kv_u64(w, "dmr_t3_syscode", id->dmr_t3_syscode);
+    }
+    if ((id->valid & DSD_RXID_DMR_SITE_TEXT) != 0U) {
+        (void)dsd_json_kv_strn(w, "dmr_site_text", id->dmr_site_text, sizeof id->dmr_site_text);
+    }
+    if ((id->valid & DSD_RXID_DMR_BRAND) != 0U) {
+        (void)dsd_json_kv_strn(w, "dmr_brand", id->dmr_brand, sizeof id->dmr_brand);
+    }
+}
+
+static void
+encode_site_nxdn(dsd_json_writer* w, const dsd_received_identity* id) {
+    if ((id->valid & DSD_RXID_NXDN_LOCATION) != 0U) {
+        (void)dsd_json_kv_u64(w, "nxdn_category", id->nxdn_category);
+        (void)dsd_json_kv_u64(w, "nxdn_sys", id->nxdn_sys);
+        (void)dsd_json_kv_u64(w, "nxdn_site", id->nxdn_site);
+    }
+    if ((id->valid & DSD_RXID_NXDN_IDAS_AREA) != 0U) {
+        (void)dsd_json_kv_u64(w, "idas_area", id->nxdn_idas_area);
+    }
+    if ((id->valid & DSD_RXID_NXDN_IDAS_SITE) != 0U) {
+        (void)dsd_json_kv_u64(w, "idas_site_type", id->nxdn_idas_site_type);
+        (void)dsd_json_kv_u64(w, "idas_site_code", id->nxdn_idas_site_code);
+    }
+    if ((id->valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
+        (void)dsd_json_kv_u64(w, "nxdn_typed_sys", id->nxdn_typed_sys);
+        (void)dsd_json_kv_u64(w, "nxdn_typed_site", id->nxdn_typed_site);
+    }
+}
+
+static void
+encode_site_edacs_tetra(dsd_json_writer* w, const dsd_received_identity* id) {
+    const uint32_t edacs = DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM;
+    if ((id->valid & DSD_RXID_EDACS_SITE) != 0U) {
+        (void)dsd_json_kv_u64(w, "edacs_site", id->edacs_site);
+    }
+    if ((id->valid & DSD_RXID_EDACS_AREA) != 0U) {
+        (void)dsd_json_kv_u64(w, "edacs_area", id->edacs_area);
+    }
+    if ((id->valid & DSD_RXID_EDACS_SYSTEM) != 0U) {
+        (void)dsd_json_kv_u64(w, "edacs_system", id->edacs_system);
+    }
+    if ((id->valid & edacs) != 0U) {
+        (void)dsd_json_kv_i64(w, "edacs_ea_mode", id->edacs_ea_mode);
+    }
+    if ((id->valid & DSD_RXID_TETRA_NET) != 0U) {
+        (void)dsd_json_kv_u64(w, "tetra_mcc", id->tetra_mcc);
+        (void)dsd_json_kv_u64(w, "tetra_mnc", id->tetra_mnc);
+        (void)dsd_json_kv_u64(w, "tetra_colour", id->tetra_colour);
+    }
+    if ((id->valid & DSD_RXID_TETRA_LA) != 0U) {
+        (void)dsd_json_kv_u64(w, "tetra_la", id->tetra_la);
+    }
+}
+
+static const char*
+channel_kind_name(uint8_t kind) {
+    switch (kind) {
+        case DSD_CALL_CHANNEL_LSN: return "lsn";
+        case DSD_CALL_CHANNEL_LPCN: return "lpcn";
+        case DSD_CALL_CHANNEL_LCN: return "lcn";
+        default: return "none";
+    }
+}
+
+/* The site the row was heard on and the numbering of its channel, after the keys a client already reads. */
+static void
+encode_event_site(dsd_json_writer* w, const Event_History* e) {
+    const dsd_received_identity* id = &e->site_id;
+    (void)dsd_json_kv_str(w, "channel_kind", channel_kind_name(e->call_channel_kind));
+    (void)dsd_json_key(w, "site");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_u64(w, "family", id->family);
+    encode_site_p25(w, id);
+    encode_site_dmr(w, id);
+    encode_site_nxdn(w, id);
+    encode_site_edacs_tetra(w, id);
+    (void)dsd_json_obj_end(w);
+    char text[DSD_APP_SITE_HISTORY_TEXT_SIZE];
+    text[0] = '\0';
+    (void)dsd_app_site_history_text(id, e->call_channel_kind, e->channel, text, sizeof text);
+    (void)dsd_json_kv_str(w, "site_text", text);
+}
+
 static void
 encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t push, uint64_t instance) {
     (void)dsd_json_key(w, "row");
@@ -225,6 +349,7 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_strn(w, "text", e->text_message, sizeof e->text_message);
     (void)dsd_json_kv_strn(w, "event", e->event_string, sizeof e->event_string);
     (void)dsd_json_kv_strn(w, "internal", e->internal_str, sizeof e->internal_str);
+    encode_event_site(w, e);
     (void)dsd_json_obj_end(w);
 }
 
@@ -252,6 +377,46 @@ fnv1a_str(uint64_t h, const char* s, size_t cap) {
         }
     }
     return h;
+}
+
+/* The site parts a row reports (the keys encode_event_site() writes), by value. */
+static uint64_t
+fnv1a_site(uint64_t h, const dsd_received_identity* id) {
+    const uint64_t parts[] = {
+        id->family,
+        id->valid,
+        id->p25_wacn,
+        id->p25_sysid,
+        id->p25_rfss,
+        id->p25_site,
+        id->p25_lra,
+        id->dmr_trunk,
+        id->dmr_t3_model,
+        id->dmr_net,
+        id->dmr_site,
+        id->dmr_t3_syscode,
+        id->nxdn_category,
+        id->nxdn_sys,
+        id->nxdn_site,
+        id->nxdn_idas_area,
+        id->nxdn_idas_site_type,
+        id->nxdn_idas_site_code,
+        id->nxdn_typed_sys,
+        id->nxdn_typed_site,
+        id->edacs_site,
+        id->edacs_area,
+        id->edacs_system,
+        (uint64_t)(int64_t)id->edacs_ea_mode,
+        id->tetra_mcc,
+        id->tetra_mnc,
+        id->tetra_colour,
+        id->tetra_la,
+    };
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        h = fnv1a_u64(h, parts[i]);
+    }
+    h = fnv1a_str(h, id->dmr_site_text, sizeof id->dmr_site_text);
+    return fnv1a_str(h, id->dmr_brand, sizeof id->dmr_brand);
 }
 
 /* Everything a client sees of a committed row. */
@@ -308,7 +473,8 @@ row_fingerprint(const Event_History* e) {
     h = fnv1a_str(h, e->text_message, sizeof e->text_message);
     h = fnv1a_str(h, e->event_string, sizeof e->event_string);
     h = fnv1a_str(h, e->internal_str, sizeof e->internal_str);
-    return h;
+    h = fnv1a_byte(h, e->call_channel_kind);
+    return fnv1a_site(h, &e->site_id);
 }
 
 /* The fingerprint of a row as init_event_history() leaves it: never written, or cleared by a history reset. */

@@ -73,7 +73,9 @@ typedef struct {
     dmr_sm_event_type_e type;
     int slot;     // 0 (left/TS1) or 1 (right/TS2), -1 if N/A
     long freq_hz; // Frequency in Hz (for GRANT, 0 to resolve from LPCN)
-    int lpcn;     // Logical Physical Channel Number (for GRANT)
+    int lpcn;     // The call's channel (for GRANT): a Tier III LPCN, a Connect Plus LCN, an XPT LSN; 0 for none
+    /* dsd_call_channel_kind of lpcn (NONE without a channel), as its submitter numbered it. */
+    uint8_t channel_kind;
     int tg;       // Talkgroup (for GRANT, 0 if individual)
     int src;      // Source RID
     int dst;      // Destination RID (for individual GRANT)
@@ -117,7 +119,12 @@ typedef struct {
     /* DSD_CRC_* bits of what named the identity (a RAS-accepted grant, status or LC under -F, a Cap+ status's every
        fragment, or a move's burst with the identity it moved): what a C_MOVE republishes carries them. */
     uint8_t crc_flags;
-    int channel;     // LPCN, or the Capacity Plus LSN, the call was announced on
+    int channel; // the channel the call was announced on (0: none)
+    /* dsd_call_channel_kind of channel: a Tier III LPCN, a Connect Plus LCN, a Cap+ or XPT LSN. */
+    uint8_t channel_kind;
+    /* DSD_CRC_* bits of what named the channel (the grant's, move's or status's burst; a status filling an LC's record):
+       its own provenance, which an LC naming the call keeps with the channel and the channel's publication carries. */
+    uint8_t channel_crc_flags;
     long carrier_hz; // the carrier the identity belongs to
     double follow_m; // decode clock
 
@@ -164,7 +171,8 @@ typedef struct {
 
     // Voice channel context (valid when state == DMR_SM_TUNED)
     long vc_freq_hz;
-    int vc_lpcn;
+    int vc_lpcn;             // the followed call's channel (0: none), named once by the grant or move that tuned it
+    uint8_t vc_channel_kind; // dsd_call_channel_kind of vc_lpcn
     int vc_tg;
     int vc_dst;
     int vc_src;
@@ -414,20 +422,22 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
  * LSN, whose named call is over (an LC's included: its authority ends with its call), or that has no identity at all
  * (one that expired with its call while the companion slot kept the carrier), takes the group, with a new follow time
  * unless it is the same call, and the status's CRC provenance (@p crc_flags, DSD_CRC_*: every fragment's). An @p active LSN with no group (@p tg 0: a private or data call) leaves that
- * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
+ * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing. A current checked LC's
+ * record that names no channel takes the LSN alone, with the status's provenance.
  */
 void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,
                                       int active, uint8_t crc_flags);
 
 /**
- * @brief A channel status (Hytera XPT) names the call on @p slot of carrier @p freq_hz: group @p tg, or (@p tg 0,
- * @p active) a call of no known identity (a private call). On the carrier the machine follows, a slot whose identity a
- * grant gave (not a checked LC naming the call still there) takes the group, with a new follow time when the call
- * changes, or becomes unknown; on the followed slot the grant's identity follows it, so it no longer stands for the
- * slot's call either. An idle slot (neither) changes nothing.
+ * @brief A channel status (Hytera XPT) names the call on @p slot (LSN @p lsn) of carrier @p freq_hz: group @p tg, or
+ * (@p tg 0, @p active) a call of no known identity (a private call). On the carrier the machine follows, a slot whose
+ * identity a grant gave (not a checked LC naming the call still there) takes the group on its own LSN, with a new
+ * follow time when the call changes, or becomes unknown; on the followed slot the grant's identity follows it, so it no
+ * longer stands for the slot's call either. A checked LC's record that names no channel yet takes the LSN alone. An
+ * idle slot (neither) changes nothing.
  */
-void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, long freq_hz, uint32_t tg,
-                                  int active);
+void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, long freq_hz,
+                                  uint32_t tg, int active);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);

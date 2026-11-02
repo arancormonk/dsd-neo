@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
@@ -333,6 +334,16 @@ main(void) {
 
     history[0].Event_History_Items[1].source_id = 123U;
     history[1].Event_History_Items[1].source_id = 456U;
+    /* A committed row's site and the numbering of its channel (issue #799) ride the snapshot with the row. */
+    dsd_received_identity row_site;
+    DSD_MEMSET(&row_site, 0, sizeof row_site);
+    row_site.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    row_site.valid = DSD_RXID_DMR_T3_SYSCODE;
+    row_site.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    row_site.dmr_t3_syscode = 0x0A3FU;
+    DSD_MEMCPY(&history[0].Event_History_Items[1].site_id, &row_site, sizeof row_site);
+    history[0].Event_History_Items[1].channel = 12U;
+    history[0].Event_History_Items[1].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "RADIO-123");
     /* The staged row's rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7) ride the
@@ -389,6 +400,8 @@ main(void) {
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
     assert(dsd_recent_activity_publish(state, 0U, &observation, "mutated TG: 999; ", 2000U) == 1);
     history[0].Event_History_Items[1].source_id = 999U;
+    history[0].Event_History_Items[1].site_id.dmr_t3_syscode = 0x0123U;
+    history[0].Event_History_Items[1].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "MUTATED");
     cc->count = 1;
@@ -418,6 +431,9 @@ main(void) {
            == (DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_CC_FREQ));
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
+    assert(memcmp(&snap->event_history_s[0].Event_History_Items[1].site_id, &row_site, sizeof row_site) == 0);
+    assert(snap->event_history_s[0].Event_History_Items[1].channel == 12U
+           && snap->event_history_s[0].Event_History_Items[1].call_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN);
     assert(snap->event_history_s[0].Event_History_Items[0].policy_target_id == 123U);
     assert(snap->event_history_s[0].Event_History_Items[0].stream_blocked == 1U);
     assert(snap->event_history_s[1].Event_History_Items[0].policy_target_id == 0U);
