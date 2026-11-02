@@ -2776,6 +2776,12 @@ suite runs under this compiler.
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
+    Each importable kind is one row of `k_protocols[]` in `radioreference/rr_generate.c` (trunked or
+    conventional, channel-map need, decode flags, sidecar token, short name, talkgroup-ID ceiling `id_max`, read
+    through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
+    just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
+    over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
+    returns 0 with no text and keeps the trunked "first site only" warning.
     The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
     selection, Hz-to-MHz text, the baked-key rule and the output filename stem — lives in
     `radioreference/rr_import.c` behind `include/dsd-neo/runtime/radioreference_import.h` and compiles with

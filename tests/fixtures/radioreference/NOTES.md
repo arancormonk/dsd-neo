@@ -34,10 +34,39 @@ observed, not inferred; the synthetic addition is explicitly identified.
 | `trs_sites_dmr_conv_small.xml` | sid 12244 | Linn County REC, DMR Conventional Networked — 2 sites, the ordinary small case |
 | `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` `11-24-2026` |
 | `fault_auth.xml` | `getUserData` with a wrong password | HTTP 500, `faultcode` `AUTH` |
+| `trs_details_tetra.xml`, `trs_sites_tetra.xml`, `trs_talkgroups_tetra.xml`, `trs_talkgroup_cats_tetra.xml` | sid 10880 | Kordia KorKor (Auckland, NZ), TETRA — 9 sites, 24 freqs, 16 TGs, 1 category; captured 2026-11-01, see below |
 
 `fault_subscription.xml` was **not** captured: no subscription-class fault was ever observed. An
 expired premium account surfaces through `getUserData`'s `subExpireDate`, exactly as the plan
 assumed. None of the captured responses was synthesized.
+
+## TETRA (sid 10880, captured 2026-11-01)
+
+The four `*_tetra.xml` files are a later capture: `getTrsDetails`, `getTrsSites`, `getTrsTalkgroups` and
+`getTrsTalkgroupCats` for sid 10880, Kordia KorKor, taken on 2026-11-01 with the same kind of premium account and
+copied **byte-exact, with no edits**. They hold no username, licence callsign or other account data, and every byte
+is ASCII.
+
+What the wire shows here, and across the other RadioReference systems typed TETRA that were looked at the same day
+(sids 9772, 6636, 8514, 13442, 7725, 9084, 13787, 2169, 11795, 11639, 12835, 11242, 7902; those files are not
+committed):
+
+- **Type, flavor and voice are always 5 "TETRA", 17 "Standard" and 13 "Tetra Digital".** The flavor table has no
+  other TETRA row. The details carry no `sysid` record.
+- **No `a` mark on any TETRA system seen.** `d` appears on some sites — one per site, or on every frequency of a
+  site — and many sites carry none at all. Here only sites 1 and 2 are marked: site 1 marks its **second** carrier
+  (858.0875), site 2 its first (858.0625); the other seven sites leave `use` nil on every carrier.
+- **Carrier numbers where frequencies belong.** Site 29 (Silverdale) lists `2341` and `2351`. They parse as
+  2341 and 2351 MHz, past the trunking frequency ceiling, so the site has nothing usable to tune.
+- **`tgDec` is the decimal group number (GSSI)**: 1017000..1093000 here, all far below 2^24 (16777216); the largest
+  seen on any TETRA system is 10010012. `tgMode` is `T` and `enc` 0 on every talkgroup, and several alpha tags
+  repeat the number (`Tow 1017000`).
+- **One uppercase `D`** exists elsewhere: IRIS (sid 2169) site 105 marks a carrier `D`, not `d`. It is not in
+  these files.
+- Site fields that mean nothing for TETRA: `ran` is `0`, `nac` empty, `siteModulation`, `colorCode` and `ch_id`
+  nil; `lcn` is a 1-based row index.
+- The one category (`29992`, `All`) carries a `tgSortBy` member, which the 2026-08-15 capture never showed
+  (correction 6 below). The parser ignores it.
 
 ## Synthetic position regression fixture
 

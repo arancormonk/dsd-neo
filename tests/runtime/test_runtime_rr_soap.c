@@ -813,6 +813,80 @@ test_talkgroup_categories(void) {
     dsd_rr_talkgroup_cat_list_free(&cats);
 }
 
+/**
+ * @brief The captured TETRA system (Kordia KorKor, sid 10880) parses whole.
+ *
+ * Its own quirks are the reason it is here: no sysid record at all, a `use`
+ * mark on only two of nine sites, and one site whose "frequencies" are carrier
+ * numbers (2341, 2351) that convert as MHz without complaint.
+ */
+static void
+test_tetra_system(void) {
+    dsd_rr_error err;
+    dsd_rr_trs_details details;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&details, 0, sizeof(details));
+    if (parse_fixture("trs_details_tetra.xml", RR_SHAPE_TRS_DETAILS, &details, &err) == 0) {
+        expect_str("tetra name", details.name, "Kordia KorKor");
+        expect_ll("tetra type", details.type_id, 5);
+        expect_ll("tetra flavor", details.flavor_id, 17);
+        expect_ll("tetra voice", details.voice_id, 13);
+        expect_ll("tetra has no sysid record", (long long)details.sysid_count, 0);
+    }
+    dsd_rr_trs_details_free(&details);
+
+    dsd_rr_site_list sites;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    if (parse_fixture("trs_sites_tetra.xml", RR_SHAPE_SITE_LIST, &sites, &err) == 0) {
+        expect_ll("tetra site count", (long long)sites.count, 9);
+        size_t freqs = 0;
+        size_t marked = 0;
+        for (size_t i = 0; i < sites.count; i++) {
+            freqs += sites.items[i].freq_count;
+            for (size_t f = 0; f < sites.items[i].freq_count; f++) {
+                marked += (sites.items[i].freqs[f].is_control != 0) ? 1U : 0U;
+                expect("no alternate control channel on TETRA", sites.items[i].freqs[f].is_alt_control == 0);
+            }
+        }
+        expect_ll("tetra frequency count", (long long)freqs, 24);
+        expect_ll("tetra marked carriers", (long long)marked, 2);
+        if (sites.count == 9U && sites.items[1].freq_count == 4U && sites.items[2].freq_count == 2U) {
+            expect_str("tetra site 2", sites.items[1].descr, "Sky Tower");
+            expect_ll("tetra site 2 carrier", sites.items[1].freqs[0].freq_hz, 858062500LL);
+            expect_ll("tetra site 2 carrier marked", sites.items[1].freqs[0].is_control, 1);
+            expect_ll("tetra site 29", sites.items[2].site_number, 29);
+            expect_ll("tetra carrier number reads as MHz", sites.items[2].freqs[0].freq_hz, 2341000000LL);
+        }
+    }
+    dsd_rr_site_list_free(&sites);
+
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    if (parse_fixture("trs_talkgroups_tetra.xml", RR_SHAPE_TALKGROUP_LIST, &tgs, &err) == 0) {
+        expect_ll("tetra talkgroup count", (long long)tgs.count, 16);
+        if (tgs.count > 0U) {
+            expect_ll("tetra first tgDec", (long long)tgs.items[0].tg_dec, 1017000);
+            expect_str("tetra first alpha tag", tgs.items[0].alpha_tag, "Tow 1017000");
+            expect_str("tetra first mode", tgs.items[0].mode, "T");
+        }
+    }
+    dsd_rr_talkgroup_list_free(&tgs);
+
+    dsd_rr_talkgroup_cat_list cats;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&cats, 0, sizeof(cats));
+    if (parse_fixture("trs_talkgroup_cats_tetra.xml", RR_SHAPE_TALKGROUP_CAT_LIST, &cats, &err) == 0) {
+        expect_ll("tetra category count", (long long)cats.count, 1);
+        if (cats.count == 1U) {
+            expect_ll("tetra category id", cats.items[0].tg_cid, 29992);
+            expect_str("tetra category name", cats.items[0].name, "All");
+        }
+    }
+    dsd_rr_talkgroup_cat_list_free(&cats);
+}
+
 static void
 test_fault_classification(void) {
     char* body = NULL;
@@ -1043,6 +1117,7 @@ main(void) {
     test_nil_and_nonzoned_sites();
     test_talkgroups();
     test_talkgroup_categories();
+    test_tetra_system();
     test_fault_classification();
     test_hostile_and_malformed_input();
     test_unknown_elements_are_ignored();

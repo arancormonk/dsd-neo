@@ -14,8 +14,8 @@
  * tighter contract than "valid CSV" - see the per-protocol notes below.
  *
  * The same three constraints that shape radioreference.h apply here: every
- * entry point is declared unconditionally, nothing but <stddef.h> and dsd-neo
- * headers is included, and no curl, expat or Qt type is named.
+ * entry point is declared unconditionally, nothing but <stddef.h>, <stdint.h>
+ * and dsd-neo headers is included, and no curl, expat or Qt type is named.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RADIOREFERENCE_GENERATE_H_H
@@ -23,6 +23,7 @@
 
 #include <dsd-neo/runtime/radioreference.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,9 @@ extern "C" {
  * under three system types - P25 (48), DMR (43) and NXDN (45) - and the NXDN
  * pair is split by rate for the same reason the trunked pair is: the decode flag
  * differs (-fi vs -fn).
+ *
+ * New kinds go just before DSD_RR_PROTO_UNSUPPORTED, so no earlier value moves
+ * and every loop over 0..UNSUPPORTED-1 picks them up.
  */
 typedef enum {
     DSD_RR_PROTO_P25 = 0,
@@ -53,6 +57,7 @@ typedef enum {
     DSD_RR_PROTO_DMR_CONV,    /**< DMR flavor 43 "Conventional Networked". */
     DSD_RR_PROTO_NXDN48_CONV, /**< NXDN flavor 45, 4800 bps. */
     DSD_RR_PROTO_NXDN96_CONV, /**< NXDN flavor 45, 9600 bps. */
+    DSD_RR_PROTO_TETRA,       /**< TETRA (type 5): trunked, no channel map. */
     DSD_RR_PROTO_UNSUPPORTED
 } dsd_rr_protocol;
 
@@ -173,9 +178,22 @@ const char* dsd_rr_decode_flag(dsd_rr_protocol protocol, int simulcast, int esk,
  * @return 2 when trunking cannot tune without one, 1 when it is useful but
  *         optional (P25, where the map is the control-channel hunt list; NXDN,
  *         which falls back to DFA; conventional, which needs one only for two
- *         or more repeaters), 0 when no file should be produced.
+ *         or more repeaters), 0 when no file should be produced (TETRA,
+ *         which learns its carriers from the control channel).
  */
 int dsd_rr_chan_map_need(dsd_rr_protocol protocol);
+
+/**
+ * @brief The largest talkgroup ID the protocol can carry.
+ *
+ * TETRA group addresses are 24-bit GSSIs, so a RadioReference tgDec above
+ * 0xFFFFFF cannot be one of its groups.
+ *
+ * @param protocol Protocol.
+ * @return The inclusive ceiling, or 0 when the protocol sets none (every kind
+ *         but TETRA, and DSD_RR_PROTO_UNSUPPORTED).
+ */
+uint32_t dsd_rr_protocol_id_max(dsd_rr_protocol protocol);
 
 /**
  * @brief The site's control-channel frequency.

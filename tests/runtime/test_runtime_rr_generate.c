@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -290,12 +291,17 @@ test_protocol_table(void) {
 
     /* -Y is conventional-only: a trunked import must never pick it up. */
     expect_str("trunked ignores scan_list", dsd_rr_decode_flag(DSD_RR_PROTO_DMR_TIER3, 0, 0, 1), "-fs");
+    /* Trunking is the recipe's own switch: -T never rides inside the flag. */
+    expect_str("TETRA flag", dsd_rr_decode_flag(DSD_RR_PROTO_TETRA, 0, 0, 0), "-fT");
+    expect_str("TETRA ignores every answer", dsd_rr_decode_flag(DSD_RR_PROTO_TETRA, 1, 1, 1), "-fT");
 
     expect("P25 map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_P25) == 1);
     expect("Tier3 map required", dsd_rr_chan_map_need(DSD_RR_PROTO_DMR_TIER3) == 2);
     expect("EDACS map required", dsd_rr_chan_map_need(DSD_RR_PROTO_EDACS_STD) == 2);
     expect("NXDN map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_NXDN48) == 1);
     expect("conv map optional", dsd_rr_chan_map_need(DSD_RR_PROTO_DMR_CONV) == 1);
+    expect("TETRA map none", dsd_rr_chan_map_need(DSD_RR_PROTO_TETRA) == 0);
+    expect("TETRA is trunked", dsd_rr_protocol_is_trunked(DSD_RR_PROTO_TETRA) == 1);
     expect("unsupported map none", dsd_rr_chan_map_need(DSD_RR_PROTO_UNSUPPORTED) == 0);
 
     expect("DMR conv is conventional", dsd_rr_protocol_is_conventional(DSD_RR_PROTO_DMR_CONV) == 1);
@@ -333,6 +339,7 @@ test_protocol_tokens(void) {
         {DSD_RR_PROTO_DMR_CONV, "dmr_conv", "DMR conv"},
         {DSD_RR_PROTO_NXDN48_CONV, "nxdn48_conv", "NXDN48 conv"},
         {DSD_RR_PROTO_NXDN96_CONV, "nxdn96_conv", "NXDN96 conv"},
+        {DSD_RR_PROTO_TETRA, "tetra", "TETRA"},
     };
 
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
@@ -351,7 +358,7 @@ test_protocol_tokens(void) {
     expect("unsupported has no short name", dsd_rr_protocol_short_name(DSD_RR_PROTO_UNSUPPORTED) == NULL);
     /* A token this build does not know is a future protocol, not an error:
      * the caller degrades to "files only" rather than refusing the sidecar. */
-    expect("unknown token is unsupported", dsd_rr_protocol_from_token("tetra") == DSD_RR_PROTO_UNSUPPORTED);
+    expect("unknown token is unsupported", dsd_rr_protocol_from_token("tetra_future") == DSD_RR_PROTO_UNSUPPORTED);
     expect("empty token is unsupported", dsd_rr_protocol_from_token("") == DSD_RR_PROTO_UNSUPPORTED);
     expect("NULL token is unsupported", dsd_rr_protocol_from_token(NULL) == DSD_RR_PROTO_UNSUPPORTED);
     /* Tokens are exact: case is part of the identity. */
@@ -404,7 +411,12 @@ test_classify_strings(void) {
         {"Motorola", "Type II SmartZone", "Analog", DSD_RR_PROTO_UNSUPPORTED},
         {"LTR", "Standard", "", DSD_RR_PROTO_UNSUPPORTED},
         {"OpenSky", "", "", DSD_RR_PROTO_UNSUPPORTED},
-        {"TETRA", "", "", DSD_RR_PROTO_UNSUPPORTED},
+        /* RR's one TETRA flavor is "Standard"; the type alone decides, so a
+         * flavor it adds later still imports. */
+        {"TETRA", "Standard", "Tetra Digital", DSD_RR_PROTO_TETRA},
+        {"TETRA", "", "", DSD_RR_PROTO_TETRA},
+        /* Only the type names TETRA: a flavor or voice mention does not. */
+        {"Other", "TETRA-ish", "Tetra Digital", DSD_RR_PROTO_UNSUPPORTED},
         {"MPT-1327", "", "", DSD_RR_PROTO_UNSUPPORTED},
         {"iDEN", "", "", DSD_RR_PROTO_UNSUPPORTED},
         {"SmarTrunk", "", "", DSD_RR_PROTO_UNSUPPORTED},
@@ -462,6 +474,10 @@ test_classify_from_fixtures(void) {
     /* Namespacing: flavor 8 is EDACS "Networked Standard", not a DMR row. */
     expect_str("flavor 8 under EDACS", dsd_rr_support_lookup(&maps.flavors, 2, 8), "Networked Standard");
     expect_str("flavor 8 absent under DMR", dsd_rr_support_lookup(&maps.flavors, 12, 8), "");
+    /* The only TETRA rows RadioReference publishes. */
+    expect_str("type 5 is TETRA", dsd_rr_support_lookup(&maps.types, 5, 5), "TETRA");
+    expect_str("TETRA flavor 17", dsd_rr_support_lookup(&maps.flavors, 5, 17), "Standard");
+    expect_str("TETRA voice 13", dsd_rr_support_lookup(&maps.voices, 5, 13), "Tetra Digital");
 
     static const struct {
         const char* leaf;
@@ -473,6 +489,7 @@ test_classify_from_fixtures(void) {
         {"trs_details_nxdn.xml", DSD_RR_PROTO_NXDN48},
         {"trs_details_edacs.xml", DSD_RR_PROTO_EDACS_STD},
         {"trs_details_dmr_conv.xml", DSD_RR_PROTO_DMR_CONV},
+        {"trs_details_tetra.xml", DSD_RR_PROTO_TETRA},
     };
 
     for (size_t i = 0; i < sizeof(systems) / sizeof(systems[0]); i++) {
@@ -1494,6 +1511,100 @@ test_chan_argument_validation(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+/* ------------------------------------------------------------------------- */
+/* TETRA                                                                      */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Build a TETRA plan for one fixture site. */
+static int
+tetra_fixture_plan(const dsd_rr_site_list* sites, size_t site, const dsd_rr_talkgroup_list* tgs,
+                   dsd_rr_import_plan* plan) {
+    dsd_rr_system_info info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.protocol = DSD_RR_PROTO_TETRA;
+    info.supported = 1;
+    info.trunked = 1;
+    const size_t selected[] = {site};
+    const dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
+    DSD_MEMSET(plan, 0, sizeof(*plan));
+    return dsd_rr_import_plan_build(&info, sites->items, sites->count, selected, 1U, (tgs != NULL) ? tgs->items : NULL,
+                                    (tgs != NULL) ? tgs->count : 0U, &options, plan);
+}
+
+/**
+ * @brief Plan the captured TETRA system (Kordia KorKor, sid 10880) site by site.
+ *
+ * Its nine sites hold every shape RadioReference gives TETRA: a `d` on the
+ * first carrier (site 2), a `d` on a later one (site 1), no mark at all (the
+ * rest), and carrier numbers where frequencies belong (site 29).
+ */
+static void
+test_plan_tetra_fixture(void) {
+    dsd_rr_site_list sites;
+    dsd_rr_talkgroup_list tgs;
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    DSD_MEMSET(&tgs, 0, sizeof(tgs));
+    if (parse_fixture("trs_sites_tetra.xml", RR_SHAPE_SITE_LIST, &sites) != 0 || sites.count != 9U
+        || parse_fixture("trs_talkgroups_tetra.xml", RR_SHAPE_TALKGROUP_LIST, &tgs) != 0) {
+        expect("tetra fixture has nine sites", sites.count == 9U);
+        dsd_rr_site_list_free(&sites);
+        dsd_rr_talkgroup_list_free(&tgs);
+        return;
+    }
+    expect("fixture site order", sites.items[0].site_number == 1 && sites.items[1].site_number == 2
+                                     && sites.items[2].site_number == 29 && sites.items[3].site_number == 9991);
+
+    dsd_rr_import_plan plan;
+    expect("sky tower plan built", tetra_fixture_plan(&sites, 1U, &tgs, &plan) == 0);
+    expect("sky tower ok", plan.ok == 1);
+    expect("sky tower trunking", plan.trunking == 1 && plan.conventional == 0);
+    expect_str("sky tower flag", plan.decode_flag, "-fT");
+    expect("sky tower has no channel map", plan.chan_csv_text == NULL && plan.chan_csv_len == 0U);
+    expect("sky tower tunes its marked carrier", plan.tune_hz == 858062500LL);
+    expect_str("sky tower label", plan.site_label, "Sky Tower");
+    expect_str("sky tower provenance", plan.site_ids, "35613");
+    expect("sky tower has a talkgroup list", plan.group_csv_text != NULL);
+    if (plan.group_csv_text != NULL) {
+        expect("sky tower keeps the GSSI as written",
+               strstr(plan.group_csv_text, "\n1093000,A,Debt 1093000\n") != NULL);
+        dsd_csv_validation counts;
+        DSD_MEMSET(&counts, 0, sizeof(counts));
+        if (validate_generated(plan.group_csv_text, 1, &counts) == 0) {
+            expect_counts("tetra group round-trip", &counts, 16U, 0U);
+        }
+    }
+    /* The group writer's own count is the only note. */
+    if (plan.warnings.count != 1U) {
+        dump_warnings(&plan.warnings);
+    }
+    expect_size("sky tower warns only the talkgroup count", plan.warnings.count, 1U);
+    expect("sky tower talkgroup count noted", warned(&plan.warnings, "16 talkgroup(s) written."));
+    dsd_rr_import_plan_free(&plan);
+
+    /* The mark wins over the carrier listed before it. */
+    expect("waiatarua plan built", tetra_fixture_plan(&sites, 0U, NULL, &plan) == 0);
+    expect("waiatarua tunes its marked carrier", plan.ok == 1 && plan.tune_hz == 858087500LL);
+    expect("waiatarua without talkgroups writes nothing", plan.group_csv_text == NULL && plan.chan_csv_text == NULL);
+    expect_size("waiatarua is silent", plan.warnings.count, 0U);
+    dsd_rr_import_plan_free(&plan);
+
+    expect("redoubt road plan built", tetra_fixture_plan(&sites, 3U, NULL, &plan) == 0);
+    expect("redoubt road ok", plan.ok == 1);
+    expect("redoubt road starts on its first carrier", plan.tune_hz == 863737500LL);
+    expect("redoubt road says nothing is marked",
+           warned(&plan.warnings, "RadioReference marks no control channel for this site"));
+    dsd_rr_import_plan_free(&plan);
+
+    expect("silverdale plan built", tetra_fixture_plan(&sites, 2U, &tgs, &plan) == 0);
+    expect("silverdale is blocked", plan.ok == 0 && plan.awaiting_selection == 0);
+    expect_str("silverdale wording", plan.blocked_reason,
+               "This site lists no frequency to start on, so the session would have nothing to tune.");
+    dsd_rr_import_plan_free(&plan);
+
+    dsd_rr_talkgroup_list_free(&tgs);
+    dsd_rr_site_list_free(&sites);
+}
+
 static void
 test_group_listening_policy(void) {
     dsd_rr_talkgroup groups[3] = {{0}};
@@ -1547,6 +1658,7 @@ main(void) {
     test_chan_conventional_duplicate_freq_names();
     test_simulcast();
     test_chan_argument_validation();
+    test_plan_tetra_fixture();
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

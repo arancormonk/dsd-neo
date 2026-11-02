@@ -282,22 +282,25 @@ typedef struct {
        sidecars. */
     const char* token;
     const char* short_name;
+    /* Largest talkgroup ID the protocol can carry, inclusive; 0 sets none. */
+    uint32_t id_max;
 } rr_protocol_entry;
 
 static const rr_protocol_entry k_protocols[] = {
-    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL, "p25", "P25"},
-    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_conplus", "DMR Con+"},
-    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_capplus", "DMR Cap+"},
-    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_tier3", "DMR TIII"},
-    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_xpt", "DMR XPT"},
-    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL, "nxdn48", "NXDN48"},
-    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL, "nxdn96", "NXDN96"},
-    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL, "edacs_std", "EDACS"},
-    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL, "edacs_ea", "EDACS EA"},
-    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y", "p25_conv", "P25 conv"},
-    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL, "dmr_conv", "DMR conv"},
-    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL, "nxdn48_conv", "NXDN48 conv"},
-    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL, "nxdn96_conv", "NXDN96 conv"},
+    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL, "p25", "P25", 0U},
+    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_conplus", "DMR Con+", 0U},
+    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_capplus", "DMR Cap+", 0U},
+    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_tier3", "DMR TIII", 0U},
+    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_xpt", "DMR XPT", 0U},
+    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL, "nxdn48", "NXDN48", 0U},
+    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL, "nxdn96", "NXDN96", 0U},
+    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL, "edacs_std", "EDACS", 0U},
+    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL, "edacs_ea", "EDACS EA", 0U},
+    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y", "p25_conv", "P25 conv", 0U},
+    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL, "dmr_conv", "DMR conv", 0U},
+    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL, "nxdn48_conv", "NXDN48 conv", 0U},
+    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL, "nxdn96_conv", "NXDN96 conv", 0U},
+    {DSD_RR_PROTO_TETRA, 0U, 0U, RR_ALT_NEVER, "-fT", NULL, NULL, NULL, "tetra", "TETRA", 0xFFFFFFU},
 };
 
 /**
@@ -332,6 +335,12 @@ int
 dsd_rr_chan_map_need(dsd_rr_protocol protocol) {
     const rr_protocol_entry* row = rr_protocol_row(protocol);
     return (row != NULL) ? (int)row->map_need : 0;
+}
+
+uint32_t
+dsd_rr_protocol_id_max(dsd_rr_protocol protocol) {
+    const rr_protocol_entry* row = rr_protocol_row(protocol);
+    return (row != NULL) ? row->id_max : 0U;
 }
 
 const char*
@@ -480,6 +489,11 @@ dsd_rr_protocol_classify(const char* type_descr, const char* flavor_descr, const
     }
     if (rr_contains_ci(type, "EDACS")) {
         return rr_classify_edacs(flavor);
+    }
+    /* RadioReference has one TETRA flavor ("Standard"); the type alone decides
+     * so a flavor it adds later still imports. */
+    if (rr_contains_ci(type, "TETRA")) {
+        return DSD_RR_PROTO_TETRA;
     }
     if (rr_contains_ci(type, "DMR") || rr_contains_ci(flavor, "MOTOTRBO")) {
         return rr_classify_dmr(flavor);
@@ -1212,7 +1226,10 @@ dsd_rr_generate_chan_csv(dsd_rr_protocol protocol, const dsd_rr_site* sites, siz
         if (site_count > 1U) {
             rr_warn(warnings, "This system is trunked, so only the first selected site was used.");
         }
-        rc = rr_chan_trunked(protocol, &sites[0], &text, warnings);
+        /* A kind with no channel map (TETRA, which learns its carriers from the
+         * control channel) emits no rows, so the header-only check below
+         * returns the valid "no -C file" result. */
+        rc = (dsd_rr_chan_map_need(protocol) == 0) ? 0 : rr_chan_trunked(protocol, &sites[0], &text, warnings);
     }
 
     if (rc != 0 || text.failed) {

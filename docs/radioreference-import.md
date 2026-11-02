@@ -287,7 +287,8 @@ list — RadioReference adds rows over time.
 | EDACS Standard / Networked / Narrowband | `-fh`, or `-fH` with ESK | Yes, strictly positional |
 | EDACS Extended Addressing | `-fe`, or `-fE` with ESK | Yes, strictly positional |
 | P25 / DMR / NXDN **Conventional Networked** | see below | Only with two or more repeaters, each row named |
-| Everything else (LTR, Motorola, OpenSky, iDEN, TETRA, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
+| TETRA | `-fT`, with trunking on | Never — the decoder learns the cell's carriers from its control channel |
+| Everything else (LTR, Motorola, OpenSky, iDEN, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
 
 `-^` rides with every P25 import on purpose. Supplying a channel map tells the decoder a user LCN
 list exists, which otherwise disables its own learned control-channel candidates; `-^` puts the
