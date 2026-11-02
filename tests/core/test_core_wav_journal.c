@@ -1328,17 +1328,21 @@ test_nfm_start_moves_back_by_its_preroll(void) {
    both record, over the open time and the row's start; with none, both keep the later of the two. */
 static int
 test_stamped_start_is_the_journal_and_sidecar_start(void) {
+    /* Seconds after k_t0; a started offset of 0 means the recorder stamped no start. */
     static const struct {
-        time_t opened;
-        time_t started;
-        long long want;
+        int opened;
+        int started;
+        int want;
     } cases[] = {
-        {(time_t)(k_t0 + 52), (time_t)(k_t0 + 47), (long long)k_t0 + 47},
-        {(time_t)(k_t0 + 52), 0, (long long)k_t0 + 52},
+        {52, 47, 47},
+        {52, 0, 52},
     };
 
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const time_t opened = (time_t)(k_t0 + (uint64_t)cases[i].opened);
+        const time_t started = cases[i].started > 0 ? (time_t)(k_t0 + (uint64_t)cases[i].started) : 0;
+        const long long want_start = (long long)k_t0 + cases[i].want;
         rig r;
         rc |= rig_open(&r, "dsdneo_journal_stamped_start");
         r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -1355,11 +1359,10 @@ test_stamped_start_is_the_journal_and_sidecar_start(void) {
             }
             (void)sf_write_short(wav, pcm, 960);
             clock_at(k_t0 + 55);
-            (void)close_and_publish_call_wav_ex(wav, r.opts, r.state, 0, temp, r.dir, cases[i].opened,
-                                                cases[i].started);
+            (void)close_and_publish_call_wav_ex(wav, r.opts, r.state, 0, temp, r.dir, opened, started);
         }
         reload(&r);
-        rc |= expect_int("stamped start: the journal's", nfm_start(0), cases[i].want);
+        rc |= expect_int("stamped start: the journal's", nfm_start(0), want_start);
         const char* pub = record(&g_j, "publish", 0);
         char sidecar[DSD_TEST_PATH_MAX * 2];
         char body[4096];
@@ -1370,12 +1373,13 @@ test_stamped_start_is_the_journal_and_sidecar_start(void) {
             DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
             FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
             if (f) {
-                (void)fread(body, 1, sizeof body - 1, f);
+                const size_t got = fread(body, 1, sizeof body - 1, f);
+                body[got] = '\0';
                 (void)fclose(f);
             }
         }
         char want[64];
-        DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", cases[i].want);
+        DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", want_start);
         rc |= expect_true("stamped start: the sidecar's is the journal's", strstr(body, want) != NULL);
         rig_close(&r);
     }
