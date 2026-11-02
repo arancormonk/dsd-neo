@@ -163,3 +163,23 @@ rr_panel_plan_line(const dsd_rr_import_plan* plan, char* out, size_t out_sz) {
         plan->trunking ? "trunked" : "conventional", files, (plan->freq_mhz[0] != '\0') ? plan->freq_mhz : "-");
     return 0;
 }
+
+size_t
+rr_panel_plan_note(const dsd_rr_import_plan* plan, const char** lines, size_t max_lines) {
+    /* The Qt screen's note, cut to the terminal: the receiver it needs (the
+       import's verdict refuses an RTL-SDR or rtl_tcp at another bandwidth and
+       every Airspy), then the Tetrapol caveat. */
+    static const char* const k_tetra[RR_PANEL_NOTE_LINES_MAX] = {
+        "TETRA needs RTL-SDR or rtl_tcp at 72 kHz, or a symbol capture; no Airspy.",
+        "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.",
+    };
+    if (plan == NULL || lines == NULL || plan->protocol != DSD_RR_PROTO_TETRA) {
+        return 0;
+    }
+    size_t n = 0;
+    while (n < max_lines && n < RR_PANEL_NOTE_LINES_MAX) {
+        lines[n] = k_tetra[n];
+        n++;
+    }
+    return n;
+}

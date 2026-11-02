@@ -8935,7 +8935,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
-    `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`)
+    `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`). The system view's text
+    comes from the pure formatters in `rr_panel_format.{h,c}` (`UI_RR_PANEL`), the TETRA note under the site list
+    included (`rr_panel_plan_note()`, mirroring the Qt screen's; the window grows by its rows)
   - Invariant (issue #803): nothing posts an RR apply, or writes its files, before the session gate says yes. The
     wizard asks `rr_wizard_core_apply_block_reason()` with the plan's own outputs (has group / has chan from the
     generated text, before any path exists) on every rebuild and again at Enter; the Imported Systems browser asks

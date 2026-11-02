@@ -341,7 +341,8 @@ a TETRA system switched to an Airspy keeps TETRA but cannot continue until you p
 another decode mode; the reason shows under the decode chips. The bandwidth field's hint shows what an empty
 field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in
 the review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo
-cannot decode.
+cannot decode. The terminal wizard says the same in two lines under the site list of a TETRA system: an
+RTL-SDR or rtl_tcp radio at 72 kHz or a symbol capture, no Airspy, and the Tetrapol caveat.
 
 ## What gets generated
 

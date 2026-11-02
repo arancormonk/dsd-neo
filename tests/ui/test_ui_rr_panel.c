@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
 #include "rr_panel_format.h"
@@ -199,6 +200,35 @@ test_plan_line_awaiting_a_selection(void) {
     assert(strcmp(line, "Select at least one repeater.") == 0);
 }
 
+/*
+ * A TETRA import says what it needs and the Tetrapol caveat, as the Qt screen
+ * does: nothing in a RadioReference record tells Tetrapol from TETRA. Each line
+ * fits the 74 columns an 80-column terminal gives the panel, unwrapped. No other
+ * protocol has a note.
+ */
+static void
+test_plan_note_for_tetra_only(void) {
+    dsd_rr_import_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof plan);
+    const char* lines[RR_PANEL_NOTE_LINES_MAX + 1] = {NULL, NULL, NULL};
+
+    plan.protocol = DSD_RR_PROTO_TETRA;
+    assert(rr_panel_plan_note(&plan, lines, RR_PANEL_NOTE_LINES_MAX + 1) == 2U);
+    assert(strcmp(lines[0], "TETRA needs RTL-SDR or rtl_tcp at 72 kHz, or a symbol capture; no Airspy.") == 0);
+    assert(strcmp(lines[1], "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.") == 0);
+    assert(lines[2] == NULL);
+    for (size_t i = 0; i < 2U; i++) {
+        assert(strlen(lines[i]) <= 74U);
+    }
+    assert(rr_panel_plan_note(&plan, lines, 1U) == 1U);
+    assert(rr_panel_plan_note(NULL, lines, 2U) == 0U);
+
+    plan.protocol = DSD_RR_PROTO_P25;
+    assert(rr_panel_plan_note(&plan, lines, 2U) == 0U);
+    plan.protocol = DSD_RR_PROTO_DMR_TIER3;
+    assert(rr_panel_plan_note(&plan, lines, 2U) == 0U);
+}
+
 int
 main(void) {
     test_site_row_trunked_with_control();
@@ -210,6 +240,7 @@ main(void) {
     test_plan_line_normal();
     test_plan_line_blocked();
     test_plan_line_awaiting_a_selection();
+    test_plan_note_for_tetra_only();
     printf("UI_RR_PANEL: OK\n");
     return 0;
 }

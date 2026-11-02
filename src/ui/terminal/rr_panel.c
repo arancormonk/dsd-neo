@@ -718,8 +718,15 @@ rr_panel_center_axis(int screen_extent, int window_extent) {
     return pos;
 }
 
+/* The system view's width on a @p screen_w-column screen. */
 static int
-rr_panel_compute_rect(int site_count, int screen_h, int screen_w, int* h, int* w, int* wy, int* wx) {
+rr_panel_window_width(int screen_w) {
+    return (RR_PANEL_MAX_W < screen_w - 2) ? RR_PANEL_MAX_W : (screen_w - 2);
+}
+
+/* @p note_rows is the plan note's height; the window grows by it while the screen has the room. */
+static int
+rr_panel_compute_rect(int site_count, int note_rows, int screen_h, int screen_w, int* h, int* w, int* wy, int* wx) {
     if (h == NULL || w == NULL || wy == NULL || wx == NULL) {
         return 0;
     }
@@ -731,14 +738,11 @@ rr_panel_compute_rect(int site_count, int screen_h, int screen_w, int* h, int* w
        (local_h starts at RR_PANEL_CHROME_ROWS + 1 == RR_PANEL_MIN_H). A second "raise back
        to the minimum" clamp would therefore be dead code, which CodeQL's
        cpp/constant-comparison flags. */
-    int local_h = RR_PANEL_CHROME_ROWS + ((site_count > 0) ? site_count : 1);
+    int local_h = RR_PANEL_CHROME_ROWS + ((note_rows > 0) ? note_rows : 0) + ((site_count > 0) ? site_count : 1);
     if (local_h > screen_h - 2) {
         local_h = screen_h - 2;
     }
-    int local_w = RR_PANEL_MAX_W;
-    if (local_w > screen_w - 2) {
-        local_w = screen_w - 2;
-    }
+    const int local_w = rr_panel_window_width(screen_w);
     *h = local_h;
     *w = local_w;
     *wy = rr_panel_center_axis(screen_h, local_h);
@@ -923,6 +927,33 @@ rr_panel_draw_wrapped(WINDOW* win, int y, int max_rows, int width, const char* t
     return n;
 }
 
+/* Rows the plan's note takes at @p body_w, each line wrapped on its own as rr_panel_draw_note() draws it. */
+static int
+rr_panel_note_rows(const dsd_rr_import_plan* plan, int body_w) {
+    const char* lines[RR_PANEL_NOTE_LINES_MAX];
+    const size_t n = rr_panel_plan_note(plan, lines, RR_PANEL_NOTE_LINES_MAX);
+    int rows = 0;
+    for (size_t i = 0; i < n; i++) {
+        UiTextSlice slices[RR_PANEL_WRAP_ROWS_MAX];
+        rows += ui_text_wrap(lines[i], body_w, RR_PANEL_WRAP_ROWS_MAX, slices, NULL);
+    }
+    return rows;
+}
+
+/* The plan's note (rr_panel_plan_note()) in the @p rows rows from @p y, between the site list and the options row:
+   advice rather than a warning about this import, so dimmed like the menus' help text and without the "!" mark. */
+static void
+rr_panel_draw_note(WINDOW* win, int y, int rows, int body_w, const dsd_rr_import_plan* plan) {
+    const char* lines[RR_PANEL_NOTE_LINES_MAX];
+    const size_t n = rr_panel_plan_note(plan, lines, RR_PANEL_NOTE_LINES_MAX);
+    const int y_end = y + rows;
+    wattron(win, A_DIM);
+    for (size_t i = 0; i < n && y < y_end; i++) {
+        y += rr_panel_draw_wrapped(win, y, y_end - y, body_w, lines[i], NULL);
+    }
+    wattroff(win, A_DIM);
+}
+
 static void
 rr_panel_draw_warnings(WINDOW* win, int h, int body_w, const dsd_rr_import_plan* plan) {
     if (plan == NULL) {
@@ -997,21 +1028,26 @@ rr_panel_render_system(void) {
     int scr_h = 0;
     int scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
+    /* Re-fetch the plan on every render: any mutator frees the previous one. */
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(g_rr_panel.core);
+    int note_rows = rr_panel_note_rows(plan, rr_panel_window_width(scr_w) - 4);
     int h = 0;
     int w = 0;
     int wy = 0;
     int wx = 0;
-    if (!rr_panel_compute_rect((int)sites->count, scr_h, scr_w, &h, &w, &wy, &wx)) {
+    if (!rr_panel_compute_rect((int)sites->count, note_rows, scr_h, scr_w, &h, &w, &wy, &wx)) {
         return;
     }
     WINDOW* win = rr_panel_ensure_window(h, w, wy, wx);
     if (win == NULL) {
         return;
     }
-    /* Re-fetch the plan on every render: any mutator frees the previous one. */
-    const dsd_rr_import_plan* plan = rr_wizard_core_plan(g_rr_panel.core);
     const int body_w = (w > 4) ? (w - 4) : 1;
-    g_rr_panel.page_rows = h - RR_PANEL_CHROME_ROWS;
+    /* A screen too short for the whole note keeps one site row; the note gives way. */
+    if (note_rows > h - RR_PANEL_CHROME_ROWS - 1) {
+        note_rows = h - RR_PANEL_CHROME_ROWS - 1;
+    }
+    g_rr_panel.page_rows = h - RR_PANEL_CHROME_ROWS - note_rows;
     rr_panel_clamp_selection((int)sites->count);
     werase(win);
     box(win, 0, 0);
@@ -1019,6 +1055,7 @@ rr_panel_render_system(void) {
     rr_panel_draw_header(win, body_w, info);
     rr_panel_draw_heading(win, body_w, info, sites);
     rr_panel_draw_sites(win, w, body_w, info, sites);
+    rr_panel_draw_note(win, h - 9 - note_rows, note_rows, body_w, plan);
     rr_panel_draw_options(win, h, body_w, rr_wizard_core_options(g_rr_panel.core), plan);
     rr_panel_draw_warnings(win, h, body_w, plan);
     rr_panel_draw_plan(win, h, body_w, plan);
