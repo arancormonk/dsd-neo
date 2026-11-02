@@ -436,14 +436,15 @@ county-p25 (0 avoided)`). Nothing retunes: the receiver stays where it is, and a
 failed retune and the dwell are left as they were. Esc closes the list and changes nothing. **Clear avoids** puts
 every entry back at once.
 
-The list and Clear are offered while a scan runs and, outside one, while avoids are left. A `-Y` list's avoids
-outlive the scan: the DMR and NXDN control-channel hunts under `-T` still skip those rows, so with `-Y` stopped, under
-`-T` and on a paused scan the list and Clear stay, and the main screen keeps the count (see "Channel Labels"). Avoid
-current channel needs a running scan. Avoids are never saved.
+The list and Clear are offered while a scan runs (with none avoided, the list says `No avoided channels`) and,
+outside one, while avoids are left. A `-Y` list's avoids outlive the scan: the DMR and NXDN control-channel hunts under
+`-T` still skip those rows, so with `-Y` stopped, under `-T` and on a paused scan the list and Clear stay, and the main
+screen keeps the count (see "Channel Labels"). Avoid current channel needs a running scan. Avoids are never saved.
 
 If the scan list changed after the list opened (a map reload or a restart), Enter puts nothing back and says
 `Scan list changed; nothing put back`; open the list again. `[?]` in place of the count means the screen's copy of the
-avoids is not whole yet: the list then says `Avoided channel list not ready; try again`, and Clear still works.
+avoids is not whole yet (a `-Y` list's Scan Mode row reads `Avoids: ?` then): the list says `Avoided channel list not
+ready; try again`, and Clear still works.
 
 ### Decoder mode
 

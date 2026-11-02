@@ -174,13 +174,16 @@ match responses by `id`.
 
 * Integer parameters take JSON integers. `5.0` and `5e0` are not integers.
 * 64-bit values -- key words, `policy_context`, `wacn`/`sysid`/`cc`,
-  `tune_generation`, `key_epoch`, the scan avoid `instance` and `list_rev` --
-  also take a string holding a decimal value or a `0x`-prefixed hexadecimal
-  one, so a client whose JSON numbers are doubles can send every bit. The
-  server writes 64-bit identifiers as decimal strings for the same reason.
-  The other unsigned scan avoid fields take the same strings: `session` and
-  `frequency_hz` (`scan_avoid_remove`), and `offset` and `limit`
-  (`get scan_avoids`). A `row` is a JSON integer only.
+  `tune_generation`, `key_epoch`, and the scan avoid `instance`, `list_rev`
+  and `frequency_hz` -- also take a string holding a decimal value or a
+  `0x`-prefixed hexadecimal one, so a client whose JSON numbers are doubles
+  can send every bit. The server writes 64-bit identifiers as decimal strings
+  for the same reason.
+* The other unsigned parameters take the same strings: `policy_generation`,
+  `id_start`/`id_end`, `count` (`tg_selection_set`), `tune_hz`
+  (`rr_apply_import`), `session` (`scan_row_edit` and `scan_avoid_remove`),
+  and `offset` and `limit` (`get scan_avoids`). Signed parameters, such as a
+  scan row's `row`, are JSON integers only.
 * Booleans take `true`/`false` or `0`/`1`.
 * A string longer than the command's field is refused with `invalid_params`,
   never cut short. Each string command's limit is in its catalog entry (most
