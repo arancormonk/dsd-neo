@@ -62,22 +62,30 @@ void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind 
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
  * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
  *
- * Called after the import posted its own toast. The poll then posts each outcome: a late failure posts
- * @p failure_text; a landing, or a drop (a newer tune took over, the stream stopped), replaces the import's toast or a
- * line already cleared, never a newer message, and the import's toast only when @p own_toast_replaceable (it reported
- * a success the landing completes, not a failure the landing would hide).
+ * Called after the import posted its own toast, which names the pending tune. The poll then posts each outcome: a late
+ * failure posts @p failure_text; a landing (@p landed_text), or a drop by a newer tune or by the stream stopping,
+ * replaces the import's toast only while that toast is still up, never a newer message or a cleared line. A drop by the
+ * owner's own continuation (dsd_engine_manual_tune_owner_takes_over()) says nothing. The engine's synced-frames loop ends
+ * a reception at once on an announced drop or a stream stop, so each report reaches the poll while the toast is up.
  *
- * @param state                 Decoder state; its ui_msg is the import's toast.
- * @param id                    The ID io_control_set_freq_tagged() handed back; 0 notes nothing and leaves any older
- *                              tune noted (a tune that was not queued supersedes nothing).
- * @param requested_hz          The frequency asked for.
- * @param prior_applied_hz      The centre in force before the tune.
- * @param failure_text          The toast a late failure posts; NULL or empty for the plain tune failure.
- * @param own_toast_replaceable Non-zero when a landing or a drop may replace the import's toast.
+ * @param state            Decoder state; its ui_msg is the import's toast.
+ * @param id               The ID io_control_set_freq_tagged() handed back; 0 notes nothing and leaves any older tune
+ *                         noted (a tune that was not queued supersedes nothing).
+ * @param requested_hz     The frequency asked for.
+ * @param prior_applied_hz The centre in force before the tune.
+ * @param failure_text     The toast a late failure posts; NULL or empty for the plain tune failure.
+ * @param landed_text      The toast a landing posts; NULL or empty for the plain landing.
  */
 void dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32_t requested_hz,
                                            uint32_t prior_applied_hz, const char* failure_text,
-                                           int own_toast_replaceable);
+                                           const char* landed_text);
+
+/**
+ * @brief Say that the tune about to supersede the noted one is its owner's continuation: a trunking state machine's or
+ * a scan's own tune, after the RadioReference import that turned it on. The import's drop is then not announced (it
+ * would read as a failed import). Called right before dsd_engine_manual_tune_supersede(); nothing for another kind.
+ */
+void dsd_engine_manual_tune_owner_takes_over(void);
 
 /**
  * @brief Drop the noted tune: another tune of the receiver now decides where the receiver is. The next

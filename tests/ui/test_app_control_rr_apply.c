@@ -1517,7 +1517,8 @@ test_apply_pending_tune_outcomes(void) {
     rc |= expect_int("pending: landed", dsd_engine_manual_tune_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
     dsd_engine_manual_tune_last_settled(&settled);
     rc |= expect_int("pending: an RR import's", (int)settled.kind, DSD_MANUAL_TUNE_RR_IMPORT);
-    rc |= expect_str("pending: landing toast", state.ui_msg, "Applied: RR import -> tuned to 851.012500 MHz");
+    rc |= expect_str("pending: landing toast", state.ui_msg,
+                     "Applied: RR import (P25 (Phase 1 + 2)) +trunking; tuned to 851.012500 MHz");
     rc |= expect_int("pending: centre", (int)opts.rtlsdr_center_freq, (int)RR_TUNE_HZ);
     tune_session_end(&state);
 
@@ -1551,8 +1552,8 @@ test_apply_pending_tune_outcomes(void) {
     rc |= expect_str("superseded under news: newer message kept", state.ui_msg, "Applied: tuned -> 853.000000 MHz");
     tune_session_end(&state);
 
-    /* PENDING with a file that did not load: the partial apply stays up over the landing, and a late failure names
-       both. */
+    /* PENDING with a file that did not load: the partial apply names the tune on its way, and its outcome replaces it,
+       keeping what failed (review fix: the landing was said nowhere). A late failure names both. */
     payload_files(&p, "rr_apply_tune_chan.csv", "rr_apply_tune_group.csv");
     const char* partial = "Failed: RR import -> channel map not loaded; mode and talkgroups applied";
     for (int late_failure = 0; late_failure <= 1; late_failure++) {
@@ -1561,14 +1562,17 @@ test_apply_pending_tune_outcomes(void) {
         g_chan_import_fails = 1;
         rc |= apply_tuned_import("pending partial", &opts, &state, &p, RTL_STREAM_TUNE_TIMEOUT, id);
         g_chan_import_fails = 0;
-        rc |= expect_str("pending partial: toast", state.ui_msg, partial);
+        char want[sizeof state.ui_msg];
+        DSD_SNPRINTF(want, sizeof want, "%s; tuning to 851.012500 MHz", partial);
+        rc |= expect_str("pending partial: toast names the tune", state.ui_msg, want);
         dsd_engine_manual_tune_completion(id, late_failure ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_OK);
         (void)dsd_engine_manual_tune_poll(&opts, &state);
-        rc |= expect_str(late_failure ? "pending partial: late failure names both" : "pending partial: landing quiet",
+        DSD_SNPRINTF(want, sizeof want, "%s; tuned to 851.012500 MHz", partial);
+        rc |= expect_str(late_failure ? "pending partial: late failure names both" : "pending partial: landing said",
                          state.ui_msg,
                          late_failure ? "Failed: RR import -> tune to 851.012500 MHz failed and channel map not "
                                         "loaded; mode and talkgroups applied"
-                                      : partial);
+                                      : want);
         tune_session_end(&state);
     }
     (void)remove("rr_apply_tune_chan.csv");

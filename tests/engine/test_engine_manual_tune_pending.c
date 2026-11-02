@@ -517,38 +517,39 @@ test_manual_ids_stay_out_of_the_ledger(fixture* f) {
 
 /* Issue #803: a RadioReference import's tune that timed out, as rr_apply_report() notes it after posting its toast. */
 #define RR_OWN_TOAST    "Applied: RR import (P25 Phase 1); tuning to 853.000000 MHz"
+#define RR_LANDED_TEXT  "Applied: RR import (P25 Phase 1); tuned to 853.000000 MHz"
 #define RR_FAILURE_TEXT "Failed: RR import -> tune to 853.000000 MHz failed; mode applied"
 
 static uint64_t
-import_tune(fixture* f, int own_toast_replaceable) {
+import_tune(fixture* f) {
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
     DSD_SNPRINTF(f->state->ui_msg, sizeof f->state->ui_msg, "%s", RR_OWN_TOAST);
-    f->state->ui_msg_expire = dsd_realtime_time() + 4;
-    dsd_engine_manual_tune_note_rr_import(f->state, pending_id, ENTRY_A_HZ, prior_hz, RR_FAILURE_TEXT,
-                                          own_toast_replaceable);
+    f->state->ui_msg_expire = dsd_realtime_time() + 8;
+    dsd_engine_manual_tune_note_rr_import(f->state, pending_id, ENTRY_A_HZ, prior_hz, RR_FAILURE_TEXT, RR_LANDED_TEXT);
     return pending_id;
 }
 
 /* Every outcome is posted: the landing (which ends a synced reception, as an untyped step's does), the late failure
-   (its text, the centre back), a drop by a newer tune and one by the stream stopping. A landing or a drop takes only
-   the import's own toast or a cleared line, never a newer message, and not a toast the import marked as a failure. */
+   (its text, the centre back), a drop by a newer tune and one by the stream stopping, both of which end a synced
+   reception at once. A landing or a drop takes only the import's own toast while it is up, never a newer message nor a
+   line already cleared (a drop polled late would come out of nowhere). */
 static void
 test_rr_import_reports_each_outcome(fixture* f) {
     fixture_begin(f);
-    uint64_t id = import_tune(f, 1);
+    uint64_t id = import_tune(f);
     assert(dsd_engine_manual_tune_noted() == 1 && dsd_engine_manual_tune_settled_ready() == 0);
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
     assert(dsd_engine_manual_tune_settled_ready() == 1);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
-    assert(toast_is(f->state, "Applied: RR import -> tuned to 853.000000 MHz"));
+    assert(toast_is(f->state, RR_LANDED_TEXT));
     assert(f->opts->rtlsdr_center_freq == ENTRY_A_HZ);
     fixture_end();
 
     fixture_begin(f);
-    id = import_tune(f, 1);
+    id = import_tune(f);
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ) == 0);
     assert(dsd_engine_manual_tune_settled_ready() == 1);
@@ -557,44 +558,84 @@ test_rr_import_reports_each_outcome(fixture* f) {
     assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
     fixture_end();
 
-    /* Superseded with the import's toast up, then under a newer message. */
+    /* Superseded with the import's toast up: ready at once, and said. */
     fixture_begin(f);
-    (void)import_tune(f, 1);
+    (void)import_tune(f);
     dsd_engine_manual_tune_supersede(f->state);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
     assert(toast_is(f->state, "Interrupted: RR import -> tune to 853.000000 MHz; a newer tune took over"));
     fixture_end();
+    /* ... under a newer message, and once the import's toast is gone: nothing said. */
     fixture_begin(f);
-    (void)import_tune(f, 1);
+    (void)import_tune(f);
     dsd_engine_manual_tune_supersede(f->state);
     DSD_SNPRINTF(f->state->ui_msg, sizeof f->state->ui_msg, "%s", "Applied: tuned -> 855.000000 MHz");
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
     assert(toast_is(f->state, "Applied: tuned -> 855.000000 MHz"));
     fixture_end();
-
-    /* The stream stopped (another source, a restart): dropped, and said so. */
     fixture_begin(f);
-    (void)import_tune(f, 1);
+    (void)import_tune(f);
+    dsd_engine_manual_tune_supersede(f->state);
+    f->state->ui_msg_expire = dsd_realtime_time() - 1;
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    assert(toast_is(f->state, RR_OWN_TOAST) && f->state->ui_msg_expire < dsd_realtime_time());
+    fixture_end();
+
+    /* The stream stopped (another source, a restart): ready at once, dropped, and said so. */
+    fixture_begin(f);
+    (void)import_tune(f);
     assert(rtl_stream_test_manual_tune_standin_stop() == 1);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
     assert(toast_is(f->state, "Interrupted: RR import -> tune to 853.000000 MHz; the radio input stopped"));
     fixture_end();
 
-    /* A toast the import marked as not replaceable (a partial apply) stays over the landing, until it has expired. */
+    /* A landing whose toast has expired says nothing either. */
     fixture_begin(f);
-    id = import_tune(f, 0);
+    id = import_tune(f);
+    f->state->ui_msg_expire = dsd_realtime_time() - 1;
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
     assert(toast_is(f->state, RR_OWN_TOAST));
     fixture_end();
+}
+
+/* Reviewer check (issue #803): after an import that turned trunking or a scan on, the owner's own tune (a hunt probe, a
+   grant, a scan step) supersedes the import's tune as its continuation, and says nothing: no "a newer tune took over"
+   after a normal import, nor a reception ended for it. If the import's tune had landed first (its completion came in
+   the frame that tuned the grant), the landing is what is said. */
+static void
+test_rr_import_owner_continuation_is_quiet(fixture* f) {
     fixture_begin(f);
-    id = import_tune(f, 0);
-    f->state->ui_msg_expire = dsd_realtime_time() - 1;
+    (void)import_tune(f);
+    dsd_engine_manual_tune_owner_takes_over();
+    dsd_engine_manual_tune_supersede(f->state);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    assert(toast_is(f->state, RR_OWN_TOAST));
+    fixture_end();
+
+    fixture_begin(f);
+    const uint64_t id = import_tune(f);
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
-    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
-    assert(toast_is(f->state, "Applied: RR import -> tuned to 853.000000 MHz"));
+    dsd_engine_manual_tune_owner_takes_over();
+    dsd_engine_manual_tune_supersede(f->state);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    assert(toast_is(f->state, RR_LANDED_TEXT));
+    fixture_end();
+
+    /* The mark is the noted import's only: a newer import's record starts unmarked. */
+    fixture_begin(f);
+    (void)import_tune(f);
+    dsd_engine_manual_tune_owner_takes_over();
+    (void)import_tune(f);
+    dsd_engine_manual_tune_supersede(f->state);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    assert(toast_is(f->state, "Interrupted: RR import -> tune to 853.000000 MHz; a newer tune took over"));
     fixture_end();
 }
 
@@ -604,7 +645,7 @@ static void
 test_rr_import_without_id_keeps_the_older_tune(fixture* f) {
     fixture_begin(f);
     const uint64_t id = enter_frequency(f, ENTRY_A_HZ);
-    dsd_engine_manual_tune_note_rr_import(f->state, 0U, ENTRY_B_HZ, ENTRY_A_HZ, RR_FAILURE_TEXT, 1);
+    dsd_engine_manual_tune_note_rr_import(f->state, 0U, ENTRY_B_HZ, ENTRY_A_HZ, RR_FAILURE_TEXT, RR_LANDED_TEXT);
     assert(dsd_engine_manual_tune_noted() == 1);
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
@@ -642,6 +683,7 @@ main(void) {
     test_settled_ready_names_what_the_poll_acts_on(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
     test_rr_import_reports_each_outcome(&f);
+    test_rr_import_owner_continuation_is_quiet(&f);
     test_rr_import_without_id_keeps_the_older_tune(&f);
 
     rtl_stream_register_tune_completion_callback(NULL, NULL);

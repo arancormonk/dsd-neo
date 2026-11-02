@@ -598,11 +598,18 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 /* Owner tunes supersede a manual tune still pending (issue #671). */
 static int g_manual_tune_supersedes;
+static int g_manual_tune_owner_takeovers;
 
 void
 dsd_engine_manual_tune_supersede(dsd_state* state) {
     (void)state;
     g_manual_tune_supersedes++;
+}
+
+/* An owner tune marks itself as its owner's continuation before it supersedes (issue #803). */
+void
+dsd_engine_manual_tune_owner_takes_over(void) {
+    g_manual_tune_owner_takeovers++;
 }
 
 /* No manual tune is ever noted here (dsd_engine_tuner_free_for_protocol()). */
@@ -1477,16 +1484,20 @@ test_backend_tune_updates_center_freq_cache(void) {
     opts->rtlsdr_center_freq = 111111100U;
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     int supersedes = g_manual_tune_supersedes;
+    int takeovers = g_manual_tune_owner_takeovers;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
     assert(g_manual_tune_supersedes == supersedes + 1);
+    assert(g_manual_tune_owner_takeovers == takeovers + 1);
 
     /* A deferred tune never reached the controller: a manual tune still pending keeps the receiver. */
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
     supersedes = g_manual_tune_supersedes;
+    takeovers = g_manual_tune_owner_takeovers;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
     assert(opts->rtlsdr_center_freq == 111111100U);
     assert(g_manual_tune_supersedes == supersedes);
+    assert(g_manual_tune_owner_takeovers == takeovers);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, UINT64_C(0x10))

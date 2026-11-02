@@ -599,7 +599,7 @@ test_engine_holds_the_move_while_the_tuner_is_busy(void) {
                                                 (uint32_t)VC_HZ, -1, 0U, 0U);
         } else if (how == 5) {
             /* A RadioReference import's tune still pending (issue #803). */
-            dsd_engine_manual_tune_note_rr_import(s.state, 78U, (uint32_t)OTHER_FREQ_HZ, (uint32_t)VC_HZ, NULL, 1);
+            dsd_engine_manual_tune_note_rr_import(s.state, 78U, (uint32_t)OTHER_FREQ_HZ, (uint32_t)VC_HZ, NULL, NULL);
         } else if (how == 2) {
             other = dsd_trunk_tuning_request_begin();
             dsd_trunk_tuning_request_mark_ready(other);

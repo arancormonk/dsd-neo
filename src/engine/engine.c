@@ -1392,6 +1392,9 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
     if (tune_result == RTL_STREAM_TUNE_TIMEOUT && out_pending_id) {
         *out_pending_id = pending_id;
     } else {
+        /* A scan step's or a control-channel return's: its owner's own, which continues a RadioReference import that
+           turned it on (issue #803). */
+        dsd_engine_manual_tune_owner_takes_over();
         dsd_engine_manual_tune_supersede(state);
     }
     if (tune_result != RTL_STREAM_TUNE_OK) {

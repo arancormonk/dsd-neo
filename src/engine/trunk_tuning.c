@@ -862,7 +862,9 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
     const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
                                     : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
     if (rc != RTL_STREAM_TUNE_DEFERRED) {
-        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). It is an owner's
+           own: after a RadioReference import that turned trunking on, its continuation (issue #803). */
+        dsd_engine_manual_tune_owner_takes_over();
         dsd_engine_manual_tune_supersede(state);
     }
     if (rc == RTL_STREAM_TUNE_OK) {

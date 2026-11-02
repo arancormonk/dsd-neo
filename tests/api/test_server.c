@@ -41,6 +41,7 @@
 #include <sys/socket.h>
 #endif
 
+#include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -819,6 +820,54 @@ test_feed(void) {
     free(opts);
 }
 
+/*
+ * Issue #803 (T5): rr_apply_import's response only acknowledges the queue; the import's outcome, its tune's included,
+ * arrives in the status feed's message. An RTL input whose stream is not running cannot take the tune: the response is
+ * "queued" and carries no outcome, and status.message is the partial apply, which on main read "Applied: RR import".
+ */
+static void
+test_rr_apply_outcome_in_status_feed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    initOpts(opts);
+    opts->audio_out_type = 9; /* the null output: no host audio stream */
+    initState(state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0");
+    dsd_app_frontend_runtime_start(opts, state);
+    const int port = start_server(NULL, 0, 0);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    dsd_socket_t c = open_session(port, "\"type\":\"welcome\"");
+    send_str(c, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"status\"]}\n");
+    expect_line(c, "{\"id\":1,\"ok\":true");
+
+    send_str(c, "{\"id\":2,\"cmd\":\"rr_apply_import\",\"params\":{\"decode_mode\":2,\"trunking\":true,"
+                "\"tune_hz\":851375000}}\n");
+    assert(await_text(c, "{\"id\":2,", 3000U));
+    assert(strstr(g_line, "\"ok\":true,\"cmd\":\"rr_apply_import\",\"status\":\"queued\"") != NULL);
+    assert(strstr(g_line, "RR import") == NULL && strstr(g_line, "\"message\"") == NULL);
+
+    /* The decoder applies it, and the feed's next status carries the outcome. */
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    const char* want = "\"message\":{\"text\":\"Failed: RR import -> tune to 851.375000 MHz failed; mode applied\"";
+    int seen = 0;
+    for (int attempt = 0; attempt < 30 && !seen; attempt++) {
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        seen = await_line(c, "status", want, 100U);
+    }
+    if (!seen) {
+        DSD_FPRINTF(stderr, "status never carried %s (decoder message \"%s\")\n", want, state->ui_msg);
+    }
+    assert(seen);
+    dsd_socket_close(c);
+    dsd_api_stop();
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 /* A request still queued when the decoder stops is cancelled as the command session closes; the server, stopped right
    after (as the CLI does, most likely while its result pump sleeps), still reports that before it disconnects. */
 static void
@@ -858,6 +907,7 @@ main(void) {
     test_vanishing_peer();
     test_authentication();
     test_feed();
+    test_rr_apply_outcome_in_status_feed();
     test_results_at_stop();
     printf("api server tests passed\n");
     return 0;

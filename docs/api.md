@@ -749,9 +749,9 @@ field, and the decoder refuses the rest when it applies the command.
   a partial apply (`Failed: RR import -> tune to <MHz> MHz failed; mode
   applied`); a busy tuner takes nothing (`Deferred; retry: RR import -> tune to
   <MHz> MHz deferred (tuner busy); ...`); a tune still on its way ends the
-  success message in `tuning to <MHz> MHz`, and a later `status.message` gives
-  its outcome (`Applied: RR import -> tuned to <MHz> MHz`, the failure, or
-  `Interrupted: RR import -> tune to <MHz> MHz; ...`).
+  import's message in `tuning to <MHz> MHz`, and a later `status.message`
+  gives its outcome while that message is still up (`...; tuned to <MHz> MHz`,
+  the failure, or `Interrupted: RR import -> tune to <MHz> MHz; ...`).
 * **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
   terminal's frequency entry does. It is refused during an I/Q replay and for
   `0`. With single-system P25 trunking on and no scan it selects that control
