@@ -280,7 +280,8 @@ calls are not affected.
 - Under a tone filter, the tone is checked again each time the signal comes back. That takes about 0.4 to 0.8 seconds
   and counts as part of the pause, so allow for it: 0.5 seconds rarely joins anything there.
 - A feed that stops sending between transmissions (a UDP or TCP audio stream with nothing in the pauses) is not a pause
-  in the signal, and still ends the call. Keep the stream running while the channel is quiet.
+  in the signal, and still ends the call. Its recordings also miss the first moment of each transmission (a fraction of
+  a second), even with **NFM pre-roll**. Keep the stream running while the channel is quiet.
 - `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows
   the row disabled, with a line that says so, and turning Record calls on leaves the session's own hold alone. A saved
   system's own Extra decoder arguments win the same way, but Settings cannot see them. The details are in
@@ -305,7 +306,7 @@ affected.
 - Someone who keys up again within 0.2 seconds of letting go is part of the same call, not a new one, so their first
   word can still be cut short.
 - A recording's own start time, which the app keeps with it, is the time of its first sample, pre-roll included, in
-  whole seconds, so it can be a second earlier than its History row's.
+  whole seconds, so it can be a second or two earlier than its History row's.
 - Choosing a time in a running session, even the one already set, drops the audio held so far, so the next call may
   start without it. So do turning Record calls off and on, and changing the decoder's input or channel.
 - `--analog-record-preroll-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows

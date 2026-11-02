@@ -284,9 +284,9 @@ Windows console runs:
   (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as
   heard, with the pre-roll below), so the recording keeps time. A longer pause ends the call at its last audio, and the
   next transmission starts a new one. 200 or less turns it off, the default: a call then ends 200 ms after its carrier
-  drops, as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI: `[recording]
-  analog_max_gap_ms`. How pauses are counted, and the limits, are under [Pauses in an NFM
-  recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+  drops, as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI:
+  `[recording] analog_max_gap_ms`. How pauses are counted, and the limits, are under
+  [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 - `--analog-record-preroll-ms <ms>` (or `--analog-record-preroll-ms=<ms>`) Start each new conventional NFM recording
   with up to `<ms>` of the audio heard just before the call, so its first word is not cut off. It works only with
   per-call recording on (`-P`). Only audio the tone filter allows is kept: audio it is still checking or has rejected
@@ -1460,8 +1460,11 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a UDP sender that
   stops between transmissions) pauses the stream instead: once nothing has arrived for about half a second, the row
   shows no carrier, and the audio that follows starts a new reception that inherits nothing from the last one (the read
-  that spans the pause, up to 20 ms of audio from either side of it, is not used). Padded output (`rtl_fm -E pad`) keeps
-  samples flowing, and the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the
+  that spans the pause, up to 20 ms of audio from either side of it, is not used). A per-call recording (`-P`) also
+  leaves out the whole block of audio the stream comes back in, up to about 117 ms at 8192 Hz, so each transmission
+  loses its start ([Where an NFM recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms)).
+  Padded output (`rtl_fm -E pad`) keeps samples flowing, and the 200 ms hangover then applies as on any other input.
+  DSD-neo does not see a retune the
   producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
   second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
   still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
@@ -1686,19 +1689,26 @@ picked up, as before.
   [tone filter](#tone-filter-ctcssdcs-receive-policy), "What is muted").
 - A call begins only on the carrier itself, not on the 200 ms the squelch holds open after the carrier drops. So a
   short burst whose tone is confirmed only after its carrier has gone leaves no recording and no history row.
-- On radio input, a carrier of at most about 40 ms that comes on just as a stalled input resumes begins no call: the
-  first moment of input after a stall is set aside, as it may hold audio from before the stall.
+- When the input comes back after a stall or a pause in the stream (stdin, UDP, TCP or radio input), the block of
+  audio it comes back in is not recorded, with the pre-roll or without it: it may hold audio from before the pause. A
+  block is 20 ms on radio input and on audio input at 48 kHz (8, 9.6, 12, 16 and 24 kHz input is brought up to
+  48 kHz first); at other rates it is 960 samples, about 117 ms at 8192 Hz. So a stream that sends nothing between
+  transmissions (`rtl_fm` without `-E pad`, a UDP sender that stops) loses the start of each one; keep it running
+  (`rtl_fm -E pad`). A carrier too short to outlast that block begins no call; on radio input that holds for one of up
+  to about 40 ms.
 - Someone who keys up again within 200 ms of letting go is not a new call: the call goes on, and the start of their
   first word stays as the squelch left it.
 - When a call held through a pause (`--analog-record-max-gap-ms`, below) resumes, the end of the pause is saved as
   heard rather than as silence, up to the pre-roll. Anything that breaks the audio during the pause, such as a tone
   check when the carrier comes back, makes the whole pause silence, as before.
 - The recording's start time is its first sample, the pre-roll included, so the `--wav-journal` record's `start` and
-  the rdio-scanner export's `start_time` can be a second earlier than the call's history row. Both are whole seconds.
+  the rdio-scanner export's `start_time` can be a second or two earlier than the call's history row (two with a long
+  pre-roll). Both are whole seconds.
 - These drop the audio held so far, so the next recording may start without it: turning per-call recording off or
   on, a new recording folder, a new pre-roll value, and setting the pre-roll in a running session through the API,
-  the terminal menu or the app, even to the value it already has. A config applied in a running session that changes
-  none of these keeps it.
+  the terminal menu or the app, even to the value it already has. A retune, a scan step or an input switch drops it
+  too, as above. A config applied in a running session drops it for these same reasons and no other, except that a new
+  tone filter can start a fresh tone check, whose audio is never held.
 - AM (`-fM`) calls have no per-call recording yet, so no pre-roll either. Digital calls are not affected.
 
 #### NFM calls in rdio-scanner

@@ -453,7 +453,7 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
-| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional NFM call in one recording and one history row; the pause is saved as silence; 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
+| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional NFM call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
@@ -478,9 +478,9 @@ longer than that. The hold works only while `per_call_wav` is on; with it off, N
 are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
 `analog_preroll_ms` outside 0 to 1000, or not a whole number, is refused with a warning, and the value already loaded
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a running
-session that changes it drops the audio held so far at once; one that leaves it and the recording as they were keeps
-that audio. It works only while `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an
-NFM recording starts".
+session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
+change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
+`per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
 `rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
 warning, and the value already loaded stays; `--validate-config` reports them as errors. An NFM call with a frequency
 is exported under it in kHz; how NFM calls are exported, and the limits, are in `docs/cli.md`, "NFM calls in
