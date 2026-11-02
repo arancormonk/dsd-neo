@@ -1514,7 +1514,8 @@ suite runs under this compiler.
   model, network and site; symmetric; DMR site text and brand are presentation and are never compared),
   `dsd_rxid_site_union()` (order-free; of two texts a Tier III one with the `Capacity Max` part wins, else the
   strcmp-smaller), `dsd_rxid_site_consistent()` (what a stored identity must satisfy to be loaded; Tier III numbers
-  within the model's NET/SITE widths, a 14-bit system code that names the raw numbers beside it), `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
+  within the model's NET/SITE widths, a 14-bit system code that names the raw numbers beside it),
+  `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
   `dsd_call_record_site_compatible()` the call-state reacquisition guard above uses. Tests:
   `CORE_RECEIVED_IDENTITY_SITE`, `CORE_CALL_ALERT_HISTORY`, `CORE_CALL_STATE`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
@@ -2183,17 +2184,21 @@ suite runs under this compiler.
   following but is never noted. Each part has a valid and a fresh bit. A DMR site keeps its raw network and site
   numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
   text by `dsd_rxid_note_dmr_site()`, the only way a DMR site is noted), and only they tell one site from another:
-  the site text is presentation (it follows `-D` and shows Tier III one-based) and is never compared. Text copies zero
-  their whole field, so equal notes leave equal bytes. One part is the decoder's, not the carrier's identity: the
-  Capacity Max marker (`DSD_RXID_DMR_T3_CAPMAX`, `dmr_t3_capmax_model`/`dmr_t3_capmax_net`,
-  `dsd_rxid_note_dmr_t3_capmax()`, `dsd_rxid_dmr_t3_is_capmax()`) names the Tier III network (model and raw network,
-  never `syscode >> SITE width`, which two models can share) a C_ALOHA recognised as Motorola Capacity Max, so the DMR
-  decoder writes that network's site text with raw numbers and the `DSD_RXID_T3_CAPMAX_TOKEN` part. It is the one
-  note a RAS-accepted message under `-F` may make (it publishes no number). It is set valid and never fresh, noting
-  or dropping it alone never moves the epoch, and no site snapshot, compare, union, store or API feed carries it. It
-  goes with the DMR system parts (another access code, the DMR reset) and the trunking parts (another trunking
-  system), and a Tier III system code of another network drops it; another site of the same network, a trunk tune,
-  the RAS reset and the no-carrier pass keep it. Threading: the decoder thread owns the record and is
+  the site text is presentation (it follows `-D` and the network's numbering, see Protocols, "Received identity note
+  points") and is never compared. Text copies zero their whole field, so equal notes leave equal bytes. One part is
+  the decoder's, not the carrier's identity: the Capacity Max marker (`DSD_RXID_DMR_T3_CAPMAX`,
+  `dmr_t3_capmax_model`/`dmr_t3_capmax_net`, `dsd_rxid_note_dmr_t3_capmax()`, `dsd_rxid_dmr_t3_is_capmax()`) names
+  the Tier III network (model and raw network, never `syscode >> SITE width`, which two models can share) a C_ALOHA
+  recognised as Motorola Capacity Max, so the DMR decoder writes that network's site text with raw numbers and the
+  `DSD_RXID_T3_CAPMAX_TOKEN` part. It is the one note a RAS-accepted message under `-F` may make (it publishes no
+  number). It is set valid and never fresh, noting or dropping it alone never moves the epoch, and no site snapshot,
+  compare, union, store or API feed carries it. It goes with the DMR system parts (another access code, the DMR reset)
+  and the trunking parts (another trunking system), and a Tier III system code of another network drops it; another
+  site of the same network, a trunk tune, the RAS reset and the no-carrier pass keep it. One site can so carry two
+  texts (standard before recognition, Capacity Max after): a merge keeps the one that names Capacity Max
+  (`dsd_rxid_site_union()`), the `-J` event line keeps the part (`SITE: Capacity Max Net 1 Site 1;`), and Qt History
+  re-reads a row whose text alone changed (its seen digest, Frontends, "Call history site and channel"). Threading:
+  the decoder thread owns the record and is
   its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
@@ -7367,12 +7372,26 @@ the message passed its own check, with that message's values, an unchanged repea
   brand from its CSBKs, LC and short LC (XPT sends no site number of its own), and the site's free channel
   (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's `Free LCN: n;`) from its
   site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts joined by ` · ` ("TIII
-  Small · Net 13 · Site 4 · SYS 1183", "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"). Tier III numbers are
-  shown one-based on every path (issue #799 D1: the network, the site and, with a `-D` split, the area and the site
-  in it, each the raw value + 1; `dmr_tiii_site.h`), and `-D n` is the spec's DMRLA (TS 102 361-4 §6.3.2.2.3, Figure
-  6.19): the top n SITE bits are the area, clamped to the model's SITE width; no `-D` or `-D 0` shows the site whole.
-  The decoder never writes `-D` (`dsd_opts::dmr_dmrla_*`): a Capacity Max C_ALOHA reads as any Tier III one, keeping
-  only its "Capacity Max" label and Motorola branding. Capacity Plus and Connect Plus numbers are shown as sent. The
+  Small · Net 13 · Site 4 · SYS 1183", "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"). Tier III numbering is
+  vendor-aware (issue #40; `dmr_tiii_site.h`, the one system code decoder `dmr_tiii_decode_syscode()` for the CSBK and
+  short LC paths): a network recognised as Motorola Capacity Max shows its network and site as sent and the site
+  whole, `-D` ignored, with the `DSD_RXID_T3_CAPMAX_TOKEN` part after the model ("TIII Large · Capacity Max · Net 1 ·
+  Site 1 · SYS 2101"), as Motorola numbers them; every other Tier III network shows the network, the site and, with a
+  `-D` split, the area and the site in it as the raw value + 1, as Hytera's CPS does. `-D n` is the spec's DMRLA
+  (TS 102 361-4 §6.3.2.2.3, Figure 6.19): the top n SITE bits are the area; no `-D` or `-D 0` shows the site whole,
+  and an n of the SITE width or more makes the whole SITE the area with site 0 in it (`<SITE+1>.1`). Each message
+  formats with the recognition of the network its own system code names (`dsd_rxid_dmr_t3_is_capmax()` with the code's
+  model and raw network), so a C_BCAST neighbour of a recognised network reads raw and one of another network
+  standard. Recognition (`dmr_aloha_recognises_capmax()` in `dmr_csbk.c`) comes only from a single type-0 C_ALOHA
+  (last-block bit set) with FID 0x10 that dmr_cspdu() handled (protect flag clear, no irrecoverable errors) and that
+  either passed its CRC, or that `-F` accepted as RAS: the slot's `event_crc_invalid` exactly
+  `DSD_CRC_RAS_UNVERIFIED`, RAS confirmed on the carrier (`dmr_ras_confirmed()`), not interrupted, not read across a
+  carrier boundary and not the synthesized P_CLEAR. It sets the record's decoder-side Capacity Max marker (Core,
+  "Received identity record"), the one note a RAS acceptance may make; it names no site. The C_ALOHA line ends in
+  "Capacity Max" only on a recognised network. Decided limits: a RAS Capacity Max network decoded without `-F` is
+  never recognised, the messages before the first recognising C_ALOHA read as standard (a site already noted keeps its
+  standard text until a checked message notes it again), and another vendor's own numbering reads as standard. The
+  decoder never writes `-D` (`dsd_opts::dmr_dmrla_*`). Capacity Plus and Connect Plus numbers are shown as sent. The
   colour code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
   (`dmr_data_carrier_left()`, `dsd_state_frame_read_lost()` before the decode). A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
   under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
@@ -9725,7 +9744,8 @@ Qt Quick frontend (`src/ui/qt`):
     part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
-    first digest read without counting it as an advance); a row saved by an older build has none and loads with an
+    first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`), so it
+    happens once; a store lost alone is reseeded from the rows, each with its text's digest, and re-reads nothing); a row saved by an older build has none and loads with an
     unknown site and channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its
     field loads as unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
     `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
