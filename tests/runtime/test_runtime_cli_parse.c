@@ -240,6 +240,7 @@ test_folder_options_refuse_paths_that_do_not_fit(void) {
 typedef struct {
     const char* option; /* the option as typed; one ending in '=' carries the path in the same word */
     size_t capacity;    /* the buffer the path is copied into, NUL included */
+    const char* noun;   /* what the refusal calls it: "path", or "value" for an option that also takes a device spec */
 } cli_path_option_case;
 
 static int
@@ -276,7 +277,8 @@ expect_path_option_refused(const cli_path_option_case* c) {
         joined ? parse_args_capture_stderr(2, argv_joined, opts, state, &argc_effective, &exit_rc, err, sizeof err)
                : parse_args_capture_stderr(3, argv_split, opts, state, &argc_effective, &exit_rc, err, sizeof err);
     char want[64];
-    DSD_SNPRINTF(want, sizeof want, "%.*s path is too long", (int)(joined ? option_len - 1U : option_len), c->option);
+    DSD_SNPRINTF(want, sizeof want, "%.*s %s is too long", (int)(joined ? option_len - 1U : option_len), c->option,
+                 c->noun);
     int rc = 0;
     if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, want) == NULL) {
         DSD_FPRINTF(stderr, "%s with a %zu-byte path: rc=%d exit=%d, wanted \"%s\"\n%s\n", c->option, c->capacity,
@@ -294,23 +296,23 @@ static int
 test_path_options_refuse_paths_that_do_not_fit(void) {
     const dsd_opts* o = NULL;
     const cli_path_option_case cases[] = {
-        {"--trunk-scan", sizeof o->trunk_scan_targets_csv},
-        {"--trunk-scan=", sizeof o->trunk_scan_targets_csv},
-        {"-C", sizeof o->chan_in_file},
-        {"-G", sizeof o->group_in_file},
-        {"-k", sizeof o->key_in_file},
-        {"-K", sizeof o->key_in_file},
-        {"-w", sizeof o->wav_out_file},
-        {"-6", sizeof o->wav_out_file_raw},
-        {"-c", sizeof o->symbol_out_file},
-        {"-J", sizeof o->event_out_file},
-        {"-L", sizeof o->lrrp_out_file},
-        {"-Q", 1024U}, /* the file name -Q puts under ./DSP */
-        {"-i", sizeof o->audio_in_dev},
-        {"-o", sizeof o->audio_out_dev},
-        {"--frame-log", sizeof o->frame_log_file},
-        {"--wav-journal", sizeof o->wav_journal_file},
-        {"--p25-sm-log", sizeof o->p25_sm_log_file},
+        {"--trunk-scan", sizeof o->trunk_scan_targets_csv, "path"},
+        {"--trunk-scan=", sizeof o->trunk_scan_targets_csv, "path"},
+        {"-C", sizeof o->chan_in_file, "path"},
+        {"-G", sizeof o->group_in_file, "path"},
+        {"-k", sizeof o->key_in_file, "path"},
+        {"-K", sizeof o->key_in_file, "path"},
+        {"-w", sizeof o->wav_out_file, "path"},
+        {"-6", sizeof o->wav_out_file_raw, "path"},
+        {"-c", sizeof o->symbol_out_file, "path"},
+        {"-J", sizeof o->event_out_file, "path"},
+        {"-L", sizeof o->lrrp_out_file, "path"},
+        {"-Q", 1024U, "path"}, /* the file name -Q puts under ./DSP */
+        {"-i", sizeof o->audio_in_dev, "value"},
+        {"-o", sizeof o->audio_out_dev, "value"},
+        {"--frame-log", sizeof o->frame_log_file, "path"},
+        {"--wav-journal", sizeof o->wav_journal_file, "path"},
+        {"--p25-sm-log", sizeof o->p25_sm_log_file, "path"},
     };
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -3056,6 +3058,62 @@ test_repeated_channel_map_is_refused(void) {
     }
     (void)remove(first);
     (void)remove(second);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* Issue #697: only a second -C on the command line is refused. A config that names a channel map ([trunking] chan_csv)
+   and one CLI -C is one map: the CLI's, as before. */
+static int
+test_config_channel_map_and_one_cli_channel_map_are_accepted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    char config_map[1024];
+    char cli_map[1024];
+    char ini[1200];
+    char cfg_path[1024];
+    int made = test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n1,851012500\n", config_map,
+                                                  sizeof config_map)
+               == 0;
+    made = made
+           && test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n3,852012500\n", cli_map,
+                                                 sizeof cli_map)
+                  == 0;
+    DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nchan_csv = \"%s\"\n", config_map);
+    made = made && test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) == 0;
+    int rc = 0;
+    if (!made) {
+        DSD_FPRINTF(stderr, "failed to create the config and channel CSVs\n");
+        rc = 1;
+    } else {
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--config";
+        char arg3[] = "-C";
+        char* argv[] = {arg0, arg1, cfg_path, arg3, cli_map, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int boot = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0 || strcmp(opts->chan_in_file, cli_map) != 0
+            || state->trunk_chan_map[3] != 852012500) {
+            DSD_FPRINTF(stderr, "config chan_csv + one -C: rc=%d exit=%d file=%s channel 3=%ld\n", boot, exit_rc,
+                        opts->chan_in_file, state->trunk_chan_map[3]);
+            rc = 1;
+        }
+    }
+    (void)remove(config_map);
+    (void)remove(cli_map);
+    (void)remove(cfg_path);
     freeState(state);
     free(opts);
     free(state);
@@ -11688,6 +11746,7 @@ main(void) {
     rc |= test_folder_options_refuse_paths_that_do_not_fit();
     rc |= test_path_options_refuse_paths_that_do_not_fit();
     rc |= test_repeated_channel_map_is_refused();
+    rc |= test_config_channel_map_and_one_cli_channel_map_are_accepted();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_tetra_network_options();

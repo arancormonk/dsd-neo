@@ -5699,6 +5699,30 @@ test_channel_cycle_first_refusal_names_no_row(void) {
 }
 
 /*
+ * Issue #697: `b` refuses to avoid the last row a step can land on. Beside the DMR row on air the list holds only an am
+ * row, which nothing demodulates on audio input with no rigctl peer, so it is skipped at every visit: avoiding the DMR
+ * row would leave the operator parked on an avoided row with nowhere to go.
+ */
+static int
+test_scan_avoid_counts_width_skipped_rows_out(void) {
+    static const long kRows[] = {880000000L, 881000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 2);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    rc |= expect_int("skipped alternate: dmr row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("skipped alternate: am row", dsd_channel_mode_set(&state, 1, DSD_SCAN_MODE_AM), 0);
+    state.lcn_freq_roll = 1; /* the dmr row heard */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "skipped alternate: avoid");
+    rc |= expect_int("skipped alternate: the dmr row is not avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U), 0);
+    rc |= expect_contains("skipped alternate: refused", state.ui_msg, "Cannot avoid the last usable scan channel");
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Channels a DMR site announces are then
  * appended to the list (dmr_cspdu_pf0_c_bcast_track_freq()), and they are no list to scan: neither the per-visit cap nor
  * the voice gate ends a reception for them, and none of them is somewhere to go.
@@ -25480,6 +25504,7 @@ main(void) {
     rc |= test_channel_cycle_first_refusal_names_no_row();
     rc |= test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit();
     rc |= test_clear_channel_map_leaves_learned_channels_unscanned();
+    rc |= test_scan_avoid_counts_width_skipped_rows_out();
     rc |= test_channel_cycle_with_nothing_to_land_on();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();

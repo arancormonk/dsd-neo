@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -1030,19 +1031,30 @@ dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* sta
     return 0;
 }
 
+/* The rows a step can land on (channel_scan_row_reachable()), counted up to @p stop_at. */
+static int
+channel_scan_count_reachable(const dsd_opts* opts, const dsd_state* state, int stop_at) {
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    int reachable = 0;
+    for (int row = 0; row < state->lcn_freq_count && reachable < stop_at; row++) {
+        if (channel_scan_row_reachable(opts, state, row, dsp_rate_hz)) {
+            reachable++;
+        }
+    }
+    return reachable;
+}
+
 int
 dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
-    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    int reachable = 0;
-    for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (channel_scan_row_reachable(opts, state, row, dsp_rate_hz) && ++reachable >= 2) {
-            return 1;
-        }
-    }
-    return 0;
+    return channel_scan_count_reachable(opts, state, 2) >= 2;
+}
+
+int
+dsd_engine_channel_scan_reachable_rows(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state) ? channel_scan_count_reachable(opts, state, INT_MAX) : 0;
 }
 
 int

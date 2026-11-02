@@ -4099,6 +4099,11 @@ test_scan_timing_row_phrases(void) {
        and no budget reads as suspended beneath it. */
     seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Tone check");
+    /* Issue #697: -Y with no channel map imported stays where it is, so nothing counts down. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.scanner_mode = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_NO_LIST, 1U, -1.0, 0U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No channel map");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a

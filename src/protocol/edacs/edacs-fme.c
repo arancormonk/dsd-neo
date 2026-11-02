@@ -1389,6 +1389,15 @@ edacs_print_unknown_command(const dsd_opts* opts, unsigned long long int msg_1, 
     edacs_print_optional_payload_if_needed(opts, msg_1, msg_2);
 }
 
+/* The frequency the receiver is on: the RTL centre, else the rigctl peer's; 0 with neither. */
+static long int
+edacs_heard_frequency(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtlsdr_center_freq != 0U) {
+        return (long int)opts->rtlsdr_center_freq;
+    }
+    return (opts->use_rigctl == 1) ? dsd_rigctl_query_hook_get_current_freq_hz(opts) : 0L;
+}
+
 static void
 edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
     /* An imported list is positional: its 0 is a row skipped or parked on purpose, which the site never fills. */
@@ -1396,30 +1405,23 @@ edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int 
         || dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return;
     }
-
-    if (opts->use_rigctl == 1) {
-        long int lcnfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (lcnfreq != 0) {
-            (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, lcnfreq);
-        }
-    }
-
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        long int lcnfreq = (long int)opts->rtlsdr_center_freq;
-        if (lcnfreq != 0) {
-            (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, lcnfreq);
-        }
-    }
+    (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, edacs_heard_frequency(opts));
 }
 
 static void
 edacs_update_trunk_cc_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] == 0) {
+    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25) {
         return;
     }
-
-    state->p25_cc_freq = state->trunk_lcn_freq[lcn - 1];
-    state->trunk_cc_freq = state->p25_cc_freq;
+    /* A control channel an imported list holds at 0 is still the one heard: the returns to it need its frequency,
+       though the list keeps its 0 (edacs_capture_current_lcn_frequency()). */
+    const long int cc =
+        (state->trunk_lcn_freq[lcn - 1] != 0) ? state->trunk_lcn_freq[lcn - 1] : edacs_heard_frequency(opts);
+    if (cc == 0) {
+        return;
+    }
+    state->p25_cc_freq = cc;
+    state->trunk_cc_freq = cc;
 }
 
 static void

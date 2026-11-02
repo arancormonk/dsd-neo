@@ -1011,15 +1011,21 @@ cli_log_iq_replay_wav_summary(const dsd_iq_replay_config* cfg, uint64_t effectiv
 
 #define DSD_CLI_LOCAL_PATH_MAX 2048
 
-/* A path that does not fit @p capacity bytes is refused, never cut short to a file the user did not name. */
+/* A @p value that does not fit @p capacity bytes is refused, never cut short to a file or device the user did not
+   name; @p noun says what it is ("path", or "value" for an option that also takes a device spec). */
 static int
-cli_path_fits(const char* option_name, const char* path, size_t capacity, int* out_exit_rc) {
-    if (strlen(path) < capacity) {
+cli_value_fits(const char* option_name, const char* noun, const char* value, size_t capacity, int* out_exit_rc) {
+    if (strlen(value) < capacity) {
         return 1;
     }
-    LOG_ERROR("%s path is too long\n", option_name);
+    LOG_ERROR("%s %s is too long\n", option_name, noun);
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
+}
+
+static int
+cli_path_fits(const char* option_name, const char* path, size_t capacity, int* out_exit_rc) {
+    return cli_value_fits(option_name, "path", path, capacity, out_exit_rc);
 }
 
 static int
@@ -3158,7 +3164,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: %s", KNRM);                                                                              \
             break;                                                                                                     \
         case 'i':                                                                                                      \
-            if (!cli_path_fits("-i", optarg, sizeof opts->audio_in_dev, out_exit_rc)) {                                \
+            if (!cli_value_fits("-i", "value", optarg, sizeof opts->audio_in_dev, out_exit_rc)) {                      \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             if (strcmp(opts->audio_in_dev, optarg) != 0) {                                                             \
@@ -3189,7 +3195,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             break;                                                                                                     \
         case 'o':                                                                                                      \
-            if (!cli_path_fits("-o", optarg, sizeof opts->audio_out_dev, out_exit_rc)) {                               \
+            if (!cli_value_fits("-o", "value", optarg, sizeof opts->audio_out_dev, out_exit_rc)) {                     \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             DSD_STRNCPY(opts->audio_out_dev, optarg, 1023);                                                            \

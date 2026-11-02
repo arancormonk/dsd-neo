@@ -114,6 +114,10 @@ int dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state*
  * dsd_engine_channel_scan_has_other_row() judges them. The per-visit cap neither runs nor expires otherwise. 0 for
  * NULL arguments. */
 int dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state);
+/** How many rows of the -Y list a step can land on, by the rule dsd_engine_channel_scan_can_rotate() counts them
+ * with: a frequency, not avoided, and not an analog row skipped at every visit for its width at the current DSP rate.
+ * The `b` avoid refuses to leave fewer than one. 0 for NULL arguments. */
+int dsd_engine_channel_scan_reachable_rows(const dsd_opts* opts, const dsd_state* state);
 /** The -Y list row the receiver is on (issue #666): on a typed list the row whose tune last landed on the current map,
  * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
  * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */

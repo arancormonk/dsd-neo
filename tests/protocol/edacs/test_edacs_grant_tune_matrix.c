@@ -1280,6 +1280,26 @@ edacs_run_standard_state_cases(void) {
     rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 0 && g_state.lcn_freq_count == 13, "standard-site-id-user-list",
                        "state", "placeholder row of an imported list left at 0");
 
+    /* The same placeholder under -T: the list keeps its 0, the control channel is the frequency heard, and the end
+       of a call returns to it. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 0 && g_state.lcn_freq_count == 13,
+                       "standard-site-id-user-list-trunked", "state", "placeholder row of an imported list left at 0");
+    rc |=
+        edacs_expect(g_state.p25_cc_freq == 856012500L && g_state.trunk_cc_freq == 856012500L,
+                     "standard-site-id-user-list-trunked", "state", "control channel learned from the frequency heard");
+    g_opts.trunk_is_tuned = 1;
+    eot_cc(&g_opts, &g_state);
+    rc |= edacs_expect(g_cc_tune_count == 1 && g_last_cc_freq == 856012500L, "standard-site-id-user-list-trunked",
+                       "state", "end of call returns to the learned control channel");
+
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, 1010),
                               edacs_standard_all_call_msg2(1010));

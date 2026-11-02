@@ -2012,7 +2012,7 @@ is delayed.
   `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or an import during the session). With none, at
   start or after Clear channel map, it stays on its frequency until one is imported: channels a DMR site announces
   over the air are recorded, but `-Y` never steps to them, and neither the voice gate nor `--scan-max-visit-ms` ends a
-  reception on their account.
+  reception on their account. The Scan Timing row reads `No channel map` meanwhile, with no countdown.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
@@ -2054,20 +2054,18 @@ is delayed.
   frequency also appears on the next row "hops" to the same frequency, ending the call as an explicit hop rather than
   moving the receiver, and a low `-t` already steps a quiet row about a second after its last sync, so the cap only
   changes what happens on a row that keeps syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`,
-  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`,
-  `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the mixed-mode
-  example](../examples/conventional_scan_modes.csv) and [the mixed analog
+  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the
+  mixed-mode example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
   rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
   or the configured NFM width (16 kHz by default; on audio input with a rigctl peer, `-B` stands in for an unset one),
   and an `am` row the AM monitor at its own `--am-bandwidth-hz` width or the configured AM width (6 kHz by default),
   switching the receiver between the FM monitor, the AM monitor and the digital decoder at each row without reopening
-  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played:
-  `-o null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies
-  to an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes
-  take effect at the first scheduled row entry, including manual `L` and `J` steps. Existing dwell and voice-hold
-  defaults remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may
-  change.
+  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o
+  null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to
+  an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take
+  effect at the first scheduled row entry, including manual `L` and `J` steps. Existing dwell and voice-hold defaults
+  remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may change.
   Global mode and modulation commands update the saved configuration, and exiting scanning restores it. Blank-mode rows
   retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning releases the row's
   decoder and keys. Manual `L` and `J` skip zero-frequency placeholders, while automatic scanning continues to park on
@@ -2129,8 +2127,9 @@ is delayed.
   the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
   uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
-  `-i` takes up to 2047 bytes; `-C`, `-G`, `--trunk-scan`, `-k`/`-K`, `-o`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q`
-  file name, `--frame-log`, `--wav-journal` and `--p25-sm-log` up to 1023.
+  `-C`, `-G`, `--trunk-scan`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name, `--frame-log`,
+  `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also take device
+  specs, so theirs is refused with "value is too long".
 - P25 band plan CSV: `--p25-bandplan <file>` — one row per band-plan identifier (base, spacing, type, offset,
   bandwidth, optional WACN/SYS) for sites that never broadcast `IDEN_UP`; rows yield to a real `IDEN_UP`. Format
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.

@@ -777,6 +777,7 @@ typedef enum {
     DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
     DSD_SCAN_STAY_CARRIER = 10,       /**< analog row: its carrier is open (issue #526) */
     DSD_SCAN_STAY_TONE_PENDING = 11,  /**< analog row: carrier open, the tone policy still checking (issue #527) */
+    DSD_SCAN_STAY_NO_LIST = 12,       /**< -Y with no channel map of the user's: nothing to step to (issue #697) */
 } dsd_scan_stay_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline

@@ -560,6 +560,10 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
     scan_y_timing_seed(opts, &report);
     if (dsd_engine_channel_scan_waiting(state)) {
         report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+    } else if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        /* No channel map of the user's (issue #697): nothing steps, so nothing counts down; a channel learned over the
+           air is no row to step to. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_NO_LIST;
     } else if (state->lcn_scan_hold) {
         /* The rotation is parked by the operator: the window is paused, not expired.
          * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step

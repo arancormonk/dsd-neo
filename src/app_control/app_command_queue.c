@@ -7870,7 +7870,8 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Already avoided: row %d (%s)", row + 1, mhz);
         return;
     }
-    if (dsd_state_trunk_lcn_usable_count(state) <= 1) {
+    /* A row skipped at every visit for its width is not one to go to (issue #697). */
+    if (dsd_engine_channel_scan_reachable_rows(opts, state) <= 1) {
         ui_set_toast(state, 3, "Cannot avoid the last usable scan channel");
         return;
     }

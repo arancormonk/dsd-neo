@@ -296,9 +296,12 @@ Generated (do not edit/commit):
     (`channel_scan_row_reachable()`: a frequency, not avoided, and not an analog row skipped at every visit for its
     width at the published DSP rate), the -Y side of the trunk-scan candidate filter: a busy row beside rows that are
     all width-skipped keeps its call, and a row whose width fits again, or a list imported later, starts a fresh limit.
-    The walk stops at the second reachable row and runs only while the cap is on. `-T` hunts are unchanged. Tests:
-    `ENGINE_NO_CARRIER_RESET`, `ENGINE_DMR_CC_RECOVERY` (the frame-sync yield hook), `APP_COMMAND_QUEUE` (after Clear
-    channel map).
+    The walk stops at the second reachable row and runs only while the cap is on. The `b` avoid counts the same rows
+    (`dsd_engine_channel_scan_reachable_rows()`) when it refuses to avoid the last one. With no user list the -Y timing
+    tick publishes `DSD_SCAN_STAY_NO_LIST` ("No channel map") with no window, so no frontend counts down to a step that
+    never comes. `-T` hunts are unchanged. Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu()` included),
+    `ENGINE_DMR_CC_RECOVERY` (the frame-sync yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid),
+    `ENGINE_SCAN_VOICE_GATE`, `APP_CONTROL_SCAN_TIMING_VIEW`, `UI_NCURSES_PRINTER_HELPERS`.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -2555,12 +2558,13 @@ suite runs under this compiler.
     `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
     numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
     (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping.
-    A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path
-    is too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-i`,
-    `-o`, `-w`, `-6`, `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`; options
-    that resolve a file first (`--src-csv`, `--p25-bandplan`, `--iq-replay`'s metadata) or hold a folder (`-d`, `-7`)
-    check their own. A second `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and
-    EDACS LCN slots shadowing the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
+    A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path is
+    too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-w`, `-6`,
+    `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`, and `-i`/`-o`, which also
+    take device specs, as "<option> value is too long" (`cli_value_fits()`); options that resolve a file first
+    (`--src-csv`, `--p25-bandplan`, `--iq-replay`'s metadata) or hold a folder (`-d`, `-7`) check their own. A second
+    `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and EDACS LCN slots shadowing
+    the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits

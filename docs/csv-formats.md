@@ -176,8 +176,9 @@ Notes:
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
   holds that LCN's place, also when an EDACS site names that LCN as its control channel (the frequency it is heard on
-  is recorded there only with no list imported). Frequencies learned from site broadcasts (with no list imported) are
-  capped at 26, and a `-Y` scan never steps to them.
+  is recorded there only with no list imported). Under `-T` that control channel is still learned from the frequency
+  it is heard on, so the returns to it work while the list keeps its 0. Frequencies learned from site broadcasts
+  (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
 
 Example:
 

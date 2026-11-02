@@ -948,6 +948,32 @@ test_y_timing_hangtime_without_anchor(void) {
     fixture_free(&fix);
 }
 
+/* Issue #697: -Y with no channel map of the user's (the rows are channels a site announced) stays on its frequency,
+ * so the publication names that and counts nothing down: neither the voice gate's qualify window, nor the hangtime,
+ * nor the per-visit cap. */
+static void
+test_y_timing_without_a_channel_map(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->chan_in_file[0] = '\0';
+    fix.opts->scan_max_visit_ms = 2000;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time = (time_t)1000;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 100.25);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    CHECK("no map reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_NO_LIST);
+    CHECK("no map has no window", fix.state->scan_timing.started_m < 0.0 && fix.state->scan_timing.deadline_m < 0.0
+                                      && fix.state->scan_timing.span_ms == 0U);
+    CHECK("no map runs no visit cap", fix.state->scan_timing.visit_deadline_m < 0.0);
+    fixture_free(&fix);
+}
+
 static void
 test_y_timing_manual_hold_pauses_the_timer(void) {
     gate_fixture fix;
@@ -1803,6 +1829,7 @@ main(void) {
     test_y_timing_silent_under_trunk_scan();
     test_y_timing_legacy_hangtime_window();
     test_y_timing_hangtime_without_anchor();
+    test_y_timing_without_a_channel_map();
     test_y_timing_manual_hold_pauses_the_timer();
     test_y_timing_qualify_window();
     test_y_timing_voice_and_tail_share_the_hold_window();

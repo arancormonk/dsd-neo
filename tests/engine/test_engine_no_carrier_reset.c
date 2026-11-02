@@ -3298,17 +3298,46 @@ test_visit_cap_scanner_hops(void) {
     return rc;
 }
 
-/* What a DMR site's channel broadcasts (C_BCAST) leave in the list while no list of the user's is loaded: three distinct
- * frequencies and no map path (dmr_cspdu_pf0_c_bcast_track_freq()). On a continuous carrier, synced and silent for
- * longer than the voice gate's qualify window, with a visit older than the cap, nothing may end the reception for them
- * at any pass, and noCarrier() never retunes: not while the carrier holds, nor once it is gone. */
-static int
-expect_learned_channels_hold(dsd_opts* opts, dsd_state* state, const char* what, long base_hz) {
-    int rc = 0;
+static void
+write_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A DMR Tier III C_BCAST (opcode 40) announcing @p channel at an absolute frequency: @p rx_int MHz plus @p rx_step
+ * steps of 125 Hz, the same receive and transmit. */
+static void
+build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 40U;
+    write_csbk_bits(bits, 16U, 5U, 5U);
+    write_csbk_bits(bits, 68U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 112U, 0U, 4U);
+    write_csbk_bits(bits, 118U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 130U, rx_int & 0x03FFU, 10U);
+    write_csbk_bits(bits, 140U, rx_step & 0x1FFFU, 13U);
+    write_csbk_bits(bits, 153U, rx_int & 0x03FFU, 10U);
+    write_csbk_bits(bits, 163U, rx_step & 0x1FFFU, 13U);
+}
+
+/* What a DMR site's channel broadcasts (C_BCAST) leave in the list while no list of the user's is loaded: distinct
+ * frequencies and no map path (dmr_cspdu_pf0_c_bcast_track_freq()). */
+static void
+seed_learned_channels(dsd_state* state, long base_hz) {
     for (int i = 0; i < 3; i++) {
         *dsd_state_trunk_lcn_slot(state, i) = base_hz + (1000000L * i);
     }
     state->lcn_freq_count = 3;
+}
+
+/* On a continuous carrier, synced and silent for longer than the voice gate's qualify window, with a visit older than
+ * the cap, nothing may end the reception for learned channels at any pass, and noCarrier() never retunes: not while
+ * the carrier holds, nor once it is gone. */
+static int
+expect_learned_channels_hold(dsd_opts* opts, dsd_state* state, const char* what) {
+    int rc = 0;
     state->lcn_freq_roll = 0;
     g_rtl_tune_calls = 0;
     for (int pass = 0; pass < 3; pass++) {
@@ -3354,7 +3383,8 @@ test_learned_channels_never_rotate_the_scanner(void) {
     opts->scan_voice_hold_ms = 2000;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
-    rc |= expect_learned_channels_hold(opts, state, "no map at start", 962012500L);
+    seed_learned_channels(state, 962012500L);
+    rc |= expect_learned_channels_hold(opts, state, "no map at start");
 
     /* An imported list, then Clear channel map (svc_clear_channel_map()): the path and the rows go, -Y stays on. */
     mark_scan_list_imported(opts);
@@ -3365,7 +3395,22 @@ test_learned_channels_never_rotate_the_scanner(void) {
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
-    rc |= expect_learned_channels_hold(opts, state, "after Clear channel map", 972012500L);
+    seed_learned_channels(state, 972012500L);
+    rc |= expect_learned_channels_hold(opts, state, "after Clear channel map");
+
+    /* The same through the real tracker: two C_BCAST channel announcements (absolute frequency, 451.0125 and
+       451.0375 MHz) decoded with no map loaded. */
+    dsd_state_trunk_lcn_free(state);
+    state->lcn_freq_count = 0;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("c_bcast: the site's channels are learned",
+                      state->lcn_freq_count == 2 && *dsd_state_trunk_lcn_slot_const(state, 0) == 451012500L);
+    rc |= expect_learned_channels_hold(opts, state, "learned from C_BCAST");
 
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
