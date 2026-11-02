@@ -127,9 +127,9 @@ check_recording(const char* name, void* user) {
     assert(strstr(name, ".wav"));
     assert(!strstr(name, "TEMP"));
     /* The NFM name: no talkgroup, source or call type, and the sanitized service last (issue #637). */
-    const int traveler = dsd_test_nfm_recording_name_is(name, "Traveler__West_");
-    const int dispatch = dsd_test_nfm_recording_name_is(name, "Dispatch");
-    const int unnamed = dsd_test_nfm_recording_name_is(name, NULL);
+    const int traveler = dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_141.3", "Traveler__West_");
+    const int dispatch = dsd_test_nfm_recording_name_is(name, NULL, "DCS_D047N", "Dispatch");
+    const int unnamed = dsd_test_nfm_recording_name_is(name, NULL, NULL, NULL);
     assert(traveler || dispatch || unnamed);
     check->traveler += traveler;
     check->dispatch += dispatch;
@@ -166,8 +166,8 @@ typedef struct {
 static int
 count_service_files(const char* name, void* user) {
     service_files* check = user;
-    check->traveler += dsd_test_nfm_recording_name_is(name, "Traveler__West_");
-    check->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
+    check->traveler += dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_141.3", "Traveler__West_");
+    check->dispatch += dsd_test_nfm_recording_name_is(name, NULL, "DCS_D047N", "Dispatch");
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -207,7 +207,7 @@ static int
 check_teardown_recording(const char* name, void* user) {
     teardown_check* check = user;
     check->temp += strstr(name, "TEMP") != NULL;
-    check->unnamed += dsd_test_nfm_recording_name_is(name, NULL);
+    check->unnamed += dsd_test_nfm_recording_name_is(name, NULL, NULL, NULL);
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -514,8 +514,8 @@ static int
 check_tone_sync_recording(const char* name, void* user) {
     tone_sync_recordings* found = user;
     assert(!strstr(name, "TEMP"));
-    found->traveler += dsd_test_nfm_recording_name_is(name, "Traveler");
-    found->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
+    found->traveler += dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_100.0", "Traveler");
+    found->dispatch += dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_141.3", "Dispatch");
     found->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
@@ -816,13 +816,22 @@ typedef struct {
     short* samples[HOLD_FILES];
 } hold_files;
 
+/* An unnamed NFM recording of the rig: no frequency (an audio input), and the one tone its calls lock -- none, CTCSS
+   141.3 Hz or DCS 047 normal (hold_lock_tone()) -- since no tone name is set. */
+static int
+hold_unnamed_name_is(const char* name) {
+    return dsd_test_nfm_recording_name_is(name, NULL, NULL, NULL)
+           || dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_141.3", NULL)
+           || dsd_test_nfm_recording_name_is(name, NULL, "DCS_D047N", NULL);
+}
+
 static int
 take_hold_file(const char* name, void* user) {
     hold_files* found = user;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
     found->temp += strstr(name, "TEMP") != NULL;
-    found->named += dsd_test_nfm_recording_name_is(name, NULL);
+    found->named += hold_unnamed_name_is(name);
     assert(found->files < HOLD_FILES);
     SF_INFO info = {0};
     SNDFILE* wav = sf_open(path, SFM_READ, &info);
@@ -1275,8 +1284,8 @@ typedef struct {
 static int
 take_hold_service(const char* name, void* user) {
     hold_services* found = user;
-    const int dispatch = dsd_test_nfm_recording_name_is(name, "Dispatch");
-    assert(dispatch || dsd_test_nfm_recording_name_is(name, "Traveler"));
+    const int dispatch = dsd_test_nfm_recording_name_is(name, NULL, "DCS_D047N", "Dispatch");
+    assert(dispatch || dsd_test_nfm_recording_name_is(name, NULL, "CTCSS_141.3", "Traveler"));
     found->traveler += !dispatch;
     found->dispatch += dispatch;
     char path[DSD_TEST_PATH_MAX * 2];

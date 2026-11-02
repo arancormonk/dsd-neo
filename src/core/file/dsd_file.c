@@ -57,6 +57,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -1077,6 +1078,8 @@ typedef struct {
     char tgt_str[200];
     char gi_str[10];
     char service[DSD_SERVICE_LABEL_SIZE + 5];
+    char analog_part
+        [48]; /* An analog call's `<MODE>_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>]` (issue #668). */
     uint8_t is_string;
     uint8_t is_analog; /* A conventional NFM call: no talkgroup, source or call type to name it by (issue #637). */
 } wav_rename_metadata;
@@ -1124,6 +1127,39 @@ wav_rename_service(const Event_History* event_item, wav_rename_metadata* metadat
     }
 }
 
+/* The analog name's tone part, `_CTCSS_100.0` or `_DCS_D023N`, for a tone the call's row confirmed; nothing for a
+   confirmed untoned call or one never judged. Built from the stored value directly: the name sanitizer would turn the
+   '.' of a CTCSS tone into '_'. */
+static void
+wav_rename_analog_tone(const Event_History* event_item, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!event_item || !event_item->receive_identity.known) {
+        return;
+    }
+    const int kind = event_item->receive_identity.kind;
+    char value[16];
+    if ((kind != DSD_RECEIVE_CTCSS && kind != DSD_RECEIVE_DCS)
+        || dsd_receive_value_format(kind, event_item->receive_identity.value, value, sizeof value) <= 0) {
+        return;
+    }
+    DSD_SNPRINTF(out, out_size, "_%s_%s", kind == DSD_RECEIVE_CTCSS ? "CTCSS" : "DCS", value);
+}
+
+/* An analog call's mode word (the row's, NFM until #667 adds more), then its frequency and received tone. The close
+   without a row (the NFM teardown) has none of them and names itself NFM_FREQ_UNKNOWN. */
+static void
+wav_rename_analog(const Event_History* event_item, wav_rename_metadata* metadata) {
+    const char* mode = metadata->sys_str[0] != '\0' ? metadata->sys_str : "NFM";
+    char tone[24];
+    wav_rename_analog_tone(event_item, tone, sizeof tone);
+    if (event_item && event_item->freq_hz > 0) {
+        DSD_SNPRINTF(metadata->analog_part, sizeof(metadata->analog_part), "%s_%lld%s", mode,
+                     (long long)event_item->freq_hz, tone);
+    } else {
+        DSD_SNPRINTF(metadata->analog_part, sizeof(metadata->analog_part), "%s_FREQ_UNKNOWN%s", mode, tone);
+    }
+}
+
 static void
 wav_rename_build_metadata(const Event_History* event_item, int analog, wav_rename_metadata* metadata) {
     if (!metadata) {
@@ -1165,6 +1201,9 @@ wav_rename_build_metadata(const Event_History* event_item, int analog, wav_renam
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
     }
     metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
+    if (metadata->is_analog) {
+        wav_rename_analog(event_item, metadata);
+    }
 }
 
 static void
@@ -1173,8 +1212,8 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
         return;
     }
     if (metadata->is_analog) {
-        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_NFM%s.wav", dir, metadata->datestr, metadata->timestr,
-                     metadata->random_number, metadata->service);
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->analog_part, metadata->service);
     } else if (metadata->is_string == 1) {
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,

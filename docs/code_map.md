@@ -11933,10 +11933,13 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     same), see `docs/testing.md`.
   - Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz
     call-WAV conversion lane; `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing
-    diagnostic raw capture. An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup,
-    source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer
-    has the row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no
-    rdio export), so it is never left under its temp name nor given the digital shape. The call's own close exports it
+    diagnostic raw capture. An NFM recording is published as
+    `<date>_<time>_<nnnnn>_NFM_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>][_SVC_<name>].wav` (no
+    talkgroup, source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; the mode word
+    is the row's, the frequency its `freq_hz`, and the tone part appears only for a confirmed CTCSS/DCS identity,
+    formatted by `dsd_receive_value_format()` and not run through the name sanitizer; a teardown that no longer has the
+    row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, `NFM_FREQ_UNKNOWN`, no
+    tone or service, no rdio export), so it is never left under its temp name nor given the digital shape. The call's own close exports it
     to rdio-scanner under its frequency in kHz (issue #668; Core, "rdio-scanner export verdict").
   - A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone

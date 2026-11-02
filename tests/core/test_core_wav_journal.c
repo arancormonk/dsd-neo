@@ -817,7 +817,7 @@ test_held_nfm_call_is_one_recording(void) {
             rc |= expect_int("held nfm: both bursts and the pause", field_ll(pub, "duration_ms"), 40 + 200 + 40);
             rc |= expect_int("held nfm: starts at the first burst", field_ll(pub, "start"), (long long)k_t0 + 10);
             rc |= expect_true("held nfm: the NFM name with its service",
-                              strstr(field_s(pub, "file"), "_NFM_SVC_Dispatch.wav") != NULL);
+                              strstr(field_s(pub, "file"), "_NFM_FREQ_UNKNOWN_CTCSS_141.3_SVC_Dispatch.wav") != NULL);
         }
     }
     rc |= expect_int("held nfm: published once", published, 1);

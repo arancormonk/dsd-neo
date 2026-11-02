@@ -290,8 +290,9 @@ ends a paused call at its last audio. Digital calls are not affected.
 Recordings go to DSD-neo's own folder on the phone's storage (reachable over USB):
 `Android/data/io.github.arancormonk.dsdneo/files/Call recordings/`. Each saved system and scan list has a folder named
 after it with a short ID, for example `County P25 (1a2b3c4d)`; Explore and Signal search sessions share `Explore`.
-Renaming a system keeps its folder, and the folder keeps its first name. A file is named like any per-call WAV (date,
-time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digital voice, 48 kHz for analog FM.
+Renaming a system keeps its folder, and the folder keeps its first name. A digital call's file is named with the date, time,
+system, talkgroup and radio, and an analog FM call's with the date, time, `NFM`, frequency and received tone (see
+[`-P`](../docs/cli.md)): 8 kHz mono for digital voice, 48 kHz for analog FM.
 
 - **From a computer:** connect the phone over USB, choose **File transfer** on the phone, and open
   `Android/data/io.github.arancormonk.dsdneo/files/Call recordings` on the computer. On Android 11 and later, file

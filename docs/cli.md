@@ -1642,9 +1642,12 @@ History includes the received CTCSS/DCS identity; a confirmed tone change separa
 Carrier end (200 ms after the carrier drops, or after a longer pause with `--analog-record-max-gap-ms`, below),
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
 include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
-`<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
-`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. With `--rdio-mode`, NFM recordings are exported to
-rdio-scanner too, named or not ([below](#nfm-calls-in-rdio-scanner)). See
+`<date>_<time>_<nnnnn>_NFM_<frequency in Hz>[_<tone>][_SVC_<name>].wav`
+(`20261021_142839_51828_NFM_154430000_CTCSS_141.3_SVC_20R_Traveler.wav`). The tone is the received `CTCSS_<Hz>`
+or `DCS_D<code><N|I>` (the standard code, as `DCS_D023N`); it is left out when no tone was received or it was not
+confirmed. A call with no known frequency (an audio input) has `FREQ_UNKNOWN` in place of the frequency.
+With `--rdio-mode`, NFM recordings are exported to rdio-scanner too, named or not
+([below](#nfm-calls-in-rdio-scanner)). See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
 
 #### NFM calls in rdio-scanner

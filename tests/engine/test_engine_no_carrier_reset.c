@@ -5597,7 +5597,7 @@ test_replay_leave_closes_the_nfm_recording(void) {
     rc |= expect_true("replay leave nfm: one recording is published", found.published == 1 && found.temp == 0);
     rc |= expect_true("replay leave nfm: under the capture's date", strncmp(found.name, date, strlen(date)) == 0);
     rc |= expect_true("replay leave nfm: as NFM, named by its tone",
-                      dsd_test_nfm_recording_name_is(found.name, "Traveler"));
+                      dsd_test_nfm_recording_name_is(found.name, "850000000", "CTCSS_141.3", "Traveler"));
 
     (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
     (void)dsd_test_rmdir(dir);
