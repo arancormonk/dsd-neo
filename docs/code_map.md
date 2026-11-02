@@ -1510,9 +1510,11 @@ suite runs under this compiler.
   a known DMR trunking system) and the merged row keeps the union of their parts (`watchdog_event_merge_site()`), so a
   radio heard on two sites inside the reacquire window gives two rows. The core site module,
   `<dsd-neo/core/received_identity_site.h>` (libc only, so Qt builds it as it is): `dsd_rxid_site_snapshot()`,
-  `dsd_rxid_site_compatible()` (no part both know differs; symmetric; DMR site text and brand are presentation and are
-  never compared), `dsd_rxid_site_union()` (order-free), `dsd_rxid_site_consistent()` (what a stored identity must
-  satisfy to be loaded), `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
+  `dsd_rxid_site_compatible()` (no part both know differs, and a Tier III system code agrees with the other side's raw
+  model, network and site; symmetric; DMR site text and brand are presentation and are never compared),
+  `dsd_rxid_site_union()` (order-free; of two texts a Tier III one with the `Capacity Max` part wins, else the
+  strcmp-smaller), `dsd_rxid_site_consistent()` (what a stored identity must satisfy to be loaded; Tier III numbers
+  within the model's NET/SITE widths, a 14-bit system code that names the raw numbers beside it), `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
   `dsd_call_record_site_compatible()` the call-state reacquisition guard above uses. Tests:
   `CORE_RECEIVED_IDENTITY_SITE`, `CORE_CALL_ALERT_HISTORY`, `CORE_CALL_STATE`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
@@ -2182,7 +2184,16 @@ suite runs under this compiler.
   numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
   text by `dsd_rxid_note_dmr_site()`, the only way a DMR site is noted), and only they tell one site from another:
   the site text is presentation (it follows `-D` and shows Tier III one-based) and is never compared. Text copies zero
-  their whole field, so equal notes leave equal bytes. Threading: the decoder thread owns the record and is
+  their whole field, so equal notes leave equal bytes. One part is the decoder's, not the carrier's identity: the
+  Capacity Max marker (`DSD_RXID_DMR_T3_CAPMAX`, `dmr_t3_capmax_model`/`dmr_t3_capmax_net`,
+  `dsd_rxid_note_dmr_t3_capmax()`, `dsd_rxid_dmr_t3_is_capmax()`) names the Tier III network (model and raw network,
+  never `syscode >> SITE width`, which two models can share) a C_ALOHA recognised as Motorola Capacity Max, so the DMR
+  decoder writes that network's site text with raw numbers and the `DSD_RXID_T3_CAPMAX_TOKEN` part. It is the one
+  note a RAS-accepted message under `-F` may make (it publishes no number). It is set valid and never fresh, noting
+  or dropping it alone never moves the epoch, and no site snapshot, compare, union, store or API feed carries it. It
+  goes with the DMR system parts (another access code, the DMR reset) and the trunking parts (another trunking
+  system), and a Tier III system code of another network drops it; another site of the same network, a trunk tune,
+  the RAS reset and the no-carrier pass keep it. Threading: the decoder thread owns the record and is
   its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because

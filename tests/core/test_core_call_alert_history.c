@@ -4458,7 +4458,7 @@ test_system_identity_takes_dependent_invalidations(void) {
 
 // Issue #799: each row keeps the site identity its call was heard on -- the site parts of the record its sys ids come
 // from, under the same rule -- and the DMR call's channel with the numbering it was named in.
-static const char k_t3_site_text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 28 \xC2\xB7 SYS 0A3F";
+static const char k_t3_site_text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 28 \xC2\xB7 SYS 119B";
 
 // One active group call with its channel, the channel's kind and frequency, rendered into the staged row.
 static const Event_History*
@@ -4500,8 +4500,8 @@ expect_row_site_empty(const char* label, const Event_History* row) {
 
 static void
 note_t3_site(dsd_state* state) {
-    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
-    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 0U, k_t3_site_text);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x119BU); /* Small, NET 12, SITE 27 */
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, k_t3_site_text);
 }
 
 // The row takes the site of the record its call began under while that record is the call's, and keeps it once the
@@ -4875,7 +4875,7 @@ test_event_line_dmr_site_tokens(void) {
     const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U,
                                                    DSD_CALL_CHANNEL_LPCN, DSD_CALL_BOUNDARY_BEGIN);
     int rc = expect_str_eq("Tier III", item->event_string,
-                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 0A3F; "
+                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 119B; "
                            "SITE: Net 13 Site 28; LPCN: 12; Group; ");
     rc |= expect_int("the row's channel kind", item->call_channel_kind, DSD_CALL_CHANNEL_LPCN);
 

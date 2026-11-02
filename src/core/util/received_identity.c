@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "received_identity_t3.h"
+
 dsd_rxid_family
 dsd_rxid_family_for_sync(int synctype) {
     if (synctype < 0) {
@@ -103,12 +105,15 @@ rxid_drop(dsd_received_identity* id, uint32_t parts) {
 
 /* Drop @p parts because a note named another system, site, cell or subtype than the one they belong to: what the record
    holds from here is another identity, so its epoch moves (a reader that took the old one, a call's history row, keeps
-   it). Nothing held, nothing moves. */
+   it). Nothing held, nothing moves; the Capacity Max marker alone is no identity, so dropping it moves nothing. */
 static void
 rxid_invalidate(dsd_received_identity* id, uint32_t parts) {
-    if ((id->valid & parts) != 0U) {
+    const uint32_t held = id->valid & parts;
+    if (held != 0U) {
         rxid_drop(id, parts);
-        id->epoch++;
+        if ((held & ~(uint32_t)DSD_RXID_DMR_T3_CAPMAX) != 0U) {
+            id->epoch++;
+        }
     }
 }
 
@@ -193,8 +198,8 @@ rxid_system_parts(uint8_t family) {
     switch (family) {
         case DSD_RXID_FAMILY_DMR:
             return DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
-                   | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_VENDOR
-                   | DSD_RXID_CC_FREQ;
+                   | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_T3_CAPMAX | DSD_RXID_DMR_XPT_FREE_LCN
+                   | DSD_RXID_DMR_VENDOR | DSD_RXID_CC_FREQ;
         case DSD_RXID_FAMILY_P25: return RXID_P25_SYSTEM;
         case DSD_RXID_FAMILY_NXDN:
             return DSD_RXID_NXDN_LOCATION | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
@@ -297,10 +302,10 @@ dsd_rxid_note_p25_lra(dsd_state* state, uint16_t sysid, uint8_t lra) {
     rxid_set(id, DSD_RXID_P25_LRA);
 }
 
-/* The parts one DMR trunking system sends, apart from the carrier's colour code. */
+/* The parts one DMR trunking system sends, apart from the carrier's colour code, and the Tier III Capacity Max marker. */
 #define RXID_DMR_TRUNK_PARTS                                                                                           \
     (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_BRAND        \
-     | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN)
+     | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_T3_CAPMAX | DSD_RXID_DMR_XPT_FREE_LCN)
 
 /* What one DMR site names: its numbers and text, the rest channel and free channel it names, its control channel. */
 #define RXID_DMR_SITE_PARTS                                                                                            \
@@ -448,8 +453,41 @@ dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode) {
         rxid_invalidate(id, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
                                 | DSD_RXID_CC_FREQ);
     }
+    if (rxid_has(id, DSD_RXID_DMR_T3_CAPMAX)) {
+        /* Another site of the recognised network keeps the marker; a code of another network (model and NET) drops
+           it, whether or not a code came before. */
+        const rxid_t3_code code = rxid_t3_decode(syscode);
+        if (code.model != id->dmr_t3_capmax_model || code.net != id->dmr_t3_capmax_net) {
+            rxid_invalidate(id, DSD_RXID_DMR_T3_CAPMAX);
+        }
+    }
     id->dmr_t3_syscode = syscode;
     rxid_set(id, DSD_RXID_DMR_T3_SYSCODE);
+}
+
+void
+dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net) {
+    if (model > 3U || net > rxid_t3_net_max(model)) {
+        return; /* names no Tier III network */
+    }
+    dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3);
+    if (id == NULL) {
+        return;
+    }
+    id->dmr_t3_capmax_model = model;
+    id->dmr_t3_capmax_net = net;
+    /* Valid only: the marker is no identity received, so it never makes a stale record read as live. */
+    id->valid |= DSD_RXID_DMR_T3_CAPMAX;
+}
+
+int
+dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net) {
+    if (state == NULL) {
+        return 0;
+    }
+    const dsd_received_identity* const id = &state->rx_id;
+    return id->family == (uint8_t)DSD_RXID_FAMILY_DMR && id->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3
+           && rxid_has(id, DSD_RXID_DMR_T3_CAPMAX) && id->dmr_t3_capmax_model == model && id->dmr_t3_capmax_net == net;
 }
 
 void
