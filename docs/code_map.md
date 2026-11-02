@@ -4324,8 +4324,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`dsd_app_scan_avoid_summary_same_key()`) moved since the last successful collection, collects the raw entries
     (`dsd_app_scan_avoid_raw_collect()`, no formatting) into a new immutable, reference-counted block swapped in under
     `g_feed_mu`. A failed collection drops the block and reports the list unavailable at that revision (never the older
-    list as current), and the next tick retries at the same key; feed start/stop drops it, and a new state instance
-    moves the key. `status.scan_avoids` is the held summary; `get {"what":"scan_avoids","offset","limit"}`
+    list as current), and the next tick retries at the same key. Feed stop drops it, and so does the first publish
+    that finds no client (nothing refreshes it then), which also makes the next publish with a client run the update;
+    a new state instance runs the update at that publish (one instance compare per publish while a client is
+    connected) instead of at the next interval. A collection reports the entries it found as its total. `status.scan_avoids` is the held summary; `get {"what":"scan_avoids","offset","limit"}`
     (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a reference under the lock and formats its page (the view's
     labels, each entry's `scan_avoid_remove` identity) on the session thread outside every lock, so the replaced
     block is freed by its last reader

@@ -43,6 +43,7 @@
 #endif
 
 #include "../../src/app_control/commands_internal.h"
+#include "api_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json.h"
@@ -1222,7 +1223,8 @@ scan_avoids_failed_collection(avoid_rig* rig) {
     rig->state->trunk_scan_avoid_count = 2U;
     rig->state->trunk_scan_avoid_rev = dsd_state_rev_next();
     expect_unavailable(rig);
-    /* Still failing at the same key: retried every tick, still unavailable. */
+    /* Another tick at the same key: still unavailable, and A's entries do not come back. (That the feed retries at
+       this key is shown below: the recovery happens at this same revision.) */
     await_tick(rig, 9002);
     expect_unavailable(rig);
 
@@ -1262,18 +1264,36 @@ scan_avoids_restart(avoid_rig* rig) {
     await_status(rig, want);
     const uint64_t before = rig->state->state_instance;
 
+    /* The restart lands right after a tick, and one publish follows: the feed refreshes at that publish instead of
+       serving the old instance's entries until the next 250 ms update. */
     freeState(rig->state);
     initState(rig->state);
     assert(rig->state->state_instance != before);
     fill_lcn_list(rig->state, 3, "Ch", avoid_row_1);
-    want_lcn_status(want, sizeof want, rig->state, 1U);
-    await_status(rig, want);
+    dsd_telemetry_publish_both_and_redraw(rig->opts, rig->state);
     dsd_json_node* root = get_scan_avoids(rig, -1, -1);
     expect_u64_str(json_at(root, "data"), "instance", rig->state->state_instance);
     size_t count = 0U;
     const dsd_json_node* entries = data_entries(root, &count);
     assert(count == 1U);
     expect_lcn_entry(entries->items[0], rig->state, 1, "Ch");
+    dsd_json_free(root);
+    /* status refreshed at the same publish. */
+    want_lcn_status(want, sizeof want, rig->state, 1U);
+    assert(await_line(rig->sub, "status", want, 3000U));
+
+    /* A list shrunk past an avoided row without a recount: the total is the entries a page reaches, not the stale
+       count (lcn_avoid_total still says 2). */
+    assert(dsd_state_trunk_lcn_avoid_set(rig->state, 2U, 1) == 0);
+    rig->state->lcn_freq_count = 2;
+    rig->state->lcn_avoid_rev = dsd_state_rev_next();
+    assert(rig->state->lcn_avoid_total == 2U);
+    want_lcn_status(want, sizeof want, rig->state, 1U);
+    await_status(rig, want);
+    root = get_scan_avoids(rig, -1, -1);
+    assert(json_u64(json_at(root, "data"), "total") == 1U);
+    (void)data_entries(root, &count);
+    assert(count == 1U);
     dsd_json_free(root);
 }
 
@@ -1407,6 +1427,24 @@ test_scan_avoids(void) {
     scan_avoids_concurrent_paging(&rig);
     scan_avoids_largest_page(&rig);
 
+    /* With no client connected the feed keeps no copy, so a client connecting later is never served the list the last
+       one saw as current: null until the first update, which the next publish runs. */
+    dsd_socket_close(rig.get);
+    dsd_socket_close(rig.sub);
+    for (int i = 0; i < 500 && dsd_api_client_count() > 0; i++) {
+        dsd_sleep_ms(10);
+    }
+    assert(dsd_api_client_count() == 0);
+    dsd_telemetry_publish_both_and_redraw(rig.opts, rig.state);
+    rig.get = open_session(port, "\"type\":\"welcome\"");
+    send_get_scan_avoids(rig.get, -1, -1);
+    expect_line(rig.get, "{\"id\":null,\"ok\":true,\"what\":\"scan_avoids\",\"data\":null}");
+    dsd_telemetry_publish_both_and_redraw(rig.opts, rig.state);
+    root = get_scan_avoids(&rig, 0, 1);
+    (void)data_entries(root, &count);
+    assert(count == 1U);
+    dsd_json_free(root);
+
     dsd_api_stop();
     dsd_socket_close(rig.get);
     /* The copy went with the feed: a reconnecting client sees nothing until the feed has looked again. */
@@ -1416,7 +1454,6 @@ test_scan_avoids(void) {
     expect_line(rig.get, "{\"id\":null,\"ok\":true,\"what\":\"scan_avoids\",\"data\":null}");
     dsd_socket_close(rig.get);
     dsd_api_stop();
-    dsd_socket_close(rig.sub);
     dsd_app_frontend_runtime_stop();
     freeState(rig.state);
     free(rig.state);

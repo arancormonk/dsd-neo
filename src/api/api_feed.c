@@ -201,6 +201,15 @@ scan_avoids_publish(api_scan_avoid_block* block, const dsd_app_scan_avoid_summar
     scan_avoid_block_release(old);
 }
 
+/* Report nothing and forget the built key (a block exists only with a summary shown); one flag test when already so. */
+static void
+scan_avoids_drop_idle(void) {
+    g_sa_built_valid = 0;
+    if (g_sa_shown_valid) {
+        scan_avoids_publish(NULL, NULL);
+    }
+}
+
 /* Once per telemetry tick: nothing beyond the view's constant-cost summary and a key compare unless the key moved
    since the last successful collection. A failed collection drops the copy, so status and `get` both report the list
    unavailable at that revision rather than an older list as current, and the next tick tries again. */
@@ -208,10 +217,7 @@ static void
 scan_avoids_refresh(const dsd_state* state) {
     dsd_app_scan_avoid_summary seen;
     if (g_live_opts == NULL || dsd_app_scan_avoid_summary_get(g_live_opts, state, &seen) != 0) {
-        g_sa_built_valid = 0;
-        if (g_sa_shown_valid || g_sa_block != NULL) {
-            scan_avoids_publish(NULL, NULL);
-        }
+        scan_avoids_drop_idle();
         return;
     }
     if (g_sa_built_valid && dsd_app_scan_avoid_summary_same_key(&seen, &g_sa_built)) {
@@ -1122,7 +1128,18 @@ feed_state(const dsd_state* state, void* user) {
     }
     track_events(state);
     if (dsd_api_client_count() <= 0) {
+        /* Nothing is refreshed without a client, so no copy is kept that a later client could take for current, and
+           the first publish once one connects runs the update at once. */
+        if (g_sa_shown_valid) {
+            scan_avoids_drop_idle();
+            g_last_telemetry_ms = 0U;
+        }
         return;
+    }
+    /* A restarted decoder (a new state instance): run the update now, so neither status nor `get scan_avoids` keeps
+       answering for the previous instance until the next interval. One compare per publish. */
+    if (g_sa_shown_valid && state->state_instance != g_sa_shown.instance) {
+        g_last_telemetry_ms = 0U;
     }
     const uint64_t now = dsd_realtime_mono_ms();
     if (g_last_telemetry_ms != 0U && now - g_last_telemetry_ms < (uint64_t)DSD_API_TELEMETRY_INTERVAL_MS) {

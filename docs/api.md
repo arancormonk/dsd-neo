@@ -178,6 +178,9 @@ match responses by `id`.
   also take a string holding a decimal value or a `0x`-prefixed hexadecimal
   one, so a client whose JSON numbers are doubles can send every bit. The
   server writes 64-bit identifiers as decimal strings for the same reason.
+  The other unsigned scan avoid fields take the same strings: `session` and
+  `frequency_hz` (`scan_avoid_remove`), and `offset` and `limit`
+  (`get scan_avoids`). A `row` is a JSON integer only.
 * Booleans take `true`/`false` or `0`/`1`.
 * A string longer than the command's field is refused with `invalid_params`,
   never cut short. Each string command's limit is in its catalog entry (most
@@ -841,7 +844,9 @@ session has neither.
 ```
 
 * `offset` starts at `0` (the default); a page past the end is empty.
-  `limit` is `1` to `64` (default `64`). Anything else is `invalid_params`.
+  `limit` is `1` to `64` (default `64`). Both are integers, or strings as
+  under [Parameter values](#parameter-values); anything else is
+  `invalid_params`.
 * `data` starts with the same summary as `status.scan_avoids`: `available`,
   `kind`, `total` (the number of avoided entries, `null` while unavailable),
   `instance`, `list_rev` (`lcn`) or `session` (`trunk_scan`), and `revision`.
@@ -854,14 +859,18 @@ session has neither.
 * `revision` moves whenever the list could have changed. A client paging
   through a list starts again from `offset` `0` when `revision`, `instance` or
   `kind` changes between pages.
-* `available` is `false` while the decoder cannot list the entries (it could
-  not allocate the list); the page is then empty, and `scan_avoid_clear` still
-  works. A later revision, or the next telemetry update, brings the entries
-  back.
+* `available` is `false` while the entries cannot be listed because memory
+  for a list could not be allocated: the trunk scan's own published list, or
+  the server's copy of either list. The page is then empty, and
+  `scan_avoid_clear` still works. A later revision, or the next telemetry
+  update, brings the entries back.
 
-The list is refreshed with the 250 ms telemetry updates, so a page can lag a
-change by that much; `scan_avoid_remove` checks the identity it is sent against
-the live list either way.
+The server's copy follows the telemetry updates: every 250 ms while a client is
+connected, and at once when the decoder restarts. With no client connected the
+server keeps no copy, so a `get` sent right after connecting can answer `null`
+until the first update, which the decoder's next publish runs. A page can
+therefore lag a change briefly; `scan_avoid_remove` checks the identity it is
+sent against the live list either way.
 
 ## Examples
 
