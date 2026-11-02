@@ -764,6 +764,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_fp_mode
+  HEADERS_PUBLIC_RUNTIME_FP_MODE
+  dsd-neo/runtime/fp_mode.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_frame_sync_hooks
   HEADERS_PUBLIC_RUNTIME_FRAME_SYNC_HOOKS
   dsd-neo/runtime/frame_sync_hooks.h
@@ -977,12 +983,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_unicode
   HEADERS_PUBLIC_RUNTIME_UNICODE
   dsd-neo/runtime/unicode.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_runtime_worker_pool
-  HEADERS_PUBLIC_RUNTIME_WORKER_POOL
-  dsd-neo/runtime/worker_pool.h
   C
 )
 
@@ -2388,16 +2388,17 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_mem PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_MEM COMMAND dsd-neo_test_runtime_mem)
 
-add_executable(
-    dsd-neo_test_runtime_worker_pool
-    runtime/test_runtime_worker_pool.cpp
-)
+# The run's FTZ/DAZ mode: config mapping, entry apply on a new thread, the library-callback scope (issue #672 B12).
+add_executable(dsd-neo_test_runtime_fp_mode runtime/test_runtime_fp_mode.c)
 target_include_directories(
-    dsd-neo_test_runtime_worker_pool
+    dsd-neo_test_runtime_fp_mode
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_runtime_worker_pool PRIVATE dsd-neo_runtime)
-add_test(NAME RUNTIME_WORKER_POOL COMMAND dsd-neo_test_runtime_worker_pool)
+target_link_libraries(
+    dsd-neo_test_runtime_fp_mode
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(NAME RUNTIME_FP_MODE COMMAND dsd-neo_test_runtime_fp_mode)
 
 add_executable(
     dsd-neo_test_runtime_rt_sched
@@ -2774,6 +2775,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
@@ -2813,6 +2815,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
@@ -5357,6 +5360,7 @@ add_executable(
     dsd-neo_test_runtime_bootstrap_system
     runtime/test_runtime_bootstrap_system.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/system.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_system
@@ -13021,6 +13025,21 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_cold_start PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_COLD_START COMMAND dsd-neo_test_p25_sm_cold_start)
 
+# P25 SM watchdog thread start: a failed start rolls back and joins nothing; the entry applies FTZ/DAZ (issue #672)
+add_executable(
+    dsd-neo_test_p25_sm_watchdog_start
+    protocol/p25/test_p25_sm_watchdog_start.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_SM_WATCHDOG_START COMMAND dsd-neo_test_p25_sm_watchdog_start)
+
 # P25 SM Phase 2 grant gating on decoded WACN/SYSID/NAC
 add_executable(
     dsd-neo_test_p25_p2_grant_site_gate
@@ -16864,6 +16883,27 @@ if(DSD_HAS_RADIO)
         "C_ALOHA_SYS_PARMS|-RAS "
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
+    # The run's FTZ/DAZ mode on every thread an in-process I/Q replay decode starts, across an on-to-off restart
+    # (issue #672 B12): tests/engine/fp_mode_replay.c.
+    add_executable(dsd-neo_test_fp_mode_replay engine/fp_mode_replay.c)
+    target_include_directories(
+        dsd-neo_test_fp_mode_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_fp_mode_replay
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    add_test(
+        NAME DECODE_IQ_FP_MODE
+        COMMAND
+            dsd-neo_test_fp_mode_replay --frontend none -fi --iq-replay
+            "${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn48.iq.json" -o null
+    )
+    set_tests_properties(
+        DECODE_IQ_FP_MODE
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")

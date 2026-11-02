@@ -39,9 +39,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__SSE__) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
 #include "csv_picker.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -639,27 +636,6 @@ act_p2_params(void* v) {
 }
 
 // ---- Env/Advanced actions ----
-
-void
-act_toggle_ftz_daz(void* v) {
-#if defined(__SSE__) || defined(__SSE2__)
-    UiCtx* c = (UiCtx*)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
-    on = on ? 0 : 1; // flip
-    ui_env_override("DSD_NEO_FTZ_DAZ", on ? "1" : "0");
-    unsigned int mxcsr = _mm_getcsr();
-    if (on) {
-        mxcsr |= (1u << 15) | (1u << 6);
-    } else {
-        mxcsr &= ~((1u << 15) | (1u << 6));
-    }
-    _mm_setcsr(mxcsr);
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
-#else
-    UNUSED(v);
-#endif
-}
 
 void
 act_set_input_warn(void* v) {
@@ -1272,15 +1248,6 @@ act_rt_sched(void* v) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_RT_SCHED", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
-}
-
-void
-act_mt(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
-    ui_env_override("DSD_NEO_MT", on ? "0" : "1");
     env_reparse_runtime_cfg(c ? c->opts : NULL);
 }
 

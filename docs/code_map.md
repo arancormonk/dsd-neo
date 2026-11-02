@@ -2471,7 +2471,30 @@ suite runs under this compiler.
       never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
       `NXDN_CC_HUNT`.
-  - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
+  - Config system (schema, expansion, user config), logging, memory helpers, rings, RT scheduling
+    - Floating-point mode (`include/dsd-neo/runtime/fp_mode.h`, `src/runtime/fp_mode.c`, issue #672 B12):
+      `DSD_NEO_FTZ_DAZ` is a start-time setting. `dsd_bootstrap_apply_fp_mode()` (`bootstrap/system.c`, called from
+      `dsd_engine_run_with_lifecycle()` before any stream or watchdog thread) resolves it once per run (unset: each
+      thread keeps what it inherited; `0`: clear MXCSR bits 15|6; `1`: set them), publishes it and applies it on the
+      decoder thread; nothing changes it during a run, and the terminal's Advanced row only reports it. New threads do
+      not inherit MXCSR on macOS and, by every available source, Windows, so every dsd-neo thread that does float work
+      calls `dsd_runtime_fp_mode_apply_thread()` as its first statement. Per thread: decoder (`decoder`, at engine
+      start), RTL demod `demod_thread_fn` (`rtl_demod`), controller `controller_thread_retune_loop`
+      (`rtl_controller`), USB reader `dongle_thread_fn` where the librtlsdr/libusb callbacks run (`rtl_usb`), rtl_tcp
+      reader `tcp_thread_fn` (`rtl_tcp`), Soapy reader `soapy_thread_fn` (`soapy`), I/Q replay feeder
+      `replay_thread_fn` (`iq_replay`), P25 watchdog (`p25_watchdog`). No apply (no float work of dsd-neo's): the
+      Airspy and replay progress monitors, UDP PCM input (int16), the audio output pumps, the I/Q capture writer, UDP
+      control, the API, RadioReference, rdio upload, terminal UI, Signal search store and Qt/Android worker threads.
+      The mode covers dsd-neo-owned computation only: libairspy converts and filters on its own consumer thread before
+      calling back, so `airspy_receive()` (`rtl_device.cpp`) wraps its work in `dsd_runtime_fp_mode_scope_enter()` /
+      `_leave()`, which put the library thread's MXCSR back before returning (both x86-64 ABIs expect MXCSR's control
+      bits preserved); cost per buffer: nothing while unset, else one MXCSR read, plus two writes only when the
+      thread's mode differs. x86/x86-64 only (`DSD_RUNTIME_FP_MODE_HAVE_MXCSR`, which also covers MSVC's `_M_X64` /
+      `_M_IX86_FP`); arm64 has no FPCR.FZ support. A new float thread must add its entry call and a line here. Tests:
+      `RUNTIME_BOOTSTRAP_SYSTEM`, `RUNTIME_FP_MODE` (entry apply, Airspy scope), the observer
+      (`dsd_runtime_fp_mode_set_observer()`) in `DECODE_IQ_FP_MODE` (in-process replay, on-to-off restart),
+      `IO_RTL_TCP_RECONNECT` `fp_mode_applied_on_stream_threads` (stream reopen) and `P25_SM_WATCHDOG_START`.
+      `DSD_NEO_MT` and its idle two-thread worker pool were removed (#672 B13); the variable is ignored.
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
       `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),
       `--interactive-setup` (hides `DSD_NEO_NO_BOOTSTRAP`), the RTL services, the I/Q DSP toggles and the terminal
@@ -7625,7 +7648,9 @@ Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
-  `<dsd-neo/protocol/p25/p25_sm_watchdog.h>`
+  `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
+  a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()` injects the failure,
+  `P25_SM_WATCHDOG_START`)
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
   (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`

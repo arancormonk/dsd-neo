@@ -323,9 +323,8 @@ Main Menu
 │   ├── Save config as...
 │   └── Save as default config
 ├── Advanced
+│   ├── SSE FTZ/DAZ [Default] (set DSD_NEO_FTZ_DAZ before start)
 │   ├── Realtime scheduling [Off]
-│   ├── Intra-block multithreading [Off]
-│   ├── SSE FTZ/DAZ [On]
 │   ├── Freeze symbol window [Off]
 │   ├── Simulate no-carrier event                Z
 │   ├── ─────

@@ -4378,7 +4378,7 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
 
     dsd_input_failure_clear();
     reset_device_io_caches();
-    dsd_bootstrap_enable_ftz_daz_if_enabled();
+    dsd_bootstrap_apply_fp_mode();
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
     InitAllFecFunction();

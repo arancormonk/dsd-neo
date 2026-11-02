@@ -37,15 +37,19 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <errno.h>
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <utility>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
@@ -61,6 +65,10 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+#include <xmmintrin.h>
+#endif
 
 struct rtl_device;
 
@@ -2437,6 +2445,75 @@ test_stream_retune_keeps_pair_alignment(void) {
     assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
 }
 
+/* fp_mode_applied_on_stream_threads (issue #672 B12): every thread a real rtl_tcp stream starts (the reader, the
+ * controller, the demod) applies the run's FTZ/DAZ mode at its entry, though the thread that opens the stream holds the
+ * opposite mode, so it is not inheritance; a reopen after an on-to-off restart applies the new run's mode. */
+std::mutex g_fp_seen_lock;
+std::vector<std::pair<std::string, unsigned int>> g_fp_seen;
+
+void
+fp_observe(const char* thread_tag, unsigned int csr) {
+    const std::lock_guard<std::mutex> hold(g_fp_seen_lock);
+    g_fp_seen.emplace_back(thread_tag, csr & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS);
+}
+
+void
+fp_set_caller_bits(unsigned int bits) {
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    _mm_setcsr((_mm_getcsr() & ~DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS) | bits);
+#else
+    (void)bits;
+#endif
+}
+
+void
+fp_stream_run(dsd_fp_mode mode, unsigned int caller_bits, unsigned int want_bits) {
+    {
+        const std::lock_guard<std::mutex> hold(g_fp_seen_lock);
+        g_fp_seen.clear();
+    }
+    dsd_runtime_fp_mode_publish(mode);
+    fp_set_caller_bits(caller_bits);
+    stream_rig r;
+    stream_open(r, 0, 1);
+    assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
+    stream_close(r);
+    const std::lock_guard<std::mutex> hold(g_fp_seen_lock);
+    for (const char* tag : {"rtl_tcp", "rtl_controller", "rtl_demod"}) {
+        int seen = 0;
+        for (const auto& entry : g_fp_seen) {
+            if (entry.first == tag) {
+                seen++;
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+                assert(entry.second == want_bits);
+#else
+                (void)want_bits;
+#endif
+            }
+        }
+        if (seen == 0) {
+            DSD_FPRINTF(stderr, "no FTZ/DAZ apply seen on %s\n", tag);
+        }
+        assert(seen > 0);
+    }
+}
+
+void
+test_fp_mode_applied_on_stream_threads(void) {
+    server_reset(default_script());
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    const unsigned int original = _mm_getcsr();
+#endif
+    dsd_runtime_fp_mode_set_observer(fp_observe);
+    fp_stream_run(DSD_FP_MODE_ON, 0U, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS);
+    fp_stream_run(DSD_FP_MODE_OFF, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS, 0U);
+    dsd_runtime_fp_mode_set_observer(nullptr);
+    dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    _mm_setcsr(original);
+#endif
+}
+
 /* commands_raise_no_sigpipe: a command to a connection that is gone fails, and never raises SIGPIPE (MSG_NOSIGNAL, or
  * SO_NOSIGPIPE where that is missing). The rest of this test ignores SIGPIPE, so a case that sends on a connection
  * taken down (old_sender_does_not_touch_replacement) runs again in a child process with SIGPIPE's default
@@ -2517,6 +2594,7 @@ const named_test kTests[] = {
     {"full_output_write_gives_up_on_stop", test_full_output_write_gives_up_on_stop},
     {"controller_create_failure_fails_start", test_controller_create_failure_fails_start},
     {"quit_during_outage_exits", test_quit_during_outage_exits},
+    {"fp_mode_applied_on_stream_threads", test_fp_mode_applied_on_stream_threads},
 };
 
 } // namespace

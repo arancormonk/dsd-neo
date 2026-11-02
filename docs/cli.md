@@ -2784,12 +2784,15 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 
 Misc
 
-- `DSD_NEO_MT=1` — enable light worker pool (2 threads)
 - `DSD_NEO_PDU_JSON=1` — emit P25 PDU JSON to stderr
 - `DSD_NEO_RT_SCHED=1` — enable real‑time thread scheduling (requires privileges)
 - `DSD_NEO_RT_PRIO_USB|DSD_NEO_RT_PRIO_DONGLE|DSD_NEO_RT_PRIO_DEMOD=<1..99>` — per-thread RT priority (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
-- `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
+- `DSD_NEO_FTZ_DAZ=1|0` — SSE flush‑to‑zero / denormals‑are‑zero for every decoding thread. Read once at start and
+  fixed for the run: `1` turns both on, `0` turns both off (even when the build or the host started them on), and
+  unset leaves the threads as they started. x86 and x86‑64 builds only (Windows included); elsewhere it is ignored.
+  Advanced > `SSE FTZ/DAZ` in the terminal menu shows the mode in force
+- `DSD_NEO_MT` — no longer used: the worker pool it enabled ran no work and was removed; the variable is ignored
 - `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
   the decoder in their own process and drive shutdown themselves (a host can also set it in-process with
   `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a

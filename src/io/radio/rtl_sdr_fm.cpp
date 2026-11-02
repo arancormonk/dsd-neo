@@ -54,6 +54,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/input_ring_watermark.h>
@@ -5020,6 +5021,7 @@ demod_note_replay_chunk_written(const struct demod_state* d, const DemodInputSpa
 
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 demod_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_demod");
     struct demod_state* d = static_cast<demod_state*>(arg);
     struct output_state* o = &output;
     maybe_set_thread_realtime_and_affinity("DEMOD");
@@ -7122,6 +7124,7 @@ controller_hop_next(struct controller_state* s, const ControllerRetuneWork* work
 
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 controller_thread_retune_loop(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_controller");
     struct controller_state* s = static_cast<controller_state*>(arg);
 
     while (!controller_should_exit()) {

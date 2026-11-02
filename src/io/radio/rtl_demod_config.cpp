@@ -30,7 +30,6 @@
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
-#include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -425,9 +424,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     demod_init_squelch_windows(s);
     demod_init_cqpsk_defaults(s);
     demod_apply_mode_defaults(s, mode, p, rtl_dsp_bw_hz);
-
-    /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
-    demod_mt_init(s);
 
     /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline.
        Start disabled so the UI/DSP menu fully controls this DSP block. */
@@ -1045,7 +1041,6 @@ rtl_demod_cleanup(struct demod_state* demod) {
     }
     dsd_cond_destroy(&demod->ready);
     dsd_mutex_destroy(&demod->ready_m);
-    demod_mt_destroy(demod);
     dsd_fsk_modem_release(&demod->fsk_modem_state);
     if (demod->resamp_taps) {
         dsd_neo_aligned_free(demod->resamp_taps);

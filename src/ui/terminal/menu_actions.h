@@ -85,7 +85,6 @@ void act_xor_ks(void* v);
 void act_p2_params(void* v);
 
 // ---- Env/Advanced actions ----
-void act_toggle_ftz_daz(void* v);
 void act_set_input_warn(void* v);
 void act_set_squelch(void* v);
 // The NFM and AM channel width rows: on a radio input the channel filter, on audio input with a rigctl peer the
@@ -106,7 +105,6 @@ void act_window_freeze_toggle(void* v);
 void act_auto_ppm_freeze(void* v);
 void act_tcp_waitall(void* v);
 void act_rt_sched(void* v);
-void act_mt(void* v);
 void act_env_editor(void* v);
 
 // ---- Prompt wrappers for Advanced menu ----

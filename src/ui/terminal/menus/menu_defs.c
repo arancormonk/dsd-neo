@@ -67,7 +67,7 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
                                 .submenu_len = CONFIG_MENU_ITEMS_LEN};
         items[8] = (NcMenuItem){.id = "main.advanced",
                                 .label = "Advanced",
-                                .help = "Scheduling, threads, FTZ/DAZ, diagnostics, environment.",
+                                .help = "Scheduling, FTZ/DAZ, diagnostics, environment.",
                                 .submenu = ADV_MENU_ITEMS,
                                 .submenu_len = ADV_MENU_ITEMS_LEN};
         items[9] = (NcMenuItem){.id = "main.sep", .kind = NC_ITEM_SEPARATOR};

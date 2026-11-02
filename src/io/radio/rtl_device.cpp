@@ -38,6 +38,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
@@ -3145,6 +3146,7 @@ replay_report_failure(const struct rtl_device* s, int rc) {
 
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 replay_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("iq_replay");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     if (!s) {
         DSD_THREAD_RETURN;
@@ -3782,6 +3784,7 @@ rtl_usb_reader_finished(struct rtl_device* s, int rc, uint32_t incarnation) {
  */
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 dongle_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_usb");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
     /* No other reader starts before this one is joined, so the value is this reader's. */
@@ -5262,6 +5265,7 @@ soapy_thread_fn(void* arg) {
     (void)arg;
     DSD_THREAD_RETURN;
 #else
+    dsd_runtime_fp_mode_apply_thread("soapy");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
 
@@ -5324,10 +5328,8 @@ soapy_progress_monitor(void* arg) {
     DSD_THREAD_RETURN;
 }
 
-/* libairspy's single consumer owns sample ingestion; the monitor only observes
- * streaming health. Never stop/join the driver from its receive callback. */
 static void
-airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64_t dropped) {
     auto* dev = static_cast<rtl_device*>(context);
     if (!dev->run.load(std::memory_order_acquire)) {
         return;
@@ -5359,6 +5361,18 @@ airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropp
     rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
     rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
     (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0);
+}
+
+/* libairspy's single consumer owns sample ingestion; the monitor only observes
+ * streaming health. Never stop/join the driver from its receive callback.
+ * The consumer is libairspy's own thread, which converts and filters the samples in its own floating-point mode before
+ * this runs: the run's mode covers dsd-neo's work here only, and the library's is back before the callback returns. */
+static void
+airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+    dsd_fp_mode_scope fp_mode;
+    dsd_runtime_fp_mode_scope_enter(&fp_mode);
+    airspy_receive_samples(context, samples, pairs, dropped);
+    dsd_runtime_fp_mode_scope_leave(&fp_mode);
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -7142,6 +7156,7 @@ rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st
  * too many receive timeouts in a row, the throughput watchdog) is reconnected here (rtl_tcp_reconnect()). */
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 tcp_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_tcp");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     maybe_set_thread_realtime_and_affinity("DONGLE");

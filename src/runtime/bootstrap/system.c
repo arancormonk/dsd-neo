@@ -5,26 +5,25 @@
 
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/log.h>
 
-#if defined(__SSE__) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
-
 void
-dsd_bootstrap_enable_ftz_daz_if_enabled(void) {
-#if defined(__SSE__) || defined(__SSE2__)
+dsd_bootstrap_apply_fp_mode(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
-    if (!cfg || !cfg->ftz_daz_enable) {
+    const dsd_fp_mode mode = dsd_runtime_fp_mode_from_config(cfg);
+    dsd_runtime_fp_mode_publish(mode);
+    dsd_runtime_fp_mode_apply_thread("decoder");
+    if (mode == DSD_FP_MODE_INHERIT) {
         return;
     }
-    unsigned int mxcsr = _mm_getcsr();
-    mxcsr |= (1u << 15) | (1u << 6); // FTZ | DAZ
-    _mm_setcsr(mxcsr);
-    LOG_INFO("NOTICE: Enabled SSE FTZ/DAZ (env DSD_NEO_FTZ_DAZ)\n");
-#endif
+    if (!dsd_runtime_fp_mode_supported()) {
+        LOG_INFO("NOTICE: DSD_NEO_FTZ_DAZ ignored: SSE FTZ/DAZ exists only on x86 builds\n");
+        return;
+    }
+    LOG_INFO("NOTICE: SSE FTZ/DAZ %s for this run (env DSD_NEO_FTZ_DAZ)\n", mode == DSD_FP_MODE_ON ? "on" : "off");
 }

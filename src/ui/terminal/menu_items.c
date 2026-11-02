@@ -1185,15 +1185,11 @@ const size_t CONFIG_MENU_ITEMS_LEN = NC_LEN(CONFIG_MENU_ITEMS);
 // Advanced
 // ============================================================================
 const NcMenuItem ADV_MENU_ITEMS[] = {
+    {.id = "adv.ftz", .label_fn = lbl_ftz_daz, .kind = NC_ITEM_STATUS},
     {.id = "adv.rt_sched",
      .label_fn = lbl_rt_sched,
      .help = "Best-effort realtime scheduling for the decode threads (needs privileges).",
      .on_select = act_rt_sched},
-    {.id = "adv.mt", .label_fn = lbl_mt, .help = "Light worker pool for hot DSP loops.", .on_select = act_mt},
-    {.id = "adv.ftz",
-     .label_fn = lbl_ftz_daz,
-     .help = "Flush-to-zero / denormals-are-zero on x86 SSE.",
-     .on_select = act_toggle_ftz_daz},
     {.id = "adv.win_freeze",
      .label_fn = lbl_window_freeze,
      .help = "Freeze the symbol window selection and stop auto-centering.",

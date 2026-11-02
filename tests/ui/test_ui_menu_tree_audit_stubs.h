@@ -70,7 +70,6 @@
     X(act_m17_user_data)                                                                                               \
     X(act_mod_cycle)                                                                                                   \
     X(act_mod_p2_toggle)                                                                                               \
-    X(act_mt)                                                                                                          \
     X(act_p25_enc_lockout)                                                                                             \
     X(act_p2_params)                                                                                                   \
     X(act_pbf_toggle)                                                                                                  \
@@ -117,7 +116,6 @@
     X(act_tcp_rcvtimeo_prompt)                                                                                         \
     X(act_tcp_waitall)                                                                                                 \
     X(act_tg_hold)                                                                                                     \
-    X(act_toggle_ftz_daz)                                                                                              \
     X(act_toggle_invert)                                                                                               \
     X(act_toggle_payload)                                                                                              \
     X(act_toggle_ui_channels)                                                                                          \
@@ -271,7 +269,6 @@
     X(lbl_m17_user_data)                                                                                               \
     X(lbl_modulation)                                                                                                  \
     X(lbl_monitor)                                                                                                     \
-    X(lbl_mt)                                                                                                          \
     X(lbl_muting)                                                                                                      \
     X(lbl_out_mute)                                                                                                    \
     X(lbl_p25_cc_grace)                                                                                                \

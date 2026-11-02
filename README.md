@@ -478,7 +478,7 @@ Quick examples
 - Core: `src/core`, headers `<dsd-neo/core/...>` — glue (audio, vocoder, frame dispatch, GPS, file import).
 - Engine: `src/engine`, headers `<dsd-neo/engine/...>` — top-level decode/encode runner and lifecycle.
 - Platform: `src/platform`, headers `<dsd-neo/platform/...>` — cross-platform primitives (audio backend, sockets, threading, timing, curses).
-- Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, worker pool, RT scheduling, git version.
+- Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, RT scheduling, the FTZ/DAZ floating-point mode, git version.
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
 - IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), IQ capture/replay, network audio (TCP/UDP PCM and M17 UDP), and control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.

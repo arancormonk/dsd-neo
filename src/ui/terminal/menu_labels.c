@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -1430,18 +1431,19 @@ lbl_history_slot(const void* v, char* b, size_t n) {
 
 // ---- Advanced labels ----
 
+/* The mode the run started with: DSD_NEO_FTZ_DAZ is read once at start and applied on every float thread, so the
+   row only reports it (fp_mode.h). */
 const char*
 lbl_ftz_daz(const void* v, char* b, size_t n) {
     (void)v;
-#if defined(__SSE__) || defined(__SSE2__)
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
-    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [%s]", onoff(on));
+    if (!dsd_runtime_fp_mode_supported()) {
+        DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [Unavailable]");
+        return b;
+    }
+    const dsd_fp_mode mode = dsd_runtime_fp_mode_current();
+    const char* state = (mode == DSD_FP_MODE_ON) ? "On" : ((mode == DSD_FP_MODE_OFF) ? "Off" : "Default");
+    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [%s] (set DSD_NEO_FTZ_DAZ before start)", state);
     return b;
-#else
-    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [Unavailable]");
-    return b;
-#endif
 }
 
 const char*
@@ -1459,15 +1461,6 @@ lbl_rt_sched(const void* v, char* b, size_t n) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     DSD_SNPRINTF(b, n, "Realtime scheduling [%s]", onoff(on));
-    return b;
-}
-
-const char*
-lbl_mt(const void* v, char* b, size_t n) {
-    (void)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
-    DSD_SNPRINTF(b, n, "Intra-block multithreading [%s]", onoff(on));
     return b;
 }
 

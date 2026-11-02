@@ -60,7 +60,7 @@ target_sources(
         mem.cpp
         ring.cpp
         input_ring.cpp
-        worker_pool.cpp
+        fp_mode.c
         rt_sched.cpp
         unicode.cpp
         cli/args.c

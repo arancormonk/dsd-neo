@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1103,9 +1104,26 @@ test_display_and_advanced_labels(void) {
     rc |= expect_str("tcp waitall on", lbl_tcp_waitall(NULL, b, sizeof(b)), "rtl_tcp MSG_WAITALL [On]");
     g_cfg.rt_sched_enable = 1;
     rc |= expect_str("rt sched on", lbl_rt_sched(NULL, b, sizeof(b)), "Realtime scheduling [On]");
-    g_cfg.mt_is_set = 1;
-    g_cfg.mt_enable = 1;
-    rc |= expect_str("mt on", lbl_mt(NULL, b, sizeof(b)), "Intra-block multithreading [On]");
+
+    /* A start-time setting: the row reports the mode the run started with, never the (re-parsed) config. */
+    g_cfg.ftz_daz_is_set = 1;
+    g_cfg.ftz_daz_enable = 1;
+    if (dsd_runtime_fp_mode_supported()) {
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+        rc |= expect_str("ftz default", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [Default] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_ON);
+        rc |= expect_str("ftz on", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [On] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_OFF);
+        rc |= expect_str("ftz off", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [Off] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+    } else {
+        rc |= expect_str("ftz unavailable", lbl_ftz_daz(NULL, b, sizeof(b)), "SSE FTZ/DAZ [Unavailable]");
+    }
+    g_cfg.ftz_daz_is_set = 0;
+    g_cfg.ftz_daz_enable = 0;
 
     return rc;
 }

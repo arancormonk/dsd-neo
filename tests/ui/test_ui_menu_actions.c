@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 #include <sndfile.h>
@@ -53,6 +54,9 @@
 #include "menu_labels.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+#include <xmmintrin.h>
+#endif
 
 typedef struct {
     int id;
@@ -1794,15 +1798,6 @@ test_additional_prompt_and_toggle_actions(void) {
     opts.analog_am_bandwidth_hz = 0;
     g_infer_mode = DSDCFG_MODE_AUTO;
 
-#if defined(__SSE__) || defined(__SSE2__)
-    reset_capture();
-    g_cfg.ftz_daz_enable = 0;
-    act_toggle_ftz_daz(&ctx);
-    rc |= expect_str("ftz env", g_env_name, "DSD_NEO_FTZ_DAZ");
-    rc |= expect_str("ftz value", g_env_value, "1");
-    rc |= expect_int("ftz reparse", g_reparse_calls, 1);
-#endif
-
     reset_capture();
     g_cfg.audio_lpf_is_set = 1;
     g_cfg.audio_lpf_disable = 0;
@@ -1906,13 +1901,6 @@ test_additional_prompt_and_toggle_actions(void) {
     act_rt_sched(&ctx);
     rc |= expect_str("rt sched env", g_env_name, "DSD_NEO_RT_SCHED");
     rc |= expect_str("rt sched value", g_env_value, "1");
-
-    reset_capture();
-    g_cfg.mt_is_set = 1;
-    g_cfg.mt_enable = 1;
-    act_mt(&ctx);
-    rc |= expect_str("mt env", g_env_name, "DSD_NEO_MT");
-    rc |= expect_str("mt value", g_env_value, "0");
 
     reset_capture();
     act_env_editor(&ctx);
@@ -3041,6 +3029,10 @@ test_scan_row_scope_chooser(void) {
 int
 main(void) {
     int rc = 0;
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    /* FTZ/DAZ is a start-time setting no menu action writes: the UI thread's mode is the one it started with. */
+    const unsigned int ftz_daz_before = _mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS;
+#endif
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
@@ -3055,6 +3047,10 @@ main(void) {
     rc |= test_additional_prompt_and_toggle_actions();
     rc |= test_signal_chain_rows();
     rc |= test_config_and_pulse_failure_variants();
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    rc |= expect_int("menu actions leave FTZ/DAZ as it was", (int)(_mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS),
+                     (int)ftz_daz_before);
+#endif
     if (rc == 0) {
         printf("UI_MENU_ACTIONS: OK\n");
     }

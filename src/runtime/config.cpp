@@ -270,8 +270,6 @@ config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(audio_lpf_is_set);
     CONFIG_EQ_FIELD(audio_lpf_disable);
     CONFIG_EQ_FIELD(audio_lpf_cutoff_hz);
-    CONFIG_EQ_FIELD(mt_is_set);
-    CONFIG_EQ_FIELD(mt_enable);
     CONFIG_EQ_FIELD(combine_rot_is_set);
     CONFIG_EQ_FIELD(combine_rot);
     CONFIG_EQ_FIELD(fs4_shift_disable_is_set);
@@ -1223,13 +1221,7 @@ config_init_deemph_audio(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
-    /* MT (intra-block worker pool) */
-    const dsd_env_value mt_value("DSD_NEO_MT");
-    const char* mt = mt_value.c_str();
-    c.mt_is_set = env_is_set(mt);
-    c.mt_enable = (c.mt_is_set && mt[0] == '1') ? 1 : 0;
-
+config_init_frontend_and_retune(dsdneoRuntimeConfig& c) {
     /* Select the current combined CU8 transform or its supported two-pass equivalent. */
     const dsd_env_value combine_rot_value("DSD_NEO_COMBINE_ROT");
     const char* combine_rot = combine_rot_value.c_str();
@@ -1384,7 +1376,7 @@ dsd_neo_config_init(void) {
     config_init_resamp(c);
     config_init_costas_ted(c);
     config_init_deemph_audio(c);
-    config_init_mt_and_retune(c);
+    config_init_frontend_and_retune(c);
     config_init_tcpin_window_pdu_snr(c);
     config_init_iq_and_channel_lpf(c);
 

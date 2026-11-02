@@ -162,7 +162,6 @@ const char* lbl_history_slot(const void* v, char* b, size_t n);
 const char* lbl_ftz_daz(const void* v, char* b, size_t n);
 const char* lbl_window_freeze(const void* v, char* b, size_t n);
 const char* lbl_rt_sched(const void* v, char* b, size_t n);
-const char* lbl_mt(const void* v, char* b, size_t n);
 const char* lbl_auto_ppm_snr(const void* v, char* b, size_t n);
 const char* lbl_auto_ppm_pwr(const void* v, char* b, size_t n);
 const char* lbl_auto_ppm_zeroppm(const void* v, char* b, size_t n);
