@@ -929,6 +929,38 @@ test_aes256_definition_compiles_at_load() {
     check(error.isEmpty() && storedRow("restored-aes256").value("compiled").isObject() && importsAes256(path, 0x2A));
 }
 
+/* A restored profile whose key ID or force is past its type's range (a backup keeps a large JSON number as a 64-bit
+   integer) fails its check rather than compile with the low 32 bits: key ID 2A, force 1. */
+static void
+test_definitions_past_int_range() {
+    const qint64 past = qint64(1) << 32;
+    const QJsonObject key{{"uid", "key-oversized"}, {"label", "Dispatch"}, {"keyId", past + 0x2A},
+                          {"kind", "aes256"},       {"lookup", "id"},      {"material", groupedAes256Key()}};
+    QJsonObject valid = key;
+    valid.insert("keyId", 0x2A);
+    seedStore({QJsonObject{{"uid", "oversized-key"},
+                           {"label", "Oversized key"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"force", 0},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}},
+               QJsonObject{{"uid", "oversized-force"},
+                           {"label", "Oversized force"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"force", past + 1},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{valid}}}});
+    const dsd_qt::DecryptionProfilesModel loaded;
+    for (const char* uid : {"oversized-key", "oversized-force"}) {
+        QString error;
+        loaded.configuration(uid, &error);
+        check(!error.isEmpty());
+        check(!storedRow(uid).value("compiled").isObject());
+    }
+}
+
 /* The P25 Simulcast preset (-mq) migrates a legacy key as a P25 profile, and a non-legacy profile of another
    protocol is refused at start for it. */
 static void
@@ -1073,5 +1105,6 @@ main(int argc, char** argv) {
     test_load_compile_persist_failure(secret);
     test_compile_refuses_linked_directories(secret);
     test_aes256_definition_compiles_at_load();
+    test_definitions_past_int_range();
     return 0;
 }

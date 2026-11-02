@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
@@ -1216,6 +1217,19 @@ lbl_per_call_wav(const void* vctx, char* b, size_t n) {
     /* The mode, as the toggle reads it (issue #708): on while a slot whose file failed to open waits to open again. */
     const int on = (c->opts->dmr_stereo_wav == 1);
     DSD_SNPRINTF(b, n, "Per-call WAV [%s]", onoff(on));
+    return b;
+}
+
+/* The NFM max gap (issue #756): Off at 200 ms or less, the carrier's own hangover, which joins no pause. */
+const char*
+lbl_analog_record_max_gap(const void* vctx, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)vctx;
+    const int ms = (c && c->opts) ? c->opts->analog_record_max_gap_ms : 0;
+    if (ms > DSD_ANALOG_CARRIER_HANGOVER_MS) {
+        DSD_SNPRINTF(b, n, "NFM pause hold... [%d ms]", ms);
+    } else {
+        DSD_SNPRINTF(b, n, "NFM pause hold... [Off]");
+    }
     return b;
 }
 

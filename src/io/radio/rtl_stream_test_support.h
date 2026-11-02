@@ -660,6 +660,8 @@ void rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx);
 void rtl_device_test_tcp_set_read_hook(void (*hook)(void* ctx), void* ctx);
 /* How many releases from the discard path left an odd byte for the reader to drop, process-wide. */
 uint64_t rtl_device_test_tcp_odd_drops(void);
+/* How many bytes the reader's discard path received, process-wide. */
+uint64_t rtl_device_test_tcp_discard_bytes(void);
 
 /* rtl_tcp hand-off states (rtl_device_test_tcp_state::handoff). */
 enum {

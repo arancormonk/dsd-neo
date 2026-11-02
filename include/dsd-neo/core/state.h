@@ -865,6 +865,12 @@ struct dsd_analog_rx_publication {
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */
     uint32_t generation;
+    /** Bumped on every hard boundary the tap crosses: an announced reset (dsd_analog_rx_reset(): a retune, a row or
+     * target change, an input switch or TCP reconnect, a mode change, stop), a retune or receive-profile change the
+     * tap's own generation check found, a detected stream pause, an input-rate move and a switch between the FM and AM
+     * monitors (issue #756). Unlike generation, the carrier hangover running out never moves it, so a reader that saw
+     * it move since its last block knows the input crossed such a boundary in between, even inside one block. */
+    uint32_t boundaries;
     /** Real monotonic ms (dsd_realtime_mono_ms()) after which this publication no longer describes
      * the channel if the tap has not run again since. Set only on input that may pause: stdin,
      * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family

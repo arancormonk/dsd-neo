@@ -389,8 +389,8 @@ holding one square bracket of a pair (`AACH 2/1/9]` from a TETRA payload line) a
 one holding a semicolon. The
 `DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
 replay defaults to `--iq-replay-rate fast`, so run one after another in
-`dev-debug` the 122 digital cases take about 79 seconds and the 104 analog ones (see
-[Analog monitor audio checks](#analog-monitor-audio-checks)) about 73. The 14
+`dev-debug` the 122 digital cases take about 79 seconds and the 110 analog ones (see
+[Analog monitor audio checks](#analog-monitor-audio-checks)) about 70. The 14
 `iq-determinism` cases (see [Replay determinism](#replay-determinism-issue-572))
 add 92 seconds, two realtime cases of 15.2 seconds among them; under
 `ctest -j 16` they run beside the suite's longest tests, and the full suite
@@ -1861,6 +1861,7 @@ write or two).
 | `--analog-max-delivery-error-pct PCT` | How far the length of the delivered audio strays from the input its blocks span, at the sink rate (issue #633). Measured on audio input, where each block spans 960 samples at the monitor's rate; fails as not measured otherwise. |
 | `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
+| `--analog-synth-pauses SEED` | Make the NFM recording cases' capture at run time (issue #756) and replay it: five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, 0.8 s of noise after the last; see [NFM recordings through pauses](#nfm-recordings-through-pauses-issue-756). The case names no `--iq-replay` of its own (the host refuses one). With `-P` the host also prints an `ANALOG CALL ROW: start=S end=E` line per NFM history row after the run. |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
@@ -2028,7 +2029,8 @@ synthetics of #523 0.77 MB (the no-code case reuses `nfm_notone_synth`), 4.86 MB
 auto squelch's two burst synthetics (0.75 s each) take 0.14 MB (4,992,000 bytes in all), which spends the budget: its
 hotter-receiver twins add nothing, since the analog replay host scales a copy at run time (`--analog-iq-gain-db`), and
 its noise and real-carrier cases reuse `noise_floor` and the excerpts. The noise squelch's replay cases add none either:
-they reuse the same bursts, copies and excerpts. A pull request that adds analog fixtures states the running total.
+they reuse the same bursts, copies and excerpts. The NFM recording cases of issue #756 add none: the host makes their
+capture at run time (`--analog-synth-pauses`). A pull request that adds analog fixtures states the running total.
 
 #### Auto squelch classifier (design gate)
 
@@ -2532,6 +2534,31 @@ fixture is committed for them.
 | `DECODE_PCM_SCAN_SQL_NOISE_ROW`, `_AM_ROW_OFF` | A `-Y` nfm row's own `--squelch noise` gates as `-fA` does; an am row that inherits a noise default plays (off on AM audio). |
 
 With the PCM noise squelch disabled, every case but the two where it is meant to be off fails.
+
+#### NFM recordings through pauses (issue #756)
+
+These cases run a per-call NFM recording (`-P -7 <dir> --wav-journal <file>`) through the real engine and check what
+the run leaves on disk, through `tests/analog_recording_check.cmake` and the analog replay host. No fixture is
+committed. The host makes the capture at run time (`--analog-synth-pauses 756`) the way `tools/build_iq_fixtures.py`
+makes `nfm_burst_synth`: complex noise at 3 LSB a component, 0.5 s of it first, then five 0.5 s bursts with pauses of
+0.3, 0.6, 1.5 and 3.0 s between them and 0.8 s of noise after the last. Each burst is the carrier 16 dB over the noise,
+keyed with 2 ms ramps and carrying 700 and 1300 Hz at up to 3 kHz deviation, swelling at 3 Hz. 9.2 s in all.
+
+For each run the checker requires the expected number of recordings in the folder and no `TEMP_` file. The journal must
+have one `publish` line per recording: NFM, pending its row, not failed, naming a file in the folder. Each one needs a
+`link` line, and there may be no `unlink` or `error` line. The host must print one `ANALOG CALL ROW` per recording.
+Each `publish` line's `duration_ms`, in publication order, must be within one 20 ms block of the case's expected length
+(`DURATIONS_MS`), so the recordings keep time.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_PCM_ANALOG_RECORD_GAP_200`, `_500`, `_1000`, `_2000`, `_3500` | The discriminator tap as audio input under `--squelch noise+6`, every build: `--analog-record-max-gap-ms` 200 (off) gives 5 recordings, 500 gives 4, 1000 gives 3, 2000 gives 2 and 3500 gives 1. Expected lengths in the journal are the values measured on a dev-debug build, each held to within 20 ms, so a build whose squelch decides one block earlier or later still passes: a burst alone is 700 or 680 ms (the 0.5 s burst and the 200 ms hangover); joined, 1500 ms (500), 2600 (1000), 4580 (2000) and 8100 (3500). |
+| the `_1000`, `_2000` and `_3500` cases | The input ends 740 ms after the last audible audio (`total_ms - last_audible_ms`, held under the max gap by `HELD_AT_END_MS`), so the last call is still held then: the engine's normal teardown publishes it, and its row commits and links it. With `dsd_engine_analog_call_end()` skipping a held call, these three cases and `_PACED` fail and the other two pass. |
+| `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. The lengths are held to 2580, 680 and 680 ms, as measured, within 20 ms. |
+
+The largest silence one resume writes (a 10 s hold that is all tone check, 480000 samples) is timed by `CORE_RECEIVE`,
+which prints `a 10 s pause written as silence in N ms`. That is about 0.5 ms in `dev-debug` with the temporary
+directory on tmpfs, and about 1.6 ms on btrfs: well under one 20 ms block.
 
 #### Tone and code labels
 

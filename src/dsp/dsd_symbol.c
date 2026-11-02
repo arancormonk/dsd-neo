@@ -1818,6 +1818,23 @@ symbol_analog_block_collect(const dsd_opts* opts, dsd_state* state, uint32_t rtl
     }
 }
 
+/* What the block is to the engine's NFM call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
+   rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no detection, a channel the
+   tap has not read yet, a rejected tone) from one it may hold through (the carrier closed, or its tone still checked).
+   Only a block that is no reception pays for the checks, the boundaries' read last. */
+static int
+symbol_analog_call_input(const dsd_opts* opts, const dsd_state* state, int discard, int reception) {
+    if (reception) {
+        return DSD_ANALOG_CALL_RECEPTION;
+    }
+    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)
+        || dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED
+        || !dsd_analog_rx_boundaries_current(opts, state)) {
+        return DSD_ANALOG_CALL_BREAK;
+    }
+    return DSD_ANALOG_CALL_HOLDABLE;
+}
+
 static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     /* 0 for a block that mixes two rates (issue #633): dropped as a block that straddles a boundary is. */
@@ -1841,15 +1858,16 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
                           && dsd_analog_rx_carrier_open_now(opts, state)
                           && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
     const int processing = allowed || (reception && opts->dmr_stereo_wav);
+    const int call_input = symbol_analog_call_input(opts, state, discard, reception);
     if (dsd_squelch_flags_in_force(opts, state)) {
         symbol_process_unsynced_audio_runs(opts, state, analog_block, processing, discard);
         const int heard = symbol_apply_sink_gate(opts, state, analog_block, processing);
-        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, reception);
+        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, call_input);
         symbol_apply_speaker_ramp(opts, state, analog_block, allowed, processing);
         symbol_output_unsynced_analog(opts, state, analog_block, heard && allowed, block_hz);
     } else {
         symbol_process_unsynced_audio(opts, state, analog_block, processing, discard);
-        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, reception);
+        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, call_input);
         symbol_output_unsynced_analog(opts, state, analog_block, allowed, block_hz);
     }
     symbol_reset_analog_buffers(state);

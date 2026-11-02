@@ -204,6 +204,9 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     check(warning.contains("Skipped at every visit at this bandwidth: Guard: AM bandwidth 6 kHz does not fit the 6 kHz "
                            "DSP rate")
           && !warning.contains("more") && !warning.contains("NFM"));
+    // A restored bandwidth past int's range is no bandwidth: its low 32 bits (6 kHz) name no rate.
+    list["bandwidthKhz"] = (qlonglong(1) << 32) + 6;
+    check(!starter.validate(list).value("warnings").toStringList().join("\n").contains("6 kHz DSP rate"));
     list["bandwidthKhz"] = 12;
     check(starter.validate(list).value("warnings").toStringList().isEmpty());
     // An entry without a width of its own runs the width of its kind the app's Extra arguments configure, in either

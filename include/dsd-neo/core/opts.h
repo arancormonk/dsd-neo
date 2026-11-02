@@ -90,6 +90,12 @@ typedef struct {
     char p25_bandplan_in_file[1024];
 } dsd_opts_next_start;
 
+/* The NFM max gap in ms (dsd_opts.analog_record_max_gap_ms, issue #756): the default, which is off (the carrier's
+   200 ms hangover, DSD_ANALOG_CARRIER_HANGOVER_MS, joins no pause), and the largest value the CLI, the INI, the app
+   command and the API take. A value outside 0 to the largest is refused, never clamped. */
+#define DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS 200
+#define DSD_ANALOG_RECORD_MAX_GAP_MAX_MS     10000
+
 struct dsd_opts {
 #ifdef __cplusplus
     dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -193,6 +199,10 @@ struct dsd_opts {
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
     int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
+    /* The longest pause, in ms, one conventional NFM call (its history row and per-call WAV) survives (issue #756);
+       the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the
+       call ends when the carrier's hangover does. */
+    int analog_record_max_gap_ms;
     int serial_baud;
     int serial_fd;
     int resume;

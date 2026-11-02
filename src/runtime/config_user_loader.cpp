@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -655,6 +656,19 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
     *out_value = v;
 }
 
+/* Issue #756: the NFM max gap is refused, never clamped: a value outside 0..10000, or not a whole number, is reported
+   and the one already loaded (the default, for a base file) stays. --validate-config reports it as an error. */
+static void
+apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
+    int ms = 0;
+    if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
+        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to %d); keeping %d\n", val,
+                 DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, cfg->analog_max_gap_ms);
+        return;
+    }
+    cfg->analog_max_gap_ms = ms;
+}
+
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
@@ -673,6 +687,8 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
         if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->unknown_talkgroups_only = b;
         }
+    } else if (strcmp(key_lc, "analog_max_gap_ms") == 0) {
+        apply_recording_analog_max_gap(cfg, val);
     } else {
         return 0;
     }

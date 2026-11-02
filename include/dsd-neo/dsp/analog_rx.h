@@ -366,9 +366,21 @@ void dsd_analog_rx_block_restart(const dsd_state* state);
  * the scanner moved on, it delivers a channel other than the one the scanner shows. A scanner therefore never holds a
  * row on another channel's carrier, and one a failed retune left the receiver on lets the row's hangtime run out.
  * Before the tap has run there is nothing to compare, and the publication stands as it is. On the AM monitor, where no
- * detection runs, the tap keeps the carrier all the same (issue #524). Read-only.
+ * detection runs, the tap keeps the carrier all the same (issue #524). It returns the published carrier only while
+ * dsd_analog_rx_boundaries_current() holds, else 0. Read-only.
  */
 int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Whether the receiver is still on the channel the tap last read (issue #756): no retune unresolved
+ * (dsd_trunk_tuning_pending_request()), and the boundaries the tap noted at its last read -- the trunk-tuning
+ * generation, and on RTL input the stream generation and the published analog profile, on other inputs the rigctl
+ * peer's passband -- still current. 1 before the tap has run, with nothing to compare; 0 without @p opts or @p state.
+ * The hard-boundary test the NFM call's block input uses (DSD_ANALOG_CALL_BREAK); it is not the publication's
+ * generation, which the carrier hangover moves too. A boundary the tap has since read past is counted in
+ * dsd_analog_rx_publication::boundaries instead. Read-only.
+ */
+int dsd_analog_rx_boundaries_current(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Whether the tap has judged the channel the receiver is on now, so dsd_analog_rx_carrier_open_now() is a

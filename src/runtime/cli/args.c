@@ -648,6 +648,31 @@ cli_parse_long_option(const char* option_name, const char* in, int base, long* o
     return 0;
 }
 
+/* @p value clamped to @p lo..@p hi while still a long, then narrowed: a value past int's range clamps to the nearer
+   bound instead of wrapping to an unrelated one in the range (issue #756). */
+static int
+cli_clamp_long_to_int(long value, int lo, int hi) {
+    if (value < lo) {
+        return lo;
+    }
+    if (value > hi) {
+        return hi;
+    }
+    return (int)value;
+}
+
+/* Whether a long option at argv[@p i] has its value, the next argument: given last, without one, it is refused (issue
+   #756), never dropped as if it had not been given. */
+static int
+cli_has_value(const char* option_name, int i, int argc, int* out_exit_rc) {
+    if (i + 1 < argc) {
+        return 1;
+    }
+    LOG_ERROR("%s requires a value\n", option_name);
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
 static int
 cli_parse_ulong_option(const char* option_name, const char* in, int base, unsigned long* out, int* out_exit_rc) {
     if (cli_parse_ulong_base(in, base, out)) {
@@ -1436,7 +1461,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             iq_info_cli = argv[i] + 10;                                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-vc-grace") == 0) {                                                                  \
+            if (!cli_has_value("--p25-vc-grace", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-vc-grace", DSD_PARSE_ARGS_NEXT_ARG(), opts->p25_vc_grace_s);         \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
@@ -1444,7 +1472,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);                             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {                                          \
+        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0) {                                                          \
+            if (!cli_has_value("--p25-min-follow-dwell", i, argc, out_exit_rc)) {                                      \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-min-follow-dwell", DSD_PARSE_ARGS_NEXT_ARG(),                        \
                                            opts->p25_min_follow_dwell_s);                                              \
             char buf[32];                                                                                              \
@@ -1453,7 +1484,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {                                       \
+        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0) {                                                       \
+            if (!cli_has_value("--p25-grant-voice-timeout", i, argc, out_exit_rc)) {                                   \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-grant-voice-timeout", DSD_PARSE_ARGS_NEXT_ARG(),                     \
                                            opts->p25_grant_voice_to_s);                                                \
             char buf[32];                                                                                              \
@@ -1462,7 +1496,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);           \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-mac-hold") == 0) {                                                                  \
+            if (!cli_has_value("--p25-mac-hold", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-mac-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             char buf[32];                                                                                              \
@@ -1471,7 +1508,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: MAC hold set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--p25-cc-grace") == 0) {                                                                  \
+            if (!cli_has_value("--p25-cc-grace", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-cc-grace", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             if (v < 0) {                                                                                               \
@@ -1486,7 +1526,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: CC grace set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {                                       \
+        if (strcmp(argv[i], "--p25-force-release-extra") == 0) {                                                       \
+            if (!cli_has_value("--p25-force-release-extra", i, argc, out_exit_rc)) {                                   \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-extra", DSD_PARSE_ARGS_NEXT_ARG(),                     \
                                            opts->p25_force_release_extra_s);                                           \
             char buf[32];                                                                                              \
@@ -1495,7 +1538,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);       \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {                                      \
+        if (strcmp(argv[i], "--p25-force-release-margin") == 0) {                                                      \
+            if (!cli_has_value("--p25-force-release-margin", i, argc, out_exit_rc)) {                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-margin", DSD_PARSE_ARGS_NEXT_ARG(),                    \
                                            opts->p25_force_release_margin_s);                                          \
             char buf[32];                                                                                              \
@@ -1504,7 +1550,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);     \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0) {                                                           \
+            if (!cli_has_value("--p25-p1-err-hold-pct", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-pct", DSD_PARSE_ARGS_NEXT_ARG(),                         \
                                            opts->p25_p1_err_hold_pct);                                                 \
             char buf[32];                                                                                              \
@@ -1513,7 +1562,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);         \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0) {                                                           \
+            if (!cli_has_value("--p25-p1-err-hold-sec", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-sec", DSD_PARSE_ARGS_NEXT_ARG(),                         \
                                            opts->p25_p1_err_hold_s);                                                   \
             char buf[32];                                                                                              \
@@ -1522,23 +1574,38 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {                                                      \
+        if (strcmp(argv[i], "--calc-lcn") == 0) {                                                                      \
+            if (!cli_has_value("--calc-lcn", i, argc, out_exit_rc)) {                                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--calc-step") == 0) {                                                                     \
+            if (!cli_has_value("--calc-step", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_step_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--calc-cc-freq") == 0) {                                                                  \
+            if (!cli_has_value("--calc-cc-freq", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_ccf_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {                                                   \
+        if (strcmp(argv[i], "--calc-cc-lcn") == 0) {                                                                   \
+            if (!cli_has_value("--calc-cc-lcn", i, argc, out_exit_rc)) {                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_ccl_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {                                                \
+        if (strcmp(argv[i], "--calc-start-lcn") == 0) {                                                                \
+            if (!cli_has_value("--calc-start-lcn", i, argc, out_exit_rc)) {                                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1764,47 +1831,80 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             frontend_cli = argv[i] + 11;                                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--input-volume") == 0) {                                                                  \
+            if (!cli_has_value("--input-volume", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             input_vol_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--input-level-warn-db") == 0) {                                                           \
+            if (!cli_has_value("--input-level-warn-db", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             input_warn_db_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                             \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--frame-log") == 0) {                                                                     \
+            if (!cli_has_value("--frame-log", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--wav-journal") == 0 && i + 1 < argc) {                                                   \
+        if (strcmp(argv[i], "--wav-journal") == 0) {                                                                   \
+            if (!cli_has_value("--wav-journal", i, argc, out_exit_rc)) {                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             recording_cli.wav_journal = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
+        if (strcmp(argv[i], "--p25-sm-log") == 0) {                                                                    \
+            if (!cli_has_value("--p25-sm-log", i, argc, out_exit_rc)) {                                                \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             p25_sm_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {                                                     \
+        if (strcmp(argv[i], "--rdio-mode") == 0) {                                                                     \
+            if (!cli_has_value("--rdio-mode", i, argc, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {                                                \
+        if (strcmp(argv[i], "--rdio-system-id") == 0) {                                                                \
+            if (!cli_has_value("--rdio-system-id", i, argc, out_exit_rc)) {                                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_system_id_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--rdio-api-url") == 0) {                                                                  \
+            if (!cli_has_value("--rdio-api-url", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--rdio-api-key") == 0) {                                                                  \
+            if (!cli_has_value("--rdio-api-key", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {                                        \
+        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0) {                                                        \
+            if (!cli_has_value("--rdio-upload-timeout-ms", i, argc, out_exit_rc)) {                                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_upload_timeout_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {                                           \
+        if (strcmp(argv[i], "--rdio-upload-retries") == 0) {                                                           \
+            if (!cli_has_value("--rdio-upload-retries", i, argc, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rdio_upload_retries_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1814,6 +1914,27 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
             recording_cli.record_unknown_only = 1;                                                                     \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--analog-record-max-gap-ms") == 0) {                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--analog-record-max-gap-ms requires a millisecond value\n");                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0,                 \
+                                           DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, &opts->analog_record_max_gap_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--analog-record-max-gap-ms=", 27) == 0) {                                                \
+            if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", argv[i] + 27, 0,                              \
+                                           DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, &opts->analog_record_max_gap_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
@@ -1992,7 +2113,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             m17_signature_public_key_cli = argv[i] + 27;                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
+        if (strcmp(argv[i], "--auto-ppm-snr") == 0) {                                                                  \
+            if (!cli_has_value("--auto-ppm-snr", i, argc, out_exit_rc)) {                                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
                 DSD_CLI_PARSE_DOUBLE_OR_RETURN("--auto-ppm-snr", sv, opts->rtl_auto_ppm_snr_db);                       \
@@ -2285,13 +2409,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (!cli_parse_long_option("--input-volume", input_vol_cli, 10, &parsed_mv, out_exit_rc)) {                    \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int mv = (int)parsed_mv;                                                                                       \
-        if (mv < 1) {                                                                                                  \
-            mv = 1;                                                                                                    \
-        }                                                                                                              \
-        if (mv > 16) {                                                                                                 \
-            mv = 16;                                                                                                   \
-        }                                                                                                              \
+        const int mv = cli_clamp_long_to_int(parsed_mv, 1, 16);                                                        \
         opts->input_volume_multiplier = mv;                                                                            \
         char b[16];                                                                                                    \
         DSD_SNPRINTF(b, sizeof b, "%d", mv);                                                                           \
@@ -2357,13 +2475,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (!cli_parse_long_option("--rdio-system-id", rdio_system_id_cli, 10, &parsed_sid, out_exit_rc)) {            \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int sid = (int)parsed_sid;                                                                                     \
-        if (sid < 0) {                                                                                                 \
-            sid = 0;                                                                                                   \
-        }                                                                                                              \
-        if (sid > 65535) {                                                                                             \
-            sid = 65535;                                                                                               \
-        }                                                                                                              \
+        const int sid = cli_clamp_long_to_int(parsed_sid, 0, 65535);                                                   \
         opts->rdio_system_id = sid;                                                                                    \
         LOG_INFO("NOTICE: Rdio system ID: %d\n", opts->rdio_system_id);                                                \
     }                                                                                                                  \
@@ -2383,13 +2495,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                    out_exit_rc)) {                                                                     \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int timeout_ms = (int)parsed_timeout_ms;                                                                       \
-        if (timeout_ms < 100) {                                                                                        \
-            timeout_ms = 100;                                                                                          \
-        }                                                                                                              \
-        if (timeout_ms > 120000) {                                                                                     \
-            timeout_ms = 120000;                                                                                       \
-        }                                                                                                              \
+        const int timeout_ms = cli_clamp_long_to_int(parsed_timeout_ms, 100, 120000);                                  \
         opts->rdio_upload_timeout_ms = timeout_ms;                                                                     \
         LOG_INFO("NOTICE: Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);                                \
     }                                                                                                                  \
@@ -2399,13 +2505,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                    out_exit_rc)) {                                                                     \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int retries = (int)parsed_retries;                                                                             \
-        if (retries < 0) {                                                                                             \
-            retries = 0;                                                                                               \
-        }                                                                                                              \
-        if (retries > 10) {                                                                                            \
-            retries = 10;                                                                                              \
-        }                                                                                                              \
+        const int retries = cli_clamp_long_to_int(parsed_retries, 0, 10);                                              \
         opts->rdio_upload_retries = retries;                                                                           \
         LOG_INFO("NOTICE: Rdio upload retries: %d\n", opts->rdio_upload_retries);                                      \
     }                                                                                                                  \
@@ -2880,13 +2980,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-z", optarg, 10, &parsed_pref, out_exit_rc)) {                                 \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int pref = (int)parsed_pref;                                                                               \
-            if (pref < 0) {                                                                                            \
-                pref = 0;                                                                                              \
-            }                                                                                                          \
-            if (pref > 2) {                                                                                            \
-                pref = 2;                                                                                              \
-            }                                                                                                          \
+            const int pref = cli_clamp_long_to_int(parsed_pref, 0, 2);                                                 \
             opts->slot_preference = pref;                                                                              \
             LOG_INFO("NOTICE: Slot preference set: %s\n", (pref == 0 ? "Slot 1" : (pref == 1 ? "Slot 2" : "Auto")));   \
             break;                                                                                                     \
@@ -2906,13 +3000,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-V", optarg, 10, &parsed_v, out_exit_rc)) {                                    \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int v = (int)parsed_v;                                                                                     \
-            if (v < 0) {                                                                                               \
-                v = 0;                                                                                                 \
-            }                                                                                                          \
-            if (v > 3) {                                                                                               \
-                v = 3;                                                                                                 \
-            }                                                                                                          \
+            const int v = cli_clamp_long_to_int(parsed_v, 0, 3);                                                       \
             opts->slot1_on = (v & 1) ? 1 : 0;                                                                          \
             opts->slot2_on = (v & 2) ? 1 : 0;                                                                          \
             if (v == 0) {                                                                                              \
@@ -3558,14 +3646,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             if (!cli_parse_long_option("-s", optarg, 10, &parsed_sr, out_exit_rc)) {                                   \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            int sr = (int)parsed_sr;                                                                                   \
+            const int sr = cli_clamp_long_to_int(parsed_sr, 8000, 192000);                                             \
             int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
-            if (sr < 8000) {                                                                                           \
-                sr = 8000;                                                                                             \
-            }                                                                                                          \
-            if (sr > 192000) {                                                                                         \
-                sr = 192000;                                                                                           \
-            }                                                                                                          \
             dsd_opts_clear_staged_file_sample_rate(opts);                                                              \
             dsd_opts_apply_input_sample_rate(opts, sr);                                                                \
             dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));           \

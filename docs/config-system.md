@@ -448,11 +448,12 @@ is lost, since the call may still resume; a terminator alerts immediately.
 **[recording] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `per_call_wav` | BOOL | Enable per-call decoded voice WAV output | `false` |
+| `per_call_wav` | BOOL | Enable per-call WAV output: decoded voice, and conventional NFM calls | `false` |
 | `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
+| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional NFM call in one recording and one history row; the pause is saved as silence; 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
@@ -467,6 +468,11 @@ than the `*` catch-all; a private call when either radio has an exact row) as th
 and static WAVs and MBE capture skip it, and a held talkgroup still records. Learned radio-ID aliases, mode `D` rows
 and radio ID list (`--src-csv`) rows do not count as rows. Tuning and playback are
 unchanged. Applying a config in a running session changes it at once.
+`analog_max_gap_ms` outside 0 to 10000, or not a whole number, is refused with a warning, and the value already loaded
+stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a
+running session changes it from the next block of audio: a lower value, or off, ends an NFM call already paused
+longer than that. The hold works only while `per_call_wav` is on; with it off, NFM calls end as before. How pauses
+are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
@@ -1033,6 +1039,7 @@ The following can be changed without restarting:
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
 - The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
+- The NFM recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
 - TCP/UDP connection parameters
 - File input path
 

@@ -678,6 +678,44 @@ test_legacy_store_without_provenance(void) {
     expect("legacy row is not prunable", model.takePrunedPaths().isEmpty());
 }
 
+/* A restored store whose whole numbers are past int's range (a backup keeps a large JSON number as a 64-bit integer):
+ * each reads as the field's default, as an absent key does, never as its low 32 bits. Main read 12 accepted, 3
+ * skipped, RadioReference system 6673 and encryption policy 0. */
+void
+test_store_past_int_range(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    const QString importsDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/imports");
+    expect("oversized imports dir created", QDir().mkpath(importsDir));
+    const QString path = importsDir + QStringLiteral("/restored.csv");
+    expect("oversized file written", write_file(path, "TG,Mode,Name\n1,A,One\n"));
+
+    const qint64 past = qint64(1) << 32;
+    QJsonObject restored;
+    restored.insert(QStringLiteral("name"), QStringLiteral("restored.csv"));
+    restored.insert(QStringLiteral("path"), path);
+    restored.insert(QStringLiteral("type"), QStringLiteral("group"));
+    restored.insert(QStringLiteral("importedAt"), 1700000000LL);
+    restored.insert(QStringLiteral("accepted"), past + 12);
+    restored.insert(QStringLiteral("skipped"), past + 3);
+    restored.insert(QStringLiteral("origin"), QStringLiteral("radioreference"));
+    restored.insert(QStringLiteral("rrSid"), past + 6673);
+    restored.insert(QStringLiteral("rrEncryptionPolicy"), past);
+    QJsonArray array;
+    array.append(restored);
+    dsd_qt::json_store_save_array(QStringLiteral("imported_files.json"), array);
+
+    const dsd_qt::ImportedFilesModel model(&host);
+    expect("oversized store loads", model.rowCount() == 1);
+    const QVariantMap row = model.get(0);
+    expect("oversized counts read as 0",
+           row.value(QStringLiteral("accepted")).toInt() == 0 && row.value(QStringLiteral("skipped")).toInt() == 0);
+    expect("an oversized sid reads as none", row.value(QStringLiteral("rrSid")).toInt() == 0);
+    expect("an oversized policy reads as the default", row.value(QStringLiteral("rrEncryptionPolicy")).toInt() == 3);
+}
+
 void
 test_export_registration_in_place() {
     TestHost host;
@@ -1669,6 +1707,7 @@ main(int argc, char** argv) {
     test_p25_bandplan_kind();
     test_src_kind();
     test_legacy_store_without_provenance();
+    test_store_past_int_range();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -40,6 +40,7 @@ class RecordingStatus : public QObject {
     Q_PROPERTY(bool perCall READ perCall NOTIFY changed)
     Q_PROPERTY(int slotFiles READ slotFiles NOTIFY changed)
     Q_PROPERTY(bool unknownOnly READ unknownOnly NOTIFY changed)
+    Q_PROPERTY(int analogMaxGapMs READ analogMaxGapMs NOTIFY changed)
     Q_PROPERTY(bool staticWav READ staticWav NOTIFY changed)
     Q_PROPERTY(bool storageNamed READ storageNamed NOTIFY changed)
     Q_PROPERTY(QString journal READ journal NOTIFY changed)
@@ -85,6 +86,8 @@ class RecordingStatus : public QObject {
     /** @brief Per-call slot files open now: bit 0 slot 1, bit 1 slot 2. */
     int slotFiles() const;
     bool unknownOnly() const;
+    /** @brief The NFM pause hold in ms (--analog-record-max-gap-ms, issue #756); 200 or less is off. */
+    int analogMaxGapMs() const;
     /** @brief The session records to one static WAV (-w). */
     bool staticWav() const;
     /** @brief The session was started with a folder of the app's to record into; false: no storage was available. */
@@ -92,7 +95,7 @@ class RecordingStatus : public QObject {
     /** @brief "none", "on" or "failed" (a write failed: off for the rest of the run). */
     QString journal() const;
     /** @brief The last recording command this session sent: "start", "stop", "toggle", "static", "unknownOnly",
-     *  "config", or empty before it sent one. A follow-up (noteFollowUp()) reads as the switch it follows. */
+     *  "analogMaxGap", "config", or empty before it sent one. A follow-up (noteFollowUp()) reads as the switch it follows. */
     QString command() const;
     /** @brief Its state: "none" (none sent this session), "pending" (Applying...), "applied", "failed", "refused" (Signal
      *  search runs) or "dropped" (the session ended first). */

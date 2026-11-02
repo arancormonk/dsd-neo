@@ -31,6 +31,7 @@
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 
@@ -51,7 +52,7 @@ bias_tee_from_stored(const QVariant& value) {
     if (value.typeId() == QMetaType::Bool) {
         return value.toBool() ? 1 : -1;
     }
-    const int mode = value.toInt();
+    const int mode = stored_int_or(value, -1);
     return (mode >= -1 && mode <= 1) ? mode : -1;
 }
 
@@ -192,10 +193,11 @@ map_take_string(const QVariantMap& map, const QString& key, QString* target) {
     }
 }
 
+/** @brief As map_take_string(), for an int: a value that is not one (a restored 64-bit one included) keeps the base. */
 void
 map_take_int(const QVariantMap& map, const QString& key, int* target) {
     if (map.contains(key)) {
-        *target = map.value(key).toInt();
+        (void)stored_int(map.value(key), target);
     }
 }
 
@@ -219,8 +221,8 @@ SavedSystemsModel::fillRowKey(const QVariantMap& map, Row& row) {
         // WP0 persisted a wire-enum integer, with 0 also its untouched default.
         // Preserve that default as absent while migrating actual typed keys.
         if (stored.typeId() != QMetaType::QString) {
-            bool ok = false;
-            const int type = stored.toInt(&ok);
+            int type = 0;
+            const bool ok = stored_int(stored, &type);
             const QStringList types{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
                                     QStringLiteral("scrambler")};
             if (ok && type >= 0 && type < types.size()) {
@@ -228,20 +230,14 @@ SavedSystemsModel::fillRowKey(const QVariantMap& map, Row& row) {
             }
         }
     }
-    if (map.contains(QStringLiteral("encForceKey"))) {
-        row.encForceKey = map.value(QStringLiteral("encForceKey")).toInt();
-    }
+    map_take_int(map, QStringLiteral("encForceKey"), &row.encForceKey);
 }
 
 void
 SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
     fillRowKey(map, row);
-    if (map.contains(QStringLiteral("rrSid"))) {
-        row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
-    }
-    if (map.contains(QStringLiteral("rrSiteId"))) {
-        row.rrSiteId = map.value(QStringLiteral("rrSiteId")).toInt();
-    }
+    map_take_int(map, QStringLiteral("rrSid"), &row.rrSid);
+    map_take_int(map, QStringLiteral("rrSiteId"), &row.rrSiteId);
     if (map.contains(QStringLiteral("siteName"))) {
         row.siteName = map.value(QStringLiteral("siteName")).toString();
     }

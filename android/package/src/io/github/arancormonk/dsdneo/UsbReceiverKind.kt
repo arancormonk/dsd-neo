@@ -85,7 +85,7 @@ internal object UsbReceiverKind {
         "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch", "--tone-allow", "--slot-allow",
         "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block", "--nac-allow", "--nac-block",
         "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name", "--tone-block", "--calc-lcn",
-        "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn",
+        "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn", "--analog-record-max-gap-ms",
     )
 
     /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
@@ -119,7 +119,7 @@ internal object UsbReceiverKind {
         "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=", "--nfm-bandwidth-hz=",
         "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=", "--dcc-allow=",
         "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
-        "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=",
+        "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=", "--analog-record-max-gap-ms=",
     )
 
     /**

@@ -74,6 +74,13 @@
  * private temporary file, reads it back when live processing ends, prints one "ANALOG RAW WAV:" line (its frames, RMS
  * and peak dBFS, clipped samples) after the METRIC line, fails when its RMS is below DB, and removes the file when it
  * exits.
+ *
+ * --analog-synth-pauses SEED (issue #756) makes a 9.2 s NFM capture at run time, five voice-like bursts with pauses of
+ * 0.3, 0.6, 1.5 and 3.0 s between them, writes it to the private directory and adds `--iq-replay` for it (the case
+ * names no capture of its own); with --analog-pcm-tap the run takes its discriminator tap as `-i` instead. With per-call
+ * recording on (-P), the stop hook, which runs after the engine committed the session's last calls, also prints one
+ * "ANALOG CALL ROW: start=S end=E" line per NFM call history row, oldest first (decode time, whole seconds).
+ * tests/analog_recording_check.cmake reads those lines with the recordings and the journal.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -222,6 +229,8 @@ static analog_limit g_pcm_gain_db;
 static analog_limit g_pcm_lowpass_hz;
 /* The lower bound on the -6 raw WAV's RMS level (--analog-raw-wav-min-rms-dbfs); unset records no raw WAV. */
 static analog_limit g_raw_wav_min_rms_dbfs;
+/* The seed of the capture with pauses the host makes and replays (--analog-synth-pauses); unset makes none. */
+static analog_limit g_synth_pauses;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -258,6 +267,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-pcm-gain-db", &g_pcm_gain_db, -40.0, 20.0},
     {"--analog-pcm-lowpass-hz", &g_pcm_lowpass_hz, 1000.0, 20000.0},
     {"--analog-raw-wav-min-rms-dbfs", &g_raw_wav_min_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
+    {"--analog-synth-pauses", &g_synth_pauses, 1.0, 4294967295.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -301,6 +311,7 @@ analog_usage(void) {
                 "  --analog-pcm-gain-db DB           scale that audio by DB\n"
                 "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
                 "  --analog-raw-wav-min-rms-dbfs DB  record the -6 raw WAV to a private file; RMS level of that WAV\n"
+                "  --analog-synth-pauses SEED        replay a made NFM capture of bursts with pauses between them\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -995,34 +1006,42 @@ analog_tap_resample(const double* x, size_t n, long rate_in, long rate_out, size
     return y;
 }
 
-/* Writes the discriminator tap of the capture meta_path names (see the file comment); 0, or -1 with a message. */
-static int
-analog_make_tap(const char* meta_path) {
-    analog_capture cap;
-    DSD_MEMSET(&cap, 0, sizeof cap);
-    int rc = -1;
-    if (analog_capture_load(meta_path, &cap) != 0
-        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_pcm") == NULL) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap cannot read the capture '%s'\n", meta_path);
-        g_scaled_dir[0] = '\0';
-        analog_capture_free(&cap);
-        return -1;
+/* Scales one sample in @p step of @p disc (@p disc_n samples) to int16 into @p pcm (@p out_n samples); returns how many
+ * clipped. The reads stop at the end of @p disc as well as at the end of @p pcm. */
+static size_t
+analog_tap_quantize(const double* disc, size_t disc_n, size_t step, int16_t* pcm, size_t out_n) {
+    const double scale = ANALOG_TAP_SCALE * pow(10.0, (g_pcm_gain_db.set ? g_pcm_gain_db.value : 0.0) / 20.0);
+    size_t clipped = 0U;
+    size_t k = 0U;
+    for (size_t src = 0U; k < out_n && src < disc_n; src += step, k++) {
+        double v = floor((disc[src] * scale) + 0.5);
+        if (v > 32767.0 || v < -32768.0) {
+            clipped++;
+            v = v > 0.0 ? 32767.0 : -32768.0;
+        }
+        pcm[k] = (int16_t)v;
     }
-    const long rate_in = analog_tap_capture_rate((const char*)cap.json);
+    return clipped;
+}
+
+/* Writes the discriminator tap of @p cap into the private directory (see the file comment); 0, or -1 with a message. */
+static int
+analog_tap_write(const analog_capture* cap) {
+    int rc = -1;
+    const long rate_in = analog_tap_capture_rate((const char*)cap->json);
     const long rate_out = (long)g_pcm_tap_hz.value;
-    const size_t n = cap.data_len / 2U;
-    if (rate_in <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || n < 2U) {
+    const size_t n = cap->data_len / 2U;
+    if (rate_in <= 0 || rate_out <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || n < 2U) {
         DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap %g cannot be made from the capture's %ld Hz\n",
                     g_pcm_tap_hz.value, rate_in);
-        analog_capture_free(&cap);
         return -1;
     }
-    double* disc = analog_tap_discriminate(&cap, n, rate_in);
-    analog_capture_free(&cap);
+    double* disc = analog_tap_discriminate(cap, n, rate_in);
     /* A divisor of the capture's rate decimates after a low-pass; any other rate is interpolated (issue #633). */
     const int divides = rate_out <= rate_in && rate_in % rate_out == 0;
     const long factor = divides ? rate_in / rate_out : 1;
     size_t out_n = divides ? n / (size_t)factor : 0U;
+    size_t disc_n = n; /* the samples disc holds */
     if (disc != NULL && g_pcm_lowpass_hz.set
         && analog_tap_lowpass_in_place(disc, n, g_pcm_lowpass_hz.value / (double)rate_in, ANALOG_TAP_LPF_TAPS) != 0) {
         free(disc);
@@ -1032,22 +1051,15 @@ analog_make_tap(const char* meta_path) {
         double* resampled = analog_tap_resample(disc, n, rate_in, rate_out, &out_n);
         free(disc);
         disc = resampled;
+        disc_n = out_n;
     }
-    int16_t* pcm = out_n > 0U ? (int16_t*)malloc(out_n * sizeof(int16_t)) : NULL;
+    int16_t* pcm = out_n > 0U ? (int16_t*)calloc(out_n, sizeof(int16_t)) : NULL;
     if (disc != NULL && pcm != NULL
         && (factor == 1
-            || analog_tap_lowpass_in_place(disc, n, ANALOG_TAP_ALIAS_FRACTION / (double)factor, ANALOG_TAP_CHANNEL_TAPS)
+            || analog_tap_lowpass_in_place(disc, disc_n, ANALOG_TAP_ALIAS_FRACTION / (double)factor,
+                                           ANALOG_TAP_CHANNEL_TAPS)
                    == 0)) {
-        const double scale = ANALOG_TAP_SCALE * pow(10.0, (g_pcm_gain_db.set ? g_pcm_gain_db.value : 0.0) / 20.0);
-        size_t clipped = 0U;
-        for (size_t k = 0; k < out_n; k++) {
-            double v = floor((disc[k * (size_t)factor] * scale) + 0.5);
-            if (v > 32767.0 || v < -32768.0) {
-                clipped++;
-                v = v > 0.0 ? 32767.0 : -32768.0;
-            }
-            pcm[k] = (int16_t)v;
-        }
+        const size_t clipped = analog_tap_quantize(disc, disc_n, (size_t)factor, pcm, out_n);
         DSD_FPRINTF(stderr, "analog replay: discriminator tap at %ld Hz, %zu samples, %zu clipped\n", rate_out, out_n,
                     clipped);
         if (analog_tap_write_wav(pcm, out_n, (int)rate_out) == 0
@@ -1062,6 +1074,23 @@ analog_make_tap(const char* meta_path) {
     }
     free(pcm);
     free(disc);
+    return rc;
+}
+
+/* Writes the discriminator tap of the committed capture meta_path names; 0, or -1 with a message. */
+static int
+analog_make_tap(const char* meta_path) {
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    int rc = -1;
+    if (analog_capture_load(meta_path, &cap) != 0
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_pcm") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap cannot read the capture '%s'\n", meta_path);
+        g_scaled_dir[0] = '\0';
+    } else {
+        rc = analog_tap_write(&cap);
+    }
+    analog_capture_free(&cap);
     return rc;
 }
 
@@ -1081,6 +1110,175 @@ analog_replay_tap(char** args, int count) {
     }
     DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap needs an --iq-replay capture (as two arguments)\n");
     return -1;
+}
+
+/* ---- a capture with pauses (--analog-synth-pauses) ------------------------------------------------------------ */
+
+/* Issue #756: five voice-like NFM bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, which a per-call
+ * recording's max gap joins or splits. The host makes it at run time, as the analog fixture budget is spent
+ * (docs/testing.md, "Analog fixtures"), the way tools/build_iq_fixtures.py makes nfm_burst_synth: complex Gaussian
+ * noise at 3 LSB a component across 48 kHz, the carrier 16 dB over it, keyed with 2 ms raised-cosine ramps, cu8 at its
+ * own level. Each burst carries 700 and 1300 Hz at up to 3 kHz deviation, swelling at 3 Hz, so it is not one steady
+ * line. The seed fixes the noise. */
+#define ANALOG_SYNTH_RATE_HZ      48000
+#define ANALOG_SYNTH_LEAD_S       0.5 /* noise alone first: a noise squelch learns its reference from it */
+#define ANALOG_SYNTH_BURST_S      0.5
+#define ANALOG_SYNTH_BURSTS       5
+/* After the last burst: shorter than a max gap of 1000 ms, so such a call is still held when the input ends. */
+#define ANALOG_SYNTH_TAIL_S       0.8
+#define ANALOG_SYNTH_RAMP_S       0.002
+#define ANALOG_SYNTH_NOISE_LSB    3.0
+#define ANALOG_SYNTH_CARRIER_DB   16.0
+#define ANALOG_SYNTH_DEVIATION_HZ 3000.0
+#define ANALOG_SYNTH_DATA         "synth.iq"
+#define ANALOG_SYNTH_JSON_MAX     1024
+
+static const double k_synth_pauses_s[ANALOG_SYNTH_BURSTS - 1] = {0.3, 0.6, 1.5, 3.0};
+
+/* splitmix64: the same noise for a seed on every platform, unlike rand(). */
+static uint64_t
+analog_synth_next(uint64_t* state) {
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+/* Uniform on (0, 1), never 0, so the logarithm below is finite. */
+static double
+analog_synth_uniform(uint64_t* state) {
+    return ((double)(analog_synth_next(state) >> 11) + 0.5) / 9007199254740992.0;
+}
+
+/* The keying envelope at @p t seconds: 1 inside a burst, 0 in a pause, raised-cosine ramps at the edges. */
+static double
+analog_synth_envelope(double t) {
+    double start = ANALOG_SYNTH_LEAD_S;
+    for (int b = 0; b < ANALOG_SYNTH_BURSTS; b++) {
+        const double end = start + ANALOG_SYNTH_BURST_S;
+        if (t > start && t < end) {
+            const double key = fmin(t - start, end - t) / ANALOG_SYNTH_RAMP_S;
+            return 0.5 - (0.5 * cos(ANALOG_PI * fmin(key, 1.0)));
+        }
+        start = end + (b < ANALOG_SYNTH_BURSTS - 1 ? k_synth_pauses_s[b] : 0.0);
+    }
+    return 0.0;
+}
+
+static unsigned char
+analog_synth_cu8(double x) {
+    const double v = floor((x * ANALOG_CU8_MIDPOINT) + ANALOG_CU8_MIDPOINT + 0.5);
+    return (unsigned char)fmin(fmax(v, 0.0), 255.0);
+}
+
+/* The capture's sidecar, as tools/build_iq_fixtures.py writes nfm_burst_synth's, for @p data_bytes of cu8 data. */
+static int
+analog_synth_sidecar(analog_capture* cap, size_t data_bytes) {
+    cap->json = (unsigned char*)malloc(ANALOG_SYNTH_JSON_MAX);
+    if (cap->json == NULL) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(
+        (char*)cap->json, ANALOG_SYNTH_JSON_MAX,
+        "{\n  \"format\": \"dsd-neo-iq\",\n  \"version\": 1,\n  \"sample_format\": \"cu8\",\n  \"iq_order\": \"IQ\",\n"
+        "  \"endianness\": \"none\",\n  \"capture_stage\": \"post_mute_pre_widen\",\n  \"sample_rate_hz\": %d,\n"
+        "  \"center_frequency_hz\": 851375000,\n  \"capture_center_frequency_hz\": 851375000,\n  \"ppm\": 0,\n"
+        "  \"tuner_gain_tenth_db\": 270,\n  \"rtl_dsp_bw_khz\": 48,\n  \"base_decimation\": 1,\n"
+        "  \"post_downsample\": 1,\n  \"demod_rate_hz\": %d,\n  \"offset_tuning_enabled\": false,\n"
+        "  \"fs4_shift_enabled\": false,\n  \"combine_rotate_enabled\": false,\n  \"muted_bytes_excluded\": true,\n"
+        "  \"contains_retunes\": false,\n  \"capture_retune_count\": 0,\n  \"source_backend\": \"rtl\",\n"
+        "  \"source_args\": \"fixture\",\n  \"capture_started_utc\": \"1970-01-01T00:00:00Z\",\n"
+        "  \"data_file\": \"" ANALOG_SYNTH_DATA "\",\n  \"data_bytes\": %zu,\n  \"capture_drops\": 0,\n"
+        "  \"capture_drop_blocks\": 0,\n  \"input_ring_drops\": 0,\n"
+        "  \"notes\": \"made by the analog replay host\"\n}\n",
+        ANALOG_SYNTH_RATE_HZ, ANALOG_SYNTH_RATE_HZ, data_bytes);
+    if (n <= 0 || n >= ANALOG_SYNTH_JSON_MAX) {
+        return -1;
+    }
+    cap->json_len = (size_t)n;
+    return analog_sidecar_data_file((const char*)cap->json, &cap->name_at, &cap->name_len);
+}
+
+/* Makes the capture with pauses in memory (see above); 0, or -1 (what was made stays for analog_capture_free()). */
+static int
+analog_synth_capture(analog_capture* cap, uint64_t seed) {
+    double total_s = ANALOG_SYNTH_LEAD_S + (ANALOG_SYNTH_BURSTS * ANALOG_SYNTH_BURST_S) + ANALOG_SYNTH_TAIL_S;
+    for (int b = 0; b < ANALOG_SYNTH_BURSTS - 1; b++) {
+        total_s += k_synth_pauses_s[b];
+    }
+    const size_t n = (size_t)lround(total_s * ANALOG_SYNTH_RATE_HZ);
+    cap->data = (unsigned char*)malloc(2U * n);
+    if (cap->data == NULL || analog_synth_sidecar(cap, 2U * n) != 0) {
+        return -1;
+    }
+    cap->data_len = 2U * n;
+    const double sigma = ANALOG_SYNTH_NOISE_LSB / ANALOG_CU8_MIDPOINT;
+    const double amplitude = sqrt(2.0 * sigma * sigma * pow(10.0, ANALOG_SYNTH_CARRIER_DB / 10.0));
+    uint64_t rng = seed;
+    double phase = 0.0;
+    for (size_t k = 0; k < n; k++) {
+        const double t = (double)k / ANALOG_SYNTH_RATE_HZ;
+        const double swell = 0.6 + (0.4 * sin(2.0 * ANALOG_PI * 3.0 * t));
+        const double voice = (0.6 * sin(2.0 * ANALOG_PI * 700.0 * t)) + (0.4 * sin(2.0 * ANALOG_PI * 1300.0 * t));
+        phase = fmod(phase + (2.0 * ANALOG_PI * ANALOG_SYNTH_DEVIATION_HZ * voice * swell / ANALOG_SYNTH_RATE_HZ),
+                     2.0 * ANALOG_PI);
+        const double carrier = amplitude * analog_synth_envelope(t);
+        /* Box-Muller: one pair of independent Gaussians, one for I and one for Q. */
+        const double r = sigma * sqrt(-2.0 * log(analog_synth_uniform(&rng)));
+        const double theta = 2.0 * ANALOG_PI * analog_synth_uniform(&rng);
+        cap->data[2U * k] = analog_synth_cu8((carrier * cos(phase)) + (r * cos(theta)));
+        cap->data[(2U * k) + 1U] = analog_synth_cu8((carrier * sin(phase)) + (r * sin(theta)));
+    }
+    return 0;
+}
+
+/* Whether @p arg names an --iq-replay capture ("--iq-replay" or "--iq-replay=PATH", not "--iq-replay-rate"). */
+static int
+analog_is_replay_arg(const char* arg) {
+    static const char k_flag[] = "--iq-replay";
+    const size_t len = sizeof(k_flag) - 1U;
+    return strncmp(arg, k_flag, len) == 0 && (arg[len] == '\0' || arg[len] == '=');
+}
+
+/* Makes the capture with pauses and replays it: adds `--iq-replay CAPTURE`, or with --analog-pcm-tap `-i TAP.wav` (args
+   has room for two more); 0, or -1 with a message. */
+static int
+analog_replay_synth(char** args, int* count) {
+    static char k_replay_flag[] = "--iq-replay";
+    static char k_input_flag[] = "-i";
+    for (int i = 1; i < *count; i++) {
+        if (analog_is_replay_arg(args[i])) {
+            DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses makes the capture; drop --iq-replay\n");
+            return -1;
+        }
+    }
+    const double seed = g_synth_pauses.value;
+    if (fabs(seed - floor(seed)) > ANALOG_HZ_EPSILON) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses %g is not a whole number\n", seed);
+        return -1;
+    }
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    int rc = -1;
+    if (analog_synth_capture(&cap, (uint64_t)seed) != 0
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_synth") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses cannot make its capture\n");
+        g_scaled_dir[0] = '\0';
+    } else if (g_pcm_tap_hz.set) {
+        rc = analog_tap_write(&cap);
+    } else {
+        rc = analog_capture_write(&cap);
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses cannot write its capture\n");
+        }
+    }
+    analog_capture_free(&cap);
+    if (rc == 0) {
+        args[(*count)++] = g_pcm_tap_hz.set ? k_input_flag : k_replay_flag;
+        args[(*count)++] = g_pcm_tap_hz.set ? g_tap_arg : g_scaled_meta;
+        args[*count] = NULL;
+    }
+    return rc;
 }
 
 /* Removes the scaled copy or the tap, if one was made. */
@@ -1843,9 +2041,26 @@ analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
     return 0;
 }
 
+/* With per-call recording on (-P), one line per NFM call history row the run committed, oldest first: when its call
+   began and ended, in whole seconds of decode time. The stop hook runs after the engine committed the session's last
+   calls, so a call still held when the input ended is among them (issue #756). */
+static void
+analog_print_call_rows(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts->dmr_stereo_wav || state->event_history_s == NULL) {
+        return;
+    }
+    const Event_History_I* history = &state->event_history_s[0];
+    for (int i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
+        const Event_History* row = &history->Event_History_Items[i];
+        if (strcmp(row->sysid_string, "NFM") == 0) {
+            DSD_FPRINTF(stderr, "ANALOG CALL ROW: start=%lld end=%lld\n", (long long)row->event_start_time,
+                        (long long)row->event_time);
+        }
+    }
+}
+
 static void
 analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
-    (void)state;
     (void)context;
     analog_flush_block();
     if (analog_pcm_input(opts)) {
@@ -1856,6 +2071,7 @@ analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
         analog_raw_wav_measure(opts);
     }
     analog_report();
+    analog_print_call_rows(opts, state);
 }
 
 /* Scores four blocks of a 1 kHz tone at 48 kHz -- the third silent, a squelched gap -- each written whole when @p split
@@ -1910,13 +2126,33 @@ analog_selftest(void) {
     return same && gap ? 0 : 1;
 }
 
+/* Applies the host options that change the dsd-neo arguments: the capture replayed (a scaled copy, a made one, or its
+   discriminator tap as audio input) and the raw WAV. 0, or -1 with a message. */
+static int
+analog_prepare_args(char** args, int* count) {
+    if (g_iq_gain_db.set && (g_pcm_tap_hz.set || g_synth_pauses.set)) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales a committed capture, --analog-pcm-tap and "
+                            "--analog-synth-pauses replace it\n");
+        return -1;
+    }
+    if (g_iq_gain_db.set && analog_replay_scaled(args, *count) != 0) {
+        return -1;
+    }
+    if (g_synth_pauses.set ? analog_replay_synth(args, count) != 0
+                           : (g_pcm_tap_hz.set && analog_replay_tap(args, *count) != 0)) {
+        return -1;
+    }
+    return (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, count) != 0) ? -1 : 0;
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--analog-selftest") == 0) {
         return analog_selftest();
     }
-    /* Room for the NULL after the arguments and for the `-6 FILE` --analog-raw-wav-min-rms-dbfs adds. */
-    char** args = (char**)calloc((size_t)argc + 3U, sizeof(*args));
+    /* Room for the NULL after the arguments, for the `-6 FILE` --analog-raw-wav-min-rms-dbfs adds and for the input
+       --analog-synth-pauses adds. */
+    char** args = (char**)calloc((size_t)argc + 5U, sizeof(*args));
     if (args == NULL) {
         return 1;
     }
@@ -1924,14 +2160,7 @@ main(int argc, char** argv) {
     g_totals.last_audible_ms = -1.0;
     g_tone.first_lock_ms = -1.0;
     int kept = 0;
-    int args_rc = analog_split_args(argc, argv, args, &kept);
-    if (args_rc == 0 && g_iq_gain_db.set && g_pcm_tap_hz.set) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales a capture, --analog-pcm-tap replaces it\n");
-        args_rc = -1;
-    }
-    if (args_rc != 0 || (g_iq_gain_db.set && analog_replay_scaled(args, kept) != 0)
-        || (g_pcm_tap_hz.set && analog_replay_tap(args, kept) != 0)
-        || (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, &kept) != 0)) {
+    if (analog_split_args(argc, argv, args, &kept) != 0 || analog_prepare_args(args, &kept) != 0) {
         analog_remove_scaled();
         analog_raw_wav_remove();
         free((void*)args);

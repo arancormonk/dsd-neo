@@ -195,6 +195,7 @@ void
 test_saved_system(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(true);
     prefs.setRecordUnknownOnly(true);
+    prefs.setAnalogMaxGapMs(2500);
     dsd_qt::SessionArgsBuilder builder(&prefs);
     builder.setRecordingSessions(&sessions);
     Host host;
@@ -208,8 +209,19 @@ test_saved_system(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("the saved system's argv parses", parse(host.argv, decoder));
     expectRecording("a saved system records each call, unknown talkgroups only, into its folder", decoder,
                     sessions.folder, true, true);
+    expect("with the NFM pause hold Settings shows (issue #756)", decoder.opts->analog_record_max_gap_ms == 2500);
+    // One in the extra options comes later and wins.
+    prefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms 4000"));
+    Host extraHost;
+    expect("a saved system with an extra hold starts",
+           builder.start(system, &extraHost, QStringLiteral("saved")).value("started").toBool());
+    Decoder extraDecoder;
+    expect("its argv parses", parse(extraHost.argv, extraDecoder));
+    expect("and the extra hold wins", extraDecoder.opts->analog_record_max_gap_ms == 4000);
+    prefs.setExtraArgs(QString());
     prefs.setRecordCalls(false);
     prefs.setRecordUnknownOnly(false);
+    prefs.setAnalogMaxGapMs(200);
 }
 
 /* Explore with Record calls off: the folder and journal are named anyway, so a -P among the extra options records
@@ -311,20 +323,42 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("unknown-only while Record calls is off sends nothing", bridge.setRecordUnknownOnly(true));
     expect("nothing queued", live.drain() == 0 && opts->record_unknown_only == 0);
 
-    expect("Record calls on, unknown-only on, is queued", bridge.setRecordCalls(true, true));
+    expect("the NFM pause hold while Record calls is off sends nothing", bridge.setAnalogRecordMaxGap(3000));
+    expect("nothing queued for it", live.drain() == 0 && opts->analog_record_max_gap_ms == 200);
+
+    expect("Record calls on, unknown-only on, is queued", bridge.setRecordCalls(true, true, 1500));
     status.refresh();
     expect("and shows applying", status.commandState() == "pending" && status.command() == "start");
-    expect("unknown-only, then the start, apply", live.drain() == 2);
+    expect("the pause hold, unknown-only, then the start, apply", live.drain() == 3);
     status.refresh();
     expect("the session now records each call, unknown talkgroups only",
            opts->dmr_stereo_wav == 1 && opts->wav_out_f != nullptr && opts->record_unknown_only == 1 && status.perCall()
                && status.unknownOnly() && status.commandState() == "applied" && status.refusal().isEmpty());
+    expect("with the pause hold sent with it",
+           opts->analog_record_max_gap_ms == 1500 && status.analogMaxGapMs() == 1500);
     expect("into the session's folder", slotFilesIn(sessions.folder) > 0);
 
     expect("unknown-only off while recording is queued", bridge.setRecordUnknownOnly(false));
     expect("and applied", live.drain() == 1 && opts->record_unknown_only == 0);
 
-    expect("Record calls off is queued", bridge.setRecordCalls(false, true));
+    // Issue #756: the NFM pause hold while recording goes live, reads as itself, and a value the decoder refuses
+    // fails without changing the session's.
+    expect("the pause hold while recording is queued", bridge.setAnalogRecordMaxGap(10000));
+    status.refresh();
+    expect("and shows as itself, applying",
+           status.commandState() == "pending" && status.command() == QStringLiteral("analogMaxGap"));
+    expect("it applies", live.drain() == 1 && opts->analog_record_max_gap_ms == 10000);
+    status.refresh();
+    expect("and shows applied", status.commandState() == "applied" && status.analogMaxGapMs() == 10000);
+    expect("one past the range is queued", bridge.setAnalogRecordMaxGap(10001));
+    expect("and refused by the decoder", live.drain() == 1 && opts->analog_record_max_gap_ms == 10000);
+    status.refresh();
+    expect("which the status shows", status.commandState() == "failed" && status.command() == "analogMaxGap");
+    expect("off is queued", bridge.setAnalogRecordMaxGap(200) && live.drain() == 1);
+    status.refresh();
+    expect("and applies", opts->analog_record_max_gap_ms == 200 && status.analogMaxGapMs() == 200);
+
+    expect("Record calls off is queued", bridge.setRecordCalls(false, true, 200));
     status.refresh();
     // The status is about the switch the user made, the stop, not the unknown-only clear sent after it.
     expect("and shows the stop applying", status.commandState() == "pending" && status.command() == "stop");
@@ -333,6 +367,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("the session stops recording", opts->record_unknown_only == 0 && opts->dmr_stereo_wav == 0
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
                                               && !status.perCall() && !status.unknownOnly());
+    expect("the pause hold is left as it was", opts->analog_record_max_gap_ms == 200);
     expect("and shows the stop applied", status.commandState() == "applied" && status.command() == "stop");
 
     // Unknown-only sent later by something else (the TCP API, say) reads as itself, not as the stop.
@@ -369,6 +404,127 @@ test_live_unknown_only_first(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
 }
 
+/* Issue #756: with the NFM pause hold in the extra options, Settings sends no hold with Record calls on (a negative
+ * one), so the session keeps the hold its extra options set. */
+void
+test_live_record_on_keeps_extra_hold(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    prefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms 4000"));
+    prefs.setAnalogMaxGapMs(2000);
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    const dsd_opts* opts = live.decoder.opts.get();
+    expect("a session with an extra hold starts", started && opts->analog_record_max_gap_ms == 4000);
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
+    status.setRunUp(true);
+    expect("Record calls on with no hold is queued", bridge.setRecordCalls(true, false, -1));
+    expect("only unknown-only and the start apply", live.drain() == 2);
+    expect("the session records with the extra hold",
+           opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 4000);
+    prefs.setExtraArgs(QString());
+    prefs.setAnalogMaxGapMs(200);
+}
+
+/* Settings' bridge and status on a session whose run is up. */
+struct LiveBridge {
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+
+    LiveBridge() {
+        bridge.setRecordingStatus(&status);
+        status.setSessionActive(true);
+        status.setRunUp(true);
+    }
+};
+
+/* A setting changed twice while Record calls on still waits in the queue (a carrier holds it; nothing drains): both
+ * changes go, so the session ends at the last one. The first change is then the view's latest command, not the start,
+ * and the second was lost for the NFM pause hold (issue #756) and Only unknown talkgroups (issue #708) alike. */
+void
+test_live_settings_behind_a_queued_start(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    {
+        bool started = false;
+        LiveSession live(prefs, sessions, &started);
+        const dsd_opts* opts = live.decoder.opts.get();
+        expect("a session recording nothing starts", started && opts->dmr_stereo_wav == 0);
+        LiveBridge live_bridge;
+        expect("Record calls on is queued", live_bridge.bridge.setRecordCalls(true, false, 200));
+        expect("a pause hold behind it is sent", live_bridge.bridge.setAnalogRecordMaxGap(2000));
+        expect("and so is a second one", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+        live_bridge.status.refresh();
+        expect("the status shows the hold applying",
+               live_bridge.status.commandState() == "pending" && live_bridge.status.command() == "analogMaxGap");
+        (void)live.drain();
+        live_bridge.status.refresh();
+        expect("the session records with the second hold",
+               opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000);
+        expect("which the status shows applied",
+               live_bridge.status.commandState() == "applied" && live_bridge.status.analogMaxGapMs() == 3000);
+    }
+    {
+        bool started = false;
+        LiveSession live(prefs, sessions, &started);
+        const dsd_opts* opts = live.decoder.opts.get();
+        const LiveBridge live_bridge;
+        expect("Record calls on, every call, is queued",
+               started && live_bridge.bridge.setRecordCalls(true, false, 200));
+        expect("unknown-only on behind it is sent", live_bridge.bridge.setRecordUnknownOnly(true));
+        expect("and off again", live_bridge.bridge.setRecordUnknownOnly(false));
+        (void)live.drain();
+        expect("the session records every call", opts->dmr_stereo_wav == 1 && opts->record_unknown_only == 0);
+    }
+}
+
+/* A setting changed while Record calls off still waits in the queue sends nothing: the session will not record, and
+ * the next Record calls on sends the setting. A start queued behind the stop counts again. */
+void
+test_live_settings_behind_a_queued_stop(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    prefs.setRecordCalls(true);
+    {
+        bool started = false;
+        LiveSession live(prefs, sessions, &started);
+        const dsd_opts* opts = live.decoder.opts.get();
+        expect("a session recording each call starts", started && opts->dmr_stereo_wav == 1);
+        const LiveBridge live_bridge;
+        expect("Record calls off is queued", live_bridge.bridge.setRecordCalls(false, false, 200));
+        expect("a pause hold behind it sends nothing", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+        expect("nor does unknown-only", live_bridge.bridge.setRecordUnknownOnly(true));
+        expect("only the stop and its unknown-only clear apply", live.drain() == 2);
+        expect("the session stops, its settings as they were",
+               opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200 && opts->record_unknown_only == 0);
+
+        expect("Record calls off and on again are queued", live_bridge.bridge.setRecordCalls(false, false, 200)
+                                                               && live_bridge.bridge.setRecordCalls(true, false, 200));
+        expect("a pause hold behind the start is sent", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+        (void)live.drain();
+        expect("the session records with it", opts->dmr_stereo_wav == 1 && opts->analog_record_max_gap_ms == 3000);
+    }
+    prefs.setRecordCalls(false);
+}
+
+/* Record calls on that the session's end drops: a setting changed after it sends nothing, as the session records
+ * nothing. */
+void
+test_live_setting_after_a_dropped_start(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    const dsd_opts* opts = live.decoder.opts.get();
+    LiveBridge live_bridge;
+    expect("Record calls on is queued", started && live_bridge.bridge.setRecordCalls(true, false, 200));
+    // The run ends and the next comes up: its stop drops what was queued.
+    dsd_app_frontend_runtime_stop();
+    dsd_app_frontend_runtime_start(live.decoder.opts.get(), live.decoder.state.get());
+    live_bridge.status.refresh();
+    expect("the start reads as dropped", live_bridge.status.commandState() == "dropped");
+    expect("a pause hold after it sends nothing", live_bridge.bridge.setAnalogRecordMaxGap(3000));
+    expect("unknown-only neither", live_bridge.bridge.setRecordUnknownOnly(true));
+    expect("nothing is queued", live.drain() == 0);
+    expect("the session records nothing, its settings as they were",
+           opts->dmr_stereo_wav == 0 && opts->analog_record_max_gap_ms == 200 && opts->record_unknown_only == 0);
+}
+
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
 /* Record calls off where one of its two submissions is refused: the session never records more than it did. A refused
  * stop sends nothing (unknown-only stays on); a refused unknown-only after the stop leaves the session stopped. */
@@ -390,7 +546,7 @@ test_live_record_off_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
         status.setSessionActive(true);
         status.setRunUp(true);
         g_refuse_cmd = refused;
-        const bool sent = bridge.setRecordCalls(false, true);
+        const bool sent = bridge.setRecordCalls(false, true, 200);
         g_refuse_cmd = 0;
         (void)live.drain();
         if (stop_refused) {
@@ -405,6 +561,40 @@ test_live_record_off_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
     prefs.setRecordUnknownOnly(false);
 }
+
+/* Record calls on where one of its three submissions is refused (issue #756): the pause hold goes first, so a refused
+ * hold sends nothing after it and the session records nothing; a refused start leaves the hold and unknown-only sent,
+ * which change nothing while no call records. */
+void
+test_live_record_on_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    for (const int refused :
+         {static_cast<int>(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET), static_cast<int>(DSD_APP_CMD_WAV_START)}) {
+        const bool hold_refused = refused == DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET;
+        bool started = false;
+        LiveSession live(prefs, sessions, &started);
+        const dsd_opts* opts = live.decoder.opts.get();
+        expect("a session recording nothing starts", started && opts->dmr_stereo_wav == 0);
+        dsd_qt::CommandBridge bridge;
+        dsd_qt::RecordingStatus status;
+        bridge.setRecordingStatus(&status);
+        status.setSessionActive(true);
+        status.setRunUp(true);
+        g_refuse_cmd = refused;
+        const bool sent = bridge.setRecordCalls(true, true, 3000);
+        g_refuse_cmd = 0;
+        // With no start on its way, a pause hold changed while the rest still waits in the queue sends nothing.
+        expect("a pause hold after it answers", bridge.setAnalogRecordMaxGap(5000));
+        const int drained = live.drain();
+        expect("a half-sent start reads as not sent", !sent && opts->dmr_stereo_wav == 0);
+        if (hold_refused) {
+            expect("a refused hold sends nothing after it",
+                   drained == 0 && opts->analog_record_max_gap_ms == 200 && opts->record_unknown_only == 0);
+        } else {
+            expect("a refused start leaves the hold and unknown-only sent, and no later hold",
+                   drained == 2 && opts->analog_record_max_gap_ms == 3000 && opts->record_unknown_only == 1);
+        }
+    }
+}
 #endif
 
 /* A switch while the process's first session is still starting: the decoder has published no recording view yet, and
@@ -417,11 +607,11 @@ test_first_session_starting() {
     status.setSessionActive(true);
     dsd_app_recording_view view{};
     expect("no view published yet", dsd_app_recording_view_get(&view) == 0);
-    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false, 200));
     expect("as a session still starting", status.refusal() == QStringLiteral("starting"));
     expect("unknown-only too", !bridge.setRecordUnknownOnly(true) && status.refusal() == QStringLiteral("starting"));
     status.setSessionActive(false);
-    expect("with no session it is refused", !bridge.setRecordCalls(true, false));
+    expect("with no session it is refused", !bridge.setRecordCalls(true, false, 200));
     expect("as no session", status.refusal() == QStringLiteral("no-session"));
 }
 
@@ -438,7 +628,7 @@ test_live_without_storage(dsd_qt::AppPrefs& prefs) {
     bridge.setRecordingStatus(&status);
     status.setSessionActive(true);
     status.setRunUp(true);
-    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false, 200));
     status.refresh();
     expect("nothing is sent", live.drain() == 0 && live.decoder.opts->dmr_stereo_wav == 0);
     expect("and the status says storage is unavailable", status.refusal() == QStringLiteral("storage-unavailable")
@@ -460,14 +650,14 @@ test_live_beside_a_static_wav(dsd_qt::AppPrefs& prefs, Sessions& sessions, const
     bridge.setRecordingStatus(&status);
     status.setSessionActive(true);
     status.setRunUp(true);
-    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false, 200));
     status.refresh();
     expect("nothing is sent and the static WAV stays open",
            live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
     expect("the status says why", status.refusal() == QStringLiteral("static-wav") && status.staticWav());
     const int refused = status.refusalCount();
     // Nor is Record calls off sent: a stop would close the user's file as surely as a start.
-    expect("Record calls off is refused too", !bridge.setRecordCalls(false, false));
+    expect("Record calls off is refused too", !bridge.setRecordCalls(false, false, 200));
     expect("nothing is sent and the static WAV stays open",
            live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
     expect("for the same reason", status.refusal() == QStringLiteral("static-wav"));
@@ -553,10 +743,10 @@ test_status_waits_for_the_run(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
         bridge.setRecordingStatus(&status);
         dsd_qt::recording_status_follow_host(&status, &host);
         host.setPhase(dsd_qt::DecoderHost::Starting);
-        expect("while Starting a switch is refused", !bridge.setRecordCalls(false, false));
+        expect("while Starting a switch is refused", !bridge.setRecordCalls(false, false, 200));
         expect("as starting, sending nothing", status.refusal() == QStringLiteral("starting") && live.drain() == 0);
         host.setPhase(dsd_qt::DecoderHost::Running);
-        expect("Running, it is sent", bridge.setRecordCalls(false, false) && live.drain() == 2);
+        expect("Running, it is sent", bridge.setRecordCalls(false, false, 200) && live.drain() == 2);
     }
     {
         PhaseHost host;
@@ -567,14 +757,14 @@ test_status_waits_for_the_run(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
         host.setPhase(dsd_qt::DecoderHost::Starting);
         host.initialized(); // can come while Starting
         host.setPhase(dsd_qt::DecoderHost::Running);
-        expect("a run said up before Running is up", bridge.setRecordCalls(false, false) && live.drain() == 2);
+        expect("a run said up before Running is up", bridge.setRecordCalls(false, false, 200) && live.drain() == 2);
         host.setPhase(dsd_qt::DecoderHost::Idle);
         host.setPhase(dsd_qt::DecoderHost::Running);
         expect("the next session waits for its own", !bridge.setRecordUnknownOnly(true)
                                                          && status.refusal() == QStringLiteral("starting")
                                                          && live.drain() == 0);
         host.initialized();
-        expect("until it says so", bridge.setRecordCalls(false, false) && live.drain() == 2);
+        expect("until it says so", bridge.setRecordCalls(false, false, 200) && live.drain() == 2);
     }
     {
         PhaseHost host;
@@ -584,7 +774,7 @@ test_status_waits_for_the_run(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
         bridge.setRecordingStatus(&status);
         dsd_qt::recording_status_follow_host(&status, &host);
         host.firstPoll(dsd_qt::DecoderHost::Running);
-        expect("a session the UI found running is up", bridge.setRecordCalls(false, false) && live.drain() == 2);
+        expect("a session the UI found running is up", bridge.setRecordCalls(false, false, 200) && live.drain() == 2);
     }
     bridge.setRecordingStatus(nullptr);
 }
@@ -603,7 +793,7 @@ test_status_follows_the_session(dsd_qt::AppPrefs& prefs) {
     bridge.setRecordingStatus(&status);
     dsd_qt::recording_status_follow_host(&status, &host);
 
-    expect("with no session, Record calls is refused", !bridge.setRecordCalls(true, false));
+    expect("with no session, Record calls is refused", !bridge.setRecordCalls(true, false, 200));
     expect("as no session", status.refusal() == QStringLiteral("no-session") && live.drain() == 0);
     expect("and so is unknown-only", !bridge.setRecordUnknownOnly(true) && live.drain() == 0);
 
@@ -616,13 +806,13 @@ test_status_follows_the_session(dsd_qt::AppPrefs& prefs) {
     expect("and shows no command of the last session's",
            status.commandState() == QStringLiteral("none") && status.command().isEmpty());
 
-    expect("Record calls on with no storage is refused", !bridge.setRecordCalls(true, false));
+    expect("Record calls on with no storage is refused", !bridge.setRecordCalls(true, false, 200));
     expect("as such", status.refusal() == QStringLiteral("storage-unavailable"));
     host.setPhase(dsd_qt::DecoderHost::Idle);
     expect("an end clears it", status.refusal().isEmpty() && !status.sessionActive());
 
     host.setPhase(dsd_qt::DecoderHost::Running);
-    expect("Record calls off is sent", bridge.setRecordCalls(false, false));
+    expect("Record calls off is sent", bridge.setRecordCalls(false, false, 200));
     expect("and this session's command shows at once",
            status.commandState() == QStringLiteral("pending") && status.command() == QStringLiteral("stop"));
     expect("both apply", live.drain() == 2);
@@ -676,6 +866,10 @@ test_status_readings(void) {
     expect("each move signalled once", changes == 4 && status.commandState() == "dropped" && status.command() == "stop"
                                            && status.refusal() == "static-wav"
                                            && status.refusalCount() == refusals + 2);
+    // Issue #756: the NFM pause hold alone moving is a move too, so Settings follows a hold another frontend set.
+    view.analog_max_gap_ms = 2000;
+    status.apply(view);
+    expect("the pause hold moving is a change", changes == 5 && status.analogMaxGapMs() == 2000);
 }
 
 enum class Applied { Journal, DeleteAfterUpload, Folder, StaticWav, PerCall };
@@ -829,8 +1023,13 @@ main(int argc, char** argv) {
         test_status_readings();
         test_live_commands(prefs, sessions);
         test_live_unknown_only_first(prefs, sessions);
+        test_live_record_on_keeps_extra_hold(prefs, sessions);
+        test_live_settings_behind_a_queued_start(prefs, sessions);
+        test_live_settings_behind_a_queued_stop(prefs, sessions);
+        test_live_setting_after_a_dropped_start(prefs, sessions);
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
         test_live_record_off_half_sent(prefs, sessions);
+        test_live_record_on_half_sent(prefs, sessions);
 #endif
         test_live_without_storage(prefs);
         test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));

@@ -97,6 +97,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--rdio-api-key",
     "--rdio-upload-timeout-ms",
     "--rdio-upload-retries",
+    "--analog-record-max-gap-ms",
     "--dmr-baofeng-pc5",
     "--dmr-csi-ee72",
     "--dmr-vertex-ks-csv",
@@ -240,6 +241,7 @@ static const char* const k_skip_prefix[] = {
     "--tone-name=",
     "--tone-block=",
     "--frontend=",
+    "--analog-record-max-gap-ms=",
 };
 
 int

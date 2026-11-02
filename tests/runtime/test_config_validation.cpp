@@ -1588,6 +1588,58 @@ test_scan_max_visit_ms_validation(void) {
     return rc;
 }
 
+/* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
+ * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
+ * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
+static int
+run_analog_max_gap_case(const char* value, int level, const char* text) {
+    char ini[128];
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\nanalog_max_gap_ms = %s\n", value);
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+
+    int found = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (strcmp(diags.items[i].key, "analog_max_gap_ms") == 0) {
+            found++;
+            if ((int)diags.items[i].level != level || (text && !strstr(diags.items[i].message, text))) {
+                found += 100;
+            }
+        }
+    }
+    const int want = level < 0 ? 0 : 1;
+    int result = 0;
+    if (found != want || diags.count != want) {
+        DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms = %s: %d diagnostic(s) on the key, %d in all, want %d\n", value,
+                    found, diags.count, want);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s.%s: %s\n", diags.items[i].section, diags.items[i].key, diags.items[i].message);
+        }
+        result = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_analog_max_gap_validation(void) {
+    int rc = 0;
+    rc |= run_analog_max_gap_case("0", -1, NULL);
+    rc |= run_analog_max_gap_case("200", -1, NULL);
+    rc |= run_analog_max_gap_case("10000", -1, NULL);
+    rc |= run_analog_max_gap_case("-1", DSDCFG_DIAG_ERROR, "Value -1 is out of range [0, 10000] and is refused");
+    rc |= run_analog_max_gap_case("10001", DSDCFG_DIAG_ERROR, "Value 10001 is out of range [0, 10000] and is refused");
+    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value '99999999999'");
+    rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    return rc;
+}
+
 /* Issue #525: [analog] nfm_bandwidth_hz. A width outside 8000..25000 Hz, or anything but whole Hz, is an ERROR
  * (never a warning the loader would clamp); so is an explicit width the configured RTL DSP bandwidth cannot filter,
  * but only where that bandwidth sets the DSP rate (rtl and rtltcp) and the analog preset uses the width. An empty
@@ -2317,6 +2369,7 @@ main(void) {
     rc |= test_rtl_bw_khz_selectable_list();
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
+    rc |= test_analog_max_gap_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();

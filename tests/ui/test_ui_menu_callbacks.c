@@ -736,6 +736,19 @@ test_typed_callbacks_clamp_and_cancel(void) {
     rc |= expect_int("voice hold kept", cmd_i32(), 2500);
     rc |= expect_int("voice hold applying status", strstr(g_status, "Applying voice hold") != NULL, 1);
 
+    /* The NFM max gap (issue #756) goes to the command as typed, which refuses a value out of range with the reason
+       rather than the prompt clamping it. */
+    reset_capture();
+    cb_analog_record_max_gap(&ctx, 0, 2000);
+    rc |= expect_int("canceled nfm pause hold no command", g_cmd.calls, 0);
+    const int k_gaps[] = {2000, 0, -5, 10001};
+    for (size_t i = 0; i < sizeof k_gaps / sizeof k_gaps[0]; i++) {
+        reset_capture();
+        cb_analog_record_max_gap(&ctx, 1, k_gaps[i]);
+        rc |= expect_int("nfm pause hold command", g_cmd.id, DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET);
+        rc |= expect_int("nfm pause hold as typed", cmd_i32(), k_gaps[i]);
+    }
+
     return rc;
 }
 

@@ -15,8 +15,10 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/core/opts.h>
 #include <iterator>
 #include "realtime_clock.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 
@@ -85,6 +87,9 @@ enum Key {
     // writes lastStarted* (issue #671): what a recreated Activity finds running, which this device's service runs.
     kAcceptedStartKind,
     kAcceptedStartUid,
+    // Issue #756: the longest pause one analog NFM call recording keeps going through (--analog-record-max-gap-ms).
+    // Portable with the other recording choices.
+    kRecordingAnalogMaxGapMs,
     kKeyCount
 };
 
@@ -129,6 +134,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"recording/limitMb", true},
     {"listen/acceptedStartKind", false},
     {"listen/acceptedStartUid", false},
+    {"recording/analogMaxGapMs", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -200,8 +206,8 @@ constexpr int kDefaultScreenDelaySec = 30;
 /** @brief @p raw if it holds a ScreenMode code, else System default; text that is not a number included. */
 int
 sane_screen_mode(const QVariant& raw) {
-    bool ok = false;
-    const int mode = raw.toInt(&ok);
+    int mode = 0;
+    const bool ok = stored_int(raw, &mode);
     return (ok && mode >= AppPrefs::ScreenSystem && mode <= AppPrefs::ScreenOffBetweenCalls) ? mode
                                                                                              : AppPrefs::ScreenSystem;
 }
@@ -209,8 +215,8 @@ sane_screen_mode(const QVariant& raw) {
 /** @brief @p raw if it holds one of the offered delays, else the default; text that is not a number included. */
 int
 sane_screen_delay(const QVariant& raw) {
-    bool ok = false;
-    const int seconds = raw.toInt(&ok);
+    int seconds = 0;
+    const bool ok = stored_int(raw, &seconds);
     const bool offered = ok
                          && std::any_of(std::begin(kScreenDelayChoices), std::end(kScreenDelayChoices),
                                         [seconds](int choice) { return choice == seconds; });
@@ -225,12 +231,29 @@ constexpr int kDefaultRecordingLimitMb = 1000;
 /** @brief @p raw if it holds one of the offered limits, else the default; text that is not a number included. */
 int
 sane_recording_limit(const QVariant& raw) {
-    bool ok = false;
-    const int mb = raw.toInt(&ok);
+    int mb = 0;
+    const bool ok = stored_int(raw, &mb);
     const bool offered = ok
                          && std::any_of(std::begin(kRecordingLimitChoices), std::end(kRecordingLimitChoices),
                                         [mb](int choice) { return choice == mb; });
     return offered ? mb : kDefaultRecordingLimitMb;
+}
+
+// The NFM pause holds the settings offer, in ms (200: off, the decoder's default; 200 or less is off), and the range
+// the decoder takes (--analog-record-max-gap-ms). A value in range but not offered is kept as it is: it came from a
+// backup or an older build, and Settings shows it as itself.
+constexpr int kAnalogMaxGapChoices[] = {DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS, 500, 1000, 2000, 3000, 5000,
+                                        DSD_ANALOG_RECORD_MAX_GAP_MAX_MS};
+constexpr int kDefaultAnalogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
+constexpr int kMaxAnalogMaxGapMs = DSD_ANALOG_RECORD_MAX_GAP_MAX_MS;
+
+/** @brief @p raw if it holds a value the decoder takes (0..10000 ms), else the default; text that is not a number
+ *         included. */
+int
+sane_analog_max_gap(const QVariant& raw) {
+    int ms = 0;
+    const bool ok = stored_int(raw, &ms);
+    return ok && ms >= 0 && ms <= kMaxAnalogMaxGapMs ? ms : kDefaultAnalogMaxGapMs;
 }
 
 /**
@@ -242,9 +265,8 @@ sane_recording_limit(const QVariant& raw) {
  */
 bool
 stored_int_differs(const QVariant& stored, int next) {
-    bool ok = false;
-    const int value = stored.toInt(&ok);
-    return !ok || value != next;
+    int value = 0;
+    return !stored_int(stored, &value) || value != next;
 }
 
 } // namespace
@@ -346,13 +368,13 @@ AppPrefs::expireLocation() const {
 
 int
 AppPrefs::appearance() const {
-    return sane_appearance(m_settings.value(key_name(kAppearance), FollowSystem).toInt());
+    return sane_appearance(stored_int_or(m_settings.value(key_name(kAppearance)), FollowSystem));
 }
 
 void
 AppPrefs::setAppearance(int mode) {
     const int next = sane_appearance(mode);
-    if (next == m_settings.value(key_name(kAppearance), FollowSystem).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kAppearance), FollowSystem), next)) {
         return;
     }
     m_settings.setValue(key_name(kAppearance), next);
@@ -539,12 +561,12 @@ AppPrefs::setRelaxedCrc(bool on) {
 
 int
 AppPrefs::gainDb() const {
-    return m_settings.value(key_name(kGainDb), 30).toInt();
+    return stored_int_or(m_settings.value(key_name(kGainDb)), 30);
 }
 
 void
 AppPrefs::setGainDb(int db) {
-    if (db == gainDb()) {
+    if (!stored_int_differs(m_settings.value(key_name(kGainDb), 30), db)) {
         return;
     }
     m_settings.setValue(key_name(kGainDb), db);
@@ -553,12 +575,12 @@ AppPrefs::setGainDb(int db) {
 
 int
 AppPrefs::ppm() const {
-    return m_settings.value(key_name(kPpm), 0).toInt();
+    return stored_int_or(m_settings.value(key_name(kPpm)), 0);
 }
 
 void
 AppPrefs::setPpm(int value) {
-    if (value == ppm()) {
+    if (!stored_int_differs(m_settings.value(key_name(kPpm), 0), value)) {
         return;
     }
     m_settings.setValue(key_name(kPpm), value);
@@ -567,12 +589,12 @@ AppPrefs::setPpm(int value) {
 
 int
 AppPrefs::bandwidthKhz() const {
-    return m_settings.value(key_name(kBandwidthKhz), 48).toInt();
+    return stored_int_or(m_settings.value(key_name(kBandwidthKhz)), 48);
 }
 
 void
 AppPrefs::setBandwidthKhz(int khz) {
-    if (khz == bandwidthKhz()) {
+    if (!stored_int_differs(m_settings.value(key_name(kBandwidthKhz), 48), khz)) {
         return;
     }
     m_settings.setValue(key_name(kBandwidthKhz), khz);
@@ -666,13 +688,13 @@ AppPrefs::setExploreHost(const QString& host) {
 
 int
 AppPrefs::explorePort() const {
-    return sane_tuner_port(m_settings.value(key_name(kExplorePort), 1234).toInt());
+    return sane_tuner_port(stored_int_or(m_settings.value(key_name(kExplorePort)), 1234));
 }
 
 void
 AppPrefs::setExplorePort(int port) {
     const int next = sane_tuner_port(port);
-    if (next == m_settings.value(key_name(kExplorePort), 1234).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kExplorePort), 1234), next)) {
         return;
     }
     m_settings.setValue(key_name(kExplorePort), next);
@@ -727,13 +749,13 @@ AppPrefs::setSearchHost(const QString& host) {
 
 int
 AppPrefs::searchPort() const {
-    return sane_tuner_port(m_settings.value(key_name(kSearchPort), 1234).toInt());
+    return sane_tuner_port(stored_int_or(m_settings.value(key_name(kSearchPort)), 1234));
 }
 
 void
 AppPrefs::setSearchPort(int port) {
     const int next = sane_tuner_port(port);
-    if (next == m_settings.value(key_name(kSearchPort), 1234).toInt()) {
+    if (!stored_int_differs(m_settings.value(key_name(kSearchPort), 1234), next)) {
         return;
     }
     m_settings.setValue(key_name(kSearchPort), next);
@@ -933,6 +955,30 @@ QVariantList
 AppPrefs::recordingLimitChoices() const {
     QVariantList choices;
     for (const int choice : kRecordingLimitChoices) {
+        choices.append(choice);
+    }
+    return choices;
+}
+
+int
+AppPrefs::analogMaxGapMs() const {
+    return sane_analog_max_gap(m_settings.value(key_name(kRecordingAnalogMaxGapMs), kDefaultAnalogMaxGapMs));
+}
+
+void
+AppPrefs::setAnalogMaxGapMs(int ms) {
+    const int next = sane_analog_max_gap(ms);
+    if (!stored_int_differs(m_settings.value(key_name(kRecordingAnalogMaxGapMs), kDefaultAnalogMaxGapMs), next)) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordingAnalogMaxGapMs), next);
+    Q_EMIT analogMaxGapMsChanged();
+}
+
+QVariantList
+AppPrefs::analogMaxGapChoices() const {
+    QVariantList choices;
+    for (const int choice : kAnalogMaxGapChoices) {
         choices.append(choice);
     }
     return choices;

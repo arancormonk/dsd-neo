@@ -3921,6 +3921,83 @@ load_config_text(const char* ini, dsdneoUserConfig* cfg) {
     return load_rc;
 }
 
+/* Issue #756: [recording] analog_max_gap_ms loads, reaches opts->analog_record_max_gap_ms, and saves back, always
+   written; a [recording] without it is the 200 ms default (off). A value outside 0..10000, or not a whole number, is
+   refused with a warning and the value already loaded stays: never clamped. */
+static int
+test_recording_analog_max_gap_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg{};
+    if (load_config_text("[recording]\nanalog_max_gap_ms = 2000\n", &cfg) != 0 || !cfg.has_recording
+        || cfg.analog_max_gap_ms != 2000) {
+        DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms did not load (%d)\n", cfg.analog_max_gap_ms);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_record_max_gap_ms != 2000) {
+        DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms did not reach dsd_opts (%d)\n", opts.analog_record_max_gap_ms);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("analog_max_gap_ms saved", rendered, "analog_max_gap_ms = 2000\n");
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || reloaded.analog_max_gap_ms != 2000) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load analog_max_gap_ms back\n");
+        rc |= 1;
+    }
+
+    /* Left out of a present [recording]: the default, saved as itself. */
+    if (load_config_text("[recording]\nper_call_wav = true\n", &cfg) != 0 || cfg.analog_max_gap_ms != 200) {
+        DSD_FPRINTF(stderr, "FAIL: a [recording] without the key did not default it (%d)\n", cfg.analog_max_gap_ms);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_record_max_gap_ms != 200) {
+        DSD_FPRINTF(stderr, "FAIL: a [recording] without the key kept %d\n", opts.analog_record_max_gap_ms);
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("analog_max_gap_ms saved at the default", rendered, "analog_max_gap_ms = 200\n");
+
+    /* Both ends of the range load as given. */
+    for (int want : {0, 10000}) {
+        char ini[96];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nanalog_max_gap_ms = %d\n", want);
+        if (load_config_text(ini, &cfg) != 0 || cfg.analog_max_gap_ms != want) {
+            DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms = %d loaded as %d\n", want, cfg.analog_max_gap_ms);
+            rc |= 1;
+        }
+    }
+
+    /* Each refused value follows a valid one in the same section, which stays, with a warning naming the key. */
+    for (const char* value : {"-1", "10001", "2s", "1e3", "99999999999"}) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nanalog_max_gap_ms = 1500\nanalog_max_gap_ms = %s\n", value);
+        g_log_text[0] = '\0';
+        if (load_config_text(ini, &cfg) != 0 || cfg.analog_max_gap_ms != 1500) {
+            DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms = %s was not refused (%d)\n", value, cfg.analog_max_gap_ms);
+            rc |= 1;
+        }
+        if (!strstr(g_log_text, "analog_max_gap_ms")) {
+            DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms = %s refused without a warning (log: '%s')\n", value,
+                        g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 /*
  * Issue #525: [analog] nfm_bandwidth_hz rides INI -> cfg -> opts -> snapshot -> render. 0 in the
  * options is the default, not a request, so a save writes the key only for an explicit width -- an
@@ -5381,6 +5458,7 @@ main(void) {
     rc |= test_receive_boundary_waits_for_resume();
     rc |= test_rtl_bw_khz_72_round_trip();
     rc |= test_recording_unknown_talkgroups_only_roundtrip();
+    rc |= test_recording_analog_max_gap_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();

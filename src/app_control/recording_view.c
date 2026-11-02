@@ -29,6 +29,10 @@ static int g_resolved_outcome;
 static int32_t g_resolved_id;
 static dsd_app_recording_view g_pub;
 static uint64_t g_pub_resolved;
+/* The latest recording switch admitted (one that changes what records), by its place in g_submitted: still in the
+   queue, or not yet shown by a published view, while that place is past g_pub_resolved. 0: none admitted. */
+static uint64_t g_switch_submitted;
+static int32_t g_switch_id;
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. */
 static void
@@ -51,7 +55,13 @@ int
 dsd_app_recording_command_tracked(int cmd_id) {
     return cmd_id == DSD_APP_CMD_WAV_START || cmd_id == DSD_APP_CMD_WAV_STOP || cmd_id == DSD_APP_CMD_WAV_TOGGLE
            || cmd_id == DSD_APP_CMD_WAV_STATIC_OPEN || cmd_id == DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET
-           || cmd_id == DSD_APP_CMD_CONFIG_APPLY;
+           || cmd_id == DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET || cmd_id == DSD_APP_CMD_CONFIG_APPLY;
+}
+
+/* Whether a tracked command changes what records; the unknown-only switch and the NFM max gap only set values. */
+static int
+recording_switch(int cmd_id) {
+    return cmd_id != DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET && cmd_id != DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET;
 }
 
 void
@@ -63,6 +73,10 @@ dsd_app_recording_command_submitted(int cmd_id) {
     dsd_mutex_lock(&g_mu);
     g_submitted++;
     g_submitted_id = cmd_id;
+    if (recording_switch(cmd_id)) {
+        g_switch_submitted = g_submitted;
+        g_switch_id = cmd_id;
+    }
     dsd_mutex_unlock(&g_mu);
 }
 
@@ -112,6 +126,7 @@ dsd_app_recording_view_publish(const dsd_opts* opts) {
         view.slot_files = (uint8_t)((opts->wav_out_f != NULL ? 1U : 0U) | (opts->wav_out_fR != NULL ? 2U : 0U));
     }
     view.unknown_only = opts->record_unknown_only ? 1U : 0U;
+    view.analog_max_gap_ms = opts->analog_record_max_gap_ms;
     view.journal_named = opts->wav_journal_file[0] != '\0' ? 1U : 0U;
     switch (dsd_wav_journal_state_get()) {
         case DSD_WAV_JOURNAL_ON: view.journal_state = DSD_APP_RECORDING_JOURNAL_ON; break;
@@ -146,6 +161,7 @@ dsd_app_recording_view_get(dsd_app_recording_view* out) {
         out->command_state = DSD_APP_RECORDING_COMMAND_PENDING;
         out->command_id = g_submitted_id;
     }
+    out->pending_switch_id = g_switch_submitted > g_pub_resolved ? g_switch_id : 0;
     dsd_mutex_unlock(&g_mu);
     return out->published ? 1 : 0;
 }

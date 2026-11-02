@@ -28,9 +28,11 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -572,6 +574,48 @@ test_view_reports_pending_and_outcome(void) {
     submit(DSD_APP_CMD_WAV_STOP);
     (void)drain(&r);
     rc |= expect_int("stop applied in the next session", view_now().command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rig_close(&r);
+    return rc;
+}
+
+/* The view names the latest recording switch still in the queue apart from the latest recording command: a setting
+   sent behind a start names itself as the command, while the start is what records once the queue applies it. A switch
+   applied, refused or dropped is no longer pending. */
+static int
+test_view_names_the_pending_switch(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_view_switch");
+    rc |= expect_int("nothing pending at first", view_now().pending_switch_id, 0);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 2000);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("the setting is the latest command", v.command_id, DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET);
+    rc |= expect_int("the start is the pending switch", v.pending_switch_id, DSD_APP_CMD_WAV_START);
+    rc |= expect_int("not recording yet", v.per_call, 0);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("an applied start is no longer pending", v.pending_switch_id, 0);
+    rc |= expect_int("and records", v.per_call, 1);
+
+    submit(DSD_APP_CMD_WAV_STOP);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0);
+    v = view_now();
+    rc |= expect_int("a stop behind which a setting went pends", v.pending_switch_id, DSD_APP_CMD_WAV_STOP);
+    rc |= expect_int("while the view still records", v.per_call, 1);
+    (void)drain(&r);
+    rc |= expect_int("an applied stop is no longer pending", view_now().pending_switch_id, 0);
+
+    submit(DSD_APP_CMD_WAV_START);
+    submit(DSD_APP_CMD_WAV_STOP);
+    rc |= expect_int("the latest of two switches pends", view_now().pending_switch_id, DSD_APP_CMD_WAV_STOP);
+    dsd_app_frontend_runtime_stop();
+    rc |= expect_int("switches dropped with the session are not pending", view_now().pending_switch_id, 0);
+    dsd_app_frontend_runtime_start(r.opts, r.state);
+
+    submit(DSD_APP_CMD_WAV_TOGGLE);
+    rc |= expect_int("a toggle is a switch", view_now().pending_switch_id, DSD_APP_CMD_WAV_TOGGLE);
+    (void)drain(&r);
+    rc |= expect_int("applied, it is not pending", view_now().pending_switch_id, 0);
     rig_close(&r);
     return rc;
 }
@@ -1314,6 +1358,266 @@ test_stop_publishes_the_nfm_recording_in_its_folder(void) {
     return rc;
 }
 
+/* Issue #756: @p blocks blocks after the NFM carrier's hangover, which hold the call (the max gap is on). */
+static void
+nfm_hold(rig* r, int blocks) {
+    static const float closed[960] = {0};
+    r->state->analog_rx.carrier_open = 0;
+    for (int i = 0; i < blocks; i++) {
+        dsd_engine_analog_call_block(r->opts, r->state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+    }
+    r->state->analog_rx.carrier_open = 1;
+}
+
+static uint64_t
+nfm_epoch(const rig* r) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE ? call.epoch : 0U;
+}
+
+/* The one NFM recording published in @p dir: its frames, then removed. -1 when there is not exactly one. */
+static long long
+take_nfm_frames(const char* dir) {
+    const dir_count c = count_dir(dir);
+    if (c.published != 1 || strstr(c.published_name, "_NFM") == NULL) {
+        return -1;
+    }
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, dir, c.published_name) != 0) {
+        return -1;
+    }
+    const long long frames = wav_frames(path);
+    return remove(path) == 0 ? frames : -1;
+}
+
+/* The slot's last call: ended, with its row ending at its last block's media stamp (@p last_m). */
+static int
+nfm_ended_at(const rig* r, double last_m) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED && last_m > 0.0
+           && fabs(call.ended_m - last_m) < 1e-9;
+}
+
+static double
+nfm_media_m(const rig* r) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(r->state, 0, &call) > 0 ? call.media_updated_m : 0.0;
+}
+
+/* The NFM hold is a recording setting (issue #756): a stop while a call is held publishes what was recorded, and the
+   call ends at its last audio at the next block, with nothing written for the pause; a start after that begins a new
+   call, its recording with no silence for a pause it did not span. */
+static int
+test_stop_and_start_while_nfm_held(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_held");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_max_gap_ms = 1000;
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = nfm_epoch(&r);
+    const double last_m = nfm_media_m(&r);
+    nfm_hold(&r, 5);
+    rc |= expect_true("held: the call waits through the pause", epoch != 0U && nfm_epoch(&r) == epoch);
+    submit(DSD_APP_CMD_WAV_STOP);
+    (void)drain(&r);
+    rc |= expect_int("held: the stop publishes the first burst", take_nfm_frames(r.dir), 960);
+    nfm_hold(&r, 1);
+    rc |= expect_true("held: the next block ends the call", nfm_epoch(&r) == 0U);
+    rc |= expect_true("held: at its last audio", nfm_ended_at(&r, last_m));
+    nfm_hold(&r, 2);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_hold(&r, 2);
+    nfm_block(r.opts, r.state);
+    const uint64_t next = nfm_epoch(&r);
+    rc |= expect_true("held: the start's block begins a new call", next != 0U && next != epoch);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_int("held: the new recording has no leading silence", take_nfm_frames(r.dir), 960);
+    rig_close(&r);
+    return rc;
+}
+
+/* Per-call recording off, the hold holds nothing: the block after the hangover ends the call at its last audio, as
+   with the hold off, and no later reception joins it. */
+static int
+test_nfm_hold_off_without_recording(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_nfm_no_hold");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_max_gap_ms = 1000;
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = nfm_epoch(&r);
+    const double last_m = nfm_media_m(&r);
+    nfm_hold(&r, 1);
+    rc |= expect_true("unrecorded: the closed carrier ends the call", epoch != 0U && nfm_epoch(&r) == 0U);
+    rc |= expect_true("unrecorded: at its last audio", nfm_ended_at(&r, last_m));
+    nfm_block(r.opts, r.state);
+    rc |= expect_true("unrecorded: a new call", nfm_epoch(&r) != 0U && nfm_epoch(&r) != epoch);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    rc |= expect_int("unrecorded: no recording", count_dir(r.dir).published, 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* A folder change while an NFM call is held publishes the recording in its own folder, and the resumed block opens the
+   next one in the new folder without the pause; a folder change that fails keeps the file, and the pause is written
+   into it. Either way the call goes on. */
+static int
+test_folder_change_while_nfm_held(void) {
+    int rc = 0;
+    for (int fail = 0; fail < 2; fail++) {
+        rig r;
+        char other[DSD_TEST_PATH_MAX];
+        char tag[96];
+        rc |= rig_open(&r, "dsdneo_rec_nfm_held_dir");
+        rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_nfm_held_b") != NULL);
+        setup_nfm(r.opts, r.state);
+        r.opts->analog_record_max_gap_ms = 1000;
+        submit(DSD_APP_CMD_WAV_START);
+        (void)drain(&r);
+        nfm_block(r.opts, r.state);
+        const uint64_t epoch = nfm_epoch(&r);
+        nfm_hold(&r, 5);
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_recording = 1;
+        cfg.per_call_wav = 1;
+        DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", other);
+        /* A [recording] applies its max gap too, so the config keeps the session's: only the folder changes. */
+        cfg.analog_max_gap_ms = 1000;
+        dsd_wav_test_fail_opens_after(fail ? 0 : -1);
+        (void)dsd_app_command_apply_config(&cfg);
+        (void)drain(&r);
+        dsd_wav_test_fail_opens_after(-1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the folder", fail ? "failed" : "moved");
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, fail ? r.dir : other) == 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the old folder", fail ? "failed" : "moved");
+        rc |= expect_int(tag, count_dir(r.dir).published, fail ? 0 : 1);
+        nfm_hold(&r, 2);
+        nfm_block(r.opts, r.state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the call goes on", fail ? "failed" : "moved");
+        rc |= expect_true(tag, epoch != 0U && nfm_epoch(&r) == epoch);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the kept recording holds the pause", fail ? "failed" : "moved");
+        rc |= expect_int(tag, take_nfm_frames(r.dir), fail ? 960 + 7 * 960 + 960 : 960);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the new folder's recording", fail ? "failed" : "moved");
+        rc |= expect_int(tag, fail ? count_dir(other).published : take_nfm_frames(other), fail ? 0 : 960);
+        rig_close(&r);
+        remove_folder(other);
+    }
+    return rc;
+}
+
+static int
+set_max_gap(rig* r, int32_t ms) {
+    const int queued = dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, ms);
+    (void)drain(r);
+    return queued;
+}
+
+/* The NFM max gap command (issue #756) is a recording command: pending until the view that shows it applied; a value
+   outside 0..10000 fails, says why and changes nothing. */
+static int
+test_max_gap_set_applies_and_reports(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_max_gap");
+    if (rc != 0) {
+        rig_close(&r);
+        return rc;
+    }
+    rc |= expect_int("default off", r.opts->analog_record_max_gap_ms, 200);
+    rc |= expect_int("max gap queued", dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 2000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("max gap pends", v.command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    rc |= expect_int("pending max gap named", v.command_id, DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET);
+    rc |= expect_int("not applied before the drain", r.opts->analog_record_max_gap_ms, 200);
+    rc |= expect_int("max gap drained", drain(&r), 1);
+    v = view_now();
+    rc |= expect_int("max gap applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the max gap is set", r.opts->analog_record_max_gap_ms, 2000);
+    rc |= expect_int("the view shows it", v.analog_max_gap_ms, 2000);
+    rc |= expect_true("the toast names the value", strstr(r.state->ui_msg, "2000 ms") != NULL);
+    rc |= expect_int("recording itself stays off", v.mode, DSD_APP_RECORDING_MODE_OFF);
+
+    static const int32_t k_refused[] = {-1, 10001, INT32_MIN, INT32_MAX};
+    for (size_t i = 0; i < sizeof k_refused / sizeof k_refused[0]; i++) {
+        char tag[64];
+        r.state->ui_msg[0] = '\0';
+        (void)set_max_gap(&r, k_refused[i]);
+        v = view_now();
+        DSD_SNPRINTF(tag, sizeof tag, "%ld fails", (long)k_refused[i]);
+        rc |= expect_int(tag, v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+        DSD_SNPRINTF(tag, sizeof tag, "%ld changes nothing", (long)k_refused[i]);
+        rc |= expect_int(tag, r.opts->analog_record_max_gap_ms, 2000);
+        DSD_SNPRINTF(tag, sizeof tag, "%ld says why", (long)k_refused[i]);
+        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused") != NULL && strstr(r.state->ui_msg, "10000") != NULL);
+    }
+    rc |= expect_int("the view still shows it", view_now().analog_max_gap_ms, 2000);
+
+    /* The range's ends apply; 200 or less is off, and stored as given. */
+    (void)set_max_gap(&r, 10000);
+    rc |= expect_int("10000 applies", r.opts->analog_record_max_gap_ms, 10000);
+    (void)set_max_gap(&r, 150);
+    rc |= expect_int("150 is stored as given", r.opts->analog_record_max_gap_ms, 150);
+    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "Off") != NULL);
+    (void)set_max_gap(&r, 0);
+    v = view_now();
+    rc |= expect_int("0 applies", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("0 is stored", r.opts->analog_record_max_gap_ms, 0);
+    rc |= expect_int("the view shows 0", v.analog_max_gap_ms, 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* D10: the command only stores the value; the held NFM call takes it at its next block or tick. Raising it keeps the
+   held call going past the old limit; lowering it below the pause so far, or turning it off, ends the call at its last
+   audio, with no silence for that pause. */
+static int
+test_max_gap_set_while_nfm_held(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_max_gap_held");
+    setup_nfm(r.opts, r.state);
+    rc |= expect_int("1000 ms queued", set_max_gap(&r, 1000), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_block(r.opts, r.state);
+    const uint64_t epoch = nfm_epoch(&r);
+    nfm_hold(&r, 5); /* 300 ms: the 200 ms hangover and five 20 ms blocks */
+    rc |= expect_int("raised while held", set_max_gap(&r, 2000), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_true("the raise keeps the call", epoch != 0U && nfm_epoch(&r) == epoch);
+    nfm_hold(&r, 50); /* 1300 ms: past the old limit */
+    rc |= expect_true("held past the old limit", nfm_epoch(&r) == epoch);
+    nfm_block(r.opts, r.state);
+    rc |= expect_true("the call resumes", nfm_epoch(&r) == epoch);
+    rc |= expect_int("nothing published while the call goes on", count_dir(r.dir).published, 0);
+
+    nfm_hold(&r, 5);
+    rc |= expect_int("lowered while held", set_max_gap(&r, 250), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_true("the command leaves the call to the engine", nfm_epoch(&r) == epoch);
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    rc |= expect_true("the tick ends it", nfm_epoch(&r) == 0U);
+    rc |= expect_int("one recording: both bursts and the joined pause only", take_nfm_frames(r.dir),
+                     960LL + 55LL * 960LL + 960LL);
+
+    nfm_block(r.opts, r.state);
+    const uint64_t next = nfm_epoch(&r);
+    rc |= expect_true("a new call", next != 0U && next != epoch);
+    nfm_hold(&r, 2);
+    rc |= expect_int("off while held", set_max_gap(&r, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_true("still held until the next block", nfm_epoch(&r) == next);
+    nfm_hold(&r, 1);
+    rc |= expect_true("the next block ends it", nfm_epoch(&r) == 0U);
+    rc |= expect_int("its recording has no silence", take_nfm_frames(r.dir), 960);
+    rig_close(&r);
+    return rc;
+}
+
 /* A config whose [recording] turns per-call recording off closes the slot files with their publication. Main changed
    the mode alone: the files stayed open and rotating, and the next start overwrote their handles. */
 static int
@@ -1438,6 +1742,7 @@ test_config_recording_reports_its_outcome(void) {
     DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
     rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("the config's recording pends", view_now().command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    rc |= expect_int("as a switch", view_now().pending_switch_id, DSD_APP_CMD_CONFIG_APPLY);
     (void)drain(&r);
     dsd_app_recording_view v = view_now();
     rc |= expect_int("the config's recording applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
@@ -1552,9 +1857,11 @@ test_unknown_only_set_refused_during_signal_search(void) {
     rc |= expect_int("the switch stays off", r.opts->record_unknown_only, 0);
     rc |= expect_true("the search's notice", strstr(r.state->ui_msg, "Stop Signal search") != NULL);
     submit(DSD_APP_CMD_WAV_START);
+    rc |= expect_int("the start pends", view_now().pending_switch_id, DSD_APP_CMD_WAV_START);
     (void)drain(&r);
     v = view_now();
     rc |= expect_int("a WAV start is refused the same way", v.command_state, DSD_APP_RECORDING_COMMAND_REFUSED);
+    rc |= expect_int("a refused start is no longer pending", v.pending_switch_id, 0);
     rc |= expect_int("and records nothing", r.opts->dmr_stereo_wav, 0);
     rc |= expect_int("nothing opened", count_dir(r.dir).files, 0);
     g_signal_search_active = 0;
@@ -1580,6 +1887,7 @@ main(void) {
     rc |= test_stop_publishes_the_nfm_recording_at_once();
     rc |= test_toggle_follows_the_mode();
     rc |= test_view_reports_pending_and_outcome();
+    rc |= test_view_names_the_pending_switch();
     for (int writer = 0; writer < WRITER_COUNT; writer++) {
         rc |= test_short_write_latches_the_segment(writer);
         rc |= test_close_failure_keeps_the_temp_file(writer);
@@ -1599,6 +1907,11 @@ main(void) {
     rc |= test_config_changing_only_the_raw_wav_leaves_a_waiting_slot();
     rc |= test_config_delete_after_upload_keeps_its_value_under_a_journal();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
+    rc |= test_stop_and_start_while_nfm_held();
+    rc |= test_nfm_hold_off_without_recording();
+    rc |= test_folder_change_while_nfm_held();
+    rc |= test_max_gap_set_applies_and_reports();
+    rc |= test_max_gap_set_while_nfm_held();
     rc |= test_full_segment_table_is_reported_once_per_run();
     rc |= test_recording_transition_table();
     rc |= test_config_per_call_failures_change_nothing();

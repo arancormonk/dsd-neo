@@ -223,6 +223,26 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
     return 1;
 }
 
+/* The NFM max gap (issue #756) outside the schema's range is an error rather than the schema walk's warning: the loader
+   refuses it and keeps the value it had, as it does an analog width. Text that is no integer is left to the schema
+   walk's integer check, which is an error already. */
+static int
+validate_analog_max_gap_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                              int line_num, const char* diag_section, const char* diag_key) {
+    int ms = 0;
+    if (strcmp(entry->section, "recording") != 0 || strcmp(entry->key, "analog_max_gap_ms") != 0
+        || user_config_parse_int_value(val, &ms) != 0) {
+        return 0;
+    }
+    if (ms < entry->min_val || ms > entry->max_val) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Value %d is out of range [%d, %d] and is refused, not clamped", ms,
+                     entry->min_val, entry->max_val);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
@@ -231,7 +251,8 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
     }
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)
+        || validate_analog_max_gap_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "receive") == 0) {

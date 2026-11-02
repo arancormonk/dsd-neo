@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdio.h>
@@ -7609,6 +7610,244 @@ test_am_bandwidth_option(void) {
     return test_rc;
 }
 
+/* Issue #756: --analog-record-max-gap-ms takes 0 to 10000 ms in both spellings and refuses anything else, never
+ * clamping; the last one given wins. Left out, the hold stays off at its 200 ms default. */
+static int
+test_analog_record_max_gap_option(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        int want_rc;
+        int want_ms;
+        const char* want_text;
+    } cases[] = {
+        {"-P", NULL, NULL, DSD_PARSE_CONTINUE, 200, NULL},
+        {"--analog-record-max-gap-ms", "2000", NULL, DSD_PARSE_CONTINUE, 2000, NULL},
+        {"--analog-record-max-gap-ms=500", NULL, NULL, DSD_PARSE_CONTINUE, 500, NULL},
+        {"--analog-record-max-gap-ms", "0", NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {"--analog-record-max-gap-ms=10000", NULL, NULL, DSD_PARSE_CONTINUE, 10000, NULL},
+        {"--analog-record-max-gap-ms", "300", "--analog-record-max-gap-ms=900", DSD_PARSE_CONTINUE, 900, NULL},
+        {"--analog-record-max-gap-ms=900", "--analog-record-max-gap-ms", "300", DSD_PARSE_CONTINUE, 300, NULL},
+        {"--analog-record-max-gap-ms", "-1", NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"-1\" (expected 0..10000)"},
+        {"--analog-record-max-gap-ms=10001", NULL, NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"10001\" (expected 0..10000)"},
+        {"--analog-record-max-gap-ms", "2s", NULL, DSD_PARSE_ERROR, 200,
+         "Invalid --analog-record-max-gap-ms value \"2s\""},
+        {"--analog-record-max-gap-ms=", NULL, NULL, DSD_PARSE_ERROR, 200, "Invalid --analog-record-max-gap-ms value"},
+        {"--analog-record-max-gap-ms", NULL, NULL, DSD_PARSE_ERROR, 200,
+         "--analog-record-max-gap-ms requires a millisecond value"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->analog_record_max_gap_ms != cases[i].want_ms || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s: rc=%d gap=%d exit_rc=%d\n%s\n", cases[i].a, cases[i].b ? cases[i].b : "",
+                        cases[i].c ? cases[i].c : "", run.rc, run.opts->analog_record_max_gap_ms, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* What -h prints, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it. */
+static int
+help_text(char* out, size_t out_size) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_help");
+    if (fd < 0) {
+        return -1;
+    }
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        return -1;
+    }
+    dsd_close(fd);
+    const char* const args[] = {"dsd-neo", "-h", NULL};
+    am_cli_run run;
+    const int parsed = am_cli_parse(args, 0, &run);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    if (parsed == 0) {
+        am_cli_free(&run);
+    }
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    return (parsed == 0 && run.rc == DSD_PARSE_ONE_SHOT) ? read_rc : -1;
+}
+
+/* Issue #756 (B3): -h, which is also the man page, says -7 works before or after -P (true since issue #708), never the
+ * old "Use Before the -P option!", and lists the NFM max gap in the -P group. */
+static int
+test_help_describes_recording_options(void) {
+    static char text[65536];
+    if (help_text(text, sizeof text) != 0) {
+        DSD_FPRINTF(stderr, "could not read the -h text\n");
+        return 1;
+    }
+    const char* const max_gap = strstr(text, "--analog-record-max-gap-ms <ms>");
+    const char* const per_call = strstr(text, "  -P ");
+    if (strstr(text, "Use Before the -P option") || !strstr(text, "(Works before or after -P.)") || !max_gap
+        || !per_call || max_gap < per_call || !strstr(max_gap, "200 or less is off")) {
+        DSD_FPRINTF(stderr, "-h recording text is wrong:\n%s\n", text);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #756 (B4): a value-taking option given last, its value forgotten, is refused with exit code 1. These used to
+ * drop it without a word, so `-P --wav-journal` recorded with no journal and exited 0. */
+static int
+test_value_options_refuse_a_missing_value(void) {
+    static const char* const options[] = {
+        "--wav-journal",
+        "--rdio-mode",
+        "--rdio-system-id",
+        "--rdio-api-url",
+        "--rdio-api-key",
+        "--rdio-upload-timeout-ms",
+        "--rdio-upload-retries",
+        "--frame-log",
+        "--p25-sm-log",
+        "--input-volume",
+        "--input-level-warn-db",
+        "--p25-vc-grace",
+        "--p25-min-follow-dwell",
+        "--p25-grant-voice-timeout",
+        "--p25-mac-hold",
+        "--p25-cc-grace",
+        "--p25-force-release-extra",
+        "--p25-force-release-margin",
+        "--p25-p1-err-hold-pct",
+        "--p25-p1-err-hold-sec",
+        "--calc-lcn",
+        "--calc-step",
+        "--calc-cc-freq",
+        "--calc-cc-lcn",
+        "--calc-start-lcn",
+        "--auto-ppm-snr",
+    };
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "%s requires a value", options[i]);
+        const char* const args[] = {"dsd-neo", "-P", options[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1 || !strstr(run.err, want)) {
+            DSD_FPRINTF(stderr, "-P %s with no value: rc=%d exit_rc=%d\n%s\n", options[i], run.rc, run.exit_rc,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* What each option of test_wide_values_clamp_before_narrowing() sets. */
+static int
+wide_input_volume(const dsd_opts* opts) {
+    return opts->input_volume_multiplier;
+}
+
+static int
+wide_rdio_system_id(const dsd_opts* opts) {
+    return opts->rdio_system_id;
+}
+
+static int
+wide_rdio_timeout(const dsd_opts* opts) {
+    return opts->rdio_upload_timeout_ms;
+}
+
+static int
+wide_rdio_retries(const dsd_opts* opts) {
+    return opts->rdio_upload_retries;
+}
+
+static int
+wide_slot_preference(const dsd_opts* opts) {
+    return opts->slot_preference;
+}
+
+static int
+wide_voice_slots(const dsd_opts* opts) {
+    return (opts->slot1_on ? 1 : 0) | (opts->slot2_on ? 2 : 0);
+}
+
+static int
+wide_sample_rate(const dsd_opts* opts) {
+    return opts->wav_sample_rate;
+}
+
+/* Issue #756 (B5): these options clamp to their range in the parsed width before the value becomes an int, so a value
+ * past int's range clamps to the nearer bound instead of wrapping to an unrelated accepted value (each case wraps to
+ * one on a 64-bit long). Where long is 32 bits (Windows), the values are past long's range too and refused as invalid,
+ * as before. */
+static int
+test_wide_values_clamp_before_narrowing(void) {
+    static const struct {
+        const char* option;
+        const char* value;
+        int (*get)(const dsd_opts*);
+        int want;
+    } cases[] = {
+        {"--input-volume", "4294967300", wide_input_volume, 16},
+        {"--input-volume", "-4294967292", wide_input_volume, 1},
+        {"--rdio-system-id", "4294967301", wide_rdio_system_id, 65535},
+        {"--rdio-system-id", "-4294967291", wide_rdio_system_id, 0},
+        {"--rdio-upload-timeout-ms", "4294967796", wide_rdio_timeout, 120000},
+        {"--rdio-upload-timeout-ms", "-4294966796", wide_rdio_timeout, 100},
+        {"--rdio-upload-retries", "4294967299", wide_rdio_retries, 10},
+        {"--rdio-upload-retries", "-4294967293", wide_rdio_retries, 0},
+        {"-z", "4294967297", wide_slot_preference, 2},
+        {"-z", "-4294967295", wide_slot_preference, 0},
+        {"-V", "4294967297", wide_voice_slots, 3},
+        {"-V", "-4294967295", wide_voice_slots, 0},
+        {"-s", "4294975296", wide_sample_rate, 192000},
+        {"-s", "-4294919296", wide_sample_rate, 8000},
+    };
+
+    const int long_is_wide = LONG_MAX > INT_MAX;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].option, cases[i].value, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int got = cases[i].get(run.opts);
+        const int ok = long_is_wide ? (run.rc == DSD_PARSE_CONTINUE && got == cases[i].want)
+                                    : (run.rc == DSD_PARSE_ERROR && run.exit_rc == 1);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "%s %s (long %s): rc=%d exit_rc=%d value=%d, want %d\n%s\n", cases[i].option,
+                        cases[i].value, long_is_wide ? "64-bit" : "32-bit", run.rc, run.exit_rc, got, cases[i].want,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* [mode] decode = am from a loaded config on a PCM input: the same reason, logged, and the session monitors with the
  * Analog preset instead. Autosave is off for the session, so the saved decode = am stays as it was, and a toast says
  * so. On an IQ input the config's AM stands. */
@@ -11316,6 +11555,10 @@ main(void) {
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();
+    rc |= test_analog_record_max_gap_option();
+    rc |= test_help_describes_recording_options();
+    rc |= test_value_options_refuse_a_missing_value();
+    rc |= test_wide_values_clamp_before_narrowing();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

@@ -747,6 +747,13 @@ cb_scan_voice_hold(void* v, int ok, int ms) {
 }
 
 void
+cb_analog_record_max_gap(void* v, int ok, int ms) {
+    (void)v;
+    (void)ok;
+    (void)ms;
+}
+
+void
 cb_import_chan(void* v, const char* p) {
     (void)v;
     (void)p;
@@ -1120,6 +1127,14 @@ test_simple_commands_and_prompts(void) {
     reset_capture();
     act_slot_pref(&ctx);
     rc |= expect_int("slot pref initial", g_prompt.initial_int, 2);
+
+    /* The NFM max gap (issue #756): the prompt opens on the value in force, as stored. */
+    reset_capture();
+    opts.analog_record_max_gap_ms = 2000;
+    act_analog_record_max_gap(&ctx);
+    rc |= expect_str("nfm pause hold prompt", g_prompt.title, "NFM pause hold (ms, 0 = off)");
+    rc |= expect_int("nfm pause hold initial", g_prompt.initial_int, 2000);
+    rc |= expect_int("nfm pause hold callback", g_prompt.int_cb == cb_analog_record_max_gap, 1);
 
     return rc;
 }
