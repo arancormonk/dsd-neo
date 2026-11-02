@@ -100,6 +100,11 @@ static int g_sa_shown_valid = 0;                /* guarded by g_feed_mu; 0 until
 static dsd_app_scan_avoid_summary g_sa_built;
 static int g_sa_built_valid = 0;
 
+#ifdef DSD_NEO_TEST_HOOKS
+static void (*g_sa_test_page_pinned)(void) = NULL; /* guarded by g_feed_mu */
+static int g_sa_test_block_alloc_failures = 0;     /* decode thread */
+#endif
+
 static void
 ensure_feed_mu(void) {
     if (atomic_load(&g_feed_mu_state) == 2) {
@@ -177,6 +182,32 @@ dsd_api_feed_latest(const char* what, dsd_json_buf* out) {
  * Scan avoids (issue #672)
  *============================================================================*/
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_api_feed_test_on_page_pinned(void (*hook)(void)) {
+    ensure_feed_mu();
+    dsd_mutex_lock(&g_feed_mu);
+    g_sa_test_page_pinned = hook;
+    dsd_mutex_unlock(&g_feed_mu);
+}
+
+void
+dsd_api_feed_test_fail_block_allocs(int count) {
+    g_sa_test_block_alloc_failures = count;
+}
+#endif
+
+static api_scan_avoid_block*
+scan_avoid_block_new(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_sa_test_block_alloc_failures > 0) {
+        g_sa_test_block_alloc_failures--;
+        return NULL;
+    }
+#endif
+    return (api_scan_avoid_block*)calloc(1U, sizeof(api_scan_avoid_block));
+}
+
 static void
 scan_avoid_block_release(api_scan_avoid_block* block) {
     if (block != NULL && atomic_fetch_add(&block->refs, -1) == 1) {
@@ -223,7 +254,7 @@ scan_avoids_refresh(const dsd_state* state) {
     if (g_sa_built_valid && dsd_app_scan_avoid_summary_same_key(&seen, &g_sa_built)) {
         return;
     }
-    api_scan_avoid_block* block = (api_scan_avoid_block*)calloc(1U, sizeof(*block));
+    api_scan_avoid_block* block = scan_avoid_block_new();
     if (block != NULL && dsd_app_scan_avoid_raw_collect(g_live_opts, state, &block->raw) == 0) {
         atomic_store(&block->refs, 1);
         g_sa_built = block->raw.summary;
@@ -299,7 +330,15 @@ dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t limit)
     if (block != NULL) {
         (void)atomic_fetch_add(&block->refs, 1);
     }
+#ifdef DSD_NEO_TEST_HOOKS
+    void (*pinned)(void) = g_sa_test_page_pinned;
+#endif
     dsd_mutex_unlock(&g_feed_mu);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (pinned != NULL) {
+        pinned();
+    }
+#endif
     if (!valid) {
         (void)dsd_json_value_null(w);
         scan_avoid_block_release(block);

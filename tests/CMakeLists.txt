@@ -21836,6 +21836,35 @@ if(DSD_ENABLE_API)
         )
     endif()
     set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
+
+    # The feed built with its test hooks, against stand-ins for the server: a page
+    # reader held while the scan avoid list is swapped, and failed allocations.
+    add_executable(
+        dsd-neo_test_api_feed
+        api/test_feed.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_feed.c
+        ${PROJECT_SOURCE_DIR}/src/api/json.c
+    )
+    target_include_directories(
+        dsd-neo_test_api_feed
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_definitions(dsd-neo_test_api_feed PRIVATE DSD_NEO_TEST_HOOKS)
+    target_compile_options(
+        dsd-neo_test_api_feed
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    set(_dsd_neo_api_feed_test_deps ${_dsd_neo_api_test_deps})
+    list(REMOVE_ITEM _dsd_neo_api_feed_test_deps dsd-neo_api)
+    target_link_libraries(
+        dsd-neo_test_api_feed
+        PRIVATE ${_dsd_neo_api_feed_test_deps}
+    )
+    add_test(NAME API_FEED COMMAND dsd-neo_test_api_feed)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(dsd-neo_test_api_feed PRIVATE "LINKER:--as-needed")
+    endif()
+    unset(_dsd_neo_api_feed_test_deps)
     unset(_dsd_neo_api_test_deps)
     unset(_dsd_neo_api_ieee_option)
 endif()

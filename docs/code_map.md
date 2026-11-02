@@ -4346,7 +4346,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   clients and nothing reaches a freed server. The CLI stops it after the frontend runtime, whose close cancels the
   commands still queued, so their cancelled results are among those sent. A connection refused at the client limit
   is told `busy` and lingers (bounded, without blocking the accept thread) so the reply is not lost to a reset
-- Tests: `API_JSON`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`, `API_SERVER` (`tests/api/`)
+- Tests: `API_JSON`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`, `API_SERVER`, `API_FEED` (`tests/api/`). `API_FEED`
+  builds `api_feed.c` with `DSD_NEO_TEST_HOOKS` against stand-ins for the server: one hook parks a scan avoid page
+  reader after it pinned the list (a deterministic swap under a reader), another fails the feed's block allocation
 - Build files: `src/api/CMakeLists.txt`
 
 ## DSP

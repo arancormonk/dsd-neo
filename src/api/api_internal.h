@@ -104,6 +104,14 @@ enum { DSD_API_SCAN_AVOIDS_PAGE_MAX = 64 };
  */
 void dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t limit);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** Call @p hook (NULL: none) in dsd_api_feed_scan_avoids_page() after it pinned the list and released the feed lock,
+    before it reads the list, so a test can swap the list under a reader. */
+void dsd_api_feed_test_on_page_pinned(void (*hook)(void));
+/** Fail the feed's next @p count scan avoid block allocations (decode thread). */
+void dsd_api_feed_test_fail_block_allocs(int count);
+#endif
+
 /* ---- commands ---- */
 
 /**
