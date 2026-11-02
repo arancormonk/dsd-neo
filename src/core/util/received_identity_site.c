@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "received_identity_t3.h"
+
 /* The site parts of each family: everything a carrier's system and site send, without the moment's parts (access
    code, rest and free channels, RAS, vendor, control channel and its EDACS LCN). */
 #define SITE_P25 (DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA)
@@ -183,12 +185,36 @@ site_p25_compatible(const dsd_received_identity* a, const dsd_received_identity*
              || site_differs(a, b, DSD_RXID_P25_LRA, a->p25_lra, b->p25_lra));
 }
 
+/* Whether Tier III system code @p code names other numbers than the raw @p y holds (its model and site, and its network
+   when valid). */
+static int
+site_t3_code_conflict(uint16_t code, const dsd_received_identity* y) {
+    if (!site_has(y, DSD_RXID_DMR_SITE) || y->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        return 0;
+    }
+    const rxid_t3_code c = rxid_t3_decode(code);
+    if (c.model != y->dmr_t3_model || c.site != y->dmr_site) {
+        return 1;
+    }
+    return site_has(y, DSD_RXID_DMR_NET) && c.net != y->dmr_net;
+}
+
+/* A system code on one side against the raw numbers on the other: two fragments that each hold only one of them would
+   otherwise merge into a record whose code and numbers disagree. */
+static int
+site_t3_code_cross_conflict(const dsd_received_identity* x, const dsd_received_identity* y) {
+    return site_has(x, DSD_RXID_DMR_T3_SYSCODE) && site_t3_code_conflict(x->dmr_t3_syscode, y);
+}
+
 /* Raw parts only: the site text follows -D and the brand is presentation. A snapshot's trunk is known (nonzero) only
    beside a part it qualifies. */
 static int
 site_dmr_compatible(const dsd_received_identity* a, const dsd_received_identity* b) {
     if (a->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE && b->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE
         && a->dmr_trunk != b->dmr_trunk) {
+        return 0;
+    }
+    if (site_t3_code_cross_conflict(a, b) || site_t3_code_cross_conflict(b, a)) {
         return 0;
     }
     return !(site_differs(a, b, DSD_RXID_DMR_T3_SYSCODE, a->dmr_t3_syscode, b->dmr_t3_syscode)
@@ -275,10 +301,31 @@ dsd_rxid_site_compatible(const dsd_received_identity* a, const dsd_received_iden
     return site_snapshots_compatible(&sa, &sb);
 }
 
-/* Where both snapshots carry a text part, the strcmp-smaller text (snapshots are NUL-terminated, zero past the NUL). */
+/* Whether @p text holds @p token as one whole " · "-separated part. */
+static int
+site_text_has_part(const char* text, const char* token) {
+    static const char sep[] = " \xC2\xB7 ";
+    const size_t sep_len = sizeof(sep) - 1U;
+    const size_t token_len = strlen(token);
+    for (const char* p = strstr(text, token); p != NULL; p = strstr(p + 1, token)) {
+        const int starts = p == text || ((size_t)(p - text) >= sep_len && memcmp(p - sep_len, sep, sep_len) == 0);
+        const char* const end = p + token_len;
+        const int ends = *end == '\0' || strncmp(end, sep, sep_len) == 0;
+        if (starts && ends) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Where both snapshots carry a text part (NUL-terminated, zero past the NUL), the one that names the network as
+   Capacity Max when only one does: the same raw site can be written before and after the network was recognised, and
+   the recognised text is the right one. Otherwise the strcmp-smaller text. Either way the pick is order-free. */
 static void
 site_union_text(char* dst, const char* a, const char* b, size_t capacity) {
-    if (strcmp(b, a) < 0) {
+    const int a_capmax = site_text_has_part(a, DSD_RXID_T3_CAPMAX_TOKEN);
+    const int b_capmax = site_text_has_part(b, DSD_RXID_T3_CAPMAX_TOKEN);
+    if (a_capmax != b_capmax ? b_capmax : strcmp(b, a) < 0) {
         DSD_MEMCPY(dst, b, capacity);
     }
 }
@@ -339,6 +386,25 @@ site_p25_consistent(const dsd_received_identity* a) {
     return !site_has(a, DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA) || site_has(a, DSD_RXID_P25_SYSID);
 }
 
+/* A Tier III record: a 14-bit system code, numbers within the widths their model gives, and a code beside numbers names
+   them. Any of the parts may be missing, and zero is a number. */
+static int
+site_t3_consistent(const dsd_received_identity* a) {
+    if (site_has(a, DSD_RXID_DMR_T3_SYSCODE) && a->dmr_t3_syscode > RXID_T3_SYSCODE_MAX) {
+        return 0;
+    }
+    if (!site_has(a, DSD_RXID_DMR_SITE)) {
+        return 1;
+    }
+    if (a->dmr_t3_model > 3U || a->dmr_site > rxid_t3_site_max(a->dmr_t3_model)) {
+        return 0;
+    }
+    if (site_has(a, DSD_RXID_DMR_NET) && a->dmr_net > rxid_t3_net_max(a->dmr_t3_model)) {
+        return 0;
+    }
+    return !site_t3_code_cross_conflict(a, a);
+}
+
 static int
 site_dmr_consistent(const dsd_received_identity* a) {
     if (!site_has(a, SITE_DMR)) {
@@ -357,11 +423,11 @@ site_dmr_consistent(const dsd_received_identity* a) {
     if (site_has(a, DSD_RXID_DMR_T3_SYSCODE) && a->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
         return 0;
     }
-    /* A model is Tier III's (0..3); a site of another trunking system is noted with model 0. */
-    if (!site_has(a, DSD_RXID_DMR_SITE)) {
-        return 1;
+    if (a->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        return site_t3_consistent(a);
     }
-    return a->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3 ? a->dmr_t3_model <= 3U : a->dmr_t3_model == 0U;
+    /* A model is Tier III's; a site of another trunking system is noted with model 0. */
+    return !site_has(a, DSD_RXID_DMR_SITE) || a->dmr_t3_model == 0U;
 }
 
 static int

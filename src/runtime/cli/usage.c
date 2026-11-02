@@ -366,6 +366,7 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -D <dec>      DMR Tier III location area (DMRLA) bits, 0-10: the top n Site ID bits\n");
     printf("                 are the area, shown as Site area.site (both counted from 1)\n");
     printf("                 (Default and 0: no split, the whole Site ID is shown)\n");
+    printf("                 Ignored on Motorola Capacity Max, which shows numbers as sent\n");
     printf("\n");
     printf("  -ma           Auto-select modulation optimizations\n");
     printf("  -mc           Only C4FM optimizations (locks demod; no auto override)\n");

@@ -263,8 +263,8 @@ test_snapshot_zero_bytes(void) {
     dsd_received_identity dirty;
     dsd_received_identity a;
     dsd_received_identity b;
-    dmr_id(&clean, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small \xC2\xB7 Net 12");
-    clean.dmr_t3_syscode = 0x0A3FU;
+    dmr_id(&clean, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small \xC2\xB7 Net 12");
+    clean.dmr_t3_syscode = 0x117EU;
     clean.valid |= DSD_RXID_DMR_T3_SYSCODE;
 
     DSD_MEMSET(&dirty, 0x5A, sizeof(dirty));
@@ -348,8 +348,8 @@ test_dmr_raw_compare_ignores_text(void) {
     dsd_received_identity a;
     dsd_received_identity b;
     dsd_received_identity u;
-    dmr_id(&a, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 301");
-    dmr_id(&b, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 38.5");
+    dmr_id(&a, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 31");
+    dmr_id(&b, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 4.7");
     set_text(b.dmr_brand, sizeof(b.dmr_brand), "Other");
     set_text(a.dmr_brand, sizeof(a.dmr_brand), "Brand");
     a.valid |= DSD_RXID_DMR_BRAND;
@@ -357,24 +357,29 @@ test_dmr_raw_compare_ignores_text(void) {
     expect_u("text differs, raw same", (unsigned long)compatible_both_orders("dmr text", &a, &b), 1U);
     dsd_rxid_site_union(&a, &b, &u);
     /* Equal raw parts, two texts: the strcmp-smaller one, whichever side it came from. */
-    expect_s("union text smaller", u.dmr_site_text, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 301");
+    expect_s("union text smaller", u.dmr_site_text, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 31");
     expect_s("union brand smaller", u.dmr_brand, "Brand");
 
-    b.dmr_site = 301U;
+    b.dmr_site = 29U;
     expect_u("site differs", (unsigned long)compatible_both_orders("dmr site", &a, &b), 0U);
-    b.dmr_site = 300U;
+    b.dmr_site = 30U;
     b.dmr_net = 12U;
     expect_u("net differs", (unsigned long)compatible_both_orders("dmr net", &a, &b), 0U);
     b.dmr_net = 11U;
     b.dmr_t3_model = 2U;
     expect_u("model differs", (unsigned long)compatible_both_orders("dmr model", &a, &b), 0U);
     b.dmr_t3_model = 1U;
-    a.dmr_t3_syscode = 0x0A3FU;
-    b.dmr_t3_syscode = 0x0A40U;
+    a.dmr_t3_syscode = 0x117EU;
     a.valid |= DSD_RXID_DMR_T3_SYSCODE;
+    /* Two system codes alone, so only the codes meet. */
+    dsd_received_identity code_a = a;
+    dsd_received_identity code_b = a;
+    code_a.valid = DSD_RXID_DMR_T3_SYSCODE;
+    code_b.valid = DSD_RXID_DMR_T3_SYSCODE;
+    code_b.dmr_t3_syscode = 0x117DU;
+    expect_u("syscode differs", (unsigned long)compatible_both_orders("dmr syscode", &code_a, &code_b), 0U);
+    b.dmr_t3_syscode = 0x117EU;
     b.valid |= DSD_RXID_DMR_T3_SYSCODE;
-    expect_u("syscode differs", (unsigned long)compatible_both_orders("dmr syscode", &a, &b), 0U);
-    b.dmr_t3_syscode = 0x0A3FU;
     expect_u("same site", (unsigned long)compatible_both_orders("dmr same", &a, &b), 1U);
 }
 
@@ -505,9 +510,9 @@ static void
 test_union_order_free(void) {
     dsd_received_identity a;
     dsd_received_identity b;
-    dmr_id(&a, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small \xC2\xB7 Site 301");
-    dmr_id(&b, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII Small \xC2\xB7 Site 38.5");
-    b.dmr_t3_syscode = 0x0A3FU;
+    dmr_id(&a, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small \xC2\xB7 Site 31");
+    dmr_id(&b, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII Small \xC2\xB7 Site 4.7");
+    b.dmr_t3_syscode = 0x117EU;
     b.valid |= DSD_RXID_DMR_T3_SYSCODE;
     a.access = 3U;
     a.valid |= DSD_RXID_ACCESS;
@@ -648,7 +653,7 @@ test_consistent_rejects_ranges_and_cross_parts(void) {
     id.valid = DSD_RXID_TETRA_LA;
     expect_inconsistent("tetra la without net", &id);
 
-    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 3U, "TIII Huge");
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 2U, 300U, 3U, "TIII Huge");
     expect_u("dmr consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
     id.dmr_t3_model = 4U;
     expect_inconsistent("dmr model > 3", &id);
@@ -657,26 +662,171 @@ test_consistent_rejects_ranges_and_cross_parts(void) {
     expect_u("cap+ model 0 consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
     id.dmr_t3_model = 1U;
     expect_inconsistent("cap+ site with a tier iii model", &id);
-    dmr_id(&id, 5U, 1, 11U, 300U, 0U, NULL);
+    dmr_id(&id, 5U, 1, 11U, 3U, 0U, NULL);
     expect_inconsistent("dmr trunk unknown", &id);
-    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_NONE, 1, 11U, 300U, 0U, NULL);
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_NONE, 1, 11U, 3U, 0U, NULL);
     expect_inconsistent("dmr numbers without trunk", &id);
-    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 0U, NULL);
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 3U, 0U, NULL);
     id.valid = DSD_RXID_DMR_NET;
     expect_inconsistent("dmr net without site", &id);
     dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, NULL);
     id.dmr_t3_syscode = 1U;
     id.valid |= DSD_RXID_DMR_T3_SYSCODE;
     expect_inconsistent("syscode on cap+", &id);
-    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII");
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII");
     DSD_MEMSET(id.dmr_site_text, 'x', sizeof(id.dmr_site_text));
     expect_inconsistent("unterminated site text", &id);
-    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, "TIII");
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, "TIII");
     DSD_MEMSET(id.dmr_brand, 'x', sizeof(id.dmr_brand));
     expect_inconsistent("unterminated brand", &id);
 
     edacs_id(&id, 0, 1U, 2U, 3U);
     expect_u("edacs consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+}
+
+#define DOT " \xC2\xB7 "
+
+/* The Capacity Max marker is the decoder's, never a site part: a snapshot drops its bit and leaves its fields zero. */
+static void
+test_snapshot_drops_capmax_marker(void) {
+    dsd_received_identity in;
+    dsd_received_identity out;
+    dmr_id(&in, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 1U, 2U, "TIII Large" DOT "Capacity Max" DOT "Net 1");
+    in.dmr_t3_syscode = 0x2101U;
+    in.valid |= DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_T3_CAPMAX;
+    in.dmr_t3_capmax_model = 2U;
+    in.dmr_t3_capmax_net = 1U;
+    dsd_rxid_site_snapshot(&in, &out);
+    expect_u("marker bit dropped", out.valid,
+             DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_T3_SYSCODE);
+    expect_u("marker model zero", out.dmr_t3_capmax_model, 0U);
+    expect_u("marker net zero", out.dmr_t3_capmax_net, 0U);
+    expect_u("snapshot consistent", (unsigned long)dsd_rxid_site_consistent(&out), 1U);
+    /* A stored site with the bit is no record's. */
+    expect_inconsistent("marker bit stored", &in);
+}
+
+static void
+expect_union_text(const char* label, const char* text_a, const char* text_b, const char* want) {
+    dsd_received_identity a;
+    dsd_received_identity b;
+    dsd_received_identity u;
+    dmr_id(&a, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 9U, 1U, 2U, text_a);
+    dmr_id(&b, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 9U, 1U, 2U, text_b);
+    dsd_rxid_site_union(&a, &b, &u);
+    expect_s(label, u.dmr_site_text, want);
+    dsd_rxid_site_union(&b, &a, &u);
+    expect_s(label, u.dmr_site_text, want);
+}
+
+/* One raw site written before and after its network was recognised as Capacity Max: the recognised text wins, in
+   either order, even where the standard text sorts first; otherwise the strcmp-smaller text, as before. */
+static void
+test_union_prefers_capmax_text(void) {
+    const char* const standard = "TIII Large" DOT "Net 10" DOT "Site 2" DOT "SYS 2901";
+    const char* const recognised = "TIII Large" DOT "Capacity Max" DOT "Net 9" DOT "Site 1" DOT "SYS 2901";
+    expect_union_text("recognised wins", standard, recognised, recognised);
+    /* "TIII Large · Net 10" sorts before "TIII Large · Site 1 · ...": not the strcmp rule. */
+    const char* const late_token = "TIII Large" DOT "Site 1" DOT "Capacity Max";
+    expect_union_text("token as last part wins", standard, late_token, late_token);
+    /* The token only counts as a whole part. */
+    const char* const near_token = "TIII Large" DOT "Site 1" DOT "Capacity Maxi";
+    expect_union_text("near token is plain text", standard, near_token, standard);
+    const char* const both = "TIII Large" DOT "Capacity Max" DOT "Net 9" DOT "Site 1.1" DOT "SYS 2901";
+    expect_union_text("both marked: smaller", recognised, both, recognised);
+    const char* const other = "TIII Large" DOT "Net 10" DOT "Site 1.2" DOT "SYS 2901";
+    expect_union_text("neither marked: smaller", standard, other, other);
+}
+
+static void
+t3_code_id(dsd_received_identity* id, uint16_t syscode) {
+    clear_id(id);
+    id->family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    id->dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    id->dmr_t3_syscode = syscode;
+    id->valid = DSD_RXID_DMR_T3_SYSCODE;
+}
+
+/* A Tier III site's numbers fit its model's widths (NET/SITE: Tiny 9/3, Small 7/5, Large 4/8, Huge 2/10 bits), its
+   system code fits 14 bits, and a code beside raw numbers names them. Partial records and zeros are fine. */
+static void
+test_consistent_tier3_ranges_and_code(void) {
+    static const struct {
+        uint8_t model;
+        uint16_t net_max;
+        uint16_t site_max;
+    } k_widths[] = {{0U, 511U, 7U}, {1U, 127U, 31U}, {2U, 15U, 255U}, {3U, 3U, 1023U}};
+
+    dsd_received_identity id;
+    for (size_t i = 0U; i < sizeof(k_widths) / sizeof(k_widths[0]); i++) {
+        const uint8_t m = k_widths[i].model;
+        dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, k_widths[i].net_max, k_widths[i].site_max, m, NULL);
+        expect_u("tier iii max consistent", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+        id.dmr_net = (uint16_t)(k_widths[i].net_max + 1U);
+        expect_inconsistent("tier iii net past width", &id);
+        dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, (uint16_t)(k_widths[i].site_max + 1U), m, NULL);
+        expect_inconsistent("tier iii site past width", &id);
+        dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 0, 0U, (uint16_t)(k_widths[i].site_max + 1U), m, NULL);
+        expect_inconsistent("tier iii site past width, no net", &id);
+    }
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 4U, 0U, 3U, NULL);
+    expect_inconsistent("huge net 4", &id);
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 0U, 32U, 1U, NULL);
+    expect_inconsistent("small site 32", &id);
+    /* Other trunking systems keep their own ranges. */
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 4000U, 300U, 0U, NULL);
+    expect_u("con+ numbers untouched", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+
+    t3_code_id(&id, 0x3FFFU);
+    expect_u("syscode only, max", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+    t3_code_id(&id, 0x4000U);
+    expect_inconsistent("syscode 0x4000", &id);
+    t3_code_id(&id, 0x0000U);
+    expect_u("syscode zero", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+    id.valid |= DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET;
+    expect_u("all zero", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+
+    /* Large 0x2101: NET 1, SITE 1. */
+    dmr_id(&id, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 1U, 2U, NULL);
+    id.dmr_t3_syscode = 0x2101U;
+    id.valid |= DSD_RXID_DMR_T3_SYSCODE;
+    expect_u("code names the numbers", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+    id.valid &= ~DSD_RXID_DMR_NET;
+    expect_u("code beside a site only", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+    id.valid |= DSD_RXID_DMR_NET;
+    id.dmr_t3_syscode = 0x2102U;
+    expect_inconsistent("code names another site", &id);
+    id.dmr_t3_syscode = 0x2201U;
+    expect_inconsistent("code names another net", &id);
+    id.dmr_t3_syscode = 0x0109U; /* Tiny NET 33, SITE 1 */
+    expect_inconsistent("code names another model", &id);
+    id.dmr_t3_model = 0U;
+    id.dmr_net = 33U;
+    expect_u("tiny code names the numbers", (unsigned long)dsd_rxid_site_consistent(&id), 1U);
+}
+
+/* A system code on one side and raw numbers on the other are compared through the code's own fields, so two fragments
+   of different sites never merge into a record the validator refuses. */
+static void
+test_dmr_code_vs_raw_compatible(void) {
+    dsd_received_identity code;
+    dsd_received_identity raw;
+    dsd_received_identity u;
+    t3_code_id(&code, 0x2101U);
+    dmr_id(&raw, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 2U, 2U, NULL);
+    expect_u("code vs another site", (unsigned long)compatible_both_orders("code site", &code, &raw), 0U);
+    dmr_id(&raw, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 2U, 1U, 2U, NULL);
+    expect_u("code vs another net", (unsigned long)compatible_both_orders("code net", &code, &raw), 0U);
+    dmr_id(&raw, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 1U, 1U, NULL);
+    expect_u("code vs another model", (unsigned long)compatible_both_orders("code model", &code, &raw), 0U);
+    dmr_id(&raw, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 0, 0U, 2U, 2U, NULL);
+    expect_u("code vs another site, no net", (unsigned long)compatible_both_orders("code site only", &code, &raw), 0U);
+
+    dmr_id(&raw, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 1U, 2U, NULL);
+    expect_u("code vs its numbers", (unsigned long)compatible_both_orders("code same", &code, &raw), 1U);
+    dsd_rxid_site_union(&code, &raw, &u);
+    expect_u("union holds both", u.valid, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE);
+    expect_u("union validates", (unsigned long)dsd_rxid_site_consistent(&u), 1U);
 }
 
 static void
@@ -688,7 +838,7 @@ test_call_channel_kind_vs_trunk(void) {
     dsd_received_identity p25;
     dmr_id(&con, (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 3U, 5U, 0U, NULL);
     dmr_id(&cap, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, NULL);
-    dmr_id(&t3, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, NULL);
+    dmr_id(&t3, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, NULL);
     clear_id(&empty);
     p25_id(&p25, 0xBEE00U, 0x123U, 1U, 2U);
     const uint8_t none = (uint8_t)DSD_CALL_CHANNEL_NONE;
@@ -753,7 +903,7 @@ test_call_record_trunk_from_moment_parts(void) {
     free_lcn.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_XPT;
     free_lcn.dmr_xpt_free_lcn = 4U;
     free_lcn.valid = DSD_RXID_DMR_XPT_FREE_LCN;
-    dmr_id(&t3, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 300U, 1U, NULL);
+    dmr_id(&t3, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 11U, 30U, 1U, NULL);
     clear_id(&empty);
     const uint8_t none = (uint8_t)DSD_CALL_CHANNEL_NONE;
     const uint8_t lsn = (uint8_t)DSD_CALL_CHANNEL_LSN;
@@ -801,6 +951,10 @@ main(void) {
     test_consistent_rejects_ranges_and_cross_parts();
     test_call_channel_kind_vs_trunk();
     test_call_record_trunk_from_moment_parts();
+    test_snapshot_drops_capmax_marker();
+    test_union_prefers_capmax_text();
+    test_consistent_tier3_ranges_and_code();
+    test_dmr_code_vs_raw_compatible();
     if (g_fail) {
         return 1;
     }

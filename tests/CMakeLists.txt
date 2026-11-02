@@ -10652,6 +10652,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -10699,6 +10700,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
@@ -10741,6 +10743,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -10787,6 +10790,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
@@ -16762,13 +16766,14 @@ if(DSD_HAS_RADIO)
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
     # must bypass the RAS-masked CSBK CRC so the TIII site identity decodes.
     # The second case pins colour code 0, which must not be mistaken for the
-    # "unknown" sentinel. Tier III numbers show one-based: raw network 1, site 1
-    # read "Net ID: 2; Site ID: 2" (issue #799 D1).
+    # "unknown" sentinel. This is a Motorola Capacity Max network: once RAS is
+    # confirmed, its Motorola C_ALOHA recognises it, and from then on its raw
+    # network 1, site 1 read as sent, as Motorola numbers them (issue #40).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC
         dmr_t3_ras_cc
         "-fs -F"
-        "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2"
+        "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: A; SYS: 2101; Capacity Max"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_RAS_CC_COLOR_CODE

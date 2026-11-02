@@ -39,7 +39,8 @@ class QIODevice;
 namespace dsd_qt {
 
 /**
- * @brief The spill: one JSON line per row the tap found (CallHistoryModel::spillLine()), appended.
+ * @brief The spill: one JSON line per row the tap found (CallHistoryModel::spillLine()), or per seen entry it settled
+ *        with no row (CallHistoryModel::settledSeenLine()), appended.
  *
  * The tap appends on its thread; the model reads and truncates on the GUI thread. Each operation holds the spill's
  * mutex, and the model truncates only what it read and a save covered (truncateIfSize()), so a line the tap
