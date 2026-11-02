@@ -91,6 +91,12 @@ Item {
     // Imported trunking-data files; stored library paths, empty = none.
     property string chanCsvPath: ""
     property string groupCsvPath: ""
+    // Whether each of the two came from a RadioReference import (this one's,
+    // or one the edited system was saved with) rather than the user's own
+    // pick: the next import replaces the first kind, and keeps the second
+    // only for the system being edited. See applyRadioReference().
+    property bool chanCsvGenerated: false
+    property bool groupCsvGenerated: false
     property string keyCsvPath: ""
     property bool keyCsvHex: false
     // WP-D2: the editor is the sole owner of the draft key text.
@@ -162,6 +168,14 @@ Item {
     function resetImport() {
         importedSite = null;
         importedSites = [];
+        chanCsvGenerated = false;
+        groupCsvGenerated = false;
+    }
+
+    // Whether a library file is one a RadioReference import generated.
+    function generatedByRadioReference(path) {
+        var row = path.length > 0 ? importedFiles.rowForPath(path) : -1;
+        return row >= 0 && importedFiles.get(row).origin === "radioreference";
     }
 
     function openForAdd(preferNetwork) {
@@ -296,6 +310,8 @@ Item {
         nameField.text = sys.name;
         chanCsvPath = sys.chanCsvPath;
         groupCsvPath = sys.groupCsvPath;
+        chanCsvGenerated = generatedByRadioReference(chanCsvPath);
+        groupCsvGenerated = generatedByRadioReference(groupCsvPath);
         keyCsvPath = sys.keyCsvPath;
         keyCsvHex = sys.keyCsvHex;
         encryptionEditor.reset();
@@ -551,8 +567,10 @@ Item {
         csvNoticeIsProblem = false;
         if (target === "chan") {
             chanCsvPath = path;
+            chanCsvGenerated = false;
         } else if (target === "group") {
             groupCsvPath = path;
+            groupCsvGenerated = false;
         } else if (target === "keys") {
             keyCsvPath = path;
             keyCsvHex = hex;
@@ -566,29 +584,53 @@ Item {
     /**
      * Fill the tune answers from a finished RadioReference import.
      *
-     * The generated files go through the same seam a hand-picked one does, so
-     * the wizard stays the single writer of the saved system and the user's
-     * source, gain and ppm answers survive. @a result is performImport()'s map;
-     * chanCsvPath is absent when no channel map was generated, which is a valid
-     * outcome for a single conventional repeater. An absent file therefore
-     * leaves whatever the user had already picked alone — clearing it would
-     * silently strip a hand-picked -C from a system they were only editing.
+     * The wizard stays the single writer of the saved system, so the user's
+     * source, gain and ppm answers survive. @a result is performImport()'s map,
+     * or a per-site batch's {rows}; a file the import did not generate is
+     * absent from it, which is a valid outcome: a single conventional repeater
+     * has no channel map, and a TETRA system listing no talkgroups has no file
+     * at all.
+     *
+     * The import answers both files (issue #803). One it supplies replaces
+     * whatever was there. One it does not clears a file an earlier import
+     * generated, which belongs to that system: kept, it would tie this system
+     * to another one's talkgroups, and drop the import's RadioReference
+     * identity at save. A file the user picked is kept only while editing the
+     * same saved system — clearing it would silently strip a hand-picked -C
+     * from a system they were only editing. A per-site batch saves new
+     * systems, so each site keeps only its own files.
      */
     function applyRadioReference(result) {
-        importedSites = result.rows || [];
+        importedSites = (result.rows || []).map(function (row) {
+            return Object.assign({
+                chanCsvPath: "",
+                groupCsvPath: ""
+            }, row);
+        });
         if (importedSites.length > 0) {
             editRow = -1;
             result = importedSites[0];
         }
         importedSite = result;
 
-        if (result.chanCsvPath !== undefined && result.chanCsvPath.length > 0)
-            wizard.assignCsvPath("chan", result.chanCsvPath, false);
-        if (result.groupCsvPath !== undefined && result.groupCsvPath.length > 0)
-            wizard.assignCsvPath("group", result.groupCsvPath, false);
+        var keepPicked = editRow >= 0;
+        var chan = result.chanCsvPath || "";
+        if (chan.length > 0 || chanCsvGenerated || !keepPicked) {
+            chanCsvPath = chan;
+            chanCsvGenerated = chan.length > 0;
+        }
+        var group = result.groupCsvPath || "";
+        if (group.length > 0 || groupCsvGenerated || !keepPicked) {
+            groupCsvPath = group;
+            groupCsvGenerated = group.length > 0;
+        }
         if (result.freqMhz && result.freqMhz.length > 0)
             freqField.text = result.freqMhz;
         wizard.decodeFlag = result.decodeFlag;
+        // A bandwidth kept from an edited system that cannot decode TETRA:
+        // an empty field runs it at the 72 kHz it needs.
+        if (bwText.length > 0 && tetraRateError().length > 0)
+            bwText = "";
         // The database's answer, and an answer: a chip tap after the import
         // must not second-guess what the record says the system is.
         wizard.answerTrunking(result.trunking);

@@ -120,6 +120,13 @@ settings you choose. Frequency, protocol and channel/group CSV edits in that wiz
 site; the other sites retain their individual import settings. A single-site import records the same
 site identity. Identity uses RadioReference's database site ID, not the RF site number.
 
+An import fills the wizard's **Channel map** and **Talkgroups** rows with the files it generated. When it
+generates none for a row (a TETRA system that lists no talkgroups, a single conventional repeater), that
+row is emptied if it held a file an earlier import generated, so a system never keeps another system's
+files. A file you picked yourself stays only while you are editing that saved system; a new system and
+each site of a per-site import keep only the files their own import generated. A bandwidth that cannot
+decode TETRA is emptied too, so a TETRA import runs at 72 kHz.
+
 Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
 foreground fix, names the nearest eligible saved site in this system, and orders the available sites by
 distance. Avoided sites appear last; sites without coordinates are explained and cannot be ranked.
