@@ -81,6 +81,10 @@ static uint64_t g_eh_fp[2][DSD_EVENT_HISTORY_LEN];
 static int g_eh_valid = 0;
 
 static uint64_t g_last_telemetry_ms = 0;
+/* Decode thread: the cache (g_latest and the scan avoid copy) holds records of this run, refreshed while a client is
+   connected, and the state instance they describe. */
+static int g_cache_live = 0;
+static uint64_t g_cache_instance = 0;
 
 /* The session's scan avoids (issue #672) as the feed last collected them, for status.scan_avoids and the paged `get`.
    The decode thread collects raw entries (no formatting) into a new immutable block only when the scan avoid view's
@@ -1148,6 +1152,20 @@ build_quality(const dsd_state* state, dsd_json_buf* b) {
  * Observer
  *============================================================================*/
 
+/* Forget every cached record and the scan avoid copy: `get` answers null until the next update, which the next publish
+   with a client runs at once. */
+static void
+feed_cache_drop(void) {
+    dsd_mutex_lock(&g_feed_mu);
+    for (int i = 0; i < DSD_API_TOPIC_COUNT; i++) {
+        dsd_json_buf_free(&g_latest[i]);
+    }
+    dsd_mutex_unlock(&g_feed_mu);
+    scan_avoids_drop_idle();
+    g_cache_live = 0;
+    g_last_telemetry_ms = 0U;
+}
+
 static void
 emit_topic(uint32_t topic, int built) {
     if (built != 0 || g_line.data == NULL) {
@@ -1167,24 +1185,24 @@ feed_state(const dsd_state* state, void* user) {
     }
     track_events(state);
     if (dsd_api_client_count() <= 0) {
-        /* Nothing is refreshed without a client, so no copy is kept that a later client could take for current, and
-           the first publish once one connects runs the update at once. */
-        if (g_sa_shown_valid) {
-            scan_avoids_drop_idle();
-            g_last_telemetry_ms = 0U;
+        /* Nothing is refreshed without a client, so nothing is kept that a later client could take for current. */
+        if (g_cache_live) {
+            feed_cache_drop();
         }
         return;
     }
-    /* A restarted decoder (a new state instance): run the update now, so neither status nor `get scan_avoids` keeps
-       answering for the previous instance until the next interval. One compare per publish. */
-    if (g_sa_shown_valid && state->state_instance != g_sa_shown.instance) {
-        g_last_telemetry_ms = 0U;
+    /* A restarted decoder (a new state instance): no record of the previous run is served, and this publish runs the
+       update. One compare per publish. */
+    if (g_cache_live && state->state_instance != g_cache_instance) {
+        feed_cache_drop();
     }
     const uint64_t now = dsd_realtime_mono_ms();
     if (g_last_telemetry_ms != 0U && now - g_last_telemetry_ms < (uint64_t)DSD_API_TELEMETRY_INTERVAL_MS) {
         return;
     }
     g_last_telemetry_ms = now;
+    g_cache_live = 1;
+    g_cache_instance = state->state_instance;
     /* Every get-able topic is kept current while a client is connected, so a one-shot get never waits. */
     scan_avoids_refresh(state);
     emit_topic(DSD_API_TOPIC_CALL, build_call(state, &g_line));
@@ -1212,6 +1230,7 @@ dsd_api_feed_start(void) {
     g_last_telemetry_ms = 0U;
     g_live_opts = NULL;
     g_sa_built_valid = 0;
+    g_cache_live = 0;
     g_observer.state = feed_state;
     g_observer.opts = feed_opts;
     g_observer.user = NULL;

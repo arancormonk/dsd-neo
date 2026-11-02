@@ -194,12 +194,20 @@ match responses by `id`.
 | `auth` | `{token}` | `{authenticated:true}`, or `unauthorized` and the connection closes |
 | `subscribe` | `{topics:[...]}` | `{topics:[now subscribed]}` |
 | `unsubscribe` | `{topics:[...]}` | `{topics:[still subscribed]}` |
-| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; or `scan_avoids` with optional `offset` and `limit` | `{what, data}`: the latest record of that topic, `null` before the decoder has published one; for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)) |
+| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; or `scan_avoids` with optional `offset` and `limit` | `{what, data}`: the latest record of that topic, `null` until the first telemetry update (see below); for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)) |
 | `list_commands` | – | `{commands:[{name,id,params}, ...]}` |
 
 Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`, or
 `all`. An unknown topic name is `invalid_params`. `get` works without a
 subscription.
+
+`get` answers from the records the server keeps current with its telemetry
+updates: every 250 ms while a client is connected. It never serves a record
+from a previous decoder run or from before a stretch with no client connected:
+with no client the server keeps no records, and a restarted decoder replaces
+them at its first publish. Until the first update after the decoder starts,
+restarts, or a client connects to a server that had none, `data` is `null`;
+that update runs at the decoder's next publish.
 
 ## Telemetry
 
@@ -850,7 +858,8 @@ session has neither.
 * `data` starts with the same summary as `status.scan_avoids`: `available`,
   `kind`, `total` (the number of avoided entries, `null` while unavailable),
   `instance`, `list_rev` (`lcn`) or `session` (`trunk_scan`), and `revision`.
-  `data` is `null` until the decoder has published its options.
+  `data` is `null` until the decoder has published its options and the
+  first update has run.
 * Entries come in list order (rows ascending, targets in target-list order).
   Each carries the identity `scan_avoid_remove` takes, `name` (the row's name
   or the target's label column, `""` for none) and `label`, the text every
@@ -865,12 +874,10 @@ session has neither.
   `scan_avoid_clear` still works. A later revision, or the next telemetry
   update, brings the entries back.
 
-The server's copy follows the telemetry updates: every 250 ms while a client is
-connected, and at once when the decoder restarts. With no client connected the
-server keeps no copy, so a `get` sent right after connecting can answer `null`
-until the first update, which the decoder's next publish runs. A page can
-therefore lag a change briefly; `scan_avoid_remove` checks the identity it is
-sent against the live list either way.
+The list follows the telemetry updates like every other `get` record (see
+[Session commands](#session-commands)), so a page can lag a change briefly, and
+`data` is `null` until the first update; `scan_avoid_remove` checks the
+identity it is sent against the live list either way.
 
 ## Examples
 

@@ -1427,8 +1427,9 @@ test_scan_avoids(void) {
     scan_avoids_concurrent_paging(&rig);
     scan_avoids_largest_page(&rig);
 
-    /* With no client connected the feed keeps no copy, so a client connecting later is never served the list the last
-       one saw as current: null until the first update, which the next publish runs. */
+    /* With no client connected the feed keeps no copy and no cached record, so a client connecting later is never
+       served the list or the status the last one saw as current: null until the first update, which the next publish
+       runs. */
     dsd_socket_close(rig.get);
     dsd_socket_close(rig.sub);
     for (int i = 0; i < 500 && dsd_api_client_count() > 0; i++) {
@@ -1439,6 +1440,8 @@ test_scan_avoids(void) {
     rig.get = open_session(port, "\"type\":\"welcome\"");
     send_get_scan_avoids(rig.get, -1, -1);
     expect_line(rig.get, "{\"id\":null,\"ok\":true,\"what\":\"scan_avoids\",\"data\":null}");
+    send_str(rig.get, "{\"id\":2,\"cmd\":\"get\",\"params\":{\"what\":\"status\"}}\n");
+    expect_line(rig.get, "{\"id\":2,\"ok\":true,\"what\":\"status\",\"data\":null}");
     dsd_telemetry_publish_both_and_redraw(rig.opts, rig.state);
     root = get_scan_avoids(&rig, 0, 1);
     (void)data_entries(root, &count);

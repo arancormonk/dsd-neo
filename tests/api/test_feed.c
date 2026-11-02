@@ -6,7 +6,8 @@
 /*
  * The API feed's scan avoid copy (issue #672) through its test hooks, against stand-ins for the server: a page reader
  * held between pinning the list and reading it while the decode thread swaps in a new list, and a failed collection of
- * a -Y list followed by a retry at the same key.
+ * a -Y list followed by a retry at the same key, and the cached records and copy dropped when no client is connected
+ * and replaced at a decoder restart.
  */
 
 #include <assert.h>
@@ -30,12 +31,15 @@
 #include "json.h"
 
 /*============================================================================
- * Stand-ins for the server: one client connected, nobody subscribed
+ * Stand-ins for the server: g_clients clients connected (one unless a test
+ * says otherwise), nobody subscribed
  *============================================================================*/
+
+static int g_clients = 1;
 
 int
 dsd_api_client_count(void) {
-    return 1;
+    return g_clients;
 }
 
 int
@@ -257,6 +261,60 @@ test_lcn_failed_collection(void) {
     dsd_json_free(root);
 }
 
+/*============================================================================
+ * Cached records across a stretch with no clients and a restart
+ *============================================================================*/
+
+static const char* const k_cached[] = {"status", "call", "system", "metrics", "quality"};
+
+/* Every cached record is there (1) or none is (0); the scan avoid page agrees. */
+static void
+expect_cached(int want) {
+    for (size_t i = 0; i < sizeof k_cached / sizeof k_cached[0]; i++) {
+        dsd_json_buf buf;
+        dsd_json_buf_init(&buf);
+        const int have = dsd_api_feed_latest(k_cached[i], &buf);
+        dsd_json_buf_free(&buf);
+        if (have != want) {
+            DSD_FPRINTF(stderr, "get %s: %d, want %d\n", k_cached[i], have, want);
+            assert(0);
+        }
+    }
+    dsd_json_node* root = page(0U, 64U);
+    assert((root->type != DSD_JSON_NULL) == (want != 0));
+    dsd_json_free(root);
+}
+
+/* No client connected: nothing refreshes the records, so the feed keeps none a later client could take for current.
+   The first publish once a client connects runs the update at once. A restarted decoder (a new state instance)
+   replaces every record at its first publish, without waiting out the interval. */
+static void
+test_cache_never_stale(void) {
+    feed_tick();
+    expect_cached(1);
+
+    g_clients = 0;
+    dsd_telemetry_publish_both_and_redraw(g_opts, g_state);
+    expect_cached(0);
+    dsd_telemetry_publish_both_and_redraw(g_opts, g_state);
+    expect_cached(0);
+
+    g_clients = 1;
+    dsd_telemetry_publish_both_and_redraw(g_opts, g_state); /* no wait: the first update runs at this publish */
+    expect_cached(1);
+
+    const uint64_t before = g_state->state_instance;
+    freeState(g_state);
+    initState(g_state);
+    assert(g_state->state_instance != before);
+    dsd_telemetry_publish_both_and_redraw(g_opts, g_state); /* within the interval of the last update */
+    char want[96];
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan_avoids\":{\"available\":true,\"kind\":\"none\",\"total\":0,\"instance\":\"%llu\"",
+                 (unsigned long long)g_state->state_instance);
+    expect_status_has(want);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -269,6 +327,7 @@ main(void) {
 
     test_reader_keeps_pinned_list();
     test_lcn_failed_collection();
+    test_cache_never_stale();
 
     dsd_api_feed_stop();
     dsd_app_frontend_runtime_stop();

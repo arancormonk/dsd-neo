@@ -4310,27 +4310,29 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     1 MiB is disconnected, never shown a stream with gaps. An unauthenticated connection is closed at the auth
     deadline, one wrong token or one line that is not JSON ends the connection (the latter keeps a web page's HTTP
     request from driving the port), and the token is compared over its full buffer width
-  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history
-    rings at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of
-    any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
-    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. An
-    event row carries every field a client sees of the row, the call's `freq_hz` and access code included (issue
-    #575), and the fingerprint covers the same fields, so a row that learns one in place is sent again. While
-    an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
-    (cached for `get`). The `status` record carries what the stateful
-    commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics
-    follow the shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick
-    the feed reads the scan avoid view's constant-cost summary and, only when its key
-    (`dsd_app_scan_avoid_summary_same_key()`) moved since the last successful collection, collects the raw entries
-    (`dsd_app_scan_avoid_raw_collect()`, no formatting) into a new immutable, reference-counted block swapped in under
-    `g_feed_mu`. A failed collection drops the block and reports the list unavailable at that revision (never the older
-    list as current), and the next tick retries at the same key. Feed stop drops it, and so does the first publish
-    that finds no client (nothing refreshes it then), which also makes the next publish with a client run the update;
-    a new state instance runs the update at that publish (one instance compare per publish while a client is
-    connected) instead of at the next interval. A collection reports the entries it found as its total. `status.scan_avoids` is the held summary; `get {"what":"scan_avoids","offset","limit"}`
-    (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a reference under the lock and formats its page (the view's
-    labels, each entry's `scan_avoid_remove` identity) on the session thread outside every lock, so the replaced
-    block is freed by its last reader
+  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history rings
+    at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of any
+    committed row) and sends the rows pushed or changed since its last look to event subscribers; following them whether
+    or not anyone listens is what lets a new subscriber get every row committed after its subscription. An event row
+    carries every field a client sees of the row, the call's `freq_hz` and access code included (issue #575), and the
+    fingerprint covers the same fields, so a row that learns one in place is sent again. While an authenticated client
+    is connected it also encodes the call/status/system/metrics/quality records every 250 ms (cached for `get`). The
+    cache (those records and the scan avoid copy below) only ever holds the current run as a client sees it: the first
+    publish that finds no client drops it all (nothing refreshes it then) and makes the next publish with a client run
+    the update at once, and a publish from a new state instance (a restarted decoder) drops it and runs the update at
+    that publish (one flag test per publish without clients, one instance compare with them), so `get` answers `null`
+    rather than the previous run's or previous client's record. The `status` record carries what the stateful commands
+    must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics follow the
+    shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick the feed
+    reads the scan avoid view's constant-cost summary and, only when its key (`dsd_app_scan_avoid_summary_same_key()`)
+    moved since the last successful collection, collects the raw entries (`dsd_app_scan_avoid_raw_collect()`, no
+    formatting) into a new immutable, reference-counted block swapped in under `g_feed_mu`. A failed collection drops
+    the block and reports the list unavailable at that revision (never the older list as current), and the next tick
+    retries at the same key. Feed stop drops it, as do the no-client and restart drops above. A collection reports the
+    entries it found as its total. `status.scan_avoids` is the held summary; `get
+    {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a reference under
+    the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on the session thread
+    outside every lock, so the replaced block is freed by its last reader
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
