@@ -4319,7 +4319,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
     (cached for `get`). The `status` record carries what the stateful
     commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics
-    follow the shared validity rules (app-control behavior note above)
+    follow the shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick
+    the feed reads the scan avoid view's constant-cost summary and, only when its key
+    (`dsd_app_scan_avoid_summary_same_key()`) moved since the last successful collection, collects the raw entries
+    (`dsd_app_scan_avoid_raw_collect()`, no formatting) into a new immutable, reference-counted block swapped in under
+    `g_feed_mu`. A failed collection drops the block and reports the list unavailable at that revision (never the older
+    list as current), and the next tick retries at the same key; feed start/stop drops it, and a new state instance
+    moves the key. `status.scan_avoids` is the held summary; `get {"what":"scan_avoids","offset","limit"}`
+    (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a reference under the lock and formats its page (the view's
+    labels, each entry's `scan_avoid_remove` identity) on the session thread outside every lock, so the replaced
+    block is freed by its last reader
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler

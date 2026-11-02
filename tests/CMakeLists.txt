@@ -21821,7 +21821,7 @@ if(DSD_ENABLE_API)
     add_executable(dsd-neo_test_api_server api/test_server.c)
     target_include_directories(
         dsd-neo_test_api_server
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
     )
     target_link_libraries(
         dsd-neo_test_api_server

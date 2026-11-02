@@ -6,7 +6,7 @@
 /*
  * Loopback integration tests for the TCP JSON Lines API server: framing, session commands, authentication, the
  * connection limits and their reclamation, refusal of non-JSON (cross-protocol) input, peers that vanish mid-send,
- * and the telemetry feed driven through a real frontend runtime.
+ * the telemetry feed driven through a real frontend runtime, and the scan avoid summary and pages (issue #672).
  */
 
 #include <assert.h>
@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "json.h"
 
 enum { LINE_CAP = 1 << 18 };
 
@@ -868,6 +870,559 @@ test_rr_apply_outcome_in_status_feed(void) {
     free(opts);
 }
 
+/*============================================================================
+ * Scan avoids (issue #672): status.scan_avoids and the paged get
+ *============================================================================*/
+
+/* A decoder with an API session: one connection subscribed to status, to wait for the feed's ticks, and one with no
+   subscription, whose next line is always the reply to its last request. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    dsd_socket_t sub;
+    dsd_socket_t get;
+} avoid_rig;
+
+/* Publish until a status line carries @p needle. The feed refreshes its scan avoid copy on the tick that sends status,
+   just before it encodes the line, so once the line is seen every `get` answers from that copy or a newer one. */
+static void
+await_status(avoid_rig* rig, const char* needle) {
+    for (int attempt = 0; attempt < 40; attempt++) {
+        dsd_telemetry_publish_both_and_redraw(rig->opts, rig->state);
+        if (await_line(rig->sub, "status", needle, 100U)) {
+            return;
+        }
+    }
+    DSD_FPRINTF(stderr, "status never carried %s\n", needle);
+    assert(0);
+}
+
+/* One feed tick after every change made so far, shown by a synctype nothing else sets. */
+static void
+await_tick(avoid_rig* rig, int marker) {
+    char needle[48];
+    rig->state->synctype = marker;
+    DSD_SNPRINTF(needle, sizeof needle, "\"synctype\":%d,", marker);
+    await_status(rig, needle);
+}
+
+static dsd_json_node*
+parse_line(void) {
+    dsd_json_node* root = NULL;
+    char err[96];
+    if (dsd_json_parse(g_line, &root, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "not JSON (%s): %s\n", err, g_line);
+        assert(0);
+    }
+    return root;
+}
+
+static void
+send_get_scan_avoids(dsd_socket_t c, long long offset, long long limit) {
+    char off[48] = "";
+    char lim[48] = "";
+    if (offset >= 0) {
+        DSD_SNPRINTF(off, sizeof off, ",\"offset\":%lld", offset);
+    }
+    if (limit >= 0) {
+        DSD_SNPRINTF(lim, sizeof lim, ",\"limit\":%lld", limit);
+    }
+    char request[160];
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"get\",\"params\":{\"what\":\"scan_avoids\"%s%s}}\n", off, lim);
+    send_str(c, request);
+}
+
+/* `get scan_avoids` (an offset or limit below 0 is left out); returns the parsed reply, already checked to be ok. */
+static dsd_json_node*
+get_scan_avoids(avoid_rig* rig, long long offset, long long limit) {
+    send_get_scan_avoids(rig->get, offset, limit);
+    static const char k_head[] = "{\"id\":null,\"ok\":true,\"what\":\"scan_avoids\",\"data\":{";
+    assert(read_line(rig->get, 5000U) == 1);
+    if (strncmp(g_line, k_head, sizeof k_head - 1U) != 0) {
+        DSD_FPRINTF(stderr, "get scan_avoids was answered: %s\n", g_line);
+        assert(0);
+    }
+    return parse_line();
+}
+
+static void
+expect_get_refused(avoid_rig* rig, const char* params) {
+    char request[192];
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"get\",\"params\":{\"what\":\"scan_avoids\",%s}}\n", params);
+    send_str(rig->get, request);
+    assert(read_line(rig->get, 5000U) == 1);
+    if (strstr(g_line, "\"ok\":false") == NULL || strstr(g_line, "\"invalid_params\"") == NULL) {
+        DSD_FPRINTF(stderr, "get with %s was answered: %s\n", params, g_line);
+        assert(0);
+    }
+}
+
+static const dsd_json_node*
+json_at(const dsd_json_node* n, const char* key) {
+    const dsd_json_node* v = dsd_json_obj_get(n, key);
+    if (v == NULL) {
+        DSD_FPRINTF(stderr, "no \"%s\"\n", key);
+        assert(0);
+    }
+    return v;
+}
+
+static uint64_t
+json_u64(const dsd_json_node* n, const char* key) {
+    uint64_t v = 0U;
+    assert(dsd_json_as_u64(json_at(n, key), &v) == 0);
+    return v;
+}
+
+static const char*
+json_str(const dsd_json_node* n, const char* key) {
+    const char* s = dsd_json_as_str(json_at(n, key));
+    assert(s != NULL);
+    return s;
+}
+
+/* A string node holding the decimal value @p v (how the API writes 64-bit identifiers). */
+static void
+expect_u64_str(const dsd_json_node* n, const char* key, uint64_t v) {
+    char want[24];
+    DSD_SNPRINTF(want, sizeof want, "%" PRIu64, v);
+    assert(json_at(n, key)->type == DSD_JSON_STRING && strcmp(json_str(n, key), want) == 0);
+}
+
+static const dsd_json_node*
+data_entries(const dsd_json_node* root, size_t* count) {
+    const dsd_json_node* entries = json_at(json_at(root, "data"), "entries");
+    assert(entries->type == DSD_JSON_ARRAY);
+    *count = entries->count;
+    return entries;
+}
+
+/* The status.scan_avoids object of an available -Y list of @p total avoided rows. */
+static void
+want_lcn_status(char* out, size_t cap, const dsd_state* state, size_t total) {
+    DSD_SNPRINTF(out, cap,
+                 "\"scan_avoids\":{\"available\":true,\"kind\":\"lcn\",\"total\":%zu,\"instance\":\"%" PRIu64
+                 "\",\"list_rev\":\"%" PRIu64 "\",\"revision\":\"%" PRIu64 "\"}",
+                 total, state->state_instance, state->lcn_list_rev, state->lcn_avoid_rev);
+}
+
+static void
+want_trunk_status(char* out, size_t cap, const dsd_state* state, int available, size_t total) {
+    char total_text[24] = "null";
+    if (available) {
+        DSD_SNPRINTF(total_text, sizeof total_text, "%zu", total);
+    }
+    DSD_SNPRINTF(out, cap,
+                 "\"scan_avoids\":{\"available\":%s,\"kind\":\"trunk_scan\",\"total\":%s,\"instance\":\"%" PRIu64
+                 "\",\"session\":%u,\"revision\":\"%" PRIu64 "\"}",
+                 available ? "true" : "false", total_text, state->state_instance, (unsigned)state->trunk_scan_session,
+                 state->trunk_scan_avoid_rev);
+}
+
+static long
+lcn_test_hz(int row) {
+    return 450000000L + (long)row * 12500L;
+}
+
+/* Replace the -Y list with @p rows rows named "<prefix> <row>", avoiding the rows @p avoid picks. */
+static void
+fill_lcn_list(dsd_state* state, int rows, const char* prefix, int (*avoid)(int row)) {
+    dsd_state_trunk_lcn_replace_begin(state);
+    assert(dsd_state_trunk_lcn_reserve(state, (size_t)rows) == 0);
+    for (int row = 0; row < rows; row++) {
+        char name[32];
+        DSD_SNPRINTF(name, sizeof name, "%s %d", prefix, row);
+        *dsd_state_trunk_lcn_slot(state, row) = lcn_test_hz(row);
+        assert(dsd_state_trunk_lcn_name_set(state, (size_t)row, name) == 0);
+    }
+    state->lcn_freq_count = rows;
+    for (int row = 0; row < rows; row++) {
+        if (avoid(row)) {
+            assert(dsd_state_trunk_lcn_avoid_set(state, (size_t)row, 1) == 0);
+        }
+    }
+}
+
+static int
+avoid_every_97th(int row) {
+    return row % 97 == 0;
+}
+
+/* Check one -Y entry against the row it must be: the identity scan_avoid_remove takes, the name and the view's label. */
+static void
+expect_lcn_entry(const dsd_json_node* e, const dsd_state* state, int row, const char* prefix) {
+    char name[32];
+    DSD_SNPRINTF(name, sizeof name, "%s %d", prefix, row);
+    assert(strcmp(json_str(e, "kind"), "lcn") == 0);
+    expect_u64_str(e, "instance", state->state_instance);
+    expect_u64_str(e, "list_rev", state->lcn_list_rev);
+    assert(json_u64(e, "row") == (uint64_t)row);
+    assert(json_u64(e, "frequency_hz") == (uint64_t)lcn_test_hz(row));
+    assert(strcmp(json_str(e, "name"), name) == 0);
+}
+
+/* A large sparse -Y list: every avoided row reached exactly once by paging, in row order, past the embedded rows. */
+static void
+scan_avoids_lcn_paging(avoid_rig* rig) {
+    enum { ROWS = 20000, AVOIDED = 207 }; /* rows 0, 97, ... 19982 */
+
+    fill_lcn_list(rig->state, ROWS, "Ch", avoid_every_97th);
+    assert(rig->state->lcn_avoid_total == (size_t)AVOIDED);
+    char want[320];
+    want_lcn_status(want, sizeof want, rig->state, AVOIDED);
+    await_status(rig, want);
+
+    size_t seen = 0U;
+    for (int page = 0;; page++) {
+        /* The first page uses the defaults: offset 0, limit 64. */
+        dsd_json_node* root = get_scan_avoids(rig, page == 0 ? -1 : (long long)seen, page == 0 ? -1 : 64);
+        const dsd_json_node* data = json_at(root, "data");
+        assert(json_at(data, "available")->boolean == 1 && strcmp(json_str(data, "kind"), "lcn") == 0);
+        assert(json_u64(data, "total") == (uint64_t)AVOIDED);
+        expect_u64_str(data, "instance", rig->state->state_instance);
+        expect_u64_str(data, "list_rev", rig->state->lcn_list_rev);
+        expect_u64_str(data, "revision", rig->state->lcn_avoid_rev);
+        assert(json_u64(data, "offset") == seen && json_u64(data, "limit") == 64U);
+        size_t count = 0U;
+        const dsd_json_node* entries = data_entries(root, &count);
+        assert(count == (AVOIDED - seen < 64U ? AVOIDED - seen : 64U));
+        for (size_t i = 0; i < count; i++) {
+            expect_lcn_entry(entries->items[i], rig->state, (int)(seen + i) * 97, "Ch");
+        }
+        seen += count;
+        dsd_json_free(root);
+        if (count < 64U) {
+            break;
+        }
+    }
+    assert(seen == (size_t)AVOIDED);
+
+    /* One entry, labelled as every frontend lists it; the row number first. */
+    dsd_json_node* root = get_scan_avoids(rig, 1, 1);
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    assert(count == 1U && strcmp(json_str(entries->items[0], "label"), "Row 98  451.212500 MHz  Ch 97") == 0);
+    /* An entry's identity fields are scan_avoid_remove's params as they are. */
+    char request[384];
+    DSD_SNPRINTF(request, sizeof request,
+                 "{\"id\":7,\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":\"%s\","
+                 "\"list_rev\":\"%s\",\"row\":97,\"frequency_hz\":451212500,\"name\":\"Ch 97\",\"label\":\"x\"}}\n",
+                 json_str(entries->items[0], "instance"), json_str(entries->items[0], "list_rev"));
+    dsd_json_free(root);
+    send_str(rig->get, request);
+    expect_line(rig->get, "{\"id\":7,\"ok\":true");
+
+    /* Past the end: an empty page of the same list, never an error. */
+    root = get_scan_avoids(rig, AVOIDED, -1);
+    assert(json_u64(json_at(root, "data"), "total") == (uint64_t)AVOIDED);
+    (void)data_entries(root, &count);
+    assert(count == 0U);
+    dsd_json_free(root);
+    send_str(rig->get, "{\"cmd\":\"get\",\"params\":{\"what\":\"scan_avoids\",\"offset\":\"18446744073709551615\"}}\n");
+    assert(read_line(rig->get, 5000U) == 1);
+    root = parse_line();
+    (void)data_entries(root, &count);
+    assert(count == 0U);
+    dsd_json_free(root);
+
+    expect_get_refused(rig, "\"limit\":0");
+    expect_get_refused(rig, "\"limit\":65");
+    expect_get_refused(rig, "\"limit\":-1");
+    expect_get_refused(rig, "\"limit\":1.5");
+    expect_get_refused(rig, "\"offset\":-1");
+    expect_get_refused(rig, "\"offset\":\"x\"");
+    expect_get_refused(rig, "\"offset\":true");
+}
+
+static void
+set_trunk_avoids(dsd_state* state, const dsd_trunk_scan_avoid_entry* entries, size_t count) {
+    assert(dsd_state_trunk_scan_avoids_set(state, entries, count) == 0);
+    state->trunk_scan_avoid_rev = dsd_state_rev_next();
+}
+
+static void
+expect_trunk_entry(const dsd_json_node* e, uint32_t session, const char* id, uint64_t hz, const char* name,
+                   const char* label) {
+    assert(strcmp(json_str(e, "kind"), "trunk_scan") == 0);
+    assert(json_at(e, "session")->type == DSD_JSON_NUMBER && json_u64(e, "session") == session);
+    assert(strcmp(json_str(e, "target_id"), id) == 0 && json_u64(e, "frequency_hz") == hz);
+    assert(strcmp(json_str(e, "name"), name) == 0 && strcmp(json_str(e, "label"), label) == 0);
+}
+
+/* A trunk scan's avoided targets; the copy is rebuilt only when the view's key moves. */
+static void
+scan_avoids_trunk_scan(avoid_rig* rig) {
+    static const dsd_trunk_scan_avoid_entry k_targets[] = {
+        {1U, 0U, 851012500U, "county-p25", "County Fire"},
+        {3U, 0U, 0U, "state-p25", ""},
+        {4U, 0U, 852000000U, "city-dmr", "City"},
+    };
+    rig->opts->trunk_scan_enabled = 1;
+    rig->state->trunk_scan_session = 4000000000U;
+    set_trunk_avoids(rig->state, k_targets, 3U);
+    char want[320];
+    want_trunk_status(want, sizeof want, rig->state, 1, 3U);
+    await_status(rig, want);
+
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    const dsd_json_node* data = json_at(root, "data");
+    assert(json_at(data, "session")->type == DSD_JSON_NUMBER && json_u64(data, "session") == 4000000000U);
+    assert(dsd_json_obj_get(data, "list_rev") == NULL);
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    assert(count == 3U);
+    expect_trunk_entry(entries->items[0], 4000000000U, "county-p25", 851012500U, "County Fire",
+                       "#1  county-p25  851.012500 MHz  County Fire");
+    expect_trunk_entry(entries->items[1], 4000000000U, "state-p25", 0U, "", "#3  state-p25  frequency unknown");
+    expect_trunk_entry(entries->items[2], 4000000000U, "city-dmr", 852000000U, "City",
+                       "#4  city-dmr  852.000000 MHz  City");
+    dsd_json_free(root);
+
+    /* A change under an unchanged key is not collected: the feed did no work at that key. */
+    DSD_SNPRINTF(rig->state->trunk_scan_avoids[0].label, sizeof rig->state->trunk_scan_avoids[0].label, "%s",
+                 "Renamed");
+    await_tick(rig, 9001);
+    root = get_scan_avoids(rig, 0, 1);
+    entries = data_entries(root, &count);
+    assert(count == 1U && strcmp(json_str(entries->items[0], "name"), "County Fire") == 0);
+    dsd_json_free(root);
+    /* A new revision is. */
+    rig->state->trunk_scan_avoid_rev = dsd_state_rev_next();
+    want_trunk_status(want, sizeof want, rig->state, 1, 3U);
+    await_status(rig, want);
+    root = get_scan_avoids(rig, 0, 1);
+    entries = data_entries(root, &count);
+    assert(count == 1U && strcmp(json_str(entries->items[0], "name"), "Renamed") == 0);
+    dsd_json_free(root);
+}
+
+/* status.scan_avoids and get agree on availability: both from the summary the feed holds. */
+static void
+expect_unavailable(avoid_rig* rig) {
+    char want[320];
+    want_trunk_status(want, sizeof want, rig->state, 0, 0U);
+    await_status(rig, want);
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    const dsd_json_node* data = json_at(root, "data");
+    assert(json_at(data, "available")->boolean == 0 && json_at(data, "total")->type == DSD_JSON_NULL);
+    expect_u64_str(data, "revision", rig->state->trunk_scan_avoid_rev);
+    size_t count = 1U;
+    (void)data_entries(root, &count);
+    assert(count == 0U);
+    dsd_json_free(root);
+}
+
+/* T2: list A collected, then revision B whose collection fails, then B again once it can be collected. A store the
+   collection cannot read (a count with no list) fails dsd_app_scan_avoid_raw_collect() just as a failed allocation
+   would. At each step status and get answer alike, and the failure never leaves A's entries served as current. */
+static void
+scan_avoids_failed_collection(avoid_rig* rig) {
+    dsd_trunk_scan_avoid_entry* list = rig->state->trunk_scan_avoids;
+    rig->state->trunk_scan_avoids = NULL;
+    rig->state->trunk_scan_avoid_count = 2U;
+    rig->state->trunk_scan_avoid_rev = dsd_state_rev_next();
+    expect_unavailable(rig);
+    /* Still failing at the same key: retried every tick, still unavailable. */
+    await_tick(rig, 9002);
+    expect_unavailable(rig);
+
+    rig->state->trunk_scan_avoids = list;
+    char want[320];
+    want_trunk_status(want, sizeof want, rig->state, 1, 2U);
+    await_status(rig, want);
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    expect_u64_str(json_at(root, "data"), "revision", rig->state->trunk_scan_avoid_rev);
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    assert(count == 2U && strcmp(json_str(entries->items[1], "target_id"), "state-p25") == 0);
+    dsd_json_free(root);
+
+    /* The coordinator could not publish its list: unavailable until it can. */
+    rig->state->trunk_scan_avoids_ok = 0U;
+    rig->state->trunk_scan_avoid_rev = dsd_state_rev_next();
+    expect_unavailable(rig);
+    rig->state->trunk_scan_avoids_ok = 1U;
+    rig->state->trunk_scan_avoid_rev = dsd_state_rev_next();
+    want_trunk_status(want, sizeof want, rig->state, 1, 2U);
+    await_status(rig, want);
+}
+
+static int
+avoid_row_1(int row) {
+    return row == 1;
+}
+
+/* A decoder restart (a new state instance) replaces the copy, even for the same list. */
+static void
+scan_avoids_restart(avoid_rig* rig) {
+    rig->opts->trunk_scan_enabled = 0;
+    fill_lcn_list(rig->state, 3, "Ch", avoid_row_1);
+    char want[320];
+    want_lcn_status(want, sizeof want, rig->state, 1U);
+    await_status(rig, want);
+    const uint64_t before = rig->state->state_instance;
+
+    freeState(rig->state);
+    initState(rig->state);
+    assert(rig->state->state_instance != before);
+    fill_lcn_list(rig->state, 3, "Ch", avoid_row_1);
+    want_lcn_status(want, sizeof want, rig->state, 1U);
+    await_status(rig, want);
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    expect_u64_str(json_at(root, "data"), "instance", rig->state->state_instance);
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    assert(count == 1U);
+    expect_lcn_entry(entries->items[0], rig->state, 1, "Ch");
+    dsd_json_free(root);
+}
+
+static int
+avoid_even_below_300(int row) {
+    return row < 300 && row % 2 == 0;
+}
+
+static int
+avoid_1_mod_4(int row) {
+    return row % 4 == 1;
+}
+
+/* One page served while the list may have changed: whole, and of one list only. */
+static void
+expect_consistent_page(long long offset) {
+    dsd_json_node* root = parse_line();
+    const dsd_json_node* data = json_at(root, "data");
+    const uint64_t total = json_u64(data, "total");
+    assert(total == 150U || total == 100U);
+    const char* prefix = total == 150U ? "X" : "Y";
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    const uint64_t left = total > (uint64_t)offset ? total - (uint64_t)offset : 0U;
+    assert(count == (left < 64U ? left : 64U));
+    for (size_t i = 0; i < count; i++) {
+        const uint64_t k = (uint64_t)offset + i;
+        const int row = total == 150U ? (int)(k * 2U) : (int)(k * 4U + 1U);
+        char name[32];
+        DSD_SNPRINTF(name, sizeof name, "%s %d", prefix, row);
+        assert(json_u64(entries->items[i], "row") == (uint64_t)row);
+        assert(strcmp(json_str(entries->items[i], "name"), name) == 0);
+        assert(strcmp(json_str(entries->items[i], "list_rev"), json_str(data, "list_rev")) == 0);
+    }
+    dsd_json_free(root);
+}
+
+/* Pages requested while the decode thread swaps in new lists: every reply is formatted from one immutable copy (run
+   under asan/tsan, a copy freed or rewritten under a reader shows). */
+static void
+scan_avoids_concurrent_paging(avoid_rig* rig) {
+    static const long long k_offsets[] = {0, 40, 64, 99, 128, 149};
+
+    enum { OFFSETS = (int)(sizeof k_offsets / sizeof k_offsets[0]) };
+
+    fill_lcn_list(rig->state, 400, "X", avoid_even_below_300);
+    char want[320];
+    want_lcn_status(want, sizeof want, rig->state, 150U);
+    await_status(rig, want);
+    for (int round = 1; round <= 10; round++) {
+        if (round % 2 == 0) {
+            fill_lcn_list(rig->state, 400, "X", avoid_even_below_300);
+        } else {
+            fill_lcn_list(rig->state, 400, "Y", avoid_1_mod_4);
+        }
+        /* Past the feed's interval, so the next publish collects the new list. */
+        dsd_sleep_ms(260);
+        for (int i = 0; i < OFFSETS; i++) {
+            send_get_scan_avoids(rig->get, k_offsets[i], 64);
+        }
+        dsd_telemetry_publish_both_and_redraw(rig->opts, rig->state);
+        for (int i = 0; i < OFFSETS; i++) {
+            assert(read_line(rig->get, 5000U) == 1);
+            expect_consistent_page(k_offsets[i]);
+        }
+    }
+}
+
+/* The largest page -- 64 entries whose ids and labels are all control bytes, each escaped to six -- stays a small
+   fraction of the 1 MiB backlog a client may have, so paging never costs a client its connection. */
+static void
+scan_avoids_largest_page(avoid_rig* rig) {
+    enum { TARGETS = 64, OUTBOX_BYTES = 1 << 20 };
+
+    dsd_trunk_scan_avoid_entry* list = (dsd_trunk_scan_avoid_entry*)calloc(TARGETS, sizeof(*list));
+    assert(list != NULL);
+    for (uint32_t i = 0; i < TARGETS; i++) {
+        list[i].ordinal = i + 1U;
+        list[i].frequency_hz = 851012500U;
+        DSD_MEMSET(list[i].id, 0x01, sizeof list[i].id - 1U);
+        DSD_MEMSET(list[i].label, 0x02, sizeof list[i].label - 1U);
+    }
+    rig->opts->trunk_scan_enabled = 1;
+    set_trunk_avoids(rig->state, list, TARGETS);
+    free(list);
+    char want[320];
+    want_trunk_status(want, sizeof want, rig->state, 1, TARGETS);
+    await_status(rig, want);
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    size_t count = 0U;
+    (void)data_entries(root, &count);
+    assert(count == (size_t)TARGETS);
+    /* About 102 KiB: under an eighth of the backlog. */
+    assert(strlen(g_line) < (size_t)OUTBOX_BYTES / 8U);
+    dsd_json_free(root);
+}
+
+static void
+test_scan_avoids(void) {
+    avoid_rig rig;
+    rig.opts = (dsd_opts*)calloc(1U, sizeof(*rig.opts));
+    rig.state = (dsd_state*)calloc(1U, sizeof(*rig.state));
+    assert(rig.opts != NULL && rig.state != NULL);
+    initOpts(rig.opts);
+    initState(rig.state);
+    dsd_app_frontend_runtime_start(rig.opts, rig.state);
+    const int port = start_server(NULL, 0, 0);
+    rig.sub = open_session(port, "\"type\":\"welcome\"");
+    send_str(rig.sub, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"status\"]}\n");
+    expect_line(rig.sub, "{\"id\":1,\"ok\":true");
+    rig.get = open_session(port, "\"type\":\"welcome\"");
+
+    /* No scan and no channel map: nothing to avoid, and nothing is listed. */
+    char want[256];
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan_avoids\":{\"available\":true,\"kind\":\"none\",\"total\":0,\"instance\":\"%" PRIu64
+                 "\",\"revision\":\"0\"}",
+                 rig.state->state_instance);
+    await_status(&rig, want);
+    dsd_json_node* root = get_scan_avoids(&rig, -1, -1);
+    assert(strcmp(json_str(json_at(root, "data"), "kind"), "none") == 0);
+    size_t count = 1U;
+    (void)data_entries(root, &count);
+    assert(count == 0U);
+    dsd_json_free(root);
+
+    scan_avoids_lcn_paging(&rig);
+    scan_avoids_trunk_scan(&rig);
+    scan_avoids_failed_collection(&rig);
+    scan_avoids_restart(&rig);
+    scan_avoids_concurrent_paging(&rig);
+    scan_avoids_largest_page(&rig);
+
+    dsd_api_stop();
+    dsd_socket_close(rig.get);
+    /* The copy went with the feed: a reconnecting client sees nothing until the feed has looked again. */
+    const int port2 = start_server(NULL, 0, 0);
+    rig.get = open_session(port2, "\"type\":\"welcome\"");
+    send_get_scan_avoids(rig.get, -1, -1);
+    expect_line(rig.get, "{\"id\":null,\"ok\":true,\"what\":\"scan_avoids\",\"data\":null}");
+    dsd_socket_close(rig.get);
+    dsd_api_stop();
+    dsd_socket_close(rig.sub);
+    dsd_app_frontend_runtime_stop();
+    freeState(rig.state);
+    free(rig.state);
+    free(rig.opts);
+}
+
 /* A request still queued when the decoder stops is cancelled as the command session closes; the server, stopped right
    after (as the CLI does, most likely while its result pump sleeps), still reports that before it disconnects. */
 static void
@@ -908,6 +1463,7 @@ main(void) {
     test_authentication();
     test_feed();
     test_rr_apply_outcome_in_status_feed();
+    test_scan_avoids();
     test_results_at_stop();
     printf("api server tests passed\n");
     return 0;

@@ -174,10 +174,10 @@ match responses by `id`.
 
 * Integer parameters take JSON integers. `5.0` and `5e0` are not integers.
 * 64-bit values -- key words, `policy_context`, `wacn`/`sysid`/`cc`,
-  `tune_generation`, `key_epoch` -- also take a string holding a decimal value or
-  a `0x`-prefixed hexadecimal one, so a client whose JSON numbers are doubles
-  can send every bit. The server writes 64-bit identifiers as decimal strings
-  for the same reason.
+  `tune_generation`, `key_epoch`, the scan avoid `instance` and `list_rev` --
+  also take a string holding a decimal value or a `0x`-prefixed hexadecimal
+  one, so a client whose JSON numbers are doubles can send every bit. The
+  server writes 64-bit identifiers as decimal strings for the same reason.
 * Booleans take `true`/`false` or `0`/`1`.
 * A string longer than the command's field is refused with `invalid_params`,
   never cut short. Each string command's limit is in its catalog entry (most
@@ -191,7 +191,7 @@ match responses by `id`.
 | `auth` | `{token}` | `{authenticated:true}`, or `unauthorized` and the connection closes |
 | `subscribe` | `{topics:[...]}` | `{topics:[now subscribed]}` |
 | `unsubscribe` | `{topics:[...]}` | `{topics:[still subscribed]}` |
-| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality` | `{what, data}`: the latest record of that topic, `null` before the decoder has published one |
+| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; or `scan_avoids` with optional `offset` and `limit` | `{what, data}`: the latest record of that topic, `null` before the decoder has published one; for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)) |
 | `list_commands` | – | `{commands:[{name,id,params}, ...]}` |
 
 Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`, or
@@ -324,6 +324,10 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
   scan's target count or the `-Y` list's row count (`0` with no scan). A `-Y`
   resume still waiting for its row's tune reads `paused`. `null` until the
   decoder has published its options.
+* `scan_avoids`: `{available, kind, total, instance, list_rev | session,
+  revision}`, a summary of the channels the scan avoids this session; the
+  entries themselves are paged with `get` (see [Scan avoids](#scan-avoids)).
+  `null` until the decoder has published its options.
 * `tg_policy`: `{context, generation}` of the talkgroup list. The list-editing
   commands must quote both; an edit naming an older list is refused.
 * `decryption`: `{target_id, tune_generation, key_epoch}`, the context a
@@ -435,6 +439,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `scan_hold_toggle` | – |
 | `scan_avoid` | – |
 | `scan_avoid_clear` | – |
+| `scan_avoid_remove` | `{kind:lcn\|trunk_scan,instance,list_rev,row,frequency_hz,session,target_id}` |
 | `scan_resume` | – |
 | `quit` | – |
 | `force_priv_toggle` | – |
@@ -787,6 +792,23 @@ field, and the decoder refuses the rest when it applies the command.
   trunk scan pauses where it is (it cannot be stopped at runtime); a running
   `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
   waiting for its row's tune is left alone.
+* **`scan_avoid`**: the terminal's `b`. Avoids the `-Y` row or trunk-scan
+  target on air for the rest of the session and steps on. It needs a running
+  scan (refused while paused), and the last usable row or target is never
+  avoided.
+* **`scan_avoid_clear`**: puts every avoided channel back. It works whenever
+  avoids exist: with the scan running or paused, and for `-Y` rows also after
+  `-Y` stopped or under `-T`, whose control-channel hunts skip avoided rows.
+* **`scan_avoid_remove`**: puts one avoided channel back. Send the identity of
+  an entry from `get {"what":"scan_avoids"}`: for `"kind":"lcn"` its
+  `instance`, `list_rev`, `row` and `frequency_hz`; for `"kind":"trunk_scan"`
+  its `session` (1..4294967295) and `target_id`. Extra fields are ignored, so
+  an entry can be sent back as it was read. It never retunes, and it works
+  while the scan is paused, after `-Y` stopped, under `-T` and during an I/Q
+  replay; Signal search refuses it. The decoder checks the identity against
+  the live list: an entry from a replaced list, a restarted decoder or the
+  other scanner changes nothing (`status.message` says `Scan list changed;
+  nothing put back`), and one already back says `Already put back: ...`.
 * **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
   scan on the row it would have stepped to next, a trunk scan on the target it
   left, with fresh timers. A running scan is left as it is (`Not paused: the
@@ -805,6 +827,41 @@ field, and the decoder refuses the rest when it applies the command.
 Secret material (keys, tokens, account keys, configs) is never logged or echoed,
 and the server erases its copies of request lines and parsed values once a
 request is handled.
+
+### Scan avoids
+
+`get` with `"what":"scan_avoids"` pages through the channels the scan avoids
+this session: the `-Y` rows (`kind` `lcn`) or the trunk-scan targets
+(`trunk_scan`, which wins while `--trunk-scan` is configured); `none` when the
+session has neither.
+
+```json
+{"cmd":"get","params":{"what":"scan_avoids","offset":0,"limit":64}}
+{"id":null,"ok":true,"what":"scan_avoids","data":{"available":true,"kind":"lcn","total":2,"instance":"4","list_rev":"7","revision":"12","offset":0,"limit":64,"entries":[{"kind":"lcn","instance":"4","list_rev":"7","row":2,"frequency_hz":851012500,"name":"Fire Dispatch","label":"Row 3  851.012500 MHz  Fire Dispatch"},{"kind":"lcn","instance":"4","list_rev":"7","row":5,"frequency_hz":0,"name":"","label":"Row 6  frequency unknown"}]}}
+```
+
+* `offset` starts at `0` (the default); a page past the end is empty.
+  `limit` is `1` to `64` (default `64`). Anything else is `invalid_params`.
+* `data` starts with the same summary as `status.scan_avoids`: `available`,
+  `kind`, `total` (the number of avoided entries, `null` while unavailable),
+  `instance`, `list_rev` (`lcn`) or `session` (`trunk_scan`), and `revision`.
+  `data` is `null` until the decoder has published its options.
+* Entries come in list order (rows ascending, targets in target-list order).
+  Each carries the identity `scan_avoid_remove` takes, `name` (the row's name
+  or the target's label column, `""` for none) and `label`, the text every
+  DSD-neo frontend lists it by (a trunk-scan label starts with the target's
+  position in the list, `#2`). A frequency not yet known is `0`.
+* `revision` moves whenever the list could have changed. A client paging
+  through a list starts again from `offset` `0` when `revision`, `instance` or
+  `kind` changes between pages.
+* `available` is `false` while the decoder cannot list the entries (it could
+  not allocate the list); the page is then empty, and `scan_avoid_clear` still
+  works. A later revision, or the next telemetry update, brings the entries
+  back.
+
+The list is refreshed with the 250 ms telemetry updates, so a page can lag a
+change by that much; `scan_avoid_remove` checks the identity it is sent against
+the live list either way.
 
 ## Examples
 
