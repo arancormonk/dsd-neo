@@ -628,7 +628,10 @@ Item {
             freqField.text = result.freqMhz;
         wizard.decodeFlag = result.decodeFlag;
         // A bandwidth kept from an edited system that cannot decode TETRA:
-        // an empty field runs it at the 72 kHz it needs.
+        // an empty field runs it at the 72 kHz it needs. On an Airspy, where
+        // the field is hidden, any stored bandwidth is cleared: TETRA is held
+        // there anyway, and the 72 kHz is then ready for a switch to USB or
+        // rtl_tcp.
         if (bwText.length > 0 && tetraRateError().length > 0)
             bwText = "";
         // The database's answer, and an answer: a chip tap after the import

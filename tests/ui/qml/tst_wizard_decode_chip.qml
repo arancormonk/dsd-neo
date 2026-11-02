@@ -158,7 +158,8 @@ Item {
             verify(iq.text.indexOf("Airspy") >= 0, iq.text)
             findChild(tc.wizard, "wizardSource_usb").clicked()
             verify(!iq.visible)
-            tc.wizard.step = 0
+            // A fresh wizard for the next case: this one imported a system.
+            tc.wizard.openForAdd(false)
         }
 
         // Regression (#803 D-B2/D-B3): TETRA decodes only at a 72 kHz
@@ -187,7 +188,8 @@ Item {
             tc.wizard.pickDecodeFlag("-fs")
             compare(bw.placeholderText, String(sessionArgs.effectiveBandwidthKhz("-fs", "usb", -1)),
                     "another mode's placeholder is not what an empty field runs at")
-            tc.wizard.step = 0
+            // A fresh wizard for the next case: this one left a source and a flag.
+            tc.wizard.openForAdd(false)
         }
 
         // The simulcast import. "-mq -^" is what dsd_rr_decode_flag() answers

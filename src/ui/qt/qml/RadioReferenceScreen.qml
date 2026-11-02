@@ -1502,6 +1502,9 @@ Item {
                         ReadableText {
                             id: warningLine
 
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "radioReferencePlanWarning"
+
                             required property var modelData
 
                             width: previewColumn.width

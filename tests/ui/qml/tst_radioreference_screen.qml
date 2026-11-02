@@ -311,38 +311,50 @@ Item {
 
         // Regression (#803 D-B5): the scanning sentence named only a USB
         // RTL-SDR and rtl_tcp, but -Y scans on an Airspy too, as the shared
-        // import warning shown beside it says.
+        // import warning shown beside it says. The warning is the generator's
+        // own string (rr_generate.c), as buildImportPlan() hands it over.
         function test_20_the_scanning_note_names_every_radio_that_scans() {
+            var scanWarning = "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                    + "rigctl-controlled radio; on any other input the session stays on the first frequency."
             testContext.setRadioReference("conventional", true)
             testContext.setRadioReference("trunked", false)
             loadTwoSiteSystem()
             tc.screen.toggleSite(0)
             tc.screen.toggleSite(1)
             tc.screen.plan = {ok: true, freqMhz: "851.0125", decodeFlag: "-ft -Y", trunking: false,
-                              scanList: true, warnings: []}
+                              scanList: true, warnings: [scanWarning]}
+            var warning = null
+            tryVerify(function () {
+                warning = findChild(tc.screen, "radioReferencePlanWarning")
+                return warning !== null && warning.visible
+            }, 2000, "the preview does not show the scan warning")
+            compare(warning.text, "• " + scanWarning)
             var review = openReview()
             var body = reviewBody()
             for (var radio of ["USB RTL-SDR", "rtl_tcp", "Airspy"])
                 verify(body.text.indexOf(radio) >= 0, "the scanning note does not name " + radio + ": " + body.text)
+            // The note and the warning beside it agree on the Airspy.
+            verify(warning.text.indexOf("Airspy") >= 0 && body.text.indexOf("Airspy") >= 0)
             closeReview(review)
         }
 
         // Regression (#803 D-B6): the custom band plan advice sends the user
         // to a P25 band plan CSV, which only a P25 system reads.
         function test_21_the_band_plan_advice_is_for_p25_only() {
-            loadTetraSystem(1)
-            var details = Object.assign({}, radioReference.systemDetails)
-            details.hasCustomBandplan = true
-            testContext.setRadioReference("systemDetails", details)
             var bandplan = findChild(tc.screen, "radioReferenceBandplanNote")
             verify(bandplan !== null, "the band plan note has no name to find it by")
-            wait(50)
-            verify(!bandplan.visible, "a TETRA system was told to import a P25 band plan")
+            testContext.setRadioReference("credentialsReady", true)
             testContext.setRadioReference("systemDetails", {
                                               "sid": 6673, "name": "Test System", "typeDescr": "Project 25",
                                               "flavorDescr": "Phase II", "protocolToken": "p25",
                                               "hasCustomBandplan": true })
             tryVerify(function () { return bandplan.visible }, 2000, "a P25 system lost its band plan advice")
+            // The same band plan flag on a TETRA system: the note goes.
+            loadTetraSystem(1)
+            var details = Object.assign({}, radioReference.systemDetails)
+            details.hasCustomBandplan = true
+            testContext.setRadioReference("systemDetails", details)
+            tryVerify(function () { return !bandplan.visible }, 2000, "a TETRA system was told to import a P25 band plan")
         }
 
         function initTestCase() {
