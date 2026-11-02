@@ -17,6 +17,7 @@ import tempfile
 import threading
 
 ANALOG_ROW = re.compile(r" ANALOG(?: NFM| AM)?;")
+RECEIVE_BUFFER_BYTES = 4 << 20
 SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|LeakSanitizer|runtime error:")
 
 
@@ -39,15 +40,18 @@ run.count = 0
 
 
 def bind_port_pair():
-    """Two UDP sockets on 127.0.0.1, ports base and base+2, both free."""
+    """Two UDP sockets on 127.0.0.1, ports base and base+2, both free, each with a 4 MiB receive buffer: a replay sends
+    its whole capture in a burst, and a drain thread descheduled under a parallel ctest run must not lose a datagram."""
     for _ in range(50):
         base = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        base.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECEIVE_BUFFER_BYTES)
         base.bind(("127.0.0.1", 0))
         port = base.getsockname()[1]
         if port + 2 > 65535:
             base.close()
             continue
         analog = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        analog.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECEIVE_BUFFER_BYTES)
         try:
             analog.bind(("127.0.0.1", port + 2))
         except OSError:

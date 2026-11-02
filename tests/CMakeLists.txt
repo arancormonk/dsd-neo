@@ -5304,7 +5304,7 @@ add_test(NAME RUNTIME_NUMBER_TEXT COMMAND dsd-neo_test_runtime_number_text)
 
 # The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
 # views and the policy: the tone table, the DCS codes, their Golay words against the published
-# reference words, the alias rule and its golden table, the two standard spellings of every
+# reference words, the alias rule and its golden table, the two supported spellings of every
 # code's signal, and the formatters.
 add_executable(
     dsd-neo_test_runtime_analog_tones
@@ -18182,7 +18182,7 @@ if(DSD_HAS_RADIO)
     )
     # Received DCS on the analog FM monitor (issue #523): synthetic NFM with voice and a DCS
     # word at 600 Hz deviation, correct by construction (tools/build_iq_fixtures.py), replayed
-    # the same way. Each asserts the signal the log names by both of its standard spellings,
+    # the same way. Each asserts the signal the log names by both of its supported spellings,
     # canonical first -- D023N is also D047I, and the inverted word is the signal of D047N,
     # also D023I, so it must read "D047N / D023I", never "D023N / D047I" -- and that nothing
     # else was reported: any label led by another spelling. "Any other code" is spelled out
@@ -18320,18 +18320,6 @@ if(DSD_HAS_RADIO)
         "IQ replay: end of capture after 72000 samples"
         " ANALOG AM. FREQ: 851\\.375000 MHz.  *\n"
         1
-    )
-    # A kerchunk (D1): nfm_burst_synth keys its carrier for 250 ms, which the -28 dB level squelch passes as 13 blocks
-    # of 20 ms (DECODE_IQ_ANALOG_SQL_LEVEL_NFM_DETERMINISM pins that gate). With the 200 ms hangover that is 460 ms,
-    # under the 500 ms a reception needs to be a call, so the whole capture replays and the event history, which the
-    # run starts, holds no analog row. Earlier versions logged one.
-    dsd_neo_add_iq_analog_row_test(
-        DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
-        nfm_burst_synth
-        "-fA --squelch -28"
-        "IQ replay: end of capture after 36000 samples"
-        "Event History Initialized"
-        0
     )
 
     # Analog calls sound no call alert (issue #667 A1): with -a, stdout carries the same analog monitor bytes, and over
@@ -19703,7 +19691,7 @@ if(DSD_HAS_RADIO)
     )
     # Received DCS through the host (issue #523): the synthetic DCS fixtures carry the code
     # from their start, and the host's tone= field reads the publication's code as both of
-    # its standard spellings, canonical first, joined by a slash with no space:
+    # its supported spellings, canonical first, joined by a slash with no space:
     # D023N/D047I for the normal word, D047N/D023I for the inverted D023 word. Each locks
     # within the 10 dB lock bound (360 ms measured, 83% of the run locked) and reports no
     # other code, no tone and no "none".
@@ -20111,6 +20099,24 @@ if(DSD_HAS_RADIO)
         "-fM --squelch -30 ${_sql_level_burst_bounds}"
         ""
         "${_analog_off_path}"
+    )
+    # A kerchunk (issue #667 D1): the same burst, through the same gate and held to the same bounds in this run (250-270
+    # ms audible, so the carrier opened the squelch and reached the monitor and the tracker), with -P on: 260 ms and the
+    # 200 ms hangover are 460 ms, under the 500 ms a reception needs to be a call. No recording, no journal line and no
+    # analog history row (analog_recording_check.cmake). Earlier versions made a row and a recording of it.
+    add_test(
+        NAME DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=-fA --squelch -28 --iq-replay ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_burst_synth.iq.json ${_sql_level_burst_bounds}"
+            "-DFILES=0" "-DDURATIONS_MS=" "-DROWS_EXPECTED=^$"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/DECODE_IQ_ANALOG_KERCHUNK_NO_ROW"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
+        PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
     )
     set(_scan_sql_level_csv
         "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_level_row.csv"

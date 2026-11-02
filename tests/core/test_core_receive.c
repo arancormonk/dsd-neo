@@ -3112,9 +3112,10 @@ test_analog_rdio_skip_is_quiet(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Issue #667 B6: under --rdio-mode an analog call's recording stays local, through real publication, NFM and AM
-   alike. Its row has no talkgroup to name an export by, so the WAV is published in the recording folder under its mode
-   and linked to its row in the journal, and nothing goes to rdio-scanner: no DirWatch sidecar beside it (the folder
-   holds the WAV alone), no upload queued (the journal's "rdio" is false) and no export warning. */
+   alike, in DirWatch mode and with the API upload on too (both). Its row has no talkgroup to name an export by, so the
+   WAV is published in the recording folder under its mode and linked to its row in the journal, and nothing goes to
+   rdio-scanner: no DirWatch sidecar beside it (the folder holds the WAV alone), no upload queued (the journal's "rdio"
+   is false) and no export warning. */
 static void
 test_analog_recordings_stay_local(void) {
     static const struct {
@@ -3125,7 +3126,9 @@ test_analog_recordings_stay_local(void) {
         {DSD_ANALOG_DEMOD_AM, "AM"},
     };
 
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    static const int modes[] = {DSD_RDIO_MODE_DIRWATCH, DSD_RDIO_MODE_BOTH};
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0] * 2U; k++) {
+        const size_t i = k / 2U;
         hold_rig r;
         hold_journal j;
         hold_open(&r, "dsdneo_analog_local", 0);
@@ -3134,7 +3137,9 @@ test_analog_recordings_stay_local(void) {
         r.opts->analog_demod = cases[i].demod;
         r.opts->rtlsdr_center_freq = 154430000U;
         set_radio_squelch(r.opts);
-        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_mode = modes[k % 2U];
+        r.opts->rdio_system_id = 7;
+        DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:9");
         g_rdio_warnings = 0;
         g_rdio_failed = 0;
         hold_expect_a_call(&r, cases[i].mode);

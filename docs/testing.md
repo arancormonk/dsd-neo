@@ -1518,8 +1518,8 @@ fixed-seed start there locks within 700 ms.
   78.125 kHz), replayed exactly, show the code 346 and 357 ms after its onset; a rule that let the first lock keep the
   publication showed D122N only after 535 ms, when the tone was lost.
 - Rejection: ten minutes of random bits at 134.4 bit/s; the 74 rotation classes of the Golay (23,12) code that carry
-  no standard code, in both polarities; every standard word sent bit-reversed that is more than one bit from every
-  standard word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB, never locking even for a moment; and two
+  no supported code, in both polarities; every supported word sent bit-reversed that is more than one bit from every
+  supported word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB, never locking even for a moment; and two
   minutes each of unfiltered and transmitter-filtered speech: none locks. A carrier with no code reads `detecting`
   until 500 ms, then `none`, and a code that starts later still locks within its bound. A rate beyond the detector's
   sample ring (none the front end delivers) leaves it inert, reporting no code.
@@ -1546,12 +1546,12 @@ shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW
 `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N / D047I` text (both spellings of the signal,
 canonical first, with the second one's code and polarity beside the first's), the names the view refuses (an unsupported
 code, a rotation alias, a non-canonical polarity), and the received code kept apart from a configured policy value.
-`RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the canonical normal code and
-one inverted code, against the golden alias table, and the label that names both; and that every supported code's word
-carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies on. `RUNTIME_ANALOG_TONES`
-and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS
-page), 047 a standard code of its own and 020 a word of another rotation class, so check bits that do not follow from
-023's, before and after the mapping onto `Golay24.hpp`.
+`RUNTIME_ANALOG_TONES` pins that every supported signal has exactly two supported spellings, the canonical normal code
+and one inverted code, against the golden alias table, and the label that names both; and that every supported code's
+word carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies on.
+`RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020 and
+000 (onfreq's DPL/DCS page), 047 a supported code of its own and 020 a word of another rotation class, so check bits
+that do not follow from 023's, before and after the mapping onto `Golay24.hpp`.
 
 Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model through the pure receive core, a random code and polarity
 per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets its ceilings above the slowest event):
@@ -2575,18 +2575,19 @@ on NFM only. Audio input (`DECODE_PCM_*`, PCM taps) is never paused and needs no
 
 #### Analog rows in the event history (issue #667)
 
-These cases replay a committed fixture through `iq_decode_check.cmake` with `-J` and check the analog rows it
-publishes. `EVENT_EXPECTED` must match the event history, and `EVENT_COUNT_REGEX` must match it exactly `EVENT_COUNT`
-times, 0 included. Here the count regex is ` ANALOG`, so each case pins how many analog rows the run published, and a
-case expecting a row pins that it is the only one. A `.` stands for each `;` of a row, which an `add_test` argument
-would split at.
+The three `_ROW` cases replay a committed fixture through `iq_decode_check.cmake` with `-J` and check the analog rows
+it publishes. `EVENT_EXPECTED` must match the event history, and `EVENT_COUNT_REGEX` must match it exactly
+`EVENT_COUNT` times (the script refuses either count option without the other, and both without `EVENT_EXPECTED`).
+Here the count regex is ` ANALOG`, so a case expecting a row pins that it is the only one. A `.` stands for each `;`
+of a row, which an `add_test` argument would split at. The kerchunk case runs the analog replay host through
+`analog_recording_check.cmake`, and the alert case runs `tests/analog_alert_output_check.py`.
 
 | Case | What it pins |
 | --- | --- |
 | `DECODE_IQ_ANALOG_CTCSS_1000_ROW` | `nfm_ctcss_synth_1000` under `-fA --squelch -60`: one row, `ANALOG NFM; FREQ: 851.375000 MHz; CTCSS 100.0 Hz;` |
 | `DECODE_IQ_ANALOG_DCS_023N_ROW` | `nfm_dcs_synth_023n`, the same: one row, `... DCS D023N / D047I;` (both spellings, normal first) |
 | `DECODE_IQ_ANALOG_AM_ROW` | `am_tone_synth` under `-fM --squelch -60`: one row, `ANALOG AM; FREQ: 851.375000 MHz;`, no tone token |
-| `DECODE_IQ_ANALOG_KERCHUNK_NO_ROW` | `nfm_burst_synth` under `-fA --squelch -28`: the whole capture replays (`end of capture after 36000 samples`) and the history the run starts holds no analog row. The squelch passes the 250 ms burst as 13 blocks of 20 ms (`DECODE_IQ_ANALOG_SQL_LEVEL_NFM_DETERMINISM` pins that gate), 460 ms with the hangover, under the 500 ms minimum. |
+| `DECODE_IQ_ANALOG_KERCHUNK_NO_ROW` | `nfm_burst_synth` under `-fA --squelch -28` with `-P`, through the analog replay host and `analog_recording_check.cmake`: in the same run the host holds the monitor to the bounds of `DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST` (250-270 ms audible, first audible at 270-290 ms), so the burst did open the squelch, and the run leaves no recording, no journal line and no analog history row. 260 ms of signal and the 200 ms hangover are 460 ms, under the 500 ms minimum. With the squelch at -5 dB, which the burst never opens, the case fails on its audible bounds. |
 | `DECODE_IQ_ANALOG_NO_CALL_ALERT` | `tests/analog_alert_output_check.py` (POSIX, Python): `nfm_ctcss_synth_1000` with one analog row in `-J`, replayed to `-o -` with and without `-a`, writes the same stdout bytes, and to `-o udp:127.0.0.1:<base>` sends every byte to `<base>+2` and none to `<base>`, with and without `-a` (A1). The script drains both ports on a thread while the replay runs, so the receive buffer never drops a datagram. |
 
 Before issue #667 each case failed: the row cases on the old row text (`ANALOG NFM; FREQ: 851.375000 MHz;`

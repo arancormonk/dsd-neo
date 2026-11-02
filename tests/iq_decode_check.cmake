@@ -11,8 +11,9 @@
 # EXPECTED2/MIN_MATCHES2 and EXPECTED3/MIN_MATCHES3 (further payloads the same
 # run must print, at least as often; a MIN_MATCHESn of its own defaults to 1),
 # EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match),
-# EVENT_COUNT_REGEX with EVENT_COUNT (with EVENT_EXPECTED: the event history
-# must hold exactly EVENT_COUNT non-overlapping matches of it, 0 included),
+# EVENT_COUNT_REGEX with EVENT_COUNT, each refused without the other (with
+# EVENT_EXPECTED: the event history must hold exactly EVENT_COUNT
+# non-overlapping matches of it, 0 included),
 # and AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
 # at least that many bytes, not all of them zero).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
@@ -34,6 +35,12 @@ if(DEFINED EVENT_COUNT_REGEX AND NOT DEFINED EVENT_EXPECTED)
     message(
         FATAL_ERROR
         "iq_decode_check: EVENT_COUNT_REGEX needs -DEVENT_EXPECTED"
+    )
+endif()
+if(DEFINED EVENT_COUNT AND NOT DEFINED EVENT_COUNT_REGEX)
+    message(
+        FATAL_ERROR
+        "iq_decode_check: EVENT_COUNT needs -DEVENT_COUNT_REGEX"
     )
 endif()
 if(DEFINED EVENT_EXPECTED)
