@@ -1033,6 +1033,122 @@ test_owned_prompt(void) {
     assert(g_owned.callbacks == 1 && strcmp(g_owned.text, "ab") == 0 && g_owned.disposed == 1);
 }
 
+/* ---- Implicit ownership and the secret prompt's mask (issue #672, B8; review round 1) ---- */
+
+typedef struct {
+    int callbacks;
+    int got_null;
+    int reopen;   /* 1: the callback reopens a prompt with its own context, without taking it */
+    int borrowed; /* 1: that reopen is a plain (borrowed) open */
+} HeapPrompt;
+
+static int g_heap_prompt_disposed = 0;
+
+static void
+heap_prompt_dispose(void* user) {
+    g_heap_prompt_disposed++;
+    free(user);
+}
+
+static void
+heap_prompt_done(void* user, const char* text) {
+    HeapPrompt* p = (HeapPrompt*)user;
+    p->callbacks++;
+    p->got_null = (text == NULL);
+    if (p->reopen) {
+        p->reopen = 0;
+        if (p->borrowed) {
+            ui_prompt_open_string_async("Again", NULL, 8, heap_prompt_done, p);
+        } else {
+            ui_prompt_open_string_owned("Again", NULL, 8, heap_prompt_done, p, heap_prompt_dispose);
+        }
+    }
+}
+
+static HeapPrompt*
+new_heap_prompt(int reopen, int borrowed) {
+    HeapPrompt* p = (HeapPrompt*)calloc(1, sizeof(*p));
+    assert(p != NULL);
+    p->reopen = reopen;
+    p->borrowed = borrowed;
+    return p;
+}
+
+/* An owned chooser's callback that opens a plain prompt with its own context: the prompt takes the ownership over. */
+static void
+chooser_opens_prompt_done(void* user, int sel) {
+    (void)sel;
+    ui_prompt_open_string_async("From chooser", NULL, 8, heap_prompt_done, user);
+}
+
+static void
+plain_prompt_after_cancel(void* user, const char* text) {
+    (void)user;
+    if (!text) {
+        ui_prompt_open_string_async("Follow-up", NULL, 8, capture_string_done, NULL);
+    }
+}
+
+static void
+test_owned_prompt_reuse(void) {
+    static const char* const ITEMS[] = {"One"};
+    for (int borrowed = 0; borrowed <= 1; borrowed++) {
+        /* A callback that reopens with its own context without taking it: no dispose under the new prompt. */
+        g_heap_prompt_disposed = 0;
+        HeapPrompt* p = new_heap_prompt(1, borrowed);
+        ui_prompt_open_string_owned("Owned", NULL, 8, heap_prompt_done, p, heap_prompt_dispose);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_heap_prompt_disposed == 0);
+        assert(ui_prompt_active() == 1);
+        assert(p->callbacks == 1);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_heap_prompt_disposed == 1);
+        assert(ui_prompt_active() == 0);
+
+        /* An open over the open owned prompt handed its context: the old one is cancelled, not disposed. */
+        g_heap_prompt_disposed = 0;
+        p = new_heap_prompt(0, 0);
+        ui_prompt_open_string_owned("Owned", NULL, 8, heap_prompt_done, p, heap_prompt_dispose);
+        if (borrowed) {
+            ui_prompt_open_string_async("Plain", NULL, 8, heap_prompt_done, p);
+        } else {
+            ui_prompt_open_string_owned("Again", NULL, 8, heap_prompt_done, p, heap_prompt_dispose);
+        }
+        assert(p->callbacks == 1 && p->got_null);
+        assert(g_heap_prompt_disposed == 0);
+        assert(ui_prompt_active() == 1);
+        assert(ui_prompt_handle_key(DSD_KEY_ESC) == 1);
+        assert(g_heap_prompt_disposed == 1);
+    }
+
+    /* Across widgets: an owned chooser's callback hands its context to a plain prompt by opening it there. */
+    g_heap_prompt_disposed = 0;
+    HeapPrompt* p = new_heap_prompt(0, 0);
+    ui_chooser_start_owned("Owned", ITEMS, 1, 0, chooser_opens_prompt_done, p, heap_prompt_dispose);
+    assert(ui_chooser_handle_key('\n') == 1);
+    assert(g_heap_prompt_disposed == 0);
+    assert(ui_prompt_active() == 1);
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_heap_prompt_disposed == 1);
+}
+
+/* A secret prompt that cannot allocate answers cancel at once; a plain prompt that cancel opens is not masked. */
+static void
+test_secret_mask_stays_with_its_prompt(void) {
+    reset_string_capture();
+    ui_prompt_test_fail_next_alloc();
+    ui_prompt_open_secret_async("Secret", 16, plain_prompt_after_cancel, NULL);
+    assert(ui_prompt_active() == 1);
+    assert(ui_prompt_mask_active_for_test() == 0);
+    ui_prompt_close_all();
+    assert(g_string_done_called == 1 && g_string_was_null == 1);
+
+    /* And a secret prompt that opens is masked. */
+    ui_prompt_open_secret_async("Secret", 16, capture_string_done, NULL);
+    assert(ui_prompt_mask_active_for_test() == 1);
+    ui_prompt_close_all();
+}
+
 static void
 test_prompt_layout_and_view_contracts(void) {
     assert(ui_prompt_center_axis_for_test(24, 8) == 8);
@@ -1154,6 +1270,8 @@ main(void) {
     test_chooser_layout_contracts();
     test_chooser_layout_measures_cells();
     test_owned_prompt();
+    test_owned_prompt_reuse();
+    test_secret_mask_stays_with_its_prompt();
     test_prompt_layout_and_view_contracts();
     printf("UI_PROMPT_VALIDATION: OK\n");
     return 0;

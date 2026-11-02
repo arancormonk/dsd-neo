@@ -91,6 +91,34 @@ ui_pending_take(UiPendingContext* slot) {
     return user;
 }
 
+/*
+ * A start or open handed a context someone already owns - the callback running now (it restarts with its own context
+ * without taking it) or the open widget being replaced - takes that ownership over instead of letting the owner dispose
+ * it under the new widget. Returns the owner's dispose (NULL when nobody owned it); the new widget keeps its own
+ * dispose when it was given one, and otherwise disposes with the owner's, so an owned context is never lost or freed
+ * twice.
+ */
+static ui_context_dispose_fn
+ui_claim_owned_context(const void* user, const void* open_user, ui_context_dispose_fn* open_dispose) {
+    if (user == NULL) {
+        return NULL;
+    }
+    if (*open_dispose && open_user == user) {
+        const ui_context_dispose_fn owner = *open_dispose;
+        *open_dispose = NULL; /* the replaced widget's close disposes nothing */
+        return owner;
+    }
+    UiPendingContext* const slots[] = {&g_chooser_pending, &g_prompt_pending};
+    for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
+        if (slots[i]->dispose && slots[i]->user == user) {
+            const ui_context_dispose_fn owner = slots[i]->dispose;
+            (void)ui_pending_take(slots[i]);
+            return owner;
+        }
+    }
+    return NULL;
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 static int g_chooser_fail_next_start;
 static int g_prompt_fail_next_alloc;
@@ -411,9 +439,14 @@ ui_prompt_alloc_buffer(size_t cap) {
 
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
-void
-ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
-                            void* user_ctx, ui_context_dispose_fn dispose) {
+static void
+ui_prompt_open_impl(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                    void* user_ctx, ui_context_dispose_fn dispose, int mask) {
+    const ui_context_dispose_fn owner =
+        ui_claim_owned_context(user_ctx, g_prompt.active ? g_prompt.user : NULL, &g_prompt.dispose);
+    if (!dispose) {
+        dispose = owner;
+    }
     ui_prompt_close_for_open();
     if (cap < 2) {
         cap = 2;
@@ -429,6 +462,7 @@ ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, 
     g_prompt.on_done_str = on_done;
     g_prompt.user = user_ctx;
     g_prompt.dispose = dispose;
+    g_prompt.mask = mask;
     g_prompt.buf = buf;
     g_prompt.cap = cap;
     g_prompt.len = 0;
@@ -441,9 +475,15 @@ ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, 
 }
 
 void
+ui_prompt_open_string_owned(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user_ctx, ui_context_dispose_fn dispose) {
+    ui_prompt_open_impl(title, prefill, cap, on_done, user_ctx, dispose, 0);
+}
+
+void
 ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
                             void* user_ctx) {
-    ui_prompt_open_string_owned(title, prefill, cap, on_done, user_ctx, NULL);
+    ui_prompt_open_impl(title, prefill, cap, on_done, user_ctx, NULL, 0);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed
@@ -452,13 +492,9 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
 ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx) {
-    // No prefill: a secret is never redisplayed. The open zeroes g_prompt first
-    // (ui_prompt_open_string_async starts with ui_prompt_close_all), so setting
-    // mask afterwards is what survives.
-    ui_prompt_open_string_async(title, NULL, cap, on_done, user_ctx);
-    if (ui_prompt_active()) {
-        g_prompt.mask = 1;
-    }
+    // No prefill: a secret is never redisplayed. The mask goes in with the open: set afterwards, it would land on
+    // whatever prompt the cancel of a failed allocation opened instead.
+    ui_prompt_open_impl(title, NULL, cap, on_done, user_ctx, NULL, 1);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed
@@ -1425,10 +1461,12 @@ ui_chooser_max_item_width(void) {
 static void
 ui_chooser_start_impl(const char* title, const char* const* items, int count, int initial_sel,
                       ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose) {
-    /* A start over an open owned chooser replaces it, and the close disposes its context - unless this start is
-       handed the same context, which then stays alive under this start's terms. */
-    if (g_chooser.dispose && g_chooser.user == user_ctx) {
-        g_chooser.dispose = NULL;
+    /* A start over an open owned chooser replaces it, and the close disposes its context - unless this start is handed
+       that context, or the running callback's own: it then takes the ownership over (ui_claim_owned_context()). */
+    const ui_context_dispose_fn owner =
+        ui_claim_owned_context(user_ctx, g_chooser.active ? g_chooser.user : NULL, &g_chooser.dispose);
+    if (!dispose) {
+        dispose = owner;
     }
     ui_chooser_close();
     if (ui_chooser_start_fails(items, count)) {

@@ -23,6 +23,7 @@
 #include <locale.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -164,6 +165,77 @@ borrowed_done(void* user, int sel) {
     (void)sel;
     TakeProbe* probe = (TakeProbe*)user;
     probe->taken = ui_chooser_take_context();
+}
+
+/* Heap contexts (ASan sees a dispose under a widget that still reads them) for the implicit-ownership cases. */
+typedef struct {
+    int callbacks;
+    int restart;  /* 1: the callback restarts the chooser with its own context, without taking it */
+    int borrowed; /* 1: that restart is a plain (borrowed) start */
+} HeapCtx;
+
+static int g_heap_disposed = 0;
+
+static void
+heap_dispose(void* user) {
+    g_heap_disposed++;
+    free(user);
+}
+
+static void
+heap_done(void* user, int sel) {
+    HeapCtx* c = (HeapCtx*)user;
+    (void)sel;
+    c->callbacks++;
+    if (c->restart) {
+        c->restart = 0;
+        if (c->borrowed) {
+            ui_chooser_start_at("Again", OWNED_ITEMS, 3, 0, heap_done, c);
+        } else {
+            ui_chooser_start_owned("Again", OWNED_ITEMS, 3, 0, heap_done, c, heap_dispose);
+        }
+    }
+}
+
+static HeapCtx*
+new_heap_ctx(int restart, int borrowed) {
+    HeapCtx* c = (HeapCtx*)calloc(1, sizeof(*c));
+    assert(c != NULL);
+    c->restart = restart;
+    c->borrowed = borrowed;
+    return c;
+}
+
+/* A start handed a context someone already owns takes that ownership over: no dispose under the new chooser, one at
+   its end (issue #672, B8). */
+static void
+test_owned_chooser_reuse(void) {
+    for (int borrowed = 0; borrowed <= 1; borrowed++) {
+        /* A callback that restarts with its own context without taking it. */
+        g_heap_disposed = 0;
+        HeapCtx* c = new_heap_ctx(1, borrowed);
+        ui_chooser_start_owned("Owned", OWNED_ITEMS, 3, 0, heap_done, c, heap_dispose);
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(g_heap_disposed == 0);
+        assert(ui_chooser_active() == 1);
+        assert(c->callbacks == 1);
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(g_heap_disposed == 1);
+        assert(ui_chooser_active() == 0);
+
+        /* A start over the open owned chooser handed its context. */
+        g_heap_disposed = 0;
+        c = new_heap_ctx(0, 0);
+        ui_chooser_start_owned("Owned", OWNED_ITEMS, 3, 0, heap_done, c, heap_dispose);
+        if (borrowed) {
+            ui_chooser_start_at("Plain", OWNED_ITEMS, 3, 0, heap_done, c);
+        } else {
+            ui_chooser_start_owned("Again", OWNED_ITEMS, 3, 0, heap_done, c, heap_dispose);
+        }
+        assert(g_heap_disposed == 0);
+        assert(ui_chooser_handle_key(27) == 1);
+        assert(g_heap_disposed == 1);
+    }
 }
 
 static void
@@ -492,6 +564,7 @@ main(void) {
 #endif
 
     test_owned_chooser();
+    test_owned_chooser_reuse();
     test_render();
 
     printf("UI_CHOOSER_NAVIGATION: OK\n");

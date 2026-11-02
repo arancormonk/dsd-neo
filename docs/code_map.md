@@ -9150,36 +9150,37 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     first publication (runtime start publishes before the UI thread exists, so practically never) the frame's state is
     NULL: only Quit is handled, neither the menu nor the `=` overlay opens, nothing is drawn, and the frame's options
     are a UI-owned copy of the start-time fields `ui_start()` took (frontend kind, input type, wheel setting, the `-Z`
-    flag `dsd_terminal_open()` warns about), so the UI
-    thread never reads the decoder's live structs. Opening the menu asks `dsd_app_config_default_missing()` whether to
-    hint at saving a default config; the menu itself does no file I/O. Tests: `UI_ASYNC_LIFECYCLE` (the pair each entry
-    point gets, the start-time copy, one acquisition of each per frame, a publication inside the key handling changes
-    nothing the frame's tick and draw read), `UI_MENU_LABELS_RADIO` (a metrics predicate and label across a mid-frame
-    publication: no acquisition, the frame's pair), `UI_HOTKEYS_REGRESSION` (Quit alone without a state; the spectrum
-    keys' metrics pair), `UI_MENU_NAVIGATION` (no open before a publication; a deferred callback across a publication
-    and a restart; the default-config hint), `UI_MENU_RECEIVE`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`,
-    `UI_MENU_CALLBACKS`, `UI_RR_WIZARD`, `UI_RR_PANEL_KEYS` (none of these test targets defines a snapshot accessor),
-    `UI_SNR_READOUT`, `UI_TERMINAL_SNAPSHOT_AUDIT`.
-  - Overlay contexts and shutdown (issue #672, B7, B8, B17): prompts and the chooser (`menu_prompts.c`) borrow
-    their title, items and strings by pointer. A heap context that holds them is opened with the owned variants,
-    `ui_chooser_start_owned(title, items, n, initial, on_done, user, dispose)` and
-    `ui_prompt_open_string_owned(..., dispose)`: `dispose(user)` runs exactly once, after the done-callback (pick,
-    submit, Esc, the empty list's or the render path's cancel, a failed prompt allocation), or with no callback (a
-    chooser) / after the cancel (a prompt) when the widget is closed or replaced by another start. A callback that
-    advances takes the context back with `ui_chooser_take_context()` / `ui_prompt_take_context()` (valid only inside
-    that callback) and hands it to the next owned widget, whose dispose it then is; a start handed the open chooser's
-    own context keeps it. A prompt's cancel runs after the prompt is gone, so a callback may open another prompt or
-    chooser. Owned: `ProfileSelCtx`, `PulseSelCtx`, `EnvEditCtx` (name prompt, then value prompt), `CsvPickerCtx`
-    (chooser, then the "Enter a path..." prompt), and the Imported Systems browser's `RrBrowseCtx` through its system,
-    action and delete-confirmation levels; RadioReference's wizard context (`g_rr_panel`) stays borrowed. Items and the
-    title are drawn through `ui_text`: sanitized, measured in cells and cut between code points with the row model's
-    marker, the window sized from widths measured once per start; a paged title keeps its `(a-b/n)` range whole.
-    `ui_thread_main()` calls `rr_panel_shutdown()` (it closes a chooser borrowing the wizard's strings before freeing
-    them), then `ui_overlays_shutdown()` (`menu_core.c`: help, prompt and chooser - a few passes, since a cancel can
-    open another - then every menu frame, and the overlay's bookkeeping reset), then closes curses. Tests:
-    `UI_CHOOSER_NAVIGATION` (owned paths, rendering on a `newterm` screen), `UI_PROMPT_VALIDATION`, `UI_CSV_PICKER`
-    (the real flow), `UI_RR_PANEL_KEYS` (browser levels), `UI_MENU_NAVIGATION` (shutdown and restart),
-    `UI_ASYNC_LIFECYCLE` (exit order), `UI_MENU_CALLBACKS`, `UI_MENU_ACTIONS`, `UI_TEXT`.
+    flag `dsd_terminal_open()` warns about), so the UI thread never reads the decoder's live structs. Opening the menu
+    asks `dsd_app_config_default_missing()` whether to hint at saving a default config; the menu itself does no file
+    I/O. Tests: `UI_ASYNC_LIFECYCLE` (the pair each entry point gets, the start-time copy, one acquisition of each per
+    frame, a publication inside the key handling changes nothing the frame's tick and draw read), `UI_MENU_LABELS_RADIO`
+    (a metrics predicate and label across a mid-frame publication: no acquisition, the frame's pair),
+    `UI_HOTKEYS_REGRESSION` (Quit alone without a state; the spectrum keys' metrics pair), `UI_MENU_NAVIGATION` (no open
+    before a publication; a deferred callback across a publication and a restart; the default-config hint),
+    `UI_MENU_RECEIVE`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_RR_WIZARD`, `UI_RR_PANEL_KEYS`
+    (none of these test targets defines a snapshot accessor), `UI_SNR_READOUT`, `UI_TERMINAL_SNAPSHOT_AUDIT`.
+  - Overlay contexts and shutdown (issue #672, B7, B8, B17): prompts and the chooser (`menu_prompts.c`) borrow their
+    title, items and strings by pointer. A heap context that holds them is opened with the owned variants,
+    `ui_chooser_start_owned()` and `ui_prompt_open_string_owned()`, each given a `dispose`: `dispose(user)` runs exactly
+    once, after the done-callback (pick, submit, Esc, the empty list's or the render path's cancel, a failed prompt
+    allocation), or with no callback (a chooser) / after the cancel (a prompt) when the widget is closed or replaced by
+    another start. A callback that advances takes the context back with `ui_chooser_take_context()` /
+    `ui_prompt_take_context()` (valid only inside that callback) and hands it to the next owned widget, whose dispose it
+    then is; a start or open handed a context already owned (by the running callback, or by the open widget it replaces)
+    takes that ownership over the same way, disposing with the owner's dispose when given none. A prompt's cancel runs
+    after the prompt is gone, so a callback may open another prompt or chooser. Owned: `ProfileSelCtx`, `PulseSelCtx`,
+    `EnvEditCtx` (name prompt, then value prompt), `CsvPickerCtx` (chooser, then the "Enter a path..." prompt), and the
+    Imported Systems browser's `RrBrowseCtx` through its system, action and delete-confirmation levels; RadioReference's
+    wizard context (`g_rr_panel`) stays borrowed. Items and the title are drawn through `ui_text`: sanitized, measured
+    in cells and cut between code points with the row model's marker, the window sized from widths measured once per
+    start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls `rr_panel_shutdown()` (it closes a
+    chooser borrowing the wizard's strings before freeing them), then `ui_overlays_shutdown()` (`menu_core.c`: help,
+    prompt and chooser - a few passes, since a cancel can open another - then every menu frame, and the overlay's
+    bookkeeping reset), then closes curses. Tests: `UI_CHOOSER_NAVIGATION` (owned paths, rendering on a `newterm`
+    screen), `UI_PROMPT_VALIDATION`, `UI_CSV_PICKER` (the real flow), `UI_RR_PANEL_KEYS` (browser levels; the real
+    `ui_overlays_shutdown()` over a menu, help, an owned prompt and the browser's chooser, then a restart),
+    `UI_MENU_NAVIGATION` (shutdown and restart), `UI_ASYNC_LIFECYCLE` (exit order), `UI_MENU_CALLBACKS`,
+    `UI_MENU_ACTIONS`, `UI_TEXT`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity

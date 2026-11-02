@@ -29,7 +29,10 @@ typedef void (*ui_chooser_done_fn)(void* user, int selected);
  * without a callback when the widget is closed, replaced or shut down. A
  * done-callback that hands the context on to another owned widget takes it
  * back first with ui_prompt_take_context() / ui_chooser_take_context(), and the
- * dispose is then the new widget's to call.
+ * dispose is then the new widget's to call. A start or open handed a context
+ * that is already owned - by the callback running now, or by the open widget of
+ * the same kind it replaces - takes that ownership over the same way (no
+ * dispose then); given no dispose of its own, it disposes with the owner's.
  */
 typedef void (*ui_context_dispose_fn)(void* user);
 

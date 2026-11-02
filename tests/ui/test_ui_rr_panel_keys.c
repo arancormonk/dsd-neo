@@ -28,6 +28,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
@@ -41,14 +42,18 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "menu_internal.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
 #include "rr_wizard_core.h"
@@ -284,7 +289,8 @@ ui_status_clear_if_expired(time_t now) {
 void
 dsd_app_request_redraw(void) {}
 
-/* What the browser posted: the IMPORT_* commands by id, and the apply. */
+/* What the browser posted: the IMPORT_* commands by id and in all, and the apply. */
+static int g_set_string_calls = 0;
 static int g_import_chan_posts = 0;
 static int g_import_group_posts = 0;
 static int g_rr_apply_posts = 0;
@@ -293,6 +299,7 @@ static dsd_app_rr_apply_payload g_rr_apply_payload;
 int
 dsd_app_command_set_string(int cmd_id, const char* value) {
     (void)value;
+    g_set_string_calls++;
     if (cmd_id == DSD_APP_CMD_IMPORT_CHANNEL_MAP) {
         g_import_chan_posts++;
     } else if (cmd_id == DSD_APP_CMD_IMPORT_GROUP_LIST) {
@@ -613,6 +620,176 @@ test_browser_levels(void) {
     open_level(3);
     assert(ui_chooser_handle_key('\n') == 1);
     expect_gone();
+
+    /* Level 2's Use (no saved recipe: the files are loaded by path) answers and disposes. */
+    open_level(2);
+    g_set_string_calls = 0;
+    assert(ui_chooser_handle_key('\n') == 1);
+    assert(g_set_string_calls == 1); /* the group list, the system's one half */
+    expect_gone();
+
+    /* Level 2's Refresh hands the file to the wizard and disposes the browser's context. */
+    open_level(2);
+    assert(ui_chooser_handle_key(KEY_DOWN) == 1);
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+    assert(rr_panel_active() == 1); /* the refresh runs in the panel */
+    rr_panel_shutdown();
+}
+
+/* ---- UI exit over real overlays (issue #672, B17): the menu core's real ui_overlays_shutdown() ---- */
+
+static void
+noop_action(void* ctx) {
+    (void)ctx;
+}
+
+static const NcMenuItem SUB_ITEMS[] = {
+    {.id = "sub", .label = "Sub", .on_select = noop_action},
+};
+
+static const NcMenuItem MAIN_ITEMS[] = {
+    {.id = "main", .label = "Main", .submenu = SUB_ITEMS, .submenu_len = 1},
+};
+
+void
+ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
+    (void)ctx;
+    *out_items = MAIN_ITEMS;
+    *out_n = sizeof MAIN_ITEMS / sizeof MAIN_ITEMS[0];
+}
+
+int
+dsd_app_config_default_missing(char* path, size_t path_size) {
+    (void)path;
+    (void)path_size;
+    return 0;
+}
+
+int
+ui_is_enabled(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it != NULL;
+}
+
+int
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it != NULL && it->kind == NC_ITEM_ACTION;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+    (void)items;
+    (void)n;
+    (void)ctx;
+    (void)dir;
+    return from;
+}
+
+int
+ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx) {
+    (void)items;
+    (void)n;
+    (void)ctx;
+    return idx;
+}
+
+int
+ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab) {
+    (void)items;
+    (void)ctx;
+    if (out_maxlab) {
+        *out_maxlab = 8;
+    }
+    return (int)n;
+}
+
+void
+ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
+    (void)ctx;
+    f->h = 10;
+    f->w = 30;
+    f->y = 0;
+    f->x = 0;
+}
+
+void
+ui_overlay_ensure_window(UiMenuFrame* f) {
+    (void)f;
+}
+
+void
+ui_overlay_recreate_if_needed(UiMenuFrame* f) {
+    (void)f;
+}
+
+void
+ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, const void* ctx) {
+    (void)win;
+    (void)items;
+    (void)n;
+    (void)hi;
+    (void)top_io;
+    (void)title;
+    (void)ctx;
+}
+
+static int g_exit_prompt_cancels = 0;
+static int g_exit_prompt_disposed = 0;
+
+static void
+exit_prompt_done(void* user, const char* text) {
+    (void)user;
+    if (!text) {
+        g_exit_prompt_cancels++;
+    }
+}
+
+static void
+exit_prompt_dispose(void* user) {
+    g_exit_prompt_disposed++;
+    free(user);
+}
+
+/* A menu two frames deep, help, an owned prompt and the browser's owned chooser, then exit as the UI thread does it:
+   everything closed, each owned context disposed once; the next start opens on a fresh overlay. */
+static void
+test_exit_over_real_overlays(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    for (int round = 0; round < 2; round++) {
+        g_exit_prompt_cancels = 0;
+        g_exit_prompt_disposed = 0;
+        ui_menu_open_async(opts, state);
+        assert(ui_menu_is_open() == 1);
+        assert(ui_menu_handle_key('\n', opts, state) == 1); /* into the submenu */
+        ui_help_open("help text");
+        ui_prompt_open_string_owned("Name", NULL, 16, exit_prompt_done, calloc(1, 32), exit_prompt_dispose);
+        rr_panel_open_library(NULL, NULL);
+        assert(ui_help_active() == 1 && ui_prompt_active() == 1 && ui_chooser_active() == 1);
+        assert(live() == 1);
+
+        rr_panel_shutdown();
+        ui_overlays_shutdown();
+        assert(ui_help_active() == 0 && ui_prompt_active() == 0 && ui_chooser_active() == 0);
+        assert(ui_menu_is_open() == 0);
+        assert(live() == 0);
+        assert(g_exit_prompt_cancels == 1 && g_exit_prompt_disposed == 1);
+    }
+    /* Nothing open: a second shutdown is harmless. */
+    ui_overlays_shutdown();
+    assert(ui_menu_is_open() == 0);
+    free(state);
+    free(opts);
+}
+
+/* One scratch directory for the process: the config path is resolved once. */
+static void
+test_browser_and_exit(void) {
+    test_browser_levels();
+    test_exit_over_real_overlays();
 }
 
 /* One imported system (a group list and its sidecar) in the scratch imports directory browser_setup() made: the
@@ -675,7 +852,7 @@ main(void) {
     rr_panel_shutdown();
     assert(rr_panel_active() == 0);
 
-    with_one_import(test_browser_levels);
+    with_one_import(test_browser_and_exit);
     browser_teardown();
 
     printf("UI_RR_PANEL_KEYS: OK\n");

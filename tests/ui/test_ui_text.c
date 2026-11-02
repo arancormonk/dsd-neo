@@ -182,11 +182,16 @@ test_unicode_output(int have_utf8) {
 int
 main(void) {
     const int have_utf8 = use_utf8_locale();
+#if defined(DSD_USE_PDCURSES)
+    /* The PDCurses model does not ask the C library: it always runs. */
+    test_unicode_model();
+#else
     if (have_utf8) {
         test_unicode_model();
     } else {
         DSD_FPRINTF(stderr, "no UTF-8 locale installed; skipping the wcwidth() cases\n");
     }
+#endif
     (void)setlocale(LC_CTYPE, "C");
     test_ascii_model();
     test_unicode_output(have_utf8);
