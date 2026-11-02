@@ -254,6 +254,26 @@ Item {
         return name !== undefined ? name : "";
     }
 
+    // The review sheet's one text: the system, the sites, the options, what
+    // the session needs, then the files the import writes, or that it writes
+    // none (issue #803: an empty "Generated files:" list read as a failure).
+    function reviewText() {
+        var sites = screen.selectedSites.map(function (index) {
+            return screen.siteList[index] ? screen.siteList[index].descr : "";
+        }).join("\n");
+        var text = screen.systemName() + "\n" + screen.typeDescr + "\n" + sites + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls."));
+        if (screen.isP25)
+            text += "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25"));
+        if (radioReference.conventional && screen.selectedSites.length > 1)
+            text += qsTr("\nA USB RTL-SDR or RTL-TCP source is required to scan these repeaters.");
+        var files = [];
+        if (screen.planField("groupCsvText", "").length > 0)
+            files.push(qsTr("Talkgroup list"));
+        if (screen.planField("chanCsvText", "").length > 0)
+            files.push(qsTr("Channel map"));
+        return text + "\n\n" + (files.length > 0 ? qsTr("Generated files:") + "\n" + files.join("\n") : qsTr("No files are generated."));
+    }
+
     function refreshPlan() {
         planRevision++;
         if (!screen.rrLive()) {
@@ -1401,15 +1421,21 @@ Item {
                     }
 
                     ReadableText {
+                        objectName: "radioReferencePlanFiles"
                         width: parent.width
                         visible: screen.planOk()
+                        // A trunked import with no files (a TETRA system that
+                        // lists no talkgroups) still follows calls: it does
+                        // more than tune.
                         text: {
                             var files = [];
                             if (screen.planField("groupCsvText", "").length > 0)
                                 files.push(qsTr("talkgroup list"));
                             if (screen.planField("chanCsvText", "").length > 0)
                                 files.push(qsTr("channel map"));
-                            return files.length > 0 ? qsTr("Generates: %1").arg(files.join(" · ")) : qsTr("No files — the session simply tunes this frequency.");
+                            if (files.length > 0)
+                                return qsTr("Generates: %1").arg(files.join(" · "));
+                            return screen.planField("trunking", false) ? qsTr("No files — the session follows calls from this control channel.") : qsTr("No files — the session simply tunes this frequency.");
                         }
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
@@ -1496,10 +1522,9 @@ Item {
         // Back or Escape leaves it, never a stray tap beside it.
         closesOnOutsideTap: false
         ReadableText {
+            objectName: "radioReferenceReviewBody"
             width: parent.width
-            text: screen.systemName() + "\n" + screen.typeDescr + "\n" + screen.selectedSites.map(function (index) {
-                return screen.siteList[index] ? screen.siteList[index].descr : "";
-            }).join("\n") + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls.")) + (screen.isP25 ? "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25")) : "") + (radioReference.conventional && screen.selectedSites.length > 1 ? qsTr("\nA USB RTL-SDR or RTL-TCP source is required to scan these repeaters.") : "") + "\n\n" + qsTr("Generated files:") + (screen.plan.groupCsvText ? qsTr("\nTalkgroup list") : "") + (screen.plan.chanCsvText ? qsTr("\nChannel map") : "")
+            text: screen.reviewText()
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: Theme.textPrimary

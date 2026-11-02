@@ -201,6 +201,80 @@ Item {
             screenLoader.z = 0
         }
 
+        // Issue #803. A TETRA system and its import as buildImportPlan()
+        // answers it: one trunked site, -fT, and here no talkgroups listed, so
+        // nothing to write (17 of the 47 TETRA systems on RadioReference list
+        // none).
+        function loadTetraSystem(siteCount) {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 10880,
+                                              "name": "KorKor",
+                                              "typeDescr": "TETRA",
+                                              "flavorDescr": "Standard",
+                                              "protocolToken": "tetra"
+                                          })
+            var sites = []
+            for (var i = 0; i < siteCount; i++)
+                sites.push({ "siteNumber": i + 1, "descr": "Cell " + (i + 1), "freqCount": 2,
+                             "controlFreqMhz": "390.0125", "simulcast": false,
+                             "freqMhz": "390.0125", "colorCode": "" })
+            testContext.setRadioReference("sites", sites)
+            tryVerify(function () { return tc.screen.systemLoaded })
+        }
+        function reviewBody() {
+            var body = findChild(tc.screen, "radioReferenceReviewBody")
+            verify(body !== null, "the review text has no name to find it by")
+            return body
+        }
+        function openReview() {
+            var review = findChild(tc.screen, "radioReferenceReviewSheet")
+            screenLoader.z = 1
+            review.visible = true
+            waitForRendering(review)
+            return review
+        }
+        function closeReview(review) {
+            review.visible = false
+            screenLoader.z = 0
+        }
+
+        // Regression (#803 D-B4): an import that writes no file said
+        // "Generated files:" over an empty list. Reachable on main with a lone
+        // conventional repeater on a system without talkgroups, and now with
+        // any TETRA system without them. The preview says what a trunked
+        // import with no files does instead of "simply tunes".
+        function test_19_an_import_without_files_says_so() {
+            loadTetraSystem(1)
+            tryVerify(function () { return tc.screen.selectedSites.length === 1 })
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true,
+                              scanList: false, warnings: []}
+            var files = findChild(tc.screen, "radioReferencePlanFiles")
+            verify(files !== null && files.visible)
+            verify(files.text.indexOf("follows calls from this control channel") >= 0,
+                   "a trunked import without files reads as a plain tune: " + files.text)
+            var review = openReview()
+            var body = reviewBody()
+            verify(body.text.indexOf("Generated files:") < 0, "the review lists generated files that do not exist: " + body.text)
+            verify(body.text.indexOf("No files are generated.") >= 0, "the review does not say no file is written: " + body.text)
+            closeReview(review)
+
+            tc.screen.plan = {ok: true, freqMhz: "390.0125", decodeFlag: "-fT", trunking: true, scanList: false,
+                              warnings: [], groupCsvText: "Decimal,Mode,Alpha Tag\n170001,A,Ops\n"}
+            review = openReview()
+            verify(body.text.indexOf("Generated files:\nTalkgroup list") >= 0, "a written file is not listed: " + body.text)
+            verify(body.text.indexOf("No files are generated.") < 0)
+            closeReview(review)
+            verify(files.text.indexOf("talkgroup list") >= 0)
+
+            // A conventional repeater has no control channel: it still just tunes.
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            tc.screen.plan = {ok: true, freqMhz: "444.525", decodeFlag: "-ft", trunking: false,
+                              scanList: false, warnings: []}
+            verify(files.text.indexOf("simply tunes this frequency") >= 0, files.text)
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
@@ -245,6 +319,8 @@ Item {
 
         function cleanup() {
             accountCommit.target = null;
+            // A failed review case must not leave its sheet over the next case's taps.
+            findChild(tc.screen, "radioReferenceReviewSheet").visible = false;
             testContext.useRadioReferenceModel(null);
             testContext.setPrefs("rrUsername", previousRrUsername);
             screenLoader.z = 0;

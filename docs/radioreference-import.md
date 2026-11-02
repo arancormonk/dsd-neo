@@ -479,5 +479,6 @@ and legacy generation API retain their previous default behavior.
 
 Country/state/county and site/repeater pickers support search. Selection is retained
 while filtering, and the final review lists sites, modulation, source requirements,
-policy and generated files before import. Cancelling a request keeps earlier search
-results available. Location denial leaves ZIP, Browse and direct system ID usable.
+policy and generated files (or that there are none) before import. Cancelling a
+request keeps earlier search results available. Location denial leaves ZIP, Browse
+and direct system ID usable.
