@@ -28,7 +28,10 @@ extern "C" {
 #endif
 
 /* At most this many lists in one session; list N is the Nth --trunk-scan/--trunk-scan-off, or targets_csv_N. */
-#define DSD_TRUNK_SCAN_MAX_LISTS 8
+#define DSD_TRUNK_SCAN_MAX_LISTS      8
+
+/* A list's name is its file name without folder and extension, cut to fit this (31 bytes and the terminator). */
+#define DSD_TRUNK_SCAN_LIST_NAME_SIZE 32
 
 /** One configured target list: its CSV, and whether the session starts with it switched off. */
 typedef struct {

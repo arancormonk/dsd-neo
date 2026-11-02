@@ -50,6 +50,43 @@ _Static_assert(DSD_TRUNK_SCAN_CONTROL_STALE != DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDE
                    && DSD_TRUNK_SCAN_CONTROL_STALE < DSD_TRUNK_SCAN_CONTROL_PAUSED,
                "the put back's and the already-avoided codes must not alias the older failures");
 
+/* The list toggle's codes (issue #697) are distinct, with success at or above zero, so a caller can switch on them. */
+_Static_assert(DSD_TRUNK_SCAN_LIST_SET_OK == 0 && DSD_TRUNK_SCAN_LIST_SET_UNCHANGED > 0
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST < 0 && DSD_TRUNK_SCAN_LIST_SET_BUSY < 0
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE < 0 && DSD_TRUNK_SCAN_LIST_SET_PAUSED < 0
+                   && DSD_TRUNK_SCAN_LIST_SET_STALE < 0,
+               "list toggle results: success at or above zero, failures below");
+_Static_assert(DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_BUSY
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_PAUSED != DSD_TRUNK_SCAN_LIST_SET_STALE,
+               "list toggle failure codes must be distinct");
+_Static_assert(DSD_TRUNK_SCAN_LIST_ALL < 1, "every list is no list number");
+
+static int g_list_set_calls = 0;
+static uint32_t g_list_set_session = 0U;
+static int g_list_set_list = 0;
+static int g_list_set_enabled = -1;
+static uint32_t g_list_set_request = 0U;
+
+static int
+fake_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request) {
+    (void)opts;
+    (void)state;
+    g_list_set_calls++;
+    g_list_set_session = session;
+    g_list_set_list = list;
+    g_list_set_enabled = enabled;
+    g_list_set_request = request;
+    return list == DSD_TRUNK_SCAN_LIST_ALL ? DSD_TRUNK_SCAN_LIST_SET_UNCHANGED : DSD_TRUNK_SCAN_LIST_SET_OK;
+}
+
 static int g_control_calls = 0;
 static int g_last_op = -1;
 static const dsd_opts* g_last_opts = NULL;
@@ -263,12 +300,23 @@ main(void) {
     assert(g_unavoid_calls == 0);
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 0);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 0, 11U) == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE);
+    assert(g_list_set_calls == 0);
 
     /* Installed: every op reaches the implementation with its arguments and result intact. */
     dsd_trunk_scan_hooks hooks = {0};
     hooks.control = fake_control;
     hooks.p25_conventional_activity = fake_p25_activity;
+    hooks.list_set = fake_list_set;
     dsd_trunk_scan_hooks_set(&hooks);
+
+    /* Issue #697: the list toggle reaches the implementation with its session, list, state and request intact. */
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 0, 11U) == DSD_TRUNK_SCAN_LIST_SET_OK);
+    assert(g_list_set_calls == 1 && g_list_set_session == 9U && g_list_set_list == 2 && g_list_set_enabled == 0
+           && g_list_set_request == 11U);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, DSD_TRUNK_SCAN_LIST_ALL, 1, 12U)
+           == DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
+    assert(g_list_set_calls == 2 && g_list_set_list == DSD_TRUNK_SCAN_LIST_ALL && g_list_set_enabled == 1);
 
     g_control_result = 1;
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1);
@@ -329,6 +377,8 @@ main(void) {
     assert(g_unavoid_calls == 2 && name.ordinal == 0U && name.label[0] == '\0');
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 1, 13U) == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE);
+    assert(g_list_set_calls == 2);
     test_recovery_ownership();
     test_presumptive_startup_owner();
     return 0;

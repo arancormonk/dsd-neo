@@ -28,6 +28,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -109,10 +110,15 @@ dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* How often the coordinator read the rate: a walk over the targets reads it once (issue #697, carried from #697's
+   first fixes). */
+static int g_scan_dsp_rate_reads;
+
 int
 dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
+    g_scan_dsp_rate_reads++;
     return g_scan_dsp_rate_hz;
 }
 
@@ -1667,7 +1673,7 @@ expect_target0_p25_state(const dsd_state* state) {
 }
 
 /* Issue #697: the engine starts from the configured lists, and refuses those startup refuses (every list off, a gap)
-   with the CLI's reason. Until the coordinator keeps several lists it refuses more than one plainly. */
+   with the CLI's reason. */
 static int
 test_init_reads_the_list_spec(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -1686,7 +1692,6 @@ test_init_reads_the_list_spec(void) {
     } cases[] = {
         {1, 0, 1, "every trunk-scan list starts off"},
         {3, 0, 0, "trunk-scan list 2 has no target CSV"},
-        {2, 1, 0, "loads one target list for now"},
         {0, 0, 0, "requires targets_csv"},
     };
 
@@ -1712,13 +1717,28 @@ test_init_reads_the_list_spec(void) {
         }
     }
 
-    /* List 1 alone starts as the one target CSV always did. */
+    /* List 1 alone starts as the one target CSV always did, named by its file. */
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;
     char err[256] = {0};
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
-        DSD_FPRINTF(stderr, "one list did not start: %s\n", err);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0 || state.trunk_scan_list_count != 1U
+        || strcmp(state.trunk_scan_lists[0].name, "targets") != 0 || state.trunk_scan_lists[0].enabled != 1U) {
+        DSD_FPRINTF(stderr, "one list did not start as list 1 'targets': %s\n", err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    /* Two lists start together; the one starting off is loaded with them, off (its own tests are the lists' below). */
+    reset_scan_opts_state(&opts, &state);
+    for (int l = 0; l < 2; l++) {
+        DSD_SNPRINTF(opts.trunk_scan_lists[l].path, sizeof opts.trunk_scan_lists[l].path, "%s", target_path);
+    }
+    opts.trunk_scan_lists[1].start_off = 1U;
+    opts.trunk_scan_list_count = 2;
+    /* One file twice repeats every id: refused naming the file twice (the CLI's own same-path refusal comes first). */
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0
+        || strstr(err, "ids are unique across lists") == NULL) {
+        DSD_FPRINTF(stderr, "one file as two lists: err=\"%s\", want the id refusal\n", err);
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -14217,9 +14237,9 @@ test_nfm_target_refused_width_skipped_quietly(void) {
 
 /* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
  * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
- * status line. The front end refuses the scan start's park of it before any backend moves, and the rotation then
- * passes it over at every visit without a retune, with no "retune failed" line of the coordinator's own, although the
- * DSP rate fits the width. */
+ * status line. The scan start passes it over for the next target (issue #697), and the rotation passes it over at
+ * every visit without a retune, with no "retune failed" line of the coordinator's own, although the DSP rate fits the
+ * width. */
 static int
 test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -14252,6 +14272,7 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     g_scan_dsp_rate_hz = 48000;
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
     char status[sizeof state.ui_msg];
     DSD_SNPRINTF(status, sizeof status, "%s", state.ui_msg);
     g_scan_tune_watch_hz = 154430000L;
@@ -14278,11 +14299,14 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     const int status_named = strcmp(status, "Skipped at every visit: Trunk scan target 'fire': NFM 12.5 kHz needs the "
                                             "filter DSD_NEO_CHANNEL_LPF=0 turns off")
                              == 0;
-    if (rc != 0 || width != 1 || refusals != 1 || later_tunes != 0 || failed != 0 || !status_named) {
-        DSD_FPRINTF(stderr,
-                    "lpf-off nfm target (rc=%d %s): width named %d, refused %d, tuned %d times after the start, "
-                    "retune-failed %d, status '%s'\n%s\n",
-                    rc, err, width, refusals, later_tunes, failed, status, buf);
+    /* The scan starts on the target it can receive (issue #697): fire is never tried, at the start or after. */
+    if (rc != 0 || width != 1 || refusals != 0 || started_on != 1U || later_tunes != 0 || failed != 0
+        || !status_named) {
+        DSD_FPRINTF(
+            stderr,
+            "lpf-off nfm target (rc=%d %s): width named %d, refused %d, started on %zu, tuned %d times after the "
+            "start, retune-failed %d, status '%s'\n%s\n",
+            rc, err, width, refusals, started_on, later_tunes, failed, status, buf);
         return 1;
     }
     return 0;
@@ -14375,9 +14399,10 @@ test_visit_cap_with_a_width_skipped_alternate(void) {
 
 /* An nfm target that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
  * digital session. A rate that cannot filter it is named with that width when the scan starts, and the width again
- * whenever it changes (the width command, a config apply). The front end refuses the scan start's park of it before any
- * backend moves, and the rotation then passes it over at every visit without a retune, with no "retune failed" line of
- * the coordinator's own, until the configured width fits, when the rotation tunes it again. */
+ * whenever it changes (the width command, a config apply). The scan start passes it over for the next target (issue
+ * #697: the startup park takes the first target the rate can filter), and the rotation passes it over at every visit
+ * without a retune, with no "retune failed" line of the coordinator's own, until the configured width fits, when the
+ * rotation tunes it again. */
 static int
 test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -14408,6 +14433,7 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     g_scan_dsp_rate_hz = 16000;
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
     int refused_at_16 = 0;
     int refused_at_12_5 = 0;
     /* The configured 16 kHz, then 20 kHz (neither fits the 16 kHz rate), then 12.5 kHz, which does. */
@@ -14442,13 +14468,13 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
                                           "every visit");
     const int named_12_5 = count_text(buf, "configured NFM bandwidth 12.5 kHz");
     const int failed = count_text(buf, "Trunk scan target 'plain' retune failed");
-    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_fix != 2 || named_12_5 != 0 || refused_at_16 != 1
-        || refused_at_12_5 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_fix != 2 || named_12_5 != 0 || refused_at_16 != 0
+        || started_on != 1U || refused_at_12_5 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
         DSD_FPRINTF(stderr,
-                    "inherited nfm width (rc=%d %s): named 16 kHz %d, 20 kHz %d, fix %d, 12.5 kHz %d; refused %d/%d/"
-                    "%d after; tuned %d once it fit; retune-failed %d\n%s\n",
-                    rc, err, named_16, named_20, named_fix, named_12_5, refused_at_16, refused_at_12_5, refused_after,
-                    fit_tunes, failed, buf);
+                    "inherited nfm width (rc=%d %s): named 16 kHz %d, 20 kHz %d, fix %d, 12.5 kHz %d; started on %zu; "
+                    "refused %d/%d/%d after; tuned %d once it fit; retune-failed %d\n%s\n",
+                    rc, err, named_16, named_20, named_fix, named_12_5, started_on, refused_at_16, refused_at_12_5,
+                    refused_after, fit_tunes, failed, buf);
         return 1;
     }
     return 0;
@@ -14457,8 +14483,8 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
 /* An am-conventional target that sets no width of its own runs the configured AM width, held to the DSP rate as an
  * nfm target's configured NFM width is: a rate that cannot filter it is named with that width when the scan starts,
  * and again whenever the configured AM width changes -- never when only the NFM width does, which it does not run --
- * and after the front end refuses the scan start's park of it the rotation passes it over at every visit without a
- * retune, with no "retune failed" line, until the configured width fits, when the rotation tunes it again. */
+ * and, the scan start passing it over for the next target (issue #697), the rotation passes it over at every visit
+ * without a retune, with no "retune failed" line, until the configured width fits, when the rotation tunes it again. */
 static int
 test_am_target_configured_width_held_to_the_dsp_rate(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -14489,6 +14515,7 @@ test_am_target_configured_width_held_to_the_dsp_rate(void) {
     g_scan_dsp_rate_hz = 16000;
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
     int refused_at_16 = 0;
     int refused_at_10 = 0;
     /* The configured AM 16 kHz, then 20 kHz (neither fits the 16 kHz rate), an NFM width the rate cannot filter
@@ -14525,13 +14552,13 @@ test_am_target_configured_width_held_to_the_dsp_rate(void) {
     const int named_nfm = count_text(buf, "Trunk scan target 'tower': it sets no NFM width");
     const int named_10 = count_text(buf, "configured AM bandwidth 10 kHz");
     const int failed = count_text(buf, "Trunk scan target 'tower' retune failed");
-    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_nfm != 0 || named_10 != 0 || refused_at_16 != 1
-        || refused_at_10 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_nfm != 0 || named_10 != 0 || refused_at_16 != 0
+        || started_on != 1U || refused_at_10 != refused_at_16 || refused_after != 0 || fit_tunes < 1 || failed != 0) {
         DSD_FPRINTF(stderr,
-                    "inherited am width (rc=%d %s): named 16 kHz %d, 20 kHz %d, NFM %d, 10 kHz %d; refused %d/%d/%d "
-                    "after; tuned %d once it fit; retune-failed %d\n%s\n",
-                    rc, err, named_16, named_20, named_nfm, named_10, refused_at_16, refused_at_10, refused_after,
-                    fit_tunes, failed, buf);
+                    "inherited am width (rc=%d %s): named 16 kHz %d, 20 kHz %d, NFM %d, 10 kHz %d; started on %zu; "
+                    "refused %d/%d/%d after; tuned %d once it fit; retune-failed %d\n%s\n",
+                    rc, err, named_16, named_20, named_nfm, named_10, started_on, refused_at_16, refused_at_10,
+                    refused_after, fit_tunes, failed, buf);
         return 1;
     }
     return 0;
@@ -17030,6 +17057,1157 @@ test_controls_publish_timing_only_under_the_guard(void) {
     return test_rc;
 }
 
+/* --- Issue #697: several target lists in one session, each switched on or off live. --- */
+
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    char paths[DSD_TRUNK_SCAN_MAX_LISTS][DSD_TEST_PATH_MAX];
+    int count;
+} scan_list_files;
+
+/* Write list files @p names[i].csv in a fresh folder, each @p header then @p bodies[i]. */
+static int
+scan_list_files_write(scan_list_files* files, const char* header, const char* const* names, const char* const* bodies,
+                      int count) {
+    DSD_MEMSET(files, 0, sizeof *files);
+    if (make_temp_dir(files->dir, sizeof files->dir) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        char file[64];
+        DSD_SNPRINTF(file, sizeof file, "%s.csv", names[i]);
+        if (dsd_test_path_join(files->paths[i], sizeof files->paths[i], files->dir, file) != 0) {
+            return -1;
+        }
+        files->count = i + 1;
+        FILE* fp = dsd_fopen_private(files->paths[i], "wb");
+        if (!fp) {
+            return -1;
+        }
+        const int ok = fputs(header, fp) >= 0 && fputs(bodies[i], fp) >= 0;
+        if (fclose(fp) != 0 || !ok) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void
+scan_list_files_remove(const scan_list_files* files) {
+    for (int i = 0; i < files->count; i++) {
+        (void)remove(files->paths[i]);
+    }
+    if (files->dir[0] != '\0') {
+        (void)dsd_test_rmdir(files->dir);
+    }
+}
+
+/* Name the files as the session's lists, list i starting off where @p off[i] (may be NULL). */
+static void
+scan_list_files_to_opts(const scan_list_files* files, const int* off, dsd_opts* opts) {
+    for (int i = 0; i < files->count; i++) {
+        DSD_SNPRINTF(opts->trunk_scan_lists[i].path, sizeof opts->trunk_scan_lists[i].path, "%s", files->paths[i]);
+        opts->trunk_scan_lists[i].start_off = (uint8_t)(off && off[i]);
+    }
+    opts->trunk_scan_list_count = files->count;
+}
+
+/* The session nfm_targets_init() runs its analog targets in: DMR decoding beside them, a configured 20 kHz NFM
+   width. */
+static void
+scan_lists_nfm_session(dsd_opts* opts) {
+    opts->frame_dmr = 1;
+    opts->dmr_stereo = 1;
+    opts->analog_nfm_bandwidth_hz = 20000;
+}
+
+/* Start a scan over @p count lists at monotonic 0 (k_header rows unless @p header), after @p session (may be NULL) set
+   the options the scan starts from. */
+static int
+scan_lists_init_in(scan_list_files* files, const char* header, const char* const* names, const char* const* bodies,
+                   const int* off, int count, dsd_opts* opts, dsd_state* state, void (*session)(dsd_opts*)) {
+    if (scan_list_files_write(files, header ? header : k_header, names, bodies, count) != 0) {
+        scan_list_files_remove(files);
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    if (session) {
+        session(opts);
+    }
+    scan_list_files_to_opts(files, off, opts);
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan lists init failed: %s\n", err);
+        scan_list_files_remove(files);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+scan_lists_init(scan_list_files* files, const char* header, const char* const* names, const char* const* bodies,
+                const int* off, int count, dsd_opts* opts, dsd_state* state) {
+    return scan_lists_init_in(files, header, names, bodies, off, count, opts, state, NULL);
+}
+
+static void
+scan_lists_finish(scan_list_files* files, dsd_opts* opts, dsd_state* state) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    scan_list_files_remove(files);
+}
+
+/* A toggle as a frontend asks for it: the session the running scan publishes. */
+static int
+list_set(dsd_opts* opts, dsd_state* state, int list, int enabled) {
+    return dsd_engine_trunk_scan_list_set(opts, state, state->scan_row_session, list, enabled, 7U);
+}
+
+static int
+expect_list_rc(const char* stage, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "list toggle %s returned %d, want %d\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* The list on air (1-based, 0 none), whether its list is off, and the D10 readout: n of m over the lists on. */
+static int
+expect_list_on_air(const dsd_state* state, const char* stage, unsigned list, unsigned list_off, unsigned ordinal,
+                   unsigned count) {
+    if (state->trunk_scan_active_list != list || state->trunk_scan_active_list_off != list_off
+        || state->trunk_scan_rotation_ordinal != ordinal || state->trunk_scan_rotation_count != count) {
+        DSD_FPRINTF(stderr, "list on air after %s: list %u off %u, %u of %u; want list %u off %u, %u of %u\n", stage,
+                    (unsigned)state->trunk_scan_active_list, (unsigned)state->trunk_scan_active_list_off,
+                    (unsigned)state->trunk_scan_rotation_ordinal, (unsigned)state->trunk_scan_rotation_count, list,
+                    list_off, ordinal, count);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_list_published(const dsd_state* state, const char* stage, int list, const char* name, unsigned enabled,
+                      unsigned targets) {
+    const dsd_trunk_scan_list_publication* pub = &state->trunk_scan_lists[list - 1];
+    if (strcmp(pub->name, name) != 0 || pub->enabled != enabled || pub->targets != targets) {
+        DSD_FPRINTF(stderr, "list %d after %s: '%s' enabled %u targets %u; want '%s' %u %u\n", list, stage, pub->name,
+                    (unsigned)pub->enabled, (unsigned)pub->targets, name, enabled, targets);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+tick_at(dsd_opts* opts, dsd_state* state, double now_m) {
+    trunk_scan_test_set_now(now_m);
+    dsd_engine_trunk_scan_tick(opts, state);
+}
+
+/* The lists load in CLI/INI order into one rotation that keeps each target's union position (its identity ordinal),
+ * named by their files; a list that starts off is passed over until switched on, and one switched off is passed over
+ * again, while the "n of m" readout counts the lists that are on. */
+static int
+test_lists_load_in_order_and_rotate_over_the_lists_on(void) {
+    static const char* const names[] = {"security", "hospital", "municipality"};
+    static const char* const bodies[] = {
+        "s1,p25-trunk,851000000,,250,,\ns2,p25-trunk,852000000,,250,,\n",
+        "h1,p25-trunk,853000000,,250,,\n",
+        "m1,p25-trunk,854000000,,250,,\nm2,p25-trunk,855000000,,250,,\n",
+    };
+    static const int off[] = {0, 0, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, off, 3, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    if (state.trunk_scan_list_count != 3U || state.trunk_scan_lists_seq == 0U) {
+        DSD_FPRINTF(stderr, "lists published: count %u seq %u\n", (unsigned)state.trunk_scan_list_count,
+                    (unsigned)state.trunk_scan_lists_seq);
+        test_rc = 1;
+    }
+    test_rc |= expect_list_published(&state, "start", 1, "security", 1U, 2U);
+    test_rc |= expect_list_published(&state, "start", 2, "hospital", 1U, 1U);
+    test_rc |= expect_list_published(&state, "start", 3, "municipality", 0U, 2U);
+    test_rc |= expect_published_target(&state, "start", "s1", 1U, 5U);
+    test_rc |= expect_list_on_air(&state, "start", 1U, 0U, 1U, 3U);
+
+    tick_at(&opts, &state, 0.30);
+    test_rc |= expect_published_target(&state, "rotation to s2", "s2", 2U, 5U);
+    tick_at(&opts, &state, 0.56);
+    test_rc |= expect_published_target(&state, "rotation to h1", "h1", 3U, 5U);
+    test_rc |= expect_list_on_air(&state, "rotation to h1", 2U, 0U, 3U, 3U);
+    tick_at(&opts, &state, 0.82);
+    test_rc |= expect_published_target(&state, "rotation passes the list that is off", "s1", 1U, 5U);
+
+    const uint32_t seq = state.trunk_scan_lists_seq;
+    test_rc |= expect_list_rc("municipality on", list_set(&opts, &state, 3, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |=
+        expect_list_rc("municipality on again", list_set(&opts, &state, 3, 1), DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
+    if (state.trunk_scan_lists_seq == seq || state.trunk_scan_lists_seq == 0U) {
+        DSD_FPRINTF(stderr, "a list switched on left lists_seq at %u\n", (unsigned)state.trunk_scan_lists_seq);
+        test_rc = 1;
+    }
+    test_rc |= expect_list_published(&state, "municipality on", 3, "municipality", 1U, 2U);
+    /* The target on air keeps its identity ordinal; only the readout's count moves. */
+    test_rc |= expect_published_target(&state, "municipality on", "s1", 1U, 5U);
+    test_rc |= expect_list_on_air(&state, "municipality on", 1U, 0U, 1U, 5U);
+    tick_at(&opts, &state, 1.08);
+    tick_at(&opts, &state, 1.34);
+    tick_at(&opts, &state, 1.60);
+    test_rc |= expect_published_target(&state, "rotation reaches municipality", "m1", 4U, 5U);
+    test_rc |= expect_list_on_air(&state, "rotation reaches municipality", 3U, 0U, 4U, 5U);
+
+    test_rc |= expect_list_rc("hospital off", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_on_air(&state, "hospital off", 3U, 0U, 3U, 4U);
+    tick_at(&opts, &state, 1.86);
+    tick_at(&opts, &state, 2.12);
+    test_rc |= expect_published_target(&state, "rotation passes hospital", "s1", 1U, 5U);
+    tick_at(&opts, &state, 2.38);
+    tick_at(&opts, &state, 2.64);
+    test_rc |= expect_published_target(&state, "rotation passes hospital again", "m1", 4U, 5U);
+
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* Every load error says which file it is about: a row, an over-long header, a target id another list holds already
+ * (both files and rows), a file that does not open (named once). A list that starts the same channel as another, under
+ * its own id, is two targets. */
+static int
+test_lists_load_errors_name_the_file(void) {
+    static const struct {
+        const char* second;
+        const char* want;
+        int names_both;
+    } cases[] = {
+        {"b,bogus-type,852000000,,250,,\n", ": row 2 has invalid target type", 0},
+        {"x,p25-trunk,852000000,,250,,\n", " row 2: target id 'x' is also ", 1},
+    };
+
+    int test_rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char* const names[] = {"one", "two"};
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* bodies[] = {"x,p25-trunk,851000000,,250,,\n", cases[i].second};
+        scan_list_files files;
+        if (scan_list_files_write(&files, k_header, names, bodies, 2) != 0) {
+            scan_list_files_remove(&files);
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[2048] = {0};
+        char want[2048];
+        DSD_SNPRINTF(want, sizeof want, "%s%s", files.paths[1], cases[i].want);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strncmp(err, want, strlen(want)) != 0
+            || (cases[i].names_both && strstr(err, files.paths[0]) == NULL)
+            || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || state.trunk_scan_list_count != 0U) {
+            DSD_FPRINTF(stderr, "list load error case %zu: \"%s\", want it to start \"%s\"\n", i, err, want);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        scan_list_files_remove(&files);
+    }
+
+    /* An over-long header in list 2. */
+    {
+        static char longer[5000];
+        DSD_MEMSET(longer, 'n', sizeof longer);
+        DSD_MEMCPY(longer, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,",
+                   strlen("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,"));
+        DSD_SNPRINTF(longer + sizeof longer - 64U, 64U, "\nb,p25-trunk,852000000,,250,,\n");
+        const char* bodies[] = {"a,p25-trunk,851000000,,250,,\n", ""};
+        scan_list_files files;
+        if (scan_list_files_write(&files, k_header, names, bodies, 2) != 0
+            || write_text_file(files.paths[1], longer) != 0) {
+            scan_list_files_remove(&files);
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[2048] = {0};
+        char want[2048];
+        DSD_SNPRINTF(want, sizeof want, "%s: row 1 is too long", files.paths[1]);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strcmp(err, want) != 0) {
+            DSD_FPRINTF(stderr, "over-long header in list 2: \"%s\", want \"%s\"\n", err, want);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        /* A list file that does not open is named once, by the parser's own message. */
+        (void)remove(files.paths[1]);
+        DSD_MEMSET(err, 0, sizeof err);
+        DSD_SNPRINTF(want, sizeof want, "failed to open trunk scan target CSV '%s'", files.paths[1]);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strcmp(err, want) != 0) {
+            DSD_FPRINTF(stderr, "missing list 2: \"%s\", want \"%s\"\n", err, want);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        scan_list_files_remove(&files);
+    }
+
+    /* The same channel in two lists is two targets, with their own ids. */
+    {
+        const char* bodies[] = {"fire,p25-trunk,851000000,,250,,\n", "fire-2,p25-trunk,851000000,,250,,\n"};
+        scan_list_files files;
+        if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+            return 1;
+        }
+        test_rc |= expect_published_target(&state, "a channel in two lists", "fire", 1U, 2U);
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* The union of the lists shares the one target budget, and the file that crosses it is named. Nothing is built: the
+ * refusal comes before a snapshot is allocated. */
+static int
+test_lists_union_target_cap(void) {
+    const size_t half = (dsd_trunk_scan_max_targets() / 2U) + 1U;
+    char* bodies[2] = {NULL, NULL};
+    const size_t row_size = 48U;
+    int test_rc = 0;
+    for (int l = 0; l < 2; l++) {
+        bodies[l] = (char*)calloc(half, row_size);
+        if (!bodies[l]) {
+            free(bodies[0]);
+            return 1;
+        }
+        size_t used = 0U;
+        for (size_t i = 0; i < half; i++) {
+            used += (size_t)DSD_SNPRINTF(bodies[l] + used, (half * row_size) - used, "l%d-%zu,p25-trunk,%u,,250,,\n", l,
+                                         i, (unsigned)(800000000U + i));
+        }
+    }
+    static const char* const names[] = {"first", "second"};
+    const char* const texts[] = {bodies[0], bodies[1]};
+    scan_list_files files;
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_list_files_write(&files, k_header, names, texts, 2) != 0) {
+        test_rc = 1;
+    } else {
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[2048] = {0};
+        char want[2048];
+        DSD_SNPRINTF(want, sizeof want, "%s: the lists hold %zu targets together, more than the %zu", files.paths[1],
+                     half * 2U, dsd_trunk_scan_max_targets());
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strncmp(err, want, strlen(want)) != 0
+            || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
+            DSD_FPRINTF(stderr, "union cap: \"%s\", want it to start \"%s\"\n", err, want);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+    }
+    scan_list_files_remove(&files);
+    free(bodies[0]);
+    free(bodies[1]);
+    return test_rc;
+}
+
+/* A target of list 2 that cannot be built (its channel map fails to import) fails the start through the init-failure
+ * path, after list 1's target was built: the trunking and modulation options come back, nothing stays attached and
+ * nothing is published. */
+static int
+test_lists_build_failure_in_list_two_cleans_up(void) {
+    static const char* const names[] = {"one", "two"};
+    scan_list_files files;
+    const char* bodies[] = {"a,p25-trunk,851000000,,250,,\n", "dmr,dmr-trunk,452000000,chan.csv,250,,\n"};
+    if (scan_list_files_write(&files, k_header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, files.dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n1,851012500\n") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    g_csv_import_result = -1;
+    char err[512] = {0};
+    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    g_csv_import_result = 0;
+    int test_rc = 0;
+    if (rc == 0 || opts.trunk_enable != 1 || opts.trunk_is_tuned != 1
+        || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || state.trunk_scan_list_count != 0U
+        || state.trunk_scan_active_id[0] != '\0') {
+        DSD_FPRINTF(stderr, "list 2 build failure: rc=%d trunk %d/%d attached=%d lists=%u err=%s\n", rc,
+                    opts.trunk_enable, opts.trunk_is_tuned, dsd_engine_trunk_scan_active_index(&state) != (size_t)-1,
+                    (unsigned)state.trunk_scan_list_count, err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)remove(chan_path);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+/* A start with list 1 off parks on the first target of a list that is on; the startup park also passes over a target
+ * the DSP rate cannot filter. Every list on at once, and every list off is refused. */
+static int
+test_lists_start_on_the_first_reachable_target_and_all_on(void) {
+    static const char* const names[] = {"one", "two", "three"};
+    static const char two[] = "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"
+                              "b,nfm-conventional,156430000,,250,2000,,\n";
+    static const char* const bodies[] = {
+        "a,nfm-conventional,154430000,,250,2000,,\n",
+        two,
+        "c,nfm-conventional,157430000,,250,2000,,\n",
+    };
+    static const int off[] = {1, 0, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    g_scan_dsp_rate_hz = 16000;
+    int test_rc = 0;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, off, 3, &opts, &state) != 0) {
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    test_rc |= expect_published_target(&state, "start with list 1 off", "b", 3U, 4U);
+    test_rc |= expect_list_on_air(&state, "start with list 1 off", 2U, 0U, 2U, 2U);
+    test_rc |= expect_list_rc("every list on", list_set(&opts, &state, DSD_TRUNK_SCAN_LIST_ALL, 1),
+                              DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_published(&state, "every list on", 1, "one", 1U, 1U);
+    test_rc |= expect_list_published(&state, "every list on", 2, "two", 1U, 2U);
+    test_rc |= expect_list_published(&state, "every list on", 3, "three", 1U, 1U);
+    test_rc |= expect_list_on_air(&state, "every list on", 2U, 0U, 3U, 4U);
+    test_rc |= expect_list_rc("every list on again", list_set(&opts, &state, DSD_TRUNK_SCAN_LIST_ALL, 1),
+                              DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
+    test_rc |= expect_list_rc("every list off", list_set(&opts, &state, DSD_TRUNK_SCAN_LIST_ALL, 0),
+                              DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    scan_lists_finish(&files, &opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    return test_rc;
+}
+
+/* D4: switching off the list that holds the target on air leaves it at once, as `L` does: the call in progress ends
+ * and commits under the target it was heard on, its carrier is handed back, and the operator's hold carries over to
+ * the target it lands on. Two lists of one target each: switching the first off moves to the second. */
+static int
+test_lists_switching_off_the_list_on_air_leaves_at_once(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,\n", "b,p25-trunk,852000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc =
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    opts.trunk_is_tuned = 1;
+    state.p25_vc_freq[0] = 851112500;
+    state.trunk_vc_freq[0] = 851112500;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
+    const int ends_before = g_explicit_call_ends;
+    g_release_seen_target[0] = '\0';
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_list_rc("list a off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "list a off", "b", 2U, 2U);
+    test_rc |= expect_list_on_air(&state, "list a off", 2U, 0U, 1U, 1U);
+    if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "a") != 0 || opts.trunk_is_tuned != 0
+        || state.trunk_scan_hold != 1U) {
+        DSD_FPRINTF(stderr, "list off on air: %d calls ended under '%s', tuned %d, hold %u; want 1 under 'a', 0, 1\n",
+                    g_explicit_call_ends - ends_before, g_release_seen_target, opts.trunk_is_tuned,
+                    (unsigned)state.trunk_scan_hold);
+        test_rc = 1;
+    }
+    test_rc |= expect_vc_mirrors_clear(&state, "list a off");
+    /* The hold keeps b; a never comes back while its list is off. */
+    tick_at(&opts, &state, 0.60);
+    tick_at(&opts, &state, 1.20);
+    test_rc |= expect_published_target(&state, "held after the list went off", "b", 2U, 2U);
+    test_rc |= expect_no_active_call_row(&state, "held after the list went off");
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* D5 and D7: a toggle that would leave nothing to scan is refused -- the last list on, every list at once, a list
+ * whose others hold only avoided targets or targets the DSP rate cannot filter -- and so is any while the scan is
+ * paused, while the tick guard is held, or that names another session or a list it does not have. None changes a
+ * list. */
+static int
+test_lists_refusals(void) {
+    static const char* const names[] = {"a", "b", "wide"};
+    static const char* const bodies[] = {
+        "a1,nfm-conventional,154430000,,250,250,,\n",
+        "b1,nfm-conventional,155430000,,250,250,,\n",
+        "w1,nfm-conventional,156430000,,250,250,,--nfm-bandwidth-hz 20000\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    g_scan_dsp_rate_hz = 16000;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, NULL, 3, &opts, &state) != 0) {
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    int test_rc = expect_published_target(&state, "start", "a1", 1U, 3U);
+    test_rc |= expect_list_rc("b off", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_rc("b off again", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
+    /* Left with the width-skipped w1 alone, which the rotation can only pass over. */
+    test_rc |= expect_list_rc("a off, wide left", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    test_rc |= expect_list_rc("every list off", list_set(&opts, &state, DSD_TRUNK_SCAN_LIST_ALL, 0),
+                              DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    test_rc |= expect_list_rc("b on", list_set(&opts, &state, 2, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    /* b1 avoided: list a off would leave only it and w1. */
+    test_rc |= expect_control_rc("advance to b1",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_control_rc("avoid b1",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_published_target(&state, "avoid b1", "a1", 1U, 3U);
+    test_rc |= expect_list_rc("a off, the others avoided", list_set(&opts, &state, 1, 0),
+                              DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+
+    const uint32_t session = state.scan_row_session;
+    const uint32_t seq = state.trunk_scan_lists_seq;
+    test_rc |= expect_list_rc("another session", dsd_engine_trunk_scan_list_set(&opts, &state, session + 1U, 2, 0, 7U),
+                              DSD_TRUNK_SCAN_LIST_SET_STALE);
+    test_rc |= expect_list_rc("no session", dsd_engine_trunk_scan_list_set(&opts, &state, 0U, 2, 0, 7U),
+                              DSD_TRUNK_SCAN_LIST_SET_STALE);
+    test_rc |= expect_list_rc("list 0", list_set(&opts, &state, 0, 0), DSD_TRUNK_SCAN_LIST_SET_STALE);
+    test_rc |= expect_list_rc("list 4", list_set(&opts, &state, 4, 0), DSD_TRUNK_SCAN_LIST_SET_STALE);
+    g_p25_tick_guard_available = 0;
+    test_rc |= expect_list_rc("guard held", list_set(&opts, &state, 3, 0), DSD_TRUNK_SCAN_LIST_SET_BUSY);
+    g_p25_tick_guard_available = 1;
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0) {
+        test_rc = 1;
+    }
+    test_rc |= expect_list_rc("paused", dsd_engine_trunk_scan_list_set(&opts, &state, session, 3, 0, 7U),
+                              DSD_TRUNK_SCAN_LIST_SET_PAUSED);
+    if (state.trunk_scan_lists_seq != seq || state.trunk_scan_lists[2].enabled != 1U) {
+        DSD_FPRINTF(stderr, "a refused toggle changed the lists: seq %u -> %u, wide %u\n", (unsigned)seq,
+                    (unsigned)state.trunk_scan_lists_seq, (unsigned)state.trunk_scan_lists[2].enabled);
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    return test_rc;
+}
+
+/* Carried from Task 1's review: `b` on a target whose only alternate the DSP rate cannot filter used to be accepted
+ * and leave the operator on a target avoided. Somewhere to go is a target the rotation can reach. */
+static int
+test_scan_avoid_refuses_when_the_only_alternate_is_width_skipped(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_scan_dsp_rate_hz = 16000;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--nfm-bandwidth-hz 12500\n"
+                         "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    int test_rc = expect_control_rc("avoid with a width-skipped alternate",
+                                    dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                    DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_scan_control_publication(&state, "avoid with a width-skipped alternate", 0U, 0U, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* `J` and `L` (issue #666) pass over a list that is off in either direction. */
+static int
+test_lists_retreat_and_advance_pass_over_a_list_off(void) {
+    static const char* const names[] = {"a", "b", "c"};
+    static const char* const bodies[] = {
+        "a1,p25-trunk,851000000,,250,,\na2,p25-trunk,852000000,,250,,\n",
+        "b1,p25-trunk,853000000,,250,,\n",
+        "c1,p25-trunk,854000000,,250,,\n",
+    };
+    static const int off[] = {0, 1, 0};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, off, 3, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = expect_control_rc("retreat from a1",
+                                    dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_published_target(&state, "retreat from a1", "c1", 4U, 4U);
+    test_rc |= expect_list_on_air(&state, "retreat from a1", 3U, 0U, 3U, 3U);
+    test_rc |= expect_control_rc("retreat from c1",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_published_target(&state, "retreat past b", "a2", 2U, 4U);
+    test_rc |= expect_control_rc("advance from a2",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_published_target(&state, "advance past b", "c1", 4U, 4U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* The visit cap counts only alternates in the rotation: with the other target's list off it re-arms, and switching
+ * that list on gives the visit on air its first alternate, so its limit starts again in full there -- not at once. */
+static int
+test_lists_visit_cap_waits_for_a_list_on(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,\n", "b,p25-trunk,852000000,,250,,\n"};
+    static const int off[] = {0, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, k_header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, off, &opts);
+    opts.scan_max_visit_ms = 1000;
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "visit cap lists init: %s\n", err);
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    /* A call being followed holds a against its dwell; only the cap could move it. */
+    for (int tick = 1; tick <= 5; tick++) {
+        opts.trunk_is_tuned = 1;
+        tick_at(&opts, &state, (double)tick);
+    }
+    test_rc |= expect_published_target(&state, "the cap with b's list off", "a", 1U, 2U);
+    trunk_scan_test_set_now(5.0);
+    test_rc |= expect_list_rc("b on", list_set(&opts, &state, 2, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 5.5);
+    test_rc |= expect_published_target(&state, "half a limit after b went on", "a", 1U, 2U);
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 6.05);
+    test_rc |= expect_published_target(&state, "a full limit after b went on", "b", 2U, 2U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+static int
+expect_departure_due(const dsd_opts* opts, const dsd_state* state, const char* stage, double now_m, int want) {
+    trunk_scan_test_set_now(now_m);
+    const int got = dsd_engine_trunk_scan_departure_due(opts, state);
+    if (got != want) {
+        DSD_FPRINTF(stderr, "departure due after %s at %.2f: %d, want %d\n", stage, now_m, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* §2.4: a departure that cannot tune anywhere stays owed. With b's retune failing, switching a's list off falls back
+ * onto a -- published as out of the rotation, (-/1) -- under the operator's hold, with traffic still holding it. The
+ * frame loop is not asked to yield before b's cooldown ends, and is then; the tick leaves for b ahead of the hold and
+ * the activity. */
+static int
+test_lists_departure_waits_out_a_failed_retune(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,\n", "b,p25-trunk,852000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc =
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 1;
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_list_rc("a off, b failing", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_published_target(&state, "a off, b failing", "a", 1U, 2U);
+    test_rc |= expect_list_on_air(&state, "a off, b failing", 1U, 1U, 0U, 1U);
+    test_rc |= expect_departure_due(&opts, &state, "b's failure", 0.50, 0);
+    /* A pause keeps the obligation, and a resume with b still cooling down resumes where it paused and waits again. */
+    trunk_scan_test_set_now(0.55);
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0
+        || dsd_engine_trunk_scan_resume_locked(&opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "pause and resume while the departure waits failed\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "resumed while b cools down", "a", 1U, 2U);
+    test_rc |= expect_departure_due(&opts, &state, "the resume in place", 0.60, 0);
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 1.00);
+    test_rc |= expect_published_target(&state, "b cooling down", "a", 1U, 2U);
+    test_rc |= expect_departure_due(&opts, &state, "b's cooldown", 2.15, 1);
+    const int calls = g_counting_tune_to_cc_calls;
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 2.15);
+    test_rc |= expect_published_target(&state, "the departure after b's cooldown", "b", 2U, 2U);
+    test_rc |= expect_list_on_air(&state, "the departure after b's cooldown", 2U, 0U, 1U, 1U);
+    test_rc |= expect_departure_due(&opts, &state, "the departure", 2.20, 0);
+    if (g_counting_tune_to_cc_calls != calls + 1 || state.trunk_scan_hold != 1U) {
+        DSD_FPRINTF(stderr, "departure after the cooldown: %d tunes, hold %u; want 1 and the hold kept\n",
+                    g_counting_tune_to_cc_calls - calls, (unsigned)state.trunk_scan_hold);
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* §2.4 [S1]: a departure whose switch cannot be prepared (b's keys do not allocate) backs off a cooldown, as a failed
+ * retune does, rather than trying again at every tick or making the frame loop yield at every frame. */
+static int
+test_lists_departure_backs_off_a_failed_preparation(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,,\n",
+                                         "b,p25-trunk,852000000,,250,,,-K keys.csv\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    char keys[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "prepare failure lists init: %s\n", err);
+        test_rc = 1;
+    } else {
+        test_rc |= expect_control_rc(
+            "hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+        g_counting_tune_to_cc_calls = 0;
+        dsd_key_set_test_alloc_fail_after(0);
+        trunk_scan_test_set_now(0.10);
+        test_rc |= expect_list_rc("a off, b unprepared", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+        dsd_key_set_test_alloc_fail_after(-1);
+        test_rc |= expect_published_target(&state, "a off, b unprepared", "a", 1U, 2U);
+        test_rc |= expect_departure_due(&opts, &state, "the failed preparation", 1.00, 0);
+        tick_at(&opts, &state, 1.00);
+        tick_at(&opts, &state, 1.50);
+        if (g_counting_tune_to_cc_calls != 0) {
+            DSD_FPRINTF(stderr, "a failed preparation was retried within its cooldown: %d tunes\n",
+                        g_counting_tune_to_cc_calls);
+            test_rc = 1;
+        }
+        test_rc |= expect_departure_due(&opts, &state, "the preparation's cooldown", 2.15, 1);
+        tick_at(&opts, &state, 2.15);
+        test_rc |= expect_published_target(&state, "the departure after the cooldown", "b", 2U, 2U);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(keys);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+/* A departure onto b whose retune then fails asynchronously leaves b with no alternate in the rotation (a's list is
+ * off), so b is retried in place after its cooldown (A-B1 for the target in the rotation). */
+static int
+test_lists_departure_with_an_async_failure_retries_the_landing(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,dmr-trunk,461000000,,250,,\n", "b,dmr-trunk,462000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    dsd_trunk_tuning_requests_reset();
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_counting_tune_to_cc_calls = 0;
+    trunk_scan_test_set_now(1.0);
+    test_rc |= expect_list_rc("a off, b pending", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    test_rc |= expect_published_target(&state, "a off, b pending", "b", 2U, 2U);
+    dsd_trunk_tuning_request_publish(g_counting_tune_to_cc_last_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_published_target(&state, "b failed asynchronously", "b", 2U, 2U);
+    tick_at(&opts, &state, 3.2);
+    if (g_counting_tune_to_cc_calls != 2 || g_counting_tune_to_cc_freq != 462000000L) {
+        DSD_FPRINTF(stderr, "b was not retried in place: %d tunes, last %ld\n", g_counting_tune_to_cc_calls,
+                    g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    dsd_trunk_tuning_requests_reset();
+    return test_rc;
+}
+
+/* [S4] The obligation ends as soon as the target on air is in the rotation again -- its list switched back on, every
+ * list on, the avoids cleared -- and stays while either reason still holds: an avoided target whose list is off owes
+ * the departure after its avoid is cleared. Both reasons are published, each on its own. */
+static int
+test_lists_departure_cancellation(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char* const bodies[] = {"a,p25-trunk,851000000,,250,,\n", "b,p25-trunk,852000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (int how = 0; how < 3; how++) {
+        scan_list_files files;
+        if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+            return 1;
+        }
+        test_rc |= expect_control_rc(
+            "hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+        g_counting_tune_to_cc_failures_remaining = 1;
+        trunk_scan_test_set_now(0.10);
+        if (how < 2) {
+            test_rc |= expect_list_rc("a off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+            test_rc |= expect_list_rc("a back on", list_set(&opts, &state, how == 0 ? 1 : DSD_TRUNK_SCAN_LIST_ALL, 1),
+                                      DSD_TRUNK_SCAN_LIST_SET_OK);
+        } else {
+            test_rc |= expect_control_rc(
+                "avoid a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+            test_rc |= expect_scan_control_publication(&state, "avoid a, b failing", 1U, 1U, 1U);
+            test_rc |= expect_control_rc(
+                "clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+        }
+        g_counting_tune_to_cc_failures_remaining = 0;
+        test_rc |= expect_list_on_air(&state, "back in the rotation", 1U, 0U, 1U, 2U);
+        test_rc |= expect_departure_due(&opts, &state, "back in the rotation", 2.20, 0);
+        tick_at(&opts, &state, 2.20);
+        tick_at(&opts, &state, 3.00);
+        test_rc |= expect_published_target(&state, "held after the obligation ended", "a", 1U, 2U);
+        scan_lists_finish(&files, &opts, &state);
+    }
+
+    /* List off and avoided at once: clearing the avoid leaves the list off, and the departure still runs. */
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_counting_tune_to_cc_failures_remaining = 1;
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_list_rc("a off too", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_scan_control_publication(&state, "avoided and off", 1U, 1U, 1U);
+    test_rc |= expect_list_on_air(&state, "avoided and off", 1U, 1U, 0U, 1U);
+    test_rc |=
+        expect_control_rc("clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+    test_rc |= expect_scan_control_publication(&state, "off, no longer avoided", 1U, 0U, 0U);
+    test_rc |= expect_list_on_air(&state, "off, no longer avoided", 1U, 1U, 0U, 1U);
+    test_rc |= expect_departure_due(&opts, &state, "off, no longer avoided", 2.20, 1);
+    tick_at(&opts, &state, 2.20);
+    test_rc |= expect_published_target(&state, "the departure the list still owes", "b", 2U, 2U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* [S5] A resume from a pause taken while the target on air was out of the rotation walks the targets after it the
+ * advance would try, past one the DSP rate cannot filter; one whose retune fails leaves the scan paused, with the
+ * manual session put back, and the next resume tries again rather than staying pinned. The publication survives the
+ * pause (the lists and their states; no list on air while paused) and is taken down when the scan detaches. */
+static int
+test_lists_resume_walks_past_an_unreachable_target(void) {
+    static const char* const names[] = {"a", "b"};
+    static const char second[] = "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"
+                                 "c,nfm-conventional,156430000,,250,2000,,\n";
+    static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n", second};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    g_scan_dsp_rate_hz = 16000;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, NULL, 2, &opts, &state) != 0) {
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    int test_rc =
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_scan_tune_to_freq_failures_remaining = 1;
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_list_rc("a off, c failing", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "a off, c failing", "a", 1U, 3U);
+    trunk_scan_test_set_now(0.20);
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0) {
+        test_rc = 1;
+    }
+    const uint32_t seq = state.trunk_scan_lists_seq;
+    test_rc |= expect_list_on_air(&state, "paused", 0U, 0U, 0U, 2U);
+    test_rc |= expect_list_published(&state, "paused", 1, "a", 0U, 1U);
+    test_rc |= expect_list_published(&state, "paused", 2, "b", 1U, 2U);
+    test_rc |= expect_departure_due(&opts, &state, "paused", 5.0, 0);
+
+    /* c fails again: the resume leaves the scan paused. */
+    trunk_scan_test_set_now(2.50);
+    g_scan_tune_to_freq_failures_remaining = 1;
+    const int refused = dsd_engine_trunk_scan_resume_locked(&opts, &state);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    if (refused != -3 || state.trunk_scan_paused != 1U || dsd_engine_trunk_scan_active_index(&state) != 0U) {
+        DSD_FPRINTF(stderr, "a resume whose landing fails: rc %d paused %u active %zu; want -3, paused, at a\n",
+                    refused, (unsigned)state.trunk_scan_paused, dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.00);
+    const int resumed = dsd_engine_trunk_scan_resume_locked(&opts, &state);
+    if (resumed != 0 || state.trunk_scan_paused != 0U) {
+        DSD_FPRINTF(stderr, "the next resume: rc %d paused %u\n", resumed, (unsigned)state.trunk_scan_paused);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "the resume past wide", "c", 3U, 3U);
+    test_rc |= expect_list_on_air(&state, "the resume past wide", 2U, 0U, 2U, 2U);
+    if (state.trunk_scan_lists_seq != seq) {
+        DSD_FPRINTF(stderr, "a pause or resume moved lists_seq %u -> %u\n", (unsigned)seq,
+                    (unsigned)state.trunk_scan_lists_seq);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.trunk_scan_list_count != 0U || state.trunk_scan_lists_seq != 0U
+        || state.trunk_scan_lists[0].name[0] != '\0' || state.trunk_scan_rotation_count != 0U
+        || state.trunk_scan_active_list != 0U) {
+        DSD_FPRINTF(stderr, "the lists stayed published after the scan detached\n");
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    return test_rc;
+}
+
+/* §2.3: what the session must be ready for counts every loaded target, a list that is off included, since it can be
+ * switched on: the configured NFM width an nfm target there runs, and the tone detection it would need. Peer IDEN
+ * sharing and the band-plan export read every target's snapshot, a list that is off included. */
+static int
+test_lists_global_predicates_and_idens_count_every_list(void) {
+    static const char* const names[] = {"a", "b", "radio"};
+    static const char* const bodies[] = {
+        "a,p25-trunk,851000000,,250,,,\n",
+        "b,p25-trunk,852000000,,250,,,\n",
+        "n,nfm-conventional,154430000,,250,2000,,\n",
+    };
+    static const int off[] = {0, 0, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, off, 3, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    if (!dsd_engine_scan_runs_configured_nfm_width(&opts, &state) || !dsd_engine_scan_hears_tones(&opts, &state)) {
+        DSD_FPRINTF(stderr, "an nfm target in a list that is off: configured width %d, tones %d; want both\n",
+                    dsd_engine_scan_runs_configured_nfm_width(&opts, &state),
+                    dsd_engine_scan_hears_tones(&opts, &state));
+        test_rc = 1;
+    }
+    /* a learns an identifier on system A, then its list goes off while b is on air. */
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    seed_iden_entry(&state.p25_iden_fdma[1], 170201250, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state.p25_chan_tdma_explicit[1] |= 0x01;
+    tick_at(&opts, &state, 0.26);
+    test_rc |= expect_published_target(&state, "rotation to b", "b", 2U, 3U);
+    test_rc |= expect_list_rc("a off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    char out_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(out_path, sizeof out_path, "dsdneo_lists_bandplan");
+    if (fd < 0) {
+        scan_lists_finish(&files, &opts, &state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    const int rows = dsd_engine_p25_bandplan_export(&opts, &state, out_path);
+    if (rows != 1) {
+        DSD_FPRINTF(stderr, "band-plan export with a's list off wrote %d rows, want a's 1\n", rows);
+        test_rc = 1;
+    }
+    (void)remove(out_path);
+    /* b turns out to be a site of system A: a's identifier reaches it from a's snapshot. */
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    tick_at(&opts, &state, 0.30);
+    test_rc |= expect_iden_entry("b fdma[1] from a list that is off", &state.p25_iden_fdma[1], 170201250, k_sys_a_wacn,
+                                 k_sys_a_sysid, 1);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* §2.5 [S3]: two lists may hold one nfm channel under different tone lists. They rotate like any two targets, but
+ * traffic one copy's tone policy rejects never moves to the other copy: with only the two it stays, muted; with a third
+ * target it moves there, past the copy. */
+static int
+test_lists_tone_rejection_passes_over_a_copy(void) {
+    static const char* const names[] = {"fire", "ems", "other"};
+    static const char* const bodies[] = {
+        "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n",
+        "ems,nfm-conventional,154430000,,250,2000,,--tone-allow 131.8\n",
+        "dmr,dmr-conventional,461000000,,250,250,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (int lists = 2; lists <= 3; lists++) {
+        scan_list_files files;
+        if (scan_lists_init_in(&files, k_squelch_targets_header, names, bodies, NULL, lists, &opts, &state,
+                               scan_lists_nfm_session)
+            != 0) {
+            return 1;
+        }
+        if (lists == 2) {
+            /* Idle copies rotate. */
+            tick_at(&opts, &state, 0.30);
+            test_rc |= expect_published_target(&state, "the copies rotate", "ems", 2U, 2U);
+            tick_at(&opts, &state, 0.56);
+            test_rc |= expect_published_target(&state, "the copies rotate back", "fire", 1U, 2U);
+        }
+        /* Rejected traffic on fire: tick after tick with only the copy, one tick (the next one's dwell would move on)
+           with a third target. */
+        const double start = lists == 2 ? 0.60 : 0.10;
+        g_scan_dsp_rate_reads = 0;
+        const int ticks = lists == 2 ? 4 : 1;
+        for (int tick = 0; tick < ticks; tick++) {
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+            tick_at(&opts, &state, start + (0.10 * tick));
+        }
+        /* With only the copy there is nowhere to go, so no advance is even tried: each tick asks the question alone
+           (its walk reads the DSP rate once), where an advance would read it again for its own walk. */
+        if (lists == 2 && g_scan_dsp_rate_reads != ticks) {
+            DSD_FPRINTF(stderr, "tone rejection with only a copy: %d rate reads in %d ticks, want one a tick\n",
+                        g_scan_dsp_rate_reads, ticks);
+            test_rc = 1;
+        }
+        const char* want = lists == 2 ? "fire" : "dmr";
+        if (strcmp(state.trunk_scan_active_id, want) != 0) {
+            DSD_FPRINTF(stderr, "tone rejection on fire with %d lists landed on '%s', want '%s'\n", lists,
+                        state.trunk_scan_active_id, want);
+            test_rc = 1;
+        }
+        scan_lists_finish(&files, &opts, &state);
+        DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    }
+    return test_rc;
+}
+
+/* §2.5: digital receive rejection keeps a copy as somewhere to go: two lists holding one DMR repeater with
+ * complementary color-code filters hand the traffic one rejects to the other. */
+static int
+test_lists_receive_rejection_hands_over_to_a_copy(void) {
+    static const char* const names[] = {"cc2", "cc3"};
+    static const char* const bodies[] = {
+        "x,dmr-conventional,461000000,,250,250,,--dcc-allow 2\n",
+        "y,dmr-conventional,461000000,,250,250,,--dcc-allow 3\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = expect_published_target(&state, "start", "x", 1U, 2U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 3;
+    trunk_scan_test_set_now(5.0);
+    if (!dsd_engine_trunk_scan_receive_expired(&opts, &state)) {
+        DSD_FPRINTF(stderr, "color code 3 on x: the frame loop was not let go to the copy that admits it\n");
+        test_rc = 1;
+    }
+    tick_at(&opts, &state, 5.0);
+    test_rc |= expect_published_target(&state, "receive rejection on x", "y", 2U, 2U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* Carried from Task 1's review: once a failed retune's cooldown has run out while another target can take the
+ * receiver, the retry in place waits for the rotation and asks again a cooldown later, not at every tick (each asking
+ * walks the targets, which reads the DSP rate once). A call being followed keeps a past its dwell meanwhile. */
+static int
+test_due_retry_with_an_alternate_walks_once_a_cooldown(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* a's dwell runs out; b and c fail, and so does the fallback onto a: a cools down beside them. */
+    g_counting_tune_to_cc_failures_remaining = 3;
+    tick_at(&opts, &state, 0.30);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_published_target(&state, "everything failed", "a", 1U, 3U);
+    g_scan_dsp_rate_reads = 0;
+    g_counting_tune_to_cc_calls = 0;
+    for (int tick = 0; tick < 20; tick++) {
+        opts.trunk_is_tuned = 1;
+        tick_at(&opts, &state, 2.35 + (0.05 * tick));
+    }
+    if (g_scan_dsp_rate_reads != 1 || g_counting_tune_to_cc_calls != 0) {
+        DSD_FPRINTF(stderr, "a due retry with an alternate: %d walks and %d tunes in 1 s, want 1 and 0\n",
+                    g_scan_dsp_rate_reads, g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Carried from Task 1's review: one advance reads the DSP rate once for its whole candidate walk, however many
+ * targets it passes over (here three avoided ones), not once per candidate. */
+static int
+test_advance_reads_the_rate_once_per_walk(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n"
+                          "d,p25-trunk,854000000,,250,,\n"
+                          "e,p25-trunk,855000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    for (int i = 0; i < 3; i++) {
+        test_rc |= expect_control_rc(
+            "avoid", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    }
+    test_rc |= expect_published_target(&state, "three avoided", "d", 4U, 5U);
+    g_scan_dsp_rate_reads = 0;
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_published_target(&state, "advance", "e", 5U, 5U);
+    const int one_hop = g_scan_dsp_rate_reads;
+    g_scan_dsp_rate_reads = 0;
+    test_rc |= expect_control_rc("advance past a, b, c",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_published_target(&state, "advance past a, b, c", "d", 4U, 5U);
+    if (g_scan_dsp_rate_reads != one_hop) {
+        DSD_FPRINTF(stderr, "an advance past three avoided targets read the rate %d times, a plain one %d\n",
+                    g_scan_dsp_rate_reads, one_hop);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -17051,6 +18229,26 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
+    rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);
+    rc |= run_with_default_tune_hook(test_lists_load_errors_name_the_file);
+    rc |= run_with_default_tune_hook(test_lists_union_target_cap);
+    rc |= run_with_default_tune_hook(test_lists_build_failure_in_list_two_cleans_up);
+    rc |= run_with_default_tune_hook(test_lists_start_on_the_first_reachable_target_and_all_on);
+    rc |= run_with_default_tune_hook(test_lists_switching_off_the_list_on_air_leaves_at_once);
+    rc |= run_with_default_tune_hook(test_lists_refusals);
+    rc |= run_with_default_tune_hook(test_scan_avoid_refuses_when_the_only_alternate_is_width_skipped);
+    rc |= run_with_default_tune_hook(test_lists_retreat_and_advance_pass_over_a_list_off);
+    rc |= run_with_default_tune_hook(test_lists_visit_cap_waits_for_a_list_on);
+    rc |= run_with_default_tune_hook(test_lists_departure_waits_out_a_failed_retune);
+    rc |= run_with_default_tune_hook(test_lists_departure_backs_off_a_failed_preparation);
+    rc |= run_with_default_tune_hook(test_lists_departure_with_an_async_failure_retries_the_landing);
+    rc |= run_with_default_tune_hook(test_lists_departure_cancellation);
+    rc |= run_with_default_tune_hook(test_lists_resume_walks_past_an_unreachable_target);
+    rc |= run_with_default_tune_hook(test_lists_global_predicates_and_idens_count_every_list);
+    rc |= run_with_default_tune_hook(test_lists_tone_rejection_passes_over_a_copy);
+    rc |= run_with_default_tune_hook(test_lists_receive_rejection_hands_over_to_a_copy);
+    rc |= run_with_default_tune_hook(test_due_retry_with_an_alternate_walks_once_a_cooldown);
+    rc |= run_with_default_tune_hook(test_advance_reads_the_rate_once_per_walk);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
     rc |= test_parser_reads_spreadsheet_quoted_labels();

@@ -198,3 +198,12 @@ dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t ses
     }
     return g_trunk_scan_hooks.unavoid(opts, state, session, target_id, name);
 }
+
+int
+dsd_trunk_scan_hook_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
+                             uint32_t request) {
+    if (!g_trunk_scan_hooks.list_set) {
+        return DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE;
+    }
+    return g_trunk_scan_hooks.list_set(opts, state, session, list, enabled, request);
+}

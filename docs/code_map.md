@@ -267,11 +267,13 @@ Generated (do not edit/commit):
     the same traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
     `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
-    another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
-    an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the published
-    DSP rate, `trunk_scan_target_width_skipped()`; a target on the frequency on air counts, since the list's
-    `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
-    tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
+    another target is there to take it (`trunk_scan_tone_rejection_has_alternate()`: in the rotation, not cooling down,
+    and not an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the
+    published DSP rate, `trunk_scan_target_width_skipped()`; a target of another type on the frequency on air counts,
+    since it runs no tone check, but a copy of the same type from another list (issue #697) does not, here or in the
+    advance's destination walk; the digital receive rejection's `trunk_scan_rejection_has_alternate()` keeps such a
+    copy, whose own filters may admit the traffic); with none it spends the tick with the target muted in place and its
+    idle dwell disarmed, since that rotation could only switch back to it.
     Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
     `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
     disarms it), and arms a disarmed one at the check's first tick with no activity or operator hold on, as a quiet
@@ -359,8 +361,54 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (`trunk_scan_lists_layer_named`) so an empty `targets_csv_N` clears only what earlier files left (a same-file
   contradiction stays for the gap rule); a save ends its lists with an empty key (`targets_csv = ""` with none) and
   always writes `lists_off`; `dsd_user_config_compose_trunk_scan_lists()` puts what a config names over a base spec
-  (apply, queue overlay, next-start defer), an empty key removing the base's later lists with their off states. Until
-  the coordinator keeps several lists, init refuses more than one.
+  (apply, queue overlay, next-start defer), an empty key removing the base's later lists with their off states.
+- Lists in the coordinator (issue #697): init loads every configured list in order (`trunk_scan_load_lists()`: each
+  through the one parser, every parser error prefixed with its file unless it names it, then
+  `dsd_trunk_scan_check_target_lists()`) into one target vector (list order, then row order) that never moves, so
+  snapshots, avoids and session edits survive any toggle and nothing is built at runtime. Each target carries its
+  `list`; `coord->lists[]` holds each list's name (file name without folder and extension,
+  `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
+  (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
+  RETREAT, the visit cap's `trunk_scan_visit_alternate_is_eligible()`, which is the plan's has_eligible_other, the
+  rejection alternates, the resume walk), `trunk_scan_enabled_count()` (the D10 readout's m, avoided targets included),
+  and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
+  last-usable refusals). The `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's
+  fallback onto the original ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once
+  (`trunk_scan_walk`), and a due retry with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not
+  each tick. The startup park takes the first target in the rotation the DSP rate can filter
+  (`trunk_scan_start_target()`). What the session must be ready for counts every loaded target, a list that is off
+  included: the configured-width and tone predicates, the width rechecks and scan-start warnings; peer IDEN sharing and
+  the band-plan export read every snapshot.
+- List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
+  paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
+  `coord->session`; #672's published `trunk_scan_session` is the frontends' source once it lands, `scan_row_session`
+  until then), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off included),
+  then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list that comes
+  on and gives the visit on air its first eligible alternate restarts its cap
+  (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). Toggles are session-only; the
+  configured start states in `dsd_opts::trunk_scan_lists` never change.
+- Departure obligation (issue #697, §2.4): while the target on air is out of the rotation (its list off and the
+  departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
+  of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
+  (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits
+  under its own target and the hold carries over), and an attempt that did not move backs off a cooldown, a failed
+  preparation included. Nothing is stored about the reasons: they are read again each time, so a list switched back on,
+  every list on or the avoids cleared end it, and it stays while either reason holds. `depart_due_m`/`depart_yield`
+  say when it is next due and whether the frame loop may yield for it then: `dsd_engine_trunk_scan_departure_due()`
+  (two fields and the decode clock, no walk) joins the frame-sync yield predicate, so a continuous DMR carrier unwinds
+  at a burst boundary and the tick departs after protocol cleanup; with no alternate coming (none cooling) the tick
+  re-checks a cooldown later and the loop is not asked to yield. A pause keeps it; a resume from a target out of the
+  rotation walks the candidates after it (`trunk_scan_resume_park()`) and on total failure stays paused with the
+  manual-session rollback; with none eligible it resumes in place and the obligation runs later.
+- List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
+  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
+  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (D10: position among the
+  lists on, 0 while the target's list is off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each
+  toggle), all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and
+  pause, kept while paused, cleared at detach and by `initState()`. The identity ordinal `trunk_scan_active_ordinal`
+  stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`), `ENGINE_TRUNK_SCAN_PAUSE`
+  (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY` (`list_departure_yields_a_continuous_dmr_carrier`),
+  `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
   state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
@@ -3100,12 +3148,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
-  - One candidate filter, `trunk_scan_alternate_is_candidate()` (not avoided, not cooling down from a failed retune, not
-    an analog target `trunk_scan_target_width_skipped()` refuses at the published DSP rate), serves the advance walk,
-    the per-visit cap's somewhere-to-go test (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection
-    alternate, so neither the cap nor a rejection releases the target on air toward a target the walk passes over. With
-    no such alternate, a failed park is retried in place after its cooldown (`trunk_scan_retry_active_if_due()`), as a
-    single or held target's is; the walk names the widths a changed rate leaves unfit, since it no longer retunes them.
+  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. its list on and not avoided, not
+    cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at the published
+    DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
+    (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection alternate, so neither the cap nor a rejection
+    releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
+    place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
+    widths a changed rate leaves unfit, since it no longer retunes them.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
@@ -3137,6 +3186,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   when trunk scan is not installed (a NULL slot); also while paused. On OK and `_NOT_AVOIDED` it fills the caller's
   `dsd_trunk_scan_target_name` (the target's 1-based list position and label column) for the toast; the wrapper zeroes
   it first. Its own slot beside `control`, so `APP_COMMAND_QUEUE` fakes it as it fakes `control`.
+- `dsd_trunk_scan_hook_list_set()` (issue #697) — switch one target list (1-based) on or off for the session, or
+  every list on (`DSD_TRUNK_SCAN_LIST_ALL`), named by the scan session; its own result codes
+  (`dsd_trunk_scan_list_set_result`: OK, UNCHANGED, REFUSED_LAST, BUSY, UNAVAILABLE, PAUSED, STALE). The coordinator
+  takes the tick guard itself (try, BUSY), like `control`; decoder thread only. See Single-Tuner Trunk Scan.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl
@@ -11079,8 +11132,10 @@ External dependencies (resolved via CMake):
   row option accepted on trunked types as well, and its `scan_max_visit_ms` travels in the same row-option block,
   outside `dsd_scan_settings_equal()`, so a row cap never restages a tune.
 - Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
-  It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
-  and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
+  It maintains the owning scanner's visit clock and reports expiry without tuning; under trunk scan it also reports a
+  receive rejection and a departure the target on air owes (`dsd_engine_trunk_scan_departure_due()`, issue #697). The
+  decoder finishes its cleanup and releases the SM guard before the engine advances, so cleanup cannot overwrite the
+  next target's state.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 - `DSD_SCAN_OPT_SQUELCH` (`--squelch-db`, issue #521) is the one row option with hardware behind it. The parser

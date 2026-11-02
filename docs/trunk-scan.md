@@ -150,6 +150,10 @@ dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/security.csv --trunk
 - At most 8 lists. A ninth, the same path given twice, a path of 1024 bytes or more and a start with every list off are
   refused.
 - Lists given on the command line replace a config file's lists as a whole.
+- A target id must be unique across the lists loaded; the error names both files and rows. The same channel (type and
+  frequency) in two lists is two targets, each with its own options, keys and learned state. Every load error starts
+  with the file it is about, and all lists together share the one target budget below.
+- How several lists behave while scanning is under **Several lists** in [Runtime Behavior](#runtime-behavior).
 
 Optional timing controls:
 
@@ -357,9 +361,11 @@ Config notes:
 At startup DSD-neo:
 
 1. Loads the global group list, if one is configured.
-2. Loads the target CSV.
+2. Loads the target CSV, or every target list in order (`--trunk-scan`/`--trunk-scan-off` order, or `targets_csv`,
+   `targets_csv_2` ...).
 3. Imports each target's `chan_csv` into that target's isolated state.
-4. Tunes the first target.
+4. Tunes the first target of a list that starts on and that the DSP rate can filter (an analog target whose width it
+   cannot is passed over; see Width below).
 
 During scanning:
 
@@ -382,15 +388,15 @@ During scanning:
   starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
   state machine's own control/voice-channel retunes never extend it; a retune the coordinator is still waiting on
   never expires, and a completed one anchors at its own completion. Expiry advances only when another eligible target
-  exists — one that is not avoided for the session, not still cooling down from a failed retune, and not skipped at
-  every visit for a width the DSP rate cannot filter — and otherwise re-arms, so a one-target list and an all-avoided
-  list are unaffected and a target that becomes eligible later gets a full limit rather than an immediate hop. A `Y`
-  hold suspends the cap, and releasing it starts a fresh full limit
-  rather than the remainder; an `-I` talkgroup hold suspends it only while the followed call matches the held
-  talkgroup, and the limit runs from zero again once that call ends, so other calls on the target are still capped.
-  Operator hold release and clearing the last alternate's avoid restart the cap at the command; other suspension
-  changes restart it at the first eligible decoder tick. Time spent waiting for input between those ticks cannot
-  consume the fresh interval.
+  exists — one in a list that is on and not avoided for the session, not still cooling down from a failed retune, and
+  not skipped at every visit for a width the DSP rate cannot filter — and otherwise re-arms, so a one-target list and an
+  all-avoided list are unaffected and a target that becomes eligible later gets a full limit rather than an immediate
+  hop. A `Y` hold suspends the cap, and releasing it starts a fresh full limit rather than the remainder; an `-I`
+  talkgroup hold suspends it only while the followed call matches the held talkgroup, and the limit runs from zero again
+  once that call ends, so other calls on the target are still capped. Operator hold release, clearing the last
+  alternate's avoid and switching on a list that holds the first alternate restart the cap at the command; other
+  suspension changes restart it at the first eligible decoder tick. Time spent waiting for input between those ticks
+  cannot consume the fresh interval.
   When the cap evicts a target mid-call, the carrier is released first, so revisiting it later restores an idle target
   rather than a stale call or activity hold. Buffered partial P25 Phase 2 audio is flushed before the release.
   If every alternate then fails to retune and the receiver falls back onto the same target, the call stays released
@@ -417,12 +423,26 @@ During scanning:
   targets, targets still cooling down after a failed retune, and analog targets skipped at every visit for a width the
   DSP rate cannot filter. A hold only pauses the idle dwell: the parked target's trunking state machine keeps following
   calls, and `J` and `L` still move while held (the hold then applies to the new target). Avoiding the last usable
-  target is refused, as are `L` and `J` on a single-target list (`Trunk scan has only one target`). When `L` or `J`
-  cannot move (no other target is eligible, the switch cannot be set up, or every other target fails to retune and the
-  receiver falls back), it says `Staying on target #<place> <label>` (the id when the target has no label). Avoids are
-  not written back to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune
-  and the receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out
-  of the rotation.
+  target is refused — the last target in a list that is on, not avoided, and not skipped at every visit for its width —
+  as are `L` and `J` on a single-target list (`Trunk scan has only one target`). When `L` or `J` cannot move (no other
+  target is eligible, the switch cannot be set up, or every other target fails to retune and the receiver falls back),
+  it says `Staying on target #<place> <label>` (the id when the target has no label). Avoids are not written back to the
+  CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune and the receiver fell
+  back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out of the rotation.
+- **Several lists.** With more than one target list loaded, the rotation runs over the targets of the lists that are on,
+  in list order and then row order; a list that is off is passed over by the rotation, `L`, `J`, the visit cap and the
+  rejection rules alike, and keeps everything its targets learned, their avoids and session edits, for when it is on
+  again. Lists are switched on and off for the session only (nothing is written to a list file, Config->Save or the exit
+  autosave), and a restart starts each list in its configured state. Switching off the list that holds the target on air
+  leaves that target at once, as `L` does: the call in progress ends under that target's name, its carrier is handed
+  back, and a `Y` hold carries over to the target the scan lands on. When no other target can take the receiver yet
+  (they are cooling down from a failed retune), the scan stays, marked as outside the lists that are on, and leaves as
+  soon as one can, ahead of its hold, dwell and activity, even while a DMR carrier stays keyed; a list switched back on
+  before then keeps it. A switch that would leave nothing to scan is refused (every other list off, or holding only
+  avoided targets or targets skipped for their width), and so is any while the scan is paused. A resume from a target
+  whose list was switched off resumes on the next target the rotation would take. The "n of m" readout counts the
+  targets of the lists that are on, avoided ones included, and a target outside them reads as `-` for n; the log names
+  each list at start and each switch (`Trunk scan list 2 (hospital) off; 2 of 3 lists on, 14 targets`).
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
   frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the
   API's `scanner_toggle`) pauses it where it is without tuning, and so do Qt/Android **Explore from here** and the API's
@@ -651,9 +671,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   width the running DSP rate cannot filter, the target's own or the configured one it runs, is named with the fix at
   scan start, in the log and on the status line (and again if that rate changes, or, for a target without its own width,
   if the configured width does), and the rotation then passes that target over at every visit, without retuning it or a
-  further warning, until the rate or width fits again. So is a target's own width while `DSD_NEO_CHANNEL_LPF=0` turns
-  off the channel filter it needs. The Qt/Android preview of an imported target file checks the width's range only.
-  The scan-list editor's own validation (Save, Play) holds an
+  further warning, until the rate or width fits again; the scan start does not park on it either. The same applies to a
+  target's own width while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android preview of an
+  imported target file checks the width's range only. The scan-list editor's own validation (Save, Play) holds an
   RTL-SDR or rtl_tcp list's analog targets to the rate the list's bandwidth sets, an `am` entry's 6 kHz default
   included, and names those it would skip in a warning; a SoapySDR or Airspy list's rate is known once the scan's stream
   runs. While the target is parked, an RTL DSP bandwidth that cannot filter its width is refused, from the DSP bandwidth
@@ -712,14 +732,16 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   `Y` hold keeps the target, muted. With nowhere else to go (a list with this one target, or whose other targets are
   avoided, cooling down from a failed retune, or skipped at every visit for a width the DSP rate cannot filter) the
   target mutes the traffic and stays, without rotating on its idle dwell meanwhile, and the Scan Timing row reads
-  `Carrier` with no countdown; once that traffic ends, the hold and the dwell run as after any carrier. A target on the
-  same frequency counts as somewhere to go: a list holds one target per type and frequency, so it is of another type,
-  which runs no tone check (a mixed-mode repeater's `dmr-conventional` target takes the DMR traffic an
-  `nfm-conventional` target's allow list rejects). Leaving the target restores the configured policy, and Config->Save
-  never writes a target's own. An `am-conventional` target has no policy: the AM monitor hears no CTCSS or DCS, so its
-  `options` refuse the switches, and while it is parked the configured policy judges and mutes nothing and its carrier
-  holds it under `Carrier`. A configured list policy with no `nfm-conventional` target in the list has no effect, since
-  every target runs its own type's mode, and scan start says so once.
+  `Carrier` with no countdown; once that traffic ends, the hold and the dwell run as after any carrier. A target of
+  another type on the same frequency counts as somewhere to go, since it runs no tone check (a mixed-mode repeater's
+  `dmr-conventional` target takes the DMR traffic an `nfm-conventional` target's allow list rejects). A copy of the
+  target from another list (the same type on the same frequency) does not, whatever tone list it runs: a rejection never
+  moves to the same channel, which is a decided limit; the rotation still visits the copy as any other target. Leaving
+  the target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional` target
+  has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is parked the
+  configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list policy with no
+  `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and scan start says
+  so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, `L`/`J` and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

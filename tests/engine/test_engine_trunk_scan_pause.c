@@ -1084,6 +1084,85 @@ controls_beside_the_watchdog(void) {
     return rc;
 }
 
+/* ---- Target lists (issue #697) --------------------------------------------------------------------------------- */
+
+/* setup()'s session with its two targets in two lists: the P25 system in list 1, the DMR one in list 2. */
+static int
+setup_two_lists(char* second, size_t second_size) {
+    if (setup()) {
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    if (dsd_test_path_join(second, second_size, g_dir, "dmr.csv") != 0
+        || write_file(g_targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+                                 "p25,p25-trunk,851000000,,250,1200,,hexkeys.csv\n")
+        || write_file(second, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                              "tiii,dmr-trunk,451000000,channels.csv,250,1200,\n")) {
+        return 1;
+    }
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[1].path, sizeof g_opts.trunk_scan_lists[1].path, "%s", second);
+    g_opts.trunk_scan_list_count = 2;
+    trunk_scan_test_set_now(0.0);
+    char error[512] = {0};
+    if (dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error)) != 0) {
+        DSD_FPRINTF(stderr, "two-list scan init: %s\n", error);
+        return 1;
+    }
+    return expect(dsd_engine_trunk_scan_control(&g_opts, &g_state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1,
+                  "hold enabled")
+           | expect(g_frequency == k_p25_cc_hz && g_state.trunk_scan_list_count == 2U, "the scan parked on list 1");
+}
+
+/* A list toggle takes the real P25 SM tick guard the way the controls do: while a watchdog tick holds it, the toggle
+   answers BUSY and changes nothing; once it is let go, the same toggle runs, the P25 system's list goes off and the
+   receiver leaves it for the DMR system at once, as `L` would. A paused scan refuses any toggle, and a resume puts the
+   receiver back on the target it paused at, whose list is on. */
+static int
+list_toggle_takes_the_guard(void) {
+    char second[DSD_TEST_PATH_MAX] = {0};
+    if (setup_two_lists(second, sizeof second)) {
+        (void)remove(second);
+        cleanup();
+        return 1;
+    }
+    dsd_mutex_init(&g_holder.mutex);
+    dsd_cond_init(&g_holder.condition);
+    const uint32_t session = g_state.scan_row_session;
+    int rc = 0;
+    dsd_thread_t holder;
+    if (!start_guard_holder(&holder, dsd_app_command_test_policy_guard_waits())) {
+        rc |= expect(0, "guard holder for the toggle");
+    } else {
+        const int busy = dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 0, 1U);
+        const uint32_t seq = g_state.trunk_scan_lists_seq;
+        atomic_store(&g_holder.done, 1);
+        dsd_thread_join(holder);
+        rc |= expect(busy == DSD_TRUNK_SCAN_LIST_SET_BUSY && g_state.trunk_scan_lists[0].enabled == 1U
+                         && g_frequency == k_p25_cc_hz && !g_holder.stalled,
+                     "a toggle while the watchdog holds the guard is busy and changes nothing");
+        rc |= expect(seq == g_state.trunk_scan_lists_seq, "a busy toggle moves no list");
+    }
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 0, 2U) == DSD_TRUNK_SCAN_LIST_SET_OK,
+                 "the toggle once the guard is free");
+    rc |= expect_running_on("list 1 off", "tiii");
+    rc |= expect(g_frequency == k_dmr_cc_hz && g_state.trunk_scan_active_list == 2U && g_state.trunk_scan_hold == 1U,
+                 "the receiver left for list 2, the hold kept");
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 1, 3U) == DSD_TRUNK_SCAN_LIST_SET_OK,
+                 "list 1 back on");
+    rc |= expect(run_action(DSD_APP_CMD_SCANNER_TOGGLE) == 1 && toast_is("Trunk scan paused"), "y pauses");
+    rc |= expect_paused("paused with two lists");
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 2, 0, 4U) == DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                     && g_state.trunk_scan_lists[1].enabled == 1U,
+                 "a paused scan refuses a toggle");
+    rc |= expect(run_action(DSD_APP_CMD_SCAN_RESUME) == 1 && toast_is("Trunk scan resumed"), "SCAN_RESUME resumes");
+    rc |= expect_running_on("resumed on the target it paused at", "tiii");
+    dsd_cond_destroy(&g_holder.condition);
+    dsd_mutex_destroy(&g_holder.mutex);
+    (void)remove(second);
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -1102,5 +1181,6 @@ main(void) {
     rc |= watchdog_beside_pause_and_resume();
     rc |= pause_and_resume_wait_for_the_guard();
     rc |= controls_beside_the_watchdog();
+    rc |= list_toggle_takes_the_guard();
     return rc;
 }
