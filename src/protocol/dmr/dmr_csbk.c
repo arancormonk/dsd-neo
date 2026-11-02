@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -161,7 +162,8 @@ dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, u
 }
 
 static void dmr_gateway_identifier(uint32_t source, uint32_t target);
-static void dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type);
+static void dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu_bits, int csbk_fid,
+                               int type);
 
 enum { DMR_T3_MAX_LCN = 4094 };
 
@@ -1527,7 +1529,7 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     uint8_t a_reserved = (uint8_t)convert_bits_into_output(&f->bpbits2[8], 4);
 
     DSD_FPRINTF(stderr, "\n");
-    dmr_decode_syscode(opts, state, (uint8_t*)cs_pdu_bits, csbk_fid, 1);
+    dmr_decode_syscode(opts, state, cs_pdu_bits, csbk_fid, 1);
     if (active_ava != 1) {
         DSD_FPRINTF(stderr, " Active Connection Information Not Available;");
         return;
@@ -3183,46 +3185,6 @@ dmr_gateway_identifier(uint32_t source, uint32_t target) {
 }
 
 static void
-dmr_syscode_decode_model(uint8_t model, uint8_t* cs_pdu_bits, uint16_t* net, uint16_t* site, uint16_t* site_bits,
-                         char* model_str, size_t model_str_sz) {
-    if (!net || !site || !site_bits || !model_str || model_str_sz == 0) {
-        return;
-    }
-
-    *net = 0;
-    *site = 0;
-    *site_bits = 0;
-    DSD_SNPRINTF(model_str, model_str_sz, "%s", " ");
-
-    switch (model) {
-        case 0:
-            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 9);
-            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[51], 3);
-            *site_bits = 3;
-            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Tiny");
-            break;
-        case 1:
-            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 7);
-            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[49], 5);
-            *site_bits = 5;
-            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Small");
-            break;
-        case 2:
-            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 4);
-            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[46], 8);
-            *site_bits = 8;
-            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Large");
-            break;
-        default:
-            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 2);
-            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[44], 10);
-            *site_bits = 10;
-            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Huge");
-            break;
-    }
-}
-
-static void
 dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     if (!par_str || par_str_sz == 0) {
         return;
@@ -3237,8 +3199,8 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     }
 }
 
-/* Whether a system code CSBK of feature set @p csbk_fid is Capacity Max's (Motorola's, FID 0x10), which brands the
-   carrier Motorola. Its sites read as any Tier III ones: the same -D split and numbering (dmr_tiii_site.h). */
+/* Whether a system code CSBK of feature set @p csbk_fid is Motorola's (FID 0x10), which brands the carrier Motorola. A
+   C_ALOHA of it recognises its network as Capacity Max only when dmr_aloha_recognises_capmax() holds. */
 static uint8_t
 dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
     if (csbk_fid != 0x10) {
@@ -3248,8 +3210,27 @@ dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
     return 1U;
 }
 
+/* Whether the Motorola C_ALOHA being handled may recognise its network as Capacity Max (dmr_tiii_site.h): one that
+   passed its CRC, or one -F accepted as RAS, whose keyed CRC no one can check, when nothing else casts doubt on it. The
+   slot's flags must say RAS alone (a failed CRC never counts), RAS must be confirmed on this carrier, and the burst must
+   be one CSBK read whole from it, as dmr_ras_note_signature() takes a signature. dmr_cspdu() handles a C_ALOHA only with
+   no irrecoverable errors and the protect flag clear, and the P_CLEAR it synthesizes is never one. */
+static int
+dmr_aloha_recognises_capmax(const dsd_opts* opts, const dsd_state* state, const uint8_t* cs_pdu_bits) {
+    if (s_dmr_cspdu_synthesized) {
+        return 0;
+    }
+    if (dmr_csbk_crc_checked(state)) {
+        return 1;
+    }
+    return opts->aggressive_framesync == 0 && cs_pdu_bits[0] == 1U
+           && state->event_crc_invalid[state->currentslot & 1] == DSD_CRC_RAS_UNVERIFIED && dmr_ras_confirmed(state)
+           && state->input_interrupted == 0
+           && !(state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq));
+}
+
 static void
-dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* model_str, uint16_t net,
+dmr_syscode_print_type0(const dsd_opts* opts, const uint8_t* cs_pdu_bits, const char* model_str, uint16_t net,
                         const char* site_label, const char* par_str, uint16_t syscode, uint8_t is_capmax) {
     uint8_t reserved = cs_pdu_bits[16];
     uint8_t tsccas = cs_pdu_bits[17];
@@ -3264,8 +3245,8 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint8_t backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
     uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
-    DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Cat: %s;", model_str,
-                (unsigned)dmr_tiii_display_net(net), site_label, par_str);
+    DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Cat: %s;", model_str, (unsigned)net,
+                site_label, par_str);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     if (is_capmax) {
         DSD_FPRINTF(stderr, " Capacity Max");
@@ -3308,60 +3289,48 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
 
 static void
 dmr_syscode_print_type1(const char* model_str, uint16_t net, const char* site_label, uint16_t syscode) {
-    DSD_FPRINTF(stderr, " %s; Net ID: %u; Site ID: %s;", model_str, (unsigned)dmr_tiii_display_net(net), site_label);
+    DSD_FPRINTF(stderr, " %s; Net ID: %u; Site ID: %s;", model_str, (unsigned)net, site_label);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
 }
 
+/* A system code CSBK: type 0 is C_ALOHA, whose system code (bits 40..53) is this TSCC's; type 1 is C_BCAST vote or
+   adjacent, whose BParms1 (bits 21..34) names another site. Numbers show as the network's vendor numbers them
+   (dmr_tiii_site.h): the code's own network is looked up, so a neighbour of a recognised Capacity Max network reads raw
+   and one of any other network reads standard. */
 static void
-dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type) {
-    uint8_t bpbits1[14];
-    uint16_t syscode;
-    uint8_t model;
-    uint16_t net = 0;
-    uint16_t site = 0;
-    uint16_t site_bits = 0;
-    uint16_t dmrla = dmr_tiii_dmrla(opts->dmr_dmrla_is_set, opts->dmr_dmrla_n);
-    uint8_t par;
-    uint8_t is_capmax = 0;
-    char model_str[8];
-    char par_str[8];
+dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu_bits, int csbk_fid, int type) {
+    const uint16_t syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[type == 0 ? 40 : 21], 14);
+    const dmr_tiii_code code = dmr_tiii_decode_syscode(syscode);
+    const uint16_t dmrla = dmr_tiii_dmrla(opts->dmr_dmrla_is_set, opts->dmr_dmrla_n);
     char site_label[16];
 
-    for (int i = 0; i < 14; i++) {
-        bpbits1[i] = cs_pdu_bits[21 + i];
-    }
-    if (type != 0) {
-        for (int i = 0; i < 14; i++) {
-            cs_pdu_bits[40 + i] = bpbits1[i];
-        }
-    }
-
-    syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
+    const uint8_t is_motorola = dmr_syscode_note_capmax(state, csbk_fid);
     if (type == 0) {
         state->dmr_t3_syscode = syscode;
+        if (is_motorola && dmr_aloha_recognises_capmax(opts, state, cs_pdu_bits)) {
+            dsd_rxid_note_dmr_t3_capmax(state, code.model, code.net);
+        }
     }
-
-    model = (uint8_t)convert_bits_into_output(&cs_pdu_bits[40], 2);
-    dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
-
-    is_capmax = dmr_syscode_note_capmax(state, csbk_fid);
-    dmr_tiii_site_label(site_label, sizeof(site_label), site, site_bits, dmrla);
-    par = (uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2);
-    dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
+    const int capmax = dsd_rxid_dmr_t3_is_capmax(state, code.model, code.net);
+    const uint16_t net = dmr_tiii_display_net(code.net, capmax);
+    dmr_tiii_site_label(site_label, sizeof(site_label), code.site, code.site_bits, dmrla, capmax);
 
     if (type == 0) {
-        dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site_label, par_str, syscode, is_capmax);
-        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%u-%s;%04X; ", model_str,
-                     (unsigned)dmr_tiii_display_net(net), site_label, syscode);
-        /* Type 0 is C_ALOHA, naming this site; type 1 (C_BCAST vote or adjacent) names another and is no note.
-           dmr_cspdu()'s gate also passes a burst -F accepted by RAS, or an MBC whose header CRC failed: the dispatcher
-           flags those for the slot, and only a CRC that matched names the site. */
+        char par_str[8];
+        dmr_syscode_set_partition_label((uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2), par_str,
+                                        sizeof(par_str));
+        dmr_syscode_print_type0(opts, cs_pdu_bits, code.model_name, net, site_label, par_str, syscode, is_motorola);
+        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%u-%s;%04X; ", code.model_name,
+                     (unsigned)net, site_label, syscode);
+        /* A C_ALOHA names this site; a C_BCAST names another and is no note. dmr_cspdu()'s gate also passes a burst -F
+           accepted by RAS, or an MBC whose header CRC failed: the dispatcher flags those for the slot, and only a CRC
+           that matched names the site. */
         if (dmr_csbk_crc_checked(state)) {
-            dmr_tiii_note_search_site(state, model_str, net, site, dmrla, syscode);
+            dmr_tiii_note_search_site(state, syscode, dmrla);
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
         }
     } else if (type == 1) {
-        dmr_syscode_print_type1(model_str, net, site_label, syscode);
+        dmr_syscode_print_type1(code.model_name, net, site_label, syscode);
     }
 }

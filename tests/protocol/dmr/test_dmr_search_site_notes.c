@@ -6,10 +6,12 @@
 /*
  * Signal search site notes from DMR: a C_ALOHA CSBK that passed its CRC and a C_SYS_PARMS / P_SYS_PARMS short LC that
  * passed Hamming(17,12,3) and its CRC-8 note the Tier III identity they carry; the same messages failing their checks
- * note nothing. Tier III numbers are shown one-based, split only by -D (the top SITE bits are the area); the received
- * identity keeps them raw, with the Connect Plus network in full and the Capacity Plus site from its checked messages.
+ * note nothing. Tier III numbers are shown one-based, split only by -D (the top SITE bits are the area), except on a
+ * network a Motorola C_ALOHA recognised as Capacity Max, which shows them raw and whole; the received identity keeps
+ * them raw, with the Connect Plus network in full and the Capacity Plus site from its checked messages.
  */
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
@@ -570,7 +572,7 @@ test_t3_dmrla_top_bits(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
-/* -D past the SITE width is clamped to it: the whole field is the area, nothing is left to split off. */
+/* -D of the SITE width or past it (clamped to it): the whole field is the area, with site 0 in it. */
 static int
 test_t3_dmrla_clamped(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -578,20 +580,18 @@ test_t3_dmrla_clamped(dsd_opts* opts, dsd_state* state) {
     clear_record(state);
     aloha_code(opts, state, 0, SYSCODE_SMALL_2_27, 1);
     rc |= expect_text("t3 clamped text", state->rx_id.dmr_site_text,
-                      "TIII Small" DOT "Net 3" DOT "Site 28" DOT "SYS 105B");
+                      "TIII Small" DOT "Net 3" DOT "Site 28.1" DOT "SYS 105B");
     set_dmrla(opts, 1, 0);
     return rc;
 }
 
-/* A Capacity Max C_ALOHA (FID 0x10) reads as any Tier III one: the same split and numbering, the "Capacity Max" label
-   and the Motorola branding, and it never changes the user's -D. */
+/* A checked Capacity Max C_ALOHA (FID 0x10) recognises its network: it reads raw and whole whatever -D says, with the
+   "Capacity Max" label and the Motorola branding, and it never changes the user's -D. */
 static int
 test_capmax_keeps_label_and_opts(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
     static const int dmrla[3][2] = {{0, 0}, {1, 0}, {1, 2}};
-    static const char* const texts[3] = {"TIII Small" DOT "Net 3" DOT "Site 28" DOT "SYS 105B",
-                                         "TIII Small" DOT "Net 3" DOT "Site 28" DOT "SYS 105B",
-                                         "TIII Small" DOT "Net 3" DOT "Site 4.4" DOT "SYS 105B"};
+    static const char capmax_text[] = "TIII Small" DOT "Capacity Max" DOT "Net 2" DOT "Site 27" DOT "SYS 105B";
     for (int i = 0; i < 3; ++i) {
         set_dmrla(opts, dmrla[i][0], dmrla[i][1]);
         clear_record(state);
@@ -608,24 +608,27 @@ test_capmax_keeps_label_and_opts(dsd_opts* opts, dsd_state* state) {
             DSD_FPRINTF(stderr, "capmax: stderr read failed\n");
             return 1;
         }
-        rc |= expect_text("capmax text", state->rx_id.dmr_site_text, texts[i]);
+        rc |= expect_text("capmax text", state->rx_id.dmr_site_text, capmax_text);
+        rc |= expect_text("capmax site parameters", state->dmr_site_parms, "TIII Small:2-27;105B; ");
         rc |= expect_int("capmax label", strstr(log, " Capacity Max") != NULL, 1);
         rc |= expect_text("capmax branding", state->dmr_branding, "Motorola");
         rc |= expect_int("capmax keeps -D set", opts->dmr_dmrla_is_set, dmrla[i][0]);
         rc |= expect_int("capmax keeps -D n", opts->dmr_dmrla_n, dmrla[i][1]);
     }
-    // A standard Tier III C_ALOHA after it keeps the user's -D too: no split it left behind.
+    // A standard Tier III C_ALOHA on the next carrier keeps the user's -D too: no split or numbering it left behind.
     set_dmrla(opts, 0, 0);
     aloha_code(opts, state, 0x10, SYSCODE_SMALL_2_27, 1);
     clear_record(state);
     aloha_code(opts, state, 0, SYSCODE_SMALL_2_27, 1);
     rc |= expect_int("tier iii after capmax keeps no -D", opts->dmr_dmrla_is_set, 0);
-    rc |= expect_text("tier iii after capmax text", state->rx_id.dmr_site_text, texts[0]);
+    rc |= expect_text("tier iii after capmax text", state->rx_id.dmr_site_text,
+                      "TIII Small" DOT "Net 3" DOT "Site 28" DOT "SYS 105B");
     return rc;
 }
 
 /* One system through C_SYS_PARMS, P_SYS_PARMS and C_ALOHA reads as one text, with and without a split, and the
-   messages alternating never move the record's epoch. */
+   messages alternating never move the record's epoch. Once a Capacity Max C_ALOHA recognises the network, every one of
+   them reads the recognised text, raw and whole, still without moving the epoch. */
 static int
 test_slco_and_csbk_same_split(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -645,7 +648,14 @@ test_slco_and_csbk_same_split(dsd_opts* opts, dsd_state* state) {
         slco_sys_parms_code(opts, state, 3, SYSCODE_SMALL_2_27, 0);
         rc |= expect_text("p_sys_parms text equals slco", id->dmr_site_text, first);
         aloha_code(opts, state, 0x10, SYSCODE_SMALL_2_27, 1);
-        rc |= expect_text("capmax aloha text equals slco", id->dmr_site_text, first);
+        static const char capmax_text[] = "TIII Small" DOT "Capacity Max" DOT "Net 2" DOT "Site 27" DOT "SYS 105B";
+        rc |= expect_text("capmax aloha text", id->dmr_site_text, capmax_text);
+        slco_sys_parms_code(opts, state, 2, SYSCODE_SMALL_2_27, 0);
+        rc |= expect_text("slco text after capmax", id->dmr_site_text, capmax_text);
+        slco_sys_parms_code(opts, state, 3, SYSCODE_SMALL_2_27, 0);
+        rc |= expect_text("p_sys_parms text after capmax", id->dmr_site_text, capmax_text);
+        aloha_code(opts, state, 0, SYSCODE_SMALL_2_27, 1);
+        rc |= expect_text("aloha text after capmax", id->dmr_site_text, capmax_text);
         rc |= expect_int("one system keeps the epoch", (long)id->epoch, (long)epoch);
     }
     set_dmrla(opts, 1, 0);
@@ -743,6 +753,385 @@ test_capplus_slco_and_3b_agree(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* The reporter's Motorola Capacity Max control channel (issue #40), each CSBK as received: RAS-masked, so they fail
+   the standard CRC. FID 0x10 and FID 0x00 C_ALOHA name SYS 2101 (Large, raw network 1, site 1; partition A, then AB);
+   the C_BCAST names adjacent SYS 2104 (raw site 4) on LPCN 38. Its C_SYS_PARMS short LC passes Hamming and CRC-8. */
+static const uint8_t k_capmax_aloha[12] = {0x99, 0x10, 0x09, 0x00, 0xF6, 0x84, 0x05, 0x00, 0x00, 0x00, 0x16, 0xA3};
+static const uint8_t k_capmax_aloha_fid0[12] = {0x99, 0x00, 0x09, 0x00, 0xF6, 0x84, 0x07, 0x00, 0x00, 0x00, 0x00, 0xC8};
+static const uint8_t k_capmax_adjacent[12] = {0xA8, 0x00, 0x34, 0x20, 0x96, 0x84, 0x07, 0xC0, 0x00, 0x26, 0xC1, 0x17};
+static const uint8_t k_capmax_sys_parms[5] = {0x28, 0x40, 0x60, 0x0F, 0x20};
+
+static char g_log[8192];
+
+static int
+log_begin(dsd_test_capture_stderr* cap) {
+    g_log[0] = '\0';
+    return dsd_test_capture_stderr_begin(cap, "dmr_t3_capmax");
+}
+
+static int
+log_end(dsd_test_capture_stderr* cap) {
+    (void)dsd_test_capture_stderr_end(cap);
+    return dsd_test_capture_stderr_read(cap, g_log, sizeof(g_log));
+}
+
+static int
+expect_log(const char* tag, const char* want) {
+    if (strstr(g_log, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s: '%s' not in log:\n%s\n", tag, want, g_log);
+        return 1;
+    }
+    return 0;
+}
+
+/* @p bytes straight to dmr_cspdu() as one that passed the burst's gate, the current slot flagged @p crc_flags (0 is a
+   CRC that matched), its printout in g_log. The bits are left in @p bits for the caller to check. */
+static int
+csbk_send_bits(dsd_opts* opts, dsd_state* state, const uint8_t bytes[12], uint8_t crc_flags, uint8_t bits[196]) {
+    uint8_t pdu[24];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    DSD_MEMCPY(pdu, bytes, 12U);
+    DSD_MEMSET(bits, 0, 196U);
+    (void)dsd_unpack_bytes_to_bits(bytes, 12U, bits, 196U, 12U);
+    dsd_test_capture_stderr cap;
+    if (log_begin(&cap) != 0) {
+        return 1;
+    }
+    const int slot = state->currentslot & 1;
+    state->event_crc_invalid[slot] = crc_flags;
+    dmr_cspdu(opts, state, bits, pdu, 1U, 0U);
+    state->event_crc_invalid[slot] = 0;
+    return log_end(&cap);
+}
+
+static int
+csbk_send(dsd_opts* opts, dsd_state* state, const uint8_t bytes[12], uint8_t crc_flags) {
+    uint8_t bits[196];
+    return csbk_send_bits(opts, state, bytes, crc_flags, bits);
+}
+
+/* @p bytes as a BPTC CSBK burst through the burst handler, with the RAS reserved-bit marker when @p ras: a CSBK that
+   fails the standard CRC is then a RAS signature, which -F accepts. */
+static int
+csbk_burst(dsd_opts* opts, dsd_state* state, const uint8_t bytes[12], int ras) {
+    static const uint8_t k_ras_reserved[3] = {0, 0, 1};
+    static const uint8_t k_no_reserved[3] = {0, 0, 0};
+    uint8_t bits[96];
+    uint8_t info[196];
+    (void)dsd_unpack_bytes_to_bits(bytes, 12U, bits, sizeof(bits), 12U);
+    dmr_test_encode_bptc_196x96(bits, ras ? k_ras_reserved : k_no_reserved, info);
+    dsd_test_capture_stderr cap;
+    if (log_begin(&cap) != 0) {
+        return 1;
+    }
+    dmr_data_burst_handler(opts, state, info, 0x03, NULL);
+    return log_end(&cap);
+}
+
+/* @p bytes with its CRC-16 recomputed against the CSBK mask, so it passes the standard check. */
+static void
+with_valid_crc(const uint8_t bytes[12], uint8_t out[12]) {
+    uint8_t bits[96];
+    DSD_MEMCPY(out, bytes, 12U);
+    (void)dsd_unpack_bytes_to_bits(out, 12U, bits, sizeof(bits), 12U);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xA5A5U);
+    out[10] = (uint8_t)(crc >> 8);
+    out[11] = (uint8_t)(crc & 0xFFU);
+}
+
+/* The reporter's short LC: its 28 data bits, the harness adding the CRC-8. */
+static int
+slco_send_bytes(dsd_opts* opts, dsd_state* state, const uint8_t bytes[5], int slco) {
+    uint8_t bits[40];
+    uint8_t payload[28];
+    (void)dsd_unpack_bytes_to_bits(bytes, 5U, bits, sizeof(bits), 5U);
+    DSD_MEMCPY(payload, bits, sizeof(payload));
+    put_bits(payload, 0, (uint32_t)slco, 4);
+    dsd_test_capture_stderr cap;
+    if (log_begin(&cap) != 0) {
+        return 1;
+    }
+    slco_send(opts, state, payload, 0);
+    return log_end(&cap);
+}
+
+static int
+capmax_recognised(const dsd_state* state) {
+    return dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U);
+}
+
+/* A fresh carrier, relaxed CRC as given, RAS evidence of @p signatures bursts, slot 2 current and slot 1 flagged failed
+   (only the current slot's flags count). */
+static void
+gate_setup(dsd_opts* opts, dsd_state* state, int relaxed, uint8_t signatures) {
+    clear_record(state);
+    dsd_opts_set_relaxed_crc(opts, relaxed);
+    state->dmr_ras_signatures = signatures;
+    state->currentslot = 1;
+    state->event_crc_invalid[0] = DSD_CRC_FAILED;
+}
+
+static void
+gate_teardown(dsd_opts* opts, dsd_state* state) {
+    dsd_opts_set_relaxed_crc(opts, 0);
+    state->event_crc_invalid[0] = 0;
+    state->currentslot = 0;
+    state->input_interrupted = 0;
+    state->frame_dispatch_active = 0;
+    state->frame_dispatch_carrier_seq = 0;
+}
+
+typedef struct {
+    const char* tag;
+    int relaxed;
+    uint8_t signatures;
+    uint8_t crc_flags;
+    int interrupted;
+    int dispatch;    /* 0 none, 1 inside a frame dispatch, 2 one read across a carrier boundary */
+    int first_block; /* an MBC header (last-block bit clear), not a single CSBK */
+    int want;
+} capmax_gate_case;
+
+/* D3: only a Motorola C_ALOHA that passed its CRC, or one -F accepted as RAS on a carrier whose RAS is confirmed and
+   read whole from it, recognises Capacity Max; a RAS acceptance names no site. */
+static int
+test_capmax_recognition_gate(dsd_opts* opts, dsd_state* state) {
+    static const capmax_gate_case cases[] = {
+        {"ras accepted", 1, 2, DSD_CRC_RAS_UNVERIFIED, 0, 0, 0, 1},
+        {"ras inside a dispatch", 1, 2, DSD_CRC_RAS_UNVERIFIED, 0, 1, 0, 1},
+        {"ras without -F", 0, 2, DSD_CRC_RAS_UNVERIFIED, 0, 0, 0, 0},
+        {"ras with one signature", 1, 1, DSD_CRC_RAS_UNVERIFIED, 0, 0, 0, 0},
+        {"ras and failed", 1, 2, DSD_CRC_RAS_UNVERIFIED | DSD_CRC_FAILED, 0, 0, 0, 0},
+        {"failed", 1, 2, DSD_CRC_FAILED, 0, 0, 0, 0},
+        {"ras interrupted", 1, 2, DSD_CRC_RAS_UNVERIFIED, 1, 0, 0, 0},
+        {"ras across a carrier boundary", 1, 2, DSD_CRC_RAS_UNVERIFIED, 0, 2, 0, 0},
+        {"ras mbc header", 1, 2, DSD_CRC_RAS_UNVERIFIED, 0, 0, 1, 0},
+        {"crc checked", 0, 0, 0, 0, 0, 0, 1},
+        {"crc checked under -F", 1, 0, 0, 0, 0, 0, 1},
+    };
+    int rc = 0;
+    set_dmrla(opts, 0, 0);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const capmax_gate_case* c = &cases[i];
+        uint8_t bytes[12];
+        DSD_MEMCPY(bytes, k_capmax_aloha, sizeof(bytes));
+        if (c->first_block) {
+            bytes[0] &= 0x7FU;
+        }
+        gate_setup(opts, state, c->relaxed, c->signatures);
+        state->input_interrupted = c->interrupted;
+        state->frame_dispatch_active = c->dispatch != 0;
+        state->frame_dispatch_carrier_seq = state->carrier_seq + (c->dispatch == 2 ? 1U : 0U);
+        rc |= csbk_send(opts, state, bytes, c->crc_flags);
+        state->input_interrupted = 0;
+        state->frame_dispatch_active = 0;
+        rc |= expect_int(c->tag, capmax_recognised(state), c->want);
+        if (c->want && c->crc_flags != 0U) {
+            rc |= expect_int("ras recognition names no site", (long)(state->rx_id.valid & T3_SITE_PARTS), 0);
+            rc |= expect_log("ras recognition line", "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: A; SYS: "
+                                                     "2101; Capacity Max");
+        }
+        gate_teardown(opts, state);
+    }
+
+    // A standard C_ALOHA never recognises, even checked; a checked Capacity Max one notes the recognised site.
+    gate_setup(opts, state, 0, 0);
+    rc |= csbk_send(opts, state, k_capmax_aloha_fid0, 0U);
+    rc |= expect_int("fid 0 aloha never recognises", capmax_recognised(state), 0);
+    rc |= expect_log("fid 0 aloha standard", "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2; Cat: AB; SYS: 2101;");
+    uint8_t checked[12];
+    with_valid_crc(k_capmax_aloha, checked);
+    rc |= csbk_send(opts, state, checked, 0U);
+    rc |= expect_int("checked aloha recognises", capmax_recognised(state), 1);
+    rc |= expect_text("checked aloha text", state->rx_id.dmr_site_text,
+                      "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
+    gate_teardown(opts, state);
+
+    // The same through the burst handler: a CSBK whose CRC passes recognises without -F.
+    clear_record(state);
+    rc |= csbk_burst(opts, state, checked, 0);
+    rc |= expect_int("checked aloha burst recognises", capmax_recognised(state), 1);
+    rc |= expect_log("checked aloha burst line",
+                     "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: A; SYS: 2101; Capacity Max");
+    clear_record(state);
+    return rc;
+}
+
+/* The reporter's start-up through the burst handler under -F: the first RAS C_ALOHA comes before RAS is confirmed and
+   reads standard, as does the adjacent site after it (which confirms RAS); the next C_ALOHA recognises the network, and
+   from then on its site and neighbours read raw. RAS acceptances name no site. */
+static int
+test_capmax_startup_order(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    set_dmrla(opts, 0, 0);
+    clear_record(state);
+    dsd_opts_set_relaxed_crc(opts, 1);
+    state->currentslot = 0;
+
+    rc |= csbk_burst(opts, state, k_capmax_aloha, 1);
+    rc |= expect_log("startup first aloha",
+                     "C_ALOHA_SYS_PARMS: Large; Net ID: 2; Site ID: 2; Cat: A; SYS: 2101; Capacity Max");
+    rc |= expect_text("startup first site parameters", state->dmr_site_parms, "TIII Large:2-2;2101; ");
+    rc |= expect_int("startup first aloha not recognised", capmax_recognised(state), 0);
+    rc |= csbk_burst(opts, state, k_capmax_adjacent, 1);
+    rc |= expect_log("startup adjacent before", "Large; Net ID: 2; Site ID: 5; SYS: 2104;");
+    rc |= expect_int("startup ras confirmed", dmr_ras_confirmed(state), 1);
+    rc |= csbk_burst(opts, state, k_capmax_aloha, 1);
+    rc |= expect_log("startup recognised aloha",
+                     "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: A; SYS: 2101; Capacity Max");
+    rc |= expect_text("startup recognised site parameters", state->dmr_site_parms, "TIII Large:1-1;2101; ");
+    rc |= expect_int("startup recognised", capmax_recognised(state), 1);
+    rc |= csbk_burst(opts, state, k_capmax_adjacent, 1);
+    rc |= expect_log("startup adjacent after", "Large; Net ID: 1; Site ID: 4; SYS: 2104;");
+    rc |= csbk_burst(opts, state, k_capmax_aloha_fid0, 1);
+    rc |=
+        expect_log("startup fid 0 aloha after", "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: AB; SYS: 2101;");
+    rc |= expect_int("startup fid 0 aloha has no capmax suffix", strstr(g_log, "Capacity Max") == NULL, 1);
+    rc |= expect_int("startup ras names no site", (long)(state->rx_id.valid & T3_SITE_PARTS), 0);
+
+    dsd_opts_set_relaxed_crc(opts, 0);
+    clear_record(state);
+    return rc;
+}
+
+/* Recognises the reporter's network from a RAS acceptance, which notes the mark alone. */
+static void
+recognise_by_ras(dsd_opts* opts, dsd_state* state) {
+    dsd_opts_set_relaxed_crc(opts, 1);
+    state->dmr_ras_signatures = 2;
+    (void)csbk_send(opts, state, k_capmax_aloha, DSD_CRC_RAS_UNVERIFIED);
+    dsd_opts_set_relaxed_crc(opts, 0);
+}
+
+/* The checked short LC writes the text as the network numbers it: standard before recognition, raw after, the record's
+   raw parts and epoch the same. C/P_SYS_PARMS and a FID 0 C_ALOHA after recognition read raw too. */
+static int
+test_capmax_short_lc(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    const dsd_received_identity* id = &state->rx_id;
+    uint8_t crc_bits[44];
+    DSD_MEMSET(crc_bits, 0, sizeof(crc_bits));
+    (void)dsd_unpack_bytes_to_bits(k_capmax_sys_parms, 5U, crc_bits, sizeof(crc_bits), 5U);
+    for (size_t i = 36; i < sizeof(crc_bits); ++i) {
+        crc_bits[i] = 0;
+    }
+    rc |= expect_int("reporter short lc passes its crc-8", crc8_ok(crc_bits, 36), 1);
+
+    set_dmrla(opts, 0, 0);
+    clear_record(state);
+    rc |= slco_send_bytes(opts, state, k_capmax_sys_parms, 2);
+    rc |= expect_text("short lc before text", id->dmr_site_text, "TIII Large" DOT "Net 2" DOT "Site 2" DOT "SYS 2101");
+    rc |= expect_log("short lc before line", "SLC_C_SYS_PARMS: Large; Net ID: 2; Site ID: 2;");
+    const uint32_t epoch = id->epoch;
+
+    recognise_by_ras(opts, state);
+    rc |= expect_int("short lc recognised", capmax_recognised(state), 1);
+    rc |= expect_text("recognition re-renders nothing", id->dmr_site_text,
+                      "TIII Large" DOT "Net 2" DOT "Site 2" DOT "SYS 2101");
+    rc |= slco_send_bytes(opts, state, k_capmax_sys_parms, 2);
+    rc |= expect_text("short lc after text", id->dmr_site_text,
+                      "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
+    rc |= expect_log("short lc after line", "SLC_C_SYS_PARMS: Large; Net ID: 1; Site ID: 1;");
+    rc |= expect_text("short lc after site parameters", state->dmr_site_parms, "TIII Large:1-1;2101; ");
+    rc |= expect_int("short lc raw net", id->dmr_net, 1);
+    rc |= expect_int("short lc raw site", id->dmr_site, 1);
+    rc |= expect_int("short lc raw model", id->dmr_t3_model, 2);
+    rc |= expect_int("short lc same site keeps the epoch", (long)id->epoch, (long)epoch);
+
+    rc |= slco_send_bytes(opts, state, k_capmax_sys_parms, 3);
+    rc |= expect_log("p_sys_parms after line", "SLC_P_SYS_PARMS: Large; Net ID: 1; Site ID: 1;");
+    rc |= expect_text("p_sys_parms after text", id->dmr_site_text,
+                      "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
+    uint8_t fid0[12];
+    with_valid_crc(k_capmax_aloha_fid0, fid0);
+    rc |= csbk_send(opts, state, fid0, 0U);
+    rc |= expect_log("fid 0 aloha after line", "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1; Cat: AB; SYS: 2101;");
+    rc |= expect_text("fid 0 aloha after text", id->dmr_site_text,
+                      "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
+    clear_record(state);
+    return rc;
+}
+
+/* @p bytes with BParms1 (bits 21..34) set to the system code @p code. */
+static void
+adjacent_with_code(uint8_t out[12], uint16_t code) {
+    uint8_t bits[96];
+    (void)dsd_unpack_bytes_to_bits(k_capmax_adjacent, 12U, bits, sizeof(bits), 12U);
+    put_bits(bits, 21, code, 14);
+    for (size_t i = 0; i < 12U; ++i) {
+        out[i] = (uint8_t)convert_bits_into_output(&bits[i * 8U], 8U);
+    }
+}
+
+/* C_BCAST adjacent site: its own code's fields, read without writing the caller's bits, numbered as that code's network
+   is: raw for a neighbour of the recognised network, standard for any other. */
+static int
+test_capmax_adjacent(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    uint8_t bits[196];
+    uint8_t before[196];
+    set_dmrla(opts, 0, 0);
+    clear_record(state);
+    rc |= csbk_send(opts, state, k_capmax_adjacent, 0U);
+    rc |= expect_log("adjacent standard", "Large; Net ID: 2; Site ID: 5; SYS: 2104;");
+
+    recognise_by_ras(opts, state);
+    rc |= csbk_send_bits(opts, state, k_capmax_adjacent, 0U, bits);
+    rc |= expect_log("adjacent recognised", "Large; Net ID: 1; Site ID: 4; SYS: 2104;");
+    DSD_MEMSET(before, 0, sizeof(before));
+    (void)dsd_unpack_bytes_to_bits(k_capmax_adjacent, 12U, before, sizeof(before), 12U);
+    rc |= expect_int("adjacent leaves the caller's bits", memcmp(bits, before, sizeof(bits)) == 0, 1);
+
+    uint8_t other[12];
+    adjacent_with_code(other, (uint16_t)SYSCODE_SMALL_2_27);
+    rc |= csbk_send(opts, state, other, 0U);
+    rc |= expect_log("adjacent other model", "Small; Net ID: 3; Site ID: 28; SYS: 105B;");
+    adjacent_with_code(other, 0x2204U);
+    rc |= csbk_send(opts, state, other, 0U);
+    rc |= expect_log("adjacent other network", "Large; Net ID: 3; Site ID: 5; SYS: 2204;");
+    clear_record(state);
+    return rc;
+}
+
+/* D2 and D5: -D never splits a recognised Capacity Max site; on a standard network -D of the SITE width or more makes
+   the whole SITE the area, with site 0 in it. */
+static int
+test_capmax_dmrla(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    const dsd_received_identity* id = &state->rx_id;
+    uint8_t checked[12];
+    with_valid_crc(k_capmax_aloha, checked);
+    set_dmrla(opts, 1, 3);
+    clear_record(state);
+    rc |= csbk_send(opts, state, checked, 0U);
+    rc |= expect_text("capmax -D 3 text", id->dmr_site_text,
+                      "TIII Large" DOT "Capacity Max" DOT "Net 1" DOT "Site 1" DOT "SYS 2101");
+    rc |= expect_text("capmax -D 3 site parameters", state->dmr_site_parms, "TIII Large:1-1;2101; ");
+
+    clear_record(state);
+    aloha_code(opts, state, 0, (5 << 3) | 1, 1); // Tiny, network 5, site 1
+    rc |= expect_text("tiny -D 3 text", id->dmr_site_text, "TIII Tiny" DOT "Net 6" DOT "Site 2.1" DOT "SYS 0029");
+    rc |= expect_text("tiny -D 3 site parameters", state->dmr_site_parms, "TIII Tiny:6-2.1;0029; ");
+    set_dmrla(opts, 1, 5);
+    clear_record(state);
+    aloha_code(opts, state, 0, SYSCODE_SMALL_2_27, 1);
+    rc |= expect_text("small -D 5 site parameters", state->dmr_site_parms, "TIII Small:3-28.1;105B; ");
+    set_dmrla(opts, 1, 0);
+    clear_record(state);
+    return rc;
+}
+
+static int
+test_capmax_numbering(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    rc |= test_capmax_recognition_gate(opts, state);
+    rc |= test_capmax_startup_order(opts, state);
+    rc |= test_capmax_short_lc(opts, state);
+    rc |= test_capmax_adjacent(opts, state);
+    rc |= test_capmax_dmrla(opts, state);
+    return rc;
+}
+
 static int
 test_site_numbers(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -756,6 +1145,7 @@ test_site_numbers(dsd_opts* opts, dsd_state* state) {
     rc |= test_capplus_csbk_3b_site(opts, state);
     rc |= test_capplus_slco_reserved_bits_no_site(opts, state);
     rc |= test_capplus_slco_and_3b_agree(opts, state);
+    rc |= test_capmax_numbering(opts, state);
     set_dmrla(opts, 1, 0);
     g_search_running = 1;
     return rc;
