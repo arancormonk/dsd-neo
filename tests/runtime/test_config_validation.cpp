@@ -1591,7 +1591,8 @@ test_scan_max_visit_ms_validation(void) {
 /* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
  * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
  * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
-static int
+namespace {
+int
 run_recording_key_case(const char* key, const char* value, int level, const char* text) {
     char ini[128];
     DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = %s\n", key, value);
@@ -1627,12 +1628,12 @@ run_recording_key_case(const char* key, const char* value, int level, const char
     return result;
 }
 
-static int
+int
 run_analog_max_gap_case(const char* value, int level, const char* text) {
     return run_recording_key_case("analog_max_gap_ms", value, level, text);
 }
 
-static int
+int
 test_analog_max_gap_validation(void) {
     int rc = 0;
     rc |= run_analog_max_gap_case("0", -1, NULL);
@@ -1646,7 +1647,7 @@ test_analog_max_gap_validation(void) {
 }
 
 /* Issue #668: [recording] analog_preroll_ms (0..1000) is refused outside its range, as the NFM max gap is. */
-static int
+int
 test_analog_preroll_validation(void) {
     int rc = 0;
     rc |= run_recording_key_case("analog_preroll_ms", "0", -1, NULL);
@@ -1662,7 +1663,7 @@ test_analog_preroll_validation(void) {
 
 /* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
  * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
-static int
+int
 test_rdio_analog_validation(void) {
     int rc = 0;
     rc |= run_recording_key_case("rdio_analog_system_id", "0", -1, NULL);
@@ -1680,6 +1681,7 @@ test_rdio_analog_validation(void) {
                                  "Invalid integer value '2147483648'");
     return rc;
 }
+} // namespace
 
 /* Issue #525: [analog] nfm_bandwidth_hz. A width outside 8000..25000 Hz, or anything but whole Hz, is an ERROR
  * (never a warning the loader would clamp); so is an explicit width the configured RTL DSP bandwidth cannot filter,

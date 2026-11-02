@@ -1611,17 +1611,35 @@ test_sidecar_start_time_sources(void) {
         {"call start", (time_t)1700000810, (time_t)1700000830, 0, 0, (time_t)1700000810},
         {"recording opened before the call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000700, 0,
          (time_t)1700000810},
-        {"recording opened mid-call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822, 0,
-         (time_t)1700000822},
+        {
+            "recording opened mid-call",
+            (time_t)1700000810,
+            (time_t)1700000830,
+            (time_t)1700000822,
+            0,
+            (time_t)1700000822,
+        },
         {"no start: last activity", 0, (time_t)1700000830, 0, 0, (time_t)1700000830},
         {"no start: open time does not move a played file's stamp", 0, (time_t)1600000000, (time_t)1700000822, 0,
          (time_t)1600000000},
         {"negative start: last activity", (time_t)-5, (time_t)1700000830, 0, 0, (time_t)1700000830},
         {"neither stamp: decode clock", 0, 0, 0, 0, decode_now},
-        {"stamped first sample, a second before the row's start", (time_t)1700000810, (time_t)1700000830,
-         (time_t)1700000810, (time_t)1700000809, (time_t)1700000809},
-        {"stamped first sample, over a later open", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822,
-         (time_t)1700000815, (time_t)1700000815},
+        {
+            "stamped first sample, a second before the row's start",
+            (time_t)1700000810,
+            (time_t)1700000830,
+            (time_t)1700000810,
+            (time_t)1700000809,
+            (time_t)1700000809,
+        },
+        {
+            "stamped first sample, over a later open",
+            (time_t)1700000810,
+            (time_t)1700000830,
+            (time_t)1700000822,
+            (time_t)1700000815,
+            (time_t)1700000815,
+        },
         {"stamped first sample, with no row start", 0, (time_t)1600000000, 0, (time_t)1700000805, (time_t)1700000805},
         {"a negative stamp is none", (time_t)1700000810, (time_t)1700000830, 0, (time_t)-1, (time_t)1700000810},
     };
@@ -1726,8 +1744,15 @@ test_analog_talkgroup_sources(void) {
         const char* tag;
     } cases[] = {
         {"frequency", 154437500, 0, 1, "\"talkgroup\": 154437,", "\"freq\": 154437500,", "NFM 154.4375 MHz"},
-        {"frequency over the fallback", 154437500, 9000, 1, "\"talkgroup\": 154437,", "\"freq\": 154437500,",
-         "NFM 154.4375 MHz"},
+        {
+            "frequency over the fallback",
+            154437500,
+            9000,
+            1,
+            "\"talkgroup\": 154437,",
+            "\"freq\": 154437500,",
+            "NFM 154.4375 MHz",
+        },
         {"no frequency: the fallback", 0, 9000, 1, "\"talkgroup\": 9000,", "\"freq\": 0,", "NFM"},
         {"the largest fallback", 0, 2147483647, 1, "\"talkgroup\": 2147483647,", "\"freq\": 0,", "NFM"},
         {"below the 1 MHz floor", 530000, 0, 1, "\"talkgroup\": 530,", "\"freq\": 0,", "NFM 0.5300 MHz"},
@@ -2935,11 +2960,14 @@ test_analog_api_upload_holds(void) {
     dsd_socket_t stalled = DSD_INVALID_SOCKET;
     char api_url[128] = {0};
     char dir[DSD_TEST_PATH_MAX] = {0};
-    char wav[2][DSD_TEST_PATH_MAX];
+    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
     if (!opts || !hist || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0
         || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_analog_holds")) {
+        if (stalled != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(stalled);
+        }
         free(hist);
         free(opts);
         return 1;
@@ -2971,6 +2999,12 @@ test_analog_api_upload_holds(void) {
         if (dsd_rdio_upload_holds(wav[i]) != 0 || !file_exists(wav[i])) {
             DSD_FPRINTF(stderr, "analog holds: NFM upload %d after the Stop: held or deleted\n", i);
             rc = 1;
+        }
+    }
+    /* Whatever failed above, the files and the folder go. */
+    for (int i = 0; i < 2; i++) {
+        if (strlen(wav[i]) < 4U) {
+            continue;
         }
         char json[DSD_TEST_PATH_MAX];
         DSD_SNPRINTF(json, sizeof(json), "%.*s.json", (int)(strlen(wav[i]) - 4U), wav[i]);

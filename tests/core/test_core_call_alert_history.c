@@ -8903,7 +8903,11 @@ test_unjudged_recordings_export(void) {
         return 1;
     }
     const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE, .observed_m = g_observed_m};
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = g_observed_m,
+    };
     g_observed_m += 0.1;
     int rc = expect_int("NFM call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
     dsd_event_sync_slot(&opts, &state, 0U);

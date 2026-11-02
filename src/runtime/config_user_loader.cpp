@@ -669,18 +669,21 @@ apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     cfg->analog_max_gap_ms = ms;
 }
 
-/* Issue #668: the NFM pre-roll and rdio-scanner keys are refused, never clamped: a value outside @p min_value..@p max_value, or not a
-   whole number, is reported and the one already loaded stays. --validate-config reports it as an error. */
-static void
-apply_recording_refused_range(const char* key, const char* val, int min_value, int max_value, int* out_value) {
+/* Issue #668: the NFM pre-roll and rdio-scanner settings are refused, never clamped: a value outside
+   @p min_value..@p max_value, or not a whole number, is reported under @p name and the one already loaded stays.
+   --validate-config reports it as an error. */
+namespace {
+void
+apply_recording_refused_range(const char* name, const char* val, int min_value, int max_value, int* out_value) {
     int v = 0;
     if (user_config_parse_int_value(val, &v) != 0 || v < min_value || v > max_value) {
-        LOG_WARN("Config: invalid %s = '%s' (expected %d to %d); keeping %d\n", key, val, min_value, max_value,
+        LOG_WARN("Config: invalid %s = '%s' (expected %d to %d); keeping %d\n", name, val, min_value, max_value,
                  *out_value);
         return;
     }
     *out_value = v;
 }
+} // namespace
 
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {

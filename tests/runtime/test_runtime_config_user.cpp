@@ -4001,11 +4001,12 @@ test_recording_analog_max_gap_roundtrip(void) {
 /* Issue #668: [recording] analog_preroll_ms loads, reaches opts->analog_record_preroll_ms, and saves back, always
    written; a [recording] without it is the default. A value outside 0..1000, or not a whole number, is refused with a
    warning and the value already loaded stays: never clamped. */
-static int
+namespace {
+int
 test_recording_analog_preroll_roundtrip(void) {
     int rc = 0;
     dsdneoUserConfig cfg{};
-    if (load_config_text("[recording]\nanalog_preroll_ms = 300\n", &cfg) != 0 || !cfg.has_recording
+    if (load_config_text("[recording]\nanalog_preroll_ms = 300\n", &cfg) != 0 || cfg.has_recording == 0
         || cfg.analog_preroll_ms != 300) {
         DSD_FPRINTF(stderr, "FAIL: analog_preroll_ms did not load (%d)\n", cfg.analog_preroll_ms);
         return 1;
@@ -4051,7 +4052,7 @@ test_recording_analog_preroll_roundtrip(void) {
     rc |= expect_contains_quiet("analog_preroll_ms saved at the default", rendered, want_default);
 
     /* Both ends of the range load as given. */
-    for (int want : {0, 1000}) {
+    for (const int want : {0, 1000}) {
         char ini[96];
         DSD_SNPRINTF(ini, sizeof ini, "[recording]\nanalog_preroll_ms = %d\n", want);
         if (load_config_text(ini, &cfg) != 0 || cfg.analog_preroll_ms != want) {
@@ -4069,7 +4070,7 @@ test_recording_analog_preroll_roundtrip(void) {
             DSD_FPRINTF(stderr, "FAIL: analog_preroll_ms = %s was not refused (%d)\n", value, cfg.analog_preroll_ms);
             rc |= 1;
         }
-        if (!strstr(g_log_text, "analog_preroll_ms")) {
+        if (strstr(g_log_text, "analog_preroll_ms") == nullptr) {
             DSD_FPRINTF(stderr, "FAIL: analog_preroll_ms = %s refused without a warning (log: '%s')\n", value,
                         g_log_text);
             rc |= 1;
@@ -4081,7 +4082,7 @@ test_recording_analog_preroll_roundtrip(void) {
 /* Issue #668: [recording] rdio_analog_system_id and rdio_analog_talkgroup load, reach dsd_opts, and save back; 0 (the
    default) is not written, and loads as 0. A value outside the range, or not a whole number, is refused with a warning
    and the value already loaded stays: never clamped. */
-static int
+int
 test_recording_rdio_analog_roundtrip(void) {
     int rc = 0;
     dsdneoUserConfig cfg{};
@@ -4130,7 +4131,8 @@ test_recording_rdio_analog_roundtrip(void) {
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    if (opts.rdio_analog_system_id != 0 || opts.rdio_analog_talkgroup != 0 || strstr(rendered, "rdio_analog_")) {
+    if (opts.rdio_analog_system_id != 0 || opts.rdio_analog_talkgroup != 0
+        || strstr(rendered, "rdio_analog_") != nullptr) {
         DSD_FPRINTF(stderr, "FAIL: rdio_analog_* at 0 reached dsd_opts or the saved config\n");
         rc |= 1;
     }
@@ -4153,7 +4155,7 @@ test_recording_rdio_analog_roundtrip(void) {
         const int loaded = load_config_text(ini, &cfg);
         const int kept =
             strcmp(c.key, "rdio_analog_system_id") == 0 ? cfg.rdio_analog_system_id : cfg.rdio_analog_talkgroup;
-        if (loaded != 0 || kept != 77 || !strstr(g_log_text, c.key)) {
+        if (loaded != 0 || kept != 77 || strstr(g_log_text, c.key) == nullptr) {
             DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", c.key, c.value, kept,
                         g_log_text);
             rc |= 1;
@@ -4161,6 +4163,7 @@ test_recording_rdio_analog_roundtrip(void) {
     }
     return rc;
 }
+} // namespace
 
 /*
  * Issue #525: [analog] nfm_bandwidth_hz rides INI -> cfg -> opts -> snapshot -> render. 0 in the

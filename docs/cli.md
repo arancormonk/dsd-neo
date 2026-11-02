@@ -1464,15 +1464,14 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   leaves out the whole block of audio the stream comes back in, up to about 117 ms at 8192 Hz, so each transmission
   loses its start ([Where an NFM recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms)).
   Padded output (`rtl_fm -E pad`) keeps samples flowing, and the 200 ms hangover then applies as on any other input.
-  DSD-neo does not see a retune the
-  producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
-  second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
-  still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
-  stops (timing above). The same goes for audio a source still holds when DSD-neo moves it through rigctl -- in the
-  producer's own pipeline, or captured by the sound server but not yet handed over -- which arrives after the retune
-  like the new channel's. In offline runs of a clean tone followed by a carrier with no tone, about a tenth of a second
-  of the old channel's tone at the start of a reception was enough to show it again (on most seeds from 110 ms, on
-  every seed from 180 ms), for up to half a second.
+  DSD-neo does not see a retune the producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that
+  leaves a gap shorter than half a second (with padding, shorter than the 200 ms hangover) is not a new reception, so
+  the previous channel's tone can still show on the next channel for a few hundred milliseconds, until the detector
+  drops it as it drops a tone that stops (timing above). The same goes for audio a source still holds when DSD-neo moves
+  it through rigctl -- in the producer's own pipeline, or captured by the sound server but not yet handed over -- which
+  arrives after the retune like the new channel's. In offline runs of a clean tone followed by a carrier with no tone,
+  about a tenth of a second of the old channel's tone at the start of a reception was enough to show it again (on most
+  seeds from 110 ms, on every seed from 180 ms), for up to half a second.
 - Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
   is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
   (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two

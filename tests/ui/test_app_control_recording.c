@@ -1574,6 +1574,7 @@ enum {
     PREROLL_CONFIG_UNDONE,  /* a config sets the pre-roll to 0 and another back to 200, drained together */
     PREROLL_FOLDER_FAILED,  /* a config whose new folder does not open */
     PREROLL_CONFIG_SAME,    /* a config that changes nothing: the same folder and pre-roll */
+    PREROLL_FOLDER_FAILED_CHANGED, /* a config whose new folder does not open, with another pre-roll */
     PREROLL_CASES,
 };
 
@@ -1595,9 +1596,9 @@ preroll_config(const char* dir, int per_call, int preroll_ms) {
 
 static void
 preroll_transition(rig* r, int what, const char* other) {
-    if (what == PREROLL_FOLDER_MOVED || what == PREROLL_FOLDER_FAILED) {
-        dsd_wav_test_fail_opens_after(what == PREROLL_FOLDER_FAILED ? 0 : -1);
-        preroll_config(other, 1, 200);
+    if (what == PREROLL_FOLDER_MOVED || what == PREROLL_FOLDER_FAILED || what == PREROLL_FOLDER_FAILED_CHANGED) {
+        dsd_wav_test_fail_opens_after(what == PREROLL_FOLDER_MOVED ? -1 : 0);
+        preroll_config(other, 1, what == PREROLL_FOLDER_FAILED_CHANGED ? 300 : 200);
     }
     if (what == PREROLL_CONFIG_OFF_ON) {
         preroll_config(r->dir, 0, 200);
@@ -1629,7 +1630,9 @@ preroll_transition(rig* r, int what, const char* other) {
    stop and start inside one drain (per-call recording is on again by the next block, with the same pre-roll), a
    config apply, and the setting turned off and on at apply, by its command or by configs. Its command drops it even
    for the value in force. The next reception's recording holds it alone. A transition that fails changes nothing, nor
-   does a config that leaves recording and the pre-roll as they were, so the pre-roll stays and opens that recording. */
+   does a config that leaves recording and the pre-roll as they were, so the pre-roll stays and opens that recording.
+   A config whose folder fails but whose pre-roll differs still applies the pre-roll, which drops what the ring held,
+   and the recording goes on in the folder it had. */
 static int
 test_preroll_across_recording_transitions(void) {
     int rc = 0;
@@ -1647,6 +1650,10 @@ test_preroll_across_recording_transitions(void) {
         preroll_transition(&r, what, other);
         DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: per-call recording on", what);
         rc |= expect_int(tag, r.opts->dmr_stereo_wav, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the pre-roll in force", what);
+        rc |= expect_int(tag, r.opts->analog_record_preroll_ms, what == PREROLL_FOLDER_FAILED_CHANGED ? 300 : 200);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the folder", what);
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, what == PREROLL_FOLDER_MOVED ? other : r.dir) == 0);
         nfm_block(r.opts, r.state);
         dsd_engine_analog_call_end(r.opts, r.state);
         const int kept = what == PREROLL_NOTHING || what == PREROLL_FOLDER_FAILED || what == PREROLL_CONFIG_SAME;

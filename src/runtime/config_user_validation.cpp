@@ -225,7 +225,8 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
 
 /* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756), and
    the NFM pre-roll and rdio-scanner keys (issue #668). */
-static int
+namespace {
+bool
 recording_key_is_refused_out_of_range(const char* key) {
     return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "analog_preroll_ms") == 0
            || strcmp(key, "rdio_analog_system_id") == 0 || strcmp(key, "rdio_analog_talkgroup") == 0;
@@ -233,13 +234,13 @@ recording_key_is_refused_out_of_range(const char* key) {
 
 /* A refused key (above) outside the schema's range is an error rather than the schema walk's warning, as an analog
    width is. Text that is no integer is left to the schema walk's integer check, which is an error already. */
-static int
+bool
 validate_refused_range_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
                              int line_num, const char* diag_section, const char* diag_key) {
     int value = 0;
     if (strcmp(entry->section, "recording") != 0 || !recording_key_is_refused_out_of_range(entry->key)
         || user_config_parse_int_value(val, &value) != 0) {
-        return 0;
+        return false;
     }
     if (value < entry->min_val || value > entry->max_val) {
         char msg[128];
@@ -247,8 +248,9 @@ validate_refused_range_entry(const dsdcfg_schema_entry_t* entry, const char* val
                      entry->min_val, entry->max_val);
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
     }
-    return 1;
+    return true;
 }
+} // namespace
 
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
