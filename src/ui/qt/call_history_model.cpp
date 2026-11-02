@@ -1051,9 +1051,10 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     const bool filled =
         call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
     const bool received = absorbSeenReceive(*seen, read);
+    const bool digestAdopted = !seen->siteTextKnown && read.siteTextKnown;
     const bool sited = absorbSeenSite(*seen, read);
     if (!advanced && !labelAdvanced && !filled && !received && !sited) {
-        return SeenUnchanged;
+        return digestAdopted ? SeenSettled : SeenUnchanged;
     }
     if (labelAdvanced) {
         seen->sourceName = read.sourceName;
@@ -1116,7 +1117,10 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         // re-ingest every row its predecessor already logged.
         const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
         const int verdict = noteSeen(*walk.seen, walk.session, key, instance, read, kind == KindVoice);
-        if (verdict == SeenUnchanged) {
+        if (verdict == SeenSettled && walk.seenSettled != nullptr) {
+            *walk.seenSettled = true;
+        }
+        if (verdict == SeenUnchanged || verdict == SeenSettled) {
             continue;
         }
         FreshRow row;
@@ -1132,10 +1136,12 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
 }
 
 QList<CallHistoryModel::FreshRow>
-CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid) {
+CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
+                               bool* seenSettled) {
     QList<FreshRow> fresh;
     RingWalk walk;
     walk.seen = &m_seen;
+    walk.seenSettled = seenSettled;
     walk.session = m_session;
     walk.sessionLabel = m_sessionLabel;
     walk.systemUid = systemUid;
@@ -1739,9 +1745,15 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     // Whether a row may carry the saved system's UID is its own stamp (row_from_item()), which covers scans started
     // from a saved system's extra arguments as well as the list UI. A snapshot read without its options cannot
     // establish identity.
-    const QList<FreshRow> fresh = collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString());
+    bool seenSettled = false;
+    const QList<FreshRow> fresh =
+        collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString(), &seenSettled);
 
     if (fresh.isEmpty()) {
+        if (seenSettled) {
+            // Only the seen store moved: save it, so an older build's entry takes its digest once.
+            markChanged();
+        }
         return;
     }
 
