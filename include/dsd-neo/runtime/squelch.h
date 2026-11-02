@@ -210,6 +210,18 @@ int dsd_squelch_dynamic_input_kind(const dsd_opts* opts, const dsd_state* state)
  */
 int dsd_squelch_stream_gate_running(const dsd_opts* opts, const dsd_state* state);
 
+/**
+ * @brief Whether an analog reception on @p opts's input may become a call, with its history row and recording (issue
+ * #667 D2). Not on a radio input whose squelch lets noise through: no dynamic squelch in force
+ * (dsd_squelch_dynamic_in_force()), a level threshold at or below the startup default (DSD_SQUELCH_STARTUP_DB, off
+ * included; dsd_squelch_level_in_force()), and no CTCSS/DCS allow list in force on the FM monitor
+ * (dsd_analog_tone_detection_active()), which only a listed tone passes. Such a squelch opens for the receiver's own
+ * noise, which would hold one reception open all session. Audio input (and any input that is not a radio) is always
+ * allowed: its silence closes the carrier, and another receiver may squelch it. Reads @p opts as it stands, a scan
+ * row's own squelch and tone policy included. 0 for NULL @p opts.
+ */
+int dsd_squelch_analog_calls_allowed(const dsd_opts* opts, const dsd_state* state);
+
 /** @brief The level the level comparisons use: rtl_squelch_level under LEVEL, 0 (off) under AUTO and NOISE. 0 for
  * NULL. */
 double dsd_squelch_level_in_force(const dsd_opts* opts);

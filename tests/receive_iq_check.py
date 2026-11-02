@@ -8,6 +8,11 @@ import tempfile
 import wave
 
 ANALOG_ROW = re.compile(r" ANALOG(?: NFM| AM)?;")
+# Issue #667 D2: an analog reception on a radio input (here I/Q replay) becomes a call only under a squelch above the
+# startup default. Every analog case that expects rows or recordings sets this one, a level these fixtures' signals
+# clear, so payload comparisons between cases stay like for like.
+ANALOG_SQUELCH = ["--squelch", "-60"]
+PAUSED = "Analog call history and recordings are paused"
 
 
 def main():
@@ -30,6 +35,8 @@ def main():
             # -P and -w exclude each other. Analog audio reaches only the per-call recording (-w is digital-only).
             recording_option = ["-P"] if per_call else ["-w", str(wav)]
             binary = args.binary
+            if mode == "-fA":
+                options = [*ANALOG_SQUELCH, *options]
             if row is not None:
                 # A channel-map row carrying the options in its CSV cell, entered by the scan host.
                 (directory / "map.csv").write_text("channel,frequency_hz,name,mode,options\n1,851375000,Row,"
@@ -139,18 +146,45 @@ def main():
         # Issue #667: a reception is a call only once it ran 500 ms. The real capture's reverse burst and tone gap
         # (3.7-4.0 s) leave an untoned stretch of about 400 ms between its two CTCSS 151.4 Hz receptions, too short to
         # be a call: two rows, both toned, where there were three.
-        real = root / "real-ctcss-rows"
-        real.mkdir()
-        result = subprocess.run(
-            [args.binary, "--frontend", "none", "-fA", "--iq-replay", str(fixtures / "nfm_ctcss_real.iq.json"),
-             "-o", "null", "-P", "-J", str(real / "events.log")],
-            cwd=real, capture_output=True, text=True, timeout=60, check=False)
-        assert result.returncode == 0, result.stdout + result.stderr
-        real_rows = [line for line in (real / "events.log").read_text().splitlines() if ANALOG_ROW.search(line)]
+        def analog_calls(name, fixture, mode, options):
+            # The rows and per-call recordings of one analog replay, and what it printed.
+            directory = root / name
+            directory.mkdir()
+            result = subprocess.run(
+                [args.binary, "--frontend", "none", mode, *options, "--iq-replay",
+                 str(fixtures / (fixture + ".iq.json")), "-o", "null", "-P", "-J", str(directory / "events.log")],
+                cwd=directory, capture_output=True, text=True, timeout=60, check=False)
+            output = result.stdout + result.stderr
+            assert result.returncode == 0, output
+            events = directory / "events.log"
+            history = events.read_text() if events.exists() else ""
+            rows = [line for line in history.splitlines() if ANALOG_ROW.search(line)]
+            return rows, sorted((directory / "WAV").glob("*.wav")), output
+
+        real_rows, real_calls, output = analog_calls("real-ctcss-rows", "nfm_ctcss_real", "-fA", ANALOG_SQUELCH)
         assert len(real_rows) == 2, real_rows
-        assert all("CTCSS 151.4 Hz;" in line for line in real_rows), real_rows
-        assert len(list((real / "WAV").glob("*.wav"))) == 2
+        assert all(" ANALOG NFM; " in line and "CTCSS 151.4 Hz;" in line for line in real_rows), real_rows
+        assert len(real_calls) == 2 and all(call.name.endswith("_NFM.wav") for call in real_calls), real_calls
+        assert PAUSED not in output, output
         print("real-ctcss-rows OK")
+
+        # Issue #667 D8: an AM reception (-fM) is a call too: one row naming AM and the frequency and no tone (dsd-neo
+        # detects none on AM), and its recording named _AM.
+        am_rows, am_calls, output = analog_calls("am-rows", "am_airband_real", "-fM", ANALOG_SQUELCH)
+        assert len(am_rows) == 1 and re.search(r" ANALOG AM; FREQ: \d+\.\d{6} MHz; *$", am_rows[0]), am_rows
+        assert len(am_calls) == 1 and am_calls[0].name.endswith("_AM.wav"), am_calls
+        print("am-rows OK")
+
+        # D2: at the startup squelch the receiver's noise would hold one reception open all session, so a radio input
+        # makes no analog call there, and says so once, naming only the remedies that work (no --tone-allow on AM).
+        for name, fixture, mode, remedy in [("nfm-default-squelch", "nfm_ctcss_real", "-fA", True),
+                                            ("am-default-squelch", "am_airband_real", "-fM", False)]:
+            rows, calls, output = analog_calls(name, fixture, mode, [])
+            assert not rows and not calls, (rows, calls)
+            notices = [line for line in output.splitlines() if PAUSED in line]
+            assert len(notices) == 1, output
+            assert ("--tone-allow" in notices[0]) == remedy, notices[0]
+            print(name, "OK")
 
         # The same, from a channel-map row's options cell rather than the command line: the rows the issue asks for.
         # Each baseline is the host's own unnamed row, since a dmr row runs the dual-slot decoder and the NFM row's

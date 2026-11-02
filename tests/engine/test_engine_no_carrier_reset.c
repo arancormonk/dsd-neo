@@ -15,6 +15,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -5564,6 +5565,9 @@ test_replay_leave_closes_the_nfm_recording(void) {
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
+    /* A radio input's analog calls need a squelch above the startup default (issue #667 D2). */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
     int rc = expect_true("replay leave nfm: the tone-name rule parses",
                          dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts->receive.names, NULL, 0) == 0);
     rc |= expect_true("replay leave nfm: tone detection runs", dsd_analog_tone_detection_active(opts));

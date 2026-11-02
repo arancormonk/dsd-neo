@@ -85,6 +85,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
     `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>` or `--squelch <setting>` in
     its `options` column (whole dB, `-100..0`, `0` = off, `auto[+N]` on analog rows, `noise[+N]` on nfm rows, omitted
     = inherit this value); see `docs/csv-formats.md`.
+    An analog session makes calls (history rows, `-J` lines, recordings) only under a squelch above -110 dB, the
+    startup default: see [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input).
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
   Connects to an rtl_tcp server (`rtl_tcp` itself, or another server that speaks its protocol) for unsigned 8-bit
   I/Q, and tunes it over the connection. It is the only network input that carries I/Q: `tcp` and `udp` below carry
@@ -350,7 +352,9 @@ Windows console runs:
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
   before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
-  and no tone. A reception shorter than 500 ms makes no analog line (see `-P` below for how it is counted). An analog
+  and no tone. A reception shorter than 500 ms makes no analog line (see `-P` below for how it is counted), and on a
+  radio input neither does one heard while the squelch is off or at its default level (see
+  [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input)). An analog
   line is stamped with the time its call ended, even when it is written later (an input that
   stopped sending held the end back); earlier versions stamped it when it was written. The control API's `event` text
   is the same row.
@@ -1641,8 +1645,10 @@ A policy change ends only an active call it now rejects; a call it still admits,
 name edit relabels it. Completed history retains its service
 identity and label, and different confirmed identifiers do not merge into one call.
 
-`-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
-History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
+`-P` also records conventional NFM and AM (`-fM`) transmissions, independently of speaker muting or null playback.
+History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions. AM carries no
+CTCSS or DCS that dsd-neo detects, so an AM call names no tone. Earlier versions made no AM calls at all: no history
+row, `-J` line or recording.
 
 A reception becomes a call only once it has lasted 500 ms. The time counts the 200 ms hangover after the carrier
 drops, and, under a tone filter, the time the tone is checked before it is allowed. A shorter reception (a kerchunk,
@@ -1662,6 +1668,25 @@ for an AM call, and `_ANALOG` on audio input, where another receiver demodulated
 while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
 named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
+
+#### Analog calls need a squelch on a radio input
+
+On a radio input (`rtl`, `rtltcp`, `soapy`, Airspy, `--iq-replay`) an analog reception becomes a call only when the
+squelch keeps the receiver's own noise out. The startup squelch (-110 dB) and an off one let noise through, and noise
+would hold one reception open for the whole session. So while the squelch is off or at -110 dB or below, analog calls
+leave no history row, no `-J` line, no live call and no recording, and dsd-neo logs once:
+
+`NOTICE: Analog call history and recordings are paused: the squelch is off or at its default level, so noise would
+hold one call open. Set --squelch <dB>, --squelch auto or noise, or --tone-allow.`
+
+Any one of these lifts it: a level above -110 dB (`--squelch -60`), `--squelch auto`, `--squelch noise` on NFM, or on
+NFM a `--tone-allow` list, which lets only its tones through. A `--tone-block` list does not, as noise carries no tone
+to block. On AM dsd-neo checks no tones, so the AM notice names only `--squelch <dB>` and `--squelch auto`. A squelch
+set while dsd-neo runs (the terminal's `Squelch...` row, the Qt/Android radio panel, the API) or a scan row's own
+`--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged
+once too: `NOTICE: Analog call history and recordings are back on.` The monitor audio is not affected either way.
+Audio input is never paused: another receiver may squelch it, and its silence closes the carrier. Earlier versions
+made analog calls at any squelch.
 
 #### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
 

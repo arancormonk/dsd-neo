@@ -11,6 +11,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
@@ -559,6 +561,59 @@ test_noise_has_no_fm(void) {
     assert(dsd_squelch_noise_has_no_fm(NULL, &state) == 0);
 }
 
+/* Issue #667 D2: analog calls on a radio input need a squelch that closes on the receiver's noise: a level above the
+   startup default (-110 dB, the default itself and off pausing them), a dynamic squelch, or on the FM monitor a tone
+   allow list with tones in it (a block list or an empty one passes noise, and AM has no tone to list). Audio input is
+   never paused, whatever its squelch. */
+static void
+test_analog_calls_allowed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql((double)DSD_SQUELCH_STARTUP_DB);
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_level = 0.0;
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-120.0);
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-109.0);
+    assert(dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_level = 0.0;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    assert(dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state)); /* an empty list */
+    assert(dsd_tone_set_parse("100.0/D023N", &opts.analog_tone_set, NULL, 0) == 0);
+    assert(dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.monitor_input_audio = 0; /* no detection runs the list */
+    assert(!dsd_squelch_analog_calls_allowed(&opts, &state));
+    opts.monitor_input_audio = 1;
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+
+    static const int audio_inputs[] = {AUDIO_IN_STDIN, AUDIO_IN_WAV, AUDIO_IN_UDP, AUDIO_IN_TCP, AUDIO_IN_PULSE};
+    for (size_t i = 0; i < sizeof audio_inputs / sizeof audio_inputs[0]; i++) {
+        opts.audio_in_type = audio_inputs[i];
+        assert(dsd_squelch_analog_calls_allowed(&opts, &state));
+    }
+    assert(!dsd_squelch_analog_calls_allowed(NULL, &state));
+}
+
 int
 main(void) {
     test_grammar();
@@ -572,6 +627,7 @@ main(void) {
     test_format();
     test_predicates_and_equality();
     test_resolve();
+    test_analog_calls_allowed();
     printf("RUNTIME_SQUELCH: OK\n");
     return 0;
 }

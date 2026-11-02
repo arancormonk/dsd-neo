@@ -3452,8 +3452,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
@@ -3467,7 +3470,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_callbacks
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 

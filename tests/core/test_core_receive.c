@@ -2,11 +2,13 @@
 #include <assert.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/core/analog_mode.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
@@ -27,6 +29,8 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <sndfile.h>
@@ -37,6 +41,14 @@
 #include <time.h>
 #include "test_support.h"
 #include "wav_segment_test_support.h"
+
+/* A radio input's analog calls need a squelch above the startup default (issue #667 D2): -60 dB, a level a test's
+   blocks never meet, since the tracker trusts the inputs it is handed. */
+static void
+set_radio_squelch(dsd_opts* opts) {
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+}
 
 static void
 set_filter(dsd_opts* opts, int kind, const char* allow, const char* block) {
@@ -418,15 +430,11 @@ test_events(dsd_opts* opts, dsd_state* state) {
 
 /* A reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS (issue #667). The tone check before a new call,
    as the symbol path hands it over under a tone filter: a call still running ends at the first of these blocks (these
-   tests run with the hold off), and the rest are the new reception's lead-in, recorded nowhere, enough that a block of
-   @p count samples at @p rate after them brings it to the minimum. */
+   tests run with the hold off), and every one of them, that first one too, is the new reception's lead-in, recorded
+   nowhere, enough that a block of @p count samples at @p rate after them brings it to the minimum. */
 static void
 analog_lead_in(dsd_opts* opts, dsd_state* state, size_t count, int rate) {
     static const float checked[960] = {0};
-    if (dsd_engine_analog_call_active(state)) {
-        dsd_engine_analog_call_block(opts, state, checked, 960, rate, DSD_ANALOG_CALL_PENDING);
-        assert(!dsd_engine_analog_call_active(state));
-    }
     const uint64_t need = (uint64_t)DSD_ANALOG_CALL_MIN_MS * 48U;
     for (uint64_t fed = 0; (fed + count) * 48000U / (uint64_t)rate < need; fed += 960U) {
         dsd_engine_analog_call_block(opts, state, checked, 960, rate, DSD_ANALOG_CALL_PENDING);
@@ -629,6 +637,7 @@ test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
     assert(!dsd_engine_analog_call_active(state));
 
     opts->audio_in_type = AUDIO_IN_RTL;
+    set_radio_squelch(opts);
     analog_lead_in(opts, state, 960, 48000);
     dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
     assert(dsd_engine_analog_call_active(state));
@@ -721,6 +730,7 @@ test_analog_row_text(dsd_opts* opts, dsd_state* state) {
     opts->wav_sample_rate = 48000;
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     opts->audio_in_type = AUDIO_IN_RTL;
+    set_radio_squelch(opts);
     opts->rtlsdr_center_freq = 154430000U;
     DSD_MEMSET(&opts->receive, 0, sizeof opts->receive); /* no service names: the row's own tokens only */
     assert(dsd_analog_tone_detection_active(opts));
@@ -1129,13 +1139,23 @@ hold_lead_in_blocks(const hold_rig* r) {
     return blocks;
 }
 
+/* Where a reception whose first block is the one just fed starts, computed as the tracker computes it: that block's
+   stamp less its span at the block rate (issue #667), so the two agree to the last bit. */
+static double
+hold_block_start_m(const hold_rig* r) {
+    return hold_now_m(r) - (double)HOLD_BLOCK / (double)r->rate;
+}
+
 /* A new call (issue #667): the tone check before it (a lead-in of PENDING blocks, recorded nowhere) and @p blocks
    RECEPTION blocks of @p value, the first of which makes it a call. Returns where it starts: the lead-in's first sample.
-   No call may be running, or one whose hold ends at the lead-in's first block. */
+   No call may be running, or one whose hold ends at the lead-in's first block, which then begins the lead-in. */
 static double
 hold_begin(hold_rig* r, int blocks, int value) {
-    const double start_m = hold_now_m(r);
-    hold_pending(r, hold_lead_in_blocks(r));
+    const int lead_in = hold_lead_in_blocks(r);
+    assert(lead_in > 0);
+    hold_pending(r, 1);
+    const double start_m = hold_block_start_m(r);
+    hold_pending(r, lead_in - 1);
     assert(!dsd_engine_analog_call_active(r->state));
     hold_receive(r, 1, value);
     assert(dsd_engine_analog_call_active(r->state));
@@ -1294,14 +1314,13 @@ hold_slow_write(SNDFILE* file, const short* samples, long long count) {
     return (long long)sf_write_short(file, samples, (sf_count_t)count);
 }
 
-/* The call's start is its first block's stamp less the block's span (issue #667), which may be an ulp (some 0.24 us at
-   the rig's 1.7e9 s) from the rig's own conversion of that instant; its other stamps are the blocks' exactly. */
+/* The call's stamps are exactly the ones given: a start as hold_block_start_m() computes it, the others the blocks'. */
 static void
 hold_expect_stamps(const hold_rig* r, int phase, double started_m, double last_m) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof call);
     assert(dsd_call_state_get(r->state, 0U, &call) > 0 && (int)call.phase == phase);
-    assert(fabs(call.started_m - started_m) < 1e-6);
+    assert(fabs(call.started_m - started_m) < 1e-9);
     assert(fabs(call.media_updated_m - last_m) < 1e-9);
     assert(phase != DSD_CALL_PHASE_ENDED || fabs(call.ended_m - last_m) < 1e-9);
 }
@@ -2031,6 +2050,9 @@ static int g_hold_short_at = -1;
 static int g_hold_write_warnings;
 static int g_rdio_warnings;
 static int g_rdio_failed;
+static int g_calls_off_fm;
+static int g_calls_off_am;
+static int g_calls_back_on;
 
 static long long
 hold_seam_write(SNDFILE* file, const short* samples, long long count) {
@@ -2048,6 +2070,17 @@ count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (level == LOG_LEVEL_WARN && text && strstr(text, "Rdio export") != NULL) {
         g_rdio_warnings++;
         g_rdio_failed += strstr(text, "Rdio export failed") != NULL;
+    }
+    /* Issue #667 D2's notices: paused with the FM monitor's remedies, or AM's (no --tone-allow), and back on. */
+    if (level == LOG_LEVEL_INFO && text && strstr(text, "Analog call history and recordings are paused") != NULL) {
+        assert(strstr(text, "--squelch <dB>") != NULL && strstr(text, "--squelch auto") != NULL);
+        const int fm = strstr(text, "--tone-allow") != NULL;
+        assert(fm == (strstr(text, "or noise") != NULL));
+        g_calls_off_fm += fm;
+        g_calls_off_am += !fm;
+    }
+    if (level == LOG_LEVEL_INFO && text && strstr(text, "Analog call history and recordings are back on") != NULL) {
+        g_calls_back_on++;
     }
 }
 
@@ -2263,17 +2296,18 @@ test_candidate_through_a_tone_check(void) {
     const uint64_t commits = r.history[0].push_seq;
     hold_receive(&r, 10, 1000);
     hold_pending(&r, 1);
+    const double lead_m = hold_block_start_m(&r);
     hold_expect_nothing(&r, &j, commits);
-    const double lead_m = hold_now_m(&r);
+    /* The check that ended it is the lead-in's first block (5 + 20 = 25), as when the reconciliation ends it. */
     hold_pending(&r, 4);
-    hold_receive(&r, 20, 2000);
+    hold_receive(&r, 19, 2000);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_receive(&r, 1, 2000);
     assert(dsd_engine_analog_call_active(r.state));
     const double last_m = hold_now_m(&r);
     dsd_engine_analog_call_end(r.opts, r.state);
-    hold_expect_span(&r, lead_m, last_m);
-    hold_expect_one_burst(&r, 21, 2000);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, lead_m, last_m);
+    hold_expect_one_burst(&r, 20, 2000);
     assert(hold_journal_count(&j, "publish") == 1);
     hold_journal_close(&j);
     hold_close(&r);
@@ -2466,7 +2500,7 @@ hold_end_candidate(hold_rig* r, int end) {
             hold_receive(r, 1, 2000);
             break;
         case CAND_END_TICK_EPOCH: hold_reset_receiver(r); break;
-        case CAND_END_TICK_DETECT: r->opts->analog_only = 0; break;
+        case CAND_END_TICK_DETECT: r->opts->analog_only = 0; break; /* the monitor tap off */
         case CAND_END_TICK_REJECTED: r->state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED; break;
         case CAND_END_TICK_CLOSED: r->state->analog_rx.carrier_open = 0; break;
         case CAND_END_TICK_STALE:
@@ -2632,6 +2666,7 @@ test_teardown_in_both_states(void) {
         hold_open(&r, "dsdneo_cand_teardown", 0);
         if (radio) {
             r.opts->audio_in_type = AUDIO_IN_RTL;
+            set_radio_squelch(r.opts);
         }
         hold_receive(&r, 24, 1000);
         dsd_state_ext_free_all(r.state);
@@ -2675,6 +2710,276 @@ test_lead_in_through_the_tick(void) {
     hold_close(&r);
 }
 
+/* A tone check under the carrier that ends a held call (here past a 1000 ms max gap) is the next reception's lead-in,
+   whether the hold ends it on its own block or the reconciliation before that block does (a max gap lowered under it):
+   one rule, so the next call starts at that block's first sample and qualifies on the same block either way. */
+static void
+test_lead_in_after_a_hold_ends(void) {
+    for (int lowered = 0; lowered < 2; lowered++) {
+        hold_rig r;
+        hold_open(&r, "dsdneo_cand_lead_after_hold", 1000);
+        const double first_m = hold_begin(&r, 2, 1000);
+        const double last_m = hold_now_m(&r);
+        hold_pending(&r, 50); /* 1000 ms of checks under the carrier: a gap the max gap still joins */
+        assert(dsd_engine_analog_call_active(r.state));
+        if (lowered) {
+            r.opts->analog_record_max_gap_ms = 500;
+        }
+        hold_pending(&r, 1);
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, first_m, last_m);
+        const double lead_m = hold_block_start_m(&r);
+        hold_pending(&r, hold_lead_in_blocks(&r) - 1);
+        assert(!dsd_engine_analog_call_active(r.state));
+        hold_receive(&r, 1, 2000);
+        assert(dsd_engine_analog_call_active(r.state));
+        const double end_m = hold_now_m(&r);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, lead_m, end_m);
+        hold_files found;
+        hold_take(&r, &found, 2);
+        assert(found.frames[hold_file_starting(&found, 1000)] == 2L * HOLD_BLOCK);
+        assert(found.frames[hold_file_starting(&found, 2000)] == HOLD_BLOCK);
+        hold_release(&found);
+        hold_close(&r);
+    }
+}
+
+/* A call seeded at its BEGIN with a tone the receiver no longer publishes (confirmed, then checked again) goes on while
+   the tone is unknown. A block whose tone is confirmed different ends it before that block's CONTINUE: one row, under
+   the seeded tone, from the call's first sample to the last block before the change, never split inside the call
+   state. The block begins the next reception, which needs its own minimum. */
+static void
+test_seeded_call_ends_on_a_new_tone(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_cand_seed_change", 0);
+    assert(dsd_receive_names_parse("--tone-name '141.3=Traveler' --tone-name 'D023I=Dispatch'", &r.opts->receive.names,
+                                   NULL, 0)
+           == 0);
+    const uint64_t commits = r.history[0].push_seq;
+    hold_lock_tone(&r, 1413);
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 10, 1000);
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    hold_receive(&r, 15, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 5, 1000);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(r.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(same_identity(&call.receive_identity, DSD_RECEIVE_CTCSS, 1413));
+    const double last_m = hold_now_m(&r);
+
+    hold_lock_tone(&r, 0);
+    hold_receive(&r, 1, 2000);
+    const double next_m = hold_block_start_m(&r);
+    assert(!dsd_engine_analog_call_active(r.state));
+    assert(r.history[0].push_seq == commits + 1U);
+    hold_expect_span(&r, first_m, last_m);
+    const Event_History* row = &r.history[0].Event_History_Items[1];
+    assert(strcmp(row->service_label, "Traveler") == 0 && strstr(row->event_string, "CTCSS 141.3 Hz; ") != NULL);
+    assert(same_identity(&row->receive_identity, DSD_RECEIVE_CTCSS, 1413));
+
+    hold_receive(&r, 23, 2000);
+    assert(!dsd_engine_analog_call_active(r.state) && r.history[0].push_seq == commits + 1U);
+    hold_receive(&r, 1, 2000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double next_last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_stamps(&r, DSD_CALL_PHASE_ENDED, next_m, next_last_m);
+    assert(r.history[0].push_seq == commits + 2U);
+    assert(strcmp(r.history[0].Event_History_Items[1].service_label, "Dispatch") == 0);
+    hold_services services = {.dir = r.dir};
+    assert(dsd_dir_list(r.dir, take_hold_service, &services) == 0);
+    assert(services.traveler == 1 && services.dispatch == 1);
+    assert(services.frames[0] == 30L * HOLD_BLOCK && services.frames[1] == 25L * HOLD_BLOCK);
+    hold_close(&r);
+}
+
+/* Read and remove the rig's one recording, published under @p mode. */
+static void
+hold_take_one_named(const hold_rig* r, const char* mode) {
+    hold_named named = {.dir = r->dir};
+    assert(dsd_dir_list(r->dir, take_hold_named, &named) == 0);
+    assert(named.files == 1 && dsd_test_analog_recording_name_is(named.name, mode, NULL));
+}
+
+/* Issue #667 D8: an AM reception on a radio input (-fM) is a call as an NFM one is, once it ran the minimum. Its row
+   names AM and the frequency and no tone (dsd-neo detects none on AM), its system string is AM and its recording is
+   named _AM. An idle read (the stream gave nothing, so the read yields) lets the tick end it at its last reception
+   once the input is past its deadline, and a carrier that comes back begins a new call. */
+static void
+test_am_call(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_am_call", 0);
+    r.opts->audio_in_type = AUDIO_IN_RTL;
+    r.opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    r.opts->rtlsdr_center_freq = 119100000U;
+    set_radio_squelch(r.opts);
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE; /* the AM tap publishes no tone */
+    assert(dsd_analog_monitor_tap_active(r.opts) && !dsd_analog_tone_detection_active(r.opts));
+    const uint64_t commits = r.history[0].push_seq;
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 24, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_receive(&r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double last_m = hold_now_m(&r);
+
+    r.state->analog_rx.stale_after_ms = 1U;
+    hold_advance_ms(&r, 5000);
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    assert(!dsd_engine_analog_call_active(r.state));
+    r.state->analog_rx.stale_after_ms = 0U;
+    hold_expect_span(&r, first_m, last_m);
+    assert(r.history[0].push_seq == commits + 1U);
+    const Event_History* row = &r.history[0].Event_History_Items[1];
+    assert(row->systype == DSD_SYNC_ANALOG && row->analog_mode == DSD_ANALOG_MODE_AM);
+    assert(strcmp(row_text(row), "ANALOG AM; FREQ: 119.100000 MHz; ") == 0);
+    assert(strcmp(row->sysid_string, "AM") == 0);
+    hold_take_one_named(&r, "AM");
+
+    hold_receive(&r, 25, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    dsd_engine_analog_call_end(r.opts, r.state);
+    assert(r.history[0].push_seq == commits + 2U);
+    hold_take_one_named(&r, "AM");
+    hold_close(&r);
+}
+
+/* @p blocks RECEPTION blocks make no call, and nothing is committed or recorded. */
+static void
+hold_expect_no_call(hold_rig* r, int blocks) {
+    const uint64_t commits = r->history[0].push_seq;
+    hold_receive(r, blocks, 1000);
+    assert(!dsd_engine_analog_call_active(r->state));
+    hold_closed(r, 1);
+    assert(r->history[0].push_seq == commits);
+    hold_named named = {.dir = r->dir};
+    assert(dsd_dir_list(r->dir, take_hold_named, &named) == 0 && named.files == 0);
+}
+
+/* The minimum's blocks make a call, published under @p mode as its end commits it. */
+static void
+hold_expect_a_call(hold_rig* r, const char* mode) {
+    const uint64_t commits = r->history[0].push_seq;
+    hold_receive(r, 24, 1000);
+    assert(!dsd_engine_analog_call_active(r->state));
+    hold_receive(r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r->state));
+    dsd_engine_analog_call_end(r->opts, r->state);
+    assert(r->history[0].push_seq == commits + 1U);
+    hold_take_one_named(r, mode);
+}
+
+static void
+hold_expect_notices(int off_fm, int off_am, int back_on) {
+    assert(g_calls_off_fm == off_fm && g_calls_off_am == off_am && g_calls_back_on == back_on);
+}
+
+/* Issue #667 D2: on a radio input the startup squelch (-110 dB) and an off one open for the receiver's own noise, so no
+   reception becomes a call there and a running one ends: on its next block, or with no further sample at the tick. A
+   level above the default, a dynamic squelch or, on the FM monitor, a tone allow list lifts it; on AM a list does not
+   (there is no tone to check). Audio input is never paused. Each change is said once: paused, with the remedies that
+   work for the monitor in force, and back on. */
+static void
+test_analog_calls_need_a_squelch(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_calls_squelch", 0);
+    g_calls_off_fm = g_calls_off_am = g_calls_back_on = 0;
+    r.opts->audio_in_type = AUDIO_IN_RTL;
+    r.opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    r.opts->rtl_squelch_level = dB_to_pwr(DSD_SQUELCH_STARTUP_DB);
+    hold_expect_no_call(&r, 30);
+    hold_expect_notices(1, 0, 0);
+    r.opts->rtl_squelch_level = 0.0;
+    hold_expect_no_call(&r, 30);
+    hold_expect_notices(1, 0, 0);
+
+    set_radio_squelch(r.opts);
+    const double first_m = hold_now_m(&r);
+    hold_receive(&r, 30, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    hold_expect_notices(1, 0, 1);
+    const double last_m = hold_now_m(&r);
+    r.opts->rtl_squelch_level = dB_to_pwr(DSD_SQUELCH_STARTUP_DB);
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_expect_span(&r, first_m, last_m);
+    hold_expect_notices(2, 0, 1);
+    hold_take_one_named(&r, "NFM");
+    /* A later tick with nothing running says nothing new; a change seen there is said at once. */
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    hold_expect_notices(2, 0, 1);
+
+    /* A running call ends at its next block too. */
+    set_radio_squelch(r.opts);
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    hold_expect_notices(2, 0, 2);
+    hold_receive(&r, 25, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    r.opts->rtl_squelch_level = 0.0;
+    hold_receive(&r, 1, 1000);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_expect_notices(3, 0, 2);
+    hold_take_one_named(&r, "NFM");
+
+    /* An allow list on the FM monitor passes only its tones, so it lifts the pause; a block list does not. */
+    r.opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(dsd_tone_set_parse("100.0", &r.opts->analog_tone_set, NULL, 0) == 0);
+    hold_expect_no_call(&r, 30);
+    hold_expect_notices(3, 0, 2);
+    r.opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    r.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    hold_lock_tone(&r, 1000);
+    hold_expect_a_call(&r, "NFM");
+    hold_expect_notices(3, 0, 3);
+
+    /* AM has no tone to list: the list leaves it paused, and the notice names no --tone-allow. A dynamic squelch lifts
+       it there too. */
+    r.opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
+    hold_expect_no_call(&r, 30);
+    hold_expect_notices(3, 1, 3);
+    r.opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    hold_expect_a_call(&r, "AM");
+    hold_expect_notices(3, 1, 4);
+
+    /* Audio input, whatever its squelch: another receiver may squelch it, and its silence closes the carrier. */
+    r.opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    r.opts->rtl_squelch_level = 0.0;
+    r.opts->analog_tone_filter = DSD_TONE_FILTER_OFF;
+    r.opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    r.opts->audio_in_type = AUDIO_IN_WAV;
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    hold_expect_a_call(&r, "ANALOG");
+    hold_expect_notices(3, 1, 4);
+    hold_close(&r);
+}
+
+/* D2 reads the squelch in force, a -Y row's own included (scan_mode.c installs it over dsd_opts): a row's --squelch -60
+   lifts the pause while the row is on air, and its leave puts the startup default back, which pauses calls again. */
+static void
+test_analog_calls_follow_a_rows_squelch(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_calls_row_squelch", 0);
+    r.opts->audio_in_type = AUDIO_IN_RTL;
+    r.opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    r.opts->rtl_squelch_level = dB_to_pwr(DSD_SQUELCH_STARTUP_DB);
+    assert(dsd_scan_mode_begin(r.opts, r.state) == 0);
+    assert(dsd_scan_mode_enter(r.opts, r.state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(r.opts, r.state, &row) == 0);
+    hold_expect_a_call(&r, "NFM");
+    dsd_scan_mode_leave(r.opts, r.state);
+    assert(r.opts->rtl_squelch_level <= dB_to_pwr(DSD_SQUELCH_STARTUP_DB) * (1.0 + 1e-9));
+    hold_expect_no_call(&r, 30);
+    hold_close(&r);
+}
+
 static void
 test_analog_hold(void) {
     test_hold_row_ends_at_the_last_reception();
@@ -2706,6 +3011,11 @@ test_analog_hold(void) {
     test_candidate_begin_failure();
     test_teardown_in_both_states();
     test_lead_in_through_the_tick();
+    test_lead_in_after_a_hold_ends();
+    test_seeded_call_ends_on_a_new_tone();
+    test_am_call();
+    test_analog_calls_need_a_squelch();
+    test_analog_calls_follow_a_rows_squelch();
 }
 
 static int

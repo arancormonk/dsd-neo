@@ -5381,6 +5381,42 @@ test_call_input_follows_the_flag_squelch(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #667 D8: the AM monitor's blocks are calls' inputs as the FM monitor's are (the tracker admits the monitor tap,
+   FM or AM): an open carrier is the call's reception, and so is its hangover, then blocks it may hold through; a
+   carrier that comes back is the reception again. The tone policy never runs on AM, so no block waits on it. */
+static void
+test_call_input_on_the_am_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0;
+    g_chain_removes_tone = 0;
+    dsd_trunk_tuning_requests_reset();
+    start_call_capture();
+    for (int b = 0; b < 5; b++) {
+        assert(push_flagged_call_block(&opts, &state, 1000.0f, 0U)->input == DSD_ANALOG_CALL_RECEPTION);
+    }
+    const int quiet = g_call_blocks;
+    const uint32_t boundaries = last_call_block()->boundaries;
+    for (int b = 0; b < 25; b++) {
+        (void)push_flagged_call_block(&opts, &state, 1000.0f, (uint8_t)DSD_SQUELCH_FLAG_CLOSED);
+    }
+    expect_hangover_then_holdable(quiet, boundaries);
+    const call_block_seen* seen = push_flagged_call_block(&opts, &state, 1000.0f, 0U);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == boundaries);
+    stop_call_capture();
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    g_chain_removes_tone = 1;
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
 /* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is PENDING (a block a call may
    hold through, and a reception's lead-in before it is a call, issue #667), one the policy passed is its reception,
    and one it rejected breaks it. Returns how many blocks were checked. */
@@ -5758,6 +5794,7 @@ main(void) {
     test_sink_allocation_failure_is_said_once_per_rate();
     test_call_input_follows_the_level_squelch();
     test_call_input_follows_the_flag_squelch();
+    test_call_input_on_the_am_monitor();
     test_call_input_follows_the_tone_policy();
     test_call_input_breaks_at_a_hard_boundary();
     test_call_input_breaks_at_an_rtl_profile_change();

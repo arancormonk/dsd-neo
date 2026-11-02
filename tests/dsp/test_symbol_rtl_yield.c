@@ -394,14 +394,15 @@ test_search_failure_contract_kept(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* analog_zero_read_contract_kept: an idle NFM monitor's empty read (success, 0 samples) leaves the hunt for the engine
-   loop without a reason of its own, and does not stand: the next read reaches the stream again. */
+/* analog_zero_read_contract_kept: an idle analog monitor's empty read (success, 0 samples), NFM or AM (issue #667 D8),
+   leaves the hunt for the engine loop without a reason of its own, and does not stand: the next read reaches the stream
+   again. */
 static void
-test_analog_zero_read_contract_kept(dsd_opts* opts, dsd_state* state) {
+test_analog_zero_read_contract_kept(dsd_opts* opts, dsd_state* state, int demod) {
     reset_stream(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
-    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_demod = demod;
     for (int i = 0; i < 20; i++) {
         (void)getSymbol(opts, state, 0);
     }
@@ -432,7 +433,8 @@ main(void) {
     sticky_yield_across_reconnect(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
     sticky_yield_across_reconnect(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
     test_search_failure_contract_kept(opts, state);
-    test_analog_zero_read_contract_kept(opts, state);
+    test_analog_zero_read_contract_kept(opts, state, DSD_ANALOG_DEMOD_FM);
+    test_analog_zero_read_contract_kept(opts, state, DSD_ANALOG_DEMOD_AM);
 
     dsd_signal_search_active_set(NULL);
     dsd_decode_clock_use_system();

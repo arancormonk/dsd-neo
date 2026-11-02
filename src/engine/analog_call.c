@@ -18,6 +18,8 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -68,6 +70,8 @@ typedef struct {
        it, never by rewriting the receiver's publication. */
     dsd_receive_identity identity;
     uint8_t mode; /* dsd_analog_mode the reception began in, as its row has it: its recording's name and log label */
+    /* Issue #667 D2: the notice last logged about the squelch (analog_call_allowed()), so each change is said once. */
+    uint8_t off_notice;
 } analog_call;
 
 /* A teardown that skipped dsd_engine_finalize_calls() still publishes a call's open recording under its final name,
@@ -217,6 +221,66 @@ analog_call_reconcile(dsd_opts* opts, dsd_state* state, analog_call* call) {
     return 1;
 }
 
+static analog_call*
+analog_call_ensure(dsd_state* state) {
+    analog_call* call = analog_call_get(state);
+    if (!call) {
+        call = (analog_call*)calloc(1, sizeof(*call));
+        if (!call) {
+            return NULL;
+        }
+        if (dsd_engine_scan_own(state, 2, call, analog_call_free)) {
+            free(call);
+            return NULL;
+        }
+    }
+    return call;
+}
+
+/* Whether the tracker follows analog receptions: the analog monitor's tap runs, FM or AM (issue #667 D8), and no
+   trunking does. */
+static int
+analog_call_follows(const dsd_opts* opts) {
+    return dsd_analog_monitor_tap_active(opts) && opts->trunk_enable == 0;
+}
+
+/* What the D2 notice last said (analog_call::off_notice): nothing, or calls paused with the remedies that work on the
+   FM monitor (a tone allow list among them) or on AM (no tone to list). */
+enum { ANALOG_CALL_ON = 0, ANALOG_CALL_OFF_FM = 1, ANALOG_CALL_OFF_AM = 2 };
+
+static void
+analog_call_say_off(uint8_t notice) {
+    switch (notice) {
+        case ANALOG_CALL_OFF_FM:
+            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at its default "
+                     "level, so noise would hold one call open. Set --squelch <dB>, --squelch auto or noise, or "
+                     "--tone-allow.\n");
+            break;
+        case ANALOG_CALL_OFF_AM:
+            LOG_INFO("NOTICE: Analog call history and recordings are paused: the squelch is off or at its default "
+                     "level, so noise would hold one call open. Set --squelch <dB> or --squelch auto.\n");
+            break;
+        default: LOG_INFO("NOTICE: Analog call history and recordings are back on.\n"); break;
+    }
+}
+
+/* Issue #667 D2: whether a reception may begin or go on as a call (dsd_squelch_analog_calls_allowed()). Each change is
+   said once, when it is first seen, and a change of remedies while paused (an FM monitor switched to AM) too; the
+   lift is said only after a pause was. Returns 1 while calls are allowed. */
+static int
+analog_call_allowed(const dsd_opts* opts, const dsd_state* state, analog_call* call) {
+    const int allowed = dsd_squelch_analog_calls_allowed(opts, state);
+    uint8_t notice = ANALOG_CALL_ON;
+    if (!allowed) {
+        notice = dsd_analog_tone_detection_active(opts) ? (uint8_t)ANALOG_CALL_OFF_FM : (uint8_t)ANALOG_CALL_OFF_AM;
+    }
+    if (call && notice != call->off_notice) {
+        analog_call_say_off(notice);
+        call->off_notice = notice;
+    }
+    return allowed;
+}
+
 /* What the tick ends on a closed carrier or a tone still checked. With the hold on, a call or a candidate past its
    first RECEPTION block waits for the next block, which decides it on sample time; with it off, either ends. A lead-in
    is a tone check (issue #667 D1), so it ends only on a closed carrier: it has no hold. */
@@ -230,8 +294,15 @@ analog_call_tick_closes(const dsd_opts* opts, const dsd_state* state, const anal
 
 void
 dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
-    analog_call* call = (opts && state) ? analog_call_get(state) : NULL;
+    if (!opts || !state) {
+        return;
+    }
+    analog_call* call = analog_call_get(state);
     if (!analog_call_running(call)) {
+        /* D2's notice follows a live change (a squelch set from a frontend) with no block to carry it. */
+        if (analog_call_follows(opts)) {
+            (void)analog_call_allowed(opts, state, analog_call_ensure(state));
+        }
         return;
     }
     /* B6 between blocks: a reset with no block after it (a TCP reconnect that yields to a queued command) moves the
@@ -245,9 +316,10 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int gate = dsd_analog_tone_gate_in_force(opts, state);
-    /* What no hold survives, held or not: the receiver left the channel, or the tone is rejected. */
-    const int invalid = !dsd_analog_tone_detection_active(opts) || gate == DSD_ANALOG_TONE_GATE_REJECTED
-                        || !dsd_analog_rx_boundaries_current(opts, state);
+    /* What no hold survives, held or not: the receiver left the channel, the tone is rejected, or (D2) the squelch
+       lets noise through, a live change that needs no further sample. */
+    const int invalid = !dsd_analog_monitor_tap_active(opts) || gate == DSD_ANALOG_TONE_GATE_REJECTED
+                        || !dsd_analog_rx_boundaries_current(opts, state) || !analog_call_allowed(opts, state, call);
     /* A held call with input flowing needs no tick. */
     if (invalid || analog_call_tick_closes(opts, state, call, gate) || dsd_engine_analog_call_due(state)) {
         analog_call_end_reception(opts, state, call);
@@ -275,22 +347,6 @@ static void
 analog_call_write(const void* context, const short* samples, size_t count) {
     const analog_call_sink* sink = (const analog_call_sink*)context;
     dsd_wav_segment_write(sink->wav, samples, count, sink->label);
-}
-
-static analog_call*
-analog_call_ensure(dsd_state* state) {
-    analog_call* call = analog_call_get(state);
-    if (!call) {
-        call = (analog_call*)calloc(1, sizeof(*call));
-        if (!call) {
-            return NULL;
-        }
-        if (dsd_engine_scan_own(state, 2, call, analog_call_free)) {
-            free(call);
-            return NULL;
-        }
-    }
-    return call;
 }
 
 void
@@ -514,15 +570,15 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
     call->last_m = now_m;
 }
 
-/* A block no call spans: BREAK, a block that is not one, trunking, no detection, or (B6) the receiver crossed a hard
-   boundary since the reception began. The block that carries a moved epoch straddles it, its first part the old
-   reception, so it is not written either: the call ends at its last reception and the next block begins the next. */
+/* A block no call spans: BREAK, a block that is not one, trunking, no monitor tap (FM or AM), or (B6) the receiver
+   crossed a hard boundary since the reception began. The block that carries a moved epoch straddles it, its first part
+   the old reception, so it is not written either: the call ends at its last reception and the next block begins the
+   next. */
 static int
 analog_call_breaks(const dsd_opts* opts, const dsd_state* state, const analog_call* call, const float* samples,
                    size_t count, int sample_rate, int input) {
     if ((input != DSD_ANALOG_CALL_RECEPTION && input != DSD_ANALOG_CALL_HOLDABLE && input != DSD_ANALOG_CALL_PENDING)
-        || !samples || count == 0 || sample_rate <= 0 || opts->trunk_enable
-        || !dsd_analog_tone_detection_active(opts)) {
+        || !samples || count == 0 || sample_rate <= 0 || !analog_call_follows(opts)) {
         return 1;
     }
     return analog_call_running(call) && state->analog_rx.boundaries != call->boundaries_seen;
@@ -538,7 +594,9 @@ analog_call_unrecorded(dsd_opts* opts, dsd_state* state, analog_call* call, size
     }
     if (call && (call->active || call->received)) {
         analog_call_hold(opts, state, call, count, sample_rate);
-        return 1;
+        /* A tone check under the carrier that ended the reception (its hold off, or past the max gap) is the next
+           one's lead-in, as it is when the reconciliation before the block ends it. */
+        return input != DSD_ANALOG_CALL_PENDING || analog_call_running(call);
     }
     if (input == DSD_ANALOG_CALL_PENDING) {
         return 0;
@@ -570,11 +628,16 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samp
         dsd_engine_analog_call_end(opts, state);
         return;
     }
-    if (analog_call_unrecorded(opts, state, call, count, sample_rate, input)) {
-        return;
-    }
     call = analog_call_ensure(state);
     if (!call) {
+        return;
+    }
+    /* D2: no reception begins or goes on while the squelch lets noise through. */
+    if (!analog_call_allowed(opts, state, call)) {
+        analog_call_end_reception(opts, state, call);
+        return;
+    }
+    if (analog_call_unrecorded(opts, state, call, count, sample_rate, input)) {
         return;
     }
     if (input == DSD_ANALOG_CALL_PENDING) {

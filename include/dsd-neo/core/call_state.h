@@ -149,7 +149,8 @@ typedef struct {
     /**
      * Decode-clock wall seconds (the dsd_decode_* wall domain) of the call's first sample, on the observation that
      * begins an epoch; kept, fractional, as dsd_call_snapshot::start_wall. 0: none, the row's stamps are derived from
-     * its render as before.
+     * its render as before. With it, that observation's @ref observed_m must be the same first-sample instant on the
+     * decode-mono clock, since the row's end is this start plus the epoch's elapsed from @ref observed_m.
      */
     double start_wall;
     double observed_m;

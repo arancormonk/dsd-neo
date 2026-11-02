@@ -1818,8 +1818,8 @@ symbol_analog_block_collect(const dsd_opts* opts, dsd_state* state, uint32_t rtl
     }
 }
 
-/* What the block is to the engine's NFM call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
-   rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no detection, a channel the
+/* What the block is to the engine's analog call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
+   rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no monitor tap, a channel the
    tap has not read yet, a rejected tone) from one it may hold through (the carrier closed, or its tone still checked).
    A tone still checked under an open carrier is PENDING, which a reception not yet a call counts as its lead-in (issue
    #667). Only a block that is no reception pays for the checks, the boundaries' read last. */
@@ -1828,7 +1828,7 @@ symbol_analog_call_input(const dsd_opts* opts, const dsd_state* state, int disca
     if (reception) {
         return DSD_ANALOG_CALL_RECEPTION;
     }
-    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)) {
+    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_monitor_tap_active(opts)) {
         return DSD_ANALOG_CALL_BREAK;
     }
     const int gate = dsd_analog_tone_gate_in_force(opts, state);
@@ -1860,7 +1860,7 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
     if (block_hz <= 0) {
         dsd_analog_sink_break(state);
     }
-    const int reception = !discard && dsd_analog_tone_detection_active(opts) && opts->trunk_enable == 0
+    const int reception = !discard && dsd_analog_monitor_tap_active(opts) && opts->trunk_enable == 0
                           && state->carrier == 0 && dsd_trunk_tuning_pending_request() == 0U
                           && dsd_analog_rx_carrier_open_now(opts, state)
                           && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
@@ -2423,7 +2423,7 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
         symbol_rtl_read_yielded(state);
         return 0;
     }
-    if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
+    if (read_rc == 0 && got == 0 && dsd_analog_monitor_tap_active(opts)) {
         state->input_interrupted = 1;
         return 0;
     }

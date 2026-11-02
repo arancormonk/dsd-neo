@@ -2560,6 +2560,17 @@ The largest silence one resume writes (a 10 s hold that is all tone check, 48000
 which prints `a 10 s pause written as silence in N ms`. That is about 0.5 ms in `dev-debug` with the temporary
 directory on tmpfs, and about 1.6 ms on btrfs: well under one 20 ms block.
 
+#### Analog calls on a radio input need a squelch (issue #667 D2)
+
+On a radio input an analog reception becomes a call (a row, a `-J` line, a per-call recording) only under a squelch
+above the -110 dB startup default, a dynamic squelch, or a tone allow list on NFM. So every end-to-end case that
+replays I/Q under `-fA` or `-fM` and expects analog rows or recordings sets a squelch, and cases whose payloads are
+compared set the same one: `tests/receive_iq_check.py` adds `ANALOG_SQUELCH` (`--squelch -60`, a level its fixtures'
+signals clear, so the payloads match those of the open squelch they ran at before) to every `-fA` replay, and the
+`DECODE_*_ANALOG_RECORD_GAP_*` cases run `--squelch noise+6`. Its `nfm-default-squelch` and `am-default-squelch` cases
+pin the pause itself: at the default, no row, no recording, and the notice once, with `--tone-allow` among the remedies
+on NFM only. Audio input (`DECODE_PCM_*`, PCM taps) is never paused and needs nothing.
+
 #### Tone and code labels
 
 The real excerpts come unlabelled, and a C detector must not be graded against its own output. `tools/analog_oracle.py`
