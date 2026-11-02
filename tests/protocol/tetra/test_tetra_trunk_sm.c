@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -1140,6 +1141,48 @@ test_no_move_unless_the_tuner_is_the_machines(void) {
     }
 }
 
+/* Main's display for an I/Q replay of the main carrier recorded off-centre: an input the state machine cannot move is on
+ * the main carrier when its centre is within the TETRA chain's tracking range of it (DSD_TETRA_PREMIX_LIMIT_HZ), so the
+ * SYSINFO there rests ON_CC, stamps the sync and adds the candidate. Past that range it stays IDLE: 10 kHz off (the
+ * repo's tetra_call_offset_10k_72k capture), and a replay of a secondary carrier 25 kHz away (case 2 of
+ * test_no_move_unless_the_tuner_is_the_machines()). A live radio the machine can move keeps the exact-Hz rule and is
+ * moved from 5 kHz off. */
+static void
+test_off_centre_replay_of_the_main_carrier(void) {
+    static const struct {
+        long offset_hz;
+        int on_cc;
+    } k_cases[] = {
+        {5000L, 1}, {-5000L, 1}, {DSD_TETRA_PREMIX_LIMIT_HZ, 1}, {-DSD_TETRA_PREMIX_LIMIT_HZ, 1}, {-10000L, 0},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        reset_backend();
+        session s = secondary_open(1);
+        DSD_SNPRINTF(s.opts->audio_in_dev, sizeof s.opts->audio_in_dev, "%s", "iqreplay:capture.cu8");
+        s.opts->iq_replay_center_freq = (uint32_t)(main_hz(k_main) + k_cases[i].offset_hz);
+        sysinfo_burst(&s, k_main, 4U);
+        assert(g_returns == 0 && g_tunes == 0);
+        if (k_cases[i].on_cc) {
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_ON_CONTROL);
+            assert(s.state->last_cc_sync_time != 0 && cc_candidates(s.state) == 1);
+        } else {
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+            assert(s.state->last_cc_sync_time == 0 && cc_candidates(s.state) == 0);
+        }
+        session_close(&s);
+    }
+
+    reset_backend();
+    session s = secondary_open(1);
+    s.opts->rtlsdr_center_freq = (uint32_t)(main_hz(k_main) + 5000L);
+    sysinfo_burst(&s, k_main, 4U);
+    assert(g_returns == 1 && g_returned_hz == main_hz(k_main));
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ACQUIRING && s.state->last_cc_sync_time == 0);
+    session_close(&s);
+}
+
 /* A deferred move counts as none and is staged again by a SYSINFO after TETRA_SM_MOVE_HOLD_S; a refused one waits 5 s,
  * then 15 s, then 60 s at most. */
 static void
@@ -1519,6 +1562,7 @@ main(void) {
     test_move_needs_prior_evidence_on_the_carrier();
     test_no_main_carrier_no_move();
     test_no_move_unless_the_tuner_is_the_machines();
+    test_off_centre_replay_of_the_main_carrier();
     test_deferred_and_refused_moves();
     test_pending_move_fails_and_backs_off();
     test_external_tune_cancels_acquiring();

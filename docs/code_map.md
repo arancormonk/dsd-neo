@@ -8046,7 +8046,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   MCCH (EN 300 392-2 clauses 3.1, 19.3.2.1.1, 21.4.4.1 -- the downlink frequency -- and 23.3.1.2.1), so a SYSINFO says
   where the control channel is, not where the receiver is. `tetra_sm_on_cc_sync()` (from `apply_sysinfo()` in
   `tetra_mac.c`, only for a valid main carrier) makes IDLE or ACQUIRING ON_CC, adds the control-channel candidate and
-  stamps its sync only on the main carrier (`sm_on_main_carrier()`: `tetra_sm_receiver_freq()` equal to it; with no
+  stamps its sync only on the main carrier (`sm_on_main_carrier()`: `tetra_sm_receiver_freq()` equal to it for a
+  receiver the machine can move, within `DSD_TETRA_PREMIX_LIMIT_HZ` of it, the TETRA chain's tracking range, for an
+  I/Q replay, whose recorded centre a capture made off-centre leaves a few kHz off the carrier; with no
   frequency known, an audio input, yes unless the machine can move the receiver, a rigctl peer, when the frequency
   last sent to the peer, `opts->rigctl_sent_freq_hz`, or its own completed move says so). Off it
   (`sm_off_main_carrier()`), ON_CC, which a tune elsewhere rests in, and a landed ACQUIRING, whose carrier is now

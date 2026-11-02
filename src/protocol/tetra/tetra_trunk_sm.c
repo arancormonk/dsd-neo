@@ -25,6 +25,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -571,14 +572,28 @@ sm_input_tunable(const dsd_opts* opts) {
     return dsd_opts_input_is_pcm_audio(opts) && dsd_opts_rigctl_live(opts);
 }
 
-/* Whether the receiver is on main carrier @p hz: the frequency it is on, when that is known. With none known (an audio
- * input) it is, as far as anything here can tell, unless the state machine can move the receiver, a rigctl peer: then
- * the frequency last sent to the peer says so (opts->rigctl_sent_freq_hz), or the machine's own completed move there. */
+/* Whether a receiver on @p rx_hz is on main carrier @p hz. One the state machine can move is on it only at the exact
+ * frequency, which a move there reaches. One it cannot move (an I/Q replay, whose centre is what the capture recorded)
+ * is on it within the TETRA chain's tracking range, which brings that carrier to the centre: a capture of the main
+ * carrier recorded a few kHz off it is still the control channel, while a neighbouring carrier 25 kHz away is not. */
+static int
+sm_receiver_on(const dsd_opts* opts, long rx_hz, long hz) {
+    if (sm_input_tunable(opts)) {
+        return rx_hz == hz;
+    }
+    const long off_hz = rx_hz > hz ? rx_hz - hz : hz - rx_hz;
+    return off_hz <= DSD_TETRA_PREMIX_LIMIT_HZ;
+}
+
+/* Whether the receiver is on main carrier @p hz: the frequency it is on, when that is known (sm_receiver_on()). With
+ * none known (an audio input) it is, as far as anything here can tell, unless the state machine can move the receiver,
+ * a rigctl peer: then the frequency last sent to the peer says so (opts->rigctl_sent_freq_hz), or the machine's own
+ * completed move there. */
 static int
 sm_on_main_carrier(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, long hz) {
     const long rx_hz = tetra_sm_receiver_freq(opts, state);
     if (rx_hz != 0) {
-        return rx_hz == hz;
+        return sm_receiver_on(opts, rx_hz, hz);
     }
     if (!sm_input_tunable(opts)) {
         return 1;
