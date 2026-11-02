@@ -8876,6 +8876,58 @@ test_radio_control_unavailable_toasts(void) {
 
 /* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
    submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
+/* Issue #672 (B10): the terminal menu re-parses the DSD_NEO_* environment on its own thread and hands the result to the
+   decoder, which applies the two options fields the runtime config carries (dsd_apply_runtime_config_to_opts()) to the
+   options it owns. The command is applied as it is drained, in either direction, and not before. */
+static int
+test_runtime_config_apply_sets_the_decoder_options(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    opts->dmr_t3_heuristic_fill = 0;
+    opts->p25_afc_status_gate_enable = 0;
+
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_HEUR", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_P25_AFC_STATUS_GATE", "1", 1);
+    dsd_neo_config_init();
+    rc |= expect_int("runtime config: queued", dsd_app_command_action(DSD_APP_CMD_RUNTIME_CONFIG_APPLY),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("runtime config: nothing before the drain", opts->dmr_t3_heuristic_fill, 0);
+    rc |= expect_int("runtime config: drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("runtime config: DMR T3 fill on", opts->dmr_t3_heuristic_fill, 1);
+    rc |= expect_int("runtime config: P25 AFC gate on", opts->p25_afc_status_gate_enable, 1);
+
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_HEUR", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_P25_AFC_STATUS_GATE", "0", 1);
+    dsd_neo_config_init();
+    rc |= drain_action(opts, state, DSD_APP_CMD_RUNTIME_CONFIG_APPLY, "runtime config: off");
+    rc |= expect_int("runtime config: DMR T3 fill off", opts->dmr_t3_heuristic_fill, 0);
+    rc |= expect_int("runtime config: P25 AFC gate off", opts->p25_afc_status_gate_enable, 0);
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* It tunes nothing, so Signal search, which owns the receiver, lets it through. */
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_HEUR", "1", 1);
+    dsd_neo_config_init();
+    g_signal_search_active = 1;
+    rc |= drain_action(opts, state, DSD_APP_CMD_RUNTIME_CONFIG_APPLY, "runtime config: under a search");
+    g_signal_search_active = 0;
+    rc |= expect_int("runtime config: applied under a search", opts->dmr_t3_heuristic_fill, 1);
+    rc |= expect_true("runtime config: no search refusal", strstr(state->ui_msg, "Signal search") == NULL);
+#endif
+
+    (void)dsd_test_unsetenv("DSD_NEO_DMR_T3_HEUR");
+    (void)dsd_test_unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
+    dsd_neo_config_init();
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_quit_takes_effect_at_submit(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -25059,6 +25111,7 @@ main(void) {
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
+    rc |= test_runtime_config_apply_sets_the_decoder_options();
     rc |= test_channel_scan_pause_services();
 #ifdef USE_RADIO
     rc |= test_frequency_entry_pauses_a_running_list();

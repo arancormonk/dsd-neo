@@ -78,6 +78,11 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_SIGNAL_SEARCH_START || value == DSD_APP_CMD_SIGNAL_SEARCH_CONTROL) {
                 continue;
             }
+            /* The terminal menu's own hand-off of a re-parsed environment to the decoder thread: an API client sets no
+               DSD_NEO_* variables in the decoder's process, so there is nothing for it to apply. */
+            if (value == DSD_APP_CMD_RUNTIME_CONFIG_APPLY) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }

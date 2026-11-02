@@ -2513,6 +2513,11 @@ suite runs under this compiler.
       process environment and the host's overrides and never inherits the last session's `--auto-ppm` or
       extra-argument knobs. Tests: `RUNTIME_ENV_NO_PROCESS_WRITES` (with the `--interactive-setup` hide),
       `RUNTIME_SESSION_OVERRIDES_RESET` (with a host override that survives), `UI_MENU_ENV`
+      A terminal edit re-parses on the UI thread (`env_reparse_runtime_cfg()`, `menu_env.c`: `dsd_neo_config_init()`
+      publishes an immutable copy) and submits the internal `DSD_APP_CMD_RUNTIME_CONFIG_APPLY` (no payload, not in the
+      control API catalog, admitted during Signal search), whose handler applies `dsd_apply_runtime_config_to_opts()`
+      (`dmr_t3_heuristic_fill`, `p25_afc_status_gate_enable`) on the decoder thread: the menu never writes `dsd_opts`
+      (#672 B10). Tests: `UI_MENU_ENV`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `APP_COMMAND_QUEUE`, `API_COMMANDS`.
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one

@@ -4612,6 +4612,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
 };
 
 static const int k_ui_cmd_i32_ids[] = {
@@ -8307,6 +8308,15 @@ ui_cmd_handle_reverse_mute_toggle(dsd_opts* opts, dsd_state* state, const struct
     return 1;
 }
 
+/* The runtime config the menu re-parsed on its thread reaches the decoder's options here, on the decoder thread, which
+   owns them. */
+static int
+ui_cmd_handle_runtime_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 ui_cmd_handle_config_metadata_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
@@ -9593,6 +9603,7 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
         {DSD_APP_CMD_REVERSE_MUTE_TOGGLE, ui_cmd_handle_reverse_mute_toggle},
         {DSD_APP_CMD_CONFIG_APPLY, ui_cmd_handle_config_apply},
         {DSD_APP_CMD_CONFIG_METADATA_SET, ui_cmd_handle_config_metadata_set},
+        {DSD_APP_CMD_RUNTIME_CONFIG_APPLY, ui_cmd_handle_runtime_config_apply},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -10156,7 +10167,8 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
             case DSD_APP_CMD_GAIN_DELTA:
             case DSD_APP_CMD_AGAIN_SET:
             case DSD_APP_CMD_AGAIN_DELTA:
-            case DSD_APP_CMD_UI_MSG_CLEAR: break;
+            case DSD_APP_CMD_UI_MSG_CLEAR:
+            case DSD_APP_CMD_RUNTIME_CONFIG_APPLY: break;
             default: ui_set_toast(state, 4, "Stop Signal search before changing receiver settings"); return 0;
         }
     }

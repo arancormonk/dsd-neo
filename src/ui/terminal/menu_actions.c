@@ -646,7 +646,7 @@ act_set_input_warn(void* v) {
 
 void
 act_deemph_cycle(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int mode = cfg ? cfg->deemph_mode : DSD_NEO_DEEMPH_UNSET;
     mode = (mode + 1) % 5; // cycle through UNSET->OFF->50->75->NFM->UNSET
@@ -658,7 +658,7 @@ act_deemph_cycle(void* v) {
         case DSD_NEO_DEEMPH_NFM: ui_env_override("DSD_NEO_DEEMPH", "nfm"); break;
         default: break;
     }
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -1214,20 +1214,20 @@ act_tone_filter(void* v) {
 
 void
 act_window_freeze_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->window_freeze_is_set) ? cfg->window_freeze : 0;
     ui_env_override("DSD_NEO_WINDOW_FREEZE", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
 act_auto_ppm_freeze(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->auto_ppm_freeze_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -1236,7 +1236,7 @@ act_tcp_waitall(void* v) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->tcp_waitall_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_TCP_WAITALL", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
     }
@@ -1244,11 +1244,11 @@ act_tcp_waitall(void* v) {
 
 void
 act_rt_sched(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_RT_SCHED", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -2098,7 +2098,7 @@ rtl_toggle_tuner_autogain(void* v) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         int on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
         ui_env_override("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1");
-        env_reparse_runtime_cfg(c ? c->opts : NULL);
+        env_reparse_runtime_cfg();
     }
 }
 

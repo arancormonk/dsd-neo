@@ -269,8 +269,7 @@ env_get_double(const char* name, double defv) {
 }
 
 void
-env_reparse_runtime_cfg(dsd_opts* opts) {
-    (void)opts;
+env_reparse_runtime_cfg(void) {
     g_reparse_calls++;
 }
 
@@ -1121,11 +1120,22 @@ test_gain_rtl_and_env_callbacks(void) {
     rc |= expect_str("input warn env name", g_env_double_name, "DSD_NEO_INPUT_WARN_DB");
     rc |= expect_int("input warn env value", g_env_double_value == 0.0, 1);
 
+    /* Issue #672 (B10): the re-parse hands the config to the decoder (env_reparse_runtime_cfg() submits it); the menu's
+       options stay as they were, and a cancel re-parses nothing. */
     reset_capture();
+    opts.dmr_t3_heuristic_fill = 2;
+    opts.p25_afc_status_gate_enable = 3;
     cb_audio_lpf(&ctx, 1, 0);
     rc |= expect_str("audio lpf off env name", g_env_name, "DSD_NEO_AUDIO_LPF");
     rc |= expect_str("audio lpf off env value", g_env_value, "off");
     rc |= expect_int("audio lpf off reparse", g_reparse_calls, 1);
+    rc |= expect_int("audio lpf leaves the DMR T3 fill", opts.dmr_t3_heuristic_fill, 2);
+    rc |= expect_int("audio lpf leaves the P25 AFC gate", opts.p25_afc_status_gate_enable, 3);
+    opts.dmr_t3_heuristic_fill = 0;
+    opts.p25_afc_status_gate_enable = 0;
+    reset_capture();
+    cb_audio_lpf(&ctx, 0, 3000);
+    rc |= expect_int("audio lpf cancel reparses nothing", g_reparse_calls, 0);
 
     reset_capture();
     cb_auto_ppm_snr(&ctx, 1, 27.5);
@@ -1211,6 +1221,15 @@ test_env_editor_and_protocol_callbacks(void) {
     rc |= expect_str("env set value", g_env_value, "new");
     rc |= expect_int("env set sets once", g_env_set_calls, 1);
     rc |= expect_int("env set reparse", g_reparse_calls, 1);
+
+    reset_capture();
+    EnvEditCtx* canceled = (EnvEditCtx*)calloc(1, sizeof *canceled);
+    assert(canceled != NULL);
+    canceled->c = &ctx;
+    DSD_SNPRINTF(canceled->name, sizeof canceled->name, "%s", "DSD_NEO_CANCELED");
+    cb_env_edit_value(canceled, NULL);
+    rc |= expect_int("env cancel sets nothing", g_env_set_calls, 0);
+    rc |= expect_int("env cancel reparses nothing", g_reparse_calls, 0);
 
     reset_capture();
     EnvEditCtx* clear = (EnvEditCtx*)calloc(1, sizeof *clear);

@@ -610,8 +610,7 @@ env_get_double(const char* name, double defv) {
 }
 
 void
-env_reparse_runtime_cfg(dsd_opts* opts) {
-    (void)opts;
+env_reparse_runtime_cfg(void) {
     g_reparse_calls++;
 }
 
@@ -1239,12 +1238,20 @@ test_config_profile_and_env_actions(void) {
     rc |= expect_str("profile label zero", g_chooser.labels[0], "base");
     free_profile_ctx((ProfileSelCtx*)g_chooser.user);
 
+    /* Issue #672 (B10): the re-parse is handed to the decoder (env_reparse_runtime_cfg() submits it), and the two
+       options fields the runtime config carries are left to the decoder (the menu's context is read-only). */
     reset_capture();
     g_cfg.deemph_mode = DSD_NEO_DEEMPH_OFF;
+    opts.dmr_t3_heuristic_fill = 2;
+    opts.p25_afc_status_gate_enable = 3;
     act_deemph_cycle(&ctx);
     rc |= expect_str("deemph env", g_env_name, "DSD_NEO_DEEMPH");
     rc |= expect_str("deemph value", g_env_value, "50");
     rc |= expect_int("deemph reparse", g_reparse_calls, 1);
+    rc |= expect_int("deemph leaves the DMR T3 fill", opts.dmr_t3_heuristic_fill, 2);
+    rc |= expect_int("deemph leaves the P25 AFC gate", opts.p25_afc_status_gate_enable, 3);
+    opts.dmr_t3_heuristic_fill = 0;
+    opts.p25_afc_status_gate_enable = 0;
 
     reset_capture();
     opts.audio_in_type = AUDIO_IN_RTL;

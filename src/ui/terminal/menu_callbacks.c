@@ -1228,7 +1228,7 @@ cb_audio_lpf(void* v, int ok, int hz) {
     } else {
         env_set_int("DSD_NEO_AUDIO_LPF", hz);
     }
-    env_reparse_runtime_cfg(c->opts);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -1345,7 +1345,7 @@ cb_env_edit_value(void* u, const char* val) {
         ui_statusf("Cleared %s", ec->name);
     }
     // Apply to runtime config as appropriate
-    env_reparse_runtime_cfg(ec->c ? ec->c->opts : NULL);
+    env_reparse_runtime_cfg();
     free(ec);
 }
 
