@@ -148,6 +148,13 @@ SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, c
 SNDFILE* close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
                                     const char* wav_out_filename, const char* dir, time_t opened);
 /**
+ * As close_and_publish_call_wav(), for a recorder that stamps its recording's first sample itself (the NFM call, issue
+ * #668): @p started, that decode time, is the start the journal and the rdio-scanner sidecar record (0 when unknown:
+ * then as close_and_publish_call_wav(); see dsd_rdio_recording_start()).
+ */
+SNDFILE* close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                       const char* wav_out_filename, const char* dir, time_t opened, time_t started);
+/**
  * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
  * own end) and publish it under the NFM name, without a service name or an rdio export.
  */

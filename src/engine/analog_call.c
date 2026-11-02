@@ -16,6 +16,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -29,6 +30,9 @@ typedef struct {
     char path[1024];
     char dir[512]; /* The folder the recording was opened in, where it is published (issue #708). */
     time_t opened;
+    /* When the recording's first sample was heard, from the block's wall time (issue #668); 0 when the block carried
+       none. The journal and the rdio-scanner sidecar take it as the start, over the row's own. */
+    time_t started;
     int attempted;
     /* The open file was written: a pause that begins now lies inside it, so it is owed the pause's silence (issue
        #756). A file opened later starts with no silence for a pause it did not span. */
@@ -47,7 +51,9 @@ typedef struct {
     uint64_t rem48;  /* the part of a 48 kHz sample carried from one held block's span to the next, at the block rate */
     /* Decode-mono end of the last RECEPTION block: where the call ends, whenever its end is decided. 0 before one. */
     double last_m;
-    uint32_t boundaries_seen; /* the receiver's boundaries epoch when the call began; a move ends it */
+    /* The receiver's boundaries epoch at the last block, call or not (issue #668, B5/B7): a block that carries another
+       crossed a hard boundary, and a call running ends. Set from the epoch in force when the first block arrives. */
+    uint32_t boundaries_seen;
     dsd_receive_identity identity;
 } analog_call;
 
@@ -72,9 +78,9 @@ analog_call_get(const dsd_state* state) {
 static void
 analog_call_close_recording(const dsd_opts* opts, dsd_state* state, analog_call* call) {
     if (call->rec.wav) {
-        call->rec.wav =
-            close_and_publish_call_wav(call->rec.wav, opts, state, 0, call->rec.path,
-                                       call->rec.dir[0] ? call->rec.dir : opts->wav_out_dir, call->rec.opened);
+        call->rec.wav = close_and_publish_call_wav_ex(call->rec.wav, opts, state, 0, call->rec.path,
+                                                      call->rec.dir[0] ? call->rec.dir : opts->wav_out_dir,
+                                                      call->rec.opened, call->rec.started);
         call->rec.path[0] = '\0';
     }
     call->rec.spans_pause = 0;
@@ -162,7 +168,8 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
     }
     /* B6 between blocks: a reset with no block after it (a TCP reconnect that yields to a queued command) moves the
        epoch while the boundaries stay current, and the stream may bring no whole block to see it. The call, held or
-       not, ends at its last reception as the next block would end it. */
+       not, ends at its last reception as the next block would end it. The epoch seen stays the last block's, so that
+       next block, which may still hold audio from before the reset, is dropped too. */
     if (state->analog_rx.boundaries != call->boundaries_seen) {
         analog_call_finish(opts, state, call);
         return;
@@ -203,6 +210,7 @@ analog_call_ensure(dsd_state* state) {
         if (!call) {
             return NULL;
         }
+        call->boundaries_seen = state->analog_rx.boundaries;
         if (dsd_engine_scan_own(state, 2, call, analog_call_free)) {
             free(call);
             return NULL;
@@ -224,9 +232,24 @@ dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state) {
     call->rec.attempted = 0;
 }
 
+/* A wall time read from a nanosecond clock as double seconds is rounded by well under this: a start this close below a
+   whole second is that second, so a block that began on one is filed under it. */
+static const double k_analog_call_start_slack_s = 1e-6;
+
+/* When the recording that @p block opens began (issue #668): the block's end in wall time, which the DSP read before
+   any raw WAV or recording I/O, less the block's span, floored once to whole seconds. So neither a slow disk nor a
+   recording closed first moves it. 0 when the block carries no wall time. */
+static time_t
+analog_call_recording_start(const dsd_analog_call_block* block) {
+    if (!(block->wall_end_s > 0.0)) {
+        return 0;
+    }
+    const double span_s = (double)block->count / (double)block->sample_rate;
+    return (time_t)floor(block->wall_end_s - span_s + k_analog_call_start_slack_s);
+}
+
 static void
-analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const float* samples, size_t count,
-                   int sample_rate) {
+analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const dsd_analog_call_block* block) {
     analog_call_recording* rec = &call->rec;
     if (!opts->dmr_stereo_wav) {
         rec->attempted = 0;
@@ -235,7 +258,9 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
         rec->attempted = 1;
         rec->wav = open_wav_file(opts->wav_out_dir, rec->path, sizeof(rec->path), 48000, 0);
         DSD_SNPRINTF(rec->dir, sizeof(rec->dir), "%s", opts->wav_out_dir);
-        rec->opened = dsd_decode_time();
+        rec->started = analog_call_recording_start(block);
+        /* A block with no wall time (never with -P on) leaves the start to the open and the row, as before. */
+        rec->opened = rec->started ? rec->started : dsd_decode_time();
         rec->spans_pause = 0;
     }
     if (!opts->dmr_stereo_wav) {
@@ -243,8 +268,8 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
     }
     if (rec->wav) {
         const analog_call_sink sink = {rec->wav};
-        (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, samples, count, 1.0, sample_rate, 48000,
-                                    analog_call_write, &sink);
+        (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, block->samples, block->count, 1.0,
+                                    block->sample_rate, 48000, analog_call_write, &sink);
         rec->spans_pause = 1;
     }
 }
@@ -293,14 +318,20 @@ analog_call_hold(dsd_opts* opts, dsd_state* state, analog_call* call, size_t cou
 }
 
 /* A RECEPTION block, stamped @p now_m: the call's audio. A confirmed new identity ends the call (held or not) and
-   begins another with this block (D4); a held call otherwise goes on, its pause written first. */
+   begins another with this block (D4); a held call otherwise goes on, its pause written first. A call begins only on a
+   block that heard the carrier itself (issue #668, B1): the carrier's hangover after a tone verdict holds only what the
+   squelch closed on, and a call begun there would publish silence and a history row for it. Such a block still goes
+   on with a call already running. */
 static void
-analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const float* samples, size_t count,
-                    int sample_rate, double now_m) {
+analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const dsd_analog_call_block* block,
+                    double now_m) {
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, DSD_SYNC_ANALOG, 0, &identity);
     if (call->active && dsd_receive_identity_changed(&call->identity, &identity)) {
         analog_call_finish(opts, state, call);
+    }
+    if (!call->active && !block->qualified_carrier) {
+        return;
     }
     if (call->held) {
         analog_call_write_pause(opts, call);
@@ -320,9 +351,6 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
     if (!call->active || identity.known) {
         call->identity = identity;
     }
-    if (!call->active) {
-        call->boundaries_seen = state->analog_rx.boundaries;
-    }
     call->active = 1;
     const dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_CLEAR,
@@ -332,21 +360,31 @@ analog_call_receive(dsd_opts* opts, dsd_state* state, analog_call* call, const f
     (void)dsd_call_state_update_crypto(state, 0, &crypto);
     (void)dsd_call_state_update_media(state, 0, 1, now_m);
     dsd_event_sync_slot(opts, state, 0);
-    analog_call_record(opts, state, call, samples, count, sample_rate);
+    analog_call_record(opts, state, call, block);
     call->last_m = now_m;
 }
 
-/* A block no call spans: BREAK, a block that is not one, trunking, no detection, or (B6) the receiver crossed a hard
-   boundary since the call began. The block that carries a moved epoch straddles it, its first part the old reception,
-   so it is not written either: the call ends at its last reception and the next block begins the next. */
+/* A block no call spans: BREAK, a block that is not one, trunking, or no detection. */
 static int
-analog_call_breaks(const dsd_opts* opts, const dsd_state* state, const analog_call* call, const float* samples,
-                   size_t count, int sample_rate, int input) {
-    if ((input != DSD_ANALOG_CALL_RECEPTION && input != DSD_ANALOG_CALL_HOLDABLE) || !samples || count == 0
-        || sample_rate <= 0 || opts->trunk_enable || !dsd_analog_tone_detection_active(opts)) {
-        return 1;
+analog_call_breaks(const dsd_opts* opts, const dsd_analog_call_block* block) {
+    return (block->input != DSD_ANALOG_CALL_RECEPTION && block->input != DSD_ANALOG_CALL_HOLDABLE) || !block->samples
+           || block->count == 0 || block->sample_rate <= 0 || opts->trunk_enable
+           || !dsd_analog_tone_detection_active(opts);
+}
+
+/* B6, and issue #668's B5/B7: the receiver crossed a hard boundary (a stream pause, a reconnect, a retune) since the
+   last block, call or not. The block that carries the moved epoch straddles it, its first part from before (a pause
+   marks no straddle), so no call goes on or begins with it: a call ends at its last reception, the block is dropped, and
+   the next block begins afresh. Checked before anything else the block does, a live max gap change's end included,
+   which would otherwise leave no call to compare the epoch with. Returns 1 when the block is dropped. */
+static int
+analog_call_crossed_boundary(dsd_opts* opts, dsd_state* state, analog_call* call) {
+    if (state->analog_rx.boundaries == call->boundaries_seen) {
+        return 0;
     }
-    return call && call->active && state->analog_rx.boundaries != call->boundaries_seen;
+    call->boundaries_seen = state->analog_rx.boundaries;
+    dsd_engine_analog_call_end(opts, state);
+    return 1;
 }
 
 void
@@ -354,31 +392,29 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_
     if (!opts || !state || !block) {
         return;
     }
-    const float* samples = block->samples;
-    const size_t count = block->count;
-    const int sample_rate = block->sample_rate;
     const int input = block->input;
     /* A RECEPTION block's one decode-clock read, before any of its file work on any path: the reconciliation's end, a
        new identity's end and a resumed call's pause all close or write a recording before the block begins or goes on
        with a call, and the time a slow disk takes for that is not the call's. The stamp is where the call starts or
        goes on, and where it ends, whenever that is decided. A held block reads none: the hold runs on sample time. */
     const double now_m = input == DSD_ANALOG_CALL_RECEPTION ? dsd_decode_now_mono_s() : 0.0;
-    analog_call* call = analog_call_get(state);
-    if (call && call->active) {
+    /* Every block keeps the epoch seen, so the call exists from the first one; with no memory for it, none begins. */
+    analog_call* call = analog_call_ensure(state);
+    if (!call || analog_call_crossed_boundary(opts, state, call)) {
+        return;
+    }
+    if (call->active) {
         (void)analog_call_reconcile(opts, state, call);
     }
-    if (analog_call_breaks(opts, state, call, samples, count, sample_rate, input)) {
+    if (analog_call_breaks(opts, block)) {
         dsd_engine_analog_call_end(opts, state);
         return;
     }
     if (input == DSD_ANALOG_CALL_HOLDABLE) {
-        if (call && call->active) {
-            analog_call_hold(opts, state, call, count, sample_rate);
+        if (call->active) {
+            analog_call_hold(opts, state, call, block->count, block->sample_rate);
         }
         return;
     }
-    call = analog_call_ensure(state);
-    if (call) {
-        analog_call_receive(opts, state, call, samples, count, sample_rate, now_m);
-    }
+    analog_call_receive(opts, state, call, block, now_m);
 }

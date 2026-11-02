@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -356,19 +357,6 @@ replay_retune_step(dsd_opts* opts, dsd_state* state) {
 
 static int g_analog_step = 0;
 
-/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
-static void
-analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
-    const dsd_analog_call_block block = {
-        .samples = samples,
-        .count = count,
-        .sample_rate = sample_rate,
-        .input = input,
-        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
-    };
-    dsd_engine_analog_call_block(opts, state, &block);
-}
-
 static int
 analog_stall_step(dsd_opts* opts, dsd_state* state) {
     if (++g_analog_step == 1) {
@@ -377,7 +365,7 @@ analog_stall_step(dsd_opts* opts, dsd_state* state) {
         opts->audio_in_type = AUDIO_IN_UDP;
         state->analog_rx.carrier_open = 1;
         const float samples[2] = {1000.0f, 1000.0f};
-        analog_call_feed(opts, state, samples, 2, 48000, 1);
+        dsd_test_analog_call_feed(opts, state, samples, 2, 48000, 1);
         expect("NFM reception starts a call", dsd_engine_analog_call_active(state));
         state->analog_rx.stale_after_ms = 1U;
         state->input_interrupted = 1; /* An idle read yields, with no replacement input. */

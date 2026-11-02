@@ -45,6 +45,7 @@
 #include <string.h>
 #include <time.h>
 #include "../test_support/radio_policy_test.h"
+#include "analog_call_test_support.h"
 #include "commands_internal.h"
 #include "edacs_internal.h"
 #include "snapshot_internal.h"
@@ -736,26 +737,13 @@ setup_nfm(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1413;
 }
 
-/* One block for the NFM call as the monitor hands it (issue #668): clean, and on a RECEPTION its own carrier. */
-static void
-analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate, int input) {
-    const dsd_analog_call_block block = {
-        .samples = samples,
-        .count = count,
-        .sample_rate = sample_rate,
-        .input = input,
-        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
-    };
-    dsd_engine_analog_call_block(opts, state, &block);
-}
-
 static void
 nfm_block(dsd_opts* opts, dsd_state* state) {
     static float block[960];
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    analog_call_feed(opts, state, block, 960, 48000, 1);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
 }
 
 /* The pending publish of @p id on @p epoch, then exactly one link of it to @p row in @p ring, slot 1. */
@@ -809,7 +797,7 @@ test_held_nfm_call_is_one_recording(void) {
     static const float closed[960] = {0};
     r.state->analog_rx.carrier_open = 0;
     for (int i = 0; i < 10; i++) {
-        analog_call_feed(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+        dsd_test_analog_call_feed(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
     }
     r.state->analog_rx.carrier_open = 1;
     clock_at(k_t0 + 11);
@@ -1154,6 +1142,144 @@ test_start_on_the_replay_clock(void) {
                      (long long)anchor + 60);
     rc |= expect_int("stamped on the capture's clock", pub ? field_ll(pub, "t") : -9, (long long)anchor + 65);
     rig_close(&r);
+    return rc;
+}
+
+/* An NFM block as the finalizer hands it while -P records (issue #668): its end read on the decode clock's wall time,
+   before any file work. */
+static void
+nfm_block_heard_now(dsd_opts* opts, dsd_state* state) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = (float)((i % 48) * 400 - 9600);
+    }
+    const dsd_analog_call_block call = {
+        .samples = block,
+        .count = 960,
+        .sample_rate = 48000,
+        .input = DSD_ANALOG_CALL_RECEPTION,
+        .qualified_carrier = 1,
+        .wall_end_s = dsd_decode_now_realtime_s(),
+    };
+    dsd_engine_analog_call_block(opts, state, &call);
+}
+
+/* A recording close that takes three seconds of decode time, as a slow disk does under a live clock. */
+static int
+slow_close(SNDFILE* file) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + 3000000000ULL);
+    return sf_close(file);
+}
+
+/* The start of the @p nth published 48 kHz recording (an NFM call's), or -9. */
+static long long
+nfm_start(int nth) {
+    const char* pub = NULL;
+    for (int i = 0, seen = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(pub, "rate") == 48000 && seen++ == nth) {
+            return field_ll(pub, "start");
+        }
+    }
+    return -9;
+}
+
+/* Issue #668: an NFM recording starts where its first block began, the block's end in wall time (read before any file
+   I/O) less its span, floored once to whole seconds. A block that ends 10 ms into a second began in the one before,
+   which the row (accepted at the block's end) has not reached; a block that began exactly on a second is filed under
+   it; and a recording opened after the call before it closed on a slow disk still starts at its block, not after the
+   close. Before, the start was the later of the open time read after the open and the row's start. */
+static int
+test_nfm_start_is_its_first_block(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_start");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    clock_at_ms(k_t0 + 10, 10);
+    nfm_block_heard_now(r.opts, r.state);
+    clock_at_ms(k_t0 + 10, 30);
+    nfm_block_heard_now(r.opts, r.state);
+    clock_at(k_t0 + 12);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 20, 20);
+    nfm_block_heard_now(r.opts, r.state);
+    clock_at(k_t0 + 22);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 30, 520);
+    nfm_block_heard_now(r.opts, r.state);
+    /* A new tone ends that call and closes its recording, slowly, before the next one opens. */
+    clock_at_ms(k_t0 + 31, 500);
+    r.state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    r.state->analog_rx.dcs_code = 023;
+    r.state->analog_rx.dcs_inverted = 1;
+    dsd_wav_test_set_io(NULL, slow_close);
+    nfm_block_heard_now(r.opts, r.state);
+    dsd_wav_test_set_io(NULL, NULL);
+    clock_at(k_t0 + 40);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("a block that began in the second before", nfm_start(0), (long long)k_t0 + 9);
+    rc |= expect_int("a block that began on a second", nfm_start(1), (long long)k_t0 + 20);
+    rc |= expect_int("the call before the slow close", nfm_start(2), (long long)k_t0 + 30);
+    rc |= expect_int("a slow close before the open does not move it", nfm_start(3), (long long)k_t0 + 31);
+    rig_close(&r);
+    return rc;
+}
+
+/* The start a recorder stamped itself (the NFM call, issue #668) is the one the journal and the rdio-scanner sidecar
+   both record, over the open time and the row's start; with none, both keep the later of the two. */
+static int
+test_stamped_start_is_the_journal_and_sidecar_start(void) {
+    static const struct {
+        time_t opened;
+        time_t started;
+        long long want;
+    } cases[] = {
+        {(time_t)(k_t0 + 52), (time_t)(k_t0 + 47), (long long)k_t0 + 47},
+        {(time_t)(k_t0 + 52), 0, (long long)k_t0 + 52},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_stamped_start");
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_system_id = 48;
+        clock_at(k_t0 + 50);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 1201U, 77U, DSD_CALL_BOUNDARY_BEGIN);
+        char temp[DSD_TEST_PATH_MAX];
+        SNDFILE* wav = open_wav_file(r.dir, temp, sizeof temp, 48000, 0);
+        rc |= expect_true("stamped start: file opened", wav != NULL);
+        if (wav) {
+            static short pcm[960];
+            for (int k = 0; k < 960; k++) {
+                pcm[k] = (short)(k * 16);
+            }
+            (void)sf_write_short(wav, pcm, 960);
+            clock_at(k_t0 + 55);
+            (void)close_and_publish_call_wav_ex(wav, r.opts, r.state, 0, temp, r.dir, cases[i].opened,
+                                                cases[i].started);
+        }
+        reload(&r);
+        rc |= expect_int("stamped start: the journal's", nfm_start(0), cases[i].want);
+        const char* pub = record(&g_j, "publish", 0);
+        char sidecar[DSD_TEST_PATH_MAX * 2];
+        char body[4096];
+        DSD_MEMSET(body, 0, sizeof body);
+        if (pub && dsd_test_path_join(sidecar, sizeof sidecar, r.dir, field_s(pub, "file")) == 0
+            && strlen(sidecar) > 4) {
+            const size_t stem = strlen(sidecar) - 4; /* the ".wav" the sidecar's ".json" replaces */
+            DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
+            FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+            if (f) {
+                (void)fread(body, 1, sizeof body - 1, f);
+                (void)fclose(f);
+            }
+        }
+        char want[64];
+        DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", cases[i].want);
+        rc |= expect_true("stamped start: the sidecar's is the journal's", strstr(body, want) != NULL);
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -1602,6 +1728,8 @@ main(void) {
     rc |= test_start_after_mid_call_enable();
     rc |= test_start_across_midnight();
     rc |= test_start_on_the_replay_clock();
+    rc |= test_nfm_start_is_its_first_block();
+    rc |= test_stamped_start_is_the_journal_and_sidecar_start();
     rc |= test_torn_tail_gets_a_newline();
     rc |= test_write_failure_latches_the_journal_off();
     rc |= test_no_journal_no_file();

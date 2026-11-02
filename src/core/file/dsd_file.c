@@ -1259,7 +1259,7 @@ wav_segment_length(SNDFILE* wav_file, int64_t* duration_ms, int* rate) {
 /* The published recording, in the journal (issue #708). */
 static void
 wav_journal_published(const char* id, const char* path, const char* dir, const Event_History_I* event_struct,
-                      time_t opened, int64_t duration_ms, int rate, const dsd_wav_owner* owner, int rdio_queued,
+                      time_t start, int64_t duration_ms, int rate, const dsd_wav_owner* owner, int rdio_queued,
                       int failed) {
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     char target[256];
@@ -1273,7 +1273,7 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     rec.id = id[0] ? id : NULL;
     rec.path = path;
     rec.dir = dir;
-    rec.start = dsd_rdio_recording_start(event_item, opened);
+    rec.start = start;
     rec.duration_ms = duration_ms;
     rec.rate = rate;
     rec.has_instance = event_struct != NULL;
@@ -1345,7 +1345,7 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
    it is simply not exported: no warning, and no failure line. A digital row without one still warns. */
 static int
 wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
-                      const char* path, time_t opened) {
+                      const char* path, time_t opened, time_t started) {
     int rdio_queued = 0;
     if (event_item != NULL && event_item->stream_blocked != 0U) {
         return 0;
@@ -1353,7 +1353,7 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
     if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG && event_item->target_id == 0U) {
         return 0;
     }
-    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, &rdio_queued) != 0) {
+    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, started, &rdio_queued) != 0) {
         LOG_WARN("Rdio export failed for %s\n", path);
     }
     return rdio_queued;
@@ -1361,7 +1361,7 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
 
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                      const Event_History_I* event_struct, time_t opened, int export_call, int analog,
+                      const Event_History_I* event_struct, time_t opened, time_t started, int export_call, int analog,
                       const dsd_wav_owner* owner) {
     /* Only a close with options is journaled: the NFM teardown's (no options, no row) writes nothing. */
     wav_close_journal journal;
@@ -1411,10 +1411,11 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     }
 
     const int rdio_queued = (export_call && opts && final_size > 44)
-                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened)
+                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started)
                                 : 0;
     if (journal.on) {
-        wav_journal_published(journal.id, new_filename, dir, event_struct, opened, journal.duration_ms, journal.rate,
+        wav_journal_published(journal.id, new_filename, dir, event_struct,
+                              dsd_rdio_recording_start(event_item, opened, started), journal.duration_ms, journal.rate,
                               owner, rdio_queued, journal.failed);
     }
 
@@ -1426,17 +1427,17 @@ SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                              const Event_History_I* event_struct, time_t opened, int export_call,
                              const dsd_wav_owner* owner) {
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call, 0, owner);
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_call, 0, owner);
 }
 
 SNDFILE*
 close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir) {
-    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 1, NULL);
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 0, 1, NULL);
 }
 
 SNDFILE*
-close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
-                           const char* wav_out_filename, const char* dir, time_t opened) {
+close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                              const char* wav_out_filename, const char* dir, time_t opened, time_t started) {
     /* The policy as it is at the close: an import or edit applied since the row's last render counts. */
     dsd_event_refresh_stream_verdict(opts, state, slot);
     const Event_History_I* event_struct =
@@ -1448,7 +1449,13 @@ close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* s
         owner.epoch = dsd_call_state_pending_row_epoch(state, slot);
         owner.kind = owner.epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE;
     }
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1, 0, &owner);
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started, 1, 0, &owner);
+}
+
+SNDFILE*
+close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                           const char* wav_out_filename, const char* dir, time_t opened) {
+    return close_and_publish_call_wav_ex(wav_file, opts, state, slot, wav_out_filename, dir, opened, 0);
 }
 
 SNDFILE*

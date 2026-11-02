@@ -1395,9 +1395,11 @@ suite runs under this compiler.
     write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
     runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
-    too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
-    reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
-    clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
+    too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
+    NFM call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
+    (recording switched on mid-call, a reacquired segment whose file opened at the previous segment's commit), else
+    `event_time`, else the decode clock. `wav_close_and_publish()` works it out once for the journal and hands the
+    exporter the same stamps. Every stamp is on the decode clock, so a replay's records carry the capture's times.
   - One NFM recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held call is one row
     and one recording, published once and linked once. Its `start` is the first burst's, and its `duration_ms`
     includes the silence written for the pause.
@@ -4269,7 +4271,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   into `dsd_state::analog_heard_f` only while `-P` records with `opts->analog_record_preroll_ms` above 0; on the level
   path, which runs no sink gate, the block itself; NULL otherwise), `count`, `sample_rate`, `eligible_from`,
   `qualified_carrier` and `wall_end_s` (`dsd_decode_now_realtime_s()` read before the block's `-6` raw WAV write and
-  sync, only while `-P` records; 0 otherwise). The engine reads only the samples, count, rate and input so far.
+  sync, only while `-P` records; 0 otherwise). The engine reads the samples, count, rate and input, `qualified_carrier`
+  (a call begins only on a RECEPTION block that has it, B1) and `wall_end_s` (the recording's start stamp).
   Tone eligibility inside a block (issue #668, B6): the tap tracks it per block. `dsd_analog_rx_block_begin()` (from
   `symbol_analog_block_begin()`) starts the block under the gate in force; every read of it then moves the eligible
   point by the verdict it published, positioned at the read's start (the verdict describes that read's samples), so
@@ -11811,7 +11814,19 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   descriptor with its input (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a
   RECEPTION block continues or begins the call, and a BREAK ends it. The state splits the logical call (`active`, `held`, the gap counters,
   `last_m`, `boundaries_seen`, the identity) from its recording segment (`analog_call_recording`: file, folder, open
-  stamp, `spans_pause`), which a stop or folder change closes while the call goes on.
+  stamp, `started`, `spans_pause`), which a stop or folder change closes while the call goes on. The extension exists
+  from the first block, call or not, since `boundaries_seen` is kept for every block.
+  - Begin (issue #668, B1): a RECEPTION block begins a call only when it carries `qualified_carrier` (a tap read past
+    the block's tone-eligible point found the carrier itself). A block that holds only the carrier's 200 ms hangover,
+    as when a short burst's tone verdict lands after the carrier went, begins nothing: no row, no file (main published
+    an all-zero WAV and an NFM row for it). Such a block still goes on with a call already running, held or not; a
+    new identity's end (D4) does not begin a call on one either.
+  - Recording start (issue #668): `analog_call_recording_start()` takes the opening block's `wall_end_s` less its span,
+    floored once to whole seconds (with 1 us of slack for the clock's double rounding), into `rec.started` and
+    `rec.opened`; no clock is read, so a slow disk or a recording closed first does not move it. The close passes it
+    to `close_and_publish_call_wav_ex()`, so the journal and the sidecar file the recording at its first sample, before
+    the row's start (the row starts at the block's end). A block with no wall time (only with `-P` off) keeps the old
+    open stamp, read after the open.
   - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
     It is a recording setting: it holds a call only while per-call recording is on (`opts->dmr_stereo_wav`, `-P`), and
     is off otherwise (`analog_call_max_gap48()`). With the hold off a HOLDABLE block ends the call, as every
@@ -11840,15 +11855,19 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
     `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input (stdin and TCP block in the
     read, so their call ends only when data returns). With the hold off a row ends one block earlier than "now" did.
-  - Boundaries (B6): a call compares the published `state->analog_rx.boundaries` with the epoch it began under. A move
-    ends the call at `last_m`; the block that carries it straddles the boundary, so it is not written either, and the
-    next RECEPTION block begins a new call. This catches a stream pause or reconnect inside a long PCM block, which no
-    straddle marks. The tick compares the epoch too: a reset with no block after it (a TCP reconnect that yields to a
-    queued command, then a stream with no whole block) leaves the boundaries current, so only the epoch shows it. With
-    no call running, a RECEPTION block whose epoch moved begins a call as on main, so a call may start with up to one
-    block of pre-boundary, squelched audio. Tests: `CORE_RECEIVE` (the hold at 48 kHz, 8192 Hz and 44100 Hz, tone
-    checks, identity, ends, tick order, live changes, the hold off without per-call recording, the default's payloads,
-    the write latch, teardown, B1, B6 on a block and on the tick), `CORE_WAV_JOURNAL` (one publish and link),
+  - Boundaries (B6; issue #668 B5/B7): `boundaries_seen` is the published `state->analog_rx.boundaries` at the last
+    block, call or not (the epoch in force when the extension is made, at the first block). A block that carries
+    another epoch crossed a hard boundary since: `analog_call_crossed_boundary()`, the block's first step, before the
+    live max gap's reconciliation (B5: that end left no call to compare the epoch with), ends any call at `last_m`,
+    drops the block (it straddles the boundary, its first part from before) and takes the new epoch, so the next
+    block begins afresh. This catches a stream pause or reconnect inside a long PCM block, which no straddle marks,
+    with no call running too (B7: main began a call with that block's pre-boundary audio). The tick compares the epoch
+    too: a reset with no block after it (a TCP reconnect that yields to a queued command, then a stream with no whole
+    block) leaves the boundaries current, so only the epoch shows it. The tick ends the call but leaves the epoch seen
+    as the last block's, so the first block after the reset is dropped as well. Tests: `CORE_RECEIVE` (the hold at
+    48 kHz, 8192 Hz and 44100 Hz, tone checks, identity, ends, tick order, live changes, the hold off without per-call
+    recording, the default's payloads, the write latch, teardown, B1, B6 on a block and on the tick, issue #668's B1,
+    B5 and B7), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its first block),
     `APP_CONTROL_RECORDING` (a stop while held ends the call, a folder change keeps it; no hold without per-call
     recording; the max gap command's states, refusals, and raising, lowering and turning it off while held),
     `APP_COMMAND_QUEUE` (the command waits while a decoder holds a carrier), `API_COMMANDS`/`API_COMMAND_PAYLOADS`,

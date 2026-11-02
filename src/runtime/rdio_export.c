@@ -693,7 +693,12 @@ typedef struct {
 } dsd_rdio_meta_fields;
 
 time_t
-dsd_rdio_recording_start(const Event_History* event, time_t opened) {
+dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t started) {
+    // A recorder that stamps its recording's first sample itself (the NFM call, issue #668) knows the start better than
+    // the row does: the row starts when its first block was accepted, a block's span after the audio began.
+    if (started > 0) {
+        return started;
+    }
     // The recording is filed by when it began: when its call did, or when the WAV was opened if that came later (per-
     // call WAV switched on mid-call). Both are decode-clock stamps. event_time is the row's last activity -- the call's
     // end by the time its WAV closes -- so it stands in only for a row with no start of its own, such as a --playfiles
@@ -710,7 +715,7 @@ dsd_rdio_recording_start(const Event_History* event, time_t opened) {
 }
 
 static void
-dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_rdio_meta_fields* out) {
+dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, time_t started, dsd_rdio_meta_fields* out) {
     if (!out) {
         return;
     }
@@ -725,7 +730,7 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_r
     if (!event) {
         return;
     }
-    out->start_time = dsd_rdio_recording_start(event, opened);
+    out->start_time = dsd_rdio_recording_start(event, opened, started);
     out->talkgroup = event->target_id;
     out->source = event->source_id;
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
@@ -831,7 +836,8 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
 
 static int
 dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened,
-                                   const char* wav_path, char* out_meta_path, size_t out_meta_path_size) {
+                                   time_t started, const char* wav_path, char* out_meta_path,
+                                   size_t out_meta_path_size) {
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -843,7 +849,7 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
 
     const Event_History* event = event_struct ? &event_struct->Event_History_Items[0] : NULL;
     dsd_rdio_meta_fields fields;
-    dsd_rdio_meta_fields_from_event(event, opened, &fields);
+    dsd_rdio_meta_fields_from_event(event, opened, started, &fields);
     if (fields.talkgroup == 0U) {
         LOG_WARN("Rdio export: skipped %s (missing talkgroup/target ID)\n", wav_path);
         return -1;
@@ -1123,7 +1129,7 @@ dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before) {
 
 int
 dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened) {
-    return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, NULL);
+    return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, 0, NULL);
 }
 
 #ifdef USE_CURL
@@ -1138,7 +1144,7 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
 
 int
 dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
-                        int* api_queued) {
+                        time_t started, int* api_queued) {
     if (api_queued) {
         *api_queued = 0;
     }
@@ -1156,7 +1162,8 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
     }
 
     char meta_path[DSD_RDIO_PATH_MAX];
-    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, wav_path, meta_path, sizeof(meta_path)) != 0) {
+    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, wav_path, meta_path, sizeof(meta_path))
+        != 0) {
         return -1;
     }
 

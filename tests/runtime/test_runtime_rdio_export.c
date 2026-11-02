@@ -1470,9 +1470,10 @@ test_sidecar_channel_label_fallback(void) {
 
 // Export one row's sidecar into a fresh directory and return the sidecar's body in @p body, or -1. The recording is an
 // 8 kHz WAV @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was
-// opened at decode time @p opened (0: unknown).
+// opened at decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
 static int
-export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened, char* body, size_t body_size) {
+export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened, time_t started, char* body,
+                    size_t body_size) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1494,7 +1495,8 @@ export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened,
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     int rc = 0;
-    if (dsd_rdio_export_call(&opts, hist, wav_path, opened) != 0 || read_file(json_path, body, body_size) != 0) {
+    if (dsd_rdio_export_call_ex(&opts, hist, wav_path, opened, started, NULL) != 0
+        || read_file(json_path, body, body_size) != 0) {
         DSD_FPRINTF(stderr, "export failed for frequency sidecar\n");
         rc = -1;
     }
@@ -1518,7 +1520,7 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
     DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", "Base channel");
     DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "Numeric talkgroup name");
     char body[4096];
-    int rc = export_sidecar_body(hist, 1, 0, body, sizeof body);
+    int rc = export_sidecar_body(hist, 1, 0, 0, body, sizeof body);
     if (rc == 0 && (!strstr(body, "\"talkgroup_tag\": \"Hospital West\"") || !strstr(body, "\"talkgroup\": 77"))) {
         DSD_FPRINTF(stderr, "service name must label the unchanged numeric talkgroup\n%s\n", body);
         rc = 1;
@@ -1555,7 +1557,7 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         hist.Event_History_Items[0].channel = cases[i].channel;
         hist.Event_History_Items[0].freq_hz = cases[i].freq_hz;
         char body[4096];
-        if (export_sidecar_body(&hist, 0, 0, body, sizeof body) != 0) {
+        if (export_sidecar_body(&hist, 0, 0, 0, body, sizeof body) != 0) {
             return 1;
         }
         if (!strstr(body, cases[i].want)) {
@@ -1571,7 +1573,9 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
 // and is only a fallback for a row with no start of its own, as a --playfiles row is, whose event_time comes from the
 // played file and is on that file's clock, so the open time does not move it. A row with neither takes the decode
 // clock. stop_time is always the start plus the recording, never a fallback stamp moved back by it: a played file's
-// stamp need not be an end.
+// stamp need not be an end. A recorder that stamps its recording's first sample (the NFM call, issue #668) passes that
+// start, which stands over the row's start and the open time: the row starts when its first block was accepted, a
+// block's span after the audio began. The journal (dsd_rdio_recording_start()) takes the same start.
 static int
 test_sidecar_start_time_sources(void) {
     static Event_History_I hist;
@@ -1582,17 +1586,25 @@ test_sidecar_start_time_sources(void) {
         time_t event_start_time;
         time_t event_time;
         time_t opened;
+        time_t started;
         time_t want_start;
     } cases[] = {
-        {"call start", (time_t)1700000810, (time_t)1700000830, 0, (time_t)1700000810},
-        {"recording opened before the call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000700,
+        {"call start", (time_t)1700000810, (time_t)1700000830, 0, 0, (time_t)1700000810},
+        {"recording opened before the call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000700, 0,
          (time_t)1700000810},
-        {"recording opened mid-call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822, (time_t)1700000822},
-        {"no start: last activity", 0, (time_t)1700000830, 0, (time_t)1700000830},
-        {"no start: open time does not move a played file's stamp", 0, (time_t)1600000000, (time_t)1700000822,
+        {"recording opened mid-call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822, 0,
+         (time_t)1700000822},
+        {"no start: last activity", 0, (time_t)1700000830, 0, 0, (time_t)1700000830},
+        {"no start: open time does not move a played file's stamp", 0, (time_t)1600000000, (time_t)1700000822, 0,
          (time_t)1600000000},
-        {"negative start: last activity", (time_t)-5, (time_t)1700000830, 0, (time_t)1700000830},
-        {"neither stamp: decode clock", 0, 0, 0, decode_now},
+        {"negative start: last activity", (time_t)-5, (time_t)1700000830, 0, 0, (time_t)1700000830},
+        {"neither stamp: decode clock", 0, 0, 0, 0, decode_now},
+        {"stamped first sample, a second before the row's start", (time_t)1700000810, (time_t)1700000830,
+         (time_t)1700000810, (time_t)1700000809, (time_t)1700000809},
+        {"stamped first sample, over a later open", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822,
+         (time_t)1700000815, (time_t)1700000815},
+        {"stamped first sample, with no row start", 0, (time_t)1600000000, 0, (time_t)1700000805, (time_t)1700000805},
+        {"a negative stamp is none", (time_t)1700000810, (time_t)1700000830, 0, (time_t)-1, (time_t)1700000810},
     };
 
     dsd_decode_clock_use_test((uint64_t)decode_now * UINT64_C(1000000000));
@@ -1603,12 +1615,19 @@ test_sidecar_start_time_sources(void) {
         hist.Event_History_Items[0].event_time = cases[i].event_time;
         hist.Event_History_Items[0].target_id = 1201;
         char body[4096];
-        if (export_sidecar_body(&hist, 2, cases[i].opened, body, sizeof body) != 0) {
+        if (export_sidecar_body(&hist, 2, cases[i].opened, cases[i].started, body, sizeof body) != 0) {
             rc = 1;
             break;
         }
         rc |= expect_sidecar_times(cases[i].label, body, (long long)cases[i].want_start,
                                    (long long)cases[i].want_start + 2LL);
+        const time_t journal_start =
+            dsd_rdio_recording_start(&hist.Event_History_Items[0], cases[i].opened, cases[i].started);
+        if (journal_start != cases[i].want_start) {
+            DSD_FPRINTF(stderr, "%s: the journal's start %lld, want %lld\n", cases[i].label, (long long)journal_start,
+                        (long long)cases[i].want_start);
+            rc = 1;
+        }
     }
     dsd_decode_clock_use_system();
     return rc;
@@ -2415,7 +2434,7 @@ test_api_upload_holds_queued_and_in_flight_files(void) {
         }
         count = i + 1;
         queued[i] = 0;
-        (void)dsd_rdio_export_call_ex(opts, hist, wav[i], 0, &queued[i]);
+        (void)dsd_rdio_export_call_ex(opts, hist, wav[i], 0, 0, &queued[i]);
         // The worker takes the first job before the rest are published: its connection waits in the stalled backlog.
         if (i == 0 && (!queued[0] || rdio_test_wait_for_connection(stalled, 5000U) <= 0)) {
             DSD_FPRINTF(stderr, "holds: the first upload never started\n");
