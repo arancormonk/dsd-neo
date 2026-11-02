@@ -24977,6 +24977,79 @@ test_scan_avoid_counts_past_65535(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Issue #672 (spec 3.4): Signal search refuses a put back of either kind with its own notice, changing nothing and never
+   asking the coordinator; an I/Q replay takes put back and clear, which reach neither the tuner nor a rigctl peer (the
+   peer here is a live one, so a retune would have gone to it). */
+static int
+test_scan_avoid_edits_under_search_and_replay(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_test_context(&opts, &state);
+    seed_avoid_rows(&state);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 2U, 1);
+    const dsd_app_scan_avoid_remove_payload lcn = avoid_identity(&opts, &state, 1);
+    uint64_t rev = state.lcn_avoid_rev;
+    g_signal_search_active = 1;
+    rc |= drain_avoid_remove(&opts, &state, &lcn, "search: LCN put back");
+    rc |= expect_contains("search: LCN put back notice", state.ui_msg, "Stop Signal search");
+    rc |= expect_int("search: LCN put back failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("search: LCN put back changes nothing", dsd_state_trunk_lcn_avoid_get(&state, 1U) == 1
+                                                                  && state.lcn_avoid_rev == rev
+                                                                  && state.lcn_avoid_total == 2U);
+
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_session = 4242U;
+    state.trunk_scan_avoided_count = 1U;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.unavoid = fake_unavoid;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_unavoid_calls = 0;
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_OK;
+    dsd_app_scan_avoid_remove_payload target;
+    DSD_MEMSET(&target, 0, sizeof target);
+    target.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    target.session = 4242U;
+    target.row = -1;
+    DSD_SNPRINTF(target.target_id, sizeof target.target_id, "%s", "county-p25");
+    rc |= drain_avoid_remove(&opts, &state, &target, "search: trunk-scan put back");
+    rc |= expect_contains("search: trunk-scan put back notice", state.ui_msg, "Stop Signal search");
+    rc |= expect_int("search: trunk-scan put back failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("search: trunk-scan put back never asks the coordinator",
+                      g_unavoid_calls == 0 && state.trunk_scan_avoided_count == 1U);
+    g_signal_search_active = 0;
+    dsd_trunk_scan_hooks_set(NULL);
+    opts.trunk_scan_enabled = 0;
+
+    /* An I/Q replay on a radio input with a live rigctl peer: put back and clear tune nothing anywhere. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    g_rigctl_fake_armed = 1;
+    g_rigctl_fake_known = 1;
+    g_rigctl_fake_calls = 0;
+    g_rigctl_fake_freq_armed = 1;
+    g_rigctl_fake_freq_refuse = 0;
+    g_rigctl_fake_freq = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= drain_avoid_remove(&opts, &state, &lcn, "replay: put back");
+    rc |= expect_str("replay: put back toast", state.ui_msg, "Put back 852.025000 MHz (1 avoided)");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID_CLEAR, "replay: clear");
+    rc |= expect_str("replay: clear toast", state.ui_msg, "Cleared 1 scan avoid");
+    rc |= expect_true("replay: put back and clear reach neither the tuner nor the peer",
+                      g_io_control_tune_calls == 0 && g_cc_tune_calls == 0 && g_rigctl_fake_calls == 0
+                          && g_rigctl_fake_freq == 0);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -25289,6 +25362,9 @@ main(void) {
     rc |= test_scan_avoid_remove_trunk_scan();
     rc |= test_scan_avoid_on_an_avoided_row();
     rc |= test_scan_avoid_counts_past_65535();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_scan_avoid_edits_under_search_and_replay();
+#endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_signal_search_refuses_channel_cycle_prev();
 #endif

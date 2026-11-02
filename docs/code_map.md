@@ -4025,7 +4025,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `off|running|paused`) read; the scan timing, scan row and gain views read the same running predicate directly.
   Test: `APP_SCAN_STATE_VIEW`.
   `include/dsd-neo/app_control/scan_avoid_view.h` and `src/app_control/scan_avoid_view.c` (issue #672) list the
-  session's avoids for every frontend and the API. `dsd_app_scan_avoid_summary_get()` (a few loads, no walk) gives
+  session's avoids for every frontend and the API. `dsd_app_scan_avoid_summary_get()` (constant cost, no walk) gives
   `kind` (`TRUNK_SCAN` while `--trunk-scan` is configured, else `LCN` while `-Y` runs or is paused or the channel map
   has rows, else `NONE`), `available` (`scan_avoids_complete`, and `trunk_scan_avoids_ok` for a trunk scan),
   `total` (exact `lcn_avoid_total` or the published list's count, only while available: `total_known`),

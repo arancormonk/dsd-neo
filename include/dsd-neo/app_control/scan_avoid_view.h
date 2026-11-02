@@ -13,7 +13,7 @@
  * and the control API ask: which store, how many entries, whether the copy is whole enough to act on, and which
  * entries, each with the identity DSD_APP_CMD_SCAN_AVOID_REMOVE takes and a label.
  *
- * The summary costs a few loads (no walk), so a frontend reads it every frame and rebuilds its list only when the
+ * The summary costs a constant amount (no walk of either store), so a frontend reads it every frame and rebuilds its list only when the
  * summary's key moves (dsd_app_scan_avoid_summary_same_key()). The list build and the raw collection walk the store
  * once and allocate; they run on the caller's thread, the raw collection being the half the API feed runs on the
  * decoder thread (no formatting there).
@@ -85,7 +85,8 @@ typedef struct {
 } dsd_app_scan_avoid_list;
 
 /**
- * @brief Fill @p out from decoder state or a frontend snapshot pair, at the cost of a few loads. Zeroes @p out first.
+ * @brief Fill @p out from decoder state or a frontend snapshot pair, at a constant cost (no walk of either store).
+ * Zeroes @p out first.
  *
  * @return 0, or -1 for NULL arguments.
  */

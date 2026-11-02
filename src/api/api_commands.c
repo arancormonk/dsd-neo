@@ -564,10 +564,10 @@ submit_scan_row_edit(const api_command_desc* d, const dsd_json_node* params, uin
 
 /* scan_avoid_remove (issue #672): one avoided entry by the identity the scan avoid view lists. A -Y row needs instance,
    list_rev, row and frequency_hz; a trunk-scan target needs session (1..UINT32_MAX, refused above rather than narrowed)
-   and target_id. */
+   and target_id. The kind is one of two names, so anything longer than the longer one is refused unread. */
 static int
 scan_avoid_remove_params(const dsd_json_node* params, dsd_app_scan_avoid_remove_payload* p) {
-    const char* kind = dsd_json_as_str_bounded(dsd_json_obj_get(params, "kind"), sizeof p->target_id);
+    const char* kind = dsd_json_as_str_bounded(dsd_json_obj_get(params, "kind"), sizeof "trunk_scan");
     if (kind == NULL) {
         return -1;
     }
