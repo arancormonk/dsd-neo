@@ -3584,6 +3584,39 @@ test_analog_replay_heard_again(void) {
     }
 }
 
+/* Issue #667 (B1): two receptions on one frequency and tone that start in the same second (500 ms from x.00, then one
+   from x.55) share their whole-second start. Replayed in a fresh ring, each is heard again one to one: both rows join
+   the running session, and each row holds both replays' recordings of its own reception. */
+void
+test_analog_replay_same_second(void) {
+    resetStorage();
+    FakeRecordings recordings;
+    CallHistoryModel model;
+    model.setRecordingProvider(&recordings);
+    const dsd_receive_identity ctcss = {1000, DSD_RECEIVE_CTCSS, 1, 0, 0};
+    QStringList first;
+    QStringList second;
+    for (QStringList* fragments : {&first, &second}) {
+        model.beginSession();
+        auto ring = std::make_unique<RingFixture>(); // each replay's fresh state
+        commit_analog(*ring, kCaptureStart + 200, kCaptureStart + 200, 154430000, DSD_ANALOG_MODE_NFM, ctcss);
+        fragments->append(newest_fragment(*ring, 0));
+        commit_analog(*ring, kCaptureStart + 200, kCaptureStart + 201, 154430000, DSD_ANALOG_MODE_NFM, ctcss);
+        fragments->append(newest_fragment(*ring, 0));
+        model.refresh(ring->state);
+    }
+    expect("same-second receptions heard again add no row", model.count() == 2);
+    expect("both same-second rows join the session that heard them again",
+           rows_in_session(model, model.session()) == 2);
+    const int earlier = row_recording(model, recordings, first.at(0));
+    const int later = row_recording(model, recordings, first.at(1));
+    expect("each same-second reception keeps a row of its own", earlier >= 0 && later >= 0 && earlier != later);
+    expect("each same-second row holds both replays' recordings of its own reception",
+           row_recording(model, recordings, second.at(0)) == earlier
+               && row_recording(model, recordings, second.at(1)) == later);
+    model.setRecordingProvider(nullptr);
+}
+
 /* Issue #667 (B1): rows an older build stored keep no fragments, so an update the running service's ring brings (the
    reception ran on) finds its row by matching it, exactly: same start, tone and frequency. It reaches that row only,
    which takes the fragment (its recording is the row's now) and keeps its session; the reception beside it, on the
@@ -4258,6 +4291,7 @@ main(int argc, char** argv) {
     test_leaving_the_screen_saves();
     test_destructor_marks_its_teardown_stage();
     test_analog_replay_heard_again();
+    test_analog_replay_same_second();
     test_analog_update_of_an_old_store_row();
     test_analog_roles_and_persistence();
     test_rows_have_stable_uids();

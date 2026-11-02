@@ -22,6 +22,7 @@
 #include <QLatin1String>
 #include <QLocale>
 #include <QPair>
+#include <QStringView>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -1306,6 +1307,55 @@ rows_same_reception(const CallHistoryModel::Row& existing, const CallHistoryMode
     return existing.when == row.when && existing.freqHz == row.freqHz && sameTone;
 }
 
+/** @brief The ring a call_history_fragment_key() names: the instance before its first ':'. */
+QStringView
+fragment_ring(const QString& fragment) {
+    const qsizetype colon = fragment.indexOf(QLatin1Char(':'));
+    return colon > 0 ? QStringView(fragment).left(colon) : QStringView();
+}
+
+/** @brief Whether @p existing already holds a fragment, other than @p row's own, of a ring @p row comes from. */
+bool
+row_holds_ring_of(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    for (const QString& own : row.fragments) {
+        const QStringView ring = fragment_ring(own);
+        if (ring.isEmpty()) {
+            continue;
+        }
+        for (const QString& held : existing.fragments) {
+            if (held != own && fragment_ring(held) == ring) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief The row of the first @p scanRows that analog row @p row is the reception of, read again, or -1.
+ *
+ * One to one: a row's start is a whole second, so two receptions on one frequency and tone can share it. A row that
+ * already took another reception of @p row's ring is that reception's, never this one's; among the rest, a row that
+ * also ends when @p row does (a replay pushes the same span) comes before one that does not (an update ran on).
+ */
+int
+same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryModel::Row& row, int scanRows) {
+    int first = -1;
+    for (int i = 0; i < rows.size() && i < scanRows; i++) {
+        const CallHistoryModel::Row& existing = rows.at(i);
+        if (!rows_same_reception(existing, row) || row_holds_ring_of(existing, row)) {
+            continue;
+        }
+        if (row_end_secs(existing) == row_end_secs(row)) {
+            return i;
+        }
+        if (first < 0) {
+            first = i;
+        }
+    }
+    return first;
+}
+
 CallHistoryProvenance
 provenance(qint64 when, qulonglong seq, int slot) {
     CallHistoryProvenance from;
@@ -1427,8 +1477,16 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows, bool sameReception) {
         // messages, never fragments of one.
         return -1;
     }
+    if (row.analog) {
+        // An analog row never merges (rows_mergeable()); it lands only on the reception it is, read again.
+        const int same = sameReception ? same_reception_row(m_rows, row, scanRows) : -1;
+        if (same >= 0) {
+            foldRow(m_rows[same], row);
+        }
+        return same;
+    }
     for (int i = 0; i < m_rows.size() && i < scanRows; i++) {
-        if (rows_mergeable(m_rows.at(i), row) || (sameReception && rows_same_reception(m_rows.at(i), row))) {
+        if (rows_mergeable(m_rows.at(i), row)) {
             foldRow(m_rows[i], row);
             return i;
         }

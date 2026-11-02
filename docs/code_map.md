@@ -9819,13 +9819,15 @@ Qt Quick frontend (`src/ui/qt`):
     still lands on its row: a row heard again (a replay in a fresh ring) and an update of a row an older build stored
     without fragments search the whole log with `rows_same_reception()`, an exact match of two analog rows on start,
     tone (`receiveKnown`, and kind and value when known) and frequency, and fold in as any match does (the fragment, so
-    its recordings, and the running session). A first sighting and load folding never use it. The row keeps its mode
-    (`Row::analogMode`, a `dsd_analog_mode` from `Event_History::analog_mode`; stored as `analogMode` only when NFM or
-    AM). A row an older build stored has none and reads unknown, never a mode guessed from its saved name, and keeps
-    that name; a stored analog row with no name, and a live one nothing else names, is named by its mode (`NFM`, `AM`,
-    `Analog` when unknown). An update of an old row's reception fills its unknown mode. Decided limit: a row an older
-    build stored (no fragments) no longer matches an update whose tone or frequency became known after the row was
-    saved; that update logs a new row or is dropped. Roles: `analog` (bool) and
+    its recordings, and the running session). The match is one to one (`same_reception_row()`), since a start is a
+    whole second and two receptions can share it: a row that already took another fragment of the same ring is
+    skipped, and a row that also ends in the same second comes first. A first sighting and load folding never use it.
+    The row keeps its mode (`Row::analogMode`, a `dsd_analog_mode` from `Event_History::analog_mode`; stored as
+    `analogMode` only when NFM or AM). A row an older build stored has none and reads unknown, never a mode guessed from
+    its saved name, and keeps that name; a stored analog row with no name, and a live one nothing else names, is named
+    by its mode (`NFM`, `AM`, `Analog` when unknown). An update of an old row's reception fills its unknown mode.
+    Decided limit: a row an older build stored (no fragments) no longer matches an update whose tone or frequency became
+    known after the row was saved; that update logs a new row or is dropped. Roles: `analog` (bool) and
     `analogMode` (`"NFM"`, `"AM"`, `""`), also in `recordFor()`. `receivedTone` is the confirmed CTCSS/DCS tone spelled
     by `dsd_ctcss_format_label()` / `dsd_dcs_format_label()` (`CTCSS 100.0 Hz`, `DCS D023N / D047I`), as the event row,
     the terminal and the API spell it. On screen an analog row's tone takes the access code's place on the History and
