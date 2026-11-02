@@ -584,7 +584,7 @@ test_group_csv(void) {
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
 
-    expect("group csv generated", dsd_rr_generate_group_csv(tgs, 8U, 1, &text, &len, &warnings) == 0);
+    expect("group csv generated", dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, tgs, 8U, 1, &text, &len, &warnings) == 0);
     expect_str("group csv golden", text, want);
     expect_size("group csv length", len, strlen(want));
     expect("duplicate warned", warned(&warnings, "duplicate talkgroup ID"));
@@ -608,7 +608,8 @@ test_group_csv(void) {
     dsd_rr_talkgroup partial[2];
     tg_set(&partial[0], 250U, "Partial", "", 1);
     tg_set(&partial[1], 260U, "Full", "", 2);
-    expect("partial csv generated", dsd_rr_generate_group_csv(partial, 2U, 0, &text, &len, &warnings) == 0);
+    expect("partial csv generated",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 2U, 0, &text, &len, &warnings) == 0);
     expect_str("partial enc kept clear", text,
                "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                "250,A,Partial\n"
@@ -616,8 +617,10 @@ test_group_csv(void) {
     free(text);
     dsd_rr_warning_list_free(&warnings);
 
-    expect("group csv rejects empty input", dsd_rr_generate_group_csv(partial, 0U, 0, &text, &len, NULL) != 0);
-    expect("group csv rejects NULL out", dsd_rr_generate_group_csv(partial, 2U, 0, NULL, &len, NULL) != 0);
+    expect("group csv rejects empty input",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 0U, 0, &text, &len, NULL) != 0);
+    expect("group csv rejects NULL out",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, partial, 2U, 0, NULL, &len, NULL) != 0);
 }
 
 /**
@@ -649,7 +652,7 @@ test_group_csv_skips_unusable_ids(void) {
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
     expect("unusable-id csv generated",
-           dsd_rr_generate_group_csv(list.items, list.count, 1, &text, &len, &warnings) == 0);
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, list.count, 1, &text, &len, &warnings) == 0);
     expect_str("only the real talkgroup is written", text,
                "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                "13,A,Real 13\n");
@@ -665,7 +668,7 @@ test_group_csv_skips_unusable_ids(void) {
     len = 0;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
     expect("all-unusable generation succeeds",
-           dsd_rr_generate_group_csv(list.items, 3U, 1, &text, &len, &warnings) == 0);
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, 3U, 1, &text, &len, &warnings) == 0);
     expect("all-unusable writes no file", text == NULL && len == 0U);
     expect("all-unusable keeps the skip warning",
            warned(&warnings, "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
@@ -673,6 +676,75 @@ test_group_csv_skips_unusable_ids(void) {
     free(text);
     dsd_rr_warning_list_free(&warnings);
     dsd_rr_talkgroup_list_free(&list);
+}
+
+/**
+ * @brief A protocol's ID ceiling drops the IDs it cannot carry (new feature).
+ *
+ * A TETRA group is a 24-bit GSSI, so 16777215 (the all-ones broadcast group)
+ * is the last one written and 16777216 is skipped. 0 stays: no rule makes it
+ * unusable for an import. Skipping happens before duplicate selection, so two
+ * out-of-range rows count as two skipped, never as one plus a duplicate.
+ */
+static void
+test_group_csv_protocol_id_ceiling(void) {
+    dsd_rr_talkgroup tgs[6];
+    tg_set(&tgs[0], 16777216U, "Over A", "", 0);
+    tg_set(&tgs[1], 16777215U, "All Call", "", 0);
+    tg_set(&tgs[2], 0U, "Zero", "", 0);
+    tg_set(&tgs[3], 16777216U, "Over B", "", 0);
+    tg_set(&tgs[4], 4294967295U, "Over C", "", 0);
+    tg_set(&tgs[5], 1017000U, "No ID", "", 0);
+    tgs[5].tg_dec_valid = 0;
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tetra ceiling csv generated",
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_TETRA, tgs, 6U, 1, &text, &len, &warnings) == 0);
+    expect_str("tetra keeps 0 and the broadcast group", text,
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
+               "0,A,Zero\n"
+               "16777215,A,All Call\n");
+    expect("tetra over-range warning",
+           warned(&warnings, "3 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    expect("tetra no-id warning",
+           warned(&warnings, "1 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    expect("skipped rows are not duplicates", !warned(&warnings, "duplicate"));
+    expect("tetra written count", warned(&warnings, "2 talkgroup(s) written."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* The same rows for P25 have no ceiling: only the bad ID goes, and the two
+     * 16777216 rows meet in the duplicate pass. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("p25 csv generated", dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, tgs, 6U, 1, &text, &len, &warnings) == 0);
+    expect("p25 keeps 16777216", text != NULL && strstr(text, "\n16777216,A,Over A\n") != NULL);
+    expect("p25 keeps UINT32_MAX", text != NULL && strstr(text, "\n4294967295,A,Over C\n") != NULL);
+    expect("p25 has no ceiling warning", !warned(&warnings, "larger than"));
+    expect("p25 reports the duplicate", warned(&warnings, "1 duplicate talkgroup ID(s) were dropped"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Every row out of range: no file, and both counts still say why. */
+    text = NULL;
+    len = 0;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    dsd_rr_talkgroup none[2];
+    tg_set(&none[0], 16777216U, "Over", "", 0);
+    tg_set(&none[1], 20000000U, "Way over", "", 2);
+    expect("all-over generation succeeds",
+           dsd_rr_generate_group_csv_with_policy(DSD_RR_PROTO_TETRA, none, 2U, DSD_RR_TG_EXCLUDE_FULL, &text, &len,
+                                                 &warnings)
+               == 0);
+    expect("all-over writes no file", text == NULL && len == 0U);
+    expect("all-over keeps the warning",
+           warned(&warnings, "2 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
 }
 
 /**
@@ -697,7 +769,7 @@ test_group_csv_fixture(void) {
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
     expect("fixture group csv generated",
-           dsd_rr_generate_group_csv(list.items, list.count, 1, &text, &len, &warnings) == 0);
+           dsd_rr_generate_group_csv(DSD_RR_PROTO_P25, list.items, list.count, 1, &text, &len, &warnings) == 0);
 
     if (text != NULL) {
         /* The alpha tag "CR MERCY ER O-slash" is the fixture's only non-ASCII
@@ -1672,10 +1744,10 @@ test_group_listening_policy(void) {
     for (int policy = DSD_RR_TG_KEEP_ENABLED; policy <= DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL; ++policy) {
         char* text = NULL;
         size_t length = 0;
-        expect(
-            "explicit policy generates groups",
-            dsd_rr_generate_group_csv_with_policy(groups, 3, (dsd_rr_encrypted_tg_policy)policy, &text, &length, NULL)
-                == 0);
+        expect("explicit policy generates groups",
+               dsd_rr_generate_group_csv_with_policy(DSD_RR_PROTO_P25, groups, 3, (dsd_rr_encrypted_tg_policy)policy,
+                                                     &text, &length, NULL)
+                   == 0);
         if (text != NULL) {
             expect("clear group always remains enabled", strstr(text, "100,A,") != NULL);
             expect("partly encrypted policy is explicit",
@@ -1696,6 +1768,7 @@ main(void) {
     test_group_listening_policy();
     test_group_csv();
     test_group_csv_skips_unusable_ids();
+    test_group_csv_protocol_id_ceiling();
     test_group_csv_fixture();
     test_chan_p25_ranking();
     test_chan_p25_drops_frequencies_past_the_trunk_ceiling();

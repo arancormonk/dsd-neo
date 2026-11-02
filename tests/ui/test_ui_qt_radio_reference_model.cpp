@@ -203,6 +203,7 @@ suffix_for_sid(int sid) {
         case 8697: return QStringLiteral("dmr_tier3");
         case 12918: return QStringLiteral("nxdn");
         case 220: return QStringLiteral("edacs");
+        case 10880: return QStringLiteral("tetra");
         default: return QStringLiteral("dmr_conv");
     }
 }
@@ -1025,6 +1026,48 @@ test_refresh_keeps_a_group_list_when_no_id_is_usable(void) {
 }
 
 /**
+ * @brief A TETRA system's group-only refresh succeeds (new feature).
+ *
+ * TETRA has no channel map, so its only file is the talkgroup list, and the
+ * refresh regenerates it through the TETRA-aware writer.
+ */
+void
+test_refresh_of_a_tetra_group_list(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    Harness h;
+    h.model.loadSystem(10880);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
+    expect("tetra: a plan built", plan.value(QStringLiteral("ok")).toBool());
+    expect("tetra: no channel map", plan.value(QStringLiteral("chanCsvText")).toString().isEmpty());
+    expect("tetra: a group list",
+           plan.value(QStringLiteral("groupCsvText")).toString().contains(QStringLiteral("\n1017000,A,Tow 1017000")));
+    expect("tetra: import ok",
+           h.model.performImport(plan, QStringLiteral("Kordia KorKor"), -1).value(QStringLiteral("ok")).toBool());
+    expect_int("tetra: one row, the group list", h.library.rowCount(), 1);
+    const int groupRow = row_of_type(h.library, QStringLiteral("group"));
+    expect("tetra: the row is a talkgroup list", groupRow >= 0);
+    if (groupRow < 0) {
+        return;
+    }
+    const QString path = h.library.get(groupRow).value(QStringLiteral("path")).toString();
+
+    QVariantMap finished;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::refreshFinished, &h.model,
+                     [&finished](int, const QVariantMap& result) { finished = result; });
+    h.fake.replaceFrom = QByteArrayLiteral("Tow 1017000");
+    h.fake.replaceTo = QByteArrayLiteral("Tow Renamed");
+    expect("tetra: the refresh starts", h.model.refreshRow(groupRow));
+    pump(h.model);
+
+    expect("tetra: the refresh succeeded", finished.value(QStringLiteral("ok")).toBool());
+    const QByteArray refreshed = read_stored(path);
+    expect("tetra: the refreshed list follows the database", refreshed.contains("\n1017000,A,Tow Renamed"));
+    expect("tetra: the old name is gone", !refreshed.contains("Tow 1017000"));
+}
+
+/**
  * @brief A trunked site with no marked control channel is still importable.
  *
  * Capacity Plus has no fixed control channel and RadioReference leaves `use` nil
@@ -1331,6 +1374,7 @@ main(int argc, char** argv) {
     test_site_numbers_are_ambiguous();
     test_refresh_uses_the_recorded_tower();
     test_refresh_keeps_a_group_list_when_no_id_is_usable();
+    test_refresh_of_a_tetra_group_list();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_results_and_loaded_system_stay_exclusive();

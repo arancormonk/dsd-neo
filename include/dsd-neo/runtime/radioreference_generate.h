@@ -238,11 +238,14 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
  * fields. No space follows a comma, because the importer does not trim the name
  * column. Category shortening is not included in talkgroup-name warnings.
  *
- * A talkgroup whose tg_dec_valid is 0 has no ID to write: it is skipped before
- * duplicate selection and counted in its own warning. When every talkgroup is
+ * A talkgroup whose tg_dec_valid is 0 has no ID to write, and one above
+ * dsd_rr_protocol_id_max() for @p protocol is an ID that protocol cannot carry
+ * (a TETRA group is 24 bits); both are skipped before duplicate selection and
+ * each kind is counted in its own warning. When every talkgroup is
  * skipped this returns 0 with `*out == NULL` and `*out_len == 0` - "no group
  * file", with the warnings saying why - and the caller must not write one.
  *
+ * @param protocol        Protocol the IDs are written for.
  * @param talkgroups      Talkgroups to emit.
  * @param count           Number of talkgroups.
  * @param partial_enc_as_de Treat enc == 1 (partially encrypted) as blocked.
@@ -260,12 +263,12 @@ typedef enum {
 
 /** Explicit whole-talkgroup policy. KEEP_ENABLED delegates individual calls to
  * the canonical listening/key-availability policy; exclusions emit DE rows. */
-int dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+int dsd_rr_generate_group_csv_with_policy(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
                                           dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
                                           dsd_rr_warning_list* warnings);
 
-int dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
-                              size_t* out_len, dsd_rr_warning_list* warnings);
+int dsd_rr_generate_group_csv(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
+                              int partial_enc_as_de, char** out, size_t* out_len, dsd_rr_warning_list* warnings);
 
 /**
  * @brief Generate a channel-map CSV.

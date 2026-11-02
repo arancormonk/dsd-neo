@@ -104,6 +104,17 @@ static const char k_unusable_tgs_body[] =
     "<item><tgAlpha>Absent</tgAlpha></item>"
     "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
+/* TETRA groups straddling the 24-bit ceiling: the broadcast group 16777215 is
+ * the last one a TETRA group list can carry. */
+static const char k_tetra_ceiling_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>16777216</tgDec><tgAlpha>Too big</tgAlpha></item>"
+    "<item><tgDec>16777215</tgDec><tgAlpha>All Call</tgAlpha></item>"
+    "<item><tgDec>1017000</tgDec><tgAlpha>Tow 1017000</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
 /** @return The first index at or after @p from whose call was @p method, or -1. */
 static int
 call_index_of(const char* method, int from) {
@@ -263,6 +274,7 @@ suffix_for_sid(int sid) {
         case 8697: return "dmr_tier3";
         case 12918: return "nxdn";
         case 220: return "edacs";
+        case 10880: return "tetra";
         default: return "dmr_conv";
     }
 }
@@ -1260,6 +1272,41 @@ test_plan_keeps_group_warnings_without_text(void) {
     expect("no-id: the warning survives a rebuild",
            warnings_contain(&p->warnings,
                             "3 talkgroup(s) were skipped because RadioReference lists no usable ID for them."));
+    wiz_case_close(&c);
+}
+
+/*
+ * The preview's cached group half is written for the loaded system's protocol:
+ * a TETRA group list drops the ID past 24 bits and says so (new feature).
+ */
+static void
+test_plan_applies_the_protocol_id_ceiling(void) {
+    static wiz_case c;
+    if (!wiz_case_open(&c)) {
+        return;
+    }
+    c.fake.talkgroups_body = k_tetra_ceiling_tgs_body;
+    expect("ceiling: ladder reaches the search chooser", drive_to_search_mode(&c));
+    rr_wizard_core_on_chooser_done(c.core, 2); /* Enter a system ID */
+    rr_wizard_core_on_prompt_done(c.core, "10880");
+    expect("ceiling: reached the system stage", pump_until_step(c.core, RR_STEP_SYSTEM, 5000U));
+
+    const dsd_rr_import_plan* p = rr_wizard_core_plan(c.core);
+    expect("ceiling: the plan is published", p != NULL);
+    if (p == NULL) {
+        wiz_case_close(&c);
+        return;
+    }
+    expect("ceiling: TETRA system", p->protocol == DSD_RR_PROTO_TETRA);
+    expect("ceiling: group file present", p->group_csv_text != NULL);
+    expect("ceiling: the broadcast group is kept",
+           p->group_csv_text != NULL && strstr(p->group_csv_text, "\n16777215,A,All Call\n") != NULL);
+    expect("ceiling: the 25-bit ID is dropped",
+           p->group_csv_text != NULL && strstr(p->group_csv_text, "16777216") == NULL);
+    expect("ceiling: the preview says why",
+           warnings_contain(&p->warnings,
+                            "1 talkgroup(s) were skipped because their IDs are larger than TETRA allows (16777215)."));
+    expect("ceiling: the written count", warnings_contain(&p->warnings, "2 talkgroup(s) written."));
     wiz_case_close(&c);
 }
 
@@ -3012,6 +3059,7 @@ main(void) {
     test_system_load_call_sequence();
     test_trunked_plan_and_options();
     test_plan_keeps_group_warnings_without_text();
+    test_plan_applies_the_protocol_id_ceiling();
     test_conventional_plan();
     test_conventional_selection_order();
     test_restart_retires_the_loaded_system();

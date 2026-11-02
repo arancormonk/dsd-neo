@@ -519,8 +519,9 @@ rr_plan_generate_files(dsd_rr_import_plan* plan, const dsd_rr_site* chosen_sites
     if (talkgroups != NULL && talkgroup_count > 0U) {
         /* A group-generator failure is not fatal: the channel map and the tune
          * frequency are still worth having. */
-        if (dsd_rr_generate_group_csv_with_policy(talkgroups, talkgroup_count, plan->encrypted_tg_policy,
-                                                  &plan->group_csv_text, &plan->group_csv_len, &plan->warnings)
+        if (dsd_rr_generate_group_csv_with_policy(plan->protocol, talkgroups, talkgroup_count,
+                                                  plan->encrypted_tg_policy, &plan->group_csv_text,
+                                                  &plan->group_csv_len, &plan->warnings)
             != 0) {
             plan->group_csv_text = NULL;
             plan->group_csv_len = 0;

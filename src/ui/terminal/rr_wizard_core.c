@@ -1715,9 +1715,9 @@ rr_core_apply_session_gate(RrWizardCore* w) {
 /**
  * @brief Regenerate the group CSV only when the answer that shapes it changed.
  *
- * dsd_rr_generate_group_csv() takes no sites, so only partial_enc_as_de can
- * change its bytes; without this cache every Space press would re-sort and
- * re-format the whole talkgroup list.
+ * dsd_rr_generate_group_csv() takes no sites and the protocol is fixed for the
+ * loaded system, so only partial_enc_as_de can change its bytes; without this
+ * cache every Space press would re-sort and re-format the whole talkgroup list.
  */
 static void
 rr_group_cache_sync(RrWizardCore* w) {
@@ -1729,8 +1729,9 @@ rr_group_cache_sync(RrWizardCore* w) {
     w->group_len = 0;
     dsd_rr_warning_list_free(&w->group_warnings);
     if (w->talkgroups.count > 0U) {
-        (void)dsd_rr_generate_group_csv(w->talkgroups.items, w->talkgroups.count, w->options.partial_enc_as_de,
-                                        &w->group_text, &w->group_len, &w->group_warnings);
+        (void)dsd_rr_generate_group_csv(w->info.protocol, w->talkgroups.items, w->talkgroups.count,
+                                        w->options.partial_enc_as_de, &w->group_text, &w->group_len,
+                                        &w->group_warnings);
     }
     w->group_cache_partial = w->options.partial_enc_as_de;
     w->group_cache_valid = 1;

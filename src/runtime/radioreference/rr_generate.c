@@ -1430,6 +1430,7 @@ rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* 
 /** What a group-CSV pass did, so the warnings can be worded once at the end. */
 typedef struct {
     size_t no_id;
+    size_t over_max;
     size_t duplicates;
     size_t shortened;
     size_t emitted;
@@ -1472,12 +1473,20 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted
 /**
  * @brief Emit the group-CSV preview warnings.
  *
+ * @param protocol Protocol the IDs were checked against.
  * @param warnings Warning list, or NULL.
  * @param counts   Tallies from the emit pass.
  */
 static void
-rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
+rr_group_warn(dsd_rr_protocol protocol, dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
     char msg[DSD_RR_WARNING_TEXT_MAX];
+    if (counts->over_max > 0U) {
+        const char* name = dsd_rr_protocol_short_name(protocol);
+        (void)DSD_SNPRINTF(
+            msg, sizeof(msg), "%zu talkgroup(s) were skipped because their IDs are larger than %s allows (%lu).",
+            counts->over_max, (name != NULL) ? name : "this system", (unsigned long)dsd_rr_protocol_id_max(protocol));
+        rr_warn(warnings, msg);
+    }
     if (counts->no_id > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg),
                            "%zu talkgroup(s) were skipped because RadioReference lists no usable ID for them.",
@@ -1503,9 +1512,11 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
 /**
  * @brief Collect the sort keys of the talkgroups that can be written.
  *
- * Runs before duplicate selection, so a row with no usable ID can never be the
- * "first" of a duplicate pair and push a real one out.
+ * Runs before duplicate selection, so a row with no usable ID - or one the
+ * protocol cannot carry - can never be the "first" of a duplicate pair and push
+ * a real one out. 0 is not excluded: no protocol rule makes it unusable here.
  *
+ * @param id_max     Largest ID the protocol carries, or 0 for no ceiling.
  * @param talkgroups Talkgroups.
  * @param count      Number of talkgroups.
  * @param keys       Receives the keys, sized for @p count.
@@ -1513,11 +1524,16 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
  * @return The number of keys written.
  */
 static size_t
-rr_group_keys(const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys, rr_group_counts* counts) {
+rr_group_keys(uint32_t id_max, const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys,
+              rr_group_counts* counts) {
     size_t kept = 0;
     for (size_t i = 0; i < count; i++) {
         if (!talkgroups[i].tg_dec_valid) {
             counts->no_id++;
+            continue;
+        }
+        if (id_max != 0U && talkgroups[i].tg_dec > id_max) {
+            counts->over_max++;
             continue;
         }
         keys[kept].dec = talkgroups[i].tg_dec;
@@ -1528,15 +1544,15 @@ rr_group_keys(const dsd_rr_talkgroup* talkgroups, size_t count, rr_tg_key* keys,
 }
 
 int
-dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
-                          size_t* out_len, dsd_rr_warning_list* warnings) {
+dsd_rr_generate_group_csv(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
+                          int partial_enc_as_de, char** out, size_t* out_len, dsd_rr_warning_list* warnings) {
     return dsd_rr_generate_group_csv_with_policy(
-        talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL, out,
-        out_len, warnings);
+        protocol, talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL,
+        out, out_len, warnings);
 }
 
 int
-dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+dsd_rr_generate_group_csv_with_policy(dsd_rr_protocol protocol, const dsd_rr_talkgroup* talkgroups, size_t count,
                                       dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
                                       dsd_rr_warning_list* warnings) {
     if (out == NULL || out_len == NULL) {
@@ -1553,12 +1569,12 @@ dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t
     if (keys == NULL) {
         return -1;
     }
-    rr_group_counts counts = {0U, 0U, 0U, 0U};
-    const size_t kept = rr_group_keys(talkgroups, count, keys, &counts);
+    rr_group_counts counts = {0U, 0U, 0U, 0U, 0U};
+    const size_t kept = rr_group_keys(dsd_rr_protocol_id_max(protocol), talkgroups, count, keys, &counts);
     if (kept == 0U) {
         /* Nothing writable: no file, but the skip counts still say why. */
         free(keys);
-        rr_group_warn(warnings, &counts);
+        rr_group_warn(protocol, warnings, &counts);
         return 0;
     }
     qsort(keys, kept, sizeof(*keys), rr_tg_key_cmp);
@@ -1579,7 +1595,7 @@ dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t
         rr_text_free(&text);
         return -1;
     }
-    rr_group_warn(warnings, &counts);
+    rr_group_warn(protocol, warnings, &counts);
 
     *out = text.data;
     *out_len = text.len;

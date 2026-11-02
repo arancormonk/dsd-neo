@@ -1163,7 +1163,7 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, int encrypt
     char* groupText = nullptr;
     size_t groupLen = 0;
     if (m_talkgroupData.count > 0
-        && dsd_rr_generate_group_csv_with_policy(m_talkgroupData.items, m_talkgroupData.count,
+        && dsd_rr_generate_group_csv_with_policy(m_protocol, m_talkgroupData.items, m_talkgroupData.count,
                                                  static_cast<dsd_rr_encrypted_tg_policy>(encryptionPolicy), &groupText,
                                                  &groupLen, &generated)
                == 0
