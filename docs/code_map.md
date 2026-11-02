@@ -2992,22 +2992,25 @@ its late failure posts the text the import composed (the tune among what failed,
 landing (the import's toast with the tune landed) and its drop (superseded, or the stream stopped) replace the import's
 own toast only while it is up, never a newer message or a cleared line. An owner's own tune (`dsd_engine_tune_rtl()`,
 `no_carrier_tune_rtl_if_needed()`: a trunk hunt, a grant, a scan step, after an import that turned it on) marks itself
-first (`dsd_engine_manual_tune_owner_takes_over()`), and its drop says nothing, unless the import's tune had already
-landed. The cached centre follows a tune that fails inside its wait the same way: `io_control_set_freq_tagged()` (and
-`dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a target an earlier timeout cached,
-which the failed request may have coalesced over, was never reached. Every other tune of the receiver that reached the
-controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual tune, an owner tune
-(`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its own record), the
-direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the RadioReference apply.
-A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the queued request under
-its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A dropped record is
-reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so its
-owner settles what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver, and
-the older drop goes unreported. The record is process-wide, as the controller and its callback are. Tests:
-`ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
-coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an
-RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes), `IO_RIGCTL_CONTROL`,
-`ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+first (`dsd_engine_manual_tune_owner_takes_over()`, atomic, since the P25 watchdog's thread tunes too), and its drop
+says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC, Candidate cycle and a
+block's return to the control channel (`request_manual_tune()` with a P25 symbol rate) tune through the same hook, so
+they count as owner tunes as well: an import's tune they drop is not announced (accepted limit; their own toasts say
+where the receiver went). The cached centre follows a tune that fails inside its wait the same way:
+`io_control_set_freq_tagged()` (and `dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a
+target an earlier timeout cached, which the failed request may have coalesced over, was never reached. Every other tune
+of the receiver that reached the controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual
+tune, an owner tune (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its
+own record), the direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the
+RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the
+queued request under its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A
+dropped record is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in
+`dsd_engine_manual_tune_last_settled()`), so its owner settles what it was waiting on (an untyped resume, below); a
+newer tune noted in its place owns the receiver, and the older drop goes unreported. The record is process-wide, as the
+controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late
+failure, late success, a newer entry, coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report,
+what ends a synced reception, and an RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes),
+`IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
 engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the

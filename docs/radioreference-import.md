@@ -284,10 +284,11 @@ Limits worth knowing:
   still waiting to land keeps the receiver. A tune that is still on its way says so at the end of the import's
   message (`...; tuning to 851.012500 MHz`), and when it ends the message changes: `...; tuned to 851.012500
   MHz`, the failure (with what else the import applied), or `Interrupted: RR import -> tune to 851.012500 MHz; a
-  newer tune took over` (or `; the radio input stopped`). A landing or an interruption only replaces the
-  import's own message while it is still shown, never a newer one. When trunking or the scanner takes the
-  receiver on from there (a control-channel hunt, a grant, a scan step), nothing more is said. A session with no
-  tuner (a WAV file, UDP audio) says nothing about a tune.
+  newer tune took over` (or `; the radio input stopped`). A failure is always shown; a landing or an
+  interruption only replaces the import's own message while it is still shown, never a newer one. When trunking
+  or the scanner takes the receiver on from there (a control-channel hunt, a grant, a scan step, or the P25
+  Return-to-CC and Candidate cycle actions), nothing more is said. A session with no tuner (a WAV file, UDP
+  audio) says nothing about a tune.
 - An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
   frequency.
 - `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner

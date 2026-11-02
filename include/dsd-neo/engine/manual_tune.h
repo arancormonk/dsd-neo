@@ -83,7 +83,8 @@ void dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32
 /**
  * @brief Say that the tune about to supersede the noted one is its owner's continuation: a trunking state machine's or
  * a scan's own tune, after the RadioReference import that turned it on. The import's drop is then not announced (it
- * would read as a failed import). Called right before dsd_engine_manual_tune_supersede(); nothing for another kind.
+ * would read as a failed import). Called right before dsd_engine_manual_tune_supersede(), from any thread that tunes
+ * (the P25 watchdog's included); it matters only to an RR import's record, and the next note clears it.
  */
 void dsd_engine_manual_tune_owner_takes_over(void);
 

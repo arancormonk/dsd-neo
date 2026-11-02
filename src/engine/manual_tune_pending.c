@@ -60,11 +60,12 @@ static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
 /* A RadioReference import's tune (dsd_engine_manual_tune_note_rr_import(), issue #803): the toast its late failure
    posts, the one its landing posts, and the import's own toast, the only one its landing or drop replaces. Kept for
    the import noted last; a record of another kind never reads them. g_rr_owner_took_over says the tune that dropped
-   the record was its owner's continuation (dsd_engine_manual_tune_owner_takes_over()), which goes unannounced. */
+   the record was its owner's continuation (dsd_engine_manual_tune_owner_takes_over()), which goes unannounced: atomic,
+   since an owner tune can run off the decoder thread (the P25 watchdog's) while a note on the decoder thread resets it. */
 static char g_rr_failure_text[sizeof(((dsd_state*)0)->ui_msg)];
 static char g_rr_landed_text[sizeof(((dsd_state*)0)->ui_msg)];
 static char g_rr_own_toast[sizeof(((dsd_state*)0)->ui_msg)];
-static int g_rr_owner_took_over;
+static atomic_int g_rr_owner_took_over = 0;
 
 /* How long a RadioReference import's tune outcome stays up: its failure as long as the import's partial apply, its
    landing as long as a tune's success. A drop stays as a tune's failure does (DSD_MANUAL_TUNE_FAILED_TOAST_S). */
@@ -149,7 +150,7 @@ dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind,
     g_record.scan_session = scan_session;
     g_record.map_seq = map_seq;
     g_record.session_generation = manual_tune_session_generation();
-    g_rr_owner_took_over = 0;
+    atomic_store(&g_rr_owner_took_over, 0);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
 }
 
@@ -170,8 +171,11 @@ dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32_t re
 
 void
 dsd_engine_manual_tune_owner_takes_over(void) {
-    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT) {
-        g_rr_owner_took_over = 1;
+    /* Only the atomics: the record's other fields are the decoder thread's. The mark matters only to an RR import's
+       record, which the decoder reads it for, and the next note resets it, so a mark against another kind stays
+       inert. */
+    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED) {
+        atomic_store(&g_rr_owner_took_over, 1);
     }
 }
 
@@ -217,7 +221,7 @@ manual_tune_rr_drop_outcome(void) {
     if (manual_tune_completion_for(g_record.id, &packed) && (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
         return MANUAL_TUNE_RR_LANDED;
     }
-    return g_rr_owner_took_over ? MANUAL_TUNE_RR_QUIET : MANUAL_TUNE_RR_SUPERSEDED;
+    return atomic_load(&g_rr_owner_took_over) ? MANUAL_TUNE_RR_QUIET : MANUAL_TUNE_RR_SUPERSEDED;
 }
 
 /* The record settled as @p outcome: a RadioReference import's tune says how (issue #803). */
