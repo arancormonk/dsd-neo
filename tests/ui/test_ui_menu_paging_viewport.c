@@ -157,6 +157,32 @@ void
 rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
 }
 
+/* The Scan lists modal (issue #697): never open here. */
+int
+scan_list_modal_active(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+int
+scan_list_modal_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    return 0;
+}
+
+void
+scan_list_modal_render(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+scan_list_modal_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
 int
 ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     (void)ctx;

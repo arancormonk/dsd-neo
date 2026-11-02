@@ -57,6 +57,7 @@
 #include "menu_prompts.h"
 #include "rr_panel.h"
 #include "rr_wizard_core.h"
+#include "scan_list_modal.h"
 #include "test_env.h"
 #include "test_support.h"
 
@@ -288,6 +289,31 @@ ui_status_clear_if_expired(time_t now) {
 
 void
 dsd_app_request_redraw(void) {}
+
+/* ---- The Scan lists modal (issue #697), which menu_core.c drives: never open here ---- */
+
+int
+scan_list_modal_active(void) {
+    return 0;
+}
+
+int
+scan_list_modal_handle_key(int ch) {
+    (void)ch;
+    return 0;
+}
+
+void
+scan_list_modal_render(void) {}
+
+void
+scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+scan_list_modal_close(void) {}
 
 /* What the browser posted: the IMPORT_* commands by id and in all, and the apply. */
 static int g_set_string_calls = 0;

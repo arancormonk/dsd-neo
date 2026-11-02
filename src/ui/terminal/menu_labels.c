@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -128,6 +129,19 @@ scan_avoids_manageable(const void* ctx) {
         return false;
     }
     return summary.can_manage != 0;
+}
+
+/* Scan lists... (issue #697 D11): only while a running trunk scan has two or more lists to switch. A paused scan refuses
+   every switch, so the row goes with Avoid current channel; the `#` key still opens the lists then, where Enter says
+   why. */
+bool
+scan_lists_offered(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    dsd_app_scan_list_view view;
+    if (!c || dsd_app_scan_list_view_get(c->opts, c->state, &view) != 0) {
+        return false;
+    }
+    return view.toggleable != 0;
 }
 
 /* The frequency entry tunes a radio input, or a connected rigctl peer from any input (issue #671); a running or paused
@@ -812,6 +826,18 @@ const char*
 lbl_scan_avoid_clear(const void* v, char* b, size_t n) {
     char count[24];
     DSD_SNPRINTF(b, n, "Clear avoids [%s]", scan_avoid_count_text(v, count, sizeof count));
+    return b;
+}
+
+/* "Scan lists... [2 of 3 on]": how many of the loaded lists the rotation draws from now. */
+const char*
+lbl_scan_lists(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    dsd_app_scan_list_view view;
+    if (!c || dsd_app_scan_list_view_get(c->opts, c->state, &view) != 0) {
+        DSD_MEMSET(&view, 0, sizeof view);
+    }
+    DSD_SNPRINTF(b, n, "Scan lists... [%u of %u on]", (unsigned)view.lists_on, (unsigned)view.list_count);
     return b;
 }
 

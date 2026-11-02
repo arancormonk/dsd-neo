@@ -31,6 +31,7 @@
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -1207,34 +1208,55 @@ ui_row_lcn_avoids_field(ui_row* row, const dsd_opts* opts, const dsd_state* stat
     }
 }
 
-/* Which of the rotating --trunk-scan targets the receiver is parked on (issue #669 order): the ordinal, the voice gate,
-   HOLD and [avoided] for the target on air, each in a room that is always there, then the target's id, the one field
-   of operator-chosen length, and the list's avoid count. The park frequency has no snapshot field of its own; the
-   protocol header lines already carry the frequency being decoded. */
+/* The position on the Trunk Scan row (issue #697 D10): the target on air's place among the targets of the lists switched
+   on, "-" in the ordinal's room while its own list is off (the receiver leaves it as soon as another target can take
+   it), and the room alone before a position is published. Half a position is no position: no rotation length, no
+   room either. */
+static void
+ui_row_trunk_scan_position_field(ui_row* row, const dsd_state* state, int list_off) {
+    const unsigned int count = (unsigned int)state->trunk_scan_rotation_count;
+    const unsigned int ordinal = (unsigned int)state->trunk_scan_rotation_ordinal;
+    char digits[16];
+    const int width = DSD_SNPRINTF(digits, sizeof digits, "%u", count);
+    if (count == 0U) {
+        ui_row_field(row, "| Trunk Scan:");
+    } else if (ordinal != 0U) {
+        ui_row_field(row, "| Trunk Scan: (%*u/%u)", width, ordinal, count);
+    } else if (list_off) {
+        ui_row_field(row, "| Trunk Scan: (%*s/%u)", width, "-", count);
+    } else {
+        ui_row_field(row, "| Trunk Scan: %*s", 2 * width + 3, ""); /* the position's room, before it is published */
+    }
+}
+
+/* Which of the rotating --trunk-scan targets the receiver is parked on (issue #669 order): the position, the voice
+   gate, HOLD, [avoided] and, with two or more lists, [list off] for the target on air, each in a room that is always
+   there, then the target's id and its list's name, the fields of operator-chosen length, and the avoid count. The
+   park frequency has no snapshot field of its own; the protocol header lines already carry the frequency being
+   decoded. */
 static void
 ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
         return;
     }
-    const unsigned int count = (unsigned int)state->trunk_scan_target_count;
-    const unsigned int ordinal = (unsigned int)state->trunk_scan_active_ordinal;
-    char digits[16];
-    const int width = DSD_SNPRINTF(digits, sizeof digits, "%u", count);
+    dsd_app_scan_list_view lists;
+    (void)dsd_app_scan_list_view_get(opts, state, &lists);
+    const int several = lists.list_count >= 2U;
     ui_row row;
     ui_io_row_begin(&row);
-    if (count == 0U) {
-        ui_row_field(&row, "| Trunk Scan:"); /* half a position is no position */
-    } else if (ordinal != 0U) {
-        ui_row_field(&row, "| Trunk Scan: (%*u/%u)", width, ordinal, count);
-    } else {
-        ui_row_field(&row, "| Trunk Scan: %*s", 2 * width + 3, ""); /* the position's room, before it is published */
-    }
+    ui_row_trunk_scan_position_field(&row, state, several && lists.active_list_off);
     ui_row_scan_voice_gate_field(&row, opts, state);
-    // The target on air first: an operator hold, or a receiver parked on a target the operator
-    // avoided because every alternate failed to retune.
+    // The target on air first: an operator hold, a receiver parked on a target the operator
+    // avoided because every alternate failed to retune, or one whose list was switched off.
     ui_row_flag_field(&row, state->trunk_scan_hold, "HOLD");
     ui_row_flag_field(&row, state->trunk_scan_active_avoided, "[avoided]");
+    if (several) {
+        ui_row_flag_field(&row, lists.active_list_off, "[list off]");
+    }
     ui_row_field(&row, " Target: %s", state->trunk_scan_active_id);
+    if (several && lists.active_list != 0U) {
+        ui_row_field(&row, " List: %s", lists.lists[lists.active_list - 1U].name);
+    }
     ui_row_avoids_field(&row, state->trunk_scan_avoided_count);
     ui_row_end(&row);
 }
@@ -1380,13 +1402,19 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
 
 /* A scan the operator paused (issue #671) keeps its row, in place of the frequency or target it no longer has: the
    receiver is on the operator's frequency. The row says so, names the key that resumes it, and keeps the list's avoid
-   count. A resume waiting on its row's tune is still paused. */
+   count, and under a trunk scan with two or more target lists how many are on. A resume waiting on its row's tune is
+   still paused. */
 static void
 ui_render_paused_scan_row(const dsd_app_scan_state_view* view, const dsd_opts* opts, const dsd_state* state) {
     ui_row row;
     ui_io_row_begin(&row);
     if (view->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK) {
         ui_row_field(&row, "| Trunk Scan: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
+        /* With two or more lists, how many the resume will scan; switching one waits for the resume (issue #697 D7). */
+        dsd_app_scan_list_view lists;
+        if (dsd_app_scan_list_view_get(opts, state, &lists) == 0 && lists.list_count >= 2U) {
+            ui_row_field(&row, " Lists: %u/%u on", (unsigned)lists.lists_on, (unsigned)lists.list_count);
+        }
         ui_row_avoids_field(&row, state->trunk_scan_avoided_count);
     } else {
         ui_row_field(&row, "| Scan Mode: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);

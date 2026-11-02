@@ -2840,6 +2840,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -2881,6 +2882,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -3035,6 +3037,33 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
+
+    # The Scan lists modal (issue #697) on a published pair through the real scan list view; the command submit,
+    # request ids, retained results and the toast are stubbed in the test.
+    add_executable(
+        dsd-neo_test_ui_scan_list_modal
+        ui/test_ui_scan_list_modal.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/scan_list_modal.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_SCAN_LIST_MODAL COMMAND dsd-neo_test_ui_scan_list_modal)
 
     # The library folds what app-control's imports listing hands it (issue #672); the listing is compiled in, and
     # dsd-neo_core + dsd-neo_proto_dmr resolve its replace-checked validation (dsd_csv_validate_*).
@@ -3572,6 +3601,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c

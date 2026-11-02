@@ -204,6 +204,12 @@ act_freq_key(void* v) { // NOLINT(misc-use-internal-linkage)
     (void)v;
 }
 
+/* The Scan lists modal's opener (issue #697): the handler only hands it to the modal-only overlay. */
+void
+act_scan_lists(void* v) { // NOLINT(misc-use-internal-linkage)
+    (void)v;
+}
+
 /* PDCurses reports the modifiers held with the key getch() returned last (tests/ui/curses.h). */
 unsigned long
 PDC_get_key_modifiers(void) { // NOLINT(misc-use-internal-linkage)
@@ -487,6 +493,21 @@ main(void) {
         assert(g_cap.calls == 0);
     }
     opts->m17encoder = 0;
+
+    /* '#' opens the Scan lists modal over the main screen and posts nothing itself (issue #697); the opener decides from
+       the snapshots whether there are lists to switch. */
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SCAN_LISTS) == 1);
+    assert(g_modal_open_calls == 1);
+    assert(g_modal_opener == act_scan_lists);
+    assert(g_menu_open_async_calls == 0);
+    assert(g_cap.calls == 0);
+    cap_reset();
+    g_menu_open = 1;
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SCAN_LISTS) == 1);
+    assert(g_menu_handle_key_calls == 1 && g_menu_last_key == DSD_KEY_SCAN_LISTS);
+    assert(g_modal_open_calls == 0);
+    g_menu_open = 0;
 
     /* With the overlay open, '=' is the overlay's key (a prompt types it), never a second entry. */
     cap_reset();

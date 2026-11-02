@@ -1265,10 +1265,44 @@ test_input_freq_label(void) {
     return rc;
 }
 
+/* Scan lists... (issue #697 D11): offered only while a running trunk scan has two or more lists, and its label counts
+   the lists on from the published lists. */
+static int
+test_scan_lists_row(void) {
+    int rc = 0;
+    char b[96];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    rc |= expect_int("scan lists null ctx", scan_lists_offered(NULL), 0);
+    rc |= expect_str("scan lists label null ctx", lbl_scan_lists(NULL, b, sizeof b), "Scan lists... [0 of 0 on]");
+    rc |= expect_int("scan lists without a trunk scan", scan_lists_offered(&ctx), 0);
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_session = 4;
+    state.trunk_scan_list_count = 1;
+    state.trunk_scan_lists[0].enabled = 1;
+    rc |= expect_int("scan lists: one list", scan_lists_offered(&ctx), 0);
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_lists[1].enabled = 0;
+    state.trunk_scan_lists[2].enabled = 1;
+    rc |= expect_int("scan lists: three lists, running", scan_lists_offered(&ctx), 1);
+    rc |= expect_str("scan lists label", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [2 of 3 on]");
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("scan lists: paused hides the row", scan_lists_offered(&ctx), 0);
+    rc |= expect_str("scan lists label while paused", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [2 of 3 on]");
+    state.trunk_scan_paused = 0;
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_int("scan lists: lists left behind by a scan that is off", scan_lists_offered(&ctx), 0);
+    rc |= expect_str("scan lists label: no scan", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [0 of 0 on]");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_predicates();
+    rc |= test_scan_lists_row();
     rc |= test_decoder_labels();
     rc |= test_trunking_labels();
     rc |= test_input_freq_label();

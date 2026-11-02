@@ -33,6 +33,7 @@ target_sources(
         rr_panel.c
         rr_panel_format.c
         rr_library.c
+        scan_list_modal.c
         csv_picker.c
         panels/header.c
         panels/footer.c

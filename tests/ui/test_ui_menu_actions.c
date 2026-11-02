@@ -54,6 +54,7 @@
 #include "menu_labels.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
+#include "scan_list_modal.h"
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
 #include <xmmintrin.h>
 #endif
@@ -897,6 +898,20 @@ rr_panel_open_library(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
 }
 
+/* The Scan lists modal (issue #697; UI_SCAN_LIST_MODAL covers it): whether it opens, and on which pair. */
+static int g_scan_list_modal_opens = 1;
+static int g_scan_list_modal_open_calls;
+static const dsd_opts* g_scan_list_modal_opts;
+static const dsd_state* g_scan_list_modal_state;
+
+int
+scan_list_modal_open(const dsd_opts* opts, const dsd_state* state) {
+    g_scan_list_modal_open_calls++;
+    g_scan_list_modal_opts = opts;
+    g_scan_list_modal_state = state;
+    return g_scan_list_modal_opens;
+}
+
 void
 cb_tyt_ap(void* v, const char* s) {
     (void)v;
@@ -1713,7 +1728,7 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_int("freq key not offered opens no prompt", g_prompt.calls, 0);
     rc |= expect_int("freq key not offered opens help", g_help_calls, 1);
     rc |= expect_str("freq key not offered reason", g_help,
-                     "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).");
+                     "Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).");
     reset_capture();
     g_freq_offered = 0;
     const int published_in_type = opts.audio_in_type;
@@ -3232,6 +3247,38 @@ test_context_actions_without_a_context(void) {
     return rc;
 }
 
+/* Scan lists... and `#` (issue #697): the modal on the frame's pair, or, where it has nothing to switch, one line of
+   help saying what it needs, and nothing open over it. */
+static int
+test_scan_lists_action(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx = {&opts, &state};
+    reset_capture();
+    g_help_calls = 0;
+    g_scan_list_modal_open_calls = 0;
+    g_scan_list_modal_opens = 1;
+    act_scan_lists(&ctx);
+    rc |= expect_int("lists: modal asked", g_scan_list_modal_open_calls, 1);
+    rc |= expect_int("lists: on the frame's pair", g_scan_list_modal_opts == &opts && g_scan_list_modal_state == &state,
+                     1);
+    rc |= expect_int("lists: no help when it opens", g_help_calls, 0);
+    rc |= expect_int("lists: no command of its own", g_cmd.calls, 0);
+    g_scan_list_modal_opens = 0;
+    act_scan_lists(&ctx);
+    rc |= expect_int("lists: none to switch says so", g_help_calls, 1);
+    rc |= expect_str("lists: what it needs", g_help,
+                     "Nothing to switch: scan lists need a trunk scan with two or more lists (one --trunk-scan or "
+                     "--trunk-scan-off per list).");
+    act_scan_lists(NULL);
+    rc |= expect_int("lists: no frame says so too", g_help_calls, 2);
+    rc |= expect_int("lists: no frame asks nothing", g_scan_list_modal_open_calls, 2);
+    g_scan_list_modal_opens = 1;
+    g_help_calls = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3241,6 +3288,7 @@ main(void) {
 #endif
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_avoid_list_chooser();
+    rc |= test_scan_lists_action();
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
     rc |= test_width_rows_on_rigctl_audio();

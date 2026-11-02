@@ -62,6 +62,15 @@ static int g_rr_panel_active = 0;
 static int g_rr_panel_key_calls = 0;
 static int g_rr_panel_render_calls = 0;
 static int g_rr_panel_close_calls = 0;
+/* The Scan lists modal (issue #697): open, the keys and frames it took, and whether it ends in its next tick (its session
+   ended) or on the key it handles (Esc). */
+static int g_slm_active = 0;
+static int g_slm_key_calls = 0;
+static int g_slm_tick_calls = 0;
+static int g_slm_render_calls = 0;
+static int g_slm_close_calls = 0;
+static int g_slm_ends_on_tick = 0;
+static int g_slm_ends_on_key = 0;
 /* 1: the prompt stub closes on the key it handles, as submit, cancel and Esc do. */
 static int g_prompt_closes_on_key = 0;
 /* 1: the prompt stub closes on the key it handles and its callback opens a follow-up prompt (a refusal reopening the
@@ -180,6 +189,13 @@ open_rr_panel_modal(void* ctx) {
 }
 
 static void
+open_scan_list_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_slm_active = 1;
+}
+
+static void
 open_nothing_modal(void* ctx) {
     g_modal_opener_calls++;
     g_modal_opener_ctx = (UiCtx*)ctx;
@@ -286,6 +302,13 @@ reset_modal_capture(void) {
     g_rr_panel_key_calls = 0;
     g_rr_panel_render_calls = 0;
     g_rr_panel_close_calls = 0;
+    g_slm_active = 0;
+    g_slm_key_calls = 0;
+    g_slm_tick_calls = 0;
+    g_slm_render_calls = 0;
+    g_slm_close_calls = 0;
+    g_slm_ends_on_tick = 0;
+    g_slm_ends_on_key = 0;
 }
 
 static void
@@ -479,6 +502,42 @@ rr_panel_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use
 void
 rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
     g_rr_panel_close_calls++;
+}
+
+int
+scan_list_modal_active(void) { // NOLINT(misc-use-internal-linkage)
+    return g_slm_active;
+}
+
+int
+scan_list_modal_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    g_slm_key_calls++;
+    if (g_slm_ends_on_key) {
+        g_slm_active = 0;
+    }
+    return 1;
+}
+
+void
+scan_list_modal_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_slm_render_calls++;
+}
+
+void
+scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    g_slm_tick_calls++;
+    if (g_slm_ends_on_tick) {
+        g_slm_active = 0;
+    }
+}
+
+void
+scan_list_modal_close(void) { // NOLINT(misc-use-internal-linkage)
+    g_slm_close_calls++;
+    g_slm_active = 0;
 }
 
 int
@@ -973,6 +1032,42 @@ main(void) {
     assert(ui_menu_is_open() == 0);
     assert(g_draw_menu_calls == 0);
     assert(g_rr_panel_render_calls == 1);
+
+    /* Issue #697: the Scan lists modal over the main screen (`#`) takes the keys and the frames, and the overlay goes
+       with it, whether Esc closes it or its tick does (the session it opened on ended). */
+    reset_modal_capture();
+    g_draw_menu_calls = 0;
+    ui_menu_open_modal_async(opts, state, open_scan_list_modal);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_slm_key_calls == 1 && g_action_calls == 0);
+    ui_menu_tick(opts, state);
+    assert(g_slm_tick_calls == 1 && g_slm_render_calls == 1 && g_draw_menu_calls == 0);
+    g_slm_ends_on_key = 1;
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_scan_list_modal);
+    g_slm_ends_on_tick = 1;
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 0);
+    assert(g_slm_render_calls == 0 && g_draw_menu_calls == 0);
+    /* Over the menu, the modal draws in place of the menu, and closing the menu closes the modal with it. */
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    g_draw_menu_calls = 0;
+    g_slm_active = 1;
+    ui_menu_tick(opts, state);
+    assert(g_slm_render_calls == 1 && g_draw_menu_calls == 0);
+    g_slm_active = 0;
+    ui_menu_tick(opts, state);
+    assert(g_draw_menu_calls == 1);
+    g_slm_active = 1;
+    g_slm_close_calls = 0;
+    ui_overlays_shutdown();
+    assert(ui_menu_is_open() == 0 && g_slm_close_calls == 1 && g_slm_active == 0);
+    g_draw_menu_calls = 0;
 
     /* An opener that opens nothing leaves no overlay behind, and no empty frame is ever drawn. */
     reset_modal_capture();

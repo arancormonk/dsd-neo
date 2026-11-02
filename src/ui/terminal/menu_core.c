@@ -33,6 +33,7 @@
 #include "menu_internal.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
+#include "scan_list_modal.h"
 #include "ui_keys.h"
 
 static int g_overlay_open = 0;
@@ -181,6 +182,7 @@ ui_overlay_breadcrumb(char* buf, size_t n) {
 static void
 ui_overlay_close_all(void) {
     rr_panel_close();
+    scan_list_modal_close();
     for (int i = 0; i < g_depth; i++) {
         if (g_stack[i].win) {
             delwin(g_stack[i].win);
@@ -192,14 +194,15 @@ ui_overlay_close_all(void) {
     g_modal_only = 0;
 }
 
-/* A prompt-only overlay has nothing under its modal: once no prompt, help, chooser or RadioReference panel is open, it
-   closes rather than leaving an empty frame on screen. */
+/* A prompt-only overlay has nothing under its modal: once no prompt, help, chooser, RadioReference panel or Scan lists
+   modal is open, it closes rather than leaving an empty frame on screen. */
 static void
 ui_menu_close_if_modal_done(void) {
     if (!g_modal_only || !g_overlay_open) {
         return;
     }
-    if (ui_prompt_active() || ui_help_active() || ui_chooser_active() || rr_panel_active()) {
+    if (ui_prompt_active() || ui_help_active() || ui_chooser_active() || rr_panel_active()
+        || scan_list_modal_active()) {
         return;
     }
     ui_overlay_close_all();
@@ -244,6 +247,9 @@ ui_menu_modal_handle_key(int ch) {
     }
     if (rr_panel_active()) {
         return rr_panel_handle_key(ch);
+    }
+    if (scan_list_modal_active()) {
+        return scan_list_modal_handle_key(ch);
     }
     return -1;
 }
@@ -539,7 +545,9 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     rr_panel_tick(opts, state);
-    /* The RR panel's tick can end it: a modal-only overlay that held nothing else closes now, not after an empty frame. */
+    scan_list_modal_tick(opts, state);
+    /* The RR panel's tick can end it, and the Scan lists modal's closes it with the session it was opened on: a
+       modal-only overlay that held nothing else closes now, not after an empty frame. */
     ui_menu_close_if_modal_done();
     ui_menu_pop_emptied_frames(ctx);
     if (!g_overlay_open || g_depth <= 0) {
@@ -562,6 +570,10 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     }
     if (rr_panel_active()) {
         rr_panel_render();
+        return;
+    }
+    if (scan_list_modal_active()) {
+        scan_list_modal_render();
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];

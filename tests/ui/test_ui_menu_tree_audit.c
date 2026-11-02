@@ -21,6 +21,8 @@
  *    and every bound key has a row (aliases and visualizer modifiers excepted)
  *  - the channel width rows sit in Input right after Squelch, in every build,
  *    and no other row edits a width (issue #621)
+ *  - the rigctl rows follow them in Input, and Trunking ends at twelve rows
+ *    with Scan lists... after its Avoids submenu (issue #697)
  *
  * Predicates are never evaluated: the audit covers the whole tree as written,
  * including rows a particular session would hide. UI_MENU_TREE_AUDIT audits the
@@ -116,6 +118,7 @@ static const HotkeyRow k_hotkeys[] = {
     {"input.freq", {DSD_KEY_TUNE, 0}},
     {"input.volume", {DSD_KEY_RTL_VOL_CYCLE, 0}},
     {"input.invert", {DSD_KEY_INVERT, 0}},
+    {"input.rigctl", {DSD_KEY_RIGCTL_CONN, 0}},
     {"src.tcp", {DSD_KEY_TCP_AUDIO, 0}},
 #ifdef USE_RADIO
     {"rtl.ppm", {DSD_KEY_PPM_DOWN, ' ', DSD_KEY_PPM_UP, 0}},
@@ -141,7 +144,7 @@ static const HotkeyRow k_hotkeys[] = {
     {"trunk.cycle_prev", {DSD_KEY_CHANNEL_PREV, 0}},
     {"trunk.hold", {DSD_KEY_SCAN_HOLD, 0}},
     {"trunk.avoid", {DSD_KEY_SCAN_AVOID, 0}},
-    {"trunk.rigctl", {DSD_KEY_RIGCTL_CONN, 0}},
+    {"trunk.scan_lists", {DSD_KEY_SCAN_LISTS, 0}},
     {"follow.group", {DSD_KEY_TRUNK_GROUP, 0}},
     {"follow.priv", {DSD_KEY_TRUNK_PRIV, 0}},
     {"follow.data", {DSD_KEY_TRUNK_DATA, 0}},
@@ -199,6 +202,7 @@ static const int k_command_keys[] = {
     DSD_KEY_TCP_AUDIO,      DSD_KEY_RIGCTL_CONN,      DSD_KEY_LPF_TOGGLE,       DSD_KEY_HPF_TOGGLE,
     DSD_KEY_PBF_TOGGLE,     DSD_KEY_HPF_DIG_TOGGLE,   DSD_KEY_RTL_VOL_CYCLE,    DSD_KEY_PPM_UP,
     DSD_KEY_PPM_DOWN,       DSD_KEY_SCAN_HOLD,        DSD_KEY_SCAN_AVOID,       DSD_KEY_TUNE,
+    DSD_KEY_SCAN_LISTS,
 };
 
 typedef struct {
@@ -534,12 +538,12 @@ expect_avoid_row(const NcMenuItem* it, const char* id, nc_action_fn on_select, n
 }
 
 /* Trunking > Avoids (issue #672 D1): right after Scan hold, it holds Avoid current channel (`b`, a running rotation),
-   Avoided channels... and, last after a separator, Clear avoids (both whenever avoids exist), and Trunking keeps one
-   row of headroom below the fifteen-row limit. */
+   Avoided channels... and, last after a separator, Clear avoids (both whenever avoids exist). Trunking is twelve rows
+   since the rigctl rows went to Input (issue #697 D11). */
 static void
 audit_avoid_rows(void) {
-    if (TRUNK_MENU_ITEMS_LEN != 14) {
-        DSD_FPRINTF(stderr, "FAIL: root/trunk: %zu rows, want 14\n", TRUNK_MENU_ITEMS_LEN);
+    if (TRUNK_MENU_ITEMS_LEN != 12) {
+        DSD_FPRINTF(stderr, "FAIL: root/trunk: %zu rows, want 12\n", TRUNK_MENU_ITEMS_LEN);
         g_rc = 1;
     }
     size_t hold = TRUNK_MENU_ITEMS_LEN;
@@ -570,6 +574,85 @@ audit_avoid_rows(void) {
     expect_avoid_row(&sub[3], "trunk.avoid_clear", act_scan_avoid_clear, lbl_scan_avoid_clear, scan_avoids_manageable);
 }
 
+static size_t
+input_row_index(const char* id) {
+    for (size_t i = 0; i < INPUT_MENU_ITEMS_LEN; i++) {
+        if (INPUT_MENU_ITEMS[i].id && strcmp(INPUT_MENU_ITEMS[i].id, id) == 0) {
+            return i;
+        }
+    }
+    return INPUT_MENU_ITEMS_LEN;
+}
+
+static size_t
+count_rows_running(const NcMenuItem* items, size_t n, nc_action_fn on_select) {
+    size_t count = 0;
+    for (size_t i = 0; i < n; i++) {
+        count += items[i].on_select == on_select ? 1U : 0U;
+        if (items[i].submenu && items[i].submenu_len > 0) {
+            count += count_rows_running(items[i].submenu, items[i].submenu_len, on_select);
+        }
+    }
+    return count;
+}
+
+/* Issue #697 D11: the rigctl peer is a receiver, so Rigctl (`9`) and Rigctl setmod bandwidth... sit in Input right after
+   the width rows it is asked for, in every build, and nowhere else; Trunking keeps no separator or rigctl row for
+   them. */
+static void
+audit_rigctl_rows(const NcMenuItem* root, size_t n) {
+    const size_t am = input_row_index("input.am_bw");
+    if (am + 2 >= INPUT_MENU_ITEMS_LEN) {
+        fail("root/input", "input.am_bw", "no AM width row with the two rigctl rows after it");
+        return;
+    }
+    const NcMenuItem* rig = &INPUT_MENU_ITEMS[am + 1];
+    const NcMenuItem* setmod = &INPUT_MENU_ITEMS[am + 2];
+    if (!rig->id || strcmp(rig->id, "input.rigctl") != 0 || rig->on_select != io_rigctl_config
+        || rig->label_fn != lbl_rigctl || !rig->hotkey || strcmp(rig->hotkey, "9") != 0) {
+        fail("root/input", rig->id, "Rigctl (9) does not follow the AM width row");
+    }
+    if (!setmod->id || strcmp(setmod->id, "input.setmod") != 0 || setmod->on_select != act_setmod_bw) {
+        fail("root/input", setmod->id, "Rigctl setmod bandwidth... does not follow Rigctl");
+    }
+    if (count_rows_running(root, n, io_rigctl_config) != 1 || count_rows_running(root, n, act_setmod_bw) != 1) {
+        fail("root", "rigctl", "a rigctl row outside Input");
+    }
+    for (size_t i = 0; i < TRUNK_MENU_ITEMS_LEN; i++) {
+        if (TRUNK_MENU_ITEMS[i].id && strcmp(TRUNK_MENU_ITEMS[i].id, "trunk.sep2") == 0) {
+            fail("root/trunk", "trunk.sep2", "the separator the rigctl rows had is still there");
+        }
+    }
+}
+
+/* Issue #697 D11: Scan lists... right after the Avoids submenu, before Trunking's first separator: the lists modal
+   (`#`), offered only while a running trunk scan has two or more lists. */
+static void
+audit_scan_lists_row(void) {
+    size_t avoids = TRUNK_MENU_ITEMS_LEN;
+    for (size_t i = 0; i < TRUNK_MENU_ITEMS_LEN; i++) {
+        if (TRUNK_MENU_ITEMS[i].id && strcmp(TRUNK_MENU_ITEMS[i].id, "trunk.avoids") == 0) {
+            avoids = i;
+        }
+    }
+    if (avoids + 2 >= TRUNK_MENU_ITEMS_LEN) {
+        fail("root/trunk", "trunk.avoids", "no Scan lists row and separator after Avoids");
+        return;
+    }
+    const NcMenuItem* it = &TRUNK_MENU_ITEMS[avoids + 1];
+    if (!it->id || strcmp(it->id, "trunk.scan_lists") != 0) {
+        fail("root/trunk", it->id, "Scan lists... does not follow Avoids");
+        return;
+    }
+    if (it->on_select != act_scan_lists || it->label_fn != lbl_scan_lists || it->is_enabled != scan_lists_offered
+        || !it->hotkey || strcmp(it->hotkey, "#") != 0) {
+        fail("root/trunk", it->id, "Scan lists... runs another handler, label, predicate or key");
+    }
+    if (TRUNK_MENU_ITEMS[avoids + 2].kind != NC_ITEM_SEPARATOR) {
+        fail("root/trunk", TRUNK_MENU_ITEMS[avoids + 2].id, "no separator after Scan lists...");
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -585,6 +668,8 @@ main(void) {
     audit_freq_row(root, n);
     audit_ftz_row();
     audit_avoid_rows();
+    audit_rigctl_rows(root, n);
+    audit_scan_lists_row();
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

@@ -9332,7 +9332,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     no state pointer; the receive editor copies its policy as it opens). The RadioReference panel keeps the frame's
     pair it was last handed (`rr_panel_open_*()`, `rr_panel_tick()`) and gives it to the wizard through
     `RrWizardHooks.session_opts` / `session_state`; the session gate (`rr_wizard_core_apply_block_reason()`,
-    `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. Before the
+    `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. The Scan lists modal copies
+    the scan list view from the pair at each tick (see Scan lists below). Before the
     first publication (runtime start publishes before the UI thread exists, so practically never) the frame's state is
     NULL: only Quit is handled, neither the menu nor the `=` overlay opens, nothing is drawn, and the frame's options
     are a UI-owned copy of the start-time fields `ui_start()` took (frontend kind, input type, wheel setting, the `-Z`
@@ -9384,8 +9385,31 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `| Scan Mode: OFF Avoids: N` while a stopped `-Y` list's avoids are left. Clear outside a running scan hides all
     three rows; the menu tick closes an open submenu left with no selectable row back to its parent
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
-    (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 14), `UI_NCURSES_PRINTER_HELPERS`,
+    (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
+  - Scan lists (issue #697 D7, D10, D11): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
+    `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
+    view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
+    `act_scan_lists()`) open the modal in `scan_list_modal.{h,c}`, which `menu_core.c` drives like the RadioReference
+    panel (keys, `scan_list_modal_tick()` with the frame's pair, render, close with the overlay); `act_scan_lists()`
+    opens one line of help where the pair has no trunk scan with 2+ lists (`#` still opens it on a paused one, where
+    every switch is refused). The modal owns all it draws: a copy of `dsd_app_scan_list_view` (and the decoder's
+    toast) taken from the frame's pair each tick, never the decoder's structs, and per row the request it waits on.
+    Enter submits `dsd_app_command_scan_list_set()` with the session it opened on and
+    `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and a toast at
+    once. The row reads `Switching off…` until `dsd_app_scan_list_results_since()` (read from the latest sequence at
+    open) returns its request; the result decides the outcome and the note beside the list, and a switched row shows
+    the state it asked for until the view's `lists_seq` leaves the value it had when the answer came (the result can
+    beat the snapshot), then the view's. A waiting row ignores Enter; rows wait independently. The modal closes on
+    Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The Trunk Scan row
+    (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count` (`(-/m)` while
+    the list on air is off) and, with 2+ lists, keeps a `[list off]` room beside `[avoided]` and adds `List: <name>`
+    after the target (cut at a whole field); the paused trunk row adds `Lists: n/m on`. The rigctl rows moved to
+    Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests: `UI_SCAN_LIST_MODAL`
+    (pending, answers, refusals, repeat Enter, out-of-order answers, All lists on, full queue, Esc, session change,
+    results from before it opened, the decoder's toast), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
+    (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
+    key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -9401,14 +9425,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     the scan. `=` (and, under PDCurses, `SHF_PADENTER` and Enter with `PDC_get_key_modifiers() &
     PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens `act_freq_key()` through
     `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which `menu_core.c` closes
-    once no prompt, help, chooser or RadioReference panel is left (in the opener's own call, after the modal routing of
-    each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the frame's published
-    options (the menu's context), as the row's predicate does, and opens the prompt or one line of help with the
-    reason (an I/Q replay; no connected rigctl peer). The `y` row
-    (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
-    resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold
-    and avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the
-    scan running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
+    once no prompt, help, chooser, RadioReference panel or Scan lists modal is left (in the opener's own call, after the
+    modal routing of each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the
+    frame's published options (the menu's context), as the row's predicate does, and opens the prompt or one line of
+    help with the reason (an I/Q replay; no connected rigctl peer). The `y` row (`lbl_scan()`) and the main screen's
+    paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y resumes)`, `| Trunk Scan: PAUSED (y resumes)`,
+    with the avoid count and, with 2+ trunk-scan lists, `Lists: n/m on`) read `dsd_app_scan_state_view_get()`; hold and
+    avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the scan
+    running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
     `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,

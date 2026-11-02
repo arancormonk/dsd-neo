@@ -2346,8 +2346,12 @@ test_trunk_scan_status_row_rendering(void) {
 
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
+    /* Issue #697 D10: the position is among the targets of the lists switched on, not the target's place among every
+       loaded one (the identity ordinal), which the row no longer reads. */
+    state.trunk_scan_active_ordinal = 8;
+    state.trunk_scan_target_count = 11;
     g_stub_max_x = 200;
 
     reset_printw_capture();
@@ -2377,22 +2381,22 @@ test_trunk_scan_status_row_rendering(void) {
     state.trunk_scan_avoided_count = 0;
 
     /* No position published yet: name the target without inventing an "n of m". */
-    state.trunk_scan_active_ordinal = 0;
+    state.trunk_scan_rotation_ordinal = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:                      Target: county-p25\n");
 
     /* Half a position is no position: an ordinal with no rotation length behind it prints
        no suffix either. */
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 0;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:                Target: county-p25\n");
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_count = 6;
 
     /* A stale id from an earlier run must not show once scanning is off. */
-    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_rotation_ordinal = 3;
     opts.trunk_scan_enabled = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
@@ -2403,7 +2407,7 @@ test_trunk_scan_status_row_rendering(void) {
     opts.trunk_scan_enabled = 1;
     state.trunk_scan_paused = 1;
     state.trunk_scan_active_id[0] = '\0';
-    state.trunk_scan_active_ordinal = 0;
+    state.trunk_scan_rotation_ordinal = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Trunk Scan: PAUSED (y resumes)\n");
@@ -2413,7 +2417,7 @@ test_trunk_scan_status_row_rendering(void) {
     assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Avoids: 2\n");
     state.trunk_scan_avoided_count = 0;
     state.trunk_scan_paused = 0;
-    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_rotation_ordinal = 3;
     opts.trunk_scan_enabled = 0;
 
     /* Enabled but between targets: nothing is on air to name. */
@@ -2447,10 +2451,10 @@ test_trunk_scan_status_row_rendering(void) {
        whether or not they are shown. */
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
     opts.scanner_mode = 0;
-    state.trunk_scan_target_count = 12;
+    state.trunk_scan_rotation_count = 12;
     int target_col = -1;
     for (unsigned int ordinal = 1; ordinal <= 12U; ordinal++) {
-        state.trunk_scan_active_ordinal = (uint16_t)ordinal;
+        state.trunk_scan_rotation_ordinal = (uint16_t)ordinal;
         state.trunk_scan_hold = (uint8_t)(ordinal % 2U);
         state.trunk_scan_active_avoided = (uint8_t)(ordinal % 3U == 0U);
         reset_printw_capture();
@@ -2465,6 +2469,110 @@ test_trunk_scan_status_row_rendering(void) {
     assert_capture_equals("| Trunk Scan: (12/12)      [avoided] Target: county-p25\n");
     g_stub_max_x = 80;
 
+    reset_lcn_name_stub();
+}
+
+/* Issue #697: with two or more target lists the Trunk Scan row names the list on air after the target, keeps a room
+   for [list off] beside [avoided], and reads "(-/m)" while the target on air's list is off; one list adds neither. The
+   paused row says how many lists are on. A narrow terminal drops whole fields from the end, the list's name first. */
+static void
+test_trunk_scan_list_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+    g_stub_max_x = 200;
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-a");
+    static const char* const names[] = {"security", "hospital", "municipality"};
+    static const uint16_t targets[] = {2, 1, 1};
+    for (int i = 0; i < 3; i++) {
+        DSD_SNPRINTF(state.trunk_scan_lists[i].name, sizeof(state.trunk_scan_lists[i].name), "%s", names[i]);
+        state.trunk_scan_lists[i].enabled = 1;
+        state.trunk_scan_lists[i].targets = targets[i];
+    }
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_session = 7;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_rotation_ordinal = 1;
+    state.trunk_scan_rotation_count = 4;
+
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (1/4)                           Target: gate-a List: security\n");
+    const int target_col = capture_column_of(" Target:");
+
+    /* Hospital off, the receiver still on security's second target: 1..3 of the three left. */
+    state.trunk_scan_lists[1].enabled = 0;
+    state.trunk_scan_rotation_ordinal = 2;
+    state.trunk_scan_rotation_count = 3;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-b");
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (2/3)                           Target: gate-b List: security\n");
+
+    /* Security switched off while on air: no position among the lists on, the flag says why, the column holds. */
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_lists[1].enabled = 1;
+    state.trunk_scan_active_list_off = 1;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_rotation_count = 2;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (-/2)                [list off] Target: gate-b List: security\n");
+    assert(capture_column_of(" Target:") == target_col);
+    state.trunk_scan_hold = 1;
+    state.trunk_scan_active_avoided = 1;
+    state.trunk_scan_avoided_count = 1;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided] [list off] Target: gate-b List: security Avoids: 1\n");
+    assert(capture_column_of(" Target:") == target_col);
+
+    /* Cut at a whole field (issue #669): the list's name goes before the target's id, never half of either. */
+    g_stub_max_x = 75;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided] [list off] Target: gate-b...\n");
+    g_stub_max_x = 200;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_active_avoided = 0;
+    state.trunk_scan_avoided_count = 0;
+
+    /* A target on air with no list published names no list. */
+    state.trunk_scan_active_list = 0;
+    state.trunk_scan_active_list_off = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:                                 Target: gate-b\n");
+
+    /* One list: no list name and no [list off] room, as before lists existed. */
+    state.trunk_scan_list_count = 1;
+    state.trunk_scan_lists[0].enabled = 1;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_rotation_ordinal = 2;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (2/2)                Target: gate-b\n");
+
+    /* Paused: no target, and the count of lists on with two or more. */
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_paused = 1;
+    state.trunk_scan_active_id[0] = '\0';
+    state.trunk_scan_active_list = 0;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_avoided_count = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Lists: 2/3 on Avoids: 2\n");
+    state.trunk_scan_list_count = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Avoids: 2\n");
+
+    g_stub_max_x = 80;
     reset_lcn_name_stub();
 }
 
@@ -3794,8 +3902,8 @@ test_scan_voice_gate_status_rendering(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
 
     opts.scan_voice_only = 0;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
@@ -4211,8 +4319,8 @@ test_scan_timing_row_placement(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25\n"
@@ -4976,6 +5084,7 @@ main(void) {
     test_scanner_status_row_rendering();
     test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
+    test_trunk_scan_list_fields();
     test_scan_timing_row_phrases();
     test_scan_timing_row_clamps_expired_timers();
     test_scan_timing_row_visit_cap();
