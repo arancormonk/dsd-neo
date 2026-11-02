@@ -294,7 +294,7 @@ rr_soap_build_request(const char* method, const rr_soap_param* params, size_t n,
 #define RR_LEAF_MAX   4096
 #define RR_DETAIL_MAX 256
 
-typedef enum { RR_F_INT, RR_F_U32, RR_F_ID, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
+typedef enum { RR_F_INT, RR_F_ID, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
 
 /** One leaf element mapped onto a record member. */
 typedef struct {
@@ -307,7 +307,6 @@ typedef struct {
 
 #define RR_STR(type, member, elem)       {elem, RR_F_STR, offsetof(type, member), sizeof(((type*)0)->member), 0}
 #define RR_INT(type, member, elem)       {elem, RR_F_INT, offsetof(type, member), 0, 0}
-#define RR_U32(type, member, elem)       {elem, RR_F_U32, offsetof(type, member), 0, 0}
 #define RR_ID(type, member, valid, elem) {elem, RR_F_ID, offsetof(type, member), 0, offsetof(type, valid)}
 #define RR_DEC(type, member, elem)       {elem, RR_F_DEC, offsetof(type, member), 0, 0}
 #define RR_MHZ(type, member, elem)       {elem, RR_F_MHZ, offsetof(type, member), 0, 0}
@@ -747,13 +746,6 @@ rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* na
                 }
                 break;
             }
-            case RR_F_U32: {
-                uint32_t value = 0;
-                if (rr_parse_u32_field(text, &value) == 0) {
-                    DSD_MEMCPY(base, &value, sizeof(value));
-                }
-                break;
-            }
             case RR_F_ID: {
                 /* Written either way, so the last element decides: a value that
                  * does not parse must not leave an earlier one looking valid. */
@@ -955,19 +947,12 @@ rr_commit_record(rr_parse_ctx* ctx) {
  */
 static char
 rr_use_mark(const char* use) {
-    const char* p = use;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-        p++;
-    }
+    const char* p = rr_skip_ws(use);
     const char letter = *p;
     if (letter == '\0') {
         return 0;
     }
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-        p++;
-    }
-    if (*p != '\0') {
+    if (*rr_skip_ws(p + 1) != '\0') {
         return 0;
     }
     if (letter == 'd' || letter == 'D') {

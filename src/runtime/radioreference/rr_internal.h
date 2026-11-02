@@ -32,6 +32,16 @@ extern "C" {
 int rr_array_reserve(void** items, size_t* cap, size_t needed, size_t elem_size);
 
 /**
+ * @brief Skip leading ASCII whitespace (space, \t, \n, \r, \f, \v).
+ *
+ * The one whitespace set for RR text nodes, so every parser trims alike.
+ *
+ * @param p Input pointer; must not be NULL.
+ * @return First non-space character.
+ */
+const char* rr_skip_ws(const char* p);
+
+/**
  * @brief Strict base-10 parse of a whole token.
  *
  * Rejects trailing junk, an empty token and out-of-range values, which the bare
