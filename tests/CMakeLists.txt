@@ -1156,6 +1156,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_avoid_view.h
   CXX
 )
+# Issue #697: the trunk-scan target lists every frontend shows and switches.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW
+  dsd-neo/app_control/scan_list_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW_CXX
+  dsd-neo/app_control/scan_list_view.h
+  CXX
+)
 # Issue #672: the config file reads and writes a frontend asks for.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_config_files
@@ -3371,6 +3384,22 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_SCAN_AVOID_VIEW
     COMMAND dsd-neo_test_app_control_scan_avoid_view
+)
+
+# Issue #697: the trunk-scan target lists every frontend shows and switches.
+add_executable(
+    dsd-neo_test_app_control_scan_list_view
+    ui/test_app_control_scan_list_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_list_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_LIST_VIEW
+    COMMAND dsd-neo_test_app_control_scan_list_view
 )
 
 # Issue #672: the config file reads and writes the terminal menu asks app-control for, on real files.

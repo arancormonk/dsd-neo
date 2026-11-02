@@ -114,6 +114,7 @@
 #include "recording_view_internal.h"
 #include "rr_apply_verdict.h"
 #include "scan_avoid_view_internal.h"
+#include "scan_list_results.h"
 #include "scan_row_edit.h"
 #include "services.h"
 #include "snapshot_internal.h"
@@ -300,6 +301,7 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
@@ -4493,9 +4495,16 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
             return DSD_APP_COMMAND_SUBMIT_COALESCED;
         }
     }
+    /* A list toggle never evicts: its caller learns at once that nothing is pending (issue #697), rather than another
+       request losing its place to it. */
+    if (cmd_id == DSD_APP_CMD_SCAN_LIST_SET && q_is_full_unlocked()) {
+        dsd_mutex_unlock(&g_mu);
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
@@ -4848,6 +4857,14 @@ dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* paylo
 }
 
 int
+dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
+    if (!payload) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_set_tone_filter_mode(int32_t mode) {
     dsd_app_tone_filter_payload payload;
     DSD_MEMSET(&payload, 0, sizeof payload);
@@ -4892,6 +4909,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
     {DSD_APP_CMD_SCAN_AVOID_REMOVE, sizeof(dsd_app_scan_avoid_remove_payload)},
+    {DSD_APP_CMD_SCAN_LIST_SET, sizeof(dsd_app_scan_list_set_payload)},
     {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
@@ -8056,6 +8074,101 @@ apply_cmd_scan_avoid_remove(const dsd_opts* opts, dsd_state* state, const struct
                       : apply_scan_avoid_remove_lcn(opts, state, &p);
 }
 
+/* What the DSD_APP_CMD_SCAN_LIST_SET being applied did (issue #697), for its retained result: apply_cmd() sets INVALID
+   before every dispatch and SEARCH when Signal search refuses it, and the handler the coordinator's answer. Decoder
+   thread only, as the drain is. */
+static int32_t g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_INVALID;
+
+/* What a raw submission can carry (issue #697): a session that can name one, a list number or every list, and an on or
+   off. A list past the scan's lists is the coordinator's to call stale. */
+static int
+scan_list_set_payload_valid(const dsd_app_scan_list_set_payload* p) {
+    const int list_ok = p->list == DSD_APP_SCAN_LIST_ALL || (p->list >= 1 && p->list <= DSD_TRUNK_SCAN_MAX_LISTS);
+    return p->session != 0U && list_ok && p->enabled <= 1U;
+}
+
+/* List @p list (1-based) as a toast names it: its number, and its name when it has one. */
+static const char*
+scan_list_toast_name(const dsd_state* state, int list, char* out, size_t out_size) {
+    const char* name = state->trunk_scan_lists[list - 1].name;
+    if (name[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "Scan list %d (%s)", list, name);
+    } else {
+        DSD_SNPRINTF(out, out_size, "Scan list %d", list);
+    }
+    return out;
+}
+
+/* A switch the coordinator made: what is on now, as its own log line counts it (targets in the lists that are on,
+   avoided ones included). */
+static void
+scan_list_switched_toast(dsd_state* state, int list, int enabled) {
+    const int count = state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
+                                                                              : DSD_TRUNK_SCAN_MAX_LISTS;
+    int lists_on = 0;
+    unsigned int targets = 0U;
+    for (int l = 0; l < count; l++) {
+        if (state->trunk_scan_lists[l].enabled) {
+            lists_on++;
+            targets += state->trunk_scan_lists[l].targets;
+        }
+    }
+    const char* noun = targets == 1U ? "target" : "targets";
+    if (list == DSD_APP_SCAN_LIST_ALL) {
+        ui_set_toast(state, 3, "All scan lists on: %u %s", targets, noun);
+        return;
+    }
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE + 24];
+    ui_set_toast(state, 3, "%s %s: %d of %d lists on, %u %s", scan_list_toast_name(state, list, name, sizeof name),
+                 enabled ? "on" : "off", lists_on, count, targets, noun);
+}
+
+/* The toast for a list toggle the coordinator answered, from its code alone, as every frontend shows it. */
+static void
+scan_list_set_toast(dsd_state* state, int code, int list, int enabled) {
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE + 24];
+    switch (code) {
+        case DSD_APP_SCAN_LIST_SET_OK: scan_list_switched_toast(state, list, enabled); break;
+        case DSD_APP_SCAN_LIST_SET_UNCHANGED:
+            if (list == DSD_APP_SCAN_LIST_ALL) {
+                ui_set_toast(state, 3, "All scan lists are on already");
+            } else {
+                ui_set_toast(state, 3, "%s is %s already", scan_list_toast_name(state, list, name, sizeof name),
+                             enabled ? "on" : "off");
+            }
+            break;
+        case DSD_APP_SCAN_LIST_SET_REFUSED_LAST:
+            ui_set_toast(state, 3, "Nothing else to scan: switch on another list first");
+            break;
+        case DSD_APP_SCAN_LIST_SET_BUSY: ui_set_toast(state, 3, "Trunk scan busy; try again"); break;
+        case DSD_APP_SCAN_LIST_SET_PAUSED: ui_set_toast(state, 3, "%s", k_scan_paused_refusal); break;
+        case DSD_APP_SCAN_LIST_SET_STALE:
+            ui_set_toast(state, 3, "%s", "Refused: the scan changed; nothing applied");
+            break;
+        default: ui_set_toast(state, 3, "Trunk scan is not running"); break;
+    }
+}
+
+/* DSD_APP_CMD_SCAN_LIST_SET (issue #697): the coordinator switches the list (dsd_trunk_scan_hook_list_set(), which
+   takes its own try of the P25 SM tick guard, so this command is not apply-guarded) and its answer is the result. A
+   switch, or a list already as asked, completes; every refusal fails. */
+static int
+apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_scan_list_set_payload p;
+    if (!state || c->n != sizeof p) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    if (!scan_list_set_payload_valid(&p)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int code = dsd_trunk_scan_hook_list_set(opts, state, p.session, p.list, p.enabled, p.request);
+    g_scan_list_set_code = code;
+    scan_list_set_toast(state, code, p.list, p.enabled);
+    return (code == DSD_APP_SCAN_LIST_SET_OK || code == DSD_APP_SCAN_LIST_SET_UNCHANGED) ? UI_CMD_APPLY_COMPLETED
+                                                                                         : UI_CMD_APPLY_FAILED;
+}
+
 static int
 apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int op;
@@ -8064,6 +8177,7 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         case DSD_APP_CMD_SCAN_AVOID: op = DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE; break;
         case DSD_APP_CMD_SCAN_AVOID_CLEAR: op = DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR; break;
         case DSD_APP_CMD_SCAN_AVOID_REMOVE: return apply_cmd_scan_avoid_remove(opts, state, c);
+        case DSD_APP_CMD_SCAN_LIST_SET: return apply_cmd_scan_list_set(opts, state, c);
         default: return 0;
     }
     if (!state) {
@@ -10247,7 +10361,9 @@ recording_command_outcome(const struct dsd_app_command* c, int result) {
 
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_INVALID;
     if (!command_allowed_during_search(state, c)) {
+        g_scan_list_set_code = DSD_APP_SCAN_LIST_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
@@ -10661,6 +10777,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
+            dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
             if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
@@ -10676,6 +10793,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
+        dsd_app_scan_list_publish_result(&cmd, g_scan_list_set_code);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.

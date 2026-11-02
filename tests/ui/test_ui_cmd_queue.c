@@ -9259,6 +9259,7 @@ test_commands_that_need_the_frame_loop(void) {
     const int value = 0;
     const dsd_app_dsp_payload cq = {.op = DSD_APP_DSP_OP_TOGGLE_CQ};
     const dsd_app_dsp_payload iqbal = {.op = DSD_APP_DSP_OP_TOGGLE_IQBAL};
+    const dsd_app_scan_list_set_payload list_set = {.session = 1U, .request = 1U, .list = 2, .enabled = 0U};
     dsd_app_airspy_setting_payload serial;
     dsd_app_airspy_setting_payload lna;
     DSD_MEMSET(&serial, 0, sizeof serial);
@@ -9279,6 +9280,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "scan avoid", DSD_APP_CMD_SCAN_AVOID, 1},
         {&value, sizeof value, "channel cycle", DSD_APP_CMD_CHANNEL_CYCLE, 1},
         {&value, sizeof value, "previous channel", DSD_APP_CMD_CHANNEL_CYCLE_PREV, 1},
+        {&list_set, sizeof list_set, "scan list set", DSD_APP_CMD_SCAN_LIST_SET, 1},
         {&value, sizeof value, "skip slot", DSD_APP_CMD_SKIP_SLOT, 1},
         {&value, sizeof value, "lockout slot", DSD_APP_CMD_LOCKOUT_SLOT, 1},
         {&value, sizeof value, "pulse input", DSD_APP_CMD_PULSE_IN_SET, 1},
@@ -25479,6 +25481,576 @@ test_scan_avoid_edits_under_search_and_replay(void) {
 }
 #endif
 
+/*
+ * Issue #697: switching a trunk-scan target list on or off (DSD_APP_CMD_SCAN_LIST_SET) through the real queue and
+ * coordinator, the retained result every request gets, the toasts, the request ids and the queue's rules for it.
+ */
+
+/* A frontend's list toggle: a fresh request id, as dsd_app_scan_list_request_next() gives one. */
+static int
+submit_list_set(uint32_t session, int list, int enabled, uint32_t* request) {
+    dsd_app_scan_list_set_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.session = session;
+    p.request = dsd_app_scan_list_request_next();
+    p.list = (int16_t)list;
+    p.enabled = (uint8_t)enabled;
+    if (request) {
+        *request = p.request;
+    }
+    return dsd_app_command_scan_list_set(&p);
+}
+
+static uint64_t
+scan_list_newest_seq(void) {
+    dsd_app_scan_list_result r;
+    return dsd_app_scan_list_result_get(&r) ? r.sequence : 0U;
+}
+
+/* Exactly one result after @p after carries @p request, with the request as submitted and @p code. */
+static int
+expect_list_result(const char* what, uint64_t after, uint32_t request, uint32_t session, int list, int enabled,
+                   int code) {
+    dsd_app_scan_list_result out[DSD_APP_RESULT_HISTORY];
+    const int n = dsd_app_scan_list_results_since(after, out, DSD_APP_RESULT_HISTORY);
+    int found = 0;
+    int bad = 0;
+    for (int i = 0; i < n; i++) {
+        if (out[i].request != request) {
+            continue;
+        }
+        found++;
+        bad |= out[i].session != session || out[i].list != list || out[i].enabled != enabled || out[i].code != code
+               || out[i].sequence <= after;
+        if (bad) {
+            DSD_FPRINTF(stderr, "%s: result seq %llu session %u list %d enabled %u code %d, want %u %d %d %d\n", what,
+                        (unsigned long long)out[i].sequence, (unsigned)out[i].session, out[i].list,
+                        (unsigned)out[i].enabled, (int)out[i].code, (unsigned)session, list, enabled, code);
+        }
+    }
+    if (found != 1) {
+        DSD_FPRINTF(stderr, "%s: %d results for request %u, want 1\n", what, found, (unsigned)request);
+        return 1;
+    }
+    return bad;
+}
+
+/* Two callers (the terminal and the API, say) taking request ids and submitting at once: no id is taken twice, and
+   each request comes back exactly once. */
+enum { SCAN_LIST_CALLER_REQUESTS = 30 };
+
+typedef struct {
+    uint32_t requests[SCAN_LIST_CALLER_REQUESTS];
+    int queued;
+} scan_list_caller;
+
+static DSD_THREAD_RETURN_TYPE
+scan_list_caller_run(void* opaque) {
+    scan_list_caller* c = opaque;
+    for (int i = 0; i < SCAN_LIST_CALLER_REQUESTS; i++) {
+        /* Another session's: refused as stale, so the requests change nothing whatever their order. */
+        if (submit_list_set(1U, 2, 0, &c->requests[i]) == DSD_APP_COMMAND_SUBMIT_QUEUED) {
+            c->queued++;
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_scan_list_requests_from_two_callers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    const uint64_t after = scan_list_newest_seq();
+    scan_list_caller callers[2];
+    DSD_MEMSET(callers, 0, sizeof callers);
+    dsd_thread_t threads[2];
+    const int started0 = dsd_thread_create(&threads[0], scan_list_caller_run, &callers[0]) == 0;
+    const int started1 = dsd_thread_create(&threads[1], scan_list_caller_run, &callers[1]) == 0;
+    rc |= expect_true("callers started", started0 && started1);
+    if (started0) {
+        dsd_thread_join(threads[0]);
+    }
+    if (started1) {
+        dsd_thread_join(threads[1]);
+    }
+    rc |= expect_true("every request queued",
+                      callers[0].queued == SCAN_LIST_CALLER_REQUESTS && callers[1].queued == SCAN_LIST_CALLER_REQUESTS);
+    rc |= expect_int("every request applied", dsd_app_drain_cmds(&opts, &state), 2 * SCAN_LIST_CALLER_REQUESTS);
+    dsd_app_scan_list_result out[2 * SCAN_LIST_CALLER_REQUESTS];
+    const int n = dsd_app_scan_list_results_since(after, out, 2 * SCAN_LIST_CALLER_REQUESTS);
+    rc |= expect_int("one result each", n, 2 * SCAN_LIST_CALLER_REQUESTS);
+    for (int c = 0; c < 2; c++) {
+        for (int i = 0; i < SCAN_LIST_CALLER_REQUESTS; i++) {
+            const uint32_t id = callers[c].requests[i];
+            int seen = 0;
+            for (int k = 0; k < n; k++) {
+                seen += out[k].request == id ? 1 : 0;
+            }
+            const uint32_t other = callers[1 - c].requests[i];
+            if (id == 0U || seen != 1 || id == other) {
+                DSD_FPRINTF(stderr, "caller %d request %d: id %u seen %d times\n", c, i, (unsigned)id, seen);
+                rc = 1;
+            }
+        }
+    }
+    freeState(&state);
+    return rc;
+}
+
+/* The history keeps the last DSD_APP_RESULT_HISTORY: a reader that fell further behind gets the newest that many, the
+   oldest of them first, and sees the gap in the sequence numbers. */
+static int
+test_scan_list_results_wrap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    const uint64_t start = scan_list_newest_seq();
+    const int total = DSD_APP_RESULT_HISTORY + 6;
+    uint32_t last_request = 0U;
+    for (int i = 0; i < total; i++) {
+        rc |= expect_int("wrap: queued", submit_list_set(1U, 2, 0, &last_request), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        if (i % 50 == 49) {
+            (void)dsd_app_drain_cmds(&opts, &state);
+        }
+    }
+    (void)dsd_app_drain_cmds(&opts, &state);
+    const uint64_t newest = scan_list_newest_seq();
+    rc |= expect_true("wrap: one result each", newest == start + (uint64_t)total);
+    dsd_app_scan_list_result out[DSD_APP_RESULT_HISTORY + 8];
+    int n = dsd_app_scan_list_results_since(start, out, DSD_APP_RESULT_HISTORY + 8);
+    rc |= expect_int("wrap: the history holds the last 64", n, DSD_APP_RESULT_HISTORY);
+    rc |= expect_true("wrap: oldest kept first, newest last",
+                      out[0].sequence == newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U && out[n - 1].sequence == newest
+                          && out[n - 1].request == last_request && out[0].sequence > start + 1U);
+    n = dsd_app_scan_list_results_since(newest - 3U, out, DSD_APP_RESULT_HISTORY);
+    rc |= expect_true("wrap: a reader just behind", n == 3 && out[0].sequence == newest - 2U);
+    rc |= expect_int("wrap: a cap smaller than the backlog", dsd_app_scan_list_results_since(start, out, 5), 5);
+    rc |= expect_int("wrap: nothing newer", dsd_app_scan_list_results_since(newest, out, 4), 0);
+    rc |= expect_int("wrap: no room", dsd_app_scan_list_results_since(start, out, 0), 0);
+    rc |= expect_int("wrap: no buffer", dsd_app_scan_list_results_since(start, NULL, 4), 0);
+    rc |= expect_int("wrap: NULL get", dsd_app_scan_list_result_get(NULL), 0);
+    freeState(&state);
+    return rc;
+}
+
+/* A full queue refuses a toggle at once (nothing pending, no result) rather than evict an older command; a toggle that
+   another command evicts, or that a session stop discards, is answered DROPPED. */
+static int
+test_scan_list_set_queue_full_and_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    for (int i = 0; i < 127; i++) {
+        (void)post_empty(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
+    }
+    uint64_t before = scan_list_newest_seq();
+    rc |= expect_int("full queue refuses a toggle", submit_list_set(1U, 2, 0, NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_true("a refused toggle leaves no result", scan_list_newest_seq() == before);
+    rc |= expect_int("the refusal evicted nothing", dsd_app_drain_cmds(&opts, &state), 127);
+
+    /* A toggle at the head of a full queue evicted by a later command. */
+    uint32_t evicted = 0U;
+    rc |= expect_int("toggle queued", submit_list_set(7U, 3, 1, &evicted), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    for (int i = 0; i < 126; i++) {
+        (void)post_empty(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
+    }
+    before = scan_list_newest_seq();
+    rc |= expect_int("an eviction", post_empty(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_list_result("evicted toggle", before, evicted, 7U, 3, 1, DSD_APP_SCAN_LIST_SET_DROPPED);
+    rc |= expect_int("evicted toggle drains no more", dsd_app_drain_cmds(&opts, &state), 127);
+
+    /* A toggle a session stop discards. */
+    uint32_t discarded = 0U;
+    rc |=
+        expect_int("toggle queued before a stop", submit_list_set(8U, 1, 0, &discarded), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    before = scan_list_newest_seq();
+    dsd_app_frontend_runtime_stop();
+    rc |= expect_list_result("discarded toggle", before, discarded, 8U, 1, 0, DSD_APP_SCAN_LIST_SET_DROPPED);
+    rc |= expect_int("a stopped session refuses a toggle", submit_list_set(8U, 1, 0, NULL),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    dsd_app_frontend_runtime_start(&opts, &state);
+    freeState(&state);
+    return rc;
+}
+
+#ifdef USE_RADIO
+/* Toggle and drain one command: its toast (NULL: none) and its result. */
+static int
+drain_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, int code, const char* toast,
+               const char* what) {
+    const uint64_t after = scan_list_newest_seq();
+    uint32_t request = 0U;
+    int rc = expect_int(what, submit_list_set(session, list, enabled, &request), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(what, dsd_app_drain_cmds(opts, state), 1);
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: toast", what);
+    rc |= expect_str(tag, state->ui_msg, toast ? toast : "");
+    DSD_SNPRINTF(tag, sizeof tag, "%s: result", what);
+    rc |= expect_list_result(tag, after, request, session, list, enabled, code);
+    return rc;
+}
+
+/* A raw submission the decoder cannot take: an invalid payload with no toast, and still a result. */
+static int
+drain_list_set_raw(dsd_opts* opts, dsd_state* state, const dsd_app_scan_list_set_payload* p, size_t n,
+                   const char* what) {
+    const uint64_t after = scan_list_newest_seq();
+    int rc = expect_int(what, dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, p, n), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(what, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true(what, dsd_app_command_test_last_invalid_payload() && state->ui_msg[0] == '\0');
+    rc |= expect_list_result(what, after, p->request, p->session, p->list, p->enabled, DSD_APP_SCAN_LIST_SET_INVALID);
+    return rc;
+}
+
+static int
+expect_lists_on(const char* what, const dsd_state* state, int one, int two, int three) {
+    const int ok = state->trunk_scan_list_count == 3U && state->trunk_scan_lists[0].enabled == one
+                   && state->trunk_scan_lists[1].enabled == two && state->trunk_scan_lists[2].enabled == three;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "%s: %u lists, on %u %u %u, want 3 lists, on %d %d %d\n", what,
+                    (unsigned)state->trunk_scan_list_count, (unsigned)state->trunk_scan_lists[0].enabled,
+                    (unsigned)state->trunk_scan_lists[1].enabled, (unsigned)state->trunk_scan_lists[2].enabled, one,
+                    two, three);
+    }
+    return ok ? 0 : 1;
+}
+
+/* Three lists, every target trunked and tuned through a rigctl peer (none connected: the parks land through the tuning
+   hook): security {a}, hospital {b, c}, municipality {d}, all on, parked on a. */
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[3][DSD_TEST_PATH_MAX];
+} scan_list_rig;
+
+static int
+init_scan_list_rig(dsd_opts* opts, dsd_state* state, scan_list_rig* rig) {
+    static const char* const k_names[3] = {"security.csv", "hospital.csv", "municipality.csv"};
+    static const char* const k_rows[3] = {
+        "a,p25-trunk,851000000,,3000,,\n",
+        "b,dmr-trunk,452000000,,3000,,\nc,p25-trunk,853000000,,3000,,\n",
+        "d,dmr-trunk,454000000,,3000,,\n",
+    };
+    int rc = expect_true("scan lists dir", dsd_test_mkdtemp(rig->dir, sizeof rig->dir, "dsdneo_scan_lists") != NULL);
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->trunk_scan_enabled = 1;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = pause_scan_tune_to_cc_ok});
+    for (int i = 0; i < 3; i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "%s%s", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n",
+                     k_rows[i]);
+        rc |=
+            expect_int("scan list path", dsd_test_path_join(rig->csv[i], sizeof rig->csv[i], rig->dir, k_names[i]), 0);
+        rc |= write_file_bytes(rig->csv[i], body, strlen(body));
+        DSD_SNPRINTF(opts->trunk_scan_lists[i].path, sizeof opts->trunk_scan_lists[i].path, "%s", rig->csv[i]);
+    }
+    opts->trunk_scan_list_count = 3;
+    char err[256] = {0};
+    const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    if (init_rc != 0) {
+        DSD_FPRINTF(stderr, "scan lists init: %s\n", err);
+    }
+    rc |= expect_int("scan lists init", init_rc, 0);
+    rc |= expect_true("scan lists: parked on a, three lists on, a session",
+                      strcmp(state->trunk_scan_active_id, "a") == 0 && state->trunk_scan_session != 0U);
+    rc |= expect_lists_on("scan lists start", state, 1, 1, 1);
+    return rc;
+}
+
+static void
+finish_scan_list_rig(dsd_opts* opts, dsd_state* state, const scan_list_rig* rig) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_app_command_test_set_tune_leg(NULL);
+    opts->use_rigctl = 0;
+    for (int i = 0; i < 3; i++) {
+        (void)remove(rig->csv[i]);
+    }
+    freeState(state);
+    (void)dsd_test_rmdir(rig->dir);
+}
+
+/* Every coordinator answer through the queue, each with its toast and its result; a switch of the list on air leaves
+   it at once (D4); the refusals change nothing. */
+static int
+test_scan_list_set_answers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "list 2 off");
+    rc |= expect_int("list 2 off completed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_lists_on("list 2 off", &state, 1, 0, 1);
+    rc |= expect_str("list 2 off keeps a on air", state.trunk_scan_active_id, "a");
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_UNCHANGED,
+                         "Scan list 2 (hospital) is off already", "list 2 off again");
+    rc |= expect_int("list 2 off again completed", dsd_app_command_test_last_failed(), 0);
+
+    /* The list on air: the receiver leaves for the only target left on (D4). */
+    rc |= drain_list_set(&opts, &state, session, 1, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 1 (security) off: 1 of 3 lists on, 1 target", "list 1 off");
+    rc |= expect_true("list 1 off leaves a for d", strcmp(state.trunk_scan_active_id, "d") == 0
+                                                       && state.trunk_scan_active_list == 3U
+                                                       && state.trunk_scan_active_list_off == 0U);
+    /* D5: the last list that is on. */
+    rc |= drain_list_set(&opts, &state, session, 3, 0, DSD_APP_SCAN_LIST_SET_REFUSED_LAST,
+                         "Nothing else to scan: switch on another list first", "list 3 off");
+    rc |= expect_int("list 3 off failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_lists_on("list 3 off refused", &state, 0, 0, 1);
+    rc |= drain_list_set(&opts, &state, session, DSD_APP_SCAN_LIST_ALL, 0, DSD_APP_SCAN_LIST_SET_REFUSED_LAST,
+                         "Nothing else to scan: switch on another list first", "every list off");
+    rc |= drain_list_set(&opts, &state, session, DSD_APP_SCAN_LIST_ALL, 1, DSD_APP_SCAN_LIST_SET_OK,
+                         "All scan lists on: 4 targets", "every list on");
+    rc |= expect_lists_on("every list on", &state, 1, 1, 1);
+    rc |= drain_list_set(&opts, &state, session, DSD_APP_SCAN_LIST_ALL, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED,
+                         "All scan lists are on already", "every list on again");
+    rc |= drain_list_set(&opts, &state, session, 3, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED,
+                         "Scan list 3 (municipality) is on already", "list 3 on again");
+
+    /* Stale: another session, or a list this scan does not have. */
+    const uint32_t seq = state.trunk_scan_lists_seq;
+    rc |= drain_list_set(&opts, &state, session + 1U, 2, 0, DSD_APP_SCAN_LIST_SET_STALE,
+                         "Refused: the scan changed; nothing applied", "another session");
+    rc |= expect_int("another session failed", dsd_app_command_test_last_failed(), 1);
+    rc |= drain_list_set(&opts, &state, session, 4, 0, DSD_APP_SCAN_LIST_SET_STALE,
+                         "Refused: the scan changed; nothing applied", "list 4 of 3");
+    rc |= expect_true("stale toggles change nothing", state.trunk_scan_lists_seq == seq);
+
+    /* What a raw submission can carry. */
+    dsd_app_scan_list_set_payload bad;
+    DSD_MEMSET(&bad, 0, sizeof bad);
+    bad.session = session;
+    bad.request = dsd_app_scan_list_request_next();
+    bad.list = 2;
+    bad.enabled = 0;
+    bad.session = 0U;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad, "session 0");
+    bad.session = session;
+    bad.list = 0;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad, "list 0");
+    bad.list = -2;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad, "list -2");
+    bad.list = DSD_TRUNK_SCAN_MAX_LISTS + 1;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad, "list 9");
+    bad.list = 2;
+    bad.enabled = 2U;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad, "enabled 2");
+    bad.enabled = 0U;
+    rc |= drain_list_set_raw(&opts, &state, &bad, sizeof bad - 1U, "short payload");
+    rc |= expect_int("NULL payload refused at submit", dsd_app_command_scan_list_set(NULL),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_true("invalid payloads change nothing", state.trunk_scan_lists_seq == seq);
+
+    /* Paused (D7): refused with the pause's wording, the lists as they were, until a resume. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "lists: pause");
+    rc |= expect_int("lists: paused", state.trunk_scan_paused, 1);
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_PAUSED, "Scan paused: resume it first",
+                         "list 2 off while paused");
+    rc |= expect_int("list 2 off while paused failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_lists_on("list 2 off while paused", &state, 1, 1, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "lists: resume");
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "list 2 off after the resume");
+
+    /* A new scan: the old session names nothing in it. */
+    finish_scan_list_rig(&opts, &state, &rig);
+    rc |= init_scan_list_rig(&opts, &state, &rig);
+    rc |= expect_true("a new scan, a new session", state.trunk_scan_session != session);
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_STALE,
+                         "Refused: the scan changed; nothing applied", "the last scan's session");
+    rc |= expect_lists_on("the last scan's session changes nothing", &state, 1, 1, 1);
+    finish_scan_list_rig(&opts, &state, &rig);
+
+    /* No trunk scan: no coordinator to ask. */
+    init_test_context(&opts, &state);
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_UNAVAILABLE, "Trunk scan is not running",
+                         "no trunk scan");
+    freeState(&state);
+    return rc;
+}
+
+/* A stand-in for a watchdog tick that holds the P25 SM tick guard until told to leave. */
+typedef struct {
+    atomic_int held;
+    atomic_int leave;
+} guard_holder;
+
+static DSD_THREAD_RETURN_TYPE
+guard_holder_run(void* opaque) {
+    guard_holder* h = opaque;
+    p25_sm_tick_guard_enter();
+    atomic_store(&h->held, 1);
+    while (!atomic_load(&h->leave)) {
+        dsd_thread_yield();
+    }
+    p25_sm_tick_guard_leave();
+    DSD_THREAD_RETURN;
+}
+
+/* The command is not apply-guarded: with a watchdog tick holding the guard the drain does not wait for it, and the
+   coordinator's own try answers BUSY, retained like any answer; the next try switches. A queued toggle returns a
+   decoder holding one carrier (dmrBS()) to the frame loop at its next burst boundary. */
+static int
+test_scan_list_set_busy_and_frame_loop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+
+    guard_holder holder;
+    atomic_store(&holder.held, 0);
+    atomic_store(&holder.leave, 0);
+    dsd_thread_t thread;
+    const int started = dsd_thread_create(&thread, guard_holder_run, &holder) == 0;
+    rc |= expect_true("guard holder started", started);
+    if (started) {
+        while (!atomic_load(&holder.held)) {
+            dsd_thread_yield();
+        }
+        rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_BUSY, "Trunk scan busy; try again",
+                             "list 2 off, guard held");
+        rc |= expect_int("busy failed", dsd_app_command_test_last_failed(), 1);
+        rc |= expect_lists_on("busy changes nothing", &state, 1, 1, 1);
+        atomic_store(&holder.leave, 1);
+        dsd_thread_join(thread);
+    }
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "list 2 off, guard free");
+
+    rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
+    rc |= expect_int("toggle queued", submit_list_set(session, 2, 1, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("a queued toggle needs the frame loop", dsd_runtime_controls_need_frame_loop(), 1);
+    rc |= expect_int("toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_lists_on("toggle applied", &state, 1, 1, 1);
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+
+/* Two requests before one drain (two rows switched quickly, or the same one twice): neither coalesces, both apply in
+   order, and each gets its own result in order. */
+static int
+test_scan_list_set_two_requests_one_drain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+    const uint64_t after = scan_list_newest_seq();
+    uint32_t first = 0U;
+    uint32_t second = 0U;
+    uint32_t third = 0U;
+    rc |= expect_int("first queued", submit_list_set(session, 2, 0, &first), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("second queued", submit_list_set(session, 3, 0, &second), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("the same again queued", submit_list_set(session, 3, 0, &third), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_true("distinct requests", first != second && second != third && first != third);
+    rc |= expect_int("three applied", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_lists_on("both applied", &state, 1, 0, 0);
+    dsd_app_scan_list_result out[4];
+    const int n = dsd_app_scan_list_results_since(after, out, 4);
+    rc |= expect_int("three results", n, 3);
+    if (n == 3) {
+        rc |= expect_true("in order", out[0].request == first && out[1].request == second && out[2].request == third
+                                          && out[0].sequence + 1U == out[1].sequence
+                                          && out[1].sequence + 1U == out[2].sequence);
+        rc |= expect_true("each answered", out[0].code == DSD_APP_SCAN_LIST_SET_OK
+                                               && out[1].code == DSD_APP_SCAN_LIST_SET_OK
+                                               && out[2].code == DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    rc |= expect_str("the toast is the last one's", state.ui_msg, "Scan list 3 (municipality) is off already");
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+
+/* [R19]: a config apply over a running or paused scan keeps the live lists (a live toggle included), and a save writes
+   the configured start states, never a live toggle (D3). Lists the config changes wait for the next start. */
+static int
+test_config_apply_keeps_the_live_lists(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "config: list 2 off");
+    for (int paused = 0; paused < 2; paused++) {
+        if (paused) {
+            rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "config: pause");
+            rc |= expect_int("config: paused", state.trunk_scan_paused, 1);
+        }
+        const uint32_t seq = state.trunk_scan_lists_seq;
+        /* The running spec again, then list 3 starting off (the next start's). */
+        for (int changed = 0; changed < 2; changed++) {
+            DSD_MEMSET(&cfg, 0, sizeof cfg);
+            cfg.has_trunk_scan = 1;
+            cfg.trunk_scan_enabled = 1;
+            cfg.trunk_scan_idle_dwell_ms = opts.trunk_scan_idle_dwell_ms;
+            cfg.trunk_scan_activity_hold_ms = opts.trunk_scan_activity_hold_ms;
+            DSD_MEMCPY(cfg.trunk_scan_lists, opts.trunk_scan_lists, sizeof cfg.trunk_scan_lists);
+            cfg.trunk_scan_list_count = 3;
+            cfg.trunk_scan_lists_named = 0x7U;
+            cfg.trunk_scan_lists_off_is_set = 1;
+            cfg.trunk_scan_lists[2].start_off = changed ? 1U : 0U;
+            rc |= drain_config(&opts, &state, &cfg, changed ? "config: list 3 starts off" : "config: the same lists");
+            if (expect_lists_on("config: the live lists stay", &state, 1, 0, 1) != 0
+                || state.trunk_scan_lists_seq != seq || state.trunk_scan_session != session
+                || state.trunk_scan_paused != paused) {
+                DSD_FPRINTF(stderr, "  (paused=%d changed=%d) seq %u -> %u\n", paused, changed, (unsigned)seq,
+                            (unsigned)state.trunk_scan_lists_seq);
+                rc = 1;
+            }
+            rc |=
+                expect_int("config: restart only for a change", dsd_app_command_test_last_restart_required(), changed);
+            DSD_MEMSET(&saved, 0, sizeof saved);
+            dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+            rc |= expect_true("config: a save writes no live toggle",
+                              saved.trunk_scan_list_count == 3 && saved.trunk_scan_lists[1].start_off == 0U
+                                  && saved.trunk_scan_lists[2].start_off == (changed ? 1U : 0U));
+        }
+    }
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "config: resume");
+    rc |= expect_lists_on("config: the resume keeps the live lists", &state, 1, 0, 1);
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Signal search refuses a toggle with every receiver command, never asking the coordinator, and the refusal is
+   retained as a result. */
+static int
+test_scan_list_set_under_signal_search(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+    const uint32_t seq = state.trunk_scan_lists_seq;
+    g_signal_search_active = 1;
+    rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_SEARCH,
+                         "Stop Signal search before changing receiver settings", "list 2 off under Signal search");
+    g_signal_search_active = 0;
+    rc |= expect_int("search refusal failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_true("search refusal changes nothing", state.trunk_scan_lists_seq == seq);
+    rc |= expect_lists_on("search refusal", &state, 1, 1, 1);
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+#endif
+#endif /* USE_RADIO */
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -25800,6 +26372,18 @@ main(void) {
     rc |= test_scan_avoid_counts_past_65535();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_scan_avoid_edits_under_search_and_replay();
+#endif
+    rc |= test_scan_list_requests_from_two_callers();
+    rc |= test_scan_list_results_wrap();
+    rc |= test_scan_list_set_queue_full_and_dropped();
+#ifdef USE_RADIO
+    rc |= test_scan_list_set_answers();
+    rc |= test_scan_list_set_busy_and_frame_loop();
+    rc |= test_scan_list_set_two_requests_one_drain();
+    rc |= test_config_apply_keeps_the_live_lists();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_scan_list_set_under_signal_search();
+#endif
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_signal_search_refuses_channel_cycle_prev();

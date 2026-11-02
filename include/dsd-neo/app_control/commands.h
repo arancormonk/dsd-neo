@@ -119,6 +119,11 @@ enum dsd_app_command_id {
     // scan is paused, and for -Y rows whenever no trunk scan runs (-Y stopped, -T): the avoids still filter the control
     // channel hunts there.
     DSD_APP_CMD_SCAN_AVOID_REMOVE = 221,
+    // Switch one --trunk-scan target list on or off for the session, or every list on (issue #697); payload
+    // dsd_app_scan_list_set_payload, submitted with dsd_app_command_scan_list_set(). Set semantics: the list ends in
+    // the state asked for. Switching off the list of the target on air leaves it at once, as `b` does. A paused scan
+    // and Signal search refuse it. Every one gets a retained result (dsd_app_scan_list_results_since()).
+    DSD_APP_CMD_SCAN_LIST_SET = 222,
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
@@ -686,6 +691,48 @@ typedef struct {
     char target_id[64];
 } dsd_app_scan_avoid_remove_payload;
 
+/** The @c list of dsd_app_scan_list_set_payload that names every list: switched on, all of them at once. */
+enum { DSD_APP_SCAN_LIST_ALL = -1 };
+
+/** DSD_APP_CMD_SCAN_LIST_SET (issue #697): switch trunk-scan target list @c list (1-based, CLI/INI order) on or off,
+ * or every list on (DSD_APP_SCAN_LIST_ALL with @c enabled 1). @c session is dsd_state::trunk_scan_session as the
+ * frontend saw it (nonzero), so a request made of one scan never lands on the next. @c request is the caller's id from
+ * dsd_app_scan_list_request_next(), which the retained result carries back. @c enabled is 0 or 1. */
+typedef struct {
+    uint32_t session;
+    uint32_t request;
+    int16_t list;
+    uint8_t enabled;
+    uint8_t pad; /* explicit, so the payload carries no indeterminate padding */
+} dsd_app_scan_list_set_payload;
+
+/** What one DSD_APP_CMD_SCAN_LIST_SET did. 0 to -5 are the coordinator's answers (the same values as
+ * dsd_trunk_scan_list_set_result); the rest are app-control's, for a request the coordinator never saw. */
+typedef enum {
+    DSD_APP_SCAN_LIST_SET_OK = 0,            /**< The list is switched as asked */
+    DSD_APP_SCAN_LIST_SET_UNCHANGED = 1,     /**< It already was (every list, for DSD_APP_SCAN_LIST_ALL) */
+    DSD_APP_SCAN_LIST_SET_REFUSED_LAST = -1, /**< Switching it off would leave nothing to scan */
+    DSD_APP_SCAN_LIST_SET_BUSY = -2,         /**< The coordinator was busy; try again */
+    DSD_APP_SCAN_LIST_SET_UNAVAILABLE = -3,  /**< No trunk scan runs */
+    DSD_APP_SCAN_LIST_SET_PAUSED = -4,       /**< The scan is paused: resume it first */
+    DSD_APP_SCAN_LIST_SET_STALE = -5,        /**< The session is not this scan's, or it has no such list */
+    DSD_APP_SCAN_LIST_SET_INVALID = -6,      /**< The decoder could not take the payload */
+    DSD_APP_SCAN_LIST_SET_SEARCH = -7,       /**< Signal search runs: refused with every receiver command */
+    DSD_APP_SCAN_LIST_SET_DROPPED = -8,      /**< Never applied: the session stopped or the queue overflowed first */
+} dsd_app_scan_list_set_code;
+
+/** The retained outcome of one DSD_APP_CMD_SCAN_LIST_SET: the request as submitted and what it did. @c sequence is
+ * nonzero, process-wide, and advances per result. */
+typedef struct {
+    uint64_t sequence;
+    uint32_t request;
+    uint32_t session;
+    int16_t list;
+    uint8_t enabled;
+    uint8_t pad;
+    int32_t code; /**< dsd_app_scan_list_set_code */
+} dsd_app_scan_list_result;
+
 typedef enum {
     DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
     DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
@@ -752,6 +799,18 @@ int dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload);
 /** Submit DSD_APP_CMD_SCAN_AVOID_REMOVE. A NULL payload or a @c target_id that is not NUL-terminated is rejected here;
  * the decoder checks the rest. */
 int dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload);
+/** Submit DSD_APP_CMD_SCAN_LIST_SET. A NULL payload is rejected here, and so is any submission while the queue is
+ * full: unlike other commands it never evicts the oldest, so a rejected request is never pending and gets no
+ * retained result. The decoder checks the rest. */
+int dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload);
+/** A fresh request id for dsd_app_scan_list_set_payload::request: process-wide, never 0, so the terminal, Qt and the
+ * control API never take each other's results. Any thread. */
+uint32_t dsd_app_scan_list_request_next(void);
+/** Copy the newest retained scan-list result. Returns 1 if one exists, 0 otherwise (out is zeroed) or for NULL out. */
+int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
+/** dsd_app_tg_export_results_since() for scan-list results: every DSD_APP_CMD_SCAN_LIST_SET the queue took gets one,
+ * a refusal, an invalid payload, a Signal search refusal and a request dropped unapplied included. */
+int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

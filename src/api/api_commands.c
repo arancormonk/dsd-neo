@@ -25,6 +25,7 @@
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/config.h>
 
@@ -598,6 +599,48 @@ submit_scan_avoid_remove(const api_command_desc* d, const dsd_json_node* params,
     return dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, &p, sizeof p);
 }
 
+/* scan_list_set (issue #697): list 1..8 or "all", enabled 0 or 1, session 1..UINT32_MAX (refused above rather than
+   narrowed), and the caller's request id when it gives one (else a fresh one). */
+static int
+scan_list_set_params(const dsd_json_node* params, dsd_app_scan_list_set_payload* p) {
+    const dsd_json_node* list = dsd_json_obj_get(params, "list");
+    const char* all = dsd_json_as_str_bounded(list, sizeof "all");
+    int64_t number = 0;
+    if (all != NULL) {
+        if (strcmp(all, "all") != 0) {
+            return -1;
+        }
+        p->list = DSD_APP_SCAN_LIST_ALL;
+    } else if (param_i64(params, "list", 1, DSD_TRUNK_SCAN_MAX_LISTS, &number) == 0) {
+        p->list = (int16_t)number;
+    } else {
+        return -1;
+    }
+    int64_t enabled = 0;
+    if (param_i64(params, "enabled", 0, 1, &enabled) != 0 || param_u32(params, "session", &p->session) != 0
+        || p->session == 0U) {
+        return -1;
+    }
+    p->enabled = (uint8_t)enabled;
+    if (dsd_json_obj_get(params, "request") == NULL) {
+        p->request = dsd_app_scan_list_request_next();
+        return 0;
+    }
+    return param_u32(params, "request", &p->request);
+}
+
+static int
+submit_scan_list_set(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)d;
+    (void)request_id;
+    dsd_app_scan_list_set_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    if (scan_list_set_params(params, &p)) {
+        return API_INVALID_PARAMS;
+    }
+    return dsd_app_command_scan_list_set(&p);
+}
+
 static int
 submit_airspy(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)d;
@@ -972,6 +1015,8 @@ static const api_command_desc k_commands[] = {
     API_ACTION("scan_avoid_clear", DSD_APP_CMD_SCAN_AVOID_CLEAR),
     API_KIND("scan_avoid_remove", DSD_APP_CMD_SCAN_AVOID_REMOVE, submit_scan_avoid_remove,
              "{kind:lcn|trunk_scan,instance,list_rev,row,frequency_hz,session,target_id}"),
+    API_KIND("scan_list_set", DSD_APP_CMD_SCAN_LIST_SET, submit_scan_list_set,
+             "{list:1..8|all,enabled:0|1,session,request?}"),
     API_ACTION("scan_resume", DSD_APP_CMD_SCAN_RESUME),
 
     API_ACTION("quit", DSD_APP_CMD_QUIT),

@@ -54,6 +54,16 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
 }
 
 int
+dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
+    return capture(DSD_APP_CMD_SCAN_LIST_SET, payload, sizeof *payload);
+}
+
+uint32_t
+dsd_app_scan_list_request_next(void) {
+    return 5150U;
+}
+
+int
 dsd_app_command_action(int cmd_id) {
     return capture(cmd_id, NULL, 0U);
 }
@@ -621,6 +631,32 @@ test_scan_avoid_remove(void) {
     free(long_id);
 }
 
+/* scan_list_set (issue #697): a list number or "all", on or off, the session it names and the caller's request id (a
+   fresh one when absent) reach the payload; anything else is refused. */
+static void
+test_scan_list_set(void) {
+    dsd_app_scan_list_set_payload p = {0};
+    assert(ok("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":2,\"enabled\":0,\"session\":4294967295,"
+              "\"request\":77}}"));
+    assert(g_last_id == DSD_APP_CMD_SCAN_LIST_SET && g_last_n == sizeof p);
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.list == 2 && p.enabled == 0U && p.session == UINT32_MAX && p.request == 77U && p.pad == 0U);
+    assert(ok("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"all\",\"enabled\":1,\"session\":3}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.list == DSD_APP_SCAN_LIST_ALL && p.enabled == 1U && p.session == 3U && p.request == 5150U);
+
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":0,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":9,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":-1,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"every\",\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":2,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":0}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":4294967297}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":3,\"request\":-1}}");
+}
+
 static void
 test_config(void) {
     assert(ok("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":{\"enabled\":true}}}}"));
@@ -669,6 +705,7 @@ main(void) {
     test_receive();
     test_structured();
     test_scan_avoid_remove();
+    test_scan_list_set();
     test_config();
     test_response_framing();
     free(g_last);

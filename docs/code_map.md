@@ -3589,12 +3589,31 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put
     back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
     `API_COMMAND_PAYLOADS`.
+  - Scan list toggle (issue #697): `SCAN_LIST_SET` (222, `dsd_app_scan_list_set_payload {session, request, list,
+    enabled}`, typed submit `dsd_app_command_scan_list_set()`; min-size rule; not coalescible) switches one trunk-scan
+    target list on or off, or every list on (`DSD_APP_SCAN_LIST_ALL`), with set semantics. Like the scan controls it
+    is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
+    the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), not on `k_deferred_commands` (a queued
+    toggle returns `dmrBS()` to the frame loop at a burst boundary: it can move the tuner), and refused under Signal
+    search. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or all,
+    enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code alone
+    (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`, `... is off
+    already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the other scan
+    controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue took gets
+    a retained result `{sequence, request, session, list, enabled, code}` (`src/app_control/scan_list_results.c`):
+    the coordinator's `dsd_trunk_scan_list_set_result` passes through as `dsd_app_scan_list_set_code`, and app-control
+    adds `INVALID` (envelope or payload), `SEARCH` (`apply_cmd()` records it) and `DROPPED` (evicted by a later
+    command or discarded at a session stop). A full queue refuses a toggle at submit instead of evicting the oldest,
+    so a refused request is never pending and gets no result. Request ids come from the process-wide
+    `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each other's results.
+    Toggles are session-only: the coordinator's lists survive a config apply, running or paused, and a save writes
+    the configured start states (D3). Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
-  - Retained results: talkgroup export and decryption completions are kept as the latest result
-    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`) and in a history of the last
-    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`), for a consumer that must see every completion (the control API, which
+  - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
+    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
+    history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every completion (the control API, which
     reports a `result_gap` when more completed than the history held)
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
@@ -4195,6 +4214,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   is `dsd_app_scan_avoid_remove_payload`: LCN `(instance, list_rev, row, frequency_hz)`, trunk scan
   `(session, target_id)`. A target id is valid UTF-8 (`dsd_trunk_scan_load_targets_csv()` refuses any other, through
   `dsd_utf8_is_valid()`), so the Qt key, the QML entry and the API's JSON carry it byte for byte. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
+  `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/scan_list_view.h` and `src/app_control/scan_list_view.c` (issue #697) give the
+  trunk-scan target lists every frontend and the API show and switch. `dsd_app_scan_list_view_get()` reads only the
+  coordinator's published fields (`trunk_scan_lists[]`, `trunk_scan_list_count` clamped to 8, `trunk_scan_active_list`,
+  `trunk_scan_active_list_off`, `trunk_scan_lists_seq`, `trunk_scan_session`) and the scan state view, from a snapshot
+  pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
+  per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
+  `active_list`, `running`/`paused`, `toggleable` (running, not paused, 2+ lists) and the terminal strip (`1 [2] *3`:
+  `*` before a list that is off, brackets round the list on air). A frontend acts when `lists_seq` or `session`
+  moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu

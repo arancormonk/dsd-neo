@@ -154,6 +154,7 @@ static const sample k_samples[] = {
     {"tone_filter_set", "{\"mode\":1,\"list\":\"100.0\"}"},
     {"receive_set", "{\"kind\":1,\"enabled\":1,\"allow\":\"7\",\"block\":\"8\"}"},
     {"scan_avoid_remove", "{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"county-p25\"}"},
+    {"scan_list_set", "{\"list\":2,\"enabled\":0,\"session\":1}"},
     {"scan_row_edit", "{\"scanner\":2,\"session\":1,\"row\":0,\"field\":1,\"action\":1,\"squelch_db\":-50}"},
     {"pulse_out_set", "{\"value\":\"default\"}"},
     {"pulse_in_set", "{\"value\":\"default\"}"},
