@@ -1330,7 +1330,7 @@ list_departure_yields_a_continuous_dmr_carrier(void) {
     /* The P25 system's retune fails, and so does the fallback onto the DMR one: the departure is owed. */
     g_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     trunk_scan_test_set_now(0.10);
-    int rc = expect(dsd_engine_trunk_scan_list_set(&g_opts, &g_state, g_state.scan_row_session, 1, 0, 1U)
+    int rc = expect(dsd_engine_trunk_scan_list_set(&g_opts, &g_state, g_state.trunk_scan_session, 1, 0, 1U)
                         == DSD_TRUNK_SCAN_LIST_SET_OK,
                     "list 1 switched off");
     g_result = DSD_TRUNK_TUNE_RESULT_OK;

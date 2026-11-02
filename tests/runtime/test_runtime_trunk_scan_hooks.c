@@ -367,6 +367,10 @@ main(void) {
     /* The name reaches the implementation, zeroed first, so one that fills nothing leaves no garbage behind. */
     assert(g_unavoid_name == &name && name.ordinal == 0U && name.label[0] == '\0');
     assert(g_control_calls == 5);
+    /* The put back and the list toggle (issue #697) each reach their own slot only. */
+    assert(g_list_set_calls == 2);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 7U, 1, 1, 14U) == DSD_TRUNK_SCAN_LIST_SET_OK);
+    assert(g_list_set_calls == 3 && g_list_set_session == 7U && g_list_set_list == 1 && g_unavoid_calls == 2);
 
     /* Uninstalling (NULL clears every slot) restores the unavailable answer. */
     dsd_trunk_scan_hooks_set(NULL);
@@ -381,7 +385,7 @@ main(void) {
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
     assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 1, 13U) == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE);
-    assert(g_list_set_calls == 2);
+    assert(g_list_set_calls == 3);
     test_recovery_ownership();
     test_presumptive_startup_owner();
     return 0;

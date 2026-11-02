@@ -381,10 +381,10 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   the band-plan export read every snapshot.
 - List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
   paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
-  `coord->session`; #672's published `trunk_scan_session` is the frontends' source once it lands, `scan_row_session`
-  until then), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off included),
-  then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list that comes
-  on and gives the visit on air its first eligible alternate restarts its cap
+  `coord->session`, which frontends read as the published `trunk_scan_session`, the session a put back names too, kept
+  while paused), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off
+  included), then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
+  that comes on and gives the visit on air its first eligible alternate restarts its cap
   (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). Toggles are session-only; the
   configured start states in `dsd_opts::trunk_scan_lists` never change.
 - Departure obligation (issue #697, §2.4): while the target on air is out of the rotation (its list off and the
@@ -394,7 +394,9 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   under its own target and the hold carries over), and an attempt that did not move waits for the soonest cooldown of
   what it tried (a switch that cannot be prepared cools its target down as a failed retune does, in every advance and
   resume walk), or a cooldown when nothing cooled. Nothing is stored about the reasons: they are read again each time,
-  so a list switched back on, every list on or the avoids cleared end it, and it stays while either reason holds.
+  so a list switched back on, every list on, the avoids cleared or the target put back (issue #672) end it, and it
+  stays while either reason holds: a put back never switches a list on. #672's "already avoided" answer comes first,
+  so `b` on the avoided fallback changes nothing and the departure runs on its own once an alternate is eligible.
   `depart_due_m`/`depart_yield` say when it is next due and whether the frame loop may yield for it then:
   `dsd_engine_trunk_scan_departure_due()` (two fields and the decode clock, no walk) joins the frame-sync yield
   predicate, so a continuous DMR carrier unwinds at a burst boundary and the tick departs after protocol cleanup; with
@@ -507,29 +509,30 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a
-  clear that cleared something, a put back. A hop, advance, retreat, hold, pause, resume (refused or not) or target
-  edit changes no flag and stamps nothing; the frontends rebuild only when the revision moves. A list that cannot
-  allocate is published empty with `trunk_scan_avoids_ok` 0 (never stale entries) and `avoids_publish_retry` set; the
-  tick services that flag before its paused return, rebuilding the list alone, and a retry that fails again stamps
-  nothing. `trunk_scan_session` (`coord->session`, published with the configured state, so kept while paused unlike
-  `scan_row_session`) is a put back identity's other half. The detach (`trunk_scan_clear_published_target()`) frees
-  the list, zeroes the session and stamps the revision. `dsd_engine_trunk_scan_unavoid_target()` (the `unavoid` hook)
-  finds the target by `(session, id)` (`trunk_scan_edit_find()`; STALE when absent or session 0, NOT_AVOIDED when
-  clear), clears its flag only -- no retune, hold, retry-cooldown or dwell change -- restarts the visit cap only when
-  it makes the first eligible alternate (clear's rule, `trunk_scan_restart_visit_for_new_alternate()`; the parked
-  fallback is no alternate, so putting it back only drops its avoided mark), then republishes the list, the target and
-  the timing. A paused scan takes the put back and the clear (flag edits; its timing stays cleared) and refuses every
-  other control. Avoid on an active target already avoided (the parked fallback) answers
-  `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` before anything runs (B4): no release, walk, tune, flag, revision or clock.
-  Timing after a control (B5): the report reads the parked target's P25 machine, which the watchdog changes under the
-  P25 SM tick guard, so `trunk_scan_control_publish_timing()` builds it only under `p25_sm_tick_guard_try_enter()`,
-  never nested (the flag-only controls and the put back hold no guard; avoid, advance and retreat leave theirs first);
-  when the guard is held the control publishes nothing and the next tick publishes it as every tick does, and
-  `trunk_scan_publish_timing()` leaves a paused scan's timing cleared whoever calls it. Tests: `ENGINE_TRUNK_SCAN` (put
-  back, stale and unknown identities, the parked fallback with and without a visit cap, cooldowns and the dwell kept,
-  the cap's 0 -> 1 rule, paused put back and clear, rebuild sites, allocation failure retried while paused, the busy
-  guard), `ENGINE_TRUNK_SCAN_PAUSE` (controls and put backs beside a thread changing the P25 machine under the real
-  guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
+  clear that cleared something, a put back. A hop, advance, retreat, hold, pause, resume (refused or not) or target edit
+  changes no flag and stamps nothing; the frontends rebuild only when the revision moves. A list that cannot allocate is
+  published empty with `trunk_scan_avoids_ok` 0 (never stale entries) and `avoids_publish_retry` set; the tick services
+  that flag before its paused return, rebuilding the list alone, and a retry that fails again stamps nothing.
+  `trunk_scan_session` (`coord->session`, published with the configured state, so kept while paused unlike
+  `scan_row_session`) is a put back identity's other half. The detach (`trunk_scan_clear_published_target()`) frees the
+  list, zeroes the session and stamps the revision. `dsd_engine_trunk_scan_unavoid_target()` (the `unavoid` hook) finds
+  the target by `(session, id)` (`trunk_scan_edit_find()`; STALE when absent or session 0, NOT_AVOIDED when clear),
+  clears its flag only -- no retune, hold, retry-cooldown or dwell change -- restarts the visit cap only when it makes
+  the first eligible alternate (clear's rule, `trunk_scan_restart_visit_for_new_alternate()`; the parked fallback is no
+  alternate, so putting it back only drops its avoided mark, and with it the departure it owed while its list is on,
+  issue #697), arms the departure the target on air may still owe, as clear does (a target put back can be its first
+  alternate), then republishes the list, the target and the timing. A paused scan takes the put back and the clear (flag
+  edits; its timing stays cleared) and refuses every other control. Avoid on an active target already avoided (the
+  parked fallback) answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` before anything runs (B4): no release, walk, tune,
+  flag, revision or clock. Timing after a control (B5): the report reads the parked target's P25 machine, which the
+  watchdog changes under the P25 SM tick guard, so `trunk_scan_control_publish_timing()` builds it only under
+  `p25_sm_tick_guard_try_enter()`, never nested (the flag-only controls and the put back hold no guard; avoid, advance
+  and retreat leave theirs first); when the guard is held the control publishes nothing and the next tick publishes it
+  as every tick does, and `trunk_scan_publish_timing()` leaves a paused scan's timing cleared whoever calls it. Tests:
+  `ENGINE_TRUNK_SCAN` (put back, stale and unknown identities, the parked fallback with and without a visit cap,
+  cooldowns and the dwell kept, the cap's 0 -> 1 rule, paused put back and clear, rebuild sites, allocation failure
+  retried while paused, the busy guard), `ENGINE_TRUNK_SCAN_PAUSE` (controls and put backs beside a thread changing the
+  P25 machine under the real guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.

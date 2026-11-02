@@ -1127,8 +1127,8 @@ list_toggle_takes_the_guard(void) {
     }
     dsd_mutex_init(&g_holder.mutex);
     dsd_cond_init(&g_holder.condition);
-    const uint32_t session = g_state.scan_row_session;
-    int rc = 0;
+    const uint32_t session = g_state.trunk_scan_session;
+    int rc = expect(session != 0U, "the scan publishes its session");
     dsd_thread_t holder;
     if (!start_guard_holder(&holder, dsd_app_command_test_policy_guard_waits())) {
         rc |= expect(0, "guard holder for the toggle");
@@ -1151,6 +1151,7 @@ list_toggle_takes_the_guard(void) {
                  "list 1 back on");
     rc |= expect(run_action(DSD_APP_CMD_SCANNER_TOGGLE) == 1 && toast_is("Trunk scan paused"), "y pauses");
     rc |= expect_paused("paused with two lists");
+    rc |= expect(g_state.trunk_scan_session == session, "the session stays published while paused");
     rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 2, 0, 4U) == DSD_TRUNK_SCAN_LIST_SET_PAUSED
                      && g_state.trunk_scan_lists[1].enabled == 1U,
                  "a paused scan refuses a toggle");

@@ -16583,9 +16583,12 @@ avoid_onto_the_fallback(dsd_opts* opts, dsd_state* state, int targets) {
 
 /* B4: avoiding the avoided fallback again is answered at once and does nothing -- no release of its call, no walk, no
    tune, no flag, revision or clock -- with the alternates cooling down and once they are eligible again, with several
-   usable alternates and with one. Putting it back clears only its avoided mark: the call and the receiver stay. */
+   usable alternates and with one. Putting it back clears only its avoided mark: the call and the receiver stay, and,
+   back in the rotation, the fallback owes no departure (issue #697 [S4]), so the next tick keeps them too. Without the
+   put back (@p put_back 0), the first tick once an alternate is eligible leaves the avoided fallback, its call
+   ending, ahead of the call's activity (issue #697, the departure obligation). */
 static int
-run_avoid_on_the_parked_fallback(const char* body, int targets) {
+run_avoid_on_the_parked_fallback(const char* body, int targets, int put_back) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
@@ -16601,17 +16604,30 @@ run_avoid_on_the_parked_fallback(const char* body, int targets) {
                                  dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
                                  DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED);
     test_rc |= expect_avoid_untouched(&opts, &state, "avoid while the alternates cool", &before);
-    /* The call keeps the fallback past the cooldowns, the alternates eligible again. */
+    /* The cooldowns ran out at 2.0, so the alternates are eligible again: before the tick that would leave the avoided
+       fallback, avoiding it again is still refused and still does nothing (#672's refusal comes first). */
     trunk_scan_test_set_now(2.50);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "the call keeps the fallback", 0U);
+    test_rc |= expect_active_target(&state, "the call keeps the fallback until a tick", 0U);
     before = avoid_untouched_now(&state);
     test_rc |= expect_control_rc("avoid with alternates eligible",
                                  dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
                                  DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED);
     test_rc |= expect_avoid_untouched(&opts, &state, "avoid with alternates eligible", &before);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_same_timing(&state, "tick after the refused avoid", &before.timing);
+    if (!put_back) {
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "the tick leaves the avoided fallback", 1U);
+        test_rc |= expect_scan_control_publication(&state, "the tick leaves the avoided fallback", 0U, 0U, 1U);
+        test_rc |= expect_avoid_list(&state, "the tick leaves the avoided fallback", "a");
+        if (g_explicit_call_ends != before.call_ends + 1) {
+            DSD_FPRINTF(stderr, "leaving the avoided fallback ended %d calls, want 1\n",
+                        g_explicit_call_ends - before.call_ends);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return test_rc;
+    }
 
     /* Put back: the receiver stays and its call goes on, only the avoided mark goes. */
     trunk_scan_test_set_now(2.60);
@@ -16627,6 +16643,16 @@ run_avoid_on_the_parked_fallback(const char* body, int targets) {
         DSD_FPRINTF(stderr, "put back the fallback released its call\n");
         test_rc = 1;
     }
+    /* Back in the rotation, it owes no departure: the next tick keeps the receiver, the call and the timing. */
+    trunk_scan_test_set_now(2.70);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "tick after the put back", 0U);
+    test_rc |= expect_no_tune_since("tick after the put back", before.tunes);
+    test_rc |= expect_same_timing(&state, "tick after the put back", &before.timing);
+    if (g_explicit_call_ends != before.call_ends || opts.trunk_is_tuned != 1) {
+        DSD_FPRINTF(stderr, "the tick after the put back released the call\n");
+        test_rc = 1;
+    }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -16635,10 +16661,14 @@ run_avoid_on_the_parked_fallback(const char* body, int targets) {
 
 static int
 test_avoid_on_the_parked_fallback(void) {
-    return run_avoid_on_the_parked_fallback(k_avoid_body3, 3)
-           | run_avoid_on_the_parked_fallback("a,p25-trunk,851000000,,250,,,North\n"
-                                              "b,p25-trunk,852000000,,250,,,East\n",
-                                              2);
+    static const char k_body2[] = "a,p25-trunk,851000000,,250,,,North\n"
+                                  "b,p25-trunk,852000000,,250,,,East\n";
+    int rc = 0;
+    for (int put_back = 1; put_back >= 0; put_back--) {
+        rc |= run_avoid_on_the_parked_fallback(k_avoid_body3, 3, put_back);
+        rc |= run_avoid_on_the_parked_fallback(k_body2, 2, put_back);
+    }
+    return rc;
 }
 
 /* A put back clears no retry cooldown: the parked fallback put back while its alternates cool down keeps the receiver
@@ -16677,7 +16707,8 @@ test_unavoid_keeps_the_cooldowns(void) {
 }
 
 /* The parked fallback put back under a running visit cap: it is no alternate of its own visit, so the cap's deadline
-   stays where it was. A long dwell keeps the fallback on air past the alternates' cooldowns, so the cap counts. */
+   stays where it was. It is put back once the alternates' cooldowns ran out, before the tick that would leave the
+   avoided fallback (issue #697); back in the rotation it stays, and a long dwell keeps it on air, so the cap counts. */
 static int
 test_unavoid_of_the_fallback_keeps_the_visit_cap(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -16697,13 +16728,11 @@ test_unavoid_of_the_fallback_keeps_the_visit_cap(void) {
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
     g_counting_tune_to_cc_failures_remaining = 0;
     test_rc |= expect_scan_control_publication(&state, "fallback", 0U, 1U, 1U);
-    /* The alternates eligible again: the cap counts from the fallback's park, at 0. */
-    trunk_scan_test_set_now(2.50);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "fallback past the cooldowns", 0U);
-    test_rc |= expect_scan_visit(&state, "fallback past the cooldowns", 10000U, 10.0);
+    /* The alternates eligible again, and no tick yet: the put back's own timing shows the cap counting from the
+       fallback's park, at 0. */
     const int tunes = g_counting_tune_to_cc_calls;
-    trunk_scan_test_set_now(4.00);
+    trunk_scan_test_set_now(2.50);
+    test_rc |= expect_active_target(&state, "fallback past the cooldowns", 0U);
     test_rc |=
         expect_control_rc("put back the fallback",
                           dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
@@ -16713,7 +16742,9 @@ test_unavoid_of_the_fallback_keeps_the_visit_cap(void) {
     test_rc |= expect_no_tune_since("put back the fallback", tunes);
     trunk_scan_test_set_now(4.50);
     dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "tick after the put back", 0U);
     test_rc |= expect_scan_visit(&state, "tick after the put back", 10000U, 10.0);
+    test_rc |= expect_no_tune_since("tick after the put back", tunes);
     trunk_scan_test_set_now(10.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "the cap expires on time", 1U);
@@ -17161,7 +17192,7 @@ scan_lists_finish(scan_list_files* files, dsd_opts* opts, dsd_state* state) {
 /* A toggle as a frontend asks for it: the session the running scan publishes. */
 static int
 list_set(dsd_opts* opts, dsd_state* state, int list, int enabled) {
-    return dsd_engine_trunk_scan_list_set(opts, state, state->scan_row_session, list, enabled, 7U);
+    return dsd_engine_trunk_scan_list_set(opts, state, state->trunk_scan_session, list, enabled, 7U);
 }
 
 static int
@@ -17572,8 +17603,14 @@ test_lists_refusals(void) {
     test_rc |= expect_list_rc("a off, the others avoided", list_set(&opts, &state, 1, 0),
                               DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
 
-    const uint32_t session = state.scan_row_session;
+    /* The session a list toggle names is the one a put back names (issue #672's trunk_scan_session). */
+    const uint32_t session = state.trunk_scan_session;
     const uint32_t seq = state.trunk_scan_lists_seq;
+    if (session == 0U || session != state.scan_row_session) {
+        DSD_FPRINTF(stderr, "running: trunk_scan_session %u, scan_row_session %u; want the same nonzero session\n",
+                    (unsigned)session, (unsigned)state.scan_row_session);
+        test_rc = 1;
+    }
     test_rc |= expect_list_rc("another session", dsd_engine_trunk_scan_list_set(&opts, &state, session + 1U, 2, 0, 7U),
                               DSD_TRUNK_SCAN_LIST_SET_STALE);
     test_rc |= expect_list_rc("no session", dsd_engine_trunk_scan_list_set(&opts, &state, 0U, 2, 0, 7U),
@@ -17586,8 +17623,14 @@ test_lists_refusals(void) {
     if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0) {
         test_rc = 1;
     }
-    test_rc |= expect_list_rc("paused", dsd_engine_trunk_scan_list_set(&opts, &state, session, 3, 0, 7U),
-                              DSD_TRUNK_SCAN_LIST_SET_PAUSED);
+    /* Paused, the published session stays (scan_row_session does not), so a frontend's toggle hears "paused", not
+       "stale". */
+    if (state.trunk_scan_session != session || state.scan_row_session != 0U) {
+        DSD_FPRINTF(stderr, "paused: trunk_scan_session %u, scan_row_session %u; want %u and 0\n",
+                    (unsigned)state.trunk_scan_session, (unsigned)state.scan_row_session, (unsigned)session);
+        test_rc = 1;
+    }
+    test_rc |= expect_list_rc("paused", list_set(&opts, &state, 3, 0), DSD_TRUNK_SCAN_LIST_SET_PAUSED);
     if (state.trunk_scan_lists_seq != seq || state.trunk_scan_lists[2].enabled != 1U) {
         DSD_FPRINTF(stderr, "a refused toggle changed the lists: seq %u -> %u, wide %u\n", (unsigned)seq,
                     (unsigned)state.trunk_scan_lists_seq, (unsigned)state.trunk_scan_lists[2].enabled);
@@ -17852,8 +17895,9 @@ test_lists_departure_with_an_async_failure_retries_the_landing(void) {
 }
 
 /* [S4] The obligation ends as soon as the target on air is in the rotation again -- its list switched back on, every
- * list on, the avoids cleared -- and stays while either reason still holds: an avoided target whose list is off owes
- * the departure after its avoid is cleared. Both reasons are published, each on its own. */
+ * list on, the avoids cleared, the target put back (issue #672) -- and stays while either reason still holds: an
+ * avoided target whose list is off owes the departure after its avoid is cleared or it is put back, and a put back
+ * never switches its list on. Both reasons are published, each on its own. */
 static int
 test_lists_departure_cancellation(void) {
     static const char* const names[] = {"a", "b"};
@@ -17861,7 +17905,7 @@ test_lists_departure_cancellation(void) {
     static dsd_opts opts;
     static dsd_state state;
     int test_rc = 0;
-    for (int how = 0; how < 3; how++) {
+    for (int how = 0; how < 4; how++) {
         scan_list_files files;
         if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
             return 1;
@@ -17878,8 +17922,16 @@ test_lists_departure_cancellation(void) {
             test_rc |= expect_control_rc(
                 "avoid a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
             test_rc |= expect_scan_control_publication(&state, "avoid a, b failing", 1U, 1U, 1U);
-            test_rc |= expect_control_rc(
-                "clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+            if (how == 2) {
+                test_rc |= expect_control_rc(
+                    "clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+            } else {
+                test_rc |= expect_control_rc(
+                    "put back a",
+                    dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
+                    DSD_TRUNK_SCAN_CONTROL_OK);
+                test_rc |= expect_scan_control_publication(&state, "a put back", 1U, 0U, 0U);
+            }
         }
         g_counting_tune_to_cc_failures_remaining = 0;
         test_rc |= expect_list_on_air(&state, "back in the rotation", 1U, 0U, 1U, 2U);
@@ -17890,29 +17942,78 @@ test_lists_departure_cancellation(void) {
         scan_lists_finish(&files, &opts, &state);
     }
 
-    /* List off and avoided at once: clearing the avoid leaves the list off, and the departure still runs. */
-    scan_list_files files;
-    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+    /* List off and avoided at once: clearing the avoid, or putting the target back, leaves the list off, and the
+       departure still runs. */
+    for (int put_back = 0; put_back < 2; put_back++) {
+        scan_list_files files;
+        if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+            return 1;
+        }
+        test_rc |= expect_control_rc(
+            "hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+        g_counting_tune_to_cc_failures_remaining = 1;
+        trunk_scan_test_set_now(0.10);
+        test_rc |= expect_control_rc(
+            "avoid a", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+        g_counting_tune_to_cc_failures_remaining = 0;
+        test_rc |= expect_list_rc("a off too", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+        test_rc |= expect_scan_control_publication(&state, "avoided and off", 1U, 1U, 1U);
+        test_rc |= expect_list_on_air(&state, "avoided and off", 1U, 1U, 0U, 1U);
+        if (put_back) {
+            test_rc |= expect_control_rc(
+                "put back a", dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "a", NULL),
+                DSD_TRUNK_SCAN_CONTROL_OK);
+        } else {
+            test_rc |= expect_control_rc(
+                "clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+        }
+        test_rc |= expect_scan_control_publication(&state, "off, no longer avoided", 1U, 0U, 0U);
+        test_rc |= expect_list_on_air(&state, "off, no longer avoided", 1U, 1U, 0U, 1U);
+        test_rc |= expect_list_published(&state, "off, no longer avoided", 1, "a", 0U, 1U);
+        test_rc |= expect_departure_due(&opts, &state, "off, no longer avoided", 2.20, 1);
+        tick_at(&opts, &state, 2.20);
+        test_rc |= expect_published_target(&state, "the departure the list still owes", "b", 2U, 2U);
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* A put back (issue #672) that gives the departure an alternate lets it run at once, as clearing the avoids does:
+ * the receiver fell back onto the avoided a with b cooling down and c avoided, so the departure waits for b's
+ * cooldown; putting c back makes it due now, the frame loop may yield for it, and the next tick leaves for c. */
+static int
+test_lists_departure_runs_at_once_when_a_put_back_gives_it_an_alternate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (avoid_scan_init(k_avoid_body3, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
         return 1;
     }
-    test_rc |=
-        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    int test_rc = expect_control_rc("retreat to c",
+                                    dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_control_rc("avoid c, back to a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_published_target(&state, "avoid c", "a", 1U, 3U);
     g_counting_tune_to_cc_failures_remaining = 1;
     trunk_scan_test_set_now(0.10);
-    test_rc |= expect_control_rc("avoid a",
+    test_rc |= expect_control_rc("avoid a, b failing",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
     g_counting_tune_to_cc_failures_remaining = 0;
-    test_rc |= expect_list_rc("a off too", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
-    test_rc |= expect_scan_control_publication(&state, "avoided and off", 1U, 1U, 1U);
-    test_rc |= expect_list_on_air(&state, "avoided and off", 1U, 1U, 0U, 1U);
-    test_rc |=
-        expect_control_rc("clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
-    test_rc |= expect_scan_control_publication(&state, "off, no longer avoided", 1U, 0U, 0U);
-    test_rc |= expect_list_on_air(&state, "off, no longer avoided", 1U, 1U, 0U, 1U);
-    test_rc |= expect_departure_due(&opts, &state, "off, no longer avoided", 2.20, 1);
-    tick_at(&opts, &state, 2.20);
-    test_rc |= expect_published_target(&state, "the departure the list still owes", "b", 2U, 2U);
-    scan_lists_finish(&files, &opts, &state);
+    test_rc |= expect_scan_control_publication(&state, "fell back onto a", 0U, 1U, 2U);
+    test_rc |= expect_departure_due(&opts, &state, "b cooling, c avoided", 0.50, 0);
+    tick_at(&opts, &state, 0.50);
+    test_rc |= expect_published_target(&state, "b cooling, c avoided", "a", 1U, 3U);
+    test_rc |= expect_control_rc(
+        "put back c", dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "c", NULL),
+        DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_departure_due(&opts, &state, "c put back", 0.60, 1);
+    tick_at(&opts, &state, 0.60);
+    test_rc |= expect_published_target(&state, "the departure c made possible", "c", 3U, 3U);
+    test_rc |= expect_scan_control_publication(&state, "the departure c made possible", 0U, 0U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -18511,6 +18612,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_departure_backs_off_a_failed_preparation);
     rc |= run_with_default_tune_hook(test_lists_departure_with_an_async_failure_retries_the_landing);
     rc |= run_with_default_tune_hook(test_lists_departure_cancellation);
+    rc |= run_with_default_tune_hook(test_lists_departure_runs_at_once_when_a_put_back_gives_it_an_alternate);
     rc |= run_with_default_tune_hook(test_lists_resume_walks_past_an_unreachable_target);
     rc |= run_with_default_tune_hook(test_lists_global_predicates_and_idens_count_every_list);
     rc |= run_with_default_tune_hook(test_lists_tone_rejection_passes_over_a_copy);

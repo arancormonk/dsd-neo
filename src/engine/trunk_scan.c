@@ -6017,6 +6017,8 @@ dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uin
     const int had_alternate = trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m);
     coord->targets[index].avoided = 0;
     trunk_scan_restart_visit_for_new_alternate(opts, state, coord, had_alternate, now_m);
+    /* A departure the target on air owes (issue #697) may now have somewhere to go, as after clear. */
+    trunk_scan_arm_departure(coord);
     trunk_scan_publish_avoids(state, coord);
     trunk_scan_publish_active_target(state, coord);
     trunk_scan_control_publish_timing(opts, state, coord);

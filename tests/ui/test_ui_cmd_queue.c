@@ -25392,6 +25392,8 @@ test_scan_avoid_counts_past_65535(void) {
         state.trunk_lcn_avoid[i] = 1U;
     }
     opts.scanner_mode = 1;
+    /* An imported list: -Y avoids only a channel map's rows (issue #697). */
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv");
     state.lcn_freq_roll = ROWS - 1; /* row 69,998 heard */
     rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid the 65,537th row");
     rc |=
