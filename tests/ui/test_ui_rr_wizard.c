@@ -125,6 +125,17 @@ static const char k_tetra_ceiling_tgs_body[] =
     "<item><tgDec>1017000</tgDec><tgAlpha>Tow 1017000</tgAlpha></item>"
     "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
+/* TETRA groups every one of which lies past the 24-bit ceiling: the group list
+ * has no row to write, and a TETRA system has no channel map, so the import
+ * writes no file at all. */
+static const char k_tetra_all_too_big_tgs_body[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+    "<SOAP-ENV:Body><ns1:getTrsTalkgroupsResponse xmlns:ns1=\"http://api.radioreference.com/soap2\"><return>"
+    "<item><tgDec>16777216</tgDec><tgAlpha>Too big</tgAlpha></item>"
+    "<item><tgDec>20000000</tgDec><tgAlpha>Far too big</tgAlpha></item>"
+    "</return></ns1:getTrsTalkgroupsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
 /** @return The first index at or after @p from whose call was @p method, or -1. */
 static int
 call_index_of(const char* method, int from) {
@@ -228,6 +239,8 @@ typedef struct {
     char last_method[64];
     /* When set, served for getTrsTalkgroups instead of the system's fixture. */
     const char* talkgroups_body;
+    /* When set, served for getTrsSites instead of the system's fixture. */
+    const char* sites_body;
 } wiz_fake;
 
 static void
@@ -370,6 +383,9 @@ wiz_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
 
     if (!fault_now && fake->talkgroups_body != NULL && strcmp(fake->last_method, "getTrsTalkgroups") == 0) {
         return wiz_serve_text(resp, fake->talkgroups_body);
+    }
+    if (!fault_now && fake->sites_body != NULL && strcmp(fake->last_method, "getTrsSites") == 0) {
+        return wiz_serve_text(resp, fake->sites_body);
     }
 
     /* Only sid 6673 has a captured cats file; every other system gets a valid
@@ -1363,8 +1379,8 @@ test_conventional_plan(void) {
     }
     expect("conv: scanning warning",
            warnings_contain(&p->warnings,
-                            "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any "
-                            "other input the session stays on the first frequency."));
+                            "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                            "rigctl-controlled radio; on any other input the session stays on the first frequency."));
 
     /* Multi-select removes without disturbing the order of the rest. */
     rr_wizard_core_toggle_site(c.core, 0);
@@ -2436,6 +2452,89 @@ test_browser_gates(void) {
     expect_ll("browser: nothing published passes", rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 0);
 }
 
+/* A TETRA site whose description fills the plan's whole site label. */
+static char*
+tetra_sites_with_long_name(char* label_out, size_t label_sz) {
+    char path[DSD_TEST_PATH_MAX];
+    char* fixture = NULL;
+    size_t len = 0;
+    if (dsd_test_path_join(path, sizeof(path), DSD_NEO_TEST_RR_FIXTURE_DIR, "trs_sites_tetra.xml") != 0
+        || read_whole_file(path, &fixture, &len) != 0) {
+        return NULL;
+    }
+    /* Single spaces, so the label is the description's first 95 bytes as is. */
+    char name[160];
+    (void)DSD_SNPRINTF(name, sizeof(name), "%s",
+                       "Waiatarua Ridge Road Communications Tower North Face Repeater Building Annex "
+                       "Cabinet Four Rack Two Shelf One");
+    (void)DSD_SNPRINTF(label_out, label_sz, "%.*s", (int)(label_sz - 1U), name);
+    const char* at = strstr(fixture, ">Waiatarua<");
+    char* body = (at != NULL) ? (char*)malloc(len + sizeof(name)) : NULL;
+    if (body != NULL) {
+        const size_t head = (size_t)(at - fixture) + 1U;
+        DSD_MEMCPY(body, fixture, head);
+        (void)DSD_SNPRINTF(body + head, len + sizeof(name) - head, "%s%s", name, at + 1U + strlen("Waiatarua"));
+    }
+    free(fixture);
+    return body;
+}
+
+/*
+ * D1 (issue #803): a TETRA system whose talkgroups all lie past its ID range
+ * has no group list, and TETRA writes no channel map, so the import saves no
+ * file. It is still sent to the session, and Imported Systems will have no row
+ * for it, so the status says so - and never "applied": it is posted when the
+ * apply is queued, and the decoder's own message reports how the apply went,
+ * a refusal included. The longest site label still fits the status buffer.
+ */
+static void
+test_import_with_no_files_says_so(void) {
+    static wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    char label[sizeof(((dsd_rr_import_plan*)0)->site_label)];
+    char* sites = tetra_sites_with_long_name(label, sizeof(label));
+    expect("no files: the long-name sites body is built", sites != NULL);
+    if (sites == NULL) {
+        return;
+    }
+    expect_ll("no files: the label is as long as a label gets", (long long)strlen(label), (long long)sizeof(label) - 1);
+    if (dsd_test_mkdtemp(scratch, sizeof(scratch), "dsdneo_rr_nofile") == NULL || !wiz_case_open(&c)) {
+        expect("no files: case opened", 0);
+        free(sites);
+        return;
+    }
+    g_hook_apply_count = 0;
+    g_hook_apply_result = 1; /* queued; what the decoder makes of it never reaches the wizard */
+    DSD_MEMSET(&g_hook_apply_payload, 0, sizeof(g_hook_apply_payload));
+    c.fake.talkgroups_body = k_tetra_all_too_big_tgs_body;
+    c.fake.sites_body = sites;
+    if (!drive_sid_to_system(&c, "10880")) {
+        expect("no files: reached the system stage", 0);
+        wiz_case_close(&c);
+        free(sites);
+        expect_scratch_removed(scratch);
+        return;
+    }
+    rr_wizard_core_set_imports_dir_for_test(c.core, scratch);
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(c.core);
+    expect("no files: the plan is importable", plan != NULL && plan->ok == 1);
+    expect("no files: nothing to write", plan != NULL && plan->group_csv_text == NULL && plan->chan_csv_text == NULL);
+    expect("no files: the label is the long site name", plan != NULL && strcmp(plan->site_label, label) == 0);
+
+    expect("no files: import queued", rr_wizard_core_import_now(c.core) == 0);
+    expect_ll("no files: apply posted", g_hook_apply_count, 1);
+    expect("no files: the apply loads no file",
+           g_hook_apply_payload.has_group == 0U && g_hook_apply_payload.has_chan == 0U);
+    char want[256];
+    (void)DSD_SNPRINTF(want, sizeof(want), "Imported %s; no files to save.", label);
+    expect("no files: the status says nothing was saved", strcmp(c.h.last_status, want) == 0);
+    expect("no files: the status never says applied", strstr(c.h.last_status, "pplied") == NULL);
+
+    wiz_case_close(&c);
+    free(sites);
+    expect_scratch_removed(scratch); /* nothing was written there */
+}
+
 /* Write 1 is the group sidecar, so the group CSV has already landed when the
  * fault fires: the unwind has real work to do. */
 static void
@@ -3269,6 +3368,7 @@ main(void) {
     test_next_start_blocks_the_import();
     test_tetra_receiver_blocks_the_plan();
     test_browser_gates();
+    test_import_with_no_files_says_so();
     test_import_now_unwinds_a_failed_write();
     test_import_now_keeps_files_when_apply_is_rejected();
     test_refresh_needs_a_sidecar();

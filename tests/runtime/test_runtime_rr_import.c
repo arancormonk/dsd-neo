@@ -512,8 +512,8 @@ test_plan_conventional(void) {
     expect_str("duplicate warning", plan.warnings.items[0].text,
                "1 selected repeater(s) share a frequency already in the list and were dropped.");
     expect_str("scanning warning", plan.warnings.items[1].text,
-               "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any "
-               "other input the session stays on the first frequency.");
+               "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+               "rigctl-controlled radio; on any other input the session stays on the first frequency.");
     dsd_rr_import_plan_free(&plan);
 
     /* One repeater: a one-entry scan list is churn, so no file and no -Y. */

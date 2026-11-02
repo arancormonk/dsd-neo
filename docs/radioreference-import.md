@@ -274,6 +274,10 @@ Limits worth knowing:
   running trunk scan (it manages its own channel maps), and a trunk scan waiting for the next start beside the
   channel map or the `-Y` scanner the import would set. The decoder checks again when the apply arrives; only
   it can see a SoapySDR device's rate.
+- An import that has nothing to write (a TETRA system with no talkgroup a TETRA group list can carry writes no
+  group list, and TETRA has no channel map) is still sent to the session, and the wizard says
+  `Imported <site>; no files to save.` Such an import has no row in the Imported Systems browser, so it cannot
+  be re-applied offline: import it again from RadioReference.
 - The decoder checks everything it can before it changes anything: the receiver (see
   [Receiver requirements](#receiver-requirements)), a trunk scan waiting for the next start, the width an AM
   or Analog mode needs, whether a running I/Q replay can run the mode, and each CSV file. A refused import
@@ -299,9 +303,9 @@ Limits worth knowing:
   audio) says nothing about a tune.
 - An import on an I/Q replay never tunes, even with a rigctl radio connected: the capture decides the
   frequency.
-- `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
-  never steps and the session will look stuck on the first frequency. The generator emits that warning and
-  the panel shows it.
+- `-Y` scanning needs a live radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a rigctl-controlled radio.
+  On a WAV, UDP or TCP source, or an I/Q replay, the scanner never steps and the session will look stuck on the
+  first frequency. The generator emits that warning and the panel shows it.
 
 #### Receiver requirements
 
@@ -383,8 +387,9 @@ multi-select list, sorted by name, showing each repeater's frequency and colour 
   is deliberate: a one-entry scan list makes the scanner retune to the frequency it is already on
   at every hangtime expiry.
 - Duplicate frequencies are dropped, with a warning: two repeaters can share one output.
-- **Scanning needs an RTL-SDR or a rigctl-controlled radio.** On a WAV, UDP or TCP source the
-  scanner never steps, so the session looks stuck on one frequency. The preview says so.
+- **Scanning needs a live radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a rigctl-controlled
+  radio.** On a WAV, UDP or TCP source, or an I/Q replay, the scanner never steps, so the session looks stuck
+  on one frequency. The preview says so.
 
 The repeater's **colour code is shown but never written to a file**. `dsd_opts` has no colour-code
 field, because DMR reads it off the air; it is in the list only to help you recognise a repeater.

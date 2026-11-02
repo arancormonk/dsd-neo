@@ -2925,6 +2925,7 @@ rr_import_land_back_on_the_site_list(RrWizardCore* w) {
     char label[sizeof(w->plan.site_label)];
     (void)DSD_SNPRINTF(label, sizeof(label), "%s", (w->plan.site_label[0] != '\0') ? w->plan.site_label : w->info.name);
     const int conventional = w->info.conventional;
+    const int saved_any = (w->last_group_path[0] != '\0' || w->last_chan_path[0] != '\0');
 
     if (w->site_mark != NULL) {
         DSD_MEMSET(w->site_mark, 0, w->sites.count);
@@ -2936,8 +2937,17 @@ rr_import_land_back_on_the_site_list(RrWizardCore* w) {
                            conventional ? k_rr_next_repeaters : k_rr_next_site);
     }
 
+    /* Posted once the apply is queued, before the decoder has run it, so it
+     * says what the wizard did and never "applied": the decoder's own message
+     * reports how the apply went. An import with nothing to write (no usable
+     * talkgroups and no channel map, as a TETRA system can be) still goes to
+     * the session but leaves Imported Systems no row to list; say so. */
     char text[sizeof(label) + 32];
-    (void)DSD_SNPRINTF(text, sizeof(text), "Imported %s.", label);
+    if (saved_any) {
+        (void)DSD_SNPRINTF(text, sizeof(text), "Imported %s.", label);
+    } else {
+        (void)DSD_SNPRINTF(text, sizeof(text), "Imported %s; no files to save.", label);
+    }
     rr_core_status_notify(w, text);
 }
 

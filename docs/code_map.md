@@ -8931,7 +8931,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     it after `dsd_rr_recipe_to_plan()` ("Use this system", the recipe's decode mode), or
     `rr_wizard_core_files_block_reason()` for "Load these files" (a running trunk scan, and the next-start rule for
     the channel map it loads). Both wrap app-control's `dsd_app_rr_apply_block_reason()` /
-    `dsd_app_rr_files_block_reason()` and turn the reason phrase into a sentence
+    `dsd_app_rr_files_block_reason()` and turn the reason phrase into a sentence. The wizard's status is posted when
+    the apply is queued, so it never says "applied"; an import that wrote no file says "no files to save"
   - Imported RadioReference systems: `rr_library.{h,c}` is the curses-free model of the imports directory
     (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the

@@ -1365,7 +1365,8 @@ test_chan_conventional_small(void) {
                "1,451275000,Marion\n"
                "2,464525000,North Liberty\n");
     expect("conventional never seeds 999", strstr(text, "999,") == NULL);
-    expect("scan source warned", warned(&warnings, "RTL-SDR or a rigctl-controlled radio"));
+    expect("scan source warned",
+           warned(&warnings, "needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a rigctl-controlled radio"));
 
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof(counts));

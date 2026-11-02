@@ -1170,8 +1170,10 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
                            shortened);
         rr_warn(warnings, msg);
     }
-    rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any other input the "
-                      "session stays on the first frequency.");
+    /* Every live radio input retunes for -Y; an I/Q replay or an audio input does not, unless rigctl drives the radio
+       behind it. */
+    rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or a "
+                      "rigctl-controlled radio; on any other input the session stays on the first frequency.");
     free(chosen);
     free(chosen_site);
     return 0;
