@@ -1924,8 +1924,12 @@ test_hold_tick_ends_a_moved_epoch(void) {
             hold_closed(&r, 3);
         }
         hold_reset_receiver(&r);
+        /* The reset cleared the stale deadline, so the move is a wake of its own (issue #667 D12): a silent hunt read
+           gives way to this tick with nothing queued. */
+        assert(dsd_engine_analog_call_due(r.state));
         hold_advance_ms(&r, 5000);
         hold_expect_tick_ends(&r, span);
+        assert(!dsd_engine_analog_call_due(r.state));
         dsd_engine_analog_call_tick(r.opts, r.state);
         assert(!dsd_engine_analog_call_active(r.state));
     }
@@ -2503,7 +2507,10 @@ hold_end_candidate(hold_rig* r, int end) {
             r->state->analog_rx.boundaries++;
             hold_receive(r, 1, 2000);
             break;
-        case CAND_END_TICK_EPOCH: hold_reset_receiver(r); break;
+        case CAND_END_TICK_EPOCH:
+            hold_reset_receiver(r);
+            assert(dsd_engine_analog_call_due(r->state)); /* a candidate the reset cut wakes the tick too (D12) */
+            break;
         case CAND_END_TICK_DETECT: r->opts->analog_only = 0; break; /* the monitor tap off */
         case CAND_END_TICK_REJECTED: r->state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED; break;
         case CAND_END_TICK_CLOSED: r->state->analog_rx.carrier_open = 0; break;

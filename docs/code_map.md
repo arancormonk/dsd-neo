@@ -11979,7 +11979,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
     freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data
-    returns), each ended at its last reception. Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
+    returns), each ended at its last reception. A reset that moves the boundaries epoch under a running call or
+    candidate (a TCP reconnect, which clears that deadline) makes `dsd_engine_analog_call_due()` true by itself (issue
+    #667 D12), so a silent hunt read still gives way to the tick that ends the cut reception (`CORE_RECEIVE`).
+    Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
     `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
 - App-control receive commands validate complete edits before application. Row commands retain scanner session and
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.

@@ -27,7 +27,9 @@ void dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* stat
 void dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state);
 /** Whether a call is running: a candidate is not one (issue #667). */
 int dsd_engine_analog_call_active(const dsd_state* state);
-/** Whether a running call or candidate is past the received tone's stale deadline. */
+/** Whether a running call or candidate needs the engine's tick now, which ends it: it is past the received tone's stale
+ * deadline, or a reset moved the receiver's boundaries epoch since it began (a TCP reconnect, which clears that
+ * deadline). A silent hunt read gives way to it (the frame-sync decoder_ticks_due hook). */
 int dsd_engine_analog_call_due(const dsd_state* state);
 /** End every call now and commit it: the analog call through its own lifecycle first, so its per-call recording closes
  * under the row it was heard as, then each slot's call with @p reason at @p ended_m. A slot is committed

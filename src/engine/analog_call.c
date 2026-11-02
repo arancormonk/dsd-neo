@@ -123,10 +123,24 @@ dsd_engine_analog_call_active(const dsd_state* state) {
     return call && call->active;
 }
 
+/* The receiver crossed a boundary since the running reception began (B6): a reset moved its boundaries epoch. */
+static int
+analog_call_crossed_boundary(const dsd_state* state, const analog_call* call) {
+    return analog_call_running(call) && state->analog_rx.boundaries != call->boundaries_seen;
+}
+
 int
 dsd_engine_analog_call_due(const dsd_state* state) {
-    return state && analog_call_running(analog_call_get(state)) && state->analog_rx.stale_after_ms
-           && dsd_realtime_mono_ms() > state->analog_rx.stale_after_ms;
+    const analog_call* call = state ? analog_call_get(state) : NULL;
+    if (!analog_call_running(call)) {
+        return 0;
+    }
+    /* A reset (a TCP reconnect, issue #667 D12) clears the stale deadline as it moves the epoch, and the new stream may
+       stay silent or bring part of a sample: the move is a wake of its own, or the reception it cut never ends. */
+    if (analog_call_crossed_boundary(state, call)) {
+        return 1;
+    }
+    return state->analog_rx.stale_after_ms && dsd_realtime_mono_ms() > state->analog_rx.stale_after_ms;
 }
 
 static void
@@ -306,10 +320,11 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
         }
         return;
     }
-    /* B6 between blocks: a reset with no block after it (a TCP reconnect that yields to a queued command) moves the
-       epoch while the boundaries stay current, and the stream may bring no whole block to see it. The call, held or
-       not, ends at its last reception as the next block would end it. */
-    if (state->analog_rx.boundaries != call->boundaries_seen) {
+    /* B6 between blocks: a reset with no block after it (a TCP reconnect to a silent stream, which wakes the hunt for
+       this tick, or one that yields to a queued command) moves the epoch while the boundaries stay current, and the
+       stream may bring no whole block to see it. The call, held or not, ends at its last reception as the next block
+       would end it. */
+    if (analog_call_crossed_boundary(state, call)) {
         analog_call_end_reception(opts, state, call);
         return;
     }
@@ -591,7 +606,7 @@ analog_call_breaks(const dsd_opts* opts, const dsd_state* state, const analog_ca
         || !samples || count == 0 || sample_rate <= 0 || !analog_call_follows(opts)) {
         return 1;
     }
-    return analog_call_running(call) && state->analog_rx.boundaries != call->boundaries_seen;
+    return analog_call_crossed_boundary(state, call);
 }
 
 /* A block with nothing to record: a call, or a candidate past its first RECEPTION block, holds on it (a PENDING block
