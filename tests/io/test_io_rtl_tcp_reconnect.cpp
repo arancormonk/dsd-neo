@@ -181,6 +181,7 @@ struct conn_script {
     int pre_until_command = 0; /* stream the "pre" phase until the first command arrives */
     /* When set: these "pre" fragments once, then nothing until the first command arrives (then chunks). */
     std::vector<size_t> pre_chunks;
+    int hold_last_pre = 0; /* the last "pre" fragment waits for pre_go */
     int stream = 1;
     std::vector<size_t> chunks; /* the I/Q in chunks of these sizes, in turn (empty: 4096) */
     unsigned int chunk_gap_ms = 2U;
@@ -207,6 +208,7 @@ struct fake_server {
     std::atomic<int> up{1};
     std::atomic<int> kill{0};
     std::atomic<int> paused{0};        /* the connection stays, its I/Q stops */
+    std::atomic<int> pre_go{0};        /* a held last "pre" fragment may go */
     std::atomic<int> listening{0};     /* the listener is open */
     std::atomic<int> connected{0};     /* serving a connection */
     std::atomic<int> want_rcvbuf{0};   /* the listener's receive buffer server_reset() asked for */
@@ -342,7 +344,8 @@ server_serve(dsd_socket_t sock, const conn_script& sc, size_t idx) {
         size_t want = 0U;
         int pre = 0;
         if (!sc.pre_chunks.empty() && no_command != 0) {
-            want = pre_idx < sc.pre_chunks.size() ? sc.pre_chunks[pre_idx++] : 0U;
+            const bool held = sc.hold_last_pre != 0 && pre_idx + 1U == sc.pre_chunks.size() && g_srv.pre_go.load() == 0;
+            want = (pre_idx < sc.pre_chunks.size() && !held) ? sc.pre_chunks[pre_idx++] : 0U;
             pre = 1;
         } else if (sc.stream != 0 && g_srv.paused.load() == 0) {
             want = sc.chunks.empty() ? 4096U : sc.chunks[chunk_idx++ % sc.chunks.size()];
@@ -480,6 +483,7 @@ server_reset(const conn_script& fallback) {
     g_srv.conns.clear();
     dsd_mutex_unlock(&g_srv.lock);
     g_srv.kill.store(0);
+    g_srv.pre_go.store(0);
 }
 
 void
@@ -548,6 +552,7 @@ struct dev_rig {
     std::atomic<int> drain_quit{0};
     std::atomic<uint64_t> floats{0U};
     std::atomic<uint64_t> misaligned{0U};
+    std::atomic<int> draining{0}; /* holds a block from the ring that floats does not count yet */
     dsd_mutex_t phases_lock{};
     std::vector<int> phases;
     dsd_thread_t drainer{};
@@ -612,8 +617,10 @@ rig_drain(void* arg) {
             dsd_sleep_ms(1U);
             continue;
         }
+        r->draining.store(1);
         const int got = input_ring_read_block(&r->ring, block.data(), block.size());
         if (got <= 0) {
+            r->draining.store(0);
             continue;
         }
         dsd_mutex_lock(&r->phases_lock);
@@ -629,6 +636,7 @@ rig_drain(void* arg) {
         }
         dsd_mutex_unlock(&r->phases_lock);
         r->floats.fetch_add((uint64_t)got);
+        r->draining.store(0);
     }
     DSD_THREAD_RETURN;
 }
@@ -736,6 +744,12 @@ rig_generation(const dev_rig& r) {
     rtl_device_test_tcp_state st{};
     rtl_device_test_tcp_state_get(r.dev, &st);
     return st.generation;
+}
+
+/* Wait until the drainer counted everything in the ring, the ring's writer being held. */
+void
+wait_drained(const dev_rig& r) {
+    assert(wait_until([&] { return input_ring_used(&r.ring) == 0U && r.draining.load() == 0; }, kWaitMs));
 }
 
 /* Wait until a connection with generation @p gen is published and released to the reader. */
@@ -1581,8 +1595,8 @@ test_stop_cancels_queued_handoff(void) {
 }
 
 /* lost_connection_bytes_never_reach_ring: the server's I/Q piles up in the socket while the reader is held; a command
- * then fails, which takes that connection down; once the reader goes on, none of what the lost connection still held
- * reaches the ring. */
+ * then fails, which takes that connection down; once the reader goes on (until it reconnects), none of what the lost
+ * connection still held reaches the ring. */
 std::atomic<int> g_read_hold{0};
 std::atomic<int> g_read_held{0};
 
@@ -1607,17 +1621,20 @@ test_lost_connection_bytes_never_reach_ring(void) {
     g_read_held.store(0);
     g_read_hold.store(1);
     assert(wait_until([] { return g_read_held.load() != 0; }, kWaitMs));
-    dsd_sleep_ms(100U); /* the server streams on into the socket */
+    /* The server streams on into the socket. */
+    const uint64_t sent_at_hold = server_conn_get(0).sent;
+    assert(wait_until([&] { return server_conn_get(0).sent >= sent_at_hold + 65536U; }, kWaitMs));
     g_srv.paused.store(1);
     r.hold.store(1);
-    assert(wait_until([&] { return input_ring_used(&r.ring) == 0U; }, kWaitMs));
-    dsd_sleep_ms(20U);
+    wait_drained(r);
     const uint64_t floats_at_loss = r.floats.load();
     rtl_device_test_tcp_fail_command(0x05);
     assert(rtl_device_set_ppm(r.dev, 7) == RTL_DEVICE_ENOTCONN);
     rtl_device_test_tcp_fail_command(-1);
     g_read_hold.store(0);
-    dsd_sleep_ms(300U);
+    /* The reader is done with the lost connection once its reconnect reaches the server. */
+    assert(wait_until([] { return server_conn_count() >= 2U; }, kWaitMs));
+    wait_drained(r);
     assert(r.floats.load() == floats_at_loss);
     g_srv.paused.store(0);
     rig_close(r);
@@ -1628,22 +1645,31 @@ test_lost_connection_bytes_never_reach_ring(void) {
 
 /* discard_release_keeps_pair_alignment: while the hand-off waits, the reconnected server sends odd-sized fragments
  * (4107 bytes in all) of I/Q from before its configuration, and the release lands while the reader is inside the
- * receive of the last one; the reader drops the odd byte that leaves (a Q byte), so the ring and the capture hold whole
- * pairs again, starting on an I byte, and none of the discarded I/Q. */
+ * receive of the last one (one byte); the reader drops the odd byte that leaves (a Q byte), so the ring and the capture
+ * hold whole pairs again, starting on an I byte, and none of the discarded I/Q. The server holds that last byte until
+ * the reader took the rest, and its configured I/Q until that receive is done, so the receive takes exactly the one
+ * byte whatever the timing or the segmentation of the stream. */
 std::atomic<int> g_release_in_receive{0};
 dev_rig* g_discard_rig = nullptr;
 constexpr uint64_t kDiscardBytes = 4095U + 3U + 1U + 7U + 1U;
 
+bool
+handoff_released(const dev_rig& r) {
+    rtl_device_test_tcp_state st{};
+    rtl_device_test_tcp_state_get(r.dev, &st);
+    return st.handoff == RTL_TEST_TCP_HANDOFF_RELEASED;
+}
+
 void
 release_during_receive(void* ctx) {
     (void)ctx;
-    if (g_release_in_receive.load() != 1 || server_conn_get(1).sent < kDiscardBytes) {
+    if (g_release_in_receive.load() != 1 || g_srv.pre_go.load() == 0) {
         return;
     }
     g_release_in_receive.store(2);
     /* The controller (the rig's thread) takes, publishes and releases while this receive is on its way. */
     g_discard_rig->hold.store(0);
-    dsd_sleep_ms(50U);
+    assert(wait_until([] { return handoff_released(*g_discard_rig); }, kWaitMs));
 }
 
 void
@@ -1651,6 +1677,7 @@ test_discard_release_keeps_pair_alignment(void) {
     server_reset(default_script());
     conn_script odd;
     odd.pre_chunks = {4095U, 3U, 1U, 7U, 1U};
+    odd.hold_last_pre = 1;
     odd.chunk_gap_ms = 20U;
     server_queue(conn_script{});
     server_queue(odd);
@@ -1662,12 +1689,21 @@ test_discard_release_keeps_pair_alignment(void) {
     rig_start(r);
     assert(wait_until([&] { return r.floats.load() >= 32768U; }, kWaitMs));
     const uint64_t drops_before = rtl_device_test_tcp_odd_drops();
+    const uint64_t discarded_before = rtl_device_test_tcp_discard_bytes();
     r.hold.store(1);
     g_release_in_receive.store(1);
     rtl_device_test_tcp_set_discard_hook(release_during_receive, nullptr);
     lose_connection(r);
+    const auto discarded = [&] { return rtl_device_test_tcp_discard_bytes() - discarded_before; };
+    assert(wait_until([&] { return discarded() == kDiscardBytes - 1U; }, kWaitMs));
+    /* No configured I/Q until the last byte was received: the replay's commands would start it. */
+    g_srv.paused.store(1);
+    g_srv.pre_go.store(1);
+    assert(wait_until([&] { return discarded() == kDiscardBytes; }, kWaitMs));
+    g_srv.paused.store(0);
     wait_generation(r, 2U);
     assert(g_release_in_receive.load() == 2);
+    assert(discarded() == kDiscardBytes);
     assert(rtl_device_test_tcp_odd_drops() == drops_before + 1U);
     const uint64_t floats_at_release = r.floats.load();
     assert(wait_until([&] { return r.floats.load() >= floats_at_release + 65536U; }, kWaitMs));
