@@ -37,6 +37,7 @@
 #include "decoder_host.h"
 #include "json_store.h"
 #include "realtime_clock.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 
@@ -438,12 +439,13 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
     row.accepted = accepted;
     row.skipped = skipped;
     row.origin = origin.value(QStringLiteral("origin")).toString();
-    row.rrSid = origin.value(QStringLiteral("rrSid")).toInt();
+    row.rrSid = stored_int_or(origin.value(QStringLiteral("rrSid")), 0);
     row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
     row.rrSiteIds = origin.value(QStringLiteral("rrSiteIds")).toString();
     row.rrPartialEnc = origin.value(QStringLiteral("rrPartialEnc"), true).toBool();
     row.bundleRoot = origin.value(QStringLiteral("bundleRoot")).toString();
-    row.rrEncryptionPolicy = origin.value(QStringLiteral("rrEncryptionPolicy"), row.rrPartialEnc ? 3 : 2).toInt();
+    row.rrEncryptionPolicy =
+        stored_int_or(origin.value(QStringLiteral("rrEncryptionPolicy")), row.rrPartialEnc ? 3 : 2);
 
     auto next = m_rows;
     next.append(row);
@@ -826,15 +828,15 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.path = map.value(QStringLiteral("path")).toString();
     row.type = map.value(QStringLiteral("type")).toString();
     row.importedAt = map.value(QStringLiteral("importedAt")).toLongLong();
-    row.accepted = map.value(QStringLiteral("accepted")).toInt();
-    row.skipped = map.value(QStringLiteral("skipped")).toInt();
+    row.accepted = stored_int_or(map.value(QStringLiteral("accepted")), 0);
+    row.skipped = stored_int_or(map.value(QStringLiteral("skipped")), 0);
     row.origin = map.value(QStringLiteral("origin")).toString();
-    row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
+    row.rrSid = stored_int_or(map.value(QStringLiteral("rrSid")), 0);
     row.rrKind = map.value(QStringLiteral("rrKind")).toString();
     row.rrSiteIds = map.value(QStringLiteral("rrSiteIds")).toString();
     row.rrPartialEnc = map.value(QStringLiteral("rrPartialEnc"), true).toBool();
     row.bundleRoot = map.value(QStringLiteral("bundleRoot")).toString();
-    row.rrEncryptionPolicy = map.value(QStringLiteral("rrEncryptionPolicy"), row.rrPartialEnc ? 3 : 2).toInt();
+    row.rrEncryptionPolicy = stored_int_or(map.value(QStringLiteral("rrEncryptionPolicy")), row.rrPartialEnc ? 3 : 2);
     return row;
 }
 

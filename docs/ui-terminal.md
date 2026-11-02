@@ -271,6 +271,7 @@ Main Menu
 │   │   └── Stop replay [Off]                    s (a file or symbol playback, onto Pulse input)
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
+│   │   ├── NFM pause hold... [Off]              (one NFM recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
 │   │   ├── Static WAV file...
 │   │   └── Raw input WAV file...
 │   ├── Event log

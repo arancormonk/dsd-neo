@@ -249,6 +249,42 @@ test_saved_systems(void) {
     expect("removal persists", emptied.count() == 0);
 }
 
+/* A restored systems file whose whole numbers are past int's range (a backup keeps a large JSON number as a 64-bit
+ * integer): each reads as the field's default, as an absent key does, never as its low 32 bits. Main read port 1234,
+ * gain 36 dB, bandwidth 12 kHz, bias tee on, force key 1, RadioReference system 77 site 5 and a "hex" key type. */
+void
+test_saved_systems_past_int_range(void) {
+    const qint64 past = qint64(1) << 32;
+    QJsonObject row;
+    row.insert(QStringLiteral("name"), QStringLiteral("Restored"));
+    row.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    row.insert(QStringLiteral("port"), past + 1234);
+    row.insert(QStringLiteral("gainDb"), past + 36);
+    row.insert(QStringLiteral("bandwidthKhz"), past + 12);
+    row.insert(QStringLiteral("biasTee"), past + 1);
+    row.insert(QStringLiteral("encForceKey"), past + 1);
+    row.insert(QStringLiteral("rrSid"), past + 77);
+    row.insert(QStringLiteral("rrSiteId"), past + 5);
+    row.insert(QStringLiteral("encKeyType"), past + 1);
+    expect("an oversized systems file saves", json_store_save_array(QStringLiteral("saved_systems.json"), {row}));
+    {
+        SavedSystemsModel model;
+        const QVariantMap got = model.get(0);
+        expect("an oversized row loads", model.count() == 1);
+        expect("an oversized port reads as 0", got.value(QStringLiteral("port")).toInt() == 0);
+        expect("oversized tuning overrides follow the app",
+               got.value(QStringLiteral("gainDb")).toInt() == -1
+                   && got.value(QStringLiteral("bandwidthKhz")).toInt() == -1
+                   && got.value(QStringLiteral("biasTee")).toInt() == -1);
+        expect("an oversized force key reads as none", got.value(QStringLiteral("encForceKey")).toInt() == 0);
+        expect("an oversized RadioReference origin reads as none",
+               got.value(QStringLiteral("rrSid")).toInt() == 0 && got.value(QStringLiteral("rrSiteId")).toInt() == 0);
+        expect("an oversized legacy key type is no key type",
+               got.value(QStringLiteral("encKeyType")).toString() != QStringLiteral("hex"));
+        model.remove(0);
+    }
+}
+
 void
 test_saved_systems_csv_fields(void) {
     const QString groupPath = QStringLiteral("/data/imports/county.csv");
@@ -564,6 +600,124 @@ test_recording_prefs() {
     stored.remove(QStringLiteral("recording/recordCalls"));
     stored.remove(QStringLiteral("recording/recordUnknownOnly"));
     stored.remove(limitKey);
+}
+
+/* Issue #756: the NFM pause hold. Off (200, the decoder's default) unless chosen; any value the decoder takes is kept
+ * as it is, offered or not, so a restored or older value shows as itself; anything else reads and writes as off. */
+void
+test_analog_max_gap_pref() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString key = QStringLiteral("recording/analogMaxGapMs");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::analogMaxGapMsChanged, &prefs, [&changes]() { ++changes; });
+        expect("the pause hold is off by default", prefs.analogMaxGapMs() == 200 && !stored.contains(key));
+        expect("the holds Settings offers",
+               prefs.analogMaxGapChoices() == QVariantList({200, 500, 1000, 2000, 3000, 5000, 10000}));
+        prefs.setAnalogMaxGapMs(2000);
+        expect("a choice is saved",
+               prefs.analogMaxGapMs() == 2000 && stored.value(key).toInt() == 2000 && changes == 1);
+        prefs.setAnalogMaxGapMs(2000);
+        expect("a repeated hold does not notify", changes == 1);
+        prefs.setAnalogMaxGapMs(1500);
+        expect("a value not offered is kept as it is", prefs.analogMaxGapMs() == 1500 && changes == 2);
+        prefs.setAnalogMaxGapMs(0);
+        expect("0 is kept (off)", prefs.analogMaxGapMs() == 0 && changes == 3);
+        prefs.setAnalogMaxGapMs(10000);
+        expect("the largest is kept", prefs.analogMaxGapMs() == 10000 && changes == 4);
+        prefs.setAnalogMaxGapMs(10001);
+        expect("one past the range is written as off",
+               prefs.analogMaxGapMs() == 200 && stored.value(key).toInt() == 200 && changes == 5);
+        prefs.setAnalogMaxGapMs(-1);
+        expect("a negative hold is written as off, unchanged", prefs.analogMaxGapMs() == 200 && changes == 5);
+        prefs.setAnalogMaxGapMs(3000);
+    }
+    {
+        AppPrefs reloaded;
+        expect("the hold persists", reloaded.analogMaxGapMs() == 3000);
+        stored.setValue(key, 20000);
+        expect("a stored hold past the range reads as off", reloaded.analogMaxGapMs() == 200);
+        stored.setValue(key, QStringLiteral("abc"));
+        expect("an unparsable stored hold reads as off", reloaded.analogMaxGapMs() == 200);
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::analogMaxGapMsChanged, &reloaded, [&changes]() { ++changes; });
+        reloaded.setAnalogMaxGapMs(200);
+        expect("a corrective hold write replaces the damage",
+               stored.value(key).toString() == QStringLiteral("200") && changes == 1);
+        stored.setValue(key, 1234);
+        expect("a stored custom hold reads as itself", reloaded.analogMaxGapMs() == 1234);
+    }
+    stored.remove(key);
+}
+
+/* An integer preference read wide: a backup keeps a large JSON number as a 64-bit integer (or a double), and the ini
+ * file hands it back as text, and QVariant::toInt() takes either one's low 32 bits and reports success. A value past
+ * int's range reads as the preference's default, never as its low bits, and a write of those low bits replaces it. */
+struct WideIntPref {
+    const char* key;
+    int (AppPrefs::*get)() const;
+    void (AppPrefs::*set)(int);
+    int fallback; /* what a damaged value reads as */
+    int low;      /* a valid value, different from the fallback, that the oversized one truncates to */
+};
+
+const WideIntPref kWideIntPrefs[] = {
+    {"ui/appearance", &AppPrefs::appearance, &AppPrefs::setAppearance, AppPrefs::FollowSystem, AppPrefs::Dark},
+    {"listen/screenMode", &AppPrefs::screenMode, &AppPrefs::setScreenMode, 0, AppPrefs::ScreenOffBetweenCalls},
+    {"listen/screenDelaySec", &AppPrefs::screenDelaySec, &AppPrefs::setScreenDelaySec, 30, 120},
+    {"tuner/gainDb", &AppPrefs::gainDb, &AppPrefs::setGainDb, 30, 42},
+    {"tuner/ppm", &AppPrefs::ppm, &AppPrefs::setPpm, 0, 5},
+    {"tuner/bandwidthKhz", &AppPrefs::bandwidthKhz, &AppPrefs::setBandwidthKhz, 48, 24},
+    {"explore/port", &AppPrefs::explorePort, &AppPrefs::setExplorePort, 1234, 80},
+    {"search/port", &AppPrefs::searchPort, &AppPrefs::setSearchPort, 1234, 80},
+    {"recording/limitMb", &AppPrefs::recordingLimitMb, &AppPrefs::setRecordingLimitMb, 1000, 2000},
+    {"recording/analogMaxGapMs", &AppPrefs::analogMaxGapMs, &AppPrefs::setAnalogMaxGapMs, 200, 2000},
+};
+
+/* @p wide as a restored backup holds it (a JSON integer, a JSON number too big for one), or as the file reads back. */
+QVariant
+oversized_as(int form, qlonglong wide) {
+    if (form == 0) {
+        return QVariant(wide);
+    }
+    if (form == 1) {
+        return QVariant(static_cast<double>(wide) * 1.0e10);
+    }
+    return QVariant(QString::number(wide));
+}
+
+void
+test_prefs_past_int_range() {
+    const qlonglong past = 1LL << 32;
+    for (int form = 0; form < 3; form++) {
+        QVariantMap incoming;
+        for (const WideIntPref& pref : kWideIntPrefs) {
+            incoming.insert(QLatin1String(pref.key), oversized_as(form, past + pref.low));
+        }
+        expect("a backup with oversized integers restores", AppPrefs::replacePortable(incoming));
+        AppPrefs prefs;
+        for (const WideIntPref& pref : kWideIntPrefs) {
+            if ((prefs.*pref.get)() != pref.fallback) {
+                DSD_FPRINTF(stderr, "FAIL: %s (form %d) read %d, not %d\n", pref.key, form, (prefs.*pref.get)(),
+                            pref.fallback);
+                g_failures++;
+            }
+        }
+    }
+    /* The setters compare with what is stored, read wide: writing the low bits is a change, so it lands. */
+    AppPrefs prefs;
+    QSettings stored = prefs_file();
+    for (const WideIntPref& pref : kWideIntPrefs) {
+        stored.setValue(QLatin1String(pref.key), past + pref.low);
+        (prefs.*pref.set)(pref.low);
+        if (stored.value(QLatin1String(pref.key)).toLongLong() != pref.low || (prefs.*pref.get)() != pref.low) {
+            DSD_FPRINTF(stderr, "FAIL: %s: writing %d over its oversized value did not land\n", pref.key, pref.low);
+            g_failures++;
+        }
+        stored.remove(QLatin1String(pref.key));
+    }
 }
 
 /* Issue #574: the screen mode and its delay, which replaced the keep-awake switch.
@@ -920,6 +1074,7 @@ test_prefs_key_table(void) {
         {"recordCalls", true, "recording/recordCalls"},
         {"recordUnknownOnly", true, "recording/recordUnknownOnly"},
         {"recordingLimitMb", 5000, "recording/limitMb"},
+        {"analogMaxGapMs", 2000, "recording/analogMaxGapMs"},
         {"acceptedStartKind", QStringLiteral("scan"), "listen/acceptedStartKind"},
         {"acceptedStartUid", QStringLiteral("uid-2"), "listen/acceptedStartUid"},
     };
@@ -1018,7 +1173,8 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port"))
                && portable.contains(QStringLiteral("recording/recordCalls"))
                && portable.contains(QStringLiteral("recording/recordUnknownOnly"))
-               && portable.contains(QStringLiteral("recording/limitMb")));
+               && portable.contains(QStringLiteral("recording/limitMb"))
+               && portable.contains(QStringLiteral("recording/analogMaxGapMs")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys",
@@ -1155,11 +1311,14 @@ main(int argc, char** argv) {
     test_json_store();
     test_private_key_store();
     test_saved_systems();
+    test_saved_systems_past_int_range();
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_receiver_prefs();
     test_screen_policy_prefs();
     test_recording_prefs();
+    test_analog_max_gap_pref();
+    test_prefs_past_int_range();
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();

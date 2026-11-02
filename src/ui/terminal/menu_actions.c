@@ -109,6 +109,14 @@ act_static_wav(void* v) {
     ui_prompt_open_string_async("Static WAV filename", c->opts->wav_out_file, 1024, cb_static_wav, c);
 }
 
+/* The NFM max gap (issue #756), opened on the value in force as stored: 0 turns it off. */
+void
+act_analog_record_max_gap(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("NFM pause hold (ms, 0 = off)", c->opts->analog_record_max_gap_ms,
+                             cb_analog_record_max_gap, c);
+}
+
 void
 act_raw_wav(void* v) {
     UiCtx* c = (UiCtx*)v;

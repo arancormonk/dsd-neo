@@ -13,6 +13,7 @@
 #include "scan_entry_name.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 namespace {
@@ -167,8 +168,8 @@ appendProfileOptions(const QVariantMap& sys, QStringList& options) {
     if (sys.value("decryptionClearKeys").toBool()) {
         options << "--no-decryption-keys";
     }
-    if (sys.contains("decryptionForce")) {
-        const int value = sys.value("decryptionForce").toInt();
+    int value = 0;
+    if (stored_int(sys.value("decryptionForce"), &value)) {
         if (value == 0) {
             options << "--no-force-key";
         } else if (value == 1) {
@@ -213,8 +214,8 @@ buildOptions(const QVariantMap& sys, QStringList& options) {
     if (!keyError.isEmpty()) {
         return keyError;
     }
-    bool forceOk = false;
-    const int force = sys.value("encForceKey", 0).toInt(&forceOk);
+    int force = 0;
+    const bool forceOk = stored_int(sys.value("encForceKey", 0), &force);
     if (!forceOk || force < 0 || force > 2) {
         return session_args_error_text(SessionArgsError::ForceKey);
     }

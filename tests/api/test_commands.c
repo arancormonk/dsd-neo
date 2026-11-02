@@ -99,6 +99,7 @@ static const sample k_samples[] = {
     {"skip_slot", "{\"value\":1}"},
     {"wav_static_open", "{\"value\":\"/tmp/a.wav\"}"},
     {"record_unknown_only_set", "{\"value\":1}"},
+    {"analog_record_max_gap_set", "{\"value\":2000}"},
     {"wav_raw_open", "{\"value\":\"/tmp/b.wav\"}"},
     {"dsp_out_set", "{\"value\":\"out.bin\"}"},
     {"symcap_open", "{\"value\":\"/tmp/c.bin\"}"},

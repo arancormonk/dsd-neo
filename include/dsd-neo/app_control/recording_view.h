@@ -31,8 +31,8 @@ enum {
     DSD_APP_RECORDING_MODE_PER_CALL = 2, /**< per-call WAVs (-P) */
 };
 
-/** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set, or a config
- *  carrying [recording], whose outcome is its recording's); values are stable. */
+/** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set, NFM max gap
+ *  set, or a config carrying [recording], whose outcome is its recording's); values are stable. */
 enum {
     DSD_APP_RECORDING_COMMAND_NONE = 0,    /**< none submitted in this process */
     DSD_APP_RECORDING_COMMAND_PENDING = 1, /**< submitted, not applied yet */
@@ -64,6 +64,14 @@ typedef struct {
     int32_t command_id;    /**< the dsd_app_command_id @c command_state is about; 0 for NONE */
     uint32_t failures[DSD_WAV_RECORDING_ERROR_KINDS]; /**< this decoder run's failures by dsd_wav_recording_error */
     int32_t last_error;                               /**< the latest failure's kind, NONE for none */
+    /** the longest pause, in ms, one NFM call and its recording survive (opts->analog_record_max_gap_ms, issue #756);
+     *  200 or less is off */
+    int32_t analog_max_gap_ms;
+    /** the latest recording switch submitted (WAV start, stop, toggle, static open, or a config carrying [recording])
+     *  while no published view shows its outcome yet: what records once the queue applies it, while @c mode still
+     *  shows the state before it; 0 for none. Set by dsd_app_recording_view_get() only, and kept apart from
+     *  @c command_id, which names the latest recording command of any kind (a setting sent after a start) */
+    int32_t pending_switch_id;
 } dsd_app_recording_view;
 
 /**

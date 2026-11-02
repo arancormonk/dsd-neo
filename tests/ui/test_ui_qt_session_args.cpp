@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QList>
 #include <QMap>
+#include <QMetaProperty>
 #include <QObject>
 #include <QSettings>
 #include <QString>
@@ -165,10 +166,13 @@ test_prefs_mapping(void) {
     prefs.setExtraArgs(QStringLiteral("-Z"));
     prefs.setRecordCalls(true);
     prefs.setRecordUnknownOnly(true);
+    prefs.setAnalogMaxGapMs(1500);
     const SessionArgPrefs mapped = dsd_qt::session_args_prefs(&prefs);
-    expect("the call recording preferences map, never a folder",
-           mapped.recordCalls && mapped.recordUnknownOnly && mapped.recordingFolder.isEmpty());
-    expect("call recording is off by default", !none.recordCalls && !none.recordUnknownOnly);
+    expect("the call recording preferences map, never a folder", mapped.recordCalls && mapped.recordUnknownOnly
+                                                                     && mapped.analogMaxGapMs == 1500
+                                                                     && mapped.recordingFolder.isEmpty());
+    expect("call recording is off by default",
+           !none.recordCalls && !none.recordUnknownOnly && none.analogMaxGapMs == 200);
     expect("every preference maps",
            mapped.gainDb == 41 && mapped.ppm == 7 && mapped.bandwidthKhz == 24 && mapped.biasTee
                && !mapped.skipEncrypted && !mapped.persistTgLockouts && mapped.autoPpm && mapped.relaxedCrc
@@ -185,6 +189,7 @@ test_prefs_mapping(void) {
     prefs.setExtraArgs(defaults.extraArgs);
     prefs.setRecordCalls(defaults.recordCalls);
     prefs.setRecordUnknownOnly(defaults.recordUnknownOnly);
+    prefs.setAnalogMaxGapMs(defaults.analogMaxGapMs);
 }
 
 /* Issue #708: the call recording a session's argv names, from the store's folder and the two preferences, before the
@@ -210,9 +215,11 @@ test_recording_args(void) {
                            prefs.recordingFolder + QStringLiteral("/recordings.jsonl"),
                            QStringLiteral("-P"),
                            QStringLiteral("--record-unknown-only"),
+                           QStringLiteral("--analog-record-max-gap-ms"),
+                           QStringLiteral("200"),
                            QStringLiteral("-Z")};
     const qsizetype at = args.indexOf(QStringLiteral("-7"));
-    expect("folder, journal, -P and unknown-only, then the extra options, after the hang time",
+    expect("folder, journal, -P, unknown-only and the NFM pause hold, then the extra options, after the hang time",
            error == SessionArgsError::None && at > args.indexOf(QStringLiteral("-t"))
                && args.mid(at, want.size()) == want && args.count(QStringLiteral("-7")) == 1);
 
@@ -221,20 +228,46 @@ test_recording_args(void) {
     args = session_args_build(sys, prefs, &error);
     expect("Record calls off still names the folder and journal, so an extra -P records there",
            args.contains("-7") && args.contains("--wav-journal") && !args.contains("-P")
-               && !args.contains("--record-unknown-only"));
+               && !args.contains("--record-unknown-only") && !args.contains("--analog-record-max-gap-ms"));
 
-    // Unknown-only travels with -P: off while Record calls is off, whatever its own switch says.
+    // Unknown-only and the NFM pause hold travel with -P: neither while Record calls is off, whatever their own
+    // settings say.
     for (const bool record : {false, true}) {
         for (const bool unknown : {false, true}) {
             prefs.recordCalls = record;
             prefs.recordUnknownOnly = unknown;
+            prefs.analogMaxGapMs = 2000;
             args = session_args_build(sys, prefs, &error);
+            const qsizetype hold = args.indexOf(QStringLiteral("--analog-record-max-gap-ms"));
             expect(qPrintable(QStringLiteral("Record calls %1, unknown-only %2").arg(record).arg(unknown)),
                    args.contains(QStringLiteral("-P")) == record
-                       && args.contains(QStringLiteral("--record-unknown-only")) == (record && unknown));
+                       && args.contains(QStringLiteral("--record-unknown-only")) == (record && unknown)
+                       && (hold >= 0) == record
+                       && (!record || (args.value(hold + 1) == QStringLiteral("2000") && hold > args.indexOf("-P"))));
         }
     }
     prefs.recordUnknownOnly = false;
+
+    // The hold is sent as the preference holds it, off and custom values included, before the extra options: one
+    // there comes later and wins (the parser keeps the last).
+    prefs.recordCalls = true;
+    for (const int ms : {0, 200, 1500, 10000}) {
+        prefs.analogMaxGapMs = ms;
+        args = session_args_build(sys, prefs, &error);
+        const qsizetype hold = args.indexOf(QStringLiteral("--analog-record-max-gap-ms"));
+        expect(qPrintable(QStringLiteral("the hold %1 ms is sent once").arg(ms)),
+               hold >= 0 && args.value(hold + 1) == QString::number(ms)
+                   && args.count(QStringLiteral("--analog-record-max-gap-ms")) == 1);
+    }
+    sys["extraArgs"] = QStringLiteral("--analog-record-max-gap-ms 4000");
+    args = session_args_build(sys, prefs, &error);
+    expect("an extra hold comes after the app's",
+           error == SessionArgsError::None && args.count(QStringLiteral("--analog-record-max-gap-ms")) == 2
+               && args.lastIndexOf(QStringLiteral("--analog-record-max-gap-ms"))
+                      == args.indexOf(QStringLiteral("4000")) - 1
+               && args.indexOf(QStringLiteral("4000")) > args.indexOf(QStringLiteral("10000")));
+    sys["extraArgs"] = QStringLiteral("-Z");
+    prefs.analogMaxGapMs = 200;
 
     prefs.recordCalls = true;
     prefs.extraArgs = QStringLiteral("-Z");
@@ -342,6 +375,56 @@ test_recording_refused_extras(void) {
     appPrefs.setRecordCalls(false);
     expect("and lets it start once Record calls is off", builder.build(usb_system()).value("ok").toBool());
     appPrefs.setExtraArgs(QString());
+}
+
+/* Issue #756: Settings shuts the NFM pause hold row only when the extra options set the hold as the decoder reads them:
+ * wherever a long option stands, in either form, but never as another option's value or after a "--" that is no
+ * value. Read by name alone, those two set nothing the decoder takes, and Record calls on then sent no hold. */
+void
+test_extra_sets_pause_hold(void) {
+    using dsd_qt::session_args_extra_sets_pause_hold;
+    for (const auto& tokens : QStringList{
+             "--analog-record-max-gap-ms 7000",
+             "--analog-record-max-gap-ms=7000",
+             "-Z --analog-record-max-gap-ms 7500",
+             // A value-taking option before it, with its value: the hold is the next option.
+             "--api-token secret --analog-record-max-gap-ms 7000",
+             "--api-token=secret --analog-record-max-gap-ms 7000",
+             // The long options come out first, a short option's value position included, as the decoder takes them.
+             "-c --analog-record-max-gap-ms 7000",
+             "--analog-record-max-gap-ms 7000 -- -Z",
+         }) {
+        expect(qPrintable(QStringLiteral("sets the hold: %1").arg(tokens)), session_args_extra_sets_pause_hold(tokens));
+    }
+    for (const auto& tokens : QStringList{
+             "",
+             "-Z",
+             "-- --analog-record-max-gap-ms 7000",
+             "-Z -- --analog-record-max-gap-ms=7000",
+             "--api-token --analog-record-max-gap-ms",
+             "-Z --api-token --analog-record-max-gap-ms 7000",
+             "--frame-log --analog-record-max-gap-ms=7000",
+             "--analog-record-max-gap-msx 1",
+             "--analog-record-max-gap 7000",
+         }) {
+        expect(qPrintable(QStringLiteral("sets no hold: %1").arg(tokens)), !session_args_extra_sets_pause_hold(tokens));
+    }
+
+    // Settings reads it from the builder, off the app-wide extra options every session starts with, and follows them.
+    expect("no preferences, no hold", !dsd_qt::SessionArgsBuilder(nullptr).extraArgsSetPauseHold());
+    dsd_qt::AppPrefs appPrefs;
+    const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+    int changes = 0;
+    QObject::connect(&builder, &dsd_qt::SessionArgsBuilder::extraArgsSetPauseHoldChanged, [&changes] { changes++; });
+    appPrefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms=7000"));
+    expect("the builder reads a hold", builder.extraArgsSetPauseHold() && changes == 1);
+    appPrefs.setExtraArgs(QStringLiteral("-- --analog-record-max-gap-ms 7000"));
+    expect("the builder reads no hold after --", !builder.extraArgsSetPauseHold() && changes == 2);
+    appPrefs.setExtraArgs(QString());
+    expect("QML reads it as a property",
+           dsd_qt::SessionArgsBuilder::staticMetaObject
+               .property(dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfProperty("extraArgsSetPauseHold"))
+               .hasNotifySignal());
 }
 
 /* Issue #708: a start asks the call recording store for the session's folder before the host starts, names it in the
@@ -1083,6 +1166,59 @@ test_bias_tee_tristate(void) {
            input_spec(session_args_build(sys, prefOn, &error)).endsWith(QStringLiteral(":bias")));
 }
 
+/* A restored system or scan list whose whole numbers are past int's range (a backup keeps a large JSON number as a
+ * 64-bit integer) never starts on their low 32 bits. Unchecked fields read as their defaults, as absent keys do: the
+ * port as 0, gain, bandwidth and bias tee follow the app, a profile's force adds no option. Checked fields fail their
+ * checks: the force key and a scan list's port. A scan list's dwell is left to its default. */
+void
+test_past_int_range(void) {
+    const qlonglong past = qlonglong(1) << 32;
+    SessionArgsError error = SessionArgsError::None;
+    QVariantMap rtltcp = usb_system();
+    rtltcp.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    rtltcp.insert(QStringLiteral("host"), QStringLiteral("192.168.1.10"));
+    rtltcp.insert(QStringLiteral("port"), past + 1234);
+    rtltcp.insert(QStringLiteral("gainDb"), past + 36);
+    rtltcp.insert(QStringLiteral("bandwidthKhz"), past + 12);
+    rtltcp.insert(QStringLiteral("biasTee"), past + 1);
+    QStringList args = session_args_build(rtltcp, SessionArgPrefs(), &error);
+    expect("oversized tuning reads as the defaults",
+           error == SessionArgsError::None
+               && input_spec(args) == QStringLiteral("rtltcp:192.168.1.10:0:851.375M:30:0:48:0:2"));
+    const QVariantMap udp{
+        {QStringLiteral("sourceType"), QStringLiteral("udp")},
+        {QStringLiteral("port"), past + 7355},
+    };
+    expect("an oversized udp port reads as 0",
+           input_spec(session_args_build(udp, SessionArgPrefs(), &error)) == QStringLiteral("udp:0.0.0.0:0"));
+
+    QVariantMap forced = usb_system();
+    forced.insert(QStringLiteral("encForceKey"), past + 1);
+    expect("an oversized force key is refused",
+           session_args_build(forced, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::ForceKey);
+    QVariantMap profile = usb_system();
+    profile.insert(QStringLiteral("decryptionForce"), past + 1);
+    args = session_args_build(profile, SessionArgPrefs(), &error);
+    expect("an oversized profile force adds no option", error == SessionArgsError::None
+                                                            && !args.contains(QStringLiteral("-4"))
+                                                            && !args.contains(QStringLiteral("--no-force-key"))
+                                                            && !args.contains(QStringLiteral("--dmr-force-algid")));
+
+    QString scanError;
+    QVariantMap list{
+        {QStringLiteral("sourceType"), QStringLiteral("rtltcp")},
+        {QStringLiteral("host"), QStringLiteral("192.168.1.10")},
+        {QStringLiteral("port"), past + 1234},
+    };
+    expect("an oversized scan list port is refused",
+           dsd_qt::session_args_scan_build(list, "851.375", "scan.csv", SessionArgPrefs(), &scanError).isEmpty()
+               && !scanError.isEmpty());
+    list = {{QStringLiteral("sourceType"), QStringLiteral("usb")}, {QStringLiteral("defaultDwellMs"), past + 500}};
+    args = dsd_qt::session_args_scan_build(list, "851.375", "scan.csv", SessionArgPrefs(), &scanError);
+    expect("an oversized scan dwell is left to the default",
+           scanError.isEmpty() && !args.isEmpty() && !args.contains(QStringLiteral("--trunk-scan-dwell-ms")));
+}
+
 void
 test_network_and_file_sources(void) {
     SessionArgsError error = SessionArgsError::None;
@@ -1375,6 +1511,7 @@ main(int argc, char** argv) {
     test_prefs_mapping();
     test_recording_args();
     test_recording_refused_extras();
+    test_extra_sets_pause_hold();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();
@@ -1385,6 +1522,7 @@ main(int argc, char** argv) {
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();
+    test_past_int_range();
     test_explore_system();
     test_radio_settings_args();
     test_grouped_hex_keys();

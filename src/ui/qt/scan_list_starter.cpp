@@ -31,6 +31,7 @@
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 namespace {
@@ -109,7 +110,7 @@ analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const Q
     if (targets.isEmpty() || (source != QStringLiteral("usb") && source != QStringLiteral("rtltcp"))) {
         return {};
     }
-    const int listKhz = list.value("bandwidthKhz", -1).toInt();
+    const int listKhz = stored_int_or(list.value("bandwidthKhz"), -1);
     const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
     const int rateHz = dsd_analog_rtl_dsp_bw_or_default(khz) * 1000;
     const int nfmHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_FM);

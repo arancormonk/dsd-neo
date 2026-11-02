@@ -9,6 +9,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <utility>
@@ -198,6 +199,14 @@ main(int argc, char** argv) {
     sys["encForceKey"] = 3;
     check(!build().ok);
     sys["encForceKey"] = 0;
+    // A restored force key past int's range fails the 0..2 check rather than run as its low 32 bits (1 here), and a
+    // profile force past it adds no option.
+    sys["encForceKey"] = (qlonglong(1) << 32) + 1;
+    check(!build().ok);
+    sys["encForceKey"] = 0;
+    sys["decryptionForce"] = (qlonglong(1) << 32) + 1;
+    check(build().ok && !build().csv.contains("-4") && !build().csv.contains("--no-force-key"));
+    sys.remove("decryptionForce");
     // Every preserved column and every direct-key family, without printing values.
     sys["decodeFlag"] = "-ft";
     sys["trunking"] = true;

@@ -5546,6 +5546,7 @@ static RtlTestHook<uint64_t> g_test_tcp_commit_hook;
 static std::atomic<int> g_test_tcp_refuse_read_buffer{0};
 static RtlTestHook<> g_test_tcp_discard_hook;
 static std::atomic<uint64_t> g_test_tcp_odd_drops{0U};
+static std::atomic<uint64_t> g_test_tcp_discard_bytes{0U};
 static RtlTestHook<> g_test_tcp_read_hook;
 #endif
 
@@ -6480,6 +6481,9 @@ rtl_tcp_discard_slice(const struct rtl_tcp_conn* conn, struct rtl_tcp_loop_state
     const int got = dsd_socket_recv(conn->sock, st->u8, st->bufsz, 0);
     if (got > 0) {
         *parity ^= (unsigned int)got & 1U;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        g_test_tcp_discard_bytes.fetch_add((uint64_t)got, std::memory_order_relaxed);
+#endif
         return 0;
     }
     return (got == 0 || !rtl_tcp_recv_is_timeout(got)) ? 1 : 0;
@@ -11794,6 +11798,11 @@ rtl_device_test_tcp_set_read_hook(void (*hook)(void* ctx), void* ctx) {
 extern "C" uint64_t
 rtl_device_test_tcp_odd_drops(void) {
     return g_test_tcp_odd_drops.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t
+rtl_device_test_tcp_discard_bytes(void) {
+    return g_test_tcp_discard_bytes.load(std::memory_order_relaxed);
 }
 
 extern "C" void

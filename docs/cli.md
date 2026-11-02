@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `--frontend terminal` (`-N` alias), `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
-- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
+- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `--analog-record-max-gap-ms 2000`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
@@ -275,6 +275,13 @@ Windows console runs:
   nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
   keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
   `docs/code_map.md` ("Recording journal").
+- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional NFM call in one
+  recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
+  (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence, so the
+  recording keeps time. A longer pause ends the call at its last audio, and the next transmission starts a new one.
+  200 or less turns it off, the default: a call then ends 200 ms after its carrier drops, as before. A value outside 0
+  to 10000 is refused. Digital calls are not affected. INI: `[recording] analog_max_gap_ms`. How pauses are counted,
+  and the limits, are under [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
@@ -1606,13 +1613,59 @@ identity and label, and different confirmed identifiers do not merge into one ca
 
 `-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
 History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
-Carrier end, rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
+Carrier end (200 ms after the carrier drops, or after a longer pause with `--analog-record-max-gap-ms`, below),
+rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
 include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
 `<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
 `<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
 while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
-named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
-[row options](csv-formats.md).
+named WAVs without fabricated talkgroup IDs. It is not exported, and that is not logged as a warning or a failure. See
+[receive configuration](config-system.md) and [row options](csv-formats.md).
+
+#### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
+
+By default an NFM call ends 200 ms after its carrier drops (the carrier hangover). Every longer pause starts a new
+call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
+analog_max_gap_ms`) keeps the call going through a pause of up to `<ms>`, so one exchange stays one row and one
+recording. It changes nothing else: the hangover, the squelch, the scan and the tone filter work as before.
+
+- It works only while per-call recording is on (`-P`, INI `[recording] per_call_wav`). With recording off, a call ends
+  200 ms after its carrier drops, as before. Recording turned off in a running session ends a paused call at its last
+  audio, from the next block of audio; a change of recording folder does not.
+- The pause counts from the last moment the carrier was there. Its first 200 ms is saved as received, as before:
+  silence under the noise or auto squelch, the input itself under a level squelch. Nothing more is saved while the
+  carrier is away.
+- When the carrier comes back within the limit, the rest of the pause is saved as silence just before the new audio,
+  so the recording keeps time. A pause exactly as long as the limit is still joined. A longer one ends the call at its
+  last audio; the next transmission starts a new call and a new recording.
+- 200 or less turns it off, the default. The largest value is 10000 (10 seconds). A change in a running session
+  applies from the next block of audio: a lower limit, or off, ends a call already paused longer than that, and a
+  higher one lets it wait longer. A call that already ended stays ended.
+- While a call is paused it still shows as active, and its timer keeps running, in the terminal, the app and the API.
+  Its history row, the call-end alert (`-a`) and the event log entry come when the pause is decided. The row ends at
+  the last audio received, not when the wait ran out.
+- A tone check counts as part of the pause. Under a tone filter, the decoder checks the tone again each time the
+  carrier comes back, which takes about 0.4 to 0.8 seconds, and that time is saved as silence too. So a short limit,
+  such as 500 ms, rarely joins transmissions under a tone filter; allow for the check.
+- A different tone or code that is confirmed when the carrier comes back ends the paused call, and the new
+  transmission starts its own call and recording. Without a tone filter, a different station that answers during
+  the pause is saved into the paused recording until its tone is confirmed (usually within 0.4 seconds for a CTCSS
+  tone, at most about 0.7 seconds on a strong signal, longer for some tones and for DCS), as a tone change inside one
+  carrier is today. Audio the tone filter is still checking or has rejected is never saved. A weak toned carrier that
+  reads as untoned before its tone locks is split there, at a resume as at a call start.
+- Time is counted in the decoder's blocks of audio, so a pause is measured to within one block: 20 ms on radio input
+  and on PCM input at 48 kHz (8, 9.6, 12, 16 and 24 kHz input is brought up to 48 kHz first); at other PCM rates a
+  block is 960 samples, about 117 ms at 8192 Hz. A pause shorter than one block is not seen.
+- An input that stops sending is not a pause in the signal, and still ends the call: a stream on stdin, UDP or TCP that
+  sends nothing for about half a second (`rtl_fm` without `-E pad`, a UDP sender that stops between transmissions),
+  or a radio input that stops delivering. On UDP and radio input the call ends at once; on stdin and TCP it ends when
+  data comes back or the input ends, and its row still ends at its last audio. A shorter stall is joined without any
+  silence. To join pauses, keep the stream running while the channel is quiet (`rtl_fm -E pad`, or a channelizer that
+  keeps sending the channel's noise).
+- A scan leaving the channel, a retune, an input switch, a decode mode change or stopping the decoder ends a paused
+  call at once, with no silence added. Scanning is not held up by a paused call.
+- AM (`-fM`) has no per-call recording, and EDACS analog calls have their own; neither has this hold. There is no
+  minimum or maximum file length.
 
 ### Tone filter (CTCSS/DCS receive policy)
 
