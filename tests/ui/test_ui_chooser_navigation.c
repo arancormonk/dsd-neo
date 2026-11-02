@@ -154,11 +154,16 @@ start_owned_a(void) {
     assert(g_ctx_a.disposed == 0);
 }
 
+/* What a borrowed chooser's callback could take. */
+typedef struct {
+    void* taken;
+} TakeProbe;
+
 static void
 borrowed_done(void* user, int sel) {
     (void)sel;
-    void** out = (void**)user;
-    *out = ui_chooser_take_context();
+    TakeProbe* probe = (TakeProbe*)user;
+    probe->taken = ui_chooser_take_context();
 }
 
 static void
@@ -245,10 +250,10 @@ test_owned_chooser(void) {
 
     /* Take outside any callback, and inside a borrowed chooser's: nothing to take. */
     assert(ui_chooser_take_context() == NULL);
-    void* taken = &g_ctx_a;
-    ui_chooser_start("Plain", OWNED_ITEMS, 3, borrowed_done, &taken);
+    TakeProbe probe = {&g_ctx_a};
+    ui_chooser_start("Plain", OWNED_ITEMS, 3, borrowed_done, &probe);
     assert(ui_chooser_handle_key('\n') == 1);
-    assert(taken == NULL);
+    assert(probe.taken == NULL);
 }
 
 /* ---- Rendering (issue #672, B7) ---- */
