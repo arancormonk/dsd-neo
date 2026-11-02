@@ -986,11 +986,15 @@ CallHistoryModel::absorbSeenReceive(SeenState& seen, const SeenState& read) {
     return received;
 }
 
-// Record the site parts and call channel @p read gained in @p seen; returns whether it gained any (issue #799).
+// Record the site parts, site text and call channel @p read gained in @p seen; returns whether it gained any (issue
+// #799).
 bool
 CallHistoryModel::absorbSeenSite(SeenState& seen, const SeenState& read) {
-    return call_history_seen_absorb_site(&seen.siteMask, &seen.callChannel, &seen.callChannelKind, read.siteMask,
-                                         read.callChannel, read.callChannelKind);
+    const bool sited = call_history_seen_absorb_site(&seen.siteMask, &seen.callChannel, &seen.callChannelKind,
+                                                     read.siteMask, read.callChannel, read.callChannelKind);
+    const bool texted =
+        call_history_seen_absorb_site_text(&seen.siteText, &seen.siteTextKnown, read.siteText, read.siteTextKnown);
+    return sited || texted;
 }
 
 int
@@ -1101,8 +1105,10 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         read.receiveKnown = item->receive_identity.known != 0;
         read.receiveSlot = item->receive_identity.slot;
         read.service = QString::fromUtf8(item->service_label);
-        // A mask read only: the walk reads every committed row, and nothing is formatted here.
+        // A mask and a digest read only: the walk reads every committed row, and nothing is formatted here.
         read.siteMask = item->site_id.valid;
+        read.siteText = call_history_site_text_digest(&item->site_id);
+        read.siteTextKnown = true;
         const ItemChannel channel = item_call_channel(item);
         read.callChannel = channel.channel;
         read.callChannelKind = channel.kind;
@@ -2253,10 +2259,27 @@ CallHistoryModel::load() {
         // for a row of one fragment only. A merged row keeps one fragment's slot and seq but the earliest
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
-        m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName, it->freqHz, it->codeKind, it->code,
-                                             it->receiveKnown, it->receiveSlot, it->service, it->siteId.valid,
-                                             it->callChannel, it->callChannelKind, it->session, 0U, QString()});
+        // The seed's site text digest is the text the row shows, as a ring walk reads it: a relaunch re-reads nothing.
+        m_seen.insert(keyFor(*it), SeenState{it->when,
+                                             it->when + qMax(it->durationSecs, 0),
+                                             it->src,
+                                             it->emergency,
+                                             it->enc,
+                                             it->sourceName,
+                                             it->freqHz,
+                                             it->codeKind,
+                                             it->code,
+                                             it->receiveKnown,
+                                             it->receiveSlot,
+                                             it->service,
+                                             it->siteId.valid,
+                                             it->callChannel,
+                                             it->callChannelKind,
+                                             call_history_site_text_digest(&it->siteId),
+                                             true,
+                                             it->session,
+                                             0U,
+                                             QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -2311,6 +2334,11 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     state.service = obj.value(QLatin1String("svc")).toString();
     // Absent when nothing was read, and in stores older builds wrote; a value that does not fit reads as nothing.
     (void)json_field_fits(obj, "sm", &state.siteMask);
+    // Absent in stores older builds wrote, which kept no digest: not known, so the first read takes one (SeenState).
+    state.siteTextKnown = json_field_fits(obj, "stx", &state.siteText);
+    if (!state.siteTextKnown) {
+        state.siteText = 0U;
+    }
     if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
         || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
         state.callChannel = 0U;
@@ -2415,6 +2443,10 @@ CallHistoryModel::seenEntryToJson(const SeenState& state) {
     }
     if (state.siteMask != 0U) {
         obj.insert(QLatin1String("sm"), static_cast<qint64>(state.siteMask));
+    }
+    // Written even when 0 (no text read): only its absence means an older build's entry.
+    if (state.siteTextKnown) {
+        obj.insert(QLatin1String("stx"), static_cast<qint64>(state.siteText));
     }
     if (state.callChannel != 0U || state.callChannelKind != DSD_CALL_CHANNEL_NONE) {
         obj.insert(QLatin1String("cch"), static_cast<qint64>(state.callChannel));

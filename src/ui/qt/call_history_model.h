@@ -528,6 +528,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         uint32_t siteMask = 0;
         uint32_t callChannel = 0;
         uint8_t callChannelKind = 0;
+        /* The digest of the site text last read (call_history_site_text_digest(), 0 for none). The core can change the
+         * text alone in place (a reacquisition merge's union preferring the text that names Capacity Max), so any
+         * change is an advance. Not known in a seen entry an older build stored: the first read then takes the digest
+         * without counting as an advance. */
+        uint32_t siteText = 0;
+        bool siteTextKnown = false;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;

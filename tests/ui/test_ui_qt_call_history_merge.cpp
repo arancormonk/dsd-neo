@@ -30,8 +30,10 @@ using dsd_qt::call_history_provenance_compare;
 using dsd_qt::call_history_seen_absorb;
 using dsd_qt::call_history_seen_absorb_fill;
 using dsd_qt::call_history_seen_absorb_site;
+using dsd_qt::call_history_seen_absorb_site_text;
 using dsd_qt::call_history_seen_row_advanced;
 using dsd_qt::call_history_site_fold;
+using dsd_qt::call_history_site_text_digest;
 using dsd_qt::CallHistoryProvenance;
 using dsd_qt::kCallHistoryMaxPlausibleDurationSecs;
 using dsd_qt::kCallMergeWindowSrcMatchedSecs;
@@ -451,6 +453,36 @@ test_seen_site_ratchet(void) {
            call_history_seen_absorb_site(&mask, &channel, &kind, mask, 14U, DSD_CALL_CHANNEL_LCN), false);
 }
 
+/* The site text digest: FNV-1a over the text while it is valid, 0 otherwise; any change from the digest last read is
+ * an advance, and a digest not known on either side is none. */
+void
+test_seen_site_text_digest(void) {
+    dsd_received_identity site = {};
+    DSD_SNPRINTF(site.dmr_site_text, sizeof(site.dmr_site_text), "%s", "a");
+    expect_int("a text not valid digests to 0", static_cast<int>(call_history_site_text_digest(&site)), 0);
+    site.valid = DSD_RXID_DMR_SITE_TEXT;
+    expect("FNV-1a of \"a\"", call_history_site_text_digest(&site) == 0xE40C292CU, true);
+    site.dmr_site_text[0] = '\0';
+    expect("an empty valid text is the offset basis", call_history_site_text_digest(&site) == 2166136261U, true);
+    DSD_MEMSET(site.dmr_site_text, 'x', sizeof(site.dmr_site_text));
+    const uint32_t full = call_history_site_text_digest(&site);
+    site.dmr_site_text[sizeof(site.dmr_site_text) - 1U] = '\0';
+    expect("a text with no NUL stops at the field's end", full != call_history_site_text_digest(&site), true);
+
+    uint32_t stored = 0U;
+    bool known = false;
+    expect("an unknown read is no advance", call_history_seen_absorb_site_text(&stored, &known, 7U, false), false);
+    expect("and records nothing", !known && stored == 0U, true);
+    expect("an unknown stored digest takes the one read", call_history_seen_absorb_site_text(&stored, &known, 7U, true),
+           false);
+    expect("and knows it", known && stored == 7U, true);
+    expect("the same digest is no advance", call_history_seen_absorb_site_text(&stored, &known, 7U, true), false);
+    expect("another digest advances", call_history_seen_absorb_site_text(&stored, &known, 9U, true), true);
+    expect("so does 0, a text no longer read", call_history_seen_absorb_site_text(&stored, &known, 0U, true), true);
+    expect("an unknown read leaves the digest", call_history_seen_absorb_site_text(&stored, &known, 9U, false), false);
+    expect_int("as it was", static_cast<int>(stored), 0);
+}
+
 /* One History row as the fold below builds it: its site and the fragments (by bit) it holds. */
 struct SiteRow {
     dsd_received_identity site;
@@ -525,6 +557,7 @@ main(void) {
     test_seen_fill_ratchet();
     test_site_fold_rules();
     test_seen_site_ratchet();
+    test_seen_site_text_digest();
     test_site_fold_order_limit();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

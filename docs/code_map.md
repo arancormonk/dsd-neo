@@ -9704,27 +9704,31 @@ Qt Quick frontend (`src/ui/qt`):
     (`historyDetailSite`; an empty line is hidden, so a row with neither site nor channel shows none).
   - Call history site and channel (issue #799; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row keeps
     the site it was heard on as the core's site identity (`Row::siteId`, a `dsd_received_identity`: the raw parts the
-    record's compare reads, with the DMR site text and brand as received, for display only) and a DMR call's own
-    channel with its numbering (`Row::callChannel`, `callChannelKind`, each with its own provenance `cchWhen`/`cchSeq`/
+    record's compare reads, with the DMR site text and brand as received, for display only) and a DMR call's own channel
+    with its numbering (`Row::callChannel`, `callChannelKind`, each with its own provenance `cchWhen`/`cchSeq`/
     `cchSlot`, folded like the frequency). The `siteText` role (`SiteTextRole`) is spelled at read time by
     `dsd_app_site_history_text()`, empty when the row has neither. A merge joins fragments only when
     `dsd_call_site_compatible()` agrees and keeps the union of their site parts (`call_history_site_fold()`, order-free,
     no provenance needed); the channel folds by provenance as the frequency does, so a roaming radio heard on two sites
     within a few seconds gives two rows. The seen ratchet (`SeenState::siteMask`, `callChannel`, `callChannelKind`,
     `call_history_seen_absorb_site()`) treats a part gained, or any change of the channel or its kind, as an advance, so
-    a row the core filled in place re-ingests as an update. H1: an update for a fragment is applied to the row that
-    holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges with, because
-    a fragment that no longer passes the merge test with the row it was folded into would otherwise be dropped. Decided
-    limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the system without the
-    site) joins whichever compatible row it meets first, so a live session (oldest first) and a backlog (newest first)
-    can group the same three fragments differently; L8, a fragment that later learns parts conflicting with the row it
-    already folded into has its identity discarded whole, with its channel, never picked part by part, and is not split
-    back out of the row. Persistence: the row's `site` object (one key per part; the DMR texts as strings) and
-    `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm` and `cch`/`cchKind`);
-    a row saved by an older build has none and loads with an unknown site and channel, and an object that
-    fails `dsd_rxid_site_consistent()` or has a value that does not fit its field loads as unknown, never
-    as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`,
-    `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
+    a row the core filled in place re-ingests as an update. So does any change of the site text alone
+    (`SeenState::siteText`, an FNV-1a digest of the fragment last read, `call_history_site_text_digest()` and
+    `call_history_seen_absorb_site_text()`): a reacquisition merge's union can swap the standard Tier III text for the
+    one that names Capacity Max with the mask, channel and stamps unchanged. H1: an update for a fragment is applied to
+    the row that holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges
+    with, because a fragment that no longer passes the merge test with the row it was folded into would otherwise be
+    dropped. Decided limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the
+    system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
+    backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
+    conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
+    part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
+    texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
+    text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
+    first digest read without counting it as an advance); a row saved by an older build has none and loads with an
+    unknown site and channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its
+    field loads as unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
+    `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.

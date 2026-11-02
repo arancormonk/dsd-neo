@@ -22,7 +22,9 @@
  * record could hold, fill in place, keep fragments heard on two sites (or under two
  * channel numberings) apart across a relaunch, and an update of a fragment already
  * folded into a row reaches that row while a conflicting identity it brings is
- * discarded. Saves are bounded by bytes written, not by calls: a large store waits
+ * discarded. A site text the core changes alone in place (issue #40: the text that
+ * names Capacity Max) re-reads the row, also across a reload and the spill, while a
+ * seen store an older build wrote, with no text digest, re-reads nothing. Saves are bounded by bytes written, not by calls: a large store waits
  * longer between saves, and the moments the log must reach the disk (saveNow(), the
  * app leaving the screen) write it at once, even with a save already in flight.
  * Issue #708: every row has a stable uid that rowForUid() finds wherever the row moves, and
@@ -2880,6 +2882,216 @@ test_channel_kind_conflict_stays_apart(void) {
     }
 }
 
+/* Issue #40: a Tier III site of the reporter's network (Large, raw NET 1, SITE 1), as the decoder words it before and
+ * after it recognises Capacity Max. Same raw parts, same mask: only the text differs. */
+const char k_t3_standard_text[] = "TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101";
+const char k_t3_capmax_text[] = "TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS 2101";
+
+dsd_received_identity
+t3_large_site(const char* text) {
+    return dmr_site(DSD_RXID_DMR_TRUNK_TIER3, 1, 1, text, "", 2U);
+}
+
+/* FNV-1a, 32 bits, over a text up to its NUL: what the seen store records of a site text. */
+qint64
+fnv1a32(const char* text) {
+    uint32_t hash = 2166136261U;
+    for (const char* p = text; *p != '\0'; p++) {
+        hash ^= static_cast<uint8_t>(*p);
+        hash *= 16777619U;
+    }
+    return static_cast<qint64>(hash);
+}
+
+/* The core can change a committed row's site text in place and nothing else (a reacquisition merge's union taking the
+ * text that names Capacity Max): the mask, channel and stamps stay. The seen entry's text digest is what tells the row
+ * has advanced. It is compared with the fragment last read, not with the row shown: a fragment read back to the
+ * standard text re-reads too, and the row keeps the text the union prefers. */
+void
+test_site_text_changed_in_place_reingests(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754524500;
+    Event_History* item = RingFixture::site(ring.commit(0, 20101, 2011, when, when + 6),
+                                            t3_large_site(k_t3_standard_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    model.refresh(ring.state);
+    expect(
+        "the call lands with the standard text",
+        model.count() == 1
+            && site_text(model, 0)
+                   == u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101 \xC2\xB7 LPCN 38"));
+
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    RingFixture::site(item, t3_large_site(k_t3_capmax_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    const QString capmax =
+        u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS 2101 \xC2\xB7 "
+           "LPCN 38");
+    expect("a text changed with every stamp, part and channel the same re-ingests",
+           model.count() == 1 && site_text(model, 0) == capmax
+               && data_changed_with(changed, {CallHistoryModel::SiteTextRole}));
+
+    changed.clear();
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("the same text read again is no update", changed.count() == 0);
+
+    changed.clear();
+    RingFixture::site(item, t3_large_site(k_t3_standard_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a text changed back re-reads, as the fragment last read differs", changed.count() > 0);
+    expect("and the row keeps the text that names Capacity Max", model.count() == 1 && site_text(model, 0) == capmax);
+    changed.clear();
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("then reads as no update", changed.count() == 0);
+}
+
+/* The seen store keeps the digest of the text read: a relaunched model re-reads a row whose text changed while it was
+ * down, and nothing else. A store an older build wrote has no digest: the first read takes the text as it is, without
+ * re-reading the row, and a change after it re-reads. */
+void
+test_site_text_digest_survives_save_and_reload(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754524700;
+    const QString standard =
+        u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101 \xC2\xB7 LPCN 38");
+    const QString capmax =
+        u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS 2101 \xC2\xB7 "
+           "LPCN 38");
+    Event_History* item = nullptr;
+    {
+        CallHistoryModel model;
+        item = RingFixture::site(ring.commit(0, 20201, 2021, when, when + 6), t3_large_site(k_t3_standard_text),
+                                 DSD_CALL_CHANNEL_LPCN, 38U);
+        /* On the other slot: a commit on this one would move the row the pointer above names. */
+        RingFixture::site(ring.commit(1, 20202, 2022, when + 30, when + 34), p25_site(0x1A3, 3, 21));
+        model.refresh(ring.state);
+        expect("two calls land", model.count() == 2);
+    } // destructor flushes the stores
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    int withDigest = 0;
+    int withZero = 0;
+    for (const auto& value : seen) {
+        const QJsonObject entry = value.toObject();
+        withDigest += entry.value(QLatin1String("stx")).toInteger(-1) == fnv1a32(k_t3_standard_text) ? 1 : 0;
+        withZero +=
+            entry.contains(QLatin1String("stx")) && entry.value(QLatin1String("stx")).toInteger(-1) == 0 ? 1 : 0;
+    }
+    expect("the seen store records the text read as its digest", withDigest == 1);
+    expect("and a row read with no text as 0", withZero == 1);
+
+    {
+        CallHistoryModel restored;
+        QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+        expect("dataChanged spy connects", changed.isValid());
+        restored.refresh(ring.state);
+        expect("the reloaded store knows the text, so nothing re-reads", restored.count() == 2 && changed.count() == 0);
+        RingFixture::site(item, t3_large_site(k_t3_capmax_text), DSD_CALL_CHANNEL_LPCN, 38U);
+        ring.touchCommitted(0);
+        restored.refresh(ring.state);
+        expect("a text changed after the relaunch re-reads",
+               restored.count() == 2 && site_text(restored, row_with_tg(restored, 20201)) == capmax);
+    } // destructor flushes the stores
+
+    /* An older build's store: the row and the ring hold the standard text again, and no digest is known. */
+    RingFixture::site(item, t3_large_site(k_t3_standard_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    ring.touchCommitted(0);
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        if (row.value(QLatin1String("tg")).toInteger() == 20201) {
+            QJsonObject site = row.value(QLatin1String("site")).toObject();
+            site.insert(QLatin1String("dmr_site_text"), u8(k_t3_standard_text));
+            row.insert(QLatin1String("site"), site);
+            rows.replace(i, row);
+        }
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    QJsonArray older = dsd_qt::json_store_load_array("call_history_seen.json");
+    for (int i = 0; i < older.size(); i++) {
+        QJsonObject entry = older.at(i).toObject();
+        entry.remove(QLatin1String("stx"));
+        older.replace(i, entry);
+    }
+    expect("an older build's seen store saved", dsd_qt::json_store_save_array("call_history_seen.json", older));
+    CallHistoryModel legacy;
+    expect("the older store loads", legacy.count() == 2 && site_text(legacy, row_with_tg(legacy, 20201)) == standard);
+    QSignalSpy changed(&legacy, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    legacy.refresh(ring.state);
+    expect("a seen entry with no digest takes the text read without re-reading the row",
+           legacy.count() == 2 && changed.count() == 0);
+    RingFixture::site(item, t3_large_site(k_t3_capmax_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    ring.touchCommitted(0);
+    legacy.refresh(ring.state);
+    expect("a change after that first read re-reads",
+           legacy.count() == 2 && site_text(legacy, row_with_tg(legacy, 20201)) == capmax);
+}
+
+/* The spilled seen entry carries the digest: a relaunched model that folds the spill re-reads the ring row whose text
+ * changed after the tap spilled it, and only that. */
+void
+test_site_text_digest_spill_round_trip(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754528500;
+    Event_History* item = nullptr;
+    {
+        CallHistoryModel model;
+        item = RingFixture::site(ring.commit(0, 24101, 2411, when, when + 4), t3_large_site(k_t3_standard_text),
+                                 DSD_CALL_CHANNEL_LPCN, 38U);
+        model.refresh(ring.state);
+        expect("the call lands", model.count() == 1);
+    } // destructor flushes the stores
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    expect("one row and one seen entry stored", rows.size() == 1 && seen.size() == 1);
+    QJsonObject seenEntry = seen.at(0).toObject();
+    expect("the seen entry holds the digest",
+           seenEntry.value(QLatin1String("stx")).toInteger(-1) == fnv1a32(k_t3_standard_text));
+    QJsonObject line;
+    line.insert(QLatin1String("v"), 1);
+    line.insert(QLatin1String("key"), seenEntry.value(QLatin1String("key")));
+    seenEntry.remove(QLatin1String("key"));
+    line.insert(QLatin1String("seen"), seenEntry);
+    line.insert(QLatin1String("row"), rows.at(0));
+    const QByteArray bytes = QJsonDocument(line).toJson(QJsonDocument::Compact) + '\n';
+    const auto writeSpill = [&bytes]() {
+        QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history.json")));
+        QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history_seen.json")));
+        QFile spill(dsd_qt::json_store_path(QStringLiteral("call_history_spill.jsonl")));
+        expect("the spill is written", spill.open(QIODevice::WriteOnly) && spill.write(bytes) == bytes.size());
+        spill.close();
+    };
+
+    writeSpill();
+    {
+        CallHistoryModel restored;
+        QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+        expect("dataChanged spy connects", changed.isValid());
+        restored.refresh(ring.state);
+        expect("the spilled digest matches the ring, so the row is no update",
+               restored.count() == 1 && changed.count() == 0);
+    }
+
+    writeSpill();
+    RingFixture::site(item, t3_large_site(k_t3_capmax_text), DSD_CALL_CHANNEL_LPCN, 38U);
+    ring.touchCommitted(0);
+    CallHistoryModel restored;
+    restored.refresh(ring.state);
+    expect("a text changed since the spill re-reads",
+           restored.count() == 1
+               && site_text(restored, 0)
+                      == u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Capacity Max \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS "
+                            "2101 \xC2\xB7 LPCN 38"));
+}
+
 /* The DMR site text follows -D, so one site can arrive under two texts with the same raw numbers. Those are one site:
  * the fragments merge, and the row keeps one of the texts (the same one in any order), through a save and reload. */
 void
@@ -3933,6 +4145,9 @@ main(int argc, char** argv) {
     test_update_learning_another_source_keeps_row_source();
     test_channel_kind_conflict_stays_apart();
     test_dmr_text_differs_raw_equal_merges_and_keeps_text();
+    test_site_text_changed_in_place_reingests();
+    test_site_text_digest_survives_save_and_reload();
+    test_site_text_digest_spill_round_trip();
     test_record_for_uid();
     test_receive_service_identity();
     test_slot_proof_merges_independently_of_code();
