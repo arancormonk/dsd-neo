@@ -3079,7 +3079,8 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
     stayed advance or retreat toasts the outcome only ("Staying on target #<ordinal> <label>", the id without a label);
-    avoid keeps its own toast. Avoid on a target already avoided answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` and does nothing (issue #672).
+    avoid keeps its own toast. Avoid on a target already avoided answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` and
+    does nothing (issue #672).
   - A paused scan takes clear alone (a flag edit, issue #672); the other ops answer "paused".
 - `dsd_trunk_scan_hook_unavoid()` — put one avoided target back by its identity, `(session, target id)` (issue #672):
   `DSD_TRUNK_SCAN_CONTROL_OK`, `_STALE` (another session, session 0 or no such id), `_NOT_AVOIDED`, or "unavailable"
@@ -3476,7 +3477,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`frequency unknown` for a placeholder), since two rows can share a frequency, and a target as `#<ordinal> <label>`
     (`trunk_scan_toast_name()`; the id when it has no label, since Android's ids are entry UIDs), from the published
     `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put
-    back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`.
+    back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
+    `API_COMMAND_PAYLOADS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
