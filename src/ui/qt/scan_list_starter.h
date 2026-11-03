@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QStringList>

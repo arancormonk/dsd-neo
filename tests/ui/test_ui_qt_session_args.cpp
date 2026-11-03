@@ -15,6 +15,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonDocument>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>

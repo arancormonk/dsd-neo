@@ -5,11 +5,16 @@
 
 #include "scan_list_toggle_model.h"
 
+#include <QByteArray>
+#include <QHash>
 #include <QList>
-#include <Qt>
+#include <QtGlobal>
 #include <algorithm>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/safe_api.h>
 #include <iterator>
+#include <string.h>
 #include <utility>
 
 namespace dsd_qt {
@@ -66,7 +71,8 @@ ScanListToggleModel::data(const QModelIndex& index, int role) const {
     const dsd_app_scan_list_entry& entry = m_view.lists[i];
     switch (role) {
         case NumberRole: return entry.number;
-        case NameRole: return QString::fromUtf8(entry.name, static_cast<int>(qstrnlen(entry.name, sizeof entry.name)));
+        case NameRole:
+            return QString::fromUtf8(entry.name, static_cast<qsizetype>(strnlen(entry.name, sizeof entry.name)));
         case OnRole: return rowOn(i);
         case TargetsRole: return entry.targets;
         case OnAirRole: return entry.has_active != 0U;

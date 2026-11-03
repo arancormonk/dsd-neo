@@ -35,6 +35,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/access_code.h>
@@ -63,6 +64,7 @@ extern "C" {
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -277,6 +279,7 @@ avoid_entry(const char* key, const char* label) {
 
 /* The app-control side of the toggle model, scripted: requests are numbered from 101, every submit is kept, a case
    queues the results it wants answered, and a case can make the queue refuse. */
+namespace {
 struct ToggleRig {
     uint32_t nextRequest = 101;
     QList<dsd_app_scan_list_set_payload> sent;
@@ -319,6 +322,7 @@ struct ToggleRig {
         results << result;
     }
 };
+} // namespace
 
 /* Three lists of session 7 at lists_seq @p seq: security (12 targets), hospital (1, on air), municipality (3). */
 static dsd_app_scan_list_view

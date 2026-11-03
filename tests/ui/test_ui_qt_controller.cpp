@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QAbstractListModel>
+#include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -9,11 +10,8 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
-#include <QList>
 #include <QMap>
 #include <QMetaMethod>
-#include <QMetaObject>
-#include <QMetaProperty>
 #include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
@@ -25,10 +23,10 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
-#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
+#include <QtGlobal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

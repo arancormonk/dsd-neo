@@ -17,6 +17,7 @@
 #define DSD_NEO_SRC_UI_QT_UI_CONTROLLER_H_
 
 // Complete types are needed by inline Qt container and metatype instantiations.
+#include <QList>
 #include <QMap>
 #include <QObject>
 #include <QPointer>

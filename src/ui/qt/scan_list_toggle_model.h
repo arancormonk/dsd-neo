@@ -22,15 +22,14 @@
 #define DSD_NEO_SRC_UI_QT_SCAN_LIST_TOGGLE_MODEL_H_
 
 #include <QAbstractListModel>
-#include <QByteArray>
-#include <QHash>
 #include <QList>
-#include <QModelIndex>
 #include <QObject>
 #include <QString>
 #include <QVariant>
+#include <Qt>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/scan_list_view.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <functional>
 #include <stdint.h>
 
