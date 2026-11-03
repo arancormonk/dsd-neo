@@ -2914,6 +2914,35 @@ test_teardown_in_both_states(void) {
     }
 }
 
+/* D1 and D4: under a tone filter a lead-in is a tone the policy still checks, so what the receiver reads meanwhile names
+   nothing yet. A DCS code locks slower than "no tone" is read: a lead-in of 1400 ms that read unknown, then "none",
+   then the allowed code locks, runs on into the call on its first RECEPTION block, from the lead-in's first sample,
+   named by the code. */
+static void
+test_lead_in_identity_waits_for_the_verdict(void) {
+    hold_rig r;
+    hold_open(&r, "dsdneo_cand_lead_dcs", 0);
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
+    hold_pending(&r, 1);
+    const double first_m = hold_block_start_m(&r);
+    hold_pending(&r, 24);
+    r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE; /* the detector reads no tone, the policy waits */
+    hold_pending(&r, 45);
+    assert(!dsd_engine_analog_call_active(r.state));
+    hold_lock_tone(&r, 0); /* DCS 047N locks, and the policy passes it */
+    hold_receive(&r, 1, 1000);
+    assert(dsd_engine_analog_call_active(r.state));
+    const double last_m = hold_now_m(&r);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    hold_expect_span(&r, first_m, last_m);
+    const dsd_receive_identity* id = &r.history[0].Event_History_Items[1].receive_identity;
+    assert(id->known && id->kind == DSD_RECEIVE_DCS && id->value == 047 * 2);
+    hold_files found;
+    hold_take(&r, &found, 1); /* ANALOG_FREQ_UNKNOWN_DCS_D047N on the rig's audio input */
+    hold_release(&found);
+    hold_close(&r);
+}
+
 /* D1: a lead-in is a tone check under an open carrier, so the tick leaves it, and its span counts: ten checked blocks
    and fifteen received make a call. A closed carrier ends it (it has no hold), and the count starts over. */
 static void
@@ -4219,6 +4248,7 @@ test_analog_hold(void) {
     test_held_candidate_owes_silence();
     test_candidate_begin_failure();
     test_teardown_in_both_states();
+    test_lead_in_identity_waits_for_the_verdict();
     test_lead_in_through_the_tick();
     test_lead_in_after_a_hold_ends();
     test_seeded_call_ends_on_a_new_tone();

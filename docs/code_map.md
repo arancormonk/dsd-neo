@@ -9933,30 +9933,30 @@ Qt Quick frontend (`src/ui/qt`):
     unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
     `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
   - Call history analog receptions (issue #667; `call_history_model.{h,cpp}`, `HistoryScreen.qml`, `MonitorScreen.qml`,
-    `HistoryDetailSheet.qml`). Each analog row (`Row::analog`, `DSD_SYNC_ANALOG`) is one reception: the engine's
-    tracker already joined its hangover and pause hold, so `rows_mergeable()` refuses a pair when either row is analog
-    (no analog row folds with another, or with a digital row; digital folding is unchanged). A reception read again
-    still lands on its row: a row heard again (a replay in a fresh ring) and an update of a row an older build stored
-    without fragments search the whole log with `rows_same_reception()`, an exact match of two analog rows on start,
-    tone (`receiveKnown`, and kind and value when known) and frequency, and fold in as any match does (the fragment, so
-    its recordings, and the running session). The match is one to one (`same_reception_row()`), since a start is a
-    whole second and two receptions can share it: a row that already took another fragment of the same ring is
-    skipped, and a row that also ends in the same second comes first. A first sighting and load folding never use it.
-    The row keeps its mode (`Row::analogMode`, a `dsd_analog_mode` from `Event_History::analog_mode`; stored as
-    `analogMode` only when NFM or AM). A row an older build stored has none and reads unknown, never a mode guessed from
-    its saved name, and keeps that name; a stored analog row with no name, and a live one nothing else names, is named
-    by its mode (`NFM`, `AM`, `Analog` when unknown). An update of an old row's reception fills its unknown mode.
-    Decided limit: a row an older build stored (no fragments) no longer matches an update whose tone or frequency became
-    known after the row was saved; that update logs a new row or is dropped. Roles: `analog` (bool) and
-    `analogMode` (`"NFM"`, `"AM"`, `""`), also in `recordFor()`. `receivedTone` is the confirmed CTCSS/DCS tone spelled
-    by `dsd_ctcss_format_label()` / `dsd_dcs_format_label()` (`CTCSS 100.0 Hz`, `DCS D023N / D047I`), as the event row,
-    the terminal and the API spell it. On screen an analog row's tone takes the access code's place on the History and
-    Monitor "Recent" meta lines (`CTCSS 100.0 Hz · 0:04 · Fire Dispatch · 154.4300 MHz`; the frequency still closes the
-    line, or leads it on a History row a frequency search found). The details sheet reads the tone alone on the code's
-    line (index 7) and the mode (`Analog NFM`, `Analog AM`, `Analog`) on the Encrypted/Unencrypted line (index 11);
-    every line keeps its place, so `siteLineIndex` stays 9. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS`
-    (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`),
-    `UI_QT_QML_BACK_MODALS`.
+    `HistoryDetailSheet.qml`). Each analog row (`Row::analog`, `DSD_SYNC_ANALOG`) is one reception: the engine's tracker
+    already joined its hangover and pause hold, so `rows_mergeable()` refuses a pair when either row is analog (no
+    analog row folds with another, or with a digital row; digital folding is unchanged). A reception read again still
+    lands on its row: a row heard again (a replay in a fresh ring) and an update of a row an older build stored without
+    fragments search the whole log with `rows_same_reception()`, an exact match of two analog rows on start, tone
+    (`receiveKnown`, and kind and value when known), frequency, and system and channel (as `rows_mergeable()` keeps two
+    systems apart), and fold in as any match does (the fragment, so its recordings, and the running session). The match
+    is one to one (`same_reception_row()`), since a start is a whole second and two receptions can share it: a row that
+    already took another fragment of the same ring is skipped, and a row that also ends in the same second comes first.
+    A first sighting and load folding never use it. The row keeps its mode (`Row::analogMode`, a `dsd_analog_mode` from
+    `Event_History::analog_mode`; stored as `analogMode` only when NFM or AM). A row an older build stored has none and
+    reads unknown, never a mode guessed from its saved name, and keeps that name; a stored analog row with no name, and
+    a live one nothing else names, is named by its mode (`NFM`, `AM`, `Analog` when unknown). An update of an old row's
+    reception fills its unknown mode. Decided limit: a row an older build stored (no fragments) no longer matches an
+    update whose tone or frequency became known after the row was saved; that update logs a new row or is dropped.
+    Roles: `analog` (bool) and `analogMode` (`"NFM"`, `"AM"`, `""`), also in `recordFor()`. `receivedTone` is the
+    confirmed CTCSS/DCS tone spelled by `dsd_ctcss_format_label()` / `dsd_dcs_format_label()` (`CTCSS 100.0 Hz`, `DCS
+    D023N / D047I`), as the event row, the terminal and the API spell it. On screen an analog row's tone takes the
+    access code's place on the History and Monitor "Recent" meta lines (`CTCSS 100.0 Hz · 0:04 · Fire Dispatch ·
+    154.4300 MHz`; the frequency still closes the line, or leads it on a History row a frequency search found). The
+    details sheet reads the tone alone on the code's line (index 7) and the mode (`Analog NFM`, `Analog AM`, `Analog`)
+    on the Encrypted/Unencrypted line (index 11); every line keeps its place, so `siteLineIndex` stays 9. Tests:
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`,
+    `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -12089,9 +12089,11 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     identity the candidate confirmed (`has_receive_seed`), then the crypto and media updates and
     `dsd_event_sync_slot()`, which names the seeded call. Its recording, opened at its first RECEPTION block, goes on. A
     BEGIN that fails (the call state could not be allocated) leaves the candidate, which tries again on its next
-    RECEPTION block. Identity before qualification: unknown to known goes on; a confirmed change (to another code, or to
-    none) discards the candidate and begins the next with the block; a tone confirmed and then lost still seeds the
-    BEGIN. A call's confirmed change ends it before the CONTINUE that would split it inside the call state.
+    RECEPTION block. Identity before qualification: a lead-in (PENDING) block names nothing, as the tone policy has not
+    decided (a DCS code locks slower than "none" is read), so the first RECEPTION block takes the identity; from there
+    unknown to known goes on, a confirmed change (to another code, or to none) discards the candidate and begins the
+    next with the block, and a tone confirmed and then lost still seeds the BEGIN. A call's confirmed change ends it
+    before the CONTINUE that would split it inside the call state.
   - Discard (`analog_call_discard_candidate()`): every end of a candidate goes through `analog_call_end_reception()`,
     which ends a call at its last reception or discards a candidate: `dsd_engine_analog_call_end()` (every boundary that
     calls it), the tick, the block path and a hold past the max gap. It clears the reception, discards the temporary

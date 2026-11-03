@@ -992,10 +992,11 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_
         return;
     }
     if (input == DSD_ANALOG_CALL_PENDING) {
-        dsd_receive_identity identity;
-        dsd_receive_identity_current(state, DSD_SYNC_ANALOG, 0, &identity);
-        analog_call_identity_boundary(opts, state, call, &identity);
-        analog_call_admit(opts, state, call, &identity, block->count, block->sample_rate, now_m);
+        /* A lead-in block: the tone policy has not decided, so what the receiver reads meanwhile (a code still being
+           acquired, or "none" read before a slower DCS code locks) names nothing yet, and no change of it ends the
+           lead-in. The first RECEPTION block, which the verdict passed, takes the identity. */
+        const dsd_receive_identity provisional = {0};
+        analog_call_admit(opts, state, call, &provisional, block->count, block->sample_rate, now_m);
         return;
     }
     analog_call_receive(opts, state, call, block, now_m);
