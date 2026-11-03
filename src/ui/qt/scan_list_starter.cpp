@@ -25,6 +25,7 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/log.h>
+#include <functional>
 #include <stddef.h>
 #include <stdint.h>
 #include <utility>
@@ -444,6 +445,21 @@ listsRefusal(const QString& error) {
 }
 } // namespace
 
+#ifdef DSD_NEO_TEST_HOOKS
+namespace {
+std::function<void(const QString&)>&
+list_copy_written_hook() {
+    static std::function<void(const QString&)> hook;
+    return hook;
+}
+} // namespace
+
+void
+scan_list_set_copy_written_hook_for_test(std::function<void(const QString&)> hook) {
+    list_copy_written_hook() = std::move(hook);
+}
+#endif
+
 QString
 ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int listNumber) {
     const QString uid = list.value("uid").toString();
@@ -457,6 +473,19 @@ ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int 
                != 0) {
         why = QString::fromUtf8(detail);
     }
+    if (why.isEmpty()) {
+        remove_other_list_csvs(uid, copy);
+#ifdef DSD_NEO_TEST_HOOKS
+        if (list_copy_written_hook()) {
+            list_copy_written_hook()(copy);
+        }
+#endif
+        /* The copy is what the decoder will open: one written under another name (a platform layer that read the
+           name in another code page) is gone after the cleanup above, and the imported file runs instead. */
+        if (!QFileInfo(copy).isFile()) {
+            why = QStringLiteral("the copy is not at its path after writing");
+        }
+    }
     if (!why.isEmpty()) {
         QFile::remove(copy);
         LOG_INFO("NOTICE: Scan list \"%s\" runs from its imported file, named after that file: no copy under the "
@@ -464,7 +493,6 @@ ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int 
                  qUtf8Printable(list.value("name").toString()), qUtf8Printable(why));
         return source;
     }
-    remove_other_list_csvs(uid, copy);
     return copy;
 }
 

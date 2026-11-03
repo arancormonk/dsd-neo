@@ -15,7 +15,6 @@
 #include <string.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
-#include <dsd-neo/core/utf16.h>
 #include <fcntl.h>
 #include <io.h>
 #include <stdlib.h>
@@ -126,34 +125,12 @@ path_reject_windows_attributes(DWORD attrs) {
     return 0;
 }
 
-/* @p path as UTF-16 for the wide file calls, or NULL when it is not well-formed UTF-8 (a path in the ANSI code page,
-   as a command line can give it) or cannot be converted. The caller frees it. */
-static wchar_t*
-path_utf8_to_wide(const char* path) {
-    if (!dsd_utf8_is_valid(path)) {
-        return NULL;
-    }
-    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-    if (wide_len <= 0) {
-        return NULL;
-    }
-    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
-    if (!wide) {
-        return NULL;
-    }
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
-        free(wide);
-        return NULL;
-    }
-    return wide;
-}
-
 /* A UTF-8 path (the app's own files, named after lists in any script) opens through the wide calls, whatever the
    ANSI code page; one the wide calls do not find, or one that is not UTF-8, through the ANSI calls as before, so a
    command line's path in the ANSI code page still opens. */
 static int
 path_open_read_fd_windows(const char* resolved) {
-    wchar_t* wide = path_utf8_to_wide(resolved);
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(resolved);
     if (wide) {
         int fd = -1;
         if (path_reject_windows_attributes(GetFileAttributesW(wide)) == 0) {

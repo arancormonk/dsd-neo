@@ -21672,7 +21672,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_scan_list_roundtrip
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(
         dsd-neo_test_ui_qt_scan_list_roundtrip

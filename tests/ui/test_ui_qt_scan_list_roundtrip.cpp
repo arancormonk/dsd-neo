@@ -150,6 +150,14 @@ checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
                  == scan_list_csv_path(csvList.value("uid").toString(), "Analog CSV", 1));
     check(targets.open(QIODevice::ReadOnly) && targets.readAll() == body);
     targets.close();
+    /* A copy that is not at its path once written (on Windows, one a code page wrote under another name, which the
+       folder's cleanup then removes) leaves the list on the imported file: the starter never names a missing file. */
+    scan_list_set_copy_written_hook_for_test([](const QString& copy) { QFile::remove(copy); });
+    const auto missingCopy = csvStarter.build(csvList);
+    scan_list_set_copy_written_hook_for_test({});
+    const auto missingArgs = missingCopy.value("args").toStringList();
+    check(missingCopy.value("ok").toBool() && missingCopy.value("csvPath").toString() == targetPath
+          && missingArgs.value(missingArgs.indexOf("--trunk-scan") + 1) == targetPath && QFile::exists(targetPath));
     const auto preview = inspectTargets(targetPath);
     check(preview.types == QStringList{"am-conventional", "nfm-conventional", "p25-conventional"});
     check(preview.widths == QList<int>{8333, 12500, -1} && preview.squelchDb == QList<int>{-55, 1, -60});

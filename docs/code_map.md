@@ -12354,18 +12354,24 @@ Several lists in one session (issue #697):
   (`ScanListStarter::listCopyOf()`:
   `copy_targets_for_list()` rewrites every companion the targets name with `dsd_app_scan_csv_rewrite()`, relative to the
   copy's folder, then `dsd_app_trunk_scan_validate_bundle()` checks the copy); the imported file is never written. A
-  copy that cannot be made or does not check out leaves the list on the imported file, named after it, with a
-  `NOTICE: Scan list "<name>" runs from its imported file ...` log line (a decided limit, untested: an import never
-  writes a bundle path the rewrite refuses). `remove_other_list_csvs()` drops the list's older files there.
+  copy that cannot be made, does not check out, or is not at its path once the folder is cleaned (on Windows, a copy
+  written under another name) leaves the list on the imported file, named after it, with a
+  `NOTICE: Scan list "<name>" runs from its imported file ...` log line; the starter never names a missing file
+  (`UI_QT_SCAN_LIST_ROUNDTRIP` removes the copy through `scan_list_set_copy_written_hook_for_test()`).
+  `remove_other_list_csvs()` drops the list's older files there. On Windows the copy's writer
+  (`dsd_fopen_private_temp_for_replace()`, `dsd_replace_file_with_temp()`, `dsd_remove_file()`) and the engine's reader
+  (`dsd_path_fopen_user_read_file()`) take a UTF-8 path through the wide calls (`dsd_win32_utf8_path_to_wide()`), so a
+  list named in any script keeps its name.
 - Who can join: `session_args_scan_join_conflict()` (`session_args.cpp`; QML asks `ScanListStarter::joinConflict()`)
   compares the primary list with another after the app defaults and path resolution and names the first setting that
   differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
   `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different default dwell`,
   `Different default hold`, `Different fallback talkgroups`, `Different source aliases`; empty when it can join). The
   radio source is the source type and device (Airspy serial, rtl_tcp/TCP host and port, UDP port, file path); bandwidth
-  is compared as the radio runs it; bias tee only on RTL sources; Airspy values are read with the engine's aliases
-  (`scan_join_airspy_value()`); dwell and hold 0 are the engine's defaults (`SessionArgsScan{Dwell,Hold}DefaultMs`,
-  pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
+  is compared as the radio runs it and only on RTL and Airspy sources; gain, PPM and bias tee only on RTL sources (a
+  setting the source's argv leaves out, `append_input_args()`, is no setting); Airspy values are read with the engine's
+  aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's defaults
+  (`SessionArgsScan{Dwell,Hold}DefaultMs`, pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
 - Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
   checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
   (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with

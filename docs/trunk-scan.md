@@ -668,10 +668,12 @@ has a switch for each other ready list, all off, in Home order; switch on the li
 **Start N lists**. The lists run as one session on this list's receiver and settings, so a list joins only when every
 setting the session shares matches: the radio source, gain, PPM correction, bandwidth, bias tee, Airspy settings,
 voice-only setting, default dwell and hold, fallback talkgroup file and source aliases, each compared after defaults and
-path resolution. A list that differs is shown greyed out with the first difference (`Different gain`), and a session
-runs at most 8 lists. All the lists are checked before anything starts (each list's own checks, the ids across lists,
-the target budget); a refusal names the list (`“Louder” can't scan with “Security”: different gain.`). Every list starts
-switched on: the app cannot start a list switched off, a decided limit; switch it off in the session instead.
+path resolution. A setting the radio does not use is not compared: gain, PPM correction and bias tee only on a USB or
+rtl_tcp radio, the bandwidth only on those and an Airspy. A list that differs is shown greyed out with the first
+difference (`Different gain`), and a session runs at most 8 lists. All the lists are checked before anything starts
+(each list's own checks, the ids across lists, the target budget); a refusal names the list (`“Louder” can't scan with
+“Security”: different gain.`). Every list starts switched on: the app cannot start a list switched off, a decided limit;
+switch it off in the session instead.
 
 While the session runs, Session options > **Scan lists** has a switch per list with its targets and **On air** beside
 the list of the target on air. A switch waits for the decoder's answer (`Switching off…`); a refusal turns it back and

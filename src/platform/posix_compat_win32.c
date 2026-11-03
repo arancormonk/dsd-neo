@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <wchar.h>
 #include <windows.h>
 
 #include "win32_temp_name_internal.h"
@@ -176,11 +178,28 @@ dsd_win32_temp_name_fill(char* suffix) {
     }
 }
 
+/* Create @p path exclusively: through the wide call when it is UTF-8 (the app's own files, in any script), else, or
+   when the wide call finds no such folder, through the ANSI one, as before. */
+static int
+dsd_win32_temp_create(const char* path, int flags) {
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (wide) {
+        const int fd = _wopen(wide, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+        const int saved_errno = errno;
+        free(wide);
+        if (fd >= 0 || saved_errno != ENOENT) {
+            errno = saved_errno;
+            return fd;
+        }
+    }
+    return _open(path, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+}
+
 int
 dsd_win32_temp_open(char* path, char* suffix, int flags) {
     for (int attempt = 0; attempt < DSD_WIN32_TEMP_NAME_ATTEMPTS; attempt++) {
         dsd_win32_temp_name_fill(suffix);
-        int fd = _open(path, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+        int fd = dsd_win32_temp_create(path, flags);
         if (fd >= 0 || errno != EEXIST) {
             return fd;
         }

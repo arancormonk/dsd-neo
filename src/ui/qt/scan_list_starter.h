@@ -32,6 +32,12 @@ QString scan_list_csv_stem(const QString& name, int listNumber);
  */
 QString scan_list_csv_path(const QString& uid, const QString& name, int listNumber);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** @brief Call @p hook with an imported list's copy once it is written, checked and its folder cleaned, before the
+ *  starter makes sure it is there: a test removes it, as a copy written under another name is removed. */
+void scan_list_set_copy_written_hook_for_test(std::function<void(const QString&)> hook);
+#endif
+
 class ScanListStarter : public QObject {
     Q_OBJECT
     /** @brief The most lists one session scans (DSD_TRUNK_SCAN_MAX_LISTS, issue #697). */
