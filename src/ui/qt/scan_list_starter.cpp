@@ -410,7 +410,7 @@ listsRefusal(const QString& error) {
 QString
 ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int listNumber) {
     const QString uid = list.value("uid").toString();
-    const QString copy = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
+    QString copy = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
     /* A copy that cannot be written, or that does not check out as the original does, leaves the list on the
        imported file itself: it still runs, named after that file. */
     if (!copy_targets_for_list(source, copy)

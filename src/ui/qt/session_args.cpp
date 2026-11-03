@@ -923,7 +923,7 @@ scan_join_radio(const QVariantMap& list) {
    number; anything else as written, for the engine to refuse. */
 QString
 scan_join_airspy_value(const QString& key, const QVariant& value) {
-    const QString text = value.toString().trimmed().toLower();
+    QString text = value.toString().trimmed().toLower();
     if (key == QLatin1String("gain_mode")) {
         return text;
     }
