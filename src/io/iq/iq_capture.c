@@ -484,6 +484,30 @@ metadata_write_identity_fields(FILE* fp, const dsd_iq_capture_config* cfg, size_
     return 0;
 }
 
+/* The live rate chain's scalars (issue #806), after the legacy demod rate. Readers from before them ignore them. */
+static int
+metadata_write_rate_chain_fields(FILE* fp, const dsd_iq_rate_chain* chain) {
+    if (chain->has_nominal && write_json_u64_field(fp, "nominal_rate_hz", chain->nominal_rate_hz, 0) != 0) {
+        return -1;
+    }
+    if (chain->has_forced && write_json_bool_field(fp, "capture_rate_device_forced", chain->device_forced, 0) != 0) {
+        return -1;
+    }
+    if (!chain->has_step) {
+        return 0;
+    }
+    if (write_json_u64_field(fp, "dsp_rate_hz", chain->dsp_rate_hz, 0) != 0
+        || write_json_u64_field(fp, "iq_step_l", chain->step_l, 0) != 0
+        || write_json_u64_field(fp, "iq_step_m", chain->step_m, 0) != 0) {
+        return -1;
+    }
+    /* LC_NUMERIC stays "C" (only LC_CTYPE is ever set), so the decimal point is a point. */
+    if (DSD_FPRINTF(fp, "  \"iq_step_approx_ppm\": %.6f,\n", chain->step_approx_ppm) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int
 metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
     if (write_json_u64_field(fp, "sample_rate_hz", cfg->sample_rate_hz, 0) != 0) {
@@ -516,7 +540,7 @@ metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
     if (write_json_u64_field(fp, "demod_rate_hz", cfg->demod_rate_hz, 0) != 0) {
         return -1;
     }
-    return 0;
+    return metadata_write_rate_chain_fields(fp, &cfg->rate_chain);
 }
 
 static int
@@ -715,7 +739,8 @@ validate_capture_cfg(const dsd_iq_capture_config* cfg, char* err_buf, size_t err
         set_error(err_buf, err_buf_size, "source_backend is required");
         return DSD_IQ_ERR_INVALID_META;
     }
-    return DSD_IQ_OK;
+    /* The live rate chain is written only when it agrees with itself: a reader refuses one that does not. */
+    return dsd_iq_rate_chain_check(&cfg->rate_chain, cfg->sample_rate_hz, cfg->base_decimation, err_buf, err_buf_size);
 }
 
 static uint64_t

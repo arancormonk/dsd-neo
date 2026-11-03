@@ -10134,7 +10134,8 @@ __wrap_rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_ra
     if (!opts) {
         return RTL_STREAM_REPLAN_NO_REPLAY;
     }
-    const rtl_stream_replay_request req = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, opts->frame_tetra == 1};
+    const rtl_stream_replay_request req = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, opts->frame_tetra == 1,
+                                           dsd_opts_is_analog_family(opts)};
     return fake_replay_replan_check(&req, out_dsp_rate_hz, out_resampled, why, why_size);
 }
 

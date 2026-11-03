@@ -106,6 +106,10 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     cfg->base_decimation = r.base_decimation;
     cfg->post_downsample = r.post_downsample;
     cfg->demod_rate_hz = r.demod_rate_hz;
+    /* Not forced, recorded (issue #806): these chains deliver another rate than the 48 kHz bandwidth, which a replay
+       would otherwise take for a device-forced chain and re-plan; recorded as the device's own, they run as kept. */
+    cfg->rate_chain.has_forced = 1;
+    cfg->rate_chain.device_forced = 0;
     cfg->offset_tuning_enabled = 0;
     cfg->fs4_shift_enabled = 1;
     cfg->combine_rotate_enabled = 1;

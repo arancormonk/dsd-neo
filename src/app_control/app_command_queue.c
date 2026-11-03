@@ -6031,7 +6031,7 @@ ui_check_mode_receive_profile_widths(const dsd_opts* opts, const dsd_state* stat
     /* A running replay the change re-plans (leaving TETRA's rate, issue #701) runs the width at the rate the request
        plans, not the one it runs. */
     const int replay_rate_hz =
-        svc_replay_planned_rate_hz(opts, state, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 0);
+        svc_replay_planned_rate_hz(opts, state, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 0, 1);
     if (replay_rate_hz > 0) {
         return svc_check_analog_bandwidth_at_rate(kind, width_hz, replay_rate_hz, why, why_size);
     }
@@ -6420,6 +6420,13 @@ rr_apply_check_receive_profile(const dsd_opts* opts, dsd_state* state, dsdneoUse
 }
 
 #ifdef USE_RADIO
+/* Whether decode mode @p mode runs the analog monitor (dsd_opts_is_analog_family()), whose channel filter puts no
+   ceiling on the rate a replay keeps (rtl_stream_replay_request::analog_family, issue #806). */
+static int
+cfg_mode_is_analog_family(const dsd_opts* opts, dsdneoUserDecodeMode mode) {
+    return (mode == DSDCFG_MODE_ANALOG || mode == DSDCFG_MODE_AM) && opts->m17encoder != 1;
+}
+
 /* A running I/Q replay can run the mode (issue #701): the re-plan the mode change makes, asked dry, so a capture no
    chain resamples to the mode's rate is refused before anything changes. TETRA's refusal names the rate the replay
    keeps, as the mode change's own does (decode_mode_replan_replay()). */
@@ -6432,6 +6439,7 @@ rr_apply_check_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMo
         opts->rtl_dsp_bw_khz,
         opts->rtl_dsp_bw_source,
         mode == DSDCFG_MODE_TETRA ? 1 : 0,
+        cfg_mode_is_analog_family(opts, mode),
     };
     char why[192];
     why[0] = '\0';
@@ -8381,10 +8389,11 @@ cfg_replay_rate_hz(const dsd_opts* opts, const dsd_state* state, const dsdneoUse
         bw_khz = dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz);
         bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
     }
-    const int frame_tetra = (cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET)
-                                ? cfg->decode_mode == DSDCFG_MODE_TETRA
-                                : opts->frame_tetra == 1;
-    return svc_replay_planned_rate_hz(opts, state, bw_khz, bw_source, frame_tetra);
+    const int has_mode = cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET;
+    const int frame_tetra = has_mode ? cfg->decode_mode == DSDCFG_MODE_TETRA : opts->frame_tetra == 1;
+    const int analog_family =
+        has_mode ? cfg_mode_is_analog_family(opts, cfg->decode_mode) : dsd_opts_is_analog_family(opts);
+    return svc_replay_planned_rate_hz(opts, state, bw_khz, bw_source, frame_tetra, analog_family);
 #else
     (void)opts;
     (void)state;

@@ -1185,6 +1185,11 @@ test_rate_change_seals_capture(void) {
     char err[256] = {0};
     assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
     assert(meta.sample_rate_hz == 1536000U && meta.base_decimation == 32U);
+    /* The live rate chain at the seal (issue #806): the RTL-SDR's request, not forced, 48 kHz with no step. */
+    assert(meta.rate_chain.has_nominal && meta.rate_chain.nominal_rate_hz == 1536000U);
+    assert(meta.rate_chain.has_forced && meta.rate_chain.device_forced == 0);
+    assert(meta.rate_chain.has_step && meta.rate_chain.dsp_rate_hz == 48000U && meta.rate_chain.step_l == 0U
+           && meta.rate_chain.step_m == 0U);
     assert(meta.data_bytes == 768U);
     assert(meta.event_count == 2U && meta.events[0].kind == DSD_IQ_EVENT_RETUNE);
     assert(meta.events[1].kind == DSD_IQ_EVENT_RESET && meta.events[1].byte_offset == 512U);

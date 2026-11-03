@@ -4,6 +4,7 @@
 #define DSD_NEO_SRC_IO_RADIO_RTL_STREAM_TEST_SUPPORT_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/threading.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -824,6 +825,12 @@ int rtl_stream_test_live_chain_profile_steps(const dsd_opts* opts, int backend, 
                                              rtl_stream_test_profile_step_result* out);
 
 typedef struct {
+    int passes;       /* demod_state::downsample_passes */
+    int forced;       /* capture_rate_device_forced */
+    int step_enabled; /* the live I/Q rate step runs (issue #806) */
+    int step_l;
+    int step_m;
+    int squelch_step_model; /* the squelches' noise model is the running step's (dsd_demod_squelch_step_model_sync()) */
     int complex_rate_hz;
     int rate_out_hz;
     int ted_sps;
@@ -834,6 +841,7 @@ typedef struct {
     unsigned int predicted_rate_hz; /* rtl_stream_output_rate_for_family() for the family @p opts runs */
     long long input_pairs;
     long long emitted; /* samples (CQPSK: symbols) full_demod() and the output resampler emitted for them */
+    int tetra_chain;   /* the TETRA chain ran after the blocks */
 } rtl_stream_test_post_chain_result;
 
 /* An I/Q replay open of @p opts on a sidecar with no half-band pass and post-demod decimation @p post (the complex rate
@@ -842,6 +850,19 @@ typedef struct {
  * Returns -1 for bad arguments or with a stream or device open, -3 when the open failed. */
 int rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz, uint32_t post, int blocks,
                                       int pairs, rtl_stream_test_post_chain_result* out);
+
+/* rtl_stream_test_replay_post_chain() for the sidecar @p sidecar describes (its events left out), planned as a replay
+ * of @p opts plans it (the stream's request and filter domain, dsd_iq_replay_plan_rate(); the plan in @p out_plan) and
+ * applied, then @p blocks blocks of @p pairs complex noise samples at the capture rate (issue #806). Returns -1 for bad
+ * arguments or with a stream or device open, -2 when the plan refused, -3 when the open failed. */
+int rtl_stream_test_replay_planned_chain(const dsd_opts* opts, const dsd_iq_replay_config* sidecar, int blocks,
+                                         int pairs, dsd_iq_replay_rate_plan* out_plan,
+                                         rtl_stream_test_post_chain_result* out);
+
+/* The filter domain a replay of @p sidecar plans for @p opts (issue #806 §13.8), as though the stream ran a TED override
+ * of @p ted_sps_override samples per symbol (0: none): 0 for no ceiling. */
+uint32_t rtl_stream_test_replay_filter_domain_hz(const dsd_opts* opts, const dsd_iq_replay_config* sidecar,
+                                                 int ted_sps_override);
 
 /* Call @p probe(@p out, @p ctx) inside rtl_stream_test_replay_post_chain() once the replay open landed and before the
  * stream's own state comes back, so a test can read the stream through its public getters and the metrics hooks
@@ -2003,6 +2024,8 @@ typedef struct rtl_stream_test_replay_state {
     uint32_t replay_event_reset_purge_mismatch_count; /* RESETs whose finalize made any other number (none) */
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
+    int replay_loop_restart_step_l; /* the I/Q rate step the last rewind put back (issue #806), 0/0 for none */
+    int replay_loop_restart_step_m;
     uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
     uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */

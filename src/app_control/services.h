@@ -987,8 +987,8 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  *         chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with the
  *         planner's reason).
  */
-int svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source,
-                               int frame_tetra);
+int svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra,
+                               int analog_family);
 
 /** What svc_rtl_replay_replan_locked() did (issue #701). */
 typedef enum {

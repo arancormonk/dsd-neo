@@ -14,8 +14,10 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -2301,6 +2303,254 @@ test_open_reports_a_data_file_it_emptied_without_a_stream(void) {
 }
 #endif
 
+/* ---------------- The live rate chain's scalars (issue #806) ---------------- */
+
+/* The chain a live stream records: the nominal rate, the forced flag, the DSP rate after the step and its ratio. */
+static dsd_iq_rate_chain
+live_chain(uint32_t nominal_hz, int forced, uint32_t dsp_hz, uint32_t L, uint32_t M, double approx_ppm) {
+    dsd_iq_rate_chain chain;
+    DSD_MEMSET(&chain, 0, sizeof(chain));
+    chain.has_nominal = 1;
+    chain.nominal_rate_hz = nominal_hz;
+    chain.has_forced = 1;
+    chain.device_forced = forced;
+    chain.has_step = 1;
+    chain.dsp_rate_hz = dsp_hz;
+    chain.step_l = L;
+    chain.step_m = M;
+    chain.step_approx_ppm = approx_ppm;
+    return chain;
+}
+
+typedef struct {
+    const char* name;
+    const char* want_err; /* a refusal names this */
+    dsd_iq_rate_chain chain;
+    uint32_t sample_rate_hz;
+    uint32_t base;
+    int bw_khz;
+    int want_rc; /* the open's result */
+} chain_case;
+
+/* Open a capture of @p c's chain, and for one the writer takes, read it back: the reader gets the chain as written. */
+static int
+check_chain_case(const chain_case* c) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256] = {0};
+    char label[192];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "chain.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "chain.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32);
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "airspy");
+    cfg.sample_rate_hz = c->sample_rate_hz;
+    cfg.base_decimation = c->base;
+    cfg.rtl_dsp_bw_khz = c->bw_khz;
+    cfg.demod_rate_hz = c->sample_rate_hz / c->base;
+    cfg.rate_chain = c->chain;
+    dsd_iq_capture_writer* writer = NULL;
+    const int orc = dsd_iq_capture_open(&cfg, &writer, err, sizeof(err));
+    DSD_SNPRINTF(label, sizeof(label), "%s: open", c->name);
+    rc |= expect_int(label, orc, c->want_rc);
+    if (c->want_err) {
+        DSD_SNPRINTF(label, sizeof(label), "%s: the refusal names '%s' (%s)", c->name, c->want_err, err);
+        rc |= expect_true(label, strstr(err, c->want_err) != NULL);
+    }
+    if (writer) {
+        const float iq[4] = {0.1f, -0.1f, 0.2f, -0.2f};
+        rc |= expect_int("chain: submit", dsd_iq_capture_submit(writer, iq, sizeof(iq)), DSD_IQ_OK);
+        const dsd_iq_capture_final_stats stats = {0U, 0U};
+        dsd_iq_capture_close(writer, &stats);
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        DSD_SNPRINTF(label, sizeof(label), "%s: the reader takes it", c->name);
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        const dsd_iq_rate_chain* got = &meta.rate_chain;
+        const dsd_iq_rate_chain* want = &c->chain;
+        DSD_SNPRINTF(label, sizeof(label), "%s: the chain reads back as written", c->name);
+        rc |= expect_true(label, got->has_nominal == want->has_nominal && got->nominal_rate_hz == want->nominal_rate_hz
+                                     && got->has_forced == want->has_forced && got->device_forced == want->device_forced
+                                     && got->has_step == want->has_step && got->dsp_rate_hz == want->dsp_rate_hz
+                                     && got->step_l == want->step_l && got->step_m == want->step_m
+                                     && fabs(got->step_approx_ppm - want->step_approx_ppm) <= 1e-6);
+        DSD_SNPRINTF(label, sizeof(label), "%s: the legacy demod rate is the truncated one", c->name);
+        rc |= expect_true(label, meta.demod_rate_hz == c->sample_rate_hz / c->base);
+        dsd_iq_replay_config_clear(&meta);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/* The writer records the live chain and refuses one that does not agree with itself, which the reader would refuse. */
+static int
+test_rate_chain_written_and_checked(void) {
+    const dsd_iq_rate_chain none = {0, 0U, 0, 0, 0, 0U, 0U, 0U, 0.0};
+    const chain_case k_cases[] = {
+        {"Airspy 2.5 MS/s base 32 at 48 kHz", NULL, live_chain(2500000U, 1, 48000U, 384U, 625U, 0.0), 2500000U, 32U, 48,
+         DSD_IQ_OK},
+        {"Airspy 2.5 MS/s base 64 at 24 kHz", NULL, live_chain(2500000U, 1, 24000U, 384U, 625U, 0.0), 2500000U, 64U, 24,
+         DSD_IQ_OK},
+        {"Airspy Mini 3 MS/s base 32 at 72 kHz", NULL, live_chain(3000000U, 1, 72000U, 96U, 125U, 0.0), 3000000U, 32U,
+         72, DSD_IQ_OK},
+        /* The tolerance boundary: an RTL-SDR read back 1 Hz under 1.536 MS/s runs the 1.536 MS/s chain exactly. */
+        {"RTL read back 1535999", NULL, live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1535999U, 32U, 48, DSD_IQ_OK},
+        /* 100 ppm of 1536000 is 153.6 Hz: 153 Hz is in, 154 Hz out. */
+        {"RTL read back 153 Hz over", NULL, live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1536153U, 32U, 48, DSD_IQ_OK},
+        {"RTL read back 154 Hz over", "nominal_rate_hz", live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1536154U, 32U,
+         48, DSD_IQ_ERR_RATE_CHAIN},
+        /* A SoapySDR device at 1536200 Hz: out of tolerance, and 7680/7681 has no ratio within 5 ppm in 4096 terms. */
+        {"Soapy 1536200 against a 1536000 nominal", "nominal_rate_hz", live_chain(1536000U, 1, 48000U, 0U, 0U, 0.0),
+         1536200U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"Soapy 1536200 stepped 7680/7681", "no step takes", live_chain(1536200U, 1, 48000U, 7680U, 7681U, 0.0),
+         1536200U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        /* The approximation the planner accepts: 2000001 Hz to 48 kHz by 96/125, 0.5 ppm off. */
+        {"Soapy 2000001 approximated", NULL, live_chain(2000001U, 1, 48000U, 96U, 125U, 0.5), 2000001U, 32U, 48,
+         DSD_IQ_OK},
+        {"Soapy 2000001 approximated, ppm wrong", "iq_step_approx_ppm", live_chain(2000001U, 1, 48000U, 96U, 125U, 0.0),
+         2000001U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a ratio that is not the planner's", "384/625", live_chain(2500000U, 1, 48000U, 384U, 624U, 0.0), 2500000U,
+         32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a step with half a ratio", "both", live_chain(2500000U, 1, 48000U, 384U, 0U, 0.0), 2500000U, 32U, 48,
+         DSD_IQ_ERR_RATE_CHAIN},
+        {"a step on a chain not forced", "capture_rate_device_forced", live_chain(2500000U, 0, 48000U, 384U, 625U, 0.0),
+         2500000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"no step but a DSP rate off the half-band output", "dsp_rate_hz", live_chain(1536000U, 0, 47999U, 0U, 0U, 0.0),
+         1536000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a step where the half-band chain lands on the DSP rate", "with no step",
+         live_chain(1536000U, 1, 48000U, 1U, 1U, 0.0), 1536000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        /* A capture with no live plan writes none, as before. */
+        {"no chain", NULL, none, 1536000U, 32U, 48, DSD_IQ_OK},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        rc |= check_chain_case(&k_cases[i]);
+    }
+    return rc;
+}
+
+/* The pre-#806 replay planner (src/io/iq/iq_replay.c at b08406ebc, rate_plan_keep() and dsd_iq_replay_plan_rate()),
+   frozen: what a reader from before the rate chain's scalars plans for a capture, from its legacy fields. Fills the
+   DSP input rate, base and demod rate; returns 1 when it kept the recorded chain. */
+static int
+old_reader_plan(uint32_t fs, uint32_t base, uint32_t demod, uint32_t target_hz, int tetra, uint32_t* dsp_in,
+                uint32_t* out_base, uint32_t* out_demod) {
+    if (fs / base == demod && (!tetra || dsd_tetra_dsp_rate_runs((int)(fs / base)))) {
+        *dsp_in = fs;
+        *out_base = base;
+        *out_demod = demod;
+        return 1;
+    }
+    uint32_t k = 0U;
+    while (k < 10U && ((uint64_t)target_hz << (k + 1U)) <= (uint64_t)fs) {
+        k++;
+    }
+    *dsp_in = target_hz << k;
+    *out_base = 1U << k;
+    *out_demod = target_hz;
+    return 0;
+}
+
+/* Whether the top-level JSON object @p text holds only scalars (an old reader refuses a nested value). */
+static int
+sidecar_is_flat(const char* text) {
+    const char* first = strchr(text, '{');
+    return first && !strchr(first + 1, '{') && !strchr(text, '[');
+}
+
+/* An old reader reads a capture this writer makes with its own policy (spec D2): the new scalars are flat scalars it
+   ignores, the legacy fields it checks still agree, so it keeps an FSK chain at the forced 78,125 Hz and re-plans TETRA
+   to a reader-resampled 72 kHz, where a reader since issue #806 runs the live step. A reader ignores a scalar it does
+   not know, as an old one ignores these. */
+static int
+test_old_reader_golden(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256] = {0};
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "old_reader.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "old_reader.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.sample_rate_hz = 2500000U;
+    cfg.base_decimation = 32U;
+    cfg.demod_rate_hz = 78125U;
+    cfg.rate_chain = live_chain(2500000U, 1, 48000U, 384U, 625U, 0.0);
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("old reader: open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (writer) {
+        const uint8_t payload[4] = {127, 128, 129, 126};
+        rc |= expect_int("old reader: submit", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+        const dsd_iq_capture_final_stats stats = {0U, 0U};
+        dsd_iq_capture_close(writer, &stats);
+    }
+    uint8_t text[8192];
+    size_t n = 0;
+    rc |= expect_int("old reader: read the sidecar", read_file_all(metadata_path, text, sizeof(text) - 1U, &n), 0);
+    text[n] = '\0';
+    const char* json = (const char*)text;
+    rc |= expect_true("old reader: version 1 or 2", strstr(json, "\"version\": 1,") || strstr(json, "\"version\": 2,"));
+    rc |= expect_true("old reader: the new fields are flat scalars", sidecar_is_flat(json));
+    rc |= expect_true("old reader: the legacy demod rate is the truncated chain",
+                      strstr(json, "\"demod_rate_hz\": 78125,") != NULL);
+    rc |= expect_true("old reader: the step is recorded", strstr(json, "\"iq_step_l\": 384,") != NULL);
+
+    /* The frozen old policy, from the legacy fields alone. */
+    uint32_t dsp_in = 0U;
+    uint32_t base = 0U;
+    uint32_t demod = 0U;
+    rc |= expect_true("old reader: FSK keeps the chain",
+                      old_reader_plan(2500000U, 32U, 78125U, 48000U, 0, &dsp_in, &base, &demod));
+    rc |= expect_true("old reader: FSK at 78125 Hz", dsp_in == 2500000U && base == 32U && demod == 78125U);
+    rc |= expect_true("old reader: TETRA re-plans",
+                      !old_reader_plan(2500000U, 32U, 78125U, 72000U, 1, &dsp_in, &base, &demod));
+    rc |= expect_true("old reader: TETRA resampled to 2.304 MS/s, 72 kHz",
+                      dsp_in == 2304000U && base == 32U && demod == 72000U);
+
+    /* This reader: the live step for both. */
+    dsd_iq_replay_config meta;
+    DSD_MEMSET(&meta, 0, sizeof(meta));
+    rc |= expect_int("old reader: this reader takes it",
+                     dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+    dsd_iq_replay_rate_plan plan;
+    rc |= expect_int("this reader: FSK plan",
+                     dsd_iq_replay_plan_rate(&meta, 48000U, 0U, 0, 0U, &plan, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_true("this reader: FSK steps to 48 kHz",
+                      plan.chain.step.enabled && plan.complex_rate_hz == 48000U && !plan.resample);
+    rc |= expect_int("this reader: TETRA plan",
+                     dsd_iq_replay_plan_rate(&meta, 72000U, 18000U, 0, 0U, &plan, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_true("this reader: TETRA steps to 72 kHz",
+                      plan.chain.step.enabled && plan.complex_rate_hz == 72000U && !plan.resample);
+    dsd_iq_replay_config_clear(&meta);
+
+    /* An unknown scalar, an integer or not, is ignored: the rule old readers apply to these fields. */
+    char* end = strrchr((char*)text, '}');
+    if (end) {
+        DSD_SNPRINTF(end, sizeof(text) - (size_t)(end - (char*)text), "%s", ",\n  \"a_later_field\": 1.25\n}\n");
+        FILE* fp = dsd_fopen_private(metadata_path, "wb");
+        if (fp) {
+            (void)fwrite(json, 1, strlen(json), fp);
+            fclose(fp);
+        }
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("an unknown scalar is ignored",
+                         dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        dsd_iq_replay_config_clear(&meta);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2334,6 +2584,8 @@ main(void) {
     rc |= test_rate_change_seals_capture(DSD_IQ_EVENT_RESET);
     rc |= test_unsealed_capture_has_no_end_reason();
     rc |= test_concurrent_submissions_and_seal();
+    rc |= test_rate_chain_written_and_checked();
+    rc |= test_old_reader_golden();
 #if defined(DSD_TEST_FAULT_FDOPEN)
     rc |= test_open_reports_a_data_file_it_emptied_without_a_stream();
 #endif

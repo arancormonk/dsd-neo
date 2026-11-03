@@ -383,6 +383,16 @@ test_live_resets_match_replay(void) {
     char err[256] = {0};
     rc |= expect_true("live capture sidecar reads",
                       dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof(err)) == DSD_IQ_OK);
+    /* The live rate chain the capture records (issue #806): the Airspy's own rate as the nominal one, forced, and the
+       DSP rate the step makes, so the replay below runs the same step. */
+    const dsd_iq_rate_chain* chain = &meta.rate_chain;
+    rc |=
+        expect_true("live capture records its rate chain", chain->has_nominal && chain->has_forced && chain->has_step);
+    rc |= expect_true("live capture: the nominal rate is the device's", chain->nominal_rate_hz == meta.sample_rate_hz);
+    rc |= expect_true("live capture: the DSP rate is the bandwidth's", chain->dsp_rate_hz == 48000U);
+    rc |= expect_true("live capture: a forced rate the half-band chain does not reach steps",
+                      chain->device_forced == 1
+                          && (chain->step_l != 0U) == (meta.sample_rate_hz / meta.base_decimation != 48000U));
     uint32_t overflows = 0U;
     for (uint32_t i = 0; i < meta.event_count; i++) {
         if (meta.events[i].kind == DSD_IQ_EVENT_MUTE

@@ -1461,6 +1461,58 @@ test_eventful_replay_maps_stream_gap_reset_reason(const char* reason) {
     return rc;
 }
 
+/* Issue #806: an --iq-loop rewind applies the replay's plan again, its I/Q rate step included. A forced Airspy capture
+ * (2.5 MS/s, base 32, recorded stepped 384/625 to 48 kHz) rewinds onto the same step; the replay device's own copy of
+ * the settings used to drop the plan, so the rewind ran the 78,125 Hz half-band output unstepped. */
+static int
+test_loop_replay_keeps_the_rate_step(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 0,
+                              4U * kCf32ChunkBytes);
+    rc |= expect_int_eq(
+        "rate step fixture: 2.5 MS/s",
+        rewrite_sidecar_text(metadata_path, "\"sample_rate_hz\": 1536000", "\"sample_rate_hz\": 2500000"), 0);
+    rc |= expect_int_eq("rate step fixture: the recorded step",
+                        rewrite_sidecar_text(metadata_path, "\"demod_rate_hz\": 48000,",
+                                             "\"demod_rate_hz\": 78125,\n  \"nominal_rate_hz\": 2500000,\n"
+                                             "  \"capture_rate_device_forced\": true,\n  \"dsp_rate_hz\": 48000,\n"
+                                             "  \"iq_step_l\": 384,\n  \"iq_step_m\": 625,\n"
+                                             "  \"iq_step_approx_ppm\": 0.000000,"),
+                        0);
+    if (rc != 0) {
+        return 1;
+    }
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    float audio[1024];
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    while (dsd_time_monotonic_ns() - start_ns < 5000ULL * 1000000ULL) {
+        int got = 0;
+        (void)rtl_stream_read(ctx, audio, sizeof(audio) / sizeof(audio[0]), &got);
+        if (dsd_rtl_stream_test_get_replay_state(&state) != 0) {
+            rc |= 1;
+            break;
+        }
+        if (state.replay_loop_restart_count >= 1U) {
+            break;
+        }
+        dsd_sleep_ms(2U);
+    }
+    rc |= expect_true("rate step replay rewound", state.replay_loop_restart_count >= 1U);
+    rc |= expect_int_eq("the rewind keeps the step's L", state.replay_loop_restart_step_l, 384);
+    rc |= expect_int_eq("the rewind keeps the step's M", state.replay_loop_restart_step_m, 625);
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
 static int
 test_loop_replay_reapplies_event_timeline(void) {
     int rc = 0;
@@ -4012,6 +4064,7 @@ main(void) {
     rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_USB_RECOVERY);
     rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_TCP_RECONNECT);
     rc |= test_loop_replay_reapplies_event_timeline();
+    rc |= test_loop_replay_keeps_the_rate_step();
     rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();
     rc |= test_cf32_unknown_capture_stage_rejected();

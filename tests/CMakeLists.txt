@@ -15208,6 +15208,28 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_RTL_COMPLEX_RATE COMMAND dsd-neo_test_io_rtl_complex_rate)
 
+    # Issue #806: an I/Q replay runs the chain its live stream ran: the step a forced chain ran, the forced flag it
+    # recorded or derives (A-B4), and the filter domain the mode's channel filter has.
+    add_executable(
+        dsd-neo_test_io_rtl_replay_step
+        io/test_io_rtl_replay_step.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_step
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_step
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_step
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_REPLAY_STEP COMMAND dsd-neo_test_io_rtl_replay_step)
+
     add_executable(
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
@@ -16913,6 +16935,30 @@ if(DSD_HAS_RADIO)
         ""
         36
     )
+    # The same mix at the rates an Airspy forces after its half-band passes (78,125 and 93,750 Hz), recorded at the
+    # 48 kHz DSP bandwidth (issue #806). The replay keeps the chain and runs the live I/Q rate step to 48 kHz, from the
+    # step the 78k C4FM and 94k CQPSK sidecars record and from the forced flag the other two derive. Before, the replay
+    # ran the chain unstepped, where the channel filter fell back and CQPSK timed a fractional SPS: all four decoded
+    # nothing. Stepped they decode what the 48 kHz captures do (27 and 41).
+    foreach(_rate 78K 94K)
+        string(TOLOWER "${_rate}" _rate_lower)
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_P25P1_C4FM_ADJACENT_${_rate}
+            p25p1_c4fm_adjacent_${_rate_lower}
+            -f1
+            "NAC/CC: 140"
+            ""
+            24
+        )
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_P25P1_CQPSK_ADJACENT_${_rate}
+            p25p1_cqpsk_adjacent_${_rate_lower}
+            "-f1 -mq"
+            "WACN: 92065; SYS: 0D5"
+            ""
+            36
+        )
+    endforeach()
     # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
     # here with failing NIDs between the frames that decode, and consumption credit is bounded
     # by what a handler read -- 33 symbols for a failed NID, 134 of a ~180-symbol slot for a

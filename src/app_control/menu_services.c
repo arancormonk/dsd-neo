@@ -1332,11 +1332,12 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra) {
+svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra,
+                           int analog_family) {
     if (!opts || !dsd_opts_input_is_iq_replay(opts) || !svc_rtl_stream_running(opts, state)) {
         return 0;
     }
-    const rtl_stream_replay_request req = {bw_khz, bw_source, frame_tetra ? 1 : 0};
+    const rtl_stream_replay_request req = {bw_khz, bw_source, frame_tetra ? 1 : 0, analog_family ? 1 : 0};
     uint32_t rate_hz = 0U;
     if (rtl_stream_replay_replan_check_request(opts, &req, &rate_hz, NULL, NULL, 0U) != RTL_STREAM_REPLAN_DIFFERS) {
         return 0;
@@ -2415,7 +2416,8 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
        re-plans to for it (issue #701). */
     int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
     if (rate_hz <= 0) {
-        rate_hz = svc_replay_planned_rate_hz(opts, state, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, opts->frame_tetra == 1);
+        rate_hz = svc_replay_planned_rate_hz(opts, state, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, opts->frame_tetra == 1,
+                                             dsd_opts_is_analog_family(opts));
     }
     if (!svc_rtl_bandwidth_fits_width(kind, configured_hz, 0, khz, rate_hz, why, why_size)) {
         return 0;

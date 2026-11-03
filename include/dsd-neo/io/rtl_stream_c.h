@@ -365,11 +365,14 @@ typedef enum rtl_stream_replan_verdict {
 int rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
                                    size_t why_size);
 
-/** What a replay's rate chain follows (issue #701): the DSP bandwidth request and whether the TETRA decoder runs. */
+/** What a replay's rate chain follows (issues #701, #806): the DSP bandwidth request, whether the TETRA decoder runs,
+    and whether the analog monitor does, whose channel filter (unlike every digital mode's) has no rate it is designed
+    up to. */
 typedef struct rtl_stream_replay_request {
     int dsp_bw_khz;    /**< dsd_opts::rtl_dsp_bw_khz */
     int dsp_bw_source; /**< dsd_opts::rtl_dsp_bw_source (a DSD_RTL_DSP_BW_SOURCE_* value) */
     int frame_tetra;   /**< 1 when the TETRA decoder runs */
+    int analog_family; /**< 1 when the analog monitor runs (dsd_opts_is_analog_family()) */
 } rtl_stream_replay_request;
 
 /**

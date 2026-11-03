@@ -5677,7 +5677,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   (`RtlSdrInternals::source_replay`), so `stream_is_replay_active()` (every decoder read and replay clock step) no
   longer parses `audio_in_dev`.
 - Targets:
-  - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers, and the live rate plan; no SDR dependency
+  - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers (the recorded rate chain's check,
+    `iq_rate_chain.c`), and the live rate plan; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
     - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
@@ -5953,8 +5954,12 @@ Key public headers:
     finalize ends every transaction (`dsd_live_iq_step_finish()`) and publishes
     the chain (`rtl_stream_publish_demod_profile_snapshot()`) after the TED refresh and the output-resampler redesign,
     which then work from the exact rate, so no consumer gets a truncated rate (an Airspy R2's 24 kHz FSK or monitor
-    output resamples 2/1, not 24000/19531). An I/Q replay plans its chain itself and runs no step. The capture sidecar's
-    legacy `demod_rate_hz` stays the capture rate over the decimations, truncated (`capture_legacy_demod_rate_hz()`).
+    output resamples 2/1, not 24000/19531). An I/Q replay plans its chain itself (`dsd_iq_replay_plan_rate()`, "Replay
+    rate plan") and leaves `g_live_rate_plan` unset; a KEEP plan that steps runs its step through the same
+    `rate_chain_sync_step_for()` (`controller_apply_replay_step()`), squelch model included. The capture sidecar's
+    legacy `demod_rate_hz` stays the capture rate over the decimations, truncated (`capture_legacy_demod_rate_hz()`),
+    and `capture_fill_rate_chain()` records the plan's nominal rate, forced flag, step and `step_out_hz`
+    (`dsd_iq_capture_config::rate_chain`; none for a chain with no live plan).
     Tests: `IO_RTL_CAPTURE_WRITES` (tolerance both sides, refusals at start and retune, a far read-back, a plan change
     on a retune, a failed design, a rollback that swaps back, a third rate and one that cannot be designed, on the fake
     dongle planned as a SoapySDR device through `rtl_stream_test_set_rate_plan_backend()` and
@@ -6306,9 +6311,13 @@ Key public headers:
     return it to the stream's wrappers (`stream_record_capture_retune()`/`_reset()`), which log one WARN and post
     `DSD_STREAM_NOTICE_CAPTURE_STOPPED`. The retune and its capture hold go on as before. The sidecar then holds only
     the samples and events before the seal, with `capture_end_reason` `"rate_changed"` (absent when a capture ran to
-    its stream's end). Tests: `IO_IQ_CAPTURE_WRITER` (seal by RETUNE and by RESET, frozen counts, end reason; producers
-    on their own threads racing a seal, under TSan), `IO_RTL_CAPTURE_WRITES` (`rate_change_seals_capture`: a fake
-    device's read-back changes on a retune while recording), `APP_COMMAND_QUEUE` (the notice).
+    its stream's end), which the replay reader reads (`dsd_iq_replay_config::capture_end_reason`) and `--iq-info`
+    prints. The writer merges a MUTE into the one before it at the same offset only for the same reason
+    (`writer_event_try_merge_mute()`), so a `driver_overflow` gap stays its own event beside a retune's settle MUTE and
+    the replay resets there (issue #806 X12). Tests: `IO_IQ_CAPTURE_WRITER` (seal by RETUNE and by RESET, frozen
+    counts, end reason; producers on their own threads racing a seal, under TSan; the MUTE merge rule),
+    `IO_RTL_CAPTURE_WRITES` (`rate_change_seals_capture`: a fake device's read-back changes on a retune while
+    recording), `APP_COMMAND_QUEUE` (the notice).
   - Tuner gain (issue #669): `rtl_device_get_tuner_gain(dev, &tenth_db)` returns a status separate from the value,
     since librtlsdr's gains reach below zero (E4K -1.0 dB, FC0012/FC0013 -9.9 dB); its callers (`rtl_stream_get_gain()`,
     the autogain latch, the capture metadata, the retune note) all read it that way. A capture whose tuner reports no
@@ -6346,25 +6355,47 @@ Key public headers:
     a directory, FIFO or reparse point, else strerror). A `data_file` that cannot be opened for any reason but ENOENT
     is refused at once; a missing one leaves the sidecar readable for `--iq-info`. The sniff read seam
     (`iq_replay_test_hooks.h`, `DSD_NEO_TEST_HOOKS` only) fails one sniff read. Test: `IO_IQ_REPLAY_OPEN_ERRORS`.
-  - Replay rate plan (issue #701, user rules in `docs/iq-capture-replay.md` "Rate Chain And Resampling"):
-    `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate
-    and `dsd_iq_replay_apply_rate_plan()` writes it into the config (`dsp_input_rate_hz`, base, post, demod;
-    `sample_rate_hz` stays the capture's rate for pacing, media time, chunking and events). A sidecar with no explicit
-    bandwidth request keeps its recorded chain unless TETRA's 18 kHz requirement fails on its CQPSK rate (dsp input /
-    base, post 1); otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the largest
-    D x 2^k at or below its rate (or up to D). The plan refuses a capture below 8 kHz, an upsample past 9x and a capture
-    at 2 x 2^10 x D or faster. Stream open (`stream_open_plan_replay_rate()`) plans at every start for the target
+  - Replay rate plan (issues #701, #806; user rules in `docs/iq-capture-replay.md` "Rate Chain And Resampling"):
+    `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate, its requirement (TETRA's 18 kHz)
+    and the filter domain (`max_complex_rate_hz`, the highest complex rate the mode's channel filter is designed at, 0
+    for none: an input, so io_iq depends on no DSP or runtime code), and `dsd_iq_replay_apply_rate_plan()` writes it
+    into the config (`dsp_input_rate_hz`, base, post, demod, and the plan itself, `cfg->plan`; `sample_rate_hz` stays
+    the capture's rate for pacing, media time, chunking and events). The plan (`dsd_iq_replay_rate_plan`) carries its
+    `origin` (KEEP, RESAMPLED, EXACT, WAV), `complex_rate_hz`, the rate planner's `chain` (`dsd_rate_plan`: passes,
+    exact hb_out, step) and `forced` with its provenance (SIDECAR, DERIVED, PLAN); `dsd_iq_replay_rate_plan_equal()`
+    compares every field. KEEP, for a sidecar with no explicit bandwidth request, from the recorded chain
+    (`replay_recorded_chain_of()`: the nominal rate, the forced flag recorded or derived,
+    `dsd_iq_rate_chain_derived_forced()`, and whether it stepped), first that applies: (i) a chain that does not step,
+    unchanged, where its complex rate is whole, a multiple of post, meets the requirement (post 1) and the domain; (ii)
+    a recorded step, to `dsp_rate_hz`; (iii) a forced post-1 chain, its passes kept, stepped to D through
+    `dsd_rate_plan_compute()` (backend REPLAY_KEEP, request D x 2^p, so the planner sees it forced); (iv) folds of a
+    chain that does not step: a power-of-two post into base under a requirement, then half-band passes down into the
+    domain. Only KEEP steps: otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the
+    largest D x 2^k at or below its rate (or up to D), step off, forced. The recorded chain is read and checked in
+    `metadata_finalize()` before any plan (`dsd_iq_rate_chain_check()`, `src/io/iq/iq_rate_chain.c`, which the capture
+    writer runs too before it writes the scalars). The caller's filter domain is `replay_max_complex_rate_hz()` in
+    `rtl_sdr_fm.cpp`: none for the analog monitor and for TETRA where its own filter would run at the recorded rate
+    (`replay_tetra_channel_runs()`: TETRA's domain, the channel filter not forced off, an override that times that rate,
+    or the uplink), else `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`; `rtl_stream_replay_request::analog_family` carries the
+    family a pending mode change will run. The plan refuses a capture below 8 kHz, an upsample past 9x and a capture at
+    2 x 2^10 x D or faster. Stream open (`stream_open_plan_replay_rate()`) plans at every start for the target
     `stream_open_replay_target_hz()` picks (an EXPLICIT request, else the recorded bandwidth, else the request in force;
-    under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the
-    stream runs the planned bandwidth while opts keeps the request, and the plan in force is kept for
+    under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the stream
+    runs the planned bandwidth while opts keeps the request, and the plan in force is kept for
     `rtl_stream_replay_replan_check()`; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
     the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
     loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples
     (`dsd_iq_replay_chunk_bytes_for()` keeps a resampled chunk within one live transfer). A replay with no known centre
     (a WAV with none) opens and loops: stream open skips the frequency check for a replay, and
     `controller_finalize_dsp_chain()` runs the DSP half of `controller_finalize_rate_chain()` without a centre.
-    Tests: `IO_IQ_REPLAY_RATE_PLAN`, `IO_RTL_REPLAY_RESAMPLE`, the `DECODE_IQ_TETRA_WAV_*` and
-    `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K` cases (WAVs made in the build tree by `dsd-neo_test_iq_wav_fixture_tool`)
+    `controller_apply_replay_settings()` runs the applied plan's complex rate (`rate_in`, `complex_rate`, `rate_out` =
+    complex over post), forced flag and step; a config no plan was applied to (test seams) runs its half-band output as
+    forced with no step. The replay device keeps the plan beside the chain it opened, so an `--iq-loop` rewind applies
+    the same step (`replay_loop_restart_step_l`/`_m` in the test replay state). Tests: `IO_IQ_REPLAY_RATE_PLAN`,
+    `IO_RTL_REPLAY_STEP` (`rtl_stream_test_replay_planned_chain()`: a sidecar planned and run, per family and post 1-4;
+    `rtl_stream_test_replay_filter_domain_hz()`), `IO_RTL_REPLAY_RESAMPLE`, the `DECODE_IQ_P25P1_*_ADJACENT_78K/94K`
+    cases (forced-rate fixtures stepped to 48 kHz), the `DECODE_IQ_TETRA_WAV_*` and `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K`
+    cases (WAVs made in the build tree by `dsd-neo_test_iq_wav_fixture_tool`)
   - Requested bandwidth provenance: `dsd_opts::rtl_dsp_bw_khz` is the requested DSP bandwidth and
     `rtl_dsp_bw_source` says where it came from (`DSD_RTL_DSP_BW_SOURCE_DEFAULT`, `_EXPLICIT`, `_PRESET`). Writers set
     both (`dsd_opts_set_rtl_dsp_bw()`): mode presets in `args.c` (PRESET); input spec bandwidth fields

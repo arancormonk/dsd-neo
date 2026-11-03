@@ -9561,6 +9561,9 @@ rtl_device_open_iq_replay_source(struct rtl_device* dev, const dsd_iq_replay_con
     opened_cfg.base_decimation = cfg->base_decimation;
     opened_cfg.post_downsample = cfg->post_downsample;
     opened_cfg.demod_rate_hz = cfg->demod_rate_hz;
+    /* And the plan with it (issue #806): a loop rewind applies these settings again, the step and forced flag too. */
+    opened_cfg.plan = cfg->plan;
+    opened_cfg.plan_applied = cfg->plan_applied;
     /* A loop rewinds to the capture's opening centre and rate, wherever the replay opened. */
     dev->replay_initial_center_frequency_hz = opened_cfg.center_frequency_hz;
     dev->replay_initial_capture_center_frequency_hz = opened_cfg.capture_center_frequency_hz;

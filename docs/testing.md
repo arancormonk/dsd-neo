@@ -462,6 +462,15 @@ design they decode what the clean captures do: 27 `NAC/CC: 140` lines and 41 `WA
 `DSP_ADJACENT_CHANNEL` checks the same rejection on the live chain for every digital profile, at 72 kHz and stepped to
 48 kHz from Airspy rates.
 
+`p25p1_{c4fm,cqpsk}_adjacent_{78k,94k}` (`DERIVED_FORCED_ADJACENT`, 312.5 and 375 kB) are the same mix at the rates an
+Airspy forces after its half-band passes, 78,125 Hz (2.5 MS/s) and 93,750 Hz (3 MS/s), recorded at the 48 kHz DSP
+bandwidth with `source_backend` `airspy` (issue #806). Their replays keep the chain and run the live I/Q rate step to
+48 kHz: the 78k C4FM and 94k CQPSK sidecars record the step (`nominal_rate_hz`, `capture_rate_device_forced`,
+`dsp_rate_hz`, `iq_step_l`/`iq_step_m`) as a capture since #806 does; the other two do not, so the replay derives
+the forced flag from the rates. Each decodes what the 48 kHz capture does, 27 and 41 (`DECODE_IQ_P25P1_*_ADJACENT_78K`
+and `_94K`, at least 24 and 36); unstepped, with the channel filter falling back and CQPSK timing a fractional SPS,
+they decoded nothing.
+
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
 its decode margin (the original set still passed with ±45 counts of added

@@ -35,7 +35,12 @@ typedef struct {
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;
+    /** The legacy demod rate: sample_rate_hz / base_decimation / post_downsample, truncated, which every reader
+        checks; a chain the device forced runs another rate, which rate_chain records. */
     uint32_t demod_rate_hz;
+    /** The live rate chain (issue #806), written as metadata v2's optional rate scalars: only the fields it has, each
+        checked first (dsd_iq_rate_chain_check()). All unset writes none, as captures before them did. */
+    dsd_iq_rate_chain rate_chain;
     int offset_tuning_enabled;
     int fs4_shift_enabled;
     int combine_rotate_enabled;
