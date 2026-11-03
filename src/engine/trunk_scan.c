@@ -3338,12 +3338,19 @@ trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, 
            && !trunk_scan_target_width_skipped(opts, state, alt, rate_hz);
 }
 
+/* The end of the lists a walk goes over: coord->list_count, held to the lists[] it indexes. */
+static int
+trunk_scan_list_end(const dsd_trunk_scan_coord* coord) {
+    return coord->list_count < DSD_TRUNK_SCAN_MAX_LISTS ? coord->list_count : DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
 /* The first list at or after @p l (0-based) that is switched on, other than @p skip (0-based, -1 for none), or
- * coord->list_count. A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a
+ * trunk_scan_list_end(). A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a
  * list that is off in one step, however many targets it holds. */
 static int
 trunk_scan_next_list_on(const dsd_trunk_scan_coord* coord, int l, int skip) {
-    while (l < coord->list_count && (!coord->lists[l].enabled || l == skip)) {
+    const int end = trunk_scan_list_end(coord);
+    while (l < end && (!coord->lists[l].enabled || l == skip)) {
         l++;
     }
     return l;
@@ -3379,7 +3386,7 @@ trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* st
         return 0;
     }
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    for (int l = trunk_scan_next_list_on(coord, 0, -1); l < coord->list_count;
+    for (int l = trunk_scan_next_list_on(coord, 0, -1); l < trunk_scan_list_end(coord);
          l = trunk_scan_next_list_on(coord, l + 1, -1)) {
         if (trunk_scan_list_has_alternate(opts, state, coord, l, rate_hz, now_m)) {
             return 1;
@@ -3397,7 +3404,7 @@ trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_
                         int skip) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     size_t usable = 0U;
-    for (int l = trunk_scan_next_list_on(coord, 0, skip); l < coord->list_count;
+    for (int l = trunk_scan_next_list_on(coord, 0, skip); l < trunk_scan_list_end(coord);
          l = trunk_scan_next_list_on(coord, l + 1, skip)) {
         const size_t end = coord->lists[l].first + coord->lists[l].count;
         for (size_t i = coord->lists[l].first; i < end && i < coord->count; i++) {
