@@ -21912,8 +21912,16 @@ if(DSD_ENABLE_API)
         dsd-neo_test_api_feed
         PRIVATE ${_dsd_neo_api_ieee_option}
     )
+    # Without dsd-neo_api the feed loses what that library carries PUBLIC (app-control, runtime, platform): the
+    # Linux list names app-control in its group, the macOS and Windows list does not.
     set(_dsd_neo_api_feed_test_deps ${_dsd_neo_api_test_deps})
     list(REMOVE_ITEM _dsd_neo_api_feed_test_deps dsd-neo_api)
+    list(
+        PREPEND _dsd_neo_api_feed_test_deps
+        dsd-neo_app_control
+        dsd-neo_runtime
+        dsd-neo_platform
+    )
     target_link_libraries(
         dsd-neo_test_api_feed
         PRIVATE ${_dsd_neo_api_feed_test_deps}
