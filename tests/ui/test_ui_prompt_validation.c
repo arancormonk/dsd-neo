@@ -871,7 +871,8 @@ test_chooser_layout_contracts(void) {
 }
 
 /* Issue #672 (B7): the window is sized in cells, not bytes: "漢字漢字" is 12 bytes, and 8 cells on ncurses with UTF-8
-   output, four ('?' each, or one cell each on PDCurses) otherwise. */
+   output, four ('?' each, or one cell each on PDCurses) otherwise. The footer is empty so the title sets the width in
+   both: a six-cell footer would outgrow a four-cell title. */
 static void
 test_chooser_layout_measures_cells(void) {
     static const char kTitle[] = "\xE6\xBC\xA2\xE5\xAD\x97\xE6\xBC\xA2\xE5\xAD\x97";
@@ -886,7 +887,7 @@ test_chooser_layout_measures_cells(void) {
     int w = -1;
     int y = -1;
     int x = -1;
-    assert(ui_chooser_layout_for_test(kTitle, "Footer", 0, 1, 24, 80, &h, &w, &y, &x) == 1);
+    assert(ui_chooser_layout_for_test(kTitle, "", 0, 1, 24, 80, &h, &w, &y, &x) == 1);
     assert(w == (two_cells ? 4 + 8 + 2 : 4 + 4 + 2));
 }
 

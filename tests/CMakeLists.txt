@@ -4241,6 +4241,16 @@ if(DSD_ENABLE_TERMINAL_UI)
         NAME UI_PROMPT_VALIDATION
         COMMAND dsd-neo_test_ui_prompt_validation
     )
+    # The same cases with ASCII output, the one-cell path a PDCurses build measures
+    # by (a UTF-8 Linux run never takes it).
+    add_test(
+        NAME UI_PROMPT_VALIDATION_ASCII
+        COMMAND dsd-neo_test_ui_prompt_validation
+    )
+    set_tests_properties(
+        UI_PROMPT_VALIDATION_ASCII
+        PROPERTIES ENVIRONMENT "DSD_FORCE_ASCII=1"
+    )
 
     add_executable(
         dsd-neo_test_ui_prompt_secret
