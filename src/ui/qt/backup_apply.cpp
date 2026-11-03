@@ -210,8 +210,10 @@ ancestors(const QString& path) {
  * Whether @p relative names a file the app generates, the only files of decryption/ and scan_lists/ that count as
  * configuration: a compiled profile's key file, decryption/<uid>/<uuid>.(hex|dec|map).csv (DecryptionProfilesModel's
  * ProfileCompiler, a uid its validId() accepts), or a scan list's CSV, scan_lists/<uid>/<name>.csv (ScanListStarter, the
- * same uid rule; issue #697), or scan_lists/<uid>.csv as older versions wrote it. Anything else there is someone
- * else's and survives a restore.
+ * same uid rule; issue #697), or scan_lists/<uid>.csv as older versions wrote it. scan_lists/ is the app's own folder,
+ * so the rule is the layout, not a list of uids: any CSV in a subfolder whose name is uid-shaped
+ * ([A-Za-z0-9_-]{1,63}) is generated, whether or not a list still has that uid. Anything else there (another file
+ * type, a deeper folder, a folder whose name is not uid-shaped) is someone else's and survives a restore.
  */
 bool
 generated_file(const QString& relative) {

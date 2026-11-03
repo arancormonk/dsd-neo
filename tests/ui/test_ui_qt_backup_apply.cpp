@@ -628,6 +628,8 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     expect("generated scan list file", write_file(at("scan_lists/old.csv"), "id,type\n"));
     // Issue #697: a list's CSV under its own folder, named after the list.
     expect("generated scan list file in its folder", write_file(at("scan_lists/old-uid/Old list.csv"), "id,type\n"));
+    // The rule is the app's layout: any CSV in a uid-shaped folder of scan_lists/ is generated, a list behind it or not.
+    expect("a CSV in a uid-shaped folder", write_file(at("scan_lists/sub/list.csv"), "id,type\n"));
     // Beside what the app generates there, files it never does: someone else's, so every apply keeps them.
     for (const char* name : kUnknownBesideGenerated) {
         expect(QStringLiteral("unknown file %1").arg(QLatin1String(name)),
@@ -1189,6 +1191,9 @@ check_applied_content(const Backup& b, const Old& old) {
                && read_file(at("decryption/managed/notes.txt")) == "not generated: decryption/managed/notes.txt\n"
                && QFileInfo(at("scan_lists/sub dir")).isDir());
     expect("a directory that held only generated files goes", !QFileInfo::exists(at("decryption/old-only")));
+    expect("a CSV in a uid-shaped scan_lists/ folder counts as generated and goes",
+           !QFileInfo::exists(at("scan_lists/sub/list.csv")) && !QFileInfo::exists(at("scan_lists/sub"))
+               && !QFileInfo::exists(at("scan_lists/old-uid")));
     expect("the newer bundle revision is gone", !QFileInfo::exists(old.newRevision));
     expect("the old-only library file is gone", !QFileInfo::exists(old.extraLibrary));
     expect("a non-owned bundle keeps everything but its row's file",

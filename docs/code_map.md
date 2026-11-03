@@ -10940,8 +10940,9 @@ Qt Quick frontend (`src/ui/qt`):
     `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
     old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
-    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/` (`<uid>.csv`);
-    anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
+    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/`
+    (`<uid>/<name>.csv`, issue #697, and the older `<uid>.csv`; the rule is the layout, so any CSV in a uid-shaped
+    folder there counts, whether or not a list still has that uid); anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
     destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir
     (n)`) and the stores' references follow. File contents are never rewritten, so a bundle whose row keeps its file
     outside it (a plain channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the
