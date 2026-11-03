@@ -370,23 +370,27 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
   (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
   RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
-  alternates, the resume walk), `trunk_scan_enabled_count()` (the D10 readout's m, avoided targets included),
+  alternates, the resume walk), `trunk_scan_enabled_count()` (the "n of m" readout's m, avoided targets included),
   and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
-  last-usable refusals). The `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's
-  fallback onto the original ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once
-  (`trunk_scan_walk`), and a due retry with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not
-  each tick. The startup park takes the first target in the rotation the DSP rate can filter
-  (`trunk_scan_start_target()`). What the session must be ready for counts every loaded target, a list that is off
-  included: the configured-width and tone predicates, the width rechecks and scan-start warnings; peer IDEN sharing and
-  the band-plan export read every snapshot.
+  last-usable refusals, the toggle's naming the list it would switch off rather than switching it). The visit cap's
+  question, which the frame loop asks at every burst boundary of a held carrier, and the usable count walk list by list
+  (`trunk_scan_next_list_on()`): a list's targets sit together, so a list that is off is passed in one step. The
+  `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's fallback onto the original
+  ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once (`trunk_scan_walk`), and a due retry
+  with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not each tick. The startup park takes the
+  first target in the rotation the DSP rate can filter (`trunk_scan_start_target()`). What the session must be ready for
+  counts every loaded target, a list that is off included: the configured-width and tone predicates, the width rechecks
+  and scan-start warnings; peer IDEN sharing and the band-plan export read every snapshot.
 - List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
   paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
   `coord->session`, which frontends read as the published `trunk_scan_session`, the session a put back names too, kept
   while paused), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off
   included), then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
   that comes on and gives the visit on air its first eligible alternate restarts its cap
-  (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). Toggles are session-only; the
-  configured start states in `dsd_opts::trunk_scan_lists` never change.
+  (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). The switch publishes the scan
+  timing before it leaves the guard, as the controls do: the timing reads the parked target's P25 machine, which the
+  watchdog changes under that guard (`ENGINE_TRUNK_SCAN_LIST_RACE` runs a switch beside such writes, for tsan-debug).
+  Toggles are session-only; the configured start states in `dsd_opts::trunk_scan_lists` never change.
 - Departure obligation (issue #697): while the target on air is out of the rotation (its list off and the
   departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
   of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
@@ -406,7 +410,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   runs later.
 - List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
   name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
-  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (D10: position among the
+  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the
   lists on, 0 while the target's list is off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each
   toggle), all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and
   pause, kept while paused, cleared at detach and by `initState()`. The identity ordinal `trunk_scan_active_ordinal`
@@ -3606,7 +3610,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
     the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), and refused under Signal search. It is
     judged by its payload for `dmrBS()`'s frame-loop question (`command_scan_list_set_deferred()`, beside `DSP_OP` and
-    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (D4: it leaves at once), and
+    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (it leaves at once), and
     so does any switch of this scan while its target on air owes a departure (`scan_departure_owed()`: its list is
     off or it is the avoided fallback), since the switch starts or cancels it; only those return a held repeater
     carrier to the frame loop at a burst boundary. Waiting would lose the race: the synced-frames loop ticks the
@@ -3643,7 +3647,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     refused after a switch marks the command FAILED (and the recording view's outcome with it) while the code stays OK.
     The handler hands its code back through an out-parameter along `apply_cmd()`, never a shared static. Toggles are
     session-only: the coordinator's lists survive a config apply, running or paused, and a save writes the configured
-    start states (D3). Tests: `APP_COMMAND_QUEUE`.
+    start states, never a live switch. Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
@@ -4538,8 +4542,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     rather than the previous run's or previous client's record. The `status` record carries what the stateful commands
     must quote back: the talkgroup policy version, the decryption context and the scan row view. Its `scan` object
     (issue #697) adds, from the scan state view, the scan list view and the published position fields only:
-    `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's D10 `ordinal` (null while the
-    target on air is outside the lists switched on) and `count` (`trunk_scan_rotation_ordinal`/`_count`), and
+    `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's "n of m" `ordinal` (null while
+    the target on air is outside the lists switched on) and `count` (`trunk_scan_rotation_ordinal`/`_count`), and
     `session`, `lists_seq`, `list` (the list on air, or null) and `lists[]` that `scan_list_set` and its results quote;
     the avoid count stays in `status.scan_avoids`. RF metrics follow the
     shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick the feed
@@ -9446,7 +9450,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
-  - Scan lists (issue #697 D7, D10, D11): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
+  - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
     `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
     view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
     `act_scan_lists()`) open the modal in `scan_list_modal.{h,c}`, which `menu_core.c` drives like the RadioReference
@@ -9470,10 +9474,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     true any more. A "try again" note has no timeout and survives Enter on another row. A waiting row ignores Enter;
     rows wait independently. Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
     closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
-    Trunk Scan row (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count`
-    (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]` in the room `[avoided]` takes (11
-    cells then; `[avoided]` when both hold, so 80 columns keep room for the list's name) and adds `List: <name>` after
-    the target (cut at a whole field: the count, then the list, then the id); the paused trunk row adds `Lists: n/m on`.
+    Trunk Scan row (`ui_render_trunk_scan_status()`) reads the "n of m" position from
+    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]`
+    in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room for the list's
+    name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then the id); the
+    paused trunk row adds `Lists: n/m on`.
     The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
     `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
     out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
@@ -12331,7 +12336,7 @@ named by display name; issue #697), and delegates argv assembly to
 the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
 
-Several lists in one session (issue #697, D12):
+Several lists in one session (issue #697):
 
 - Files and names: a list's CSV is `scan_lists/<uid>/<name>.csv` (`scan_list_csv_path()`, `scan_list_csv_stem()`: the
   list's name made safe for a file name and cut to the engine's 31 bytes, `list N` when nothing is left), so the
@@ -12343,8 +12348,8 @@ Several lists in one session (issue #697, D12):
   `NOTICE: Scan list "<name>" runs from its imported file ...` log line (a decided limit, untested: an import never
   writes a bundle path the rewrite refuses). `remove_other_list_csvs()` drops the list's older files there.
 - Who can join: `session_args_scan_join_conflict()` (`session_args.cpp`; QML asks `ScanListStarter::joinConflict()`)
-  compares the primary list with another after the app defaults and path resolution, in D12's order, and names the first
-  setting that differs (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
+  compares the primary list with another after the app defaults and path resolution and names the first setting that
+  differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
   `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different default dwell`,
   `Different default hold`, `Different fallback talkgroups`, `Different source aliases`; empty when it can join). The
   radio source is the source type and device (Airspy serial, rtl_tcp/TCP host and port, UDP port, file path); bandwidth
@@ -12357,13 +12362,13 @@ Several lists in one session (issue #697, D12):
   `dsd_app_trunk_scan_validate_target_lists()` (ids unique across lists, the union cap, errors by display name). One
   recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
   session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
-  passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state (D8).
+  passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state.
 - Home: a ready card's More menu offers `Scan with other lists…` while another ready list exists (`HomeScreen.qml`
   `canScanWithOthers()`), opening `ScanTogetherSheet.qml`: one `ToggleRow` per other ready list in Home order, off,
   disabled with its conflict (or `A scan runs 8 lists at most` once full); the button reads `Start N lists`, disabled
   with none chosen. `playScanLists(row, companionUids)` reaches `Main.qml` `startScanBundle()`. `ScanListCard` and the
   sheet count through `ScanListsModel::entryCount()` (a CSV list's accepted rows) with whole singular and plural strings
-  (C-B3: `1 entry`).
+  (`1 entry`).
 - Session identity: the bundle is the primary's uid plus the companions' uids in list order. `startWithMap()` carries
   them (`attemptedSource.companions` for Retry, `pendingStartCompanions` across a USB permission wait); a host that
   accepts the start writes `prefs.acceptedStartCompanions` beside `acceptedStartKind/Uid`, never pruned, since a
@@ -12377,10 +12382,10 @@ Several lists in one session (issue #697, D12):
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
   every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the
   scan list view over the held pair: `scanListCount`, `scanActiveList`, `scanActiveListOff`,
-  `scanRotationOrdinal`/`scanRotationCount` (D10) and `scanListModel`, a `ScanListToggleModel` (rows from the view, a
-  switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`, results from
-  `dsd_app_scan_list_results_since()`, the row state by app-control's `scan_list_rows.h`; the wording, Qt's own
-  sentences, is the model's). Session options offers `Scan lists` while the scan session has 2+ lists, paused too
+  `scanRotationOrdinal`/`scanRotationCount` (the "n/m" position) and `scanListModel`, a `ScanListToggleModel` (rows from
+  the view, a switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`,
+  results from `dsd_app_scan_list_results_since()`, the row state by app-control's `scan_list_rows.h`; the wording, Qt's
+  own sentences, is the model's). Session options offers `Scan lists` while the scan session has 2+ lists, paused too
   (`ScanListsSheet.qml`: one `ToggleRow` per list with its targets and `On air`, `Switching off…` while pending, a
   refusal in the row's new `note` line in `Theme.alert` and announced; rows disabled while paused,
   `Resume the scan to change lists.`). The Monitor header reads `SCANNING · n/m · HOLD · <target> · <list>` with the

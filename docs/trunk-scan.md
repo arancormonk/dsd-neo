@@ -678,6 +678,10 @@ the list of the target on air. A switch waits for the decoder's answer (`Switchi
 says why under the list, in the app's words (`Nothing else to scan. Switch on another list first.`). While the scan is
 paused the switches cannot be used and the sheet says `Resume the scan to change lists.`
 
+A session of several lists records into one place: its calls, whichever list's target they were heard on, are filed
+under the call recordings of the list it was started from (in **Call recordings** and its folder), not under each
+list's own.
+
 The session remembers its lists: Retry, a USB permission prompt, a recreated screen and auto-start bring back the same
 lists in the same order. A list removed meanwhile is left out of the next start and the rest still start; a list removed
 while its session runs keeps its number until the session ends. A restore forgets the remembered lists. Each list's CSV

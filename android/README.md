@@ -2175,7 +2175,8 @@ Several lists can scan in one session: a ready list's More menu offers **Scan wi
 the other lists to scan with it and tap **Start N lists** (up to 8 lists, all on the first list's receiver and
 settings; a list whose receiver or scan settings differ is greyed out with the first difference). While that session
 runs, Session options → **Scan lists** switches each list on or off for the session only. Every list starts switched
-on. See [Several lists](../docs/trunk-scan.md#qt-and-android-several-lists).
+on. Its call recordings, whichever list they were heard on, are filed under the list you started from. See
+[Several lists](../docs/trunk-scan.md#qt-and-android-several-lists).
 
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only

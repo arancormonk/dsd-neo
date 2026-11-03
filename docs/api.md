@@ -978,7 +978,12 @@ never written to the list files or the config.
   once, as `scan_avoid` does (a hold carries over). A switch that would leave
   nothing to scan is refused, and so is any switch while the scan is paused.
   During a DMR repeater call, a switch that does not move the receiver waits
-  for the call to end, and its result comes then.
+  for the call to end, and its result comes then, with two exceptions: while
+  the target on air is waiting to leave (its list is off, or it is an avoided
+  target the scan fell back onto), any switch ends the call at once, since it
+  lets that target go or keeps it; and switching off the list on air when it
+  is the last one to scan is refused, yet still interrupts the call for a
+  moment. See [Switching lists](trunk-scan.md#switching-lists).
 
 ## Examples
 
