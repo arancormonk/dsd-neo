@@ -164,6 +164,7 @@ waiting). Error codes:
 | `unknown_command` | No such command. |
 | `invalid_params` | A parameter is missing, of the wrong type, out of range, or too long for its field. Nothing was submitted. |
 | `rejected` | The command queue did not admit the command: no decoder session is open. |
+| `queue_full` | `scan_list_set` only: the command queue is full. Nothing was submitted and no result follows; try again. (Other commands make room by dropping the oldest queued one.) |
 | `internal_error` | The server could not build the response. |
 | `busy` | Sent in place of `welcome` when all client slots are in use; the connection is then closed. |
 
@@ -181,9 +182,11 @@ match responses by `id`.
   for the same reason.
 * The other unsigned parameters take the same strings: `policy_generation`,
   `id_start`/`id_end`, `count` (`tg_selection_set`), `tune_hz`
-  (`rr_apply_import`), `session` (`scan_row_edit` and `scan_avoid_remove`),
-  and `offset` and `limit` (`get scan_avoids`). Signed parameters, such as a
-  scan row's `row`, are JSON integers only.
+  (`rr_apply_import`), `session` (`scan_row_edit`, `scan_avoid_remove` and
+  `scan_list_set`), `offset` and `limit` (`get scan_avoids`), and `after` and
+  `limit` (`get scan_list_results`). Signed parameters, such as a scan row's
+  `row`, and small ranges such as `scan_list_set`'s `list` and `enabled`, are
+  JSON integers only.
 * Booleans take `true`/`false` or `0`/`1`.
 * A string longer than the command's field is refused with `invalid_params`,
   never cut short. Each string command's limit is in its catalog entry (most
@@ -197,7 +200,7 @@ match responses by `id`.
 | `auth` | `{token}` | `{authenticated:true}`, or `unauthorized` and the connection closes |
 | `subscribe` | `{topics:[...]}` | `{topics:[now subscribed]}` |
 | `unsubscribe` | `{topics:[...]}` | `{topics:[still subscribed]}` |
-| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; or `scan_avoids` with optional `offset` and `limit` | `{what, data}`: the latest record of that topic, `null` until the first telemetry update (see below); for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)) |
+| `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; `scan_avoids` with optional `offset` and `limit`; or `scan_list_results` with optional `after` and `limit` | `{what, data}`: the latest record of that topic, `null` until the first telemetry update (see below); for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)); for `scan_list_results`, the `scan_list_set` results after a sequence number (see [Scan lists](#scan-lists)) |
 | `list_commands` | – | `{commands:[{name,id,params}, ...]}` |
 
 Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`, or
@@ -331,13 +334,34 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.
-* `scan`: `{kind, state, targets}`, the scan the session has, as every frontend
-  shows it. `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
-  (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
-  operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
-  scan's target count or the `-Y` list's row count (`0` with no scan). A `-Y`
-  resume still waiting for its row's tune reads `paused`. `null` until the
-  decoder has published its options.
+* `scan`: `{kind, state, targets, hold, ordinal, count, session, lists_seq,
+  list, lists}`, the scan the session has, as every frontend shows it.
+  * `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
+    (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
+    operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
+    scan's target count, every list included, or the `-Y` list's row count
+    (`0` with no scan). A `-Y` resume still waiting for its row's tune reads
+    `paused`.
+  * `hold`: `true` while the operator holds the scan on the row or target on
+    air (`scan_hold_toggle`); `false` with no scan.
+  * `ordinal` and `count`: the trunk scan's position, as the terminal shows
+    `(2/14)`. `count` is the number of targets in the lists switched on,
+    avoided ones included; `ordinal` is the target on air's place among them,
+    or `null` when it has none: no target is on air (paused), or its list was
+    just switched off and the scan leaves it as soon as another target can take
+    it (the terminal shows `(-/14)`). Outside a trunk scan `ordinal` is `null`
+    and `count` is `0`.
+  * `session`, `lists_seq`, `list`, `lists`: the trunk scan's target lists
+    (see [Scan lists](#scan-lists)). `session` is what `scan_list_set` must
+    quote; `lists_seq` moves whenever a list changes; `list` is the number of
+    the list the target on air belongs to, or `null`; `lists` holds one
+    `{number, name, enabled, targets, has_active}` per list in list order
+    (`enabled` is `0` or `1`, as `scan_list_set` takes it; `has_active` is
+    `true` for the list of the target on air). Outside a trunk scan `session`
+    and `lists_seq` are `0`, `list` is `null` and `lists` is empty.
+
+  How many channels the scan avoids is in `scan_avoids.total`. `scan` is `null`
+  until the decoder has published its options.
 * `scan_avoids`: `{available, kind, total, instance, list_rev | session,
   revision}`, a summary of the channels the scan avoids this session; the
   entries themselves are paged with `get` (see [Scan avoids](#scan-avoids)).
@@ -365,7 +389,8 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 {"type":"result","command":"decryption_apply","sequence":4,"request_id":"9223372036854775809","status":1,"ok":true,"scope":"defaults"}
 ```
 
-Every completion of these two commands is reported. A `decryption_apply`
+Every completion of these two commands is reported. `scan_list_set` results
+are not sent here: read them with `get` (see [Scan lists](#scan-lists)). A `decryption_apply`
 response carries the `request_id` its result will have; results of decryption
 requests made by a frontend rather than the API are not sent. The decoder keeps
 the last 64 results of each kind; should more complete before the server reads
@@ -454,6 +479,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `scan_avoid` | – |
 | `scan_avoid_clear` | – |
 | `scan_avoid_remove` | `{kind:lcn\|trunk_scan,instance,list_rev,row,frequency_hz,session,target_id}` |
+| `scan_list_set` | `{list:1..8\|all,enabled:0\|1,session}` |
 | `scan_resume` | – |
 | `quit` | – |
 | `force_priv_toggle` | – |
@@ -827,6 +853,8 @@ field, and the decoder refuses the rest when it applies the command.
   frequency (`Put back row 3 (851.012500 MHz, 1 avoided)`), a trunk-scan
   target by its place in the list and its label, or its id when it has none
   (`Put back target #2 County Fire (0 avoided)`).
+* **`scan_list_set`**: switches one trunk-scan target list on or off, or with
+  `"list":"all"` and `"enabled":1` every list on (see [Scan lists](#scan-lists)).
 * **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
   scan on the row it would have stepped to next, a trunk scan on the target it
   left, with fresh timers. A running scan is left as it is (`Not paused: the
@@ -885,6 +913,67 @@ The list follows the telemetry updates like every other `get` record (see
 [Session commands](#session-commands)), so a page can lag a change briefly, and
 `data` is `null` until the first update; `scan_avoid_remove` checks the
 identity it is sent against the live list either way.
+
+### Scan lists
+
+A trunk scan can run several target lists at once, each loaded from its own
+file (`--trunk-scan`, `--trunk-scan-off`). `status.scan` lists them, and
+`scan_list_set` switches one on or off for the rest of the session. A switch is
+never written to the list files or the config.
+
+```json
+{"id":5,"cmd":"scan_list_set","params":{"list":2,"enabled":0,"session":41}}
+{"id":5,"ok":true,"cmd":"scan_list_set","status":"queued","request":17}
+{"id":6,"cmd":"get","params":{"what":"scan_list_results","after":0}}
+{"id":6,"ok":true,"what":"scan_list_results","data":{"after":0,"limit":64,"results":[{"sequence":3,"request":17,"session":41,"list":2,"enabled":0,"code":"ok","lists_seq":12}]}}
+```
+
+* `list` is a list number, `1` to `8` in command-line (or config) order, or
+  `"all"` with `"enabled":1` to switch every list on. `enabled` is `0` or `1`.
+  `session` is `status.scan.session` (`1` to `4294967295`); a request naming
+  another session, or a list the session does not have, changes nothing.
+* The reply comes at once and only says the queue took the request. Its
+  `request` is the id the decoder gave it; the outcome arrives later as a
+  result with that `request`. The decoder gives every frontend's requests ids
+  from the same counter, so a client never mistakes another's result for its
+  own. A `request` parameter is refused (`invalid_params`). A full queue
+  refuses the request at once with `queue_full`: nothing is pending then.
+* `get` with `"what":"scan_list_results"` returns the results after the
+  sequence number `after` (default `0`), oldest first, up to `limit` (`1` to
+  `64`, default `64`). Results are kept for every frontend's requests, so a
+  client picks its own by `request`. The decoder keeps the last 64: a client
+  that falls further behind sees a gap in `sequence`, and should then read
+  `status.scan` for the lists as they stand. Results of an earlier decoder run
+  are not served once the decoder restarts; a request still queued when the
+  decoder stopped is answered `dropped` until then.
+* Each result has `sequence`, the `request`, `session`, `list` (a number, or
+  `"all"`) and `enabled` it asked for, its `code`, and `lists_seq`, the
+  session's `status.scan.lists_seq` once the request was handled. `code` is one
+  of:
+
+  | Code | Meaning |
+  | --- | --- |
+  | `ok` | The list is switched as asked. |
+  | `unchanged` | It already was (every list, for `"all"`). |
+  | `refused_last` | Switching it off would leave nothing to scan. |
+  | `busy` | The scan was busy; try again. |
+  | `unavailable` | No trunk scan runs. |
+  | `paused` | The scan is paused; resume it first. |
+  | `stale` | The session is not this scan's, or it has no such list. |
+  | `invalid` | The decoder could not take the request. |
+  | `search` | Signal search runs; stop it first. |
+  | `dropped` | Never applied: the decoder stopped, or the queue overflowed, first. |
+
+* The result decides the outcome of a request; `status.scan` decides what the
+  lists are. A result can arrive before the status that shows its switch: until
+  `status.scan.lists_seq` reaches the result's `lists_seq`, show the state the
+  request asked for, and once it moves past it, the lists have changed again (a
+  refusal no longer describes them).
+* Switching off the list that holds the target on air leaves that target at
+  once, as `scan_avoid` does (a hold carries over). A switch that would leave
+  nothing to scan is refused, and so is any switch while the scan is paused.
+  During a DMR repeater call, a switch that does not move the receiver waits
+  for the call to end, and its result comes then.
 
 ## Examples
 

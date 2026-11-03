@@ -340,17 +340,16 @@ session_error(api_session* s, const dsd_json_node* id, const char* code, const c
  * Request handlers
  *============================================================================*/
 
-/* The page bounds of a `get {"what":"scan_avoids"}`: offset from 0 (default 0; past the end is an empty page), limit
-   1..DSD_API_SCAN_AVOIDS_PAGE_MAX (default the maximum). Returns 0, or -1 for a value out of range or not an integer. */
+/* The page bounds of a paged `get`: @p start_key (`offset` of scan_avoids, `after` of scan_list_results) from 0
+   (default 0), and limit 1..@p max (default @p max). Returns 0, or -1 for a value out of range or not an integer. */
 static int
-get_scan_avoids_bounds(const dsd_json_node* params, uint64_t* offset, size_t* limit) {
-    const dsd_json_node* offset_node = dsd_json_obj_get(params, "offset");
+get_page_bounds(const dsd_json_node* params, const char* start_key, size_t max, uint64_t* start, size_t* limit) {
+    const dsd_json_node* start_node = dsd_json_obj_get(params, start_key);
     const dsd_json_node* limit_node = dsd_json_obj_get(params, "limit");
-    uint64_t lim = (uint64_t)DSD_API_SCAN_AVOIDS_PAGE_MAX;
-    *offset = 0U;
-    if ((offset_node != NULL && dsd_json_as_u64(offset_node, offset) != 0)
-        || (limit_node != NULL && dsd_json_as_u64(limit_node, &lim) != 0) || lim < 1U
-        || lim > (uint64_t)DSD_API_SCAN_AVOIDS_PAGE_MAX) {
+    uint64_t lim = (uint64_t)max;
+    *start = 0U;
+    if ((start_node != NULL && dsd_json_as_u64(start_node, start) != 0)
+        || (limit_node != NULL && dsd_json_as_u64(limit_node, &lim) != 0) || lim < 1U || lim > (uint64_t)max) {
         return -1;
     }
     *limit = (size_t)lim;
@@ -362,7 +361,7 @@ static void
 handle_get_scan_avoids(api_session* s, const dsd_json_node* id, const dsd_json_node* params, dsd_json_buf* scratch) {
     uint64_t offset = 0U;
     size_t limit = 0U;
-    if (get_scan_avoids_bounds(params, &offset, &limit) != 0) {
+    if (get_page_bounds(params, "offset", DSD_API_SCAN_AVOIDS_PAGE_MAX, &offset, &limit) != 0) {
         session_error(s, id, "invalid_params", "offset must be an integer from 0 and limit an integer from 1 to 64", 0,
                       scratch);
         return;
@@ -377,6 +376,70 @@ handle_get_scan_avoids(api_session* s, const dsd_json_node* id, const dsd_json_n
     }
 }
 
+/* The API spelling of a scan_list_set result's code (dsd_app_scan_list_set_code); clients match on these. */
+static const char*
+scan_list_code_name(int32_t code) {
+    switch (code) {
+        case DSD_APP_SCAN_LIST_SET_OK: return "ok";
+        case DSD_APP_SCAN_LIST_SET_UNCHANGED: return "unchanged";
+        case DSD_APP_SCAN_LIST_SET_REFUSED_LAST: return "refused_last";
+        case DSD_APP_SCAN_LIST_SET_BUSY: return "busy";
+        case DSD_APP_SCAN_LIST_SET_UNAVAILABLE: return "unavailable";
+        case DSD_APP_SCAN_LIST_SET_PAUSED: return "paused";
+        case DSD_APP_SCAN_LIST_SET_STALE: return "stale";
+        case DSD_APP_SCAN_LIST_SET_INVALID: return "invalid";
+        case DSD_APP_SCAN_LIST_SET_SEARCH: return "search";
+        case DSD_APP_SCAN_LIST_SET_DROPPED: return "dropped";
+        default: return "unknown";
+    }
+}
+
+static void
+encode_scan_list_result(dsd_json_writer* w, const dsd_app_scan_list_result* r) {
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_u64(w, "sequence", r->sequence);
+    (void)dsd_json_kv_u64(w, "request", r->request);
+    (void)dsd_json_kv_u64(w, "session", r->session);
+    (void)(r->list == DSD_APP_SCAN_LIST_ALL ? dsd_json_kv_str(w, "list", "all") : dsd_json_kv_i64(w, "list", r->list));
+    (void)dsd_json_kv_i64(w, "enabled", r->enabled);
+    (void)dsd_json_kv_str(w, "code", scan_list_code_name(r->code));
+    (void)dsd_json_kv_u64(w, "lists_seq", r->lists_seq);
+    (void)dsd_json_obj_end(w);
+}
+
+/* The scan_list_set results (issue #697) after a sequence, oldest first: every frontend's, this decoder run's only.
+   They are copied out of app-control's history under its lock and formatted here, outside it. */
+static void
+handle_get_scan_list_results(api_session* s, const dsd_json_node* id, const dsd_json_node* params,
+                             dsd_json_buf* scratch) {
+    uint64_t after = 0U;
+    size_t limit = 0U;
+    if (get_page_bounds(params, "after", DSD_APP_RESULT_HISTORY, &after, &limit) != 0) {
+        session_error(s, id, "invalid_params", "after must be an integer from 0 and limit an integer from 1 to 64", 0,
+                      scratch);
+        return;
+    }
+    dsd_app_scan_list_result results[DSD_APP_RESULT_HISTORY];
+    const int n = dsd_app_scan_list_session_results_since(after, results, (int)limit);
+    dsd_json_writer w;
+    dsd_api_response_begin(scratch, &w, id, 1);
+    (void)dsd_json_kv_str(&w, "what", "scan_list_results");
+    (void)dsd_json_key(&w, "data");
+    (void)dsd_json_obj_begin(&w);
+    (void)dsd_json_kv_u64(&w, "after", after);
+    (void)dsd_json_kv_u64(&w, "limit", limit);
+    (void)dsd_json_key(&w, "results");
+    (void)dsd_json_arr_begin(&w);
+    for (int i = 0; i < n; i++) {
+        encode_scan_list_result(&w, &results[i]);
+    }
+    (void)dsd_json_arr_end(&w);
+    (void)dsd_json_obj_end(&w);
+    if (dsd_api_response_end(scratch, &w) == 0) {
+        session_queue(s, scratch);
+    }
+}
+
 static void
 handle_get(api_session* s, const dsd_json_node* id, const dsd_json_node* params, dsd_json_buf* scratch) {
     const dsd_json_node* what_node = dsd_json_obj_get(params, "what");
@@ -385,13 +448,18 @@ handle_get(api_session* s, const dsd_json_node* id, const dsd_json_node* params,
         handle_get_scan_avoids(s, id, params, scratch);
         return;
     }
+    if (what != NULL && strcmp(what, "scan_list_results") == 0) {
+        handle_get_scan_list_results(s, id, params, scratch);
+        return;
+    }
     dsd_json_buf cached;
     dsd_json_buf_init(&cached);
     const int have = (what != NULL) ? dsd_api_feed_latest(what, &cached) : -1;
     if (have < 0) {
         dsd_json_buf_free(&cached);
         session_error(s, id, "invalid_params",
-                      "what must be status, snapshot, call, system, metrics, quality or scan_avoids", 0, scratch);
+                      "what must be status, snapshot, call, system, metrics, quality, scan_avoids or scan_list_results",
+                      0, scratch);
         return;
     }
     dsd_json_writer w;

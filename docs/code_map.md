@@ -3649,7 +3649,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
     history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
     `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
-    completion (the control API, which reports a `result_gap` when more completed than the history held)
+    completion (the control API, which reports a `result_gap` when more completed than the history held).
+    `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
+    open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
+    sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
+    `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
@@ -4518,7 +4522,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the update at once, and a publish from a new state instance (a restarted decoder) drops it and runs the update at
     that publish (one flag test per publish without clients, one instance compare with them), so `get` answers `null`
     rather than the previous run's or previous client's record. The `status` record carries what the stateful commands
-    must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics follow the
+    must quote back: the talkgroup policy version, the decryption context and the scan row view. Its `scan` object
+    (issue #697) adds, from the scan state view, the scan list view and the published position fields only:
+    `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's D10 `ordinal` (null while the
+    target on air is outside the lists switched on) and `count` (`trunk_scan_rotation_ordinal`/`_count`), and
+    `session`, `lists_seq`, `list` (the list on air, or null) and `lists[]` that `scan_list_set` and its results quote;
+    the avoid count stays in `status.scan_avoids`. RF metrics follow the
     shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick the feed
     reads the scan avoid view's constant-cost summary and, only when its key (`dsd_app_scan_avoid_summary_same_key()`)
     moved since the last successful collection, collects the raw entries (`dsd_app_scan_avoid_raw_collect()`, no
@@ -4534,7 +4543,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
     stores. Values that do not fit their field are refused, never wrapped or cut; 64-bit values convert from
     the JSON literal or a decimal/hex string, never through a double; secret payloads are wiped; `config_apply`
-    starts from `dsd_user_config_init()` like the INI loader
+    starts from `dsd_user_config_init()` like the INI loader. `scan_list_set` (issue #697) takes its request id from
+    `dsd_app_scan_list_request_next()` (a client's `request` is refused, since its own ids would collide with the
+    terminal's and Qt's) and echoes it as `request`; a full queue refuses it as `queue_full` (no result follows). Its
+    results are pulled, not pushed: `get {"what":"scan_list_results","after","limit"}` in `api_server.c` copies up to
+    64 from `dsd_app_scan_list_session_results_since()` and formats them on the session thread outside every lock,
+    each code by a stable name
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
     and every buffer are wiped before their storage is released, since requests carry keys and tokens
 - Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;

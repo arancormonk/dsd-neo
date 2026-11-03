@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <dsd-neo/api/api.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
@@ -499,19 +501,32 @@ test_feed(void) {
     assert(strstr(g_line, "\"names\":\"--nac-name \\\"293=Fire\\\"\"") != NULL);
     DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
 
-    /* Issue #671 (D12): status carries the scan state every frontend shows: none, a -Y list running, paused, and a
-       trunk scan paused, with its target count. */
+    /* Issue #671 (D12): status carries the scan state every frontend shows: none, a -Y list running, held, paused,
+       and a trunk scan paused, with its target count. Issue #697 (C-B4): and the hold of the scan on air, which
+       scan_hold_toggle flips; the trunk scan's position and lists are empty outside a trunk scan. */
     static const struct {
         int scanner_mode;
         int trunk_scan;
         uint8_t lcn_paused;
         uint8_t trunk_paused;
+        uint8_t lcn_hold;
         const char* want;
     } k_scan[] = {
-        {0, 0, 0U, 0U, "\"scan\":{\"kind\":\"none\",\"state\":\"off\",\"targets\":0}"},
-        {1, 0, 0U, 0U, "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3}"},
-        {0, 0, 1U, 0U, "\"scan\":{\"kind\":\"channel\",\"state\":\"paused\",\"targets\":3}"},
-        {0, 1, 0U, 1U, "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":2}"},
+        {0, 0, 0U, 0U, 1U,
+         "\"scan\":{\"kind\":\"none\",\"state\":\"off\",\"targets\":0,\"hold\":false,\"ordinal\":null,\"count\":0,"
+         "\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+        {1, 0, 0U, 0U, 0U,
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":false,\"ordinal\":null,"
+         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+        {1, 0, 0U, 0U, 1U,
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"ordinal\":null,"
+         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+        {0, 0, 1U, 0U, 0U,
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"paused\",\"targets\":3,\"hold\":false,\"ordinal\":null,"
+         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+        {0, 1, 0U, 1U, 1U,
+         "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":2,\"hold\":false,\"ordinal\":null,"
+         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
     };
 
     state->lcn_freq_count = 3;
@@ -521,6 +536,7 @@ test_feed(void) {
         opts->trunk_scan_enabled = k_scan[i].trunk_scan;
         state->lcn_scan_paused = k_scan[i].lcn_paused;
         state->trunk_scan_paused = k_scan[i].trunk_paused;
+        state->lcn_scan_hold = k_scan[i].lcn_hold;
         int scan_seen = 0;
         for (int attempt = 0; attempt < 30 && !scan_seen; attempt++) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
@@ -535,6 +551,7 @@ test_feed(void) {
     opts->trunk_scan_enabled = 0;
     state->lcn_scan_paused = 0U;
     state->trunk_scan_paused = 0U;
+    state->lcn_scan_hold = 0U;
     state->lcn_freq_count = 0;
     state->trunk_scan_target_count = 0U;
 
@@ -1543,6 +1560,420 @@ test_scan_avoids(void) {
     free(rig.opts);
 }
 
+/*============================================================================
+ * Scan lists (issue #697): status.scan's lists, hold and position, scan_list_set and its results
+ *============================================================================*/
+
+static void
+set_scan_list(dsd_state* state, int number, const char* name, uint8_t enabled, uint16_t targets) {
+    dsd_trunk_scan_list_publication* l = &state->trunk_scan_lists[number - 1];
+    DSD_SNPRINTF(l->name, sizeof l->name, "%s", name);
+    l->enabled = enabled;
+    l->targets = targets;
+}
+
+/* The trunk scan on air as the coordinator publishes it: the list of the target on air (0: none) and whether that
+   list is off, the target's position among the targets of the lists that are on (0: outside them) and their count,
+   and the operator's hold. */
+static void
+set_scan_position(dsd_state* state, uint8_t active_list, uint8_t list_off, uint16_t ordinal, uint16_t count,
+                  uint8_t hold) {
+    state->trunk_scan_active_list = active_list;
+    state->trunk_scan_active_list_off = list_off;
+    state->trunk_scan_rotation_ordinal = ordinal;
+    state->trunk_scan_rotation_count = count;
+    state->trunk_scan_hold = hold;
+    state->trunk_scan_lists_seq++;
+}
+
+/* C-B4 and the lists: status.scan with no list published yet, one list, and three, the target on air in a list just
+   switched off (a fallback: no position, "-" in every frontend), in a list that is on, and paused. Each field comes
+   from the scan list view and the published position, as the terminal and Qt read them. */
+static void
+scan_lists_status(avoid_rig* rig) {
+    dsd_state* state = rig->state;
+    rig->opts->trunk_scan_enabled = 1;
+    state->trunk_scan_session = 41U;
+    state->trunk_scan_lists_seq = 5U;
+    state->trunk_scan_list_count = 0U;
+    state->trunk_scan_target_count = 0U;
+    set_scan_position(state, 0U, 0U, 0U, 0U, 0U);
+    await_status(rig,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":0,\"hold\":false,\"ordinal\":null,"
+                 "\"count\":0,\"session\":41,\"lists_seq\":6,\"list\":null,\"lists\":[]}");
+
+    state->trunk_scan_list_count = 1U;
+    state->trunk_scan_target_count = 3U;
+    set_scan_list(state, 1, "security", 1U, 3U);
+    set_scan_position(state, 1U, 0U, 2U, 3U, 1U);
+    await_status(rig, "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"ordinal\":2,"
+                      "\"count\":3,\"session\":41,\"lists_seq\":7,\"list\":1,\"lists\":[{\"number\":1,\"name\":"
+                      "\"security\",\"enabled\":1,\"targets\":3,\"has_active\":true}]}");
+
+    static const char k_three[] = "\"lists\":[{\"number\":1,\"name\":\"security\",\"enabled\":1,\"targets\":3,"
+                                  "\"has_active\":%s},{\"number\":2,\"name\":\"hospital\",\"enabled\":0,\"targets\":2,"
+                                  "\"has_active\":%s},{\"number\":3,\"name\":\"municipality \\\"east\\\"\","
+                                  "\"enabled\":1,\"targets\":1,\"has_active\":%s}]}";
+    char lists[512];
+    char want[768];
+    state->trunk_scan_list_count = 3U;
+    state->trunk_scan_target_count = 6U;
+    set_scan_list(state, 2, "hospital", 0U, 2U);
+    set_scan_list(state, 3, "municipality \"east\"", 1U, 1U);
+    set_scan_position(state, 2U, 1U, 0U, 4U, 1U);
+    DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "true", "false");
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":true,\"ordinal\":null,"
+                 "\"count\":4,\"session\":41,\"lists_seq\":8,\"list\":2,%s",
+                 lists);
+    await_status(rig, want);
+
+    set_scan_position(state, 3U, 0U, 4U, 4U, 0U);
+    DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "false", "true");
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":false,\"ordinal\":4,"
+                 "\"count\":4,\"session\":41,\"lists_seq\":9,\"list\":3,%s",
+                 lists);
+    await_status(rig, want);
+
+    /* Paused: no target on air, so no list and no position; the hold and the lists stay. */
+    state->trunk_scan_paused = 1U;
+    set_scan_position(state, 0U, 0U, 0U, 4U, 1U);
+    DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "false", "false");
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":6,\"hold\":true,\"ordinal\":null,"
+                 "\"count\":4,\"session\":41,\"lists_seq\":10,\"list\":null,%s",
+                 lists);
+    await_status(rig, want);
+    state->trunk_scan_paused = 0U;
+}
+
+/* The coordinator stand-in: each list switch is answered with the next code of a script, so every code a result can
+   carry is driven through the real queue. */
+static const int* g_list_set_script = NULL;
+static int g_list_set_calls = 0;
+
+static int
+scripted_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request) {
+    (void)opts;
+    (void)session;
+    (void)list;
+    (void)enabled;
+    (void)request;
+    const int code = g_list_set_script[g_list_set_calls++];
+    if (code == DSD_TRUNK_SCAN_LIST_SET_OK) {
+        state->trunk_scan_lists_seq++;
+    }
+    return code;
+}
+
+/* `get scan_list_results` after @p after (a limit of 0 or less is left out); returns the parsed reply, already checked
+   to be ok, and its results. */
+static dsd_json_node*
+get_list_results(avoid_rig* rig, uint64_t after, int limit, const dsd_json_node** results) {
+    char lim[32] = "";
+    if (limit > 0) {
+        DSD_SNPRINTF(lim, sizeof lim, ",\"limit\":%d", limit);
+    }
+    char request[160];
+    DSD_SNPRINTF(request, sizeof request,
+                 "{\"id\":3,\"cmd\":\"get\",\"params\":{\"what\":\"scan_list_results\",\"after\":%" PRIu64 "%s}}\n",
+                 after, lim);
+    send_str(rig->get, request);
+    static const char k_head[] = "{\"id\":3,\"ok\":true,\"what\":\"scan_list_results\",\"data\":{\"after\":";
+    assert(read_line(rig->get, 5000U) == 1);
+    if (strncmp(g_line, k_head, sizeof k_head - 1U) != 0) {
+        DSD_FPRINTF(stderr, "get scan_list_results was answered: %s\n", g_line);
+        assert(0);
+    }
+    dsd_json_node* root = parse_line();
+    const dsd_json_node* data = json_at(root, "data");
+    assert(json_u64(data, "after") == after && json_u64(data, "limit") == (uint64_t)(limit > 0 ? limit : 64));
+    *results = json_at(data, "results");
+    assert((*results)->type == DSD_JSON_ARRAY);
+    return root;
+}
+
+/* scan_list_set through the session; returns the request id the reply echoes (a JSON number). */
+static uint64_t
+send_list_set(avoid_rig* rig, const char* params) {
+    char request[192];
+    DSD_SNPRINTF(request, sizeof request, "{\"id\":4,\"cmd\":\"scan_list_set\",\"params\":%s}\n", params);
+    send_str(rig->get, request);
+    assert(read_line(rig->get, 5000U) == 1);
+    static const char k_head[] = "{\"id\":4,\"ok\":true,\"cmd\":\"scan_list_set\",\"status\":\"queued\",\"request\":";
+    if (strncmp(g_line, k_head, sizeof k_head - 1U) != 0) {
+        DSD_FPRINTF(stderr, "scan_list_set %s was answered: %s\n", params, g_line);
+        assert(0);
+    }
+    dsd_json_node* root = parse_line();
+    assert(json_at(root, "request")->type == DSD_JSON_NUMBER);
+    const uint64_t request_id = json_u64(root, "request");
+    dsd_json_free(root);
+    return request_id;
+}
+
+static void
+expect_list_result(const dsd_json_node* r, uint64_t request, uint64_t session, const char* list, int enabled,
+                   const char* code, uint64_t lists_seq) {
+    char got_list[16];
+    const dsd_json_node* l = json_at(r, "list");
+    if (l->type == DSD_JSON_STRING) {
+        DSD_SNPRINTF(got_list, sizeof got_list, "%s", l->string);
+    } else {
+        DSD_SNPRINTF(got_list, sizeof got_list, "%" PRIu64, json_u64(r, "list"));
+    }
+    if (json_u64(r, "request") != request || json_u64(r, "session") != session || strcmp(got_list, list) != 0
+        || json_u64(r, "enabled") != (uint64_t)enabled || strcmp(json_str(r, "code"), code) != 0
+        || json_u64(r, "lists_seq") != lists_seq) {
+        DSD_FPRINTF(stderr,
+                    "result %" PRIu64 ": request %" PRIu64 " session %" PRIu64 " list %s enabled %" PRIu64
+                    " code %s lists_seq %" PRIu64 ", want %" PRIu64 " %" PRIu64 " %s %d %s %" PRIu64 "\n",
+                    json_u64(r, "sequence"), json_u64(r, "request"), json_u64(r, "session"), got_list,
+                    json_u64(r, "enabled"), json_str(r, "code"), json_u64(r, "lists_seq"), request, session, list,
+                    enabled, code, lists_seq);
+        assert(0);
+    }
+}
+
+/* Every code reaches a client by its stable name, under the request id the reply echoed, with the lists' sequence
+   after the request; an invalid payload one only a raw submission can make is answered too. */
+static void
+scan_list_results_codes(avoid_rig* rig) {
+    static const int k_script[] = {
+        DSD_TRUNK_SCAN_LIST_SET_OK,          DSD_TRUNK_SCAN_LIST_SET_UNCHANGED, DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST,
+        DSD_TRUNK_SCAN_LIST_SET_BUSY,        DSD_TRUNK_SCAN_LIST_SET_PAUSED,    DSD_TRUNK_SCAN_LIST_SET_STALE,
+        DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE,
+    };
+    static const char* const k_names[] = {"ok", "unchanged", "refused_last", "busy", "paused", "stale", "unavailable"};
+
+    enum { SCRIPTED = (int)(sizeof k_script / sizeof k_script[0]) };
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.list_set = scripted_list_set;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_list_set_script = k_script;
+    g_list_set_calls = 0;
+    rig->state->trunk_scan_lists_seq = 20U;
+
+    const dsd_json_node* results = NULL;
+    dsd_json_node* root = get_list_results(rig, 0U, 0, &results);
+    assert(results->count == 0U);
+    dsd_json_free(root);
+    uint64_t requests[SCRIPTED];
+    for (int i = 0; i < SCRIPTED; i++) {
+        requests[i] = send_list_set(rig, i % 2 ? "{\"list\":\"all\",\"enabled\":1,\"session\":41}"
+                                               : "{\"list\":2,\"enabled\":0,\"session\":\"41\"}");
+        assert(dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+    }
+    dsd_app_scan_list_set_payload raw = {0};
+    raw.request = dsd_app_scan_list_request_next();
+    raw.list = 3;
+    raw.enabled = 1U;
+    assert(dsd_app_command_scan_list_set(&raw) == DSD_APP_COMMAND_SUBMIT_QUEUED); /* session 0: invalid */
+    assert(dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+    assert(g_list_set_calls == SCRIPTED);
+
+    root = get_list_results(rig, 0U, 0, &results);
+    assert(results->count == (size_t)SCRIPTED + 1U);
+    uint64_t lists_seq = 20U;
+    for (int i = 0; i < SCRIPTED; i++) {
+        lists_seq += k_script[i] == DSD_TRUNK_SCAN_LIST_SET_OK ? 1U : 0U;
+        expect_list_result(results->items[i], requests[i], 41U, i % 2 ? "all" : "2", i % 2, k_names[i], lists_seq);
+    }
+    expect_list_result(results->items[SCRIPTED], raw.request, 0U, "3", 1, "invalid", lists_seq);
+    const uint64_t first = json_u64(results->items[0], "sequence");
+    for (size_t i = 1; i < results->count; i++) {
+        assert(json_u64(results->items[i], "sequence") == first + i);
+    }
+    dsd_json_free(root);
+    dsd_trunk_scan_hooks_set(NULL);
+    g_list_set_script = NULL;
+}
+
+/* More results than the history keeps: the oldest go, and pages walk what is left, oldest first and without a
+   repeat, from any point; a page past the newest is empty. Each result is copied out of app-control's history under
+   its lock and formatted after. */
+static void
+scan_list_results_paging(avoid_rig* rig) {
+    dsd_app_scan_list_result newest = {0};
+    (void)dsd_app_scan_list_result_get(&newest);
+    const uint64_t start = newest.sequence;
+
+    enum { SUBMITTED = DSD_APP_RESULT_HISTORY + 6 };
+
+    for (int i = 0; i < SUBMITTED; i++) {
+        dsd_app_scan_list_set_payload p = {0};
+        p.session = 41U;
+        p.request = dsd_app_scan_list_request_next();
+        p.list = (int16_t)(1 + i % DSD_TRUNK_SCAN_MAX_LISTS);
+        p.enabled = (uint8_t)(i % 2);
+        assert(dsd_app_command_scan_list_set(&p) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    }
+    assert(dsd_app_drain_cmds(rig->opts, rig->state) == SUBMITTED);
+    const uint64_t last = start + (uint64_t)SUBMITTED;
+    const uint64_t oldest = last - (uint64_t)DSD_APP_RESULT_HISTORY + 1U;
+
+    uint64_t after = start;
+    uint64_t want = oldest;
+    for (;;) {
+        const dsd_json_node* results = NULL;
+        dsd_json_node* root = get_list_results(rig, after, 10, &results);
+        assert(results->count <= 10U);
+        if (results->count == 0U) {
+            dsd_json_free(root);
+            break;
+        }
+        for (size_t i = 0; i < results->count; i++) {
+            const uint64_t seq = json_u64(results->items[i], "sequence");
+            assert(seq == want);
+            const int k = (int)(seq - start - 1U);
+            assert(json_u64(results->items[i], "list") == (uint64_t)(1 + k % DSD_TRUNK_SCAN_MAX_LISTS));
+            assert(json_u64(results->items[i], "enabled") == (uint64_t)(k % 2));
+            assert(strcmp(json_str(results->items[i], "code"), "unavailable") == 0);
+            want++;
+            after = seq;
+        }
+        dsd_json_free(root);
+    }
+    assert(want == last + 1U);
+
+    /* From the middle of what is kept, and from one already gone (the page starts at the oldest kept). */
+    const dsd_json_node* results = NULL;
+    dsd_json_node* root = get_list_results(rig, last - 3U, 0, &results);
+    assert(results->count == 3U && json_u64(results->items[0], "sequence") == last - 2U);
+    dsd_json_free(root);
+    root = get_list_results(rig, oldest - 5U, 2, &results);
+    assert(results->count == 2U && json_u64(results->items[0], "sequence") == oldest);
+    dsd_json_free(root);
+
+    static const char* const k_bad[] = {
+        "\"after\":-1", "\"after\":1.5", "\"after\":\"x\"", "\"limit\":0",
+        "\"limit\":65", "\"limit\":-1",  "\"limit\":true",
+    };
+    for (size_t i = 0; i < sizeof k_bad / sizeof k_bad[0]; i++) {
+        char request[160];
+        DSD_SNPRINTF(request, sizeof request,
+                     "{\"id\":6,\"cmd\":\"get\",\"params\":{\"what\":\"scan_list_results\",%s}}\n", k_bad[i]);
+        send_str(rig->get, request);
+        assert(read_line(rig->get, 5000U) == 1);
+        if (strstr(g_line, "{\"id\":6,\"ok\":false") != g_line || strstr(g_line, "\"invalid_params\"") == NULL) {
+            DSD_FPRINTF(stderr, "get scan_list_results with %s was answered: %s\n", k_bad[i], g_line);
+            assert(0);
+        }
+    }
+}
+
+/* A full queue refuses a toggle at once rather than evicting a command for it: the reply is the error, with no request
+   id and no result to wait for. */
+static void
+scan_list_set_queue_full(avoid_rig* rig) {
+    dsd_app_scan_list_result before = {0};
+    (void)dsd_app_scan_list_result_get(&before);
+    int queued = 0;
+    uint32_t last_queued = 0U;
+    dsd_app_scan_list_set_payload p = {0};
+    p.session = 41U;
+    p.list = 1;
+    for (; queued < 1000; queued++) {
+        p.request = dsd_app_scan_list_request_next();
+        if (dsd_app_command_scan_list_set(&p) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+            break;
+        }
+        last_queued = p.request;
+    }
+    assert(queued > 0 && queued < 1000);
+    send_str(rig->get, "{\"id\":7,\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":41}}\n");
+    assert(read_line(rig->get, 5000U) == 1);
+    if (strstr(g_line, "{\"id\":7,\"ok\":false,\"cmd\":\"scan_list_set\",\"error\":{\"code\":\"queue_full\"") != g_line
+        || strstr(g_line, "\"request\"") != NULL) {
+        DSD_FPRINTF(stderr, "scan_list_set on a full queue was answered: %s\n", g_line);
+        assert(0);
+    }
+    assert(dsd_app_drain_cmds(rig->opts, rig->state) == queued);
+    dsd_app_scan_list_result after = {0};
+    (void)dsd_app_scan_list_result_get(&after);
+    assert(after.sequence == before.sequence + (uint64_t)queued && after.request == last_queued);
+}
+
+/* Results of an earlier decoder run are never served as this one's: once the command session opens again, a get from
+   0 starts after them. A request a stop dropped is still answered until then. */
+static void
+scan_list_results_previous_run(avoid_rig* rig) {
+    dsd_app_scan_list_set_payload p = {0};
+    p.session = 41U;
+    p.list = 2;
+    p.request = dsd_app_scan_list_request_next();
+    assert(dsd_app_command_scan_list_set(&p) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+    const uint64_t answered = send_list_set(rig, "{\"list\":1,\"enabled\":0,\"session\":41}");
+    dsd_app_scan_list_result newest = {0};
+    (void)dsd_app_scan_list_result_get(&newest);
+
+    dsd_app_frontend_runtime_stop();
+    const dsd_json_node* results = NULL;
+    dsd_json_node* root = get_list_results(rig, newest.sequence - 1U, 0, &results);
+    assert(results->count == 2U);
+    expect_list_result(results->items[0], p.request, 41U, "2", 0, "unavailable", rig->state->trunk_scan_lists_seq);
+    expect_list_result(results->items[1], answered, 41U, "1", 0, "dropped", rig->state->trunk_scan_lists_seq);
+    dsd_json_free(root);
+
+    dsd_app_frontend_runtime_start(rig->opts, rig->state);
+    root = get_list_results(rig, 0U, 0, &results);
+    assert(results->count == 0U);
+    dsd_json_free(root);
+    root = get_list_results(rig, newest.sequence - 1U, 0, &results);
+    assert(results->count == 0U);
+    dsd_json_free(root);
+    const uint64_t fresh = send_list_set(rig, "{\"list\":3,\"enabled\":1,\"session\":41}");
+    assert(fresh != answered && dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+    root = get_list_results(rig, 0U, 0, &results);
+    assert(results->count == 1U);
+    expect_list_result(results->items[0], fresh, 41U, "3", 1, "unavailable", rig->state->trunk_scan_lists_seq);
+    assert(json_u64(results->items[0], "sequence") == newest.sequence + 2U);
+    dsd_json_free(root);
+}
+
+static void
+test_scan_lists(void) {
+    avoid_rig rig;
+    rig.opts = (dsd_opts*)calloc(1U, sizeof(*rig.opts));
+    rig.state = (dsd_state*)calloc(1U, sizeof(*rig.state));
+    assert(rig.opts != NULL && rig.state != NULL);
+    initOpts(rig.opts);
+    initState(rig.state);
+    /* A request answered by a run that ended before this one started is not this run's. */
+    dsd_app_frontend_runtime_start(rig.opts, rig.state);
+    dsd_app_scan_list_set_payload old = {0};
+    old.session = 9U;
+    old.list = 1;
+    old.request = dsd_app_scan_list_request_next();
+    assert(dsd_app_command_scan_list_set(&old) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(rig.opts, rig.state) == 1);
+    dsd_app_frontend_runtime_stop();
+
+    dsd_app_frontend_runtime_start(rig.opts, rig.state);
+    const int port = start_server(NULL, 0, 0);
+    rig.sub = open_session(port, "\"type\":\"welcome\"");
+    send_str(rig.sub, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"status\"]}\n");
+    expect_line(rig.sub, "{\"id\":1,\"ok\":true");
+    rig.get = open_session(port, "\"type\":\"welcome\"");
+
+    scan_lists_status(&rig);
+    scan_list_results_codes(&rig);
+    scan_list_results_paging(&rig);
+    scan_list_set_queue_full(&rig);
+    scan_list_results_previous_run(&rig);
+
+    dsd_socket_close(rig.get);
+    dsd_socket_close(rig.sub);
+    dsd_api_stop();
+    dsd_app_frontend_runtime_stop();
+    freeState(rig.state);
+    free(rig.state);
+    free(rig.opts);
+}
+
 /* A request still queued when the decoder stops is cancelled as the command session closes; the server, stopped right
    after (as the CLI does, most likely while its result pump sleeps), still reports that before it disconnects. */
 static void
@@ -1584,6 +2015,7 @@ main(void) {
     test_feed();
     test_rr_apply_outcome_in_status_feed();
     test_scan_avoids();
+    test_scan_lists();
     test_results_at_stop();
     printf("api server tests passed\n");
     return 0;

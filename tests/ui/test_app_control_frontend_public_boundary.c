@@ -94,6 +94,7 @@ main(void) {
     (void)&dsd_app_scan_list_request_next;
     (void)&dsd_app_scan_list_result_get;
     (void)&dsd_app_scan_list_results_since;
+    (void)&dsd_app_scan_list_session_results_since;
     (void)sizeof(dsd_app_squelch_view);
     (void)&dsd_app_squelch_view_get;
     (void)&dsd_app_squelch_view_format;

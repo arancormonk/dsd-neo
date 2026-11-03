@@ -37,6 +37,9 @@ static dsd_app_scan_list_result history[DSD_APP_RESULT_HISTORY];
 static uint32_t last_request;
 /* The decoder's trunk_scan_lists_seq as the last drain left it, for a request dropped before the decoder saw it. */
 static uint32_t known_lists_seq;
+/* The newest result's sequence when the command session last opened: every result at or below it answered a request
+   of an earlier decoder run, for dsd_app_scan_list_session_results_since(). */
+static uint64_t session_floor;
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready: the loser of the first-call race waits, since taking a
    mutex another thread has not finished initializing is undefined behavior. */
@@ -74,12 +77,9 @@ dsd_app_scan_list_result_get(dsd_app_scan_list_result* out) {
     return out->sequence != 0U;
 }
 
-int
-dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
-    if (!out || cap <= 0) {
-        return 0;
-    }
-    lock_results();
+/* Copy up to @p cap retained results above @p after_sequence, oldest first. Caller holds the results' lock. */
+static int
+results_after_locked(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
     const uint64_t last = newest.sequence;
     uint64_t seq = after_sequence + 1U;
     if (last >= (uint64_t)DSD_APP_RESULT_HISTORY && seq < last - (uint64_t)DSD_APP_RESULT_HISTORY + 1U) {
@@ -92,8 +92,36 @@ dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_resul
             out[n++] = *r;
         }
     }
+    return n;
+}
+
+int
+dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
+    if (!out || cap <= 0) {
+        return 0;
+    }
+    lock_results();
+    const int n = results_after_locked(after_sequence, out, cap);
     dsd_mutex_unlock(&result_mutex);
     return n;
+}
+
+int
+dsd_app_scan_list_session_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
+    if (!out || cap <= 0) {
+        return 0;
+    }
+    lock_results();
+    const int n = results_after_locked(after_sequence > session_floor ? after_sequence : session_floor, out, cap);
+    dsd_mutex_unlock(&result_mutex);
+    return n;
+}
+
+void
+dsd_app_scan_list_note_session_open(void) {
+    lock_results();
+    session_floor = newest.sequence;
+    dsd_mutex_unlock(&result_mutex);
 }
 
 /* One field of the submitted payload, when the submission reached it. */

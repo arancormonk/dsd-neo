@@ -24,4 +24,9 @@ void dsd_app_scan_list_publish_result(const struct dsd_app_command* command, int
    reached them. Decoder thread, once per drain that applied a command. */
 void dsd_app_scan_list_note_lists_seq(uint32_t lists_seq);
 
+/* Mark every result retained so far as an earlier decoder run's, so dsd_app_scan_list_session_results_since() no
+   longer returns it. The command queue calls it as its session opens, after it dropped what the last one left queued,
+   under its own lock (the results' lock is taken after it). */
+void dsd_app_scan_list_note_session_open(void);
+
 #endif /* DSD_NEO_SRC_APP_CONTROL_SCAN_LIST_RESULTS_H */

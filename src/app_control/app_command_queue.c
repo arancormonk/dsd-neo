@@ -308,6 +308,7 @@ dsd_app_command_session_set_open(int open) {
     }
     if (open) {
         g_session_generation = g_session_generation == UINT64_MAX ? 1 : g_session_generation + 1;
+        dsd_app_scan_list_note_session_open();
     }
     g_session_open = open != 0;
     atomic_store(&g_overflow_warn_gate, 0);

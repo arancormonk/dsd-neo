@@ -824,6 +824,10 @@ int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
  * when a later step of the same command (a rigctl passband follow-up the peer refused) fails the command: the list did
  * switch. */
 int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
+/** dsd_app_scan_list_results_since() without the results of an earlier decoder run: only those published since the
+ * command session last opened, so a reader that outlives the decoder, such as the control API, never serves a previous
+ * run's answer as this one's. The DROPPED results of requests a stop discarded stay readable until the next open. */
+int dsd_app_scan_list_session_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 
