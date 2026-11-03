@@ -19,6 +19,14 @@
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <utility>
@@ -130,8 +138,11 @@ checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
     csvStarter.setTargetFileLookup([&targetPath](const QString& candidate) { return candidate == targetPath; });
     const auto builtCsv = csvStarter.build(model.get(model.count() - 1));
     const auto args = builtCsv.value("args").toStringList();
+    // Issue #697: the list runs from its own copy, named after the list; the imported file is left as it was.
+    const QVariantMap csvList = model.get(model.count() - 1);
     check(builtCsv.value("ok").toBool() && builtCsv.value("targetCount").toInt() == 3
-          && args.value(args.indexOf("--trunk-scan") + 1) == targetPath);
+          && args.value(args.indexOf("--trunk-scan") + 1)
+                 == scan_list_csv_path(csvList.value("uid").toString(), "Analog CSV", 1));
     check(targets.open(QIODevice::ReadOnly) && targets.readAll() == body);
     targets.close();
     const auto preview = inspectTargets(targetPath);
@@ -413,6 +424,145 @@ checkCsvFolder() {
     check(!folder.exists() && !QFile::exists(legacy));
 }
 
+namespace {
+// A host that keeps the argv of its last start.
+struct ArgvHost : DecoderHost {
+    QStringList received;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        received = argv;
+        return true;
+    }
+
+    void
+    stop() override {}
+};
+
+dsd_trunk_tune_result
+acceptTune(dsd_opts*, dsd_state*, long int, int, uint64_t) {
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+// An imported targets file as the import stores it: imports/bundles/<id>/targets.csv, its talkgroup file beside it
+// and named relative to it.
+QString
+writeImportedBundle(const QString& root, const QString& id, uint32_t hz, const QByteArray& groupName) {
+    const QString folder = root + "/" + id;
+    QDir().mkpath(folder + "/rev");
+    QFile groups(folder + "/rev/0.csv");
+    check(groups.open(QIODevice::WriteOnly) && groups.write("id,mode,name\n123,B," + groupName + "\n") > 0);
+    groups.close();
+    QFile targets(folder + "/targets.csv");
+    const QByteArray body = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n" + id.toUtf8()
+                            + ",p25-conventional," + QByteArray::number(hz) + ",,,,,-G rev/0.csv\n";
+    check(targets.open(QIODevice::WriteOnly) && targets.write(body) == body.size());
+    targets.close();
+    return targets.fileName();
+}
+} // namespace
+
+// Issue #697: every imported list is stored as targets.csv, so the decoder named each one "targets". Each now runs
+// from its own copy named after the list, its companion files still found: two imported lists started together are
+// named apart in the argv and by the real coordinator, each target with its own talkgroups.
+static void
+checkImportedListsNamedApart(const QTemporaryDir& dir) {
+    const QString root = dir.filePath("imports/bundles");
+    const QString hospitalFile = writeImportedBundle(root, "hospital-target", 852012500U, "Hospital TG");
+    const QString parksFile = writeImportedBundle(root, "parks-target", 853012500U, "Parks TG");
+    const QByteArray hospitalBefore = [&] {
+        QFile f(hospitalFile);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    }();
+    ScanListsModel model;
+    const QVariantMap common{{"sourceType", "rtltcp"}, {"host", "127.0.0.1"}, {"port", 1234}, {"targetSource", "csv"}};
+    QVariantMap hospital = common;
+    hospital.insert("name", "Hospital");
+    hospital.insert("targetsCsvPath", hospitalFile);
+    QVariantMap parks = common;
+    parks.insert("name", "Parks");
+    parks.insert("targetsCsvPath", parksFile);
+    check(model.add(hospital) && model.add(parks));
+    hospital = model.get(model.count() - 2);
+    parks = model.get(model.count() - 1);
+    ScanListStarter starter(nullptr, nullptr);
+    starter.setTargetFileLookup([&](const QString& path) { return path == hospitalFile || path == parksFile; });
+    ArgvHost host;
+    const auto started = starter.startLists({hospital, parks}, &host);
+    check(started.value("started").toBool());
+    QStringList paths;
+    for (qsizetype i = 0; i + 1 < host.received.size(); ++i) {
+        if (host.received.at(i) == "--trunk-scan") {
+            paths << host.received.at(i + 1);
+        }
+    }
+    check(paths
+          == QStringList({scan_list_csv_path(hospital.value("uid").toString(), "Hospital", 1),
+                          scan_list_csv_path(parks.value("uid").toString(), "Parks", 2)}));
+    // The imported file is never written.
+    QFile original(hospitalFile);
+    check(original.open(QIODevice::ReadOnly) && original.readAll() == hospitalBefore);
+    original.close();
+
+    // The real coordinator over those copies: the lists named after the lists, and the target first in the
+    // rotation holding its own talkgroups from the file its copy names. Run in both orders, so each copy's companion
+    // is read.
+    const struct {
+        int first;
+        const char* names[2];
+        const char* group;
+    } orders[] = {{0, {"Hospital", "Parks"}, "Hospital TG"}, {1, {"Parks", "Hospital"}, "Parks TG"}};
+
+    for (const auto& order : orders) {
+        auto* opts = new dsd_opts{};
+        auto* state = new dsd_state{};
+        initOpts(opts);
+        initState(state);
+        opts->trunk_scan_enabled = 1;
+        opts->use_rigctl = 1;
+        opts->trunk_scan_list_count = 2;
+        for (int i = 0; i < 2; ++i) {
+            DSD_SNPRINTF(opts->trunk_scan_lists[i].path, sizeof opts->trunk_scan_lists[i].path, "%s",
+                         paths.value((order.first + i) % 2).toUtf8().constData());
+        }
+        dsd_trunk_tuning_hooks hooks{};
+        hooks.tune_to_freq_request = acceptTune;
+        hooks.tune_to_cc_request = acceptTune;
+        dsd_trunk_tuning_hooks_set(hooks);
+        char error[256]{};
+        const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+        if (!initialized) {
+            std::fprintf(stderr, "imported lists: %s\n", error);
+        }
+        check(initialized);
+        if (initialized) {
+            check(state->trunk_scan_list_count == 2
+                  && QString::fromUtf8(state->trunk_scan_lists[0].name) == QLatin1String(order.names[0])
+                  && QString::fromUtf8(state->trunk_scan_lists[1].name) == QLatin1String(order.names[1]));
+            dsd_tg_policy_lookup found{};
+            check(dsd_tg_policy_lookup_id(state, 123, &found) == 0
+                  && QString::fromUtf8(found.entry.name) == QLatin1String(order.group));
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        dsd_trunk_tuning_hooks_set({});
+        dsd_trunk_scan_hooks_set(nullptr);
+        freeState(state);
+        delete state;
+        delete opts;
+    }
+    check(model.remove(model.count() - 1) && model.remove(model.count() - 1));
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -432,6 +582,7 @@ main(int argc, char** argv) {
     check(!uid.isEmpty() && !list.value("entries").toList().first().toMap().value("uid").toString().isEmpty());
     checkCsvStem();
     checkCsvFolder();
+    checkImportedListsNamedApart(dir);
     model.update(0, {{"name", "Updated"}, {"uid", "replacement"}});
     model.touch(0);
     ScanListsModel loaded;
@@ -561,9 +712,13 @@ main(int argc, char** argv) {
     const auto builtCsv = starter.build(imported);
     check(builtCsv.value("ok").toBool() && builtCsv.value("targetCount").toInt() == 1);
     const auto importedArgs = builtCsv.value("args").toStringList();
-    check(importedArgs.value(importedArgs.indexOf("--trunk-scan") + 1) == targetPath);
-    check(!QFile::exists(json_store_path("scan_lists/" + imported.value("uid").toString() + ".csv"))
-          && !QFile::exists(json_store_path("scan_lists/" + imported.value("uid").toString())));
+    // Issue #697: an imported list runs from its own copy, named after the list, in its folder; nothing at the old
+    // per-uid path.
+    const QString importedCopy =
+        scan_list_csv_path(imported.value("uid").toString(), imported.value("name").toString(), 1);
+    check(importedArgs.value(importedArgs.indexOf("--trunk-scan") + 1) == importedCopy && QFile::exists(importedCopy)
+          && importedCopy != targetPath);
+    check(!QFile::exists(json_store_path("scan_lists/" + imported.value("uid").toString() + ".csv")));
     imported["entries"] = QVariantList{entry};
     check(!starter.build(imported).value("ok").toBool());
     imported["entries"] = QVariantList();

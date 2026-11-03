@@ -80,7 +80,10 @@ class ScanListStarter : public QObject {
                         bool recordingUnavailable = false, const QStringList& companionPaths = QStringList(),
                         int listNumber = 1) const;
     QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
-                           bool recordingUnavailable, const QStringList& companionPaths) const;
+                           bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const;
+    /* Issue #697: an imported target CSV copied to the list's own file (scan_list_csv_path()), its companions still
+       resolving, so the decoder names the list after it; @p source itself when no copy can be made. */
+    static QString listCopyOf(const QVariantMap& list, const QString& source, int listNumber);
     /* start()'s prepare: with the list's call recording folder when @p host can record it (@p recording set, the
        folder's session begun). */
     QVariantMap prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording,

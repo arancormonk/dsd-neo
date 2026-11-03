@@ -958,8 +958,9 @@ are not used. Combining a direct key with a key CSV is refused. Source aliases
 remain global: the list's source file wins, with a warning for differing system
 source files.
 
-The starter checks files and writes a private `<AppData>/scan_lists/<uid>.csv`
-using `QSaveFile`, then validates it through the app-control facade before asking
+The starter checks files and writes a private `<AppData>/scan_lists/<uid>/<name>.csv`
+using `QSaveFile` (the list's name, made safe for a file name, so the decoder names the list after it; a list over an
+imported target CSV gets a copy there with its side-file references made absolute), then validates it through the app-control facade before asking
 the host to start. Missing/unreadable files, commas, double quotes,
 CR/LF in paths, duplicate type/frequency pairs and empty enabled lists are refused.
 Relative saved paths are resolved against the working directory before generating
