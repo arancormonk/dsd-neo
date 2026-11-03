@@ -4848,8 +4848,10 @@ dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t sessio
        asks. */
     (void)request;
     trunk_scan_list_switch(opts, state, coord, list, on);
-    p25_sm_tick_guard_leave();
+    /* The timing reads the parked target's P25 machine, which the watchdog changes under the guard: publish it before
+       leaving (trunk_scan_control_publish_timing()). */
     trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
+    p25_sm_tick_guard_leave();
     return DSD_TRUNK_SCAN_LIST_SET_OK;
 }
 

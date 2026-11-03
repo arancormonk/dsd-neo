@@ -284,9 +284,18 @@ test_tg_policy_tune_allowed(const dsd_opts* opts, int call_type_enabled, int enc
     return 1;
 }
 
+/* The scan timing reads the hangtime of the P25 call it follows from the parked target's machine, which the watchdog
+   changes under the P25 SM tick guard: count the reads made without it. */
+static int g_p25_hangtime_reads = 0;
+static int g_p25_hangtime_unguarded_reads = 0;
+
 double
 p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
     (void)state;
+    g_p25_hangtime_reads++;
+    if (g_p25_tick_guard_depth == 0) {
+        g_p25_hangtime_unguarded_reads++;
+    }
     return hangtime;
 }
 
@@ -18565,6 +18574,41 @@ test_lists_long_file_names_keep_their_stem(void) {
     return test_rc;
 }
 
+/* A list switch publishes the scan timing it leaves while it still holds the P25 SM tick guard, as the controls do: the
+ * timing reads the parked target's P25 machine (here the hangtime of the call it follows), which the watchdog changes
+ * under that guard. */
+static int
+test_lists_switch_publishes_timing_under_the_guard(void) {
+    static const char* const names[] = {"security", "hospital"};
+    static const char* const bodies[] = {"s1,p25-trunk,851000000,,250,,\n", "h1,p25-trunk,852000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+    tick_at(&opts, &state, 0.10);
+    test_rc |= expect_scan_timing(&state, "a call followed", DSD_SCAN_STAY_CALL_FOLLOW, -1.0, 250U, 0U);
+    const int reads = g_p25_hangtime_reads;
+    const int unguarded = g_p25_hangtime_unguarded_reads;
+    state.scan_timing.reason = 0xEEU;
+    test_rc |= expect_list_rc("hospital off", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_scan_timing(&state, "hospital off", DSD_SCAN_STAY_CALL_FOLLOW, -1.0, 250U, 0U);
+    if (g_p25_hangtime_reads == reads || g_p25_hangtime_unguarded_reads != unguarded) {
+        DSD_FPRINTF(stderr, "a list switch read the P25 machine for its timing %d times, %d without the guard\n",
+                    g_p25_hangtime_reads - reads, g_p25_hangtime_unguarded_reads - unguarded);
+        test_rc = 1;
+    }
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "a list switch left the P25 guard depth=%d\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
 /* A park that failed beside an alternate whose switch keeps failing to prepare (its keys never allocate): the retry in
  * place must not keep waiting for the rotation, whose every walk finds nothing it can try. b's retune fails and so
  * does the fallback onto a, leaving a unparked and cooling; from then on b's preparation fails at every attempt. a is
@@ -18679,6 +18723,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_departure_waits_for_the_soonest_cooldown);
     rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
+    rc |= run_with_default_tune_hook(test_lists_switch_publishes_timing_under_the_guard);
     rc |= run_with_default_tune_hook(test_failed_park_beside_an_unprepared_alternate_is_retried);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);

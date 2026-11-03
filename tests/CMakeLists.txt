@@ -8794,6 +8794,35 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_RXID_WATCHDOG_RACE
         COMMAND dsd-neo_test_engine_rxid_watchdog_race
     )
+    # Issue #697: a trunk-scan list switch on the decoder thread beside the P25
+    # watchdog's writes under the tick guard; run it under tsan-debug too.
+    add_executable(
+        dsd-neo_test_engine_trunk_scan_list_race
+        engine/test_engine_trunk_scan_list_race.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_trunk_scan_list_race
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan_list_race
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_LIST_RACE
+        COMMAND dsd-neo_test_engine_trunk_scan_list_race
+    )
 endif()
 
 # Compile the queue here to enable private storage-erasure probes without adding
