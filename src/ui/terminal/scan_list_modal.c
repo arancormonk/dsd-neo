@@ -6,19 +6,17 @@
 /*
  * The Scan lists modal (issue #697). See scan_list_modal.h for its contract.
  *
- * What a row shows comes from two places, as the result API asks (commands.h): the retained result of a row's own
- * request says what that request did, and the frame's view (trunk_scan_lists_seq) says what the lists are. The result
- * carries the lists' sequence it left them at. It can come a frame or more before the snapshot that shows its switch,
- * so a row a request switched shows the state it asked for while the view's lists_seq is behind the result's; from
- * then on the snapshot is the truth, whatever else switched the list since. A refusal describes the lists the result
- * saw, or those on screen at Enter when they are later: its note goes once the view's lists_seq moves past them, and a
- * paused refusal goes on a resume the modal saw follow the pause.
+ * What a row shows between a switch and the snapshot that shows it is app-control's row rule
+ * (dsd-neo/app_control/scan_list_rows.h), which the Qt/Android Scan lists sheet shares: the retained result of a row's
+ * own request says what that request did, and the frame's view (trunk_scan_lists_seq) says what the lists are. This
+ * file keeps the wording, the keys and the drawing.
  */
 
 #include "scan_list_modal.h"
 
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/scan_list_rows.h>
 #include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -44,26 +42,6 @@ enum {
     SCAN_LIST_MODAL_RESULTS_BATCH = 16,
 };
 
-/* What a row says beside the list once its request is answered, or why it was never sent. */
-typedef enum {
-    SCAN_LIST_NOTE_NONE = 0,
-    SCAN_LIST_NOTE_NOT_SENT,
-    SCAN_LIST_NOTE_ANSWER, /* the retained result's code, in the row's code */
-} scan_list_note_kind;
-
-typedef struct {
-    uint32_t request;    /* the request this row waits on; 0 = none */
-    uint8_t want;        /* the state that request asked for */
-    uint8_t note;        /* scan_list_note_kind */
-    uint8_t held;        /* 1 = show @c held_want while the view's lists_seq is behind held_seq */
-    uint8_t held_want;   /* the state an answered switch left the list in */
-    int32_t code;        /* the answer's dsd_app_scan_list_set_code, for SCAN_LIST_NOTE_ANSWER */
-    uint32_t held_seq;   /* the switch's result's lists_seq */
-    uint32_t note_seq;   /* the lists the note describes: the later of the result's and submit_seq */
-    uint32_t submit_seq; /* the view's lists_seq at Enter: a dropped request's result can carry older lists */
-    uint8_t seen_paused; /* 1 = a PAUSED note has been shown with the scan paused, so a resume can retire it */
-} ScanListModalRow;
-
 typedef struct {
     int active;
     uint32_t session;            /* the trunk-scan session the modal opened on */
@@ -73,7 +51,7 @@ typedef struct {
     int unicode;                 /* output decision, made once per open */
     WINDOW* win;                 /* NULL until drawn, and after a resize */
     dsd_app_scan_list_view view; /* the last frame's, owned */
-    ScanListModalRow rows[SCAN_LIST_MODAL_ROWS_MAX];
+    dsd_app_scan_list_row rows[SCAN_LIST_MODAL_ROWS_MAX];
 } ScanListModal;
 
 static ScanListModal g_modal;
@@ -109,32 +87,22 @@ scan_list_answer_note(int32_t code) {
 static const char k_longest_note[] = "Scan changed; nothing applied";
 
 static const char*
-scan_list_row_note(const ScanListModalRow* row, char* buf, size_t buf_size) {
+scan_list_row_note(const dsd_app_scan_list_row* row, char* buf, size_t buf_size) {
     if (row->request != 0U) {
         DSD_SNPRINTF(buf, buf_size, "Switching %s%s", row->want ? "on" : "off", ui_text_marker(g_modal.unicode));
         return buf;
     }
     switch (row->note) {
-        case SCAN_LIST_NOTE_NOT_SENT: return "Not sent; try again";
-        case SCAN_LIST_NOTE_ANSWER: return scan_list_answer_note(row->code);
+        case DSD_APP_SCAN_LIST_NOTE_NOT_SENT: return "Not sent; try again";
+        case DSD_APP_SCAN_LIST_NOTE_ANSWER: return scan_list_answer_note(row->code);
         default: return "";
     }
 }
 
 /* Whether list row @p i reads On: what its answered request asked for until the snapshot moves, then the snapshot. */
-/* @p a is a later lists_seq than @p b: the sequence only moves forward, and wraps past UINT32_MAX. */
-static int
-scan_list_seq_after(uint32_t a, uint32_t b) {
-    return a != b && (uint32_t)(a - b) < 0x80000000U;
-}
-
 static int
 scan_list_row_enabled(int i) {
-    const ScanListModalRow* row = &g_modal.rows[i];
-    if (row->held && scan_list_seq_after(row->held_seq, g_modal.view.lists_seq)) {
-        return row->held_want ? 1 : 0;
-    }
-    return g_modal.view.lists[i].enabled ? 1 : 0;
+    return dsd_app_scan_list_row_on(&g_modal.rows[i], &g_modal.view, i);
 }
 
 static int
@@ -270,81 +238,17 @@ scan_list_format_title(char* out, size_t out_size) {
 /* ---- Requests and answers ---- */
 
 static void
-scan_list_modal_answer(const dsd_app_scan_list_result* result) {
-    const int n = scan_list_modal_row_count();
-    for (int r = 0; r < n; r++) {
-        ScanListModalRow* row = &g_modal.rows[r];
-        if (row->request == 0U || row->request != result->request) {
-            continue;
-        }
-        row->request = 0U;
-        row->note = (uint8_t)SCAN_LIST_NOTE_ANSWER;
-        row->code = result->code;
-        /* At least the lists the row was asked on: a request dropped before a drain reached it carries the lists the
-           last drain left, which can be older than the ones on screen at Enter. */
-        row->note_seq = scan_list_seq_after(row->submit_seq, result->lists_seq) ? row->submit_seq : result->lists_seq;
-        row->seen_paused = 0U;
-        if (result->code != DSD_APP_SCAN_LIST_SET_OK) {
-            return;
-        }
-        /* Switched: hold what it asked for until the snapshot reaches the lists it left. All lists on switches every
-           row. */
-        const int first = r < (int)g_modal.view.list_count ? r : 0;
-        const int last = r < (int)g_modal.view.list_count ? r : (int)g_modal.view.list_count - 1;
-        for (int i = first; i <= last; i++) {
-            g_modal.rows[i].held = 1U;
-            g_modal.rows[i].held_seq = result->lists_seq;
-            g_modal.rows[i].held_want = r < (int)g_modal.view.list_count ? row->want : 1U;
-        }
-        return;
-    }
-}
-
-static void
 scan_list_modal_take_results(void) {
     dsd_app_scan_list_result results[SCAN_LIST_MODAL_RESULTS_BATCH];
     for (;;) {
         const int n = dsd_app_scan_list_results_since(g_modal.after, results, SCAN_LIST_MODAL_RESULTS_BATCH);
         for (int i = 0; i < n; i++) {
             g_modal.after = results[i].sequence;
-            scan_list_modal_answer(&results[i]);
+            (void)dsd_app_scan_list_rows_answer(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count,
+                                                &results[i]);
         }
         if (n < SCAN_LIST_MODAL_RESULTS_BATCH) {
             return;
-        }
-    }
-}
-
-/* Whether @p row's note no longer describes the lists: they moved past the ones it described, or a paused refusal
-   saw the scan paused and then resumed. Only a pause the modal has seen counts: the frame an answer arrives in can
-   predate the pause that refused it. */
-static int
-scan_list_note_expired(ScanListModalRow* row, uint32_t seq) {
-    if (scan_list_seq_after(seq, row->note_seq)) {
-        return 1;
-    }
-    if (row->note != (uint8_t)SCAN_LIST_NOTE_ANSWER || row->code != DSD_APP_SCAN_LIST_SET_PAUSED) {
-        return 0;
-    }
-    if (g_modal.view.paused) {
-        row->seen_paused = 1U;
-        return 0;
-    }
-    return row->seen_paused;
-}
-
-/* A held row goes back to the snapshot once the snapshot has the lists its switch left, or later ones. A note goes
-   once it is no longer true (scan_list_note_expired()). */
-static void
-scan_list_modal_expire_rows(void) {
-    const uint32_t seq = g_modal.view.lists_seq;
-    for (int r = 0; r < scan_list_modal_row_count(); r++) {
-        ScanListModalRow* row = &g_modal.rows[r];
-        if (row->held && !scan_list_seq_after(row->held_seq, seq)) {
-            row->held = 0U;
-        }
-        if (row->note != (uint8_t)SCAN_LIST_NOTE_NONE && scan_list_note_expired(row, seq)) {
-            row->note = (uint8_t)SCAN_LIST_NOTE_NONE;
         }
     }
 }
@@ -355,7 +259,7 @@ scan_list_modal_submit(int r) {
     if (r < 0 || r >= scan_list_modal_row_count()) {
         return;
     }
-    ScanListModalRow* row = &g_modal.rows[r];
+    dsd_app_scan_list_row* row = &g_modal.rows[r];
     if (row->request != 0U) {
         return;
     }
@@ -368,15 +272,11 @@ scan_list_modal_submit(int r) {
     p.enabled = (uint8_t)(is_list ? !scan_list_row_enabled(r) : 1);
     if (dsd_app_command_scan_list_set(&p) == DSD_APP_COMMAND_SUBMIT_REJECTED) {
         /* Never queued, so no result will come: say so now. */
-        row->note = (uint8_t)SCAN_LIST_NOTE_NOT_SENT;
-        row->note_seq = g_modal.view.lists_seq;
+        dsd_app_scan_list_row_not_sent(row, g_modal.view.lists_seq);
         ui_statusf("Scan list switch not sent: too many commands waiting; try again");
         return;
     }
-    row->request = p.request;
-    row->want = p.enabled;
-    row->submit_seq = g_modal.view.lists_seq;
-    row->note = (uint8_t)SCAN_LIST_NOTE_NONE;
+    dsd_app_scan_list_row_sent(row, p.request, p.enabled, g_modal.view.lists_seq);
 }
 
 /* ---- Lifecycle ---- */
@@ -430,7 +330,7 @@ scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) {
     }
     g_modal.view = view;
     scan_list_modal_take_results();
-    scan_list_modal_expire_rows();
+    dsd_app_scan_list_rows_expire(g_modal.rows, scan_list_modal_row_count(), &g_modal.view);
 }
 
 /* ---- Keys ---- */

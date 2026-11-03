@@ -40,6 +40,7 @@ target_sources(
         recording_view.c
         scan_avoid_view.c
         scan_list_results.c
+        scan_list_rows.c
         scan_list_view.c
         scan_row_edit.c
         scan_row_view.c

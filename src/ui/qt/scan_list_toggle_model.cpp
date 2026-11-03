@@ -11,6 +11,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/scan_list_rows.h>
 #include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/safe_api.h>
 #include <iterator>
@@ -22,12 +23,6 @@ namespace dsd_qt {
 namespace {
 
 constexpr int kResultsBatch = 16;
-
-/* @p a is a later lists_seq than @p b: the sequence only moves forward, and wraps past UINT32_MAX. */
-bool
-seq_after(uint32_t a, uint32_t b) {
-    return a != b && static_cast<uint32_t>(a - b) < 0x80000000U;
-}
 
 } // namespace
 
@@ -92,14 +87,11 @@ ScanListToggleModel::setBackend(Backend backend) {
    the view. */
 bool
 ScanListToggleModel::rowOn(int i) const {
-    const Row& row = m_rows[i];
+    const dsd_app_scan_list_row& row = m_rows[i];
     if (row.request != 0U) {
-        return row.want;
+        return row.want != 0U;
     }
-    if (row.held && seq_after(row.heldSeq, m_view.lists_seq)) {
-        return row.heldWant;
-    }
-    return m_view.lists[i].enabled != 0U;
+    return dsd_app_scan_list_row_on(&row, &m_view, i) != 0;
 }
 
 int
@@ -121,11 +113,11 @@ ScanListToggleModel::targetsOn() const {
 }
 
 QString
-ScanListToggleModel::noteText(const Row& row) const {
-    if (row.request != 0U || row.note == Note::None) {
+ScanListToggleModel::noteText(const dsd_app_scan_list_row& row) const {
+    if (row.request != 0U || row.note == DSD_APP_SCAN_LIST_NOTE_NONE) {
         return {};
     }
-    if (row.note == Note::NotSent) {
+    if (row.note == DSD_APP_SCAN_LIST_NOTE_NOT_SENT) {
         return tr("Not sent. Try again.");
     }
     switch (row.code) {
@@ -184,7 +176,7 @@ ScanListToggleModel::refresh(const dsd_app_scan_list_view& view) {
     }
     if (newSession) {
         /* A request made of the last session is never this one's: its rows and reasons go with it. */
-        std::fill(std::begin(m_rows), std::end(m_rows), Row{});
+        std::fill(std::begin(m_rows), std::end(m_rows), dsd_app_scan_list_row{});
         m_cursorSet = false;
     }
     m_view = view;
@@ -193,7 +185,7 @@ ScanListToggleModel::refresh(const dsd_app_scan_list_view& view) {
         m_cursorSet = true;
     }
     takeResults();
-    expireNotes();
+    dsd_app_scan_list_rows_expire(m_rows, count(), &m_view);
     if (reshaped) {
         endResetModel();
     }
@@ -213,25 +205,18 @@ ScanListToggleModel::setEnabled(int number, bool on) {
         return false;
     }
     const auto before = shownRows();
-    Row& row = m_rows[i];
     dsd_app_scan_list_set_payload payload;
     DSD_MEMSET(&payload, 0, sizeof payload);
     payload.session = m_view.session;
     payload.request = m_backend.requestNext();
     payload.list = static_cast<int16_t>(number);
     payload.enabled = on ? 1U : 0U;
-    row.submitSeq = m_view.lists_seq;
-    row.held = false;
-    row.seenPaused = false;
     const bool sent = m_backend.submit(payload) != DSD_APP_COMMAND_SUBMIT_REJECTED;
     if (sent) {
-        row.request = payload.request;
-        row.want = on;
-        row.note = Note::None;
+        dsd_app_scan_list_row_sent(&m_rows[i], payload.request, on ? 1 : 0, m_view.lists_seq);
     } else {
         /* Never queued, so no result will come: the row says so until the lists move or it is switched again. */
-        row.note = Note::NotSent;
-        row.noteSeq = row.submitSeq;
+        dsd_app_scan_list_row_not_sent(&m_rows[i], m_view.lists_seq);
     }
     announce(before, count());
     return sent;
@@ -247,64 +232,10 @@ ScanListToggleModel::takeResults() {
         const int n = m_backend.resultsSince(m_after, results, kResultsBatch);
         for (int i = 0; i < n; ++i) {
             m_after = results[i].sequence;
-            answer(results[i]);
+            (void)dsd_app_scan_list_rows_answer(m_rows, count(), count(), &results[i]);
         }
         if (n < kResultsBatch) {
             return;
-        }
-    }
-}
-
-void
-ScanListToggleModel::answer(const dsd_app_scan_list_result& result) {
-    for (int i = 0; i < count(); ++i) {
-        Row& row = m_rows[i];
-        if (row.request == 0U || row.request != result.request) {
-            continue;
-        }
-        row.request = 0U;
-        row.note = Note::Answer;
-        row.code = result.code;
-        /* At least the lists the switch was made on: a request dropped before a drain reached it carries the lists the
-           last drain left, which can be older than the ones on screen at the switch. */
-        row.noteSeq = seq_after(row.submitSeq, result.lists_seq) ? row.submitSeq : result.lists_seq;
-        row.seenPaused = false;
-        if (result.code == DSD_APP_SCAN_LIST_SET_OK) {
-            row.held = true;
-            row.heldSeq = result.lists_seq;
-            row.heldWant = row.want;
-        }
-        return;
-    }
-}
-
-/* Whether @p row's reason no longer describes the lists: they moved past the ones it described, or a paused refusal
-   saw the scan paused and then resumed. Only a pause this model has seen counts: the frame an answer arrives in can
-   predate the pause that refused it. */
-bool
-ScanListToggleModel::noteExpired(Row& row) const {
-    if (seq_after(m_view.lists_seq, row.noteSeq)) {
-        return true;
-    }
-    if (row.note != Note::Answer || row.code != DSD_APP_SCAN_LIST_SET_PAUSED) {
-        return false;
-    }
-    if (paused()) {
-        row.seenPaused = true;
-        return false;
-    }
-    return row.seenPaused;
-}
-
-void
-ScanListToggleModel::expireNotes() {
-    for (int i = 0; i < count(); ++i) {
-        Row& row = m_rows[i];
-        if (row.request == 0U && row.note != Note::None && noteExpired(row)) {
-            row.note = Note::None;
-        }
-        if (row.held && !seq_after(row.heldSeq, m_view.lists_seq)) {
-            row.held = false;
         }
     }
 }

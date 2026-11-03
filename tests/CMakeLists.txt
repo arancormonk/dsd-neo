@@ -1169,6 +1169,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_list_view.h
   CXX
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_rows
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS
+  dsd-neo/app_control/scan_list_rows.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_rows_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS_CXX
+  dsd-neo/app_control/scan_list_rows.h
+  CXX
+)
 # Issue #672: the config file reads and writes a frontend asks for.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_config_files
@@ -3048,6 +3060,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
     )
     target_include_directories(
@@ -3432,6 +3445,21 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_SCAN_LIST_VIEW
     COMMAND dsd-neo_test_app_control_scan_list_view
+)
+
+# Issue #697: the switcher row rule the terminal modal and the Qt/Android sheet share.
+add_executable(
+    dsd-neo_test_app_control_scan_list_rows
+    ui/test_app_control_scan_list_rows.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_list_rows
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_LIST_ROWS
+    COMMAND dsd-neo_test_app_control_scan_list_rows
 )
 
 # Issue #672: the config file reads and writes the terminal menu asks app-control for, on real files.
@@ -4694,6 +4722,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
