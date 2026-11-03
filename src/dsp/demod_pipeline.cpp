@@ -1606,8 +1606,8 @@ tetra_chain_warn_inactive(struct demod_state* d) {
     const int ted = d->ted_sps_override;
     const int sps = rate / DSD_TETRA_SYMBOL_RATE_HZ;
     if (!d->tetra_uplink && ted > 0 && ted != sps && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_TED)) {
-        LOG_WARN("%s: a timing override of %d samples per symbol is set, but %d Hz needs %d; TETRA cannot decode until "
-                 "the override is cleared.\n",
+        LOG_WARN("%s: a timing setting from another mode is in force (%d samples per symbol, where %d Hz needs %d), so "
+                 "TETRA cannot decode.\n",
                  what, ted, rate, sps);
     }
     if (!d->channel_lpf_enable && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_LPF)) {
@@ -1941,8 +1941,9 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
                                              taps, taps_len);
         if (out_len < 0) {
             /* Not reachable: fixed odd taps, pending kept within 0..c by the decimator and a reset, and whole samples.
-               Should it happen, the cascade starts over and the block makes no samples. */
+               Should it happen, the cascade and the live step after it start over and the block makes no samples. */
             halfband_reset_state(d);
+            dsd_live_iq_step_clear(&d->live_iq_step);
             d->lp_len = 0;
             return;
         }

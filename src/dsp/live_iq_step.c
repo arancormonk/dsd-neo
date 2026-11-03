@@ -83,10 +83,13 @@ live_iq_step_ratio_agrees(const dsd_live_iq_step_plan* p) {
     return fabs(ppm) <= DSD_IQ_RESAMPLER_MAX_APPROX_PPM + 1e-6;
 }
 
+/* A plan the planner could have made: hb_out in lowest terms (as dsd_live_iq_step_plan_out_hz() and plan equality
+   read it), and a stepping plan's L/M within the resampler's terms and agreeing with its target. */
 static int
 live_iq_step_plan_ok(const dsd_live_iq_step_plan* p) {
     if (p->passes < 0 || p->passes > DSD_IQ_RESAMPLER_MAX_RATE_SHIFT || p->hb_out_num < 1
-        || p->hb_out_num > (int64_t)INT32_MAX || p->hb_out_shift > DSD_IQ_RESAMPLER_MAX_RATE_SHIFT) {
+        || p->hb_out_num > (int64_t)INT32_MAX || p->hb_out_shift > DSD_IQ_RESAMPLER_MAX_RATE_SHIFT
+        || (p->hb_out_shift > 0U && (p->hb_out_num & 1) == 0)) {
         return 0;
     }
     if (!p->enabled) {

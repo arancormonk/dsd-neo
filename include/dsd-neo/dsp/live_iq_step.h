@@ -98,8 +98,9 @@ int dsd_live_iq_step_plan_out_hz(const dsd_live_iq_step_plan* plan);
  *
  * A plan equal to the active one keeps the active design (nothing is designed). Another stepping plan is designed into
  * the candidate, cleared; a plan that does not step needs no design. An earlier candidate not yet committed is released
- * first. Refused: a plan that does not agree with itself, one whose block could not fit (L above M, or
- * ceil(@p max_block_in x L / M) above @p out_cap), and a design the resampler refuses (its status in design_status).
+ * first. Refused: a plan that does not agree with itself (hb_out not in lowest terms, or an L/M that does not take it to
+ * the target), one whose block could not fit (L above M, or ceil(@p max_block_in x L / M) above @p out_cap), and a
+ * design the resampler refuses (its status in design_status).
  * A refusal leaves no candidate and the active and retained designs untouched.
  *
  * @param max_block_in The most complex inputs a block brings to the step.

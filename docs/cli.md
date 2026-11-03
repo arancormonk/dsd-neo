@@ -642,8 +642,8 @@ Android session whose saved extra arguments carry one refuses to start the same 
   TETRA channel filter nor the matched filter and decodes no TETRA at a rate outside that range. It logs the cause once
   per stream, with what fixes it: a rate outside that range (`TETRA receive chain inactive: TETRA cannot decode at
   48000 Hz; it needs a multiple of 18 kHz from 36 to 144 kHz (a 72 kHz DSP bandwidth).`), a timing (TED)
-  samples-per-symbol override that does not match the DSP rate (`...: a timing override of 8 samples per symbol is set,
-  but 72000 Hz needs 4; TETRA cannot decode until the override is cleared.`), or the channel filter turned off
+  samples-per-symbol setting from another mode that does not match the DSP rate (`...: a timing setting from another
+  mode is in force (8 samples per symbol, where 72000 Hz needs 4), so TETRA cannot decode.`), or the channel filter turned off
   (`...: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); unset DSD_NEO_CHANNEL_LPF or set it to 1.`).
   Tuning tolerance: tune to the carrier's own frequency. These cases were measured on test signals at 72 kHz, the rate
   `-fT` sets; other rates were not measured.

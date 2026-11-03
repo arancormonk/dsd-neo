@@ -622,6 +622,31 @@ test_entering_splits(void) {
     return rc;
 }
 
+/* A switch from P25 to TETRA at the same 72 kHz rate: the P25 profile's channel filter (the WIDE plan, longer than
+ * TETRA's 97 taps) holds samples when the chain turns on, and turning it on starts the channel filter over, so nothing
+ * the longer design held back is carried into the TETRA design. */
+int
+test_entering_from_p25_starts_channel_filter_over(void) {
+    int rc = 0;
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_cqpsk(s, 72000, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 15);
+    const std::vector<float> block = constant_block(1440, 0.01f, 0.0f);
+    (void)run_block(s, block.data(), 1440);
+    rc |= expect_int("P25: chain off", s->tetra_chain, 0);
+    if (s->channel_lpf_pending <= 0 || s->channel_lpf_plan_taps_len <= 97) {
+        rc |= fail("P25: the channel filter holds nothing from a longer design, so the check proves nothing");
+    }
+    configure_tetra(s, 72000);
+    dsd_demod_update_tetra_chain(s);
+    rc |= expect_int("TETRA: chain on", s->tetra_chain, 1);
+    rc |= expect_int("TETRA: channel filter pending", s->channel_lpf_pending, 0);
+    free_demod(s);
+    return rc;
+}
+
 /* Leaving by a CQPSK toggle, then coming back: leaving folds the mixer into the FLL, which takes the P25 parameters,
  * and resets the TETRA histories; the TETRA profile then runs the WIDE plan. Entering again splits again. */
 int
@@ -702,8 +727,8 @@ test_warned_fallbacks(void) {
     rc |= expect_int("override 8: one warning", g_warns.total, 1);
     rc |= expect_int("override 8: names the samples per symbol", g_warns.ted, 1);
     rc |= expect_last_warning("override 8: text",
-                              "TETRA receive chain inactive: a timing override of 8 samples per symbol is set, but "
-                              "72000 Hz needs 4; TETRA cannot decode until the override is cleared.\n");
+                              "TETRA receive chain inactive: a timing setting from another mode is in force (8 "
+                              "samples per symbol, where 72000 Hz needs 4), so TETRA cannot decode.\n");
 
     /* A rate out of the domain, from a cold start: inactive from the first block, warned once. */
     DSD_MEMSET(s, 0, sizeof(*s));
@@ -1930,6 +1955,7 @@ main(void) {
     rc |= test_cold_start_activates();
     rc |= test_agc_alpha_wiring();
     rc |= test_entering_splits();
+    rc |= test_entering_from_p25_starts_channel_filter_over();
     rc |= test_cqpsk_toggle_leaves_and_enters();
     rc |= test_warned_fallbacks();
     rc |= test_inactive_runs_wide_path();

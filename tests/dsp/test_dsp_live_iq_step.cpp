@@ -643,6 +643,10 @@ test_transaction_refusals(void) {
     bad_passes.passes = -1;
     dsd_live_iq_step_plan bad_band = c;
     bad_band.stop_hz = bad_band.protect_hz; /* no transition band */
+    /* The same hb_out, not in lowest terms: no planner makes it, and plan equality and the output rate read it reduced. */
+    dsd_live_iq_step_plan unreduced = c;
+    unreduced.hb_out_num = c.hb_out_num * 2;
+    unreduced.hb_out_shift = c.hb_out_shift + 1U;
 
     struct Refusal {
         const char* name;
@@ -656,6 +660,7 @@ test_transaction_refusals(void) {
         {"L/M disagrees with the rates", &bad, 0, DSD_LIVE_IQ_STEP_ERR_ARGS, DSD_IQ_RESAMPLER_OK},
         {"upsampling", &up, 0, DSD_LIVE_IQ_STEP_ERR_CAPACITY, DSD_IQ_RESAMPLER_OK},
         {"negative passes", &bad_passes, 0, DSD_LIVE_IQ_STEP_ERR_ARGS, DSD_IQ_RESAMPLER_OK},
+        {"hb_out not in lowest terms", &unreduced, 0, DSD_LIVE_IQ_STEP_ERR_ARGS, DSD_IQ_RESAMPLER_OK},
         {"no transition band", &bad_band, 0, DSD_LIVE_IQ_STEP_ERR_DESIGN, DSD_IQ_RESAMPLER_ERR_BAND},
         {"allocation failure", &c, 1, DSD_LIVE_IQ_STEP_ERR_DESIGN, DSD_IQ_RESAMPLER_ERR_ALLOC},
         {"NULL plan", NULL, 0, DSD_LIVE_IQ_STEP_ERR_ARGS, DSD_IQ_RESAMPLER_OK},
