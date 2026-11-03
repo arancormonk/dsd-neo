@@ -4819,7 +4819,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - Reset: `dsd_demod_reset_filter_state()` clears the active design's history and phase with the cascade's, and a
     commit or rollback that changes the design starts it over.
   - Wiring: the radio's live rate chain prepares, commits, rolls back and finishes it inside each programming
-    transaction (IO, "Live rate chain").
+    transaction (IO, "Live rate chain"), and builds the squelches' noise model for the design it leaves running.
   - Tests: `DSP_LIVE_IQ_STEP` (every planned Airspy/SoapySDR grid point; zero-output, one-pair and empty blocks;
     maximum blocks at p = 0, p = 1 and the Airspy passes against the cascade's output through the same design; cuts;
     reset; the transaction and its refusals), `DSP_CQPSK_EVM` (P25p1/P2 through the real cascade and the step at
@@ -4883,14 +4883,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
   classifier's constants: the coherence lag L from the taps' autocorrelation, and the noise's N_eff and coherence bias
   beta from the noise autocorrelation through both stages, the model `tools/squelch_model.py` fixed the thresholds with
-  (`docs/testing.md` "Auto squelch classifier"). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor
+  (`docs/testing.md` "Auto squelch classifier"). Behind the live I/Q rate step the noise is periodic, and
+  `dsd_squelch_floor_plan_design_periodic()` takes the same constants from its covariance at every output phase: N_eff,
+  beta and rho at every 40 ms window start phase (partial periods included), averaged over the phases (the step model
+  below supplies the covariance). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor
   is learned from NOISE windows only (5 of the last 8), tracked down fast and up at 1 dB/s, and relearned on a sustained
   shift or a collapse, so carrier power never becomes floor and a channel with no noise windows stays learning, its
   carrier windows open. The gate opens on a 20 ms sub-window at floor plus margin and closes 3 dB lower or on a NOISE
   window; each sample's flag (`DSD_SQUELCH_FLAG_CLOSED`) is the gate before that sample's decision, so flags, floor and
   state are bit-identical however the samples are cut into blocks. The per-channel cache keeps floors as a noise density
   (floor over the plan's noise gain) keyed by the values that set the noise (frequency, tuner gain, tuner AGC, bias tee,
-  device, channel rate, capture chain), stale after 30 minutes of sample time, which every block counts in every mode
+  device, channel rate, capture chain, the live rate step's L/M), stale after 30 minutes of sample time, which every block counts in every mode
   (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds a floor provisionally.
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
   its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. A
@@ -4904,7 +4907,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     keyed on the symbol profile, so a channel LPF that is off and leaves the WIDE label still counts).
 
   It runs with a plan for the channel filter in force, the half-band stage
-  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`complex_rate`), and nothing
+  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`complex_rate`), or behind a running live
+  rate step the step model's plan (`dsd_demod_squelch_plan_key::step` keys it), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
@@ -4997,7 +5001,33 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting
   (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests: `DSP_NFM_NOISE_SQUELCH`, `DSP_NOISE_SQUELCH_DEMOD`,
-  `IO_RTL_SQUELCH_PLUMBING`, the `DECODE_IQ_*_SQL_NOISE_*` cases.
+  `IO_RTL_SQUELCH_PLUMBING`, the `DECODE_IQ_*_SQL_NOISE_*` cases. Behind the live I/Q rate step
+  `dsd_noise_squelch_plan_design_stepped()` takes the same band and calibrates on the same fixed-seed noise made at the
+  step's input rate by the step model's spectral factor and run through the step itself (no cascade FIR).
+- The squelches through the live I/Q rate step (issue #806) are `src/dsp/squelch_step_model.c`
+  (`<dsd-neo/dsp/squelch_step_model.h>`). Both squelch models are calibrated on the noise that reaches the channel
+  filter; without a step their own designs model it (white noise through the cascade at twice the channel rate), which a
+  step between the cascade and the channel filter breaks. `dsd_squelch_step_model_build()` makes, for one step plan:
+  R_hb, the cascade's output autocorrelation at hb_out, exactly from the half-band recursion (input variance
+  2^(passes - 1), the scale the designs without a step use); its zero-phase spectral factor (sqrt of R_hb's 4096-point
+  spectrum, Kaiser-windowed, at most 255 taps, 1e-6 of its energy left out); a step design of its own from the plan's key
+  (the live step's taps bit for bit, never the running one); and the factor's responses through that step from every
+  input phase (M of them, spaced coprime to M, each checked to lie in its window). It runs in the rate chain's
+  transaction (`dsd_demod_squelch_step_model_sync()`, `demod_state::squelch_step_model`, released by
+  `rtl_demod_cleanup()`) and does nothing for the plan it holds. The plans then come from it on the demod thread when a
+  squelch plan key changes, allocating nothing: `dsd_squelch_step_model_floor_plan()` runs the responses through the
+  channel taps into the exact covariance of every output phase (the step repeats every L outputs) for
+  `dsd_squelch_floor_plan_design_periodic()`; `dsd_squelch_step_model_noise_plan()` is the noise squelch's 2 s
+  calibration through the factor and the step. A stepping chain whose model is not built has no valid plan (the gate
+  open). Measured (`dsd-neo_bench_dsp` `squelch_*` cases, run only when named): the build 1.9 ms at L = 576 (2.5 MS/s to
+  72 kHz); the floor plan 15 ms at 72 kHz NFM 25k (8 ms at 48 kHz 12.5k; 0.2 ms without a step), the noise plan 50 ms
+  (today's 60 ms). The step's per-phase noise power varies by about 1e-6, so its windows' statistics hardly depend on
+  where they start. Tests: `DSP_SQUELCH_STEP_MODEL` (R_hb and the factor against the real cascade at 2.5 and 3 MS/s,
+  the covariance against the real step within 2 % of R[0], no-step plans bit for bit, the plan key and the model's
+  cache), `DSP_SQUELCH_STEP_MODEL_MATRIX` (every DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s, widest NFM
+  and no channel filter, three window phases: the floor and noise squelch bounds of `DSP_SQUELCH_FLOOR` and
+  `DSP_NFM_NOISE_SQUELCH`, the RTL-SDR chain held to the same), `DSP_SQUELCH_AUTO_DEMOD` (AUTO and NOISE through
+  `full_demod()` at 2.5 and 3 MS/s to 48 kHz) and `IO_RTL_SQUELCH_PLUMBING` (the context's step identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
@@ -5885,7 +5915,11 @@ Key public headers:
     and the rollback above puts the device back. The rollback writes the restored plan's programmed rate and plans the
     restore's own read-back: equal to the plan the transaction began with, its design goes back in
     (`dsd_live_iq_step_rollback()`, nothing designed); a third rate is designed; a third rate that cannot run turns the
-    step off and stops the stream. The finalize ends every transaction (`dsd_live_iq_step_finish()`) and publishes
+    step off and stops the stream. Each commit or rollback that leaves the step running builds the dynamic squelches'
+    noise model for it there too (`rate_chain_sync_squelch_model()`, `dsd_demod_squelch_step_model_sync()`; DSP,
+    "squelches through the live I/Q rate step"): kept for the same plan, so a retune at the same rate builds nothing,
+    and a model that cannot be built leaves the squelch open behind the step (a warning says so). The squelch context
+    (`demod_take_squelch_setting()`) adds the running step's L/M (`dsd_squelch_floor_key::step_l`, `step_m`). The finalize ends every transaction (`dsd_live_iq_step_finish()`) and publishes
     the chain (`rtl_stream_publish_demod_profile_snapshot()`) after the TED refresh and the output-resampler redesign,
     which then work from the exact rate, so no consumer gets a truncated rate (an Airspy R2's 24 kHz FSK or monitor
     output resamples 2/1, not 24000/19531). An I/Q replay plans its chain itself and runs no step. The capture sidecar's

@@ -38,6 +38,8 @@
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -1458,6 +1460,128 @@ bench_one_cqpsk_airspy_full_demod(const BenchOptions& opts, const char* name, in
         &meta);
 }
 
+/* A case that runs only when named with --case (one call takes milliseconds); listed as any other. */
+template <typename Fn>
+static int
+run_named_case(const BenchOptions& opts, const char* name, const char* item_unit, double work_items, Fn fn,
+               const BenchMeta* meta = NULL) {
+    if (!opts.list_cases && (!opts.case_filter || std::strcmp(opts.case_filter, name) != 0)) {
+        return 0;
+    }
+    return run_case(opts, name, item_unit, work_items, fn, meta);
+}
+
+/* The 2.5 MS/s plan to @p target_hz (five passes) or the 3 MS/s one (@p mini): the step model's key. */
+static dsd_live_iq_step_plan
+bench_airspy_step_plan(int target_hz, int mini) {
+    dsd_live_iq_step_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    plan.enabled = 1;
+    plan.passes = 5;
+    plan.hb_out_num = mini ? 93750 : 78125;
+    int g = target_hz;
+    for (int b = (int)plan.hb_out_num; b != 0;) {
+        const int t = g % b;
+        g = b;
+        b = t;
+    }
+    plan.L = target_hz / g;
+    plan.M = (int)plan.hb_out_num / g;
+    plan.target_hz = target_hz;
+    plan.protect_hz = target_hz * 9 / 20;
+    plan.stop_hz = target_hz - plan.protect_hz;
+    return plan;
+}
+
+static int
+bench_squelch_stages(dsd_noise_squelch_stage* st) {
+    for (int i = 0; i < 5; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    return 5;
+}
+
+/* The squelch step model's build, what the rate chain's transaction runs when the step's plan changes (issue #806):
+   L = 576 at 72 kHz is the largest an Airspy steps to. */
+static int
+bench_one_squelch_model_build(const BenchOptions& opts, const char* name, int target_hz, int mini) {
+    const dsd_live_iq_step_plan plan = bench_airspy_step_plan(target_hz, mini);
+    dsd_noise_squelch_stage st[5];
+    const int count = bench_squelch_stages(st);
+    dsd_squelch_step_model m;
+    dsd_squelch_step_model_init(&m);
+    BenchMeta meta;
+    meta.rate_hz = target_hz;
+    meta.profile = "squelch_model";
+    meta.tap_count = plan.L;
+    const int ran = run_named_case(
+        opts, name, "build", 1.0,
+        [&]() -> float {
+            dsd_squelch_step_model_release(&m);
+            return dsd_squelch_step_model_build(&m, &plan, st, count) == 0 ? (float)m.factor_len : -1.0f;
+        },
+        &meta);
+    dsd_squelch_step_model_release(&m);
+    return ran;
+}
+
+/* The floor or noise plan the demod thread designs at a squelch plan key change, behind the step (@p step) or today's
+   behind the five-pass cascade, for NFM @p width_hz at @p target_hz. */
+static int
+bench_one_squelch_plan(const BenchOptions& opts, const char* name, int target_hz, int width_hz, int noise, int step) {
+    std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+    const int taps_len = dsd_channel_lpf_design_analog(target_hz, width_hz, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+    const dsd_live_iq_step_plan plan = bench_airspy_step_plan(target_hz, 0);
+    dsd_noise_squelch_stage st[5];
+    const int count = bench_squelch_stages(st);
+    dsd_squelch_step_model m;
+    dsd_squelch_step_model_init(&m);
+    if (taps_len <= 0 || (step && dsd_squelch_step_model_build(&m, &plan, st, count) != 0)) {
+        DSD_FPRINTF(stderr, "%s: setup failed\n", name);
+        return 0;
+    }
+    static dsd_noise_squelch_plan np;
+    dsd_squelch_floor_plan fp;
+    BenchMeta meta;
+    meta.rate_hz = target_hz;
+    meta.profile = noise ? "noise_plan" : "floor_plan";
+    meta.tap_count = taps_len;
+    meta.variant = step ? "step" : "cascade";
+    const int ran = run_named_case(
+        opts, name, "plan", 1.0,
+        [&]() -> float {
+            if (noise) {
+                (void)(step ? dsd_squelch_step_model_noise_plan(&m, &np, taps.data(), taps_len, target_hz)
+                            : dsd_noise_squelch_plan_design(&np, taps.data(), taps_len, st, count, target_hz));
+                return (float)np.p_ref_sum;
+            }
+            (void)(step ? dsd_squelch_step_model_floor_plan(&m, &fp, taps.data(), taps_len, target_hz)
+                        : dsd_squelch_floor_plan_design(&fp, taps.data(), taps_len, hb_q15_taps, HB_TAPS, target_hz));
+            return (float)fp.neff;
+        },
+        &meta);
+    dsd_squelch_step_model_release(&m);
+    return ran;
+}
+
+static int
+bench_squelch_plans(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_78k125_72k", 72000, 0);
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_78k125_48k", 48000, 0);
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_93k75_48k", 48000, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_72k_nfm25k", 72000, 25000, 0, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_72k_nfm25k", 72000, 25000, 0, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_72k_nfm25k", 72000, 25000, 1, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_72k_nfm25k", 72000, 25000, 1, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_48k_nfm12k5", 48000, 12500, 0, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_48k_nfm12k5", 48000, 12500, 0, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_48k_nfm12k5", 48000, 12500, 1, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_48k_nfm12k5", 48000, 12500, 1, 0);
+    return ran;
+}
+
 static int
 bench_live_step(const BenchOptions& opts) {
     int ran = 0;
@@ -1784,6 +1908,7 @@ main(int argc, char** argv) {
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
     ran += bench_live_step(opts);
+    ran += bench_squelch_plans(opts);
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);

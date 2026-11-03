@@ -310,6 +310,17 @@ void dsd_demod_reset_filter_state(struct demod_state* d);
 int dsd_demod_live_step_prepare(struct demod_state* d, const dsd_live_iq_step_plan* plan);
 
 /**
+ * Build the dynamic squelches' noise model for the live I/Q rate step's active plan (issue #806;
+ * dsd_squelch_step_model_build() on demod_state::squelch_step_model, behind the half-band cascade the plan's passes
+ * run). Call it after every commit or rollback that leaves the step running, on the controller thread while the demod
+ * thread is paused: the auto and noise squelch plans of a stepping chain come from it, and stay not valid (the gate
+ * open) without it. A model already built for the plan is kept; with the step off nothing changes.
+ *
+ * @return 0, or -1 when the model could not be built (the squelch gate then stays open behind the step).
+ */
+int dsd_demod_squelch_step_model_sync(struct demod_state* d);
+
+/**
  * Channel edge (Hz) that the channel low-pass protects for a profile.
  *
  * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is

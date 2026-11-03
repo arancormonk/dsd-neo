@@ -27,6 +27,7 @@
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/platform/threading.h>
@@ -108,8 +109,8 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 /* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan, the
-   half-band stage ahead of it (0 none, else its tap count) and how many stages the cascade runs. set is 0 until a plan
-   was designed. */
+   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs, and the live I/Q rate
+   step between them (issue #806; zeroed with no step). set is 0 until a plan was designed. */
 typedef struct {
     int rate_hz;
     int rate_out;
@@ -119,6 +120,7 @@ typedef struct {
     int hb_taps;
     int passes; /* half-band stages ahead of the channel filter */
     int set;
+    dsd_live_iq_step_plan step;
 } dsd_demod_squelch_plan_key;
 
 struct demod_state {
@@ -335,6 +337,10 @@ struct demod_state {
     dsd_squelch_floor_key noise_context;
     dsd_demod_squelch_plan_key noise_plan;
     dsd_noise_squelch noise_squelch;
+    /* The noise both squelches see through the live I/Q rate step (issue #806): built for the step's active plan in
+       the rate chain's transaction (dsd_demod_squelch_step_model_sync()), and the source of both plans while the
+       step runs. Released by rtl_demod_cleanup(). */
+    dsd_squelch_step_model squelch_step_model;
     /* The flags of the post-decimator's and the resampler's last inputs: each output takes the flag of the input at or
        just before its filter's centre, half the filter's length back. */
     uint8_t post_flag_hist[32];

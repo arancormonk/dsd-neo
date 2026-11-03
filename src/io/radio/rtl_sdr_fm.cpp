@@ -1023,9 +1023,22 @@ rate_chain_prepare_step(const dsd_live_iq_step_plan* key) {
     return dsd_demod_live_step_prepare(&demod, key);
 }
 
+/* The dynamic squelches' noise model for the step that now runs (issue #806), built here in the transaction so no plan
+ * design allocates while samples flow; a model for the same plan is kept. Without one the squelch stays open behind
+ * the step, which the log says. */
+static void
+rate_chain_sync_squelch_model(void) {
+    if (dsd_demod_squelch_step_model_sync(&demod) != 0) {
+        LOG_WARN("The auto and noise squelch cannot be calibrated for the %u Hz to %u Hz conversion; they stay "
+                 "open.\n",
+                 (unsigned)g_live_rate_plan.nominal_hz, (unsigned)g_live_rate_plan.target_hz);
+    }
+}
+
 /* Make the I/Q rate step run the plan the chain runs: the design the transaction began with when the plan is that one
- * again (a rollback), else the plan's own, designed now unless it is the running one. Nothing changes for a chain with
- * no plan. Returns 0, or the step's refusal with the running design kept (g_rate_chain_refusal says why). */
+ * again (a rollback), else the plan's own, designed now unless it is the running one, and the squelches' noise model
+ * with it. Nothing changes for a chain with no plan. Returns 0, or the step's refusal with the running design kept
+ * (g_rate_chain_refusal says why). */
 static int
 rate_chain_sync_step(void) {
     if (!rate_plan_is_set(&g_live_rate_plan)) {
@@ -1035,6 +1048,7 @@ rate_chain_sync_step(void) {
     dsd_live_iq_step* step = &demod.live_iq_step;
     if (step->retained_set && dsd_live_iq_step_plan_equal(&design, &step->retained_plan)) {
         dsd_live_iq_step_rollback(step);
+        rate_chain_sync_squelch_model();
         return 0;
     }
     const int rc = rate_chain_prepare_step(&design);
@@ -1046,7 +1060,11 @@ rate_chain_sync_step(void) {
                      (unsigned)g_live_rate_plan.nominal_hz, (unsigned)g_live_rate_plan.target_hz);
         return rc;
     }
-    return dsd_live_iq_step_commit(step);
+    const int committed = dsd_live_iq_step_commit(step);
+    if (committed == DSD_LIVE_IQ_STEP_OK) {
+        rate_chain_sync_squelch_model();
+    }
+    return committed;
 }
 
 /* The legacy capture sidecar's demod rate: the capture rate over the base and post decimation, truncated, as the
@@ -5216,6 +5234,11 @@ demod_take_squelch_setting(struct demod_state* d) {
     key.device = g_squelch_device_hash.load(std::memory_order_relaxed);
     key.rate_hz = d->complex_rate > 0 ? d->complex_rate : 0;
     key.chain = (stream_is_replay_active() ? 1 : 0) | (d->downsample_passes << 1) | (post << 8);
+    /* The live I/Q rate step shapes the noise too (issue #806): with the passes and the rate its L/M names the chain. */
+    if (d->live_iq_step.enabled) {
+        key.step_l = d->live_iq_step.plan.L;
+        key.step_m = d->live_iq_step.plan.M;
+    }
     d->squelch_context = key;
 }
 
@@ -18029,6 +18052,34 @@ squelch_test_ring_round_trip(size_t at, int n, int with_flags, int replay_read) 
     return 1;
 }
 
+/* The live I/Q rate step names the squelch context's chain too (issue #806): its L/M while it runs, nothing once it is
+   off. Only its running flag and plan are read here; the setting goes back to the level squelch. Returns 0 when that
+   held, else 15. */
+static int
+squelch_test_step_context_check(void) {
+    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    rtl_stream_set_channel_squelch_setting(&auto6);
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key unstepped = demod.squelch_context;
+    demod.live_iq_step.enabled = 1;
+    demod.live_iq_step.plan.L = 384;
+    demod.live_iq_step.plan.M = 625;
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key stepped = demod.squelch_context;
+    demod.live_iq_step.enabled = 0;
+    DSD_MEMSET(&demod.live_iq_step.plan, 0, sizeof(demod.live_iq_step.plan));
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key after = demod.squelch_context;
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    const int named = unstepped.step_l == 0 && unstepped.step_m == 0 && stepped.step_l == 384 && stepped.step_m == 625;
+    return (named && !dsd_squelch_floor_key_equal(&stepped, &unstepped)
+            && dsd_squelch_floor_key_equal(&after, &unstepped))
+               ? 0
+               : 15;
+}
+
 /* The setting reaches the demod: AUTO turns the level off, the margin is clamped, a level comes back whole. Returns the
    first failed check's code, 0 when all held. */
 static int
@@ -18213,6 +18264,9 @@ rtl_stream_test_squelch_plumbing(void) {
     const int saved_resamp = demod.resamp_enabled;
 
     int failed = squelch_test_setting_checks();
+    if (!failed) {
+        failed = squelch_test_step_context_check();
+    }
     if (!failed) {
         failed = squelch_test_noise_setting_checks();
     }

@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
@@ -2021,6 +2022,9 @@ squelch_plan_key_of(const struct demod_state* d) {
         k.profile = d->channel_lpf_plan_profile;
         k.width_hz = d->channel_lpf_plan_width_hz;
     }
+    if (d->live_iq_step.enabled) {
+        k.step = d->live_iq_step.plan;
+    }
     k.set = 1;
     return k;
 }
@@ -2029,7 +2033,39 @@ static int
 squelch_plan_key_same(const dsd_demod_squelch_plan_key* a, const dsd_demod_squelch_plan_key* b) {
     return a->set && b->set && a->rate_hz == b->rate_hz && a->taps_len == b->taps_len && a->hb_taps == b->hb_taps
            && a->passes == b->passes && a->rate_out == b->rate_out && a->profile == b->profile
-           && a->width_hz == b->width_hz;
+           && a->width_hz == b->width_hz && dsd_live_iq_step_plan_equal(&a->step, &b->step);
+}
+
+/* The half-band cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones
+   after. Returns the stage count, at most DSD_NOISE_SQUELCH_MAX_STAGES. */
+static int
+squelch_cascade_stages(int passes, dsd_noise_squelch_stage* stages) {
+    const int count = passes < DSD_NOISE_SQUELCH_MAX_STAGES ? (passes > 0 ? passes : 0) : DSD_NOISE_SQUELCH_MAX_STAGES;
+    for (int i = 0; i < count; i++) {
+        stages[i].taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
+        stages[i].len = (i == 0) ? 31 : HB_TAPS;
+    }
+    return count;
+}
+
+/* The step model for a key's step, or NULL when it is not the one built (not reachable: the rate chain builds it at
+   every commit, dsd_demod_squelch_step_model_sync()); the plans are then not valid and the gate stays open. */
+static dsd_squelch_step_model*
+squelch_step_model_for(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    return dsd_squelch_step_model_matches(&d->squelch_step_model, &k->step) ? &d->squelch_step_model : NULL;
+}
+
+extern "C" int
+dsd_demod_squelch_step_model_sync(struct demod_state* d) {
+    if (!d) {
+        return -1;
+    }
+    if (!d->live_iq_step.enabled) {
+        return 0;
+    }
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = squelch_cascade_stages(d->live_iq_step.plan.passes, stages);
+    return dsd_squelch_step_model_build(&d->squelch_step_model, &d->live_iq_step.plan, stages, count);
 }
 
 static const float*
@@ -2044,9 +2080,18 @@ squelch_floor_ensure_plan(struct demod_state* d) {
         return;
     }
     dsd_squelch_floor_plan plan;
-    /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. */
-    (void)dsd_squelch_floor_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len,
-                                        squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
+    const float* taps = k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
+    /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. Behind the live rate
+       step the plan comes from the noise through the step itself (issue #806). */
+    if (k.step.enabled) {
+        dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
+        DSD_MEMSET(&plan, 0, sizeof plan);
+        if (model) {
+            (void)dsd_squelch_step_model_floor_plan(model, &plan, taps, k.taps_len, k.rate_hz);
+        }
+    } else {
+        (void)dsd_squelch_floor_plan_design(&plan, taps, k.taps_len, squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
+    }
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
     d->squelch_plan = k;
 }
@@ -2057,17 +2102,21 @@ squelch_noise_ensure_plan(struct demod_state* d) {
     if (squelch_plan_key_same(&d->noise_plan, &k)) {
         return;
     }
-    /* The cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones after. */
-    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
-    const int count = k.passes < DSD_NOISE_SQUELCH_MAX_STAGES ? k.passes : DSD_NOISE_SQUELCH_MAX_STAGES;
-    for (int i = 0; i < count; i++) {
-        stages[i].taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
-        stages[i].len = (i == 0) ? 31 : HB_TAPS;
-    }
     dsd_noise_squelch_plan plan;
-    /* A channel with no band above voice has no valid plan: the tracker runs the setting instead. */
-    (void)dsd_noise_squelch_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len, stages,
-                                        count, k.rate_hz);
+    const float* taps = k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
+    /* A channel with no band above voice has no valid plan: the tracker runs the setting instead. Behind the live
+       rate step the calibration noise runs through the step itself (issue #806). */
+    if (k.step.enabled) {
+        dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
+        DSD_MEMSET(&plan, 0, sizeof plan);
+        if (model) {
+            (void)dsd_squelch_step_model_noise_plan(model, &plan, taps, k.taps_len, k.rate_hz);
+        }
+    } else {
+        dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+        const int count = squelch_cascade_stages(k.passes, stages);
+        (void)dsd_noise_squelch_plan_design(&plan, taps, k.taps_len, stages, count, k.rate_hz);
+    }
     dsd_noise_squelch_set_plan(&d->noise_squelch, &plan);
     d->noise_plan = k;
 }

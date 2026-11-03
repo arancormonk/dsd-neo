@@ -839,7 +839,7 @@ test_cache(void) {
     assert(dsd_squelch_floor_cache_find(&c, &k, &d) == 2 && near_rel(d, 7e-3, 1e-15));
     /* Everything but the frequency must match, even for a neighbour. */
     const dsd_squelch_floor_key base = key_at(162475000);
-    for (int field = 0; field < 6; field++) {
+    for (int field = 0; field < 8; field++) {
         k = base;
         switch (field) {
             case 0: k.gain = 300; break;
@@ -847,7 +847,10 @@ test_cache(void) {
             case 2: k.bias = 0; break;
             case 3: k.device = 0x1234U; break;
             case 4: k.rate_hz = 24000; break;
-            default: k.chain = 2; break;
+            case 5: k.chain = 2; break;
+            /* The live I/Q rate step's L/M (issue #806). */
+            case 6: k.step_l = 384; break;
+            default: k.step_m = 625; break;
         }
         assert(dsd_squelch_floor_cache_find(&c, &k, &d) == 0 && !dsd_squelch_floor_key_equal(&k, &base));
     }

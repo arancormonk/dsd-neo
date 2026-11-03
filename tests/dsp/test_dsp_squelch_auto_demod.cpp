@@ -16,8 +16,11 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/live_iq_step.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
@@ -119,7 +122,8 @@ new_monitor(int am, int rate_out, int post_downsample, int width_hz) {
     return s;
 }
 
-/* Frees a demod from new_monitor() with what full_demod() allocated for it (the post-decimator's taps and history). */
+/* Frees a demod from new_monitor() with what full_demod() allocated for it (the post-decimator's taps and history) and
+   a live rate step a test installed with its squelch model. */
 void
 free_monitor(demod_state* s) {
     if (!s) {
@@ -127,6 +131,8 @@ free_monitor(demod_state* s) {
     }
     dsd_neo_aligned_free(s->post_polydecim_taps);
     dsd_neo_aligned_free(s->post_polydecim_hist);
+    dsd_live_iq_step_disable(&s->live_iq_step);
+    dsd_squelch_step_model_release(&s->squelch_step_model);
     dsd_neo_aligned_free(s);
 }
 
@@ -993,6 +999,122 @@ gate_closes_within_the_delay_bound(void) {
     return rc;
 }
 
+/* At an Airspy's rates the live I/Q rate step sits between the cascade and the channel filter (issue #806): the
+   tracker, and under NOISE the noise squelch, take their plans from the step's noise model, keep the gate shut on
+   noise, open it on a carrier and close it after the carrier drops. 2.5 MS/s (78,125 Hz after five passes, L/M
+   384/625) and 3 MS/s (93,750 Hz, 64/125) to 48 kHz, NFM 12.5 kHz. */
+int
+airspy_rates_run_the_step_model(void) {
+    const struct {
+        int device;
+        int hb_out;
+        int L;
+        int M;
+    } chains[] = {{2500000, 78125, 384, 625}, {3000000, 93750, 64, 125}};
+
+    const int rate = 48000;
+    int rc = 0;
+    for (const auto& c : chains) {
+        for (int mode = DSD_SQUELCH_MODE_AUTO; mode <= DSD_SQUELCH_MODE_NOISE; mode++) {
+            demod_state* s = new_monitor(0, rate, 1, 12500);
+            if (!s) {
+                return fail("alloc");
+            }
+            s->downsample_passes = 5;
+            s->squelch_mode = mode;
+            dsd_live_iq_step_plan plan;
+            DSD_MEMSET(&plan, 0, sizeof plan);
+            plan.enabled = 1;
+            plan.passes = 5;
+            plan.hb_out_num = c.hb_out;
+            plan.L = c.L;
+            plan.M = c.M;
+            plan.target_hz = rate;
+            plan.protect_hz = 21600;
+            plan.stop_hz = rate - 21600;
+            int step_rc = dsd_demod_live_step_prepare(s, &plan);
+            step_rc = step_rc == DSD_LIVE_IQ_STEP_OK ? dsd_live_iq_step_commit(&s->live_iq_step) : step_rc;
+            dsd_live_iq_step_finish(&s->live_iq_step);
+            if (step_rc != DSD_LIVE_IQ_STEP_OK || dsd_demod_squelch_step_model_sync(s) != 0) {
+                free_monitor(s);
+                return fail("the step or its squelch model did not install");
+            }
+            /* Noise at the device rate (variance 2^(passes - 1) x 1e-3: 1e-3 of the model's unit), and an FM carrier
+               20 dB over the channel's noise from 1.5 s to 2.5 s. */
+            const double var = 16.0e-3;
+            Rng rng{0xA125ULL + (uint64_t)c.device + (uint64_t)mode};
+            std::vector<uint8_t> flags;
+            std::vector<float> block((size_t)MAXIMUM_BUF_LENGTH);
+            const int pairs_per_block = 65536;
+            const long total = (long)(3.5 * c.device);
+            double mod = 0.0;
+            double amp = 0.0;
+            for (long at = 0; at < total; at += pairs_per_block) {
+                const int n = total - at < pairs_per_block ? (int)(total - at) : pairs_per_block;
+                for (int k = 0; k < n; k++) {
+                    const double t = (double)(at + k) / (double)c.device;
+                    double re = sqrt(var / 2.0) * rng.gauss();
+                    double im = sqrt(var / 2.0) * rng.gauss();
+                    if (t >= 1.5 && t < 2.5) {
+                        mod += 2.0 * M_PI * 1000.0 / (double)c.device;
+                        re += amp * cos(2.5 * sin(mod));
+                        im += amp * sin(2.5 * sin(mod));
+                    }
+                    block[(size_t)k * 2U] = (float)re;
+                    block[(size_t)k * 2U + 1U] = (float)im;
+                }
+                Block b = run_block(s, block.data(), n);
+                flags.insert(flags.end(), b.flags.begin(), b.flags.end());
+                if (amp == 0.0 && s->squelch_step_model.ready) {
+                    dsd_squelch_floor_plan fp;
+                    (void)dsd_squelch_step_model_floor_plan(&s->squelch_step_model, &fp, s->channel_lpf_plan_taps,
+                                                            s->channel_lpf_plan_taps_len, rate);
+                    amp = sqrt(100.0 * (var / 16.0) * fp.noise_gain);
+                }
+            }
+            if (mode == DSD_SQUELCH_MODE_AUTO) {
+                dsd_squelch_floor_plan want;
+                (void)dsd_squelch_step_model_floor_plan(&s->squelch_step_model, &want, s->channel_lpf_plan_taps,
+                                                        s->channel_lpf_plan_taps_len, rate);
+                if (!want.valid || !dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)) {
+                    rc |= fail("the tracker's plan behind the step is not the step model's");
+                }
+            } else {
+                dsd_noise_squelch_plan want;
+                (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, &want, s->channel_lpf_plan_taps,
+                                                        s->channel_lpf_plan_taps_len, rate);
+                if (!want.valid || !dsd_noise_squelch_plan_equal(&want, &s->noise_squelch.plan)
+                    || !s->squelch_noise_ran) {
+                    rc |= fail("the noise squelch's plan behind the step is not the step model's");
+                }
+            }
+            /* The chain delays the carrier by a few ms (cascade, step and channel filter): the noise spans are checked
+               from 0.5 s (a floor learned) and from the drop plus the close delay and 10 ms. */
+            long noise_open = 0;
+            long carrier_open = 0;
+            const size_t carrier_from = (size_t)(1.6 * rate);
+            const size_t carrier_to = (size_t)(2.5 * rate);
+            const size_t tail_from = (size_t)(2.5 * rate) + (size_t)((DSD_SQUELCH_CLOSE_DELAY_MS + 10) * rate / 1000);
+            for (size_t k = (size_t)(0.5 * rate); k < flags.size(); k++) {
+                const int open = (flags[k] & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+                if (k < (size_t)(1.5 * rate) || k >= tail_from) {
+                    noise_open += open;
+                } else if (k >= carrier_from && k < carrier_to) {
+                    carrier_open += open;
+                }
+            }
+            printf("DSP_SQUELCH_AUTO_DEMOD: %d Hz stepped to %d Hz, %s: %ld noise samples open, carrier %.1f %% open\n",
+                   c.device, rate, mode == DSD_SQUELCH_MODE_AUTO ? "AUTO" : "NOISE", noise_open,
+                   100.0 * (double)carrier_open / (double)(carrier_to - carrier_from));
+            if (flags.size() < tail_from + (size_t)rate / 4U || noise_open != 0
+                || carrier_open < (long)((carrier_to - carrier_from) * 95U / 100U)) {
+                rc |= fail("behind the step the gate opened on noise or missed the carrier");
+            }
+            free_monitor(s);
+        }
+    }
+    return rc;
+}
 } // namespace
 
 int
@@ -1012,6 +1134,7 @@ main(void) {
     rc |= fsk9600_path_runs_the_tracker();
     rc |= encoder_monitor_runs_the_tracker();
     rc |= gate_closes_within_the_delay_bound();
+    rc |= airspy_rates_run_the_step_model();
     if (rc == 0) {
         printf("DSP_SQUELCH_AUTO_DEMOD: OK\n");
     }

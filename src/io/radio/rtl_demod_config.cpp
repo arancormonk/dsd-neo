@@ -40,6 +40,7 @@
 #include "dsd-neo/dsp/costas.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/dsp/live_iq_step.h"
+#include "dsd-neo/dsp/squelch_step_model.h"
 #include "dsd-neo/platform/threading.h"
 #include "rtl_stream_mirrors.hpp"
 
@@ -1063,6 +1064,7 @@ rtl_demod_cleanup(struct demod_state* demod) {
     demod_mt_destroy(demod);
     dsd_fsk_modem_release(&demod->fsk_modem_state);
     dsd_live_iq_step_disable(&demod->live_iq_step);
+    dsd_squelch_step_model_release(&demod->squelch_step_model);
     if (demod->resamp_taps) {
         dsd_neo_aligned_free(demod->resamp_taps);
         demod->resamp_taps = NULL;

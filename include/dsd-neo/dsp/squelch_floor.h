@@ -142,6 +142,8 @@ typedef struct {
     uint32_t device;   /**< device identity (a hash of the device string) */
     int32_t rate_hz;   /**< channel rate */
     int32_t chain;     /**< capture chain (live, replay, the decimation cascade) */
+    int32_t step_l;    /**< the live I/Q rate step's L/M (issue #806); 0 and 0 with no step */
+    int32_t step_m;
 } dsd_squelch_floor_key;
 
 /** @brief One remembered floor. */
@@ -174,6 +176,33 @@ typedef struct {
  */
 int dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps, int taps_len, const float* hb_taps,
                                   int hb_len, int rate_hz);
+
+/**
+ * @brief Noise whose statistics repeat with a period of output samples (the live I/Q rate step's, issue #806): its
+ * covariance at every phase of one period. cov[n * lags + m] = E{z_n conj(z_{n+m})} for n in 0..period - 1 and m in
+ * 0..lags - 1, zero at lag lags and beyond; z_{n + period} has the statistics of z_n.
+ */
+typedef struct {
+    int period;
+    int lags;
+    const double* cov;
+} dsd_squelch_floor_periodic_noise;
+
+/**
+ * @brief Design the classifier's constants for the channel taps (@p taps, @p taps_len; NULL or 0 when no channel
+ * filter runs) whose output noise is @p noise, at the channel rate @p rate_hz.
+ *
+ * L follows the channel taps as in dsd_squelch_floor_plan_design(). For a 40 ms window of N samples starting at phase
+ * s, N_eff(s) = (sum_n R(n, n))^2 / sum_n sum_m R(n, n + m)^2 over the window's samples n and every lag m, and beta(s)
+ * and rho(s) are the means over its samples of beta_n = (pi/4) rho_n 2F1(1/2, 1/2; 2; rho_n^2), rho_n the correlation
+ * of z_n with z_{n-L}. The plan takes their means over every start phase s in 0..period - 1 (a window may hold part of
+ * a period); noise_gain is the mean of R(n, n). With a period of 1 this is dsd_squelch_floor_plan_design()'s model.
+ *
+ * @return 0, or -1 (plan not valid) for a rate below 100 Hz, a lag past DSD_SQUELCH_FLOOR_MAX_LAG, or noise with no
+ * power.
+ */
+int dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                           const dsd_squelch_floor_periodic_noise* noise, int rate_hz);
 
 /** @brief Whether @p a and @p b classify the same way (rate, lag and constants equal within a relative 1e-12). */
 int dsd_squelch_floor_plan_equal(const dsd_squelch_floor_plan* a, const dsd_squelch_floor_plan* b);
