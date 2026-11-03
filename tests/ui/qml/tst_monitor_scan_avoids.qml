@@ -148,6 +148,8 @@ Item {
             tryVerify(function () { return sheet.visible });
             compare(item("scanAvoidTitle").text, "Avoided channels (3)");
             verify(item("scanAvoidHint").visible);
+            // Issue #697: a put back can let a scan leave a channel it owes a departure, whichever kind it is.
+            compare(item("scanAvoidHint").text, "Put back returns a channel to the rotation without retuning. If the scan is waiting to leave a channel, it may move on at once.");
             verify(!item("scanAvoidStatus").visible);
             tryCompare(list, "count", 3);
             waitForRendering(list);

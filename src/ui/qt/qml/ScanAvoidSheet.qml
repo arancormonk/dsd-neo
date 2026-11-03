@@ -49,12 +49,13 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(20)
     }
     // What a put back does, before the first is pressed: it does not tune,
-    // though it can let a scan parked on an avoided channel move on (issue #697).
+    // though it can let a scan that owes a departure move on (issue #697): one
+    // parked on an avoided channel, or on a channel whose list was switched off.
     ReadableText {
         objectName: "scanAvoidHint"
         width: parent.width
         visible: sheet.count > 0
-        text: qsTr("Put back returns a channel to the rotation without retuning. If the scan is parked on an avoided channel, it may move on at once.")
+        text: qsTr("Put back returns a channel to the rotation without retuning. If the scan is waiting to leave a channel, it may move on at once.")
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.textSecondary

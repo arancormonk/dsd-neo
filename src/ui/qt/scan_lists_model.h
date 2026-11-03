@@ -41,12 +41,21 @@ class ScanListsModel : public QAbstractListModel {
     Q_INVOKABLE QStringList listsReferencingPath(const QString& path) const;
     Q_INVOKABLE bool clearCsvPath(const QString& path);
     Q_INVOKABLE void touch(int row);
+
+    /** @brief Whether the load gave a list a new UID (none stored, or one another list had): what a stored scan
+     *  session names by UID (AppPrefs' companions, issue #697) may then be another list. */
+    bool
+    uidsRepaired() const {
+        return m_uidsRepaired;
+    }
+
   Q_SIGNALS:
     void countChanged();
 
   private:
     bool save(const QList<QVariantMap>& rows) const;
     QList<QVariantMap> m_rows;
+    bool m_uidsRepaired = false;
 };
 } // namespace dsd_qt
 #endif

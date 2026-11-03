@@ -29,6 +29,9 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     property string scanTargetName: ""
+    // Issue #697: the name the session gives the list of the target on air;
+    // Main sets it only while the scan has more than one list.
+    property string scanListName: ""
     property bool sitesAvailable: false
     signal openSites
     signal openSessionMenu
@@ -190,6 +193,23 @@ Item {
                 return text;
         }
         return state;
+    }
+    // The running scan's line: "SCANNING · 3/14 · HOLD · Dispatch". With more
+    // than one list (issue #697) the place counts only the targets of the lists
+    // that are on, "-" while the target on air's own list is off and the scan
+    // is about to leave it, and the list it comes from closes the line.
+    function scanningText() {
+        var lists = metrics.scanListCount > 1;
+        var count = lists ? metrics.scanRotationCount : metrics.scanTargetCount;
+        if (count <= 0)
+            return "";
+        var place = !lists ? metrics.scanTargetOrdinal : metrics.scanRotationOrdinal > 0 ? metrics.scanRotationOrdinal : "-";
+        var out = qsTr("SCANNING · %1/%2").arg(place).arg(count) + (metrics.scanHold ? qsTr(" · HOLD") : "");
+        if (screen.scanTargetName.length > 0)
+            out += " · " + screen.scanTargetName;
+        if (lists && screen.scanListName.length > 0)
+            out += " · " + screen.scanListName;
+        return out;
     }
     FontMetrics {
         id: scanHeaderMetrics
@@ -507,7 +527,7 @@ Item {
                     width: parent.width
                     objectName: "scanTargetHeader"
                     step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
-                    text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
+                    text: screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : "")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8

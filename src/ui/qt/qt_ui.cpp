@@ -101,9 +101,20 @@ wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* pre
         const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
                                    : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
                                                                     : QVariantMap();
+        // Issue #697: a scan session's other lists start with its own, as the bundle it was last started as.
         controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target,
-                                     attachedKind);
+                                     attachedKind,
+                                     kind == QStringLiteral("scan") ? prefs->lastStartedCompanions() : QStringList());
     });
+}
+
+// Issue #697: a list the load gave a new UID can be named by a stored scan session's companions; they are dropped,
+// as a restore drops them, rather than start another list or none.
+void
+forget_repaired_scan_companions(const ScanListsModel* scanLists) {
+    if (scanLists->uidsRepaired()) {
+        (void)AppPrefs::forgetScanCompanions();
+    }
 }
 
 } // namespace
@@ -281,6 +292,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
 
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
+    forget_repaired_scan_companions(scanLists);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
     wire_target_files(scanListStarter, importedFiles);

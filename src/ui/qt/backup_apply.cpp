@@ -1075,7 +1075,10 @@ class Applier {
             });
         }
         if (status == Status::Ok) {
-            status = step("forward.prefs", [this] { return AppPrefs::replacePortable(m_staging.prefs); });
+            // Issue #697: the restored lists can carry other UIDs than the ones a scan session's companions name.
+            status = step("forward.prefs", [this] {
+                return AppPrefs::replacePortable(m_staging.prefs) && AppPrefs::forgetScanCompanions();
+            });
         }
         return status;
     }

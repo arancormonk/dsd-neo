@@ -20,6 +20,7 @@ Item {
         function cleanup() {
             screen.sitesAvailable = false;
             screen.scanTargetName = "";
+            screen.scanListName = "";
             screen.system = null;
             decoderHost.localDeviceBrokered = false;
             decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
@@ -55,6 +56,10 @@ Item {
             testContext.setMetric("scanPaused", false);
             testContext.setMetric("scanResumable", false);
             testContext.setMetric("scanEntryCount", 0);
+            testContext.setMetric("scanListCount", 0);
+            testContext.setMetric("scanActiveList", 0);
+            testContext.setMetric("scanRotationOrdinal", 0);
+            testContext.setMetric("scanRotationCount", 0);
         }
 
         // Readings that round to zero carry no minus sign (issue #669): toFixed keeps it.
@@ -81,6 +86,33 @@ Item {
             tryCompare(header, "text", "SCANNING · 2/3 · Dispatch");
             testContext.setMetric("scanHold", true);
             tryCompare(header, "text", "SCANNING · 2/3 · HOLD · Dispatch");
+            cleanup();
+            tryCompare(header, "text", "");
+        }
+
+        // Issue #697: with more than one list the line counts the targets of the
+        // lists that are on, says "-" while the target on air's own list is off,
+        // and closes with the list it comes from; one list reads as before.
+        function test_multi_list_header() {
+            var header = findChild(screen, "scanTargetHeader");
+            screen.scanTargetName = "Dispatch";
+            screen.scanListName = "Hospital";
+            testContext.setMetric("scanTargetOrdinal", 9);
+            testContext.setMetric("scanTargetCount", 20);
+            tryCompare(header, "text", "SCANNING · 9/20 · Dispatch");
+            testContext.setMetric("scanListCount", 3);
+            testContext.setMetric("scanActiveList", 2);
+            testContext.setMetric("scanRotationOrdinal", 3);
+            testContext.setMetric("scanRotationCount", 14);
+            tryCompare(header, "text", "SCANNING · 3/14 · Dispatch · Hospital");
+            testContext.setMetric("scanHold", true);
+            tryCompare(header, "text", "SCANNING · 3/14 · HOLD · Dispatch · Hospital");
+            testContext.setMetric("scanHold", false);
+            testContext.setMetric("scanRotationOrdinal", 0);
+            tryCompare(header, "text", "SCANNING · -/14 · Dispatch · Hospital");
+            // No name for the list: the line ends at the target.
+            screen.scanListName = "";
+            tryCompare(header, "text", "SCANNING · -/14 · Dispatch");
             cleanup();
             tryCompare(header, "text", "");
         }
@@ -291,17 +323,26 @@ Item {
             testContext.setMetric("scanVisitLive", true);
             testContext.setMetric("scanVisitRemainingDs", 35999);
             testContext.setMetric("scanTimingVisible", true);
+            // Issue #697: the longest scan line, a multi-list one, shown.
+            screen.scanTargetName = "Countywide Fire Dispatch Main";
+            screen.scanListName = "Municipal services north";
+            testContext.setMetric("scanListCount", 8);
+            testContext.setMetric("scanActiveList", 8);
+            testContext.setMetric("scanRotationOrdinal", 0);
+            testContext.setMetric("scanRotationCount", 2424);
+            testContext.setMetric("scanHold", true);
             waitForRendering(screen);
-            var names = ["runningSiteChooserButton", "openSpectrumButton", "monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"];
+            verify(findChild(screen, "scanTargetHeader").text.indexOf("SCANNING · -/2424 · HOLD") === 0);
+            var names = ["runningSiteChooserButton", "openSpectrumButton", "monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow", "scanTargetHeader"];
             // Past tier 0 on a phone, Sites and Spectrum are in the session menu (#718)
             // rather than squeezed beside the title: they show exactly when the
             // header has room for them, and the title, LIVE and timing always do.
             for (var name of ["runningSiteChooserButton", "openSpectrumButton"])
                 compare(findChild(screen, name).visible, screen.wideHeaderActions, name);
-            for (var always of ["monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"])
+            for (var always of ["monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow", "scanTargetHeader"])
                 verify(findChild(screen, always).visible, always);
             var shown = names.filter(function (name) { return findChild(screen, name).visible; });
-            compare(shown.length, screen.wideHeaderActions ? 5 : 3);
+            compare(shown.length, screen.wideHeaderActions ? 6 : 4);
             var hero = findChild(screen, "monitorHero");
             var heroY = hero.mapToItem(screen, 0, 0).y;
             for (var i = 0; i < shown.length; ++i) {

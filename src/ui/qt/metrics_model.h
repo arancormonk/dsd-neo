@@ -38,6 +38,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include "scan_avoid_list_model.h"
+#include "scan_list_toggle_model.h"
 
 namespace dsd_qt {
 
@@ -226,6 +227,16 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
+    /* Issue #697: the session's trunk-scan lists (the app-control scan list view over the held snapshot). The count of
+       lists, the list of the target on air (1-based, 0 for none) and whether it is switched off, and the target's
+       place among the targets of the lists that are on (0 while its list is off) and how many those are: the
+       header's "n/m" with more than one list (D10). The rows to switch are the toggle model's. */
+    Q_PROPERTY(int scanListCount READ scanListCount NOTIFY controlChanged)
+    Q_PROPERTY(int scanActiveList READ scanActiveList NOTIFY controlChanged)
+    Q_PROPERTY(bool scanActiveListOff READ scanActiveListOff NOTIFY controlChanged)
+    Q_PROPERTY(int scanRotationOrdinal READ scanRotationOrdinal NOTIFY controlChanged)
+    Q_PROPERTY(int scanRotationCount READ scanRotationCount NOTIFY controlChanged)
+    Q_PROPERTY(dsd_qt::ScanListToggleModel* scanListModel READ scanListModel CONSTANT)
     /* Issue #672: the avoided -Y rows or trunk-scan targets, from the app-control scan avoid view over the held
        snapshot, on their own signal so a call or a hop re-reads none of them. The list is a model of its own, rebuilt
        by key only when the view's key moves (ScanAvoidListModel); the count is its rows. */
@@ -1560,6 +1571,37 @@ class MetricsModel : public QObject {
         return m_view.scan_target_count;
     }
 
+    int
+    scanListCount() const {
+        return m_view.scan_list_count;
+    }
+
+    int
+    scanActiveList() const {
+        return m_view.scan_active_list;
+    }
+
+    bool
+    scanActiveListOff() const {
+        return m_view.scan_active_list_off;
+    }
+
+    int
+    scanRotationOrdinal() const {
+        return m_view.scan_rotation_ordinal;
+    }
+
+    int
+    scanRotationCount() const {
+        return m_view.scan_rotation_count;
+    }
+
+    /** @brief The session's trunk-scan lists to switch (issue #697). */
+    ScanListToggleModel*
+    scanListModel() {
+        return &m_scanListModel;
+    }
+
     /** @brief The avoided -Y rows or trunk-scan targets of the session (issue #672), in list order. */
     ScanAvoidListModel*
     scanAvoidModel() {
@@ -2315,6 +2357,11 @@ class MetricsModel : public QObject {
         int scan_avoid_count = 0;
         int scan_target_ordinal = 0;
         int scan_target_count = 0;
+        int scan_list_count = 0;
+        int scan_active_list = 0;
+        bool scan_active_list_off = false;
+        int scan_rotation_ordinal = 0;
+        int scan_rotation_count = 0;
         int scan_kind = 0;
         int scan_entry_count = 0;
         int scan_stay_reason = 0;
@@ -2460,10 +2507,13 @@ class MetricsModel : public QObject {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
                    && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
                    && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
-                   && scan_hold == other.scan_hold && scan_target_avoided == other.scan_target_avoided
-                   && scan_kind == other.scan_kind && scan_paused == other.scan_paused
-                   && scan_resumable == other.scan_resumable && scan_entry_count == other.scan_entry_count
-                   && operator_tuned == other.operator_tuned;
+                   && scan_list_count == other.scan_list_count && scan_active_list == other.scan_active_list
+                   && scan_active_list_off == other.scan_active_list_off
+                   && scan_rotation_ordinal == other.scan_rotation_ordinal
+                   && scan_rotation_count == other.scan_rotation_count && scan_hold == other.scan_hold
+                   && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
+                   && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
+                   && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
         }
 
         /* Issue #672: the avoid list's reading, on its own signal. The rows themselves are the list model's. */
@@ -2647,6 +2697,8 @@ class MetricsModel : public QObject {
      * meanwhile), then the readings from it.
      */
     void refreshScanAvoids(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The session's trunk-scan lists (issue #697): the header's readings, and the toggle model's rows. */
+    void refreshScanLists(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Build the list into m_scanAvoidModel; false, with the rows dropped, when it cannot be built. */
     bool buildScanAvoids(const dsd_opts* opts_snapshot, const dsd_state* snapshot, dsd_app_scan_avoid_summary* built);
     /** @brief The label an avoid list entry is shown with; see the definition for how a trunk-scan target is named. */
@@ -2713,6 +2765,8 @@ class MetricsModel : public QObject {
     /* Issue #672: the avoid list, and the view's key of the last build that succeeded. A failed build leaves
        m_scanAvoidsBuilt false, so the next refresh tries again even at the same key. */
     ScanAvoidListModel m_scanAvoidModel;
+    /* Issue #697: the session's lists, refreshed from the held snapshot with the rest. */
+    ScanListToggleModel m_scanListModel;
     dsd_app_scan_avoid_summary m_scanAvoidsBuiltKey{};
     bool m_scanAvoidsBuilt = false;
 #ifdef DSD_NEO_TEST_HOOKS

@@ -37,6 +37,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
@@ -492,6 +493,7 @@ MetricsModel::clear() {
     /* The avoid list goes with the session that had it; the next session's first refresh builds its own. */
     m_scanAvoidModel.clear();
     m_scanAvoidsBuilt = false;
+    m_scanListModel.clear();
     publish(cleared);
 }
 
@@ -1301,6 +1303,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, 
 
     fillControlViews(next, opts_snapshot, snapshot, now_m);
     refreshScanAvoids(next, opts_snapshot, snapshot);
+    refreshScanLists(next, opts_snapshot, snapshot);
 
     fillUiMessage(next, snapshot);
 
@@ -1325,6 +1328,26 @@ MetricsModel::fillControlViews(View& next, const dsd_opts* opts_snapshot, const 
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
     fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
     fillTetraView(next, opts_snapshot, snapshot);
+}
+
+/*
+ * The session's trunk-scan lists (issue #697), from the app-control scan list view over the held pair (a few loads,
+ * no walk of the targets): the readings the header names the list on air with, and the rows the Scan lists sheet
+ * switches, which also take the switch results published since the last refresh. The rotation's "n/m" is the
+ * coordinator's (D10): the place among the targets of the lists that are on, 0 while the target on air's list is off.
+ */
+void
+MetricsModel::refreshScanLists(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_scan_list_view lists{};
+    (void)dsd_app_scan_list_view_get(opts_snapshot, snapshot, &lists);
+    next.scan_list_count = lists.list_count;
+    next.scan_active_list = lists.active_list;
+    next.scan_active_list_off = lists.active_list_off != 0U;
+    if (next.scan_rotation_active && next.scan_kind == DSD_APP_SCAN_KIND_TRUNK) {
+        next.scan_rotation_ordinal = snapshot->trunk_scan_rotation_ordinal;
+        next.scan_rotation_count = snapshot->trunk_scan_rotation_count;
+    }
+    m_scanListModel.refresh(lists);
 }
 
 /*

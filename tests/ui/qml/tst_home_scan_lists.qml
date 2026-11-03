@@ -275,6 +275,50 @@ Item {
             }
         }
 
+        // Issue #697: a ready list's More menu offers Scan with other lists while another ready list exists, and the
+        // sheet it opens starts the card's list with the ones switched on there.
+        function test_scan_with_other_lists_menu() {
+            var app = appLoader.item;
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            app.currentTab = 0;
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            var menu = findChild(home, "scanListManageSheet");
+            var keys = function () {
+                return menu.actions.map(function (action) { return action.key; }).join();
+            };
+            menu.openFor(0);
+            compare(keys(), "edit,remove", "one list has no others to scan with");
+            menu.visible = false;
+            scanLists.add({name: "Draft", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, isDraft: true});
+            menu.openFor(0);
+            compare(keys(), "edit,remove", "a draft is not a list to scan with");
+            menu.visible = false;
+            scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "ER", protocol: "p25", freqMhz: "852.5", enabled: true}]});
+            var hospital = scanLists.get(scanLists.count - 1);
+            menu.openFor(0);
+            compare(keys(), "edit,together,remove");
+            compare(menu.actions[1].text, "Scan with other lists…");
+            menu.openFor(1);
+            compare(keys(), "edit,remove", "a draft's own menu offers no scan");
+            menu.openFor(0);
+            menu.activate(1);
+            var sheet = findChild(home, "scanTogetherSheet");
+            tryCompare(sheet, "visible", true);
+            findChild(sheet, "scanTogetherRow_" + hospital.uid).activate();
+            findChild(sheet, "scanTogetherStart").clicked();
+            tryCompare(sheet, "visible", false);
+            var paths = testContext.lastStartArgs().filter(function (arg, i, all) {
+                return i > 0 && all[i - 1] === "--trunk-scan";
+            }).map(function (path) { return path.substring(path.lastIndexOf("/") + 1); });
+            compare(paths.join(), [scanLists.get(0).uid + ".csv", hospital.uid + ".csv"].join());
+            compare(app.sessionStartCompanions.join(), hospital.uid);
+            decoderHost.stop();
+            prefs.onboardingDone = oldOnboarding;
+        }
+
         function test_home_card_and_confirmed_start() {
             tryVerify(function () {
                 return visualChild(appLoader.item, "scanListCard") !== null;

@@ -24,6 +24,9 @@ Item {
     signal replayAgain
     signal addScanList
     signal playScanList(int row)
+    // Issue #697: start the list at @a row with the lists @a companionUids
+    // name, in that order, as one session.
+    signal playScanLists(int row, var companionUids)
     signal editScanList(int row)
     signal addSystem
     signal importSystem
@@ -76,7 +79,7 @@ Item {
 
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
-        || removeSystem.visible || removeScanList.visible || scanListRemovalError.visible
+        || removeSystem.visible || removeScanList.visible || scanListRemovalError.visible || scanTogether.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -693,24 +696,49 @@ Item {
         id: scanMenu
         objectName: "scanListManageSheet"
         property string listUid: ""
-        actions: [
-            {text: qsTr("Edit"), objectName: "editScanListButton"},
-            {text: qsTr("Remove…"), destructive: true, objectName: "removeScanListButton"}
-        ]
+        // Issue #697: a ready list can start with the other ready lists, so
+        // the choice is offered only where there is one to make.
+        function canScanWithOthers(list) {
+            if (list.isDraft)
+                return false;
+            for (var i = 0; i < scanLists.count; ++i) {
+                var other = scanLists.get(i);
+                if (other.uid !== list.uid && !other.isDraft)
+                    return true;
+            }
+            return false;
+        }
         function openFor(row) {
             var list = scanLists.get(row);
             listUid = list.uid;
             title = list.name;
+            var items = [{text: qsTr("Edit"), key: "edit", objectName: "editScanListButton"}];
+            if (canScanWithOthers(list))
+                items.push({text: qsTr("Scan with other lists…"), key: "together", objectName: "scanWithOtherListsButton"});
+            items.push({text: qsTr("Remove…"), key: "remove", destructive: true, objectName: "removeScanListButton"});
+            actions = items;
             open();
         }
         onTriggered: function (index) {
             var row = scanLists.rowForUid(listUid);
             if (row < 0)
                 return;
-            if (index === 0)
+            var key = actions[index].key;
+            if (key === "edit")
                 screen.editScanList(row);
+            else if (key === "together")
+                scanTogether.openFor(row);
             else
                 removeScanList.openFor(row);
+        }
+    }
+
+    ScanTogetherSheet {
+        id: scanTogether
+        onStartRequested: function (primaryUid, companionUids) {
+            var row = scanLists.rowForUid(primaryUid);
+            if (row >= 0)
+                screen.playScanLists(row, companionUids);
         }
     }
 

@@ -21,6 +21,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
@@ -88,8 +89,11 @@ class UiController : public QObject {
 
     // WP-S2: called for a consumed host attachment, never on preference changes. @p attachedKind is the kind of
     // the receiver that attached ("usb" for an RTL-SDR, "airspy"); only a target on that kind starts (#647 D3a).
+    // @p companions: the other lists a scan target was last started with (issue #697), passed on as they are; the
+    // start resolves them.
     void requestAutoStart(bool enabled, bool onboardingDone, const QString& kind, const QString& uid,
-                          const QVariantMap& target, const QString& attachedKind);
+                          const QVariantMap& target, const QString& attachedKind,
+                          const QStringList& companions = QStringList());
 
     void start();
     void stop();
@@ -106,7 +110,7 @@ class UiController : public QObject {
     Q_INVOKABLE void flushHistory();
 
   Q_SIGNALS:
-    void autoStartRequested(const QString& kind, const QString& uid);
+    void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
     void pollIntervalChanged();
     void talkgroupExportResultChanged();
     void decryptionResultChanged();

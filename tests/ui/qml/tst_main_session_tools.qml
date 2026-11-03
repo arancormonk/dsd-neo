@@ -694,6 +694,152 @@ Item {
             tryCompare(loader, "status", Loader.Ready);
             verify(app.monitorMode);
         }
+        // ---- Issue #697: one session over several scan lists ----
+
+        function addScanList(name, entryName, freq) {
+            scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: entryName, protocol: "p25", freqMhz: freq, enabled: true}]});
+            return scanLists.get(scanLists.count - 1);
+        }
+        function removeScanLists(uids) {
+            for (var uid of uids) {
+                var row = scanLists.rowForUid(uid);
+                if (row >= 0)
+                    scanLists.remove(row);
+            }
+        }
+        function trunkScanPaths(args) {
+            var paths = [];
+            for (var i = 0; i + 1 < args.length; ++i) {
+                if (args[i] === "--trunk-scan")
+                    paths.push(args[i + 1].substring(args[i + 1].lastIndexOf("/") + 1));
+            }
+            return paths;
+        }
+        function scanMetrics(entryUid, activeList) {
+            testContext.setMetrics({optionsKnown: true, scanKind: 2, scanRotationActive: true, scanPaused: false,
+                                    scanResumable: false, operatorTuned: false, tunerControlled: true,
+                                    scanTargetId: entryUid, scanTargetOrdinal: activeList, scanTargetCount: 3,
+                                    scanListCount: 3, scanActiveList: activeList, scanActiveListOff: false,
+                                    scanRotationOrdinal: activeList, scanRotationCount: 3});
+        }
+        function clearScanMetrics() {
+            testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                    scanResumable: false, tunerControlled: false, optionsKnown: false,
+                                    scanTargetId: "", scanTargetOrdinal: 0, scanTargetCount: 0, scanListCount: 0,
+                                    scanActiveList: 0, scanRotationOrdinal: 0, scanRotationCount: 0});
+            testContext.resetScanLists();
+        }
+
+        // The bundle a start was accepted as is the session's identity: recorded with the accepted start and at the
+        // initialization edge, carried by Retry, read back by a recreated Activity, and named in the header and by
+        // the session's channel names. A start of one list clears it.
+        function test_a_scan_bundle_keeps_its_identity() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            var header = function () { return findChild(findChild(app, "monitorScreen"), "scanTargetHeader").text; };
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var parks = addScanList("Parks", "Ranger", "853.0125");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                testContext.setLifecyclePhase(0);
+                prefs.lastStartedCompanions = [];
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, parks.uid]);
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(),
+                        [security.uid + ".csv", hospital.uid + ".csv", parks.uid + ".csv"].join());
+                // Accepted: the bundle is recorded with the start, the initialization edge records it as started.
+                compare(prefs.acceptedStartKind, "scan");
+                compare(prefs.acceptedStartUid, security.uid);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join());
+                compare(prefs.lastStartedCompanions.length, 0);
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedUid, security.uid);
+                compare(prefs.lastStartedCompanions.join(), [hospital.uid, parks.uid].join());
+                compare(app.sessionLists.map(function (l) { return l.name; }).join(), "Security,Hospital,Parks");
+                testContext.setLifecyclePhase(2);
+                // Names: the header says which list the target on air is from, and every list names its channels.
+                var er = hospital.entries[0].uid;
+                scanMetrics(er, 2);
+                compare(app.scanTargetLabel(), "ER desk");
+                tryCompare(findChild(app, "monitorScreen"), "scanListName", "Hospital");
+                compare(header(), "SCANNING · 2/3 · ER desk · Hospital");
+                compare(metrics.channelNames[security.entries[0].uid], "Gate");
+                compare(metrics.channelNames[parks.entries[0].uid], "Ranger");
+                // Session options offers the lists while the scan has more than one.
+                choose("ScanLists");
+                tryCompare(findChild(app, "scanListsSheet"), "visible", true);
+                findChild(app, "scanListsSheet").visible = false;
+                // Recreated: the bundle comes back from the accepted start.
+                prefs.acceptedStartKind = "scan";
+                reattach();
+                compare(title(), "Security");
+                compare(app.sessionStartCompanions.join(), [hospital.uid, parks.uid].join());
+                compare(app.sessionLists.map(function (l) { return l.name; }).join(), "Security,Hospital,Parks");
+                scanMetrics(parks.entries[0].uid, 3);
+                compare(app.scanTargetLabel(), "Ranger");
+                tryCompare(findChild(app, "monitorScreen"), "scanListName", "Parks");
+                // Retry starts the same bundle again.
+                clearScanMetrics();
+                testContext.setLifecycleFailure("Connection refused");
+                testContext.setLifecyclePhase(4);
+                app.attemptedSource = {kind: "scan", uid: security.uid, companions: [hospital.uid, parks.uid],
+                    system: security, remember: true};
+                app.retrySource();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(trunkScanPaths(testContext.lastStartArgs()).length, 3);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join());
+                // A start of the one list clears it.
+                testContext.setLifecycleFailure("");
+                testContext.setLifecyclePhase(0);
+                app.startScanList(scanLists.rowForUid(security.uid));
+                compare(trunkScanPaths(testContext.lastStartArgs()).length, 1);
+                compare(prefs.acceptedStartCompanions.length, 0);
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedCompanions.length, 0);
+                compare(app.sessionLists.length, 1);
+                // A list gone since the bundle was chosen starts none of them.
+                testContext.setLifecyclePhase(0);
+                var before = testContext.lastStartArgs();
+                var gone = parks.uid;
+                removeScanLists([gone]);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, gone]);
+                compare(app.startError, "A list in this scan was removed. Choose the lists again.");
+                compare(testContext.lastStartArgs(), before);
+            } finally {
+                clearScanMetrics();
+                testContext.setLifecycleFailure("");
+                testContext.setLifecyclePhase(2);
+                app.startError = "";
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+                prefs.lastStartedCompanions = [];
+                removeScanLists([security.uid, hospital.uid, parks.uid]);
+            }
+        }
+
+        // A list that cannot join, or two lists sharing a target id, start nothing; the refusal names the list.
+        function test_a_scan_bundle_refused_starts_nothing() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            scanLists.add({name: "Twin", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{uid: security.entries[0].uid, kind: "freq", name: "Gate", protocol: "p25", freqMhz: "854.0125",
+                    enabled: true}]});
+            var twin = scanLists.get(scanLists.count - 1);
+            try {
+                testContext.setLifecyclePhase(0);
+                var before = testContext.lastStartArgs();
+                app.startScanBundle(scanLists.rowForUid(security.uid), [twin.uid]);
+                verify(app.startError.indexOf("Scan lists rejected: ") === 0, app.startError);
+                compare(testContext.lastStartArgs(), before);
+                compare(decoderHost.sessionState, 0);
+            } finally {
+                app.startError = "";
+                testContext.setLifecyclePhase(2);
+                removeScanLists([security.uid, twin.uid]);
+            }
+        }
+
         function test_a_reattached_scan_list_keeps_its_identity() {
             var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
             scanLists.add({name: "County scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,

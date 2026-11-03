@@ -93,11 +93,14 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
         if (!value.isObject()) {
             continue;
         }
+        const QString stored = value.toObject().value(QStringLiteral("uid")).toString();
         auto row = normalize(value.toObject().toVariantMap());
         auto id = row.value("uid").toString();
         if (id.isEmpty() || ids.contains(id)) {
             row["uid"] = id = uuid();
         }
+        // Issue #697: a UID minted here is not the one anything stored before this load named.
+        m_uidsRepaired = m_uidsRepaired || id != stored;
         ids.insert(id);
         m_rows << row;
     }

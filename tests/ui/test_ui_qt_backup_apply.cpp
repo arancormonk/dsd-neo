@@ -1256,9 +1256,20 @@ check_models_load(TestHost& host, const Backup& b, const Old& old) {
 Tree
 test_clean_apply(TestHost& host, const Backup& b, const Old& old) {
     prepare(b, old);
+    {
+        // Issue #697: a scan session's other lists, by UIDs the restored lists may give to other lists or none.
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"hospital-uid", "parks-uid"});
+        prefs.setLastStartedCompanions({"hospital-uid"});
+    }
     Faults seen;
     const ApplyResult result = apply(&seen);
     expect("a clean apply applies", result.outcome == ApplyOutcome::Applied && result.reason.isEmpty());
+    {
+        const dsd_qt::AppPrefs prefs;
+        expect("a restore forgets the scan session's other lists",
+               prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+    }
     expect("the result carries the summary",
            result.summary.value("systems").toInt() == 2 && result.summary.value("libraryFiles").toInt() == 7);
     for (const char* step : {"journal.begin", "journal.files", "journal.prefs", "journal.manifest", "journal.complete",
