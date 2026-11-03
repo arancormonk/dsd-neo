@@ -235,6 +235,7 @@ main() {
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <initializer_list>
+#include <stdint.h>
 #include <stdio.h>
 #include "rtl_stream_test_support.h"
 #include "test_support.h"
@@ -399,6 +400,55 @@ main() {
         }
         CHECK(!dsd_exitflag_load());
     }
+    // Issue #806 D5: at a 12 kHz DSP bandwidth the Airspy runs exactly 12,000 Hz too (19,531 Hz before), whose 9.6 kHz
+    // filters no NFM 12.5 kHz: the start refuses it there, as an RTL-SDR's would, at the rate named.
+    opts->rtl_dsp_bw_khz = 12;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    fail_create = failure = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(*opts);
+        CHECK(stream.start() != 0);
+        int kind = -1;
+        int refused_width_hz = -1;
+        int rate_hz = -1;
+        CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
+        CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 12500 && rate_hz == 12000);
+    }
+    CHECK(!rtl_stream_test_has_resources() && !device_open);
+
+    // Issue #806 D-BUG-1..4, B-6a: whatever surface hands it 72 kHz (-fT, -i airspy:F:72, [input] rtl_bw_khz = 72 at
+    // startup or live, Input > Switch source > Airspy from an RTL-SDR at 72 kHz), an Airspy stream delivers exactly
+    // 72,000 Hz past the rate step, from either rate of an R2 or a Mini (78,125 or 93,750 Hz before: the 48 kHz chain).
+    opts->analog_only = 0;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->rtl_dsp_bw_khz = 72;
+    const uint32_t saved_rates[2] = {rates[0], rates[1]};
+    static const uint32_t kPairs[2][2] = {{10000000U, 2500000U}, {6000000U, 3000000U}};
+    for (const auto& pair : kPairs) {
+        rates[0] = pair[0];
+        rates[1] = pair[1];
+        for (uint32_t listed : pair) {
+            opts->airspy.sample_rate = listed;
+            fail_create = failure = create_calls = 0;
+            workers_entered.store(0);
+            workers_exited.store(0);
+            RtlSdrOrchestrator stream(*opts);
+            CHECK(stream.start() == 0);
+            CHECK(rate == listed);
+            CHECK(rtl_stream_get_request_rate_hz() == 72000);
+            CHECK(stream.stop() == 0);
+            CHECK(!rtl_stream_test_has_resources());
+        }
+    }
+    rates[0] = saved_rates[0];
+    rates[1] = saved_rates[1];
+    opts->airspy.sample_rate = 0;
+    opts->analog_only = 1;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    opts->rtl_dsp_bw_khz = 24;
+
     // A create forgets the last start's refusal, so a start that never runs leaves none to report.
     opts->analog_nfm_bandwidth_hz = 25000;
     fail_create = failure = create_calls = 0;

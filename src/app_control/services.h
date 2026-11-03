@@ -269,8 +269,8 @@ int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
  * @brief Hold the loaded channel map's analog (nfm or am) rows to the DSP rate they would run at (issue #526), as an
  * import reports: each row's own width of its kind, else the configured width of its kind (the AM default included).
  *
- * The rate is the running RTL stream's, else on an RTL-SDR or rtl_tcp input the one the configured RTL DSP bandwidth
- * sets (dsd_app_analog_rtl_bw_rate_hz()); a SoapySDR or Airspy device, or an I/Q replay, delivers a rate only once its
+ * The rate is the running RTL stream's, else on a live radio (an RTL-SDR, rtl_tcp, SoapySDR or Airspy input) the one
+ * the configured DSP bandwidth sets (dsd_app_analog_rtl_bw_rate_hz()); an I/Q replay delivers a rate only once its
  * stream runs, and the scan start holds the rows to that one. DSD_NEO_CHANNEL_LPF=0 refuses every explicit width
  * whatever the rate, the AM default included (dsd_engine_channel_scan_refused_rows()). Returns how many rows the front
  * end would refuse, which the scanner skips at every visit; for any, @p why receives a short reason naming the first
@@ -282,9 +282,9 @@ int svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, c
  * @brief The advice for TETRA at the DSP rate the input in force runs at, when it is no multiple of 18 kHz
  * (dsd_tetra_dsp_rate_advice()).
  *
- * The rate is the running radio stream's (which a SoapySDR or Airspy device may force away from the DSP bandwidth, and an
- * I/Q replay takes from its capture), else on an RTL-SDR or rtl_tcp input the one the configured RTL DSP bandwidth sets;
- * a device whose stream has not run yet, and PCM input, have none to judge, and get no advice.
+ * The rate is the running radio stream's (an I/Q replay takes it from its capture), else on a live radio (an RTL-SDR,
+ * rtl_tcp, SoapySDR or Airspy input, each running at its DSP bandwidth) the one the configured DSP bandwidth sets; a
+ * replay whose stream has not run yet, and PCM input, have none to judge, and get no advice.
  *
  * @param brief Nonzero for the brief text a toast holds.
  * @return 1 when advice was written to @p out, 0 when there is none, -1 on a NULL or empty buffer.
@@ -500,12 +500,11 @@ int svc_check_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int
 int svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, char* why, size_t why_size);
 
 /**
- * @brief Check a channel width of analog @p kind for a SoapySDR or Airspy device a change reopens, whose rate is not
- * known yet.
+ * @brief Check a channel width of analog @p kind against the rules that hold at every rate.
  *
- * The rules that hold at every rate: the range, and DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default.
- * The reopened stream's start checks the width against the rate the device delivers. The unset NFM default (0) is
- * never refused.
+ * The range, and DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default; the checks that hold a width to a
+ * rate (svc_check_analog_bandwidth_for_rtl_bw(), svc_check_analog_bandwidth_at_rate()) ask these first. The unset NFM
+ * default (0) is never refused.
  *
  * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
  */
@@ -529,10 +528,9 @@ int svc_check_analog_bandwidth_at_rate(int kind, int width_hz, int rate_hz, char
  * default), for a toast.
  *
  * Where the input's DSP rate cannot filter the width, it names the width, the rate, the widest width it filters and the
- * fix for what sets that rate (dsd_analog_width_rate_fix()): the DSP bandwidths that fit on an RTL-SDR or rtl_tcp input
- * (whose rate is its DSP bandwidth); raising the DSP bandwidth or narrowing the width on a running SoapySDR or Airspy
- * stream; narrowing the width on an I/Q replay (the rate named is then the one the stream publishes). A refusal that
- * rate does not explain points at the log.
+ * fix: the DSP bandwidths that fit, which every input's rate follows (a live radio runs at its DSP bandwidth, a
+ * SoapySDR or Airspy device stepped to it; a bandwidth change re-plans an I/Q replay, whose rate named is then the one
+ * the stream publishes). A refusal that rate does not explain points at the log.
  */
 void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 
@@ -934,12 +932,12 @@ void svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size);
 /**
  * @brief Check the configured analog width against the Airspy DSD_APP_CMD_AIRSPY_ENABLE_INPUT would open (issue #578).
  *
- * Asked before the switch rewrites the input and tears down the running one. The Airspy delivers a rate its sample rate
- * and the DSP bandwidth set, which its start holds the width it opens on to, so only the rules every rate shares apply
- * here: an explicit width, or the AM default, is refused while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
- * width held is the one svc_check_rtl_input_analog_width() holds, the configured analog preset's (the switch is refused
- * while a scan is in force, issue #671). The unset NFM default is never refused. Its start checks the width it opens on
- * against the delivered rate.
+ * Asked before the switch rewrites the input and tears down the running one. The Airspy runs at the DSP bandwidth,
+ * which the live rate step lands its capture rate on (issue #806), so the width is held to that bandwidth as an
+ * RTL-SDR's is, after the rule every rate shares (an explicit width, or the AM default, is refused while
+ * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off). The width held is the one svc_check_rtl_input_analog_width()
+ * holds, the configured analog preset's (the switch is refused while a scan is in force, issue #671). The unset NFM
+ * default is never refused.
  *
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
@@ -950,9 +948,8 @@ int svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* s
  * Call it right after a failed start (svc_rtl_restart(), svc_rtl_enable_input_locked()), while @p opts still
  * describes the input that failed. When the start refused its analog width (rtl_stream_start_analog_refusal()), the
  * reason is the one a check before the change gives: DSD_NEO_CHANNEL_LPF=0 turning off the filter the width needs, or
- * the width, the DSP rate the device delivered, the widest width that rate filters and the fix for what sets it (a DSP
- * bandwidth that fits on an RTL-SDR or rtl_tcp input, a wider DSP bandwidth or a narrower width on a SoapySDR or Airspy
- * device, a narrower width on an I/Q replay); a width the rate fits, refused for another reason, points at the log.
+ * the width, the DSP rate the device delivered, the widest width that rate filters and the DSP bandwidths that would
+ * fit; a width the rate fits, refused for another reason, points at the log.
  * Otherwise it names the input that did not start (Airspy, SoapySDR, rtl_tcp, I/Q replay or RTL-SDR, as the stream
  * classifies the device string) and points at the log. The start already logged its own text, so this logs nothing.
  *
@@ -965,10 +962,10 @@ int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size)
  *
  * For a start that opened on other settings than the ones the stream is about to be asked for: a config apply's reopen
  * runs inside a scan row's suspended scope, so its start held the configured settings to the delivered rate, not the
- * row's analog monitor, which the resume asks for next (a SoapySDR or Airspy device sets a rate nothing could check up
- * front). Asks the stream (rtl_stream_check_analog_profile(), which logs a refusal) at the rate it published when it
- * started. A refusal's reason, for a toast, is worded as svc_describe_start_failure() words a start's own: the width
- * against that rate with the fix for what sets it, or the environment rule.
+ * row's analog monitor, which the resume asks for next. Asks the stream (rtl_stream_check_analog_profile(), which logs
+ * a refusal) at the rate it published when it started. A refusal's reason, for a toast, is worded as
+ * svc_describe_start_failure() words a start's own: the width against that rate with the fix for what sets it, or the
+ * environment rule.
  *
  * @return 0 when the stream takes it; -1 when it refuses it (reason in @p why, may be NULL).
  */
@@ -1122,20 +1119,20 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
  * @brief Set RTL DSP baseband bandwidth (kHz, dsd_analog_rtl_dsp_bw_is_selectable()), restarting if needed.
  *
- * An unsupported value becomes the 48 kHz default (dsd_analog_rtl_dsp_bw_or_default()). On an Airspy input a bandwidth
- * above DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ (72 kHz, which no Airspy rate halves to) is refused and nothing changes. A bandwidth an analog channel width in use cannot run at, on an RTL-SDR or rtl_tcp
- * input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The widths held
- * to it are the configured analog preset's explicit width, or the AM default, which AM always filters at (a typed
- * digital scan row on an analog session included), beside it the configured width of a kind while the scan has an
- * analog row or target of that kind without a width of its own to visit (issue #526,
- * dsd_engine_scan_runs_configured_nfm_width(), _am_width()), and, since the reopened stream starts on the settings in
- * force, the width in force while an analog scan row runs the analog family: the row's own width, or the configured
- * width of its kind the row runs.
- * @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
- * refusal (may be NULL): narrow the width first, or, for a scan row's own width, which the width controls do not edit,
- * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
- * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
- * the channel filter that width needs, which its start would refuse at any rate.
+ * An unsupported value becomes the 48 kHz default (dsd_analog_rtl_dsp_bw_or_default()). Every live radio runs every
+ * selectable bandwidth, an Airspy included (its capture rate is stepped to it, issue #806). A bandwidth an analog
+ * channel width in use cannot run at, on a live radio, whose DSP rate this sets, is refused and nothing changes: the
+ * width is never clamped to fit. The widths held to it are the configured analog preset's explicit width, or the AM
+ * default, which AM always filters at (a typed digital scan row on an analog session included), beside it the
+ * configured width of a kind while the scan has an analog row or target of that kind without a width of its own to
+ * visit (issue #526, dsd_engine_scan_runs_configured_nfm_width(), _am_width()), and, since the reopened stream starts
+ * on the settings in force, the width in force while an analog scan row runs the analog family: the row's own width, or
+ * the configured width of its kind the row runs. @p why receives a short reason naming both values, the widest width
+ * the bandwidth filters and the fix on that refusal (may be NULL): narrow the width first, or, for a scan row's own
+ * width, which the width controls do not edit, keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's
+ * NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth"). The validator's full text is logged. The reopen is also
+ * refused while DSD_NEO_CHANNEL_LPF=0 turns off the channel filter that width needs, which its start would refuse at
+ * any rate.
  *
  * A bandwidth it takes reopens the running RTL-family input under one hold of the P25 SM tick guard. A reopen whose
  * start fails is left with no stream and @p why empty, for the caller that knows the input that ran to put it back

@@ -1244,26 +1244,20 @@ svc_analog_held_width_hz(int kind, int width_hz) {
 }
 
 /* "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth": short enough for a
-   toast, with both values, the limit and the fix. @p source (dsd_analog_rate_source) says what sets the rate: an
-   RTL-SDR or rtl_tcp input's DSP bandwidth, whose fix names the bandwidths that fit; a SoapySDR or Airspy device, whose
-   rate a wider DSP bandwidth raises; or an I/Q replay, whose rate follows the DSP bandwidth and whose fix names the
-   bandwidths that fit, as for an RTL input. */
+   toast, with both values, the limit and the fix. Every input's rate follows the DSP bandwidth, so the fix names the
+   bandwidths that fit: a live radio runs at it (an RTL-SDR's cascade lands on it, a SoapySDR or Airspy device is
+   stepped to it, issue #806), and a bandwidth change re-plans an I/Q replay's rate (issue #701). */
 static void
-svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* why, size_t why_size) {
+svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, char* why, size_t why_size) {
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
     char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
     char max[DSD_ANALOG_WIDTH_TEXT_MAX];
     char fix[96];
     (void)dsd_analog_width_format(width_hz, width, sizeof width);
     (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);
-    if (source == DSD_ANALOG_RATE_RTL_BW || source == DSD_ANALOG_RATE_CAPTURE) {
-        /* A replay's rate follows the DSP bandwidth as an RTL-SDR's does: a bandwidth change re-plans it (issue #701). */
-        char fits[32];
-        (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
-        DSD_SNPRINTF(fix, sizeof fix, "use %s %s kHz DSP bandwidth", fits[0] == '8' ? "an" : "a", fits);
-    } else {
-        (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix, sizeof fix);
-    }
+    char fits[32];
+    (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
+    DSD_SNPRINTF(fix, sizeof fix, "use %s %s kHz DSP bandwidth", fits[0] == '8' ? "an" : "a", fits);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz > 0 && dsd_analog_width_format(max_hz, max, sizeof max) == 0) {
         svc_why(why, why_size, "%s %s does not fit the %s DSP rate (max %s); %s", dsd_analog_demod_label(kind), width,
@@ -1315,7 +1309,7 @@ svc_analog_width_fits_rtl_rate(int kind, int width_hz, int rate_hz, char* why, s
     if (rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 1;
     }
-    svc_analog_rate_refusal(kind, width_hz, rate_hz, DSD_ANALOG_RATE_RTL_BW, why, why_size);
+    svc_analog_rate_refusal(kind, width_hz, rate_hz, why, why_size);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     if (dsd_analog_width_check(kind, width_hz, rate_hz, err, sizeof err) != 0) {
         LOG_WARN("%s.\n", err);
@@ -1324,9 +1318,9 @@ svc_analog_width_fits_rtl_rate(int kind, int width_hz, int rate_hz, char* why, s
 }
 
 #ifdef USE_RADIO
-/* The DSP rate an RTL DSP bandwidth gives this input where that bandwidth is the rate: an RTL-SDR or rtl_tcp input,
-   classified as the stream classifies it (dsd_app_analog_rtl_bw_rate_hz()). 0 elsewhere: SoapySDR and Airspy devices
-   may force another rate, an I/Q replay runs at its capture's, and PCM has none. */
+/* The DSP rate an RTL DSP bandwidth gives this input: the bandwidth itself on every live radio, an RTL-SDR, rtl_tcp,
+   SoapySDR or Airspy one (dsd_app_analog_rtl_bw_rate_hz(), dsd_input_dsp_rate_policy()). 0 elsewhere: an I/Q replay
+   runs at its capture's, and PCM has none. */
 static int
 svc_rtl_bw_dsp_rate_hz(const dsd_opts* opts, int rtl_bw_khz) {
     return dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, rtl_bw_khz);
@@ -1422,9 +1416,7 @@ svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* 
     const int rtl_rate_hz = svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
     const int rate_hz = rtl_rate_hz > 0 ? rtl_rate_hz : rtl_stream_get_demod_rate_hz();
     if (rate_hz > 0 && held_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
-        svc_analog_rate_refusal(kind, held_hz, rate_hz,
-                                rtl_rate_hz > 0 ? DSD_ANALOG_RATE_RTL_BW : dsd_opts_analog_rate_source(opts), why,
-                                why_size);
+        svc_analog_rate_refusal(kind, held_hz, rate_hz, why, why_size);
         return;
     }
 #endif
@@ -1550,8 +1542,8 @@ svc_check_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kin
     }
     /* No channel filter runs on PCM input, which takes the width as stored and unused (as a PCM start does): only a
        radio input needs the filter DSD_NEO_CHANNEL_LPF=0 turns off and runs at a DSP rate, and a switch onto one holds
-       the width to both (svc_check_rtl_input_analog_width(); an Airspy, which sets its own rate, to the environment
-       first, svc_check_airspy_input_analog_width()). A PCM input a live switch put an RTL session on keeps
+       the width to both (svc_check_rtl_input_analog_width(), and svc_check_airspy_input_analog_width() for an Airspy,
+       which runs at its DSP bandwidth too). A PCM input a live switch put an RTL session on keeps
        the RTL device string, whose DSP bandwidth is no rate that input runs at. */
     if (!dsd_opts_input_is_radio(opts)) {
         return 0;
@@ -1743,8 +1735,8 @@ svc_input_width_fits(int kind, int configured_hz, int rate_hz, char* why, size_t
 }
 
 /* The analog widths an input switch opens a stream with, held to @p rate_hz, the rate the RTL DSP bandwidth gives the
-   device it opens (0: a device that sets its own rate, against which its start checks the width in force; only the
-   rules every rate shares). */
+   device it opens (0: an I/Q replay, against whose rate its start checks the width in force; only the rules every rate
+   shares). */
 static int
 svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, int rate_hz, char* why, size_t why_size) {
     int kind = DSD_ANALOG_DEMOD_FM;
@@ -1777,9 +1769,9 @@ svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, c
     if (!opts) {
         return -1;
     }
-    /* Input > Switch source > RTL-SDR opens the device svc_rtl_row_destination() names, as an RTL-SDR or rtl_tcp
-       device at its DSP bandwidth unless it is a SoapySDR or I/Q replay one. A SoapySDR device may force its own rate
-       and a replay runs at its capture's: their start checks those. */
+    /* Input > Switch source > RTL-SDR opens the device svc_rtl_row_destination() names at its DSP bandwidth: an
+       RTL-SDR, rtl_tcp or SoapySDR one (the SoapySDR device stepped to it, issue #806). A replay runs at its capture's
+       rate, which its start checks. */
     char dev[sizeof opts->audio_in_dev];
     svc_rtl_row_destination(opts, dev, sizeof dev);
     return svc_check_input_analog_width_at(
@@ -1792,8 +1784,9 @@ svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* state
     if (!opts) {
         return -1;
     }
-    /* The Airspy delivers its own rate, which its start holds the width in force to. */
-    return svc_check_input_analog_width_at(opts, state, 0, why, why_size);
+    /* The Airspy runs at the DSP bandwidth, which the live rate step lands its capture rate on (issue #806). */
+    return svc_check_input_analog_width_at(
+        opts, state, dsd_app_analog_rtl_bw_rate_hz("airspy", AUDIO_IN_RTL, opts->rtl_dsp_bw_khz), why, why_size);
 }
 
 /* The input a start opens, as the stream classifies its device string (detect_radio_source()). */
@@ -1828,7 +1821,7 @@ svc_describe_input_width_refusal(const dsd_opts* opts, int kind, int width_hz, i
     }
     const int held_hz = svc_analog_held_width_hz(kind, width_hz);
     if (held_hz > 0 && rate_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
-        svc_analog_rate_refusal(kind, held_hz, rate_hz, dsd_opts_analog_rate_source(opts), why, why_size);
+        svc_analog_rate_refusal(kind, held_hz, rate_hz, why, why_size);
         return;
     }
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
@@ -2465,14 +2458,6 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
         return -1;
     }
     khz = dsd_analog_rtl_dsp_bw_or_default(khz);
-    if (!dsd_analog_airspy_dsp_bw_is_selectable(khz) && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-        /* The Airspy would run at the rate it runs at 48 kHz (DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ): say so instead of
-           storing a bandwidth its stream start then replaces. */
-        svc_why(why, why_size,
-                "an Airspy cannot run a %d kHz DSP bandwidth: no Airspy sample rate halves to it; use %d kHz or less",
-                khz, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
-        return -1;
-    }
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;
     }

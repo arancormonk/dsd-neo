@@ -1073,14 +1073,15 @@ dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
 /*
  * An analog channel width the analog preset filters at has to fit the DSP rate the stream will run at: an explicit
  * width, from --nfm-bandwidth-hz, --am-bandwidth-hz or [analog], or the AM default (issue #524), which is held to the
- * rate like an explicit one (the unset NFM default keeps its legacy rule and is never refused for its rate). For an
- * RTL-SDR or rtl_tcp input that rate is the DSP bandwidth the input spec (or [input] rtl_bw_khz) sets, known here, so a
- * width it cannot filter is refused before the device opens, with the validator's actionable text: `-fM -i
- * rtl:0:118.1M:22:0:16 --am-bandwidth-hz 20000` stops here. It runs before an RTL-SDR input looks for its device, so
- * the refusal does not depend on a dongle being plugged in (or on RTL-SDR support in the build): the spec alone
- * decides it. An rtl_tcp spec has set rtl_dsp_bw_khz already. Inputs whose device may force another rate (SoapySDR,
- * Airspy) and I/Q replay, whose sidecar sets the rate, are checked where the rate is final, at stream start
- * (rtl_demod_finalize_analog_channel()).
+ * rate like an explicit one (the unset NFM default keeps its legacy rule and is never refused for its rate). Every live
+ * radio runs at its DSP bandwidth (dsd_input_dsp_rate_policy(): an RTL-SDR's cascade lands on it, a SoapySDR or Airspy
+ * device's capture rate is stepped to it, issue #806), which the input spec (or [input] rtl_bw_khz) sets and which is
+ * known here, so a width it cannot filter is refused before the device opens, with the validator's actionable text:
+ * `-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz 20000` stops here. It runs before an RTL-SDR input looks for its
+ * device, so the refusal does not depend on a dongle being plugged in (or on radio support in the build): the spec
+ * alone decides it. An rtl_tcp, SoapySDR or Airspy spec has set rtl_dsp_bw_khz already. An I/Q replay, whose sidecar
+ * sets the rate, is checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()), as is
+ * whether a SoapySDR device can deliver a rate stepped to the bandwidth at all.
  */
 static int
 dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
@@ -1088,15 +1089,22 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
     const int width_hz = opts->analog_demod == DSD_ANALOG_DEMOD_AM
                              ? dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, explicit_hz)
                              : explicit_hz;
-    const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
-    if (!dsd_opts_is_analog_family(opts) || width_hz <= 0 || opts->iq_replay_active
-        || !(rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev))) {
+    if (!dsd_opts_is_analog_family(opts) || width_hz <= 0) {
         return 0;
     }
+    const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
     const int bw_khz =
         rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts->audio_in_dev, opts->rtl_dsp_bw_khz) : opts->rtl_dsp_bw_khz;
+    const int live_radio = rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+                           || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
+                           || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
+    const dsd_input_dsp_rate rate =
+        dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active, bw_khz);
+    if (!live_radio || rate.rate_hz <= 0) {
+        return 0;
+    }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check(opts->analog_demod, width_hz, bw_khz * 1000, err, sizeof err) == 0) {
+    if (dsd_analog_width_check_at(opts->analog_demod, width_hz, rate.rate_hz, rate.source, err, sizeof err) == 0) {
         return 0;
     }
     LOG_ERROR("%s.\n", err);

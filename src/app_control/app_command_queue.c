@@ -1747,11 +1747,10 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     return -1;
 }
 
-/* Input > Switch source > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit analog width that bandwidth
-   cannot filter is refused before the running input is torn down: the new stream's start would refuse it and leave
-   none. Input > Switch source > Airspy opens a device that sets its own rate, which its start holds the width in force
-   to (none under a scan row that runs a digital protocol), so only the rule every rate shares is asked first (issue
-   #578): DSD_NEO_CHANNEL_LPF=0 turns off the filter an explicit width, or the AM default, needs. */
+/* Input > Switch source > RTL-SDR or > Airspy opens a device at the DSP bandwidth (an Airspy's capture rate stepped to
+   it, issue #806), so an explicit analog width that bandwidth cannot filter is refused before the running input is torn
+   down: the new stream's start would refuse it and leave none (issue #578). DSD_NEO_CHANNEL_LPF=0, which turns off the
+   filter an explicit width or the AM default needs, is asked first. */
 static int
 ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state) {
@@ -8367,8 +8366,7 @@ cfg_reopen_rtl_bw_khz(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
 /* How a config's [input] reopens the running input's device (apply_cfg_radio_input()). */
 typedef enum {
     CFG_REOPEN_NONE = 0,        /* nothing reopens: the running device and its rate stay */
-    CFG_REOPEN_AT_RTL_BW,       /* an RTL-SDR or rtl_tcp device, at its DSP bandwidth */
-    CFG_REOPEN_AT_DEVICE_RATE,  /* a SoapySDR or Airspy device, at the rate the device delivers */
+    CFG_REOPEN_AT_RTL_BW,       /* a live radio (RTL-SDR, rtl_tcp, SoapySDR or Airspy), at its DSP bandwidth */
     CFG_REOPEN_AT_RUNNING_RATE, /* the running device at the rate it runs now: an Airspy for its monitor volume
                                    alone, or any device for a new gain under the same spec */
     CFG_REOPEN_AT_REPLAY_RATE,  /* a running I/Q replay the config leaves running, re-planned at the rate its new DSP
@@ -8418,14 +8416,14 @@ cfg_replay_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUser
 
 /*
  * A running RTL-family input (an RTL-SDR, rtl_tcp, SoapySDR or Airspy one) is reopened when the config's [input]
- * builds a radio input spec other than the one it runs (dsd_user_config_radio_input_spec()): an RTL-SDR or rtl_tcp
- * one at its DSP bandwidth, a SoapySDR or Airspy one at whatever rate that device delivers. An Airspy source over a
- * running Airspy applies live instead (cfg_is_live_airspy()), reopening only for settings the stream takes when it
- * opens, and the same spec (an rtl_tcp source without rtl_freq for the host and port already in use, say) reopens
- * nothing. A reopen whose start fails anyway puts the running input back (ui_cfg_settle_reopen()). A config apply never
- * switches the input type, so the spec given to any other input waits for the next start, which checks it
- * (dsd_engine_setup_check_analog_width() for an RTL-SDR or rtl_tcp spec, the stream start's own check for every radio
- * input).
+ * builds a radio input spec other than the one it runs (dsd_user_config_radio_input_spec()), at its DSP bandwidth:
+ * a SoapySDR or Airspy device's capture rate is stepped to it exactly, as an RTL-SDR's lands on it (issue #806). An
+ * Airspy source over a running Airspy applies live instead (cfg_is_live_airspy()), reopening only for settings the
+ * stream takes when it opens, and the same spec (an rtl_tcp source without rtl_freq for the host and port already in
+ * use, say) reopens nothing. A reopen whose start fails anyway puts the running input back (ui_cfg_settle_reopen()). A
+ * config apply never switches the input type, so the spec given to any other input waits for the next start, which
+ * checks it (dsd_engine_setup_check_analog_width() for every live radio spec, the stream start's own check for every
+ * radio input).
  */
 /* Whether a config whose [input] spec is the running input's restarts it for its gain (apply_cfg_rtl_live_gain()): it
    names a gain, the input is not an Airspy (whose gains are its own settings), and the gain it puts in force differs
@@ -8453,12 +8451,12 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
     if (cfg_is_live_airspy(cfg, opts->audio_in_dev, opts->audio_in_type)) {
         /* The Airspy path applies what it can live, but reopens the device for a new sample rate or serial, or a DSP
            bandwidth or monitor volume other than the stream opened with (svc_airspy_settings_reopen()), with the
-           shared tuning the config applies (apply_shared_radio_tuning_from_config()). A reopen runs at the rate the
-           device delivers for the new settings: a wider DSP bandwidth decimates its capture less. The monitor volume
+           shared tuning the config applies (apply_shared_radio_tuning_from_config()). A reopen runs at the new DSP
+           bandwidth, which the live rate step lands the Airspy's capture rate on (issue #806). The monitor volume
            is only copied when the stream opens, so a reopen for it alone runs at the rate the Airspy runs now, which
            the running front end holds the configured width the stream opens on to, changed or not (issue #578). */
         const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
-        const int next_bw_khz = dsd_analog_airspy_dsp_bw_or_default(bw_khz);
+        const int next_bw_khz = dsd_analog_rtl_dsp_bw_or_default(bw_khz);
         const int next_volume =
             dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier);
         if (!svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz,
@@ -8467,7 +8465,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
         }
         return svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz, next_volume,
                                           next_volume)
-                   ? CFG_REOPEN_AT_DEVICE_RATE
+                   ? CFG_REOPEN_AT_RTL_BW
                    : CFG_REOPEN_AT_RUNNING_RATE;
     }
     /* A config that builds no spec (an [input] without rtl_freq, say) leaves the running one, as one that builds the
@@ -8481,16 +8479,13 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
         }
         return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
     }
-    return (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP)
-               ? CFG_REOPEN_AT_RTL_BW
-               : CFG_REOPEN_AT_DEVICE_RATE;
+    return CFG_REOPEN_AT_RTL_BW;
 }
 
 /*
  * A width of analog @p kind the config leaves the analog monitor on (@p width_hz, 0 for the AM default), held to the
- * DSP rate it will run at. When the config reopens an RTL-SDR or rtl_tcp device, that is the reopened device's DSP
- * bandwidth (@p reopen_bw_khz), whatever runs now (another bandwidth, or a SoapySDR or Airspy device whose rate the
- * device forced); otherwise the running front end holds it, as DSD_APP_CMD_NFM_BANDWIDTH_SET and
+ * DSP rate it will run at. When the config reopens a live radio, that is the reopened device's DSP bandwidth
+ * (@p reopen_bw_khz), whatever runs now; otherwise the running front end holds it, as DSD_APP_CMD_NFM_BANDWIDTH_SET and
  * DSD_APP_CMD_AM_BANDWIDTH_SET do. A refusal leaves the whole config unapplied, with a toast naming the width, the rate
  * and the fix.
  */
@@ -8513,17 +8508,29 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reo
     return UI_CMD_APPLY_FAILED;
 }
 
+/* Whether the config turns a running conventional scanner off, so the command leaves the scan row's scope rather than
+   resume it (ui_cmd_leaves_scanner_scope()): its [trunking] leaves the scanner on only with trunking off, as the apply
+   stages it (one tuner owner, trunking winning). */
+static int
+cfg_leaves_scanner_scope(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+    const int scanner_after = cfg->has_trunking ? (cfg->trunk_scanner && !cfg->trunk_enabled) : opts->scanner_mode;
+    return ui_cmd_leaves_scanner_scope_with(opts, state, opts->scanner_mode == 1, scanner_after);
+}
+
 /*
  * A config apply is scoped: while it runs, dsd_opts holds the configured options, but the stream a reopen starts runs
  * the scan row on air again once the scope resumes. An nfm or am row's own width (--nfm-bandwidth-hz or
  * --am-bandwidth-hz, issue #526) is therefore held to the rate a reopened device runs at, as RTL_SET_BW and Input >
  * Switch source hold it: a reopen that cannot filter it leaves the whole config unapplied, rather than the row refused
- * where it lands. A config that reopens nothing, or reopens the Airspy at the rate it runs, moves no rate.
+ * where it lands. A config that reopens nothing, or reopens the Airspy at the rate it runs, moves no rate, and one that
+ * turns the conventional scanner off leaves the row's scope instead of resuming it (cfg_leaves_scanner_scope()), so
+ * its row runs on no stream the config opens.
  */
 static int
 cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
-    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH) || row->channel_bw_hz <= 0) {
+    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH) || row->channel_bw_hz <= 0
+        || cfg_leaves_scanner_scope(opts, state, cfg)) {
         return UI_CMD_APPLY_COMPLETED;
     }
     const int kind = row->channel_bw_kind == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
@@ -8533,8 +8540,6 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     if (reopen == CFG_REOPEN_AT_RTL_BW) {
         rc = svc_check_analog_bandwidth_for_rtl_bw(kind, row->channel_bw_hz, cfg_reopen_rtl_bw_khz(opts, cfg), why,
                                                    sizeof why);
-    } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-        rc = svc_check_analog_bandwidth_at_device_rate(kind, row->channel_bw_hz, why, sizeof why);
     } else if (reopen == CFG_REOPEN_AT_REPLAY_RATE) {
         rc = svc_check_analog_bandwidth_at_rate(kind, row->channel_bw_hz, cfg_replay_rate_hz(opts, state, cfg), why,
                                                 sizeof why);
@@ -8550,23 +8555,13 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
  * A width of analog @p kind that a DSP rate holds (an explicit width, or the AM default) and that the session runs once
  * the config is applied, held to the rate it will run at whenever the config changes the width, reopens a device under
  * it (cfg_radio_reopen()) or, with @p opens_anew, has the front end open on it anew, changed or not: at the DSP
- * bandwidth an RTL-SDR or rtl_tcp reopen runs at, only to the rules every rate shares for a SoapySDR or Airspy reopen
- * (its start checks the rate it delivers, and a start that refuses it puts the running input back), otherwise at the
+ * bandwidth a reopened live radio runs at, an RTL-SDR, rtl_tcp, SoapySDR or Airspy one (issue #806), otherwise at the
  * running front end's rate, which an Airspy reopened for its monitor volume alone keeps (issue #578).
  */
 static int
 cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int kind, int width_hz,
                             int opens_anew) {
     const cfg_reopen_kind reopen = cfg_radio_reopen(opts, state, cfg);
-    if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-        /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
-        char why[128];
-        if (svc_check_analog_bandwidth_at_device_rate(kind, width_hz, why, sizeof why) == 0) {
-            return UI_CMD_APPLY_COMPLETED;
-        }
-        ui_set_toast(state, 5, "Config not applied: %s", why);
-        return UI_CMD_APPLY_FAILED;
-    }
     const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
     const int reopen_rate_hz = (reopen == CFG_REOPEN_AT_REPLAY_RATE) ? cfg_replay_rate_hz(opts, state, cfg) : 0;
     const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || reopen_rate_hz > 0

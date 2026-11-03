@@ -215,7 +215,7 @@ test_plan_note_for_tetra_only(void) {
     plan.protocol = DSD_RR_PROTO_TETRA;
     assert(rr_panel_plan_note(&plan, lines, RR_PANEL_NOTE_LINES_MAX + 1) == 3U);
     assert(strcmp(lines[0], "TETRA needs an I/Q radio at a TETRA rate, or a symbol capture.") == 0);
-    assert(strcmp(lines[1], "On RTL-SDR or rtl_tcp that rate is 72 kHz; an Airspy can't decode it yet.") == 0);
+    assert(strcmp(lines[1], "On RTL-SDR, rtl_tcp or Airspy, set a 72 kHz DSP bandwidth for it.") == 0);
     assert(strcmp(lines[2], "Some systems listed as TETRA run Tetrapol, which dsd-neo can't decode.") == 0);
     assert(lines[3] == NULL);
     for (size_t i = 0; i < 3U; i++) {

@@ -78,8 +78,8 @@ int dsd_app_rr_fill_apply_mode(const dsd_rr_import_plan* plan, dsd_app_rr_apply_
 typedef enum {
     DSD_APP_RR_INPUT_AUDIO = 0,     /**< demodulated audio: PulseAudio, a WAV file, TCP/UDP PCM, stdin */
     DSD_APP_RR_INPUT_RTL = 1,       /**< an RTL-SDR or rtl_tcp radio, whose DSP rate is its DSP bandwidth */
-    DSD_APP_RR_INPUT_SOAPY = 2,     /**< a SoapySDR device, whose DSP rate the device settles */
-    DSD_APP_RR_INPUT_AIRSPY = 3,    /**< an Airspy, whose sample rates halve to no TETRA rate */
+    DSD_APP_RR_INPUT_SOAPY = 2,     /**< a SoapySDR device, whose DSP rate is its DSP bandwidth (issue #806) */
+    DSD_APP_RR_INPUT_AIRSPY = 3,    /**< an Airspy, whose DSP rate is its DSP bandwidth too (issue #806) */
     DSD_APP_RR_INPUT_IQ_REPLAY = 4, /**< an I/Q replay, which a mode change re-plans or refuses (issue #701) */
     DSD_APP_RR_INPUT_SYMBOLS = 5,   /**< a symbol capture (.bin dibits, or float symbols) */
 } dsd_app_rr_input_kind;
@@ -109,10 +109,9 @@ typedef struct {
  * @brief Whether the session can take an import at all, and decode what it selects. Pure.
  *
  * Refuses an import while a trunk scan runs (it keeps its own channel maps), AM or TETRA on demodulated audio, and
- * TETRA where it decodes nothing: an RTL-SDR or rtl_tcp radio off the 72 kHz DSP bandwidth (no live reopen: it would
- * restart an --iq-capture), an Airspy, a SoapySDR device whose known rate is no TETRA rate (an unknown rate passes:
- * the decoder thread decides), or a --tetra-uplink session. An I/Q replay and a symbol capture pass; a replay's mode
- * change re-plans or refuses on its own.
+ * TETRA where it decodes nothing: a live radio (RTL-SDR, rtl_tcp, SoapySDR or Airspy) off the 72 kHz DSP bandwidth (no
+ * live reopen: it would restart an --iq-capture), or a --tetra-uplink session. An I/Q replay and a symbol capture
+ * pass; a replay's mode change re-plans or refuses on its own.
  *
  * @param facts    The session and the import.
  * @param why      Receives the reason as a phrase for "Failed: RR import -> <why>", or "" when it passes; may be NULL.

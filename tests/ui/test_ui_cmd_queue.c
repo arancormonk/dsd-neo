@@ -13022,57 +13022,72 @@ reset_rx_family_wrap(void) {
 }
 
 /*
- * TETRA times its symbols at a whole number of samples per symbol: switched on where the DSP rate is no multiple of
- * 18 kHz, the mode is kept but its toast says the rate is wrong and how to change it, and the log names the fix in
- * full. The rate is the running stream's, else an RTL-SDR's DSP bandwidth; at 72 kHz the toast is the usual one.
+ * TETRA times its symbols at a whole number of samples per symbol, which only the 72 kHz DSP bandwidth gives a live
+ * radio. D3 (a) (issue #806): switched on below it, on any live radio (an RTL-SDR, rtl_tcp, SoapySDR or Airspy input,
+ * each running at its DSP bandwidth), TETRA is selected, nothing reopens and the bandwidth stays, so the rate chain and
+ * the stream are unchanged and the TETRA chain stays inactive at that rate; the toast says it needs 72 kHz and that the
+ * bandwidth stays until the operator sets it, and the log names the fix in the input's spec form. At 72 kHz the toast
+ * is the usual one. The rate is the running stream's, else the input's DSP bandwidth. Before #806 an Airspy ran
+ * 78.125 kHz at 48 kHz and was told "no Airspy rate is one".
  */
 static int
 test_decode_mode_set_tetra_names_an_unusable_rate(void) {
     static dsd_opts opts;
     static dsd_state state;
     static void* fake_ctx[2];
+    static const char* const live_radios[] = {"rtl:0:420.1M:30:0:48", "rtltcp:127.0.0.1:1234", "soapy:driver=sdrplay",
+                                              "airspy"};
+    static const int below_72[] = {4, 6, 8, 12, 16, 24, 48};
     int rc = 0;
     init_decode_mode_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
-    opts.rtl_dsp_bw_khz = 48;
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     reset_rx_family_wrap();
-    g_fake_request_rate_hz = 48000;
-    rc |= expect_int("tetra at 48 kHz queued",
-                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tetra at 48 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("tetra at 48 kHz is kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
-    rc |= expect_str("tetra at 48 kHz names the rate and the fix", state.ui_msg,
-                     "Decoding TETRA: DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    for (size_t d = 0; d < sizeof live_radios / sizeof live_radios[0]; d++) {
+        for (size_t b = 0; b < sizeof below_72 / sizeof below_72[0]; b++) {
+            char label[96];
+            char want[160];
+            DSD_SNPRINTF(label, sizeof label, "tetra on %s at %d kHz", live_radios[d], below_72[b]);
+            DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", live_radios[d]);
+            dsd_opts_set_rtl_dsp_bw(&opts, below_72[b], DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+            opts.rtl_needs_restart = 0;
+            g_fake_request_rate_hz = below_72[b] * 1000;
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+            (void)dsd_app_drain_cmds(&opts, &state);
+            g_config_rtl_creates = 0;
+            rc |= expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |=
+                expect_int(label, dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA && opts.frame_tetra == 1, 1);
+            rc |= expect_int(label, opts.rtl_dsp_bw_khz == below_72[b] && opts.rtl_needs_restart == 0, 1);
+            rc |= expect_int(label, g_config_rtl_creates, 0);
+            rc |= expect_str(label, opts.audio_in_dev, live_radios[d]);
+            DSD_SNPRINTF(want, sizeof want,
+                         "Decoding TETRA: needs a 72 kHz DSP bandwidth; it stays %d kHz until you set it", below_72[b]);
+            rc |= expect_str(label, state.ui_msg, want);
+            rc |= expect_int(label, strlen(state.ui_msg) <= 80U, 1);
+        }
+    }
 
-    /* The running stream's rate, which a device forced: an Airspy at 78.125 kHz has no DSP bandwidth to suggest. */
-    rc |= expect_int("dmr between", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("dmr between drained", dsd_app_drain_cmds(&opts, &state), 1);
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
-    g_fake_request_rate_hz = 78125;
-    rc |= expect_int("tetra on an airspy queued",
-                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tetra on an airspy drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("tetra on an airspy says no rate fits", state.ui_msg,
-                     "Decoding TETRA: DSP rate 78.125 kHz is no multiple of 18 kHz, and no Airspy rate is one");
-
-    /* With no stream running, an RTL-SDR's DSP bandwidth is the rate: 72 kHz runs TETRA. */
-    rc |= expect_int("dmr again", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("dmr again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* With no stream running, the input's DSP bandwidth is the rate: 72 kHz runs TETRA, an Airspy's too. */
+    for (size_t d = 0; d < sizeof live_radios / sizeof live_radios[0]; d++) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "tetra on %s at 72 kHz", live_radios[d]);
+        rc |= expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+        state.rtl_ctx = NULL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", live_radios[d]);
+        dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+        g_fake_request_rate_hz = 0;
+        rc |= expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str(label, state.ui_msg, "Decoding TETRA");
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    }
     state.rtl_ctx = NULL;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:72");
-    opts.rtl_dsp_bw_khz = 72;
-    g_fake_request_rate_hz = 0;
-    rc |= expect_int("tetra at 72 kHz queued",
-                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tetra at 72 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("tetra at 72 kHz is the usual toast", state.ui_msg, "Decoding TETRA");
     reset_rx_family_wrap();
     freeState(&state);
     return rc;
@@ -15678,24 +15693,39 @@ submit_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, con
 }
 
 /*
- * A config whose [input] reopens a SoapySDR or Airspy device over the running RTL-SDR runs an explicit NFM width at the
- * rate that device delivers (an Airspy's 78,125 Hz, say), which neither the running input's DSP rate nor rtl_bw_khz
- * gives. It is held to neither: the reopened stream's start checks the width at the delivered rate. An Airspy source
+ * Issue #806: a config whose [input] reopens a SoapySDR or Airspy device over the running RTL-SDR runs an explicit NFM
+ * width at the DSP bandwidth the reopened device runs at (rtl_bw_khz, else the one in force), which the live rate step
+ * lands the device's capture rate on, so the width is held to it up front, as for an RTL-SDR reopen (before, the device
+ * was left to deliver a rate such as an Airspy's 78,125 Hz and its start checked the width there). An Airspy source
  * over a running Airspy reopens nothing (it applies live), so the running front end still holds it, as it does for one
  * that reopens the Airspy for its monitor volume alone (issue #578): the device delivers the rate it runs now.
  */
 static int
-test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
+test_config_apply_holds_a_soapy_or_airspy_reopen_to_its_bandwidth(void) {
     static dsd_opts opts;
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
-    /* No stream (the reopen's failure is the wrapped stream create's, not the width's): the 24 kHz RTL-SDR input's DSP
-       bandwidth cannot filter 25 kHz, and would refuse it if it were the rate. */
+    /* No stream: the 24 kHz RTL-SDR input's DSP bandwidth, which an Airspy source without rtl_bw_khz takes, cannot
+       filter 25 kHz, so the config is refused before anything reopens. */
     state.rtl_ctx = NULL;
     g_analog_check_result = -1;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 0, 25000, "cfg airspy over rtl");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 0, 25000, "cfg airspy over rtl at 24 kHz");
+    rc |= expect_toast("cfg airspy over rtl at 24 kHz: refused", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 "
+                       "kHz DSP bandwidth");
+    rc |= expect_int("cfg airspy over rtl at 24 kHz: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("cfg airspy over rtl at 24 kHz: width kept", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_str("cfg airspy over rtl at 24 kHz: input kept", opts.audio_in_dev, "rtl:0:851.375M:0:0:24");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 24, 25000, "cfg soapy over rtl at 24 kHz");
+    rc |= expect_toast("cfg soapy over rtl at 24 kHz: refused", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz)");
+    rc |= expect_int("cfg soapy over rtl at 24 kHz: nothing reopened", g_config_rtl_creates, 0);
+    /* At rtl_bw_khz 48 it fits. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 48, 25000, "cfg airspy over rtl");
     rc |= expect_int("cfg airspy over rtl: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
     rc |= expect_int("cfg airspy over rtl: front end not asked", g_analog_check_calls, 0);
     rc |= expect_int("cfg airspy over rtl: width applied", opts.analog_nfm_bandwidth_hz, 25000);
@@ -15724,11 +15754,10 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
     rc |= expect_int("cfg airspy over airspy: width kept", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg airspy over airspy: refused", strstr(state.ui_msg, "Config not applied") != NULL, 1);
 
-    /* ...unless it moves the DSP bandwidth (12 -> 48 kHz), which the Airspy path applies by reopening the device, at
-       the rate it delivers for the new bandwidth: an Airspy's 2.5 MS/s capture is decimated to 19,531 Hz at 12 kHz but
-       to 78,125 Hz at 48 kHz. The running front end's rate says nothing about that, so the width waits for the reopened
-       stream's start, as it does for any SoapySDR or Airspy reopen. That start takes it here (one that refuses it puts
-       the running input back, test_config_reopen_that_fails_keeps_the_running_input()). */
+    /* ...unless it moves the DSP bandwidth (12 -> 48 kHz), which the Airspy path applies by reopening the device at the
+       new bandwidth. The running front end's rate says nothing about that, so the width is held to the new bandwidth,
+       which fits it here (one that does not is refused up front; a start that refuses it anyway puts the running input
+       back, test_config_reopen_that_fails_keeps_the_running_input()). */
     opts.rtl_dsp_bw_khz = 12;
     reset_rx_family_wrap();
     g_analog_check_result = -1;
@@ -15739,23 +15768,23 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
     rc |= expect_int("cfg airspy 12->48 kHz: width applied", opts.analog_nfm_bandwidth_hz, 25000);
     rc |= expect_int("cfg airspy 12->48 kHz: reopened", g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
 
-    /* The issue's own case: a running Airspy at 12 kHz (19,531 Hz) on NFM 12.5 kHz, and a config that changes only the
+    /* The issue's own case: a running Airspy at 24 kHz on NFM 12.5 kHz, and a config that changes only the
        monitor volume with a 25 kHz width. The volume is copied when the stream opens, so the Airspy reopens for it, but
        at the rate it runs now: the running front end holds the width up front, and nothing is applied. */
     opts.analog_nfm_bandwidth_hz = 12500;
-    opts.rtl_dsp_bw_khz = 12;
+    opts.rtl_dsp_bw_khz = 24;
     opts.rtl_volume_multiplier = 2;
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     reset_rx_family_wrap();
     g_analog_check_result = -1;
-    g_fake_demod_rate_hz = 19531;
+    g_fake_demod_rate_hz = 24000;
     g_config_rtl_open_ok = 1;
     dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_AIRSPY;
     cfg.airspy = opts.airspy;
-    cfg.rtl_bw_khz = 12;
+    cfg.rtl_bw_khz = 24;
     cfg.rtl_volume = 3;
     cfg.has_analog = 1;
     cfg.analog_nfm_bandwidth_hz = 25000;
@@ -15764,7 +15793,7 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
                      g_analog_check_calls == 1 && g_analog_check_width_hz == 25000, 1);
     rc |= expect_int("cfg airspy volume only: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_toast("cfg airspy volume only toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate");
     rc |= expect_int("cfg airspy volume only: nothing reopened", g_config_rtl_creates, 0);
     rc |= expect_int("cfg airspy volume only: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
     rc |= expect_int("cfg airspy volume only: width kept", opts.analog_nfm_bandwidth_hz, 12500);
@@ -15782,12 +15811,12 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
 /*
  * Issue #578: an Airspy reopened for its monitor volume alone runs at the rate it runs now, on the configured settings
  * the apply leaves (it runs inside a scan row's suspended scope), so the running front end holds the configured width
- * up front even when the config leaves it unchanged. An Analog-configured Airspy at a 12 kHz DSP bandwidth (19,531 Hz)
- * scans a typed NXDN48 row, whose digital profile the stream runs, with a configured NFM width of 25 kHz that rate
- * cannot filter (the DSP bandwidth was lowered while the row ran). A config that changes the volume and the frequency,
- * with no [analog], would reopen the Airspy on that width, which its start refuses: it is refused first, naming the
- * width and the rate, with nothing applied and nothing reopened. A configured width the running rate filters reopens
- * the Airspy for the new volume as before.
+ * up front even when the config leaves it unchanged. An Analog-configured Airspy at a 24 kHz DSP bandwidth (24 kHz,
+ * issue #806) scans a typed NXDN48 row, whose digital profile the stream runs, with a configured NFM width of 25 kHz
+ * that rate cannot filter (the DSP bandwidth was lowered while the row ran). A config that changes the volume and the
+ * frequency, with no [analog], would reopen the Airspy on that width, which its start refuses: it is refused first,
+ * naming the width and the rate, with nothing applied and nothing reopened. A configured width the running rate filters
+ * reopens the Airspy for the new volume as before.
  */
 static int
 test_config_volume_only_reopen_holds_the_unchanged_width(void) {
@@ -15798,7 +15827,7 @@ test_config_volume_only_reopen_holds_the_unchanged_width(void) {
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
     dsd_airspy_config_defaults(&opts.airspy);
-    opts.rtl_dsp_bw_khz = 12;
+    opts.rtl_dsp_bw_khz = 24;
     opts.rtl_volume_multiplier = 2;
     opts.rtlsdr_center_freq = 851375000U;
     opts.analog_nfm_bandwidth_hz = 25000;
@@ -15806,16 +15835,16 @@ test_config_volume_only_reopen_holds_the_unchanged_width(void) {
     rc |= expect_int("volume only under a row: typed row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
     rc |= expect_int("volume only under a row: row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
     reset_rx_family_wrap();
-    g_fake_demod_rate_hz = 19531;
+    g_fake_demod_rate_hz = 24000;
     g_config_rtl_open_ok = 1;
-    g_config_rtl_device_rate_hz = 19531;
+    g_config_rtl_device_rate_hz = 24000;
     g_analog_check_result = -1;
     dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_AIRSPY;
     cfg.airspy = opts.airspy;
-    cfg.rtl_bw_khz = 12;
+    cfg.rtl_bw_khz = 24;
     cfg.rtl_volume = 3;
     DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "852.5M");
     rc |= submit_config(&opts, &state, &cfg, "volume only under a row");
@@ -15824,7 +15853,7 @@ test_config_volume_only_reopen_holds_the_unchanged_width(void) {
         g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 25000, 1);
     rc |= expect_int("volume only under a row: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_toast("volume only under a row: toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate");
     rc |= expect_int("volume only under a row: nothing reopened", g_config_rtl_creates, 0);
     rc |= expect_int("volume only under a row: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
     rc |= expect_int("volume only under a row: volume kept", opts.rtl_volume_multiplier, 2);
@@ -15838,9 +15867,9 @@ test_config_volume_only_reopen_holds_the_unchanged_width(void) {
     /* A configured 12.5 kHz the running rate filters: the Airspy reopens for the volume. */
     (void)dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500);
     reset_rx_family_wrap();
-    g_fake_demod_rate_hz = 19531;
+    g_fake_demod_rate_hz = 24000;
     g_config_rtl_open_ok = 1;
-    g_config_rtl_device_rate_hz = 19531;
+    g_config_rtl_device_rate_hz = 24000;
     rc |= submit_config(&opts, &state, &cfg, "volume only, width fits");
     rc |= expect_int("volume only, width fits: the front end asked",
                      g_analog_check_calls == 1 && g_analog_check_width_hz == 12500, 1);
@@ -15872,10 +15901,11 @@ expect_restarted_on(const char* label, const dsd_opts* opts, const dsd_state* st
 
 /*
  * Issue #578: a config apply whose stream start fails never loses the running input. A reopen onto a SoapySDR or Airspy
- * device is held only to the rules every rate shares before it commits, so its start can still refuse the width at the
- * rate the device delivers; any start can fail for its device. Either way the apply puts back the input and its device
- * settings, the tuning, [mode], [demod] and the [analog] widths, restarts the input that ran, says why ("Config not
- * applied: ...") and fails. Nothing is published to the front end for the settings it refused.
+ * device is held to its DSP bandwidth before it commits (issue #806), but a start can still refuse the width (the fake
+ * devices here deliver another rate, a stand-in for any start that refuses it), and any start can fail for its device.
+ * Either way the apply puts back the input and its device settings, the tuning, [mode], [demod] and the [analog]
+ * widths, restarts the input that ran, says why ("Config not applied: ...") and fails. Nothing is published to the
+ * front end for the settings it refused.
  */
 static int
 test_config_reopen_that_fails_keeps_the_running_input(void) {
@@ -15884,15 +15914,16 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
     static void* fake_ctx[2];
     int rc = 0;
 
-    /* An -fA session on an RTL-SDR at 24 kHz with NFM 12.5 kHz; a config opens a SoapySDR device with a 25 kHz width,
-       and its start refuses 25 kHz at the 24 kHz rate the device delivered. */
+    /* An -fA session on an RTL-SDR at 24 kHz with NFM 12.5 kHz; a config opens a SoapySDR device at 48 kHz with a
+       25 kHz width, which the bandwidth filters, and its start refuses 25 kHz at the 24 kHz rate the device delivered.
+       */
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     opts.analog_nfm_bandwidth_hz = 12500;
     reset_rx_family_wrap();
     g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
     g_config_rtl_refuse_rate_hz = 24000;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 25000, "cfg soapy refused");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 48, 25000, "cfg soapy refused");
     rc |= expect_int("cfg soapy refused: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_toast("cfg soapy refused toast", &state,
                        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz)");
@@ -15902,9 +15933,9 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
     rc |= expect_int("cfg soapy refused: rate put back", opts.rtl_dsp_bw_khz, 24);
     rc |= expect_int("cfg soapy refused: nothing published", g_analog_req_calls, 0);
 
-    /* A DMR session on the same RTL-SDR with a stored 25 kHz; a config opens an Airspy with [mode] analog, and the
-       Airspy's start refuses the width at 19,531 Hz. The session goes back to DMR, and the stream it restarts runs
-       the digital family. */
+    /* A DMR session on the same RTL-SDR with a stored 25 kHz; a config opens an Airspy at 48 kHz with [mode] analog,
+       and the Airspy's start refuses the width at 19,531 Hz. The session goes back to DMR, and the stream it restarts
+       runs the digital family. */
     rc |=
         expect_int("dmr session queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
                    DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -15919,6 +15950,7 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_AIRSPY;
     dsd_airspy_config_defaults(&cfg.airspy);
+    cfg.rtl_bw_khz = 48;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_ANALOG;
     rc |= submit_config(&opts, &state, &cfg, "cfg airspy onto analog refused");
@@ -15982,7 +16014,8 @@ test_config_reopen_with_no_stream_reports_the_failed_start(void) {
     static void* fake_ctx[2];
     int rc = 0;
 
-    /* An -fA session on an RTL-SDR at 24 kHz with no stream, and a SoapySDR device whose start refuses 25 kHz. */
+    /* An -fA session on an RTL-SDR at 24 kHz with no stream, and a SoapySDR device at 48 kHz whose start refuses
+       25 kHz. */
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     opts.analog_nfm_bandwidth_hz = 12500;
     state.rtl_ctx = NULL;
@@ -15990,7 +16023,7 @@ test_config_reopen_with_no_stream_reports_the_failed_start(void) {
     g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
     g_config_rtl_refuse_rate_hz = 24000;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 25000, "no stream soapy refused");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 48, 25000, "no stream soapy refused");
     rc |= expect_int("no stream soapy refused: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_toast("no stream soapy refused toast", &state,
                        "Config applied; no input running: NFM 25 kHz does not fit the 24 kHz DSP rate");
@@ -16246,7 +16279,9 @@ test_nfm_width_refused_after_the_check(void) {
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
     opts.analog_nfm_bandwidth_hz = 12500;
-    g_fake_demod_rate_hz = 16000; /* where the stream's rate has moved to */
+    /* An Airspy at a 16 kHz DSP bandwidth runs at 16 kHz (issue #806), so its refusal names the bandwidths that fit. */
+    opts.rtl_dsp_bw_khz = 16;
+    g_fake_demod_rate_hz = 16000;
     g_fake_request_rate_hz = 16000;
 
     /* The request refused at once. */
@@ -16255,9 +16290,10 @@ test_nfm_width_refused_after_the_check(void) {
     rc |= submit_nfm_width(&opts, &state, 20000, "width refused by its request");
     rc |= expect_int("request refused: checked first", g_analog_check_calls, 1);
     rc |= expect_int("request refused: width kept", opts.analog_nfm_bandwidth_hz, 12500);
-    rc |= expect_toast("request refused toast", &state,
-                       "Refused: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); raise the DSP bandwidth "
-                       "or narrow the NFM width");
+    rc |=
+        expect_toast("request refused toast", &state,
+                     "Refused: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP "
+                     "bandwidth");
     g_analog_req_result = 0;
 
     /* The request refused where it landed: applied at first, put back once the stream says so. */
@@ -16272,9 +16308,10 @@ test_nfm_width_refused_after_the_check(void) {
     state.ui_msg[0] = '\0';
     rc |= expect_int("landing: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
     rc |= expect_int("landing: the width the front end kept is back", opts.analog_nfm_bandwidth_hz, 12500);
-    rc |= expect_toast("landing: refusal toast", &state,
-                       "Refused: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); raise the DSP bandwidth "
-                       "or narrow the NFM width");
+    rc |=
+        expect_toast("landing: refusal toast", &state,
+                     "Refused: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP "
+                     "bandwidth");
     state.ui_msg[0] = '\0';
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("landing: reported once", state.ui_msg[0] == '\0', 1);
@@ -20497,9 +20534,11 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
 /*
  * Issue #578: a config reopen that starts under a scan row's suspended scope opens the new stream on the configured
  * settings, so that start never held the row's own width to the rate the new device delivers, which a config that
- * reopens an Airspy or SoapySDR device cannot know up front. A DMR-configured scanner on an nfm row with its own 25 kHz
- * width loads a config that reopens the input as an Airspy at a 12 kHz DSP bandwidth, whose 19,531 Hz cannot filter
- * 25 kHz: the resume would ask the new stream for a row it refuses, leaving the decoder on the row's NFM over a digital
+ * reopens an Airspy or SoapySDR device holds up front to its DSP bandwidth (issue #806: the device's capture rate is
+ * stepped to it). A DMR-configured scanner on an nfm row with its own 25 kHz width loads a config that reopens the
+ * input as an Airspy at a 12 kHz DSP bandwidth, which cannot filter 25 kHz: refused before anything reopens. At 48 kHz
+ * the row's width fits, but the fake device here delivers 19,531 Hz (a stand-in for any new stream that refuses the
+ * row): the resume would ask the new stream for a row it refuses, leaving the decoder on the row's NFM over a digital
  * front end. The apply fails as a failed start does: the RTL-SDR that ran is back, with the toast naming the width and
  * the new rate, and the row's monitor is asked of it once the row is back. A rate that fits the row keeps the reopen.
  * With no stream running before, there is nothing to put back: the config stays applied on the new stream, and the
@@ -20521,9 +20560,19 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
 
     reset_rx_family_wrap();
     g_config_rtl_open_ok = 1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 12, 0, "reopen row at 12 kHz");
+    rc |= expect_int("reopen row at 12 kHz: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("reopen row at 12 kHz: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_str("reopen row at 12 kHz: RTL-SDR kept", opts.audio_in_dev, "rtl:0:851.375M:0:0:16");
+    rc |= expect_toast("reopen row at 12 kHz toast", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 48 or 72 "
+                       "kHz DSP bandwidth");
+
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
     g_analog_check_result = -1; /* the new stream cannot filter the row's 25 kHz */
     g_fake_request_rate_hz = 19531;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 12, 0, "reopen row refused");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 48, 0, "reopen row refused");
     rc |= expect_int("reopen row refused: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_int(
         "reopen row refused: the row held to the new stream",
@@ -20547,8 +20596,8 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
     /* A rate that filters the row's width keeps the reopened Airspy. */
     reset_rx_family_wrap();
     g_config_rtl_open_ok = 1;
-    g_fake_request_rate_hz = 39062;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 24, 0, "reopen row fits");
+    g_fake_request_rate_hz = 48000;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 48, 0, "reopen row fits");
     rc |= expect_int("reopen row fits: applied", dsd_app_command_test_last_failed(), 0);
     rc |= expect_int("reopen row fits: one start", g_config_rtl_creates, 1);
     rc |= expect_str("reopen row fits: on the Airspy", opts.audio_in_dev, "airspy");
@@ -20563,7 +20612,7 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
     g_config_rtl_open_ok = 1;
     g_analog_check_result = -1;
     g_fake_request_rate_hz = 19531;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 12, 0, "reopen row refused, no stream");
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 48, 0, "reopen row refused, no stream");
     rc |= expect_int("reopen row refused, no stream: failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_int("reopen row refused, no stream: the Airspy runs",
                      g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
@@ -20583,14 +20632,16 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
 /*
  * Issue #578: a config apply's rollback starts the input that ran on the receive profile its stream ran. The apply runs
  * under a scan row's suspended scope, whose options are the configured settings, while the stream ran the row over
- * them. An Analog-configured session on an Airspy at a 12 kHz DSP bandwidth (19,531 Hz) scans a typed NXDN48 row, whose
- * digital profile the stream runs, with a configured NFM width of 25 kHz that rate cannot filter (the DSP bandwidth was
- * lowered while the row ran, reopening the stream on the row). A config then reopens the input as a SoapySDR device
- * that does not open: started again on the configured monitor, the Airspy would refuse 25 kHz and leave no input, so
- * it starts on the row's NXDN48 profile, and the configured settings go back for the row to resume over. The same holds
- * when the reopened stream's start refuses the configured width itself: a reopen opens on the configured settings,
- * holding their width to the rate the new stream runs whatever row is on air, as every reopen holds the configured
- * width (the analog monitor the scan leaves back to), so the config is not applied and the Airspy starts on the row.
+ * them. An Analog-configured session on an Airspy at a 12 kHz DSP bandwidth scans a typed NXDN48 row, whose digital
+ * profile the stream runs, with a configured NFM width of 25 kHz that rate cannot filter (the DSP bandwidth was
+ * lowered while the row ran, reopening the stream on the row). A config then reopens the input as a SoapySDR device at
+ * 48 kHz, which filters 25 kHz up front (issue #806), and that does not open: started again on the configured monitor,
+ * the Airspy would refuse 25 kHz and leave no input, so it starts on the row's NXDN48 profile, and the configured
+ * settings go back for the row to resume over. The same holds when the reopened stream's start refuses the configured
+ * width itself: a reopen opens on the configured settings, holding their width to the rate the new stream runs whatever
+ * row is on air, as every reopen holds the configured width (the analog monitor the scan leaves back to), so the config
+ * is not applied and the Airspy starts on the row (the fake device delivers 19,531 Hz, a stand-in for a start that
+ * refuses the width).
  */
 static int
 test_config_rollback_restarts_the_profile_the_stream_ran(void) {
@@ -20612,7 +20663,7 @@ test_config_rollback_restarts_the_profile_the_stream_ran(void) {
         g_config_rtl_open_ok = 1;
         g_config_rtl_device_rate_hz = 19531;
         g_config_rtl_fail_starts = refused ? 0 : 1; /* the SoapySDR device does not open */
-        rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 25000, label);
+        rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 48, 25000, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
         rc |= expect_toast(label, &state,
                            refused
@@ -20646,8 +20697,8 @@ test_config_rollback_restarts_the_profile_the_stream_ran(void) {
  * session onto the analog monitor: the new stream opened on it, so the row's refusal when the scope resumes is not the
  * front end refusing the switch, and the decoder does not go back to the mode the session had. A DMR-configured scanner
  * with no stream, on an nfm row with its own 25 kHz width, loads a config with [mode] analog that opens an Airspy at a
- * 12 kHz DSP bandwidth, whose 19,531 Hz refuses 25 kHz: the configured mode is Analog, the Airspy runs, and the toast
- * is the scan row's.
+ * 48 kHz DSP bandwidth, which filters 25 kHz up front, but whose new stream (the fake device delivers 19,531 Hz)
+ * refuses it: the configured mode is Analog, the Airspy runs, and the toast is the scan row's.
  */
 static int
 test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run(void) {
@@ -20674,7 +20725,7 @@ test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_AIRSPY;
     dsd_airspy_config_defaults(&cfg.airspy);
-    cfg.rtl_bw_khz = 12;
+    cfg.rtl_bw_khz = 48;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_ANALOG;
     rc |= submit_config(&opts, &state, &cfg, "no stream mode");
@@ -21156,11 +21207,24 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("default width: bw 12 applied", opts.rtl_dsp_bw_khz, 12);
 
+    /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth (its capture rate is stepped to it), so a
+       bandwidth that cannot filter the width is refused up front there too (it was applied before, the device left
+       to pick the rate); one that fits is applied. */
     opts.analog_nfm_bandwidth_hz = 25000;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16);
-    (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int("device-picked rate: bw 16 applied", opts.rtl_dsp_bw_khz, 16);
+    static const char* const stepped_devices[] = {"soapy:driver=airspy", "airspy"};
+    for (size_t d = 0; d < sizeof stepped_devices / sizeof stepped_devices[0]; d++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", stepped_devices[d]);
+        dsd_opts_set_rtl_dsp_bw(&opts, 12, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int("stepped device: bw 16 refused for 25 kHz", opts.rtl_dsp_bw_khz, 12);
+        rc |= expect_toast("stepped device: bw 16 toast", &state,
+                           "Refused: DSP BW 16 kHz cannot filter NFM 25 kHz (max 13.2 kHz)");
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 48);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int("stepped device: bw 48 applied", opts.rtl_dsp_bw_khz, 48);
+    }
+    dsd_opts_set_rtl_dsp_bw(&opts, 16, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
     opts.analog_only = 0; /* a digital session does not use the width */
@@ -21465,8 +21529,14 @@ test_rtl_row_returns_to_the_radio_a_switch_left(void) {
     rc |= expect_int("unfit rtl destination: nothing opened", g_config_rtl_creates, 0);
     rc |= expect_str("unfit rtl destination: the name stays", opts.audio_in_dev, "udp:127.0.0.1:7355");
     rc |= expect_contains("unfit rtl destination toast", state.ui_msg, "Refused: NFM 16 kHz");
-    /* ...but not a SoapySDR one, whose device sets its own rate. */
+    /* ...and a SoapySDR one, which runs at the DSP bandwidth too (issue #806: its capture rate is stepped to it; it
+       opened before, its device left to set its own rate), until the bandwidth fits. */
     DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "soapy:driver=x");
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("unfit soapy destination drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unfit soapy destination: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_contains("unfit soapy destination toast", state.ui_msg, "Refused: NFM 16 kHz");
+    opts.rtl_dsp_bw_khz = 24;
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     rc |= expect_int("soapy destination drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("soapy destination opens", g_config_rtl_creates, 1);
@@ -21630,18 +21700,53 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("default width at 12 kHz: opened", g_config_rtl_creates, 1);
 
-    /* A SoapySDR device, and the Airspy enable, run at a rate the device sets: their start holds the width to it. */
+    /* Issue #806: a SoapySDR device, and the Airspy enable, run at the DSP bandwidth too (the device's capture rate is
+       stepped to it), so the switch is held to it up front, as the RTL-SDR one is (before, the device was left to set
+       its rate and its start held the width to that). */
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.analog_nfm_bandwidth_hz = 25000;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
     g_config_rtl_creates = 0;
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int("soapy: not held", g_config_rtl_creates, 1);
+    rc |= expect_int("soapy: held to 12 kHz", g_config_rtl_creates, 0);
+    g_config_rtl_creates = 0;
+    (void)post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("airspy enable: held to 12 kHz", g_config_rtl_creates, 0);
+    rc |= expect_toast("airspy enable toast", &state,
+                       "Refused: NFM 25 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 48 or 72 kHz DSP "
+                       "bandwidth");
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
+    g_config_rtl_creates = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("soapy at 48 kHz: opened", g_config_rtl_creates, 1);
     g_config_rtl_creates = 0;
     (void)post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int("airspy enable: not held", g_config_rtl_creates, 1);
+    rc |= expect_int("airspy enable at 48 kHz: opened", g_config_rtl_creates, 1);
+    /* Issue #806 BUG-2: Input > Switch source > Airspy from an RTL-SDR at 72 kHz opens the Airspy at 72 kHz, which it
+       runs exactly now (the live rate step lands its capture rate on it; before, it opened at 72 kHz and ran the 48 kHz
+       chain under that label). */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:72");
+    dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    g_config_rtl_creates = 0;
+    const int open_ok_before = g_config_rtl_open_ok;
+    g_config_rtl_open_ok = 1;
+    (void)post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    g_config_rtl_open_ok = open_ok_before;
+    state.rtl_ctx = NULL;
+    opts.rtl_started = 0;
+    rc |= expect_int("rtl at 72 kHz to airspy: opened at 72 kHz",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_bw_khz == 72 && opts.rtl_dsp_bw_khz == 72, 1);
+    rc |= expect_str("rtl at 72 kHz to airspy: on the Airspy", g_config_rtl_create_dev, "airspy");
+    rc |= expect_str("rtl at 72 kHz to airspy toast", state.ui_msg, "Applied: Airspy input enabled");
+    opts.rtl_dsp_bw_khz = 12;
 
     /* A digital session does not use the width. */
     opts.analog_only = 0;
@@ -21714,11 +21819,24 @@ test_input_switch_that_fails_keeps_the_running_input(void) {
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.analog_nfm_bandwidth_hz = 25000;
 
-    /* PCM -fA with an explicit 25 kHz, stored there; the Airspy delivers 19,531 Hz at a 12 kHz DSP bandwidth. */
+    /* PCM -fA with an explicit 25 kHz, stored there. An Airspy at a 12 kHz DSP bandwidth runs at 12 kHz (issue #806:
+       its capture rate is stepped to it; it ran 19,531 Hz before, and its start refused the width), so the switch is
+       refused before anything opens. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.rtl_dsp_bw_khz = 12;
     state.rtl_ctx = NULL;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "pcm to airspy at 12 kHz drained");
+    rc |= expect_int("pcm to airspy at 12 kHz: nothing tried", g_config_rtl_creates, 0);
+    rc |= expect_str("pcm to airspy at 12 kHz: device kept", opts.audio_in_dev, "pulse");
+    rc |= expect_toast("pcm to airspy at 12 kHz toast", &state,
+                       "Refused: NFM 25 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 48 or 72 kHz DSP "
+                       "bandwidth");
+    /* A start that refuses the width anyway (the fake device delivers 19,531 Hz for a 48 kHz request) puts the PCM
+       input back. */
+    opts.rtl_dsp_bw_khz = 48;
     reset_config_rtl_wrap();
     g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
@@ -22000,11 +22118,12 @@ submit_dsp_bandwidth(dsd_opts* opts, dsd_state* state, int khz, const char* labe
 /*
  * Issue #578: a DSP bandwidth change (RTL_SET_BW) reopens the device, and a start that fails anyway puts the bandwidth
  * that ran back and starts the input again, as a failed input switch does, rather than leave the session with no
- * radio input. An Airspy delivers a rate the bandwidth sets, which nothing before the reopen can know: NFM 25 kHz runs
- * at 48 kHz, but the 19,531 Hz of a 12 kHz bandwidth cannot filter it, so that start refuses it and the message says
- * why. An RTL-SDR whose device does not open at the new bandwidth says that instead, and with --iq-capture the restart
- * runs without the capture. The change and its rollback run inside one hold of the watchdog guard. A bandwidth whose
- * start works applies as before.
+ * radio input. An Airspy runs at its DSP bandwidth (issue #806: its capture rate is stepped to it), so a 12 kHz one
+ * that cannot filter NFM 25 kHz is refused before anything reopens, as on an RTL-SDR (before, the Airspy ran 19,531 Hz
+ * there and its start refused the width). A start that refuses the width anyway (the fake device delivers 19,531 Hz
+ * for a 72 kHz request) puts 48 kHz back, and the message says why. An RTL-SDR whose device does not open at the new
+ * bandwidth says that instead, and with --iq-capture the restart runs without the capture. The change and its rollback
+ * run inside one hold of the watchdog guard. A bandwidth whose start works applies as before, 72 kHz on an Airspy too.
  */
 static int
 test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
@@ -22022,21 +22141,43 @@ test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     reset_config_rtl_wrap();
     g_config_rtl_open_ok = 1;
+    rc |= submit_dsp_bandwidth(&opts, &state, 12, "airspy bw 12");
+    rc |= expect_int("airspy bw 12: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("airspy bw 12: nothing reopened", g_config_rtl_creates == 0 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("airspy bw 12: the bandwidth kept", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_toast("airspy bw 12 toast", &state,
+                       "Refused: DSP BW 12 kHz cannot filter NFM 25 kHz (max 9.6 kHz); narrow the NFM width first");
+
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
     g_config_rtl_refuse_rate_hz = 19531;
     guard_probe_arm(&opts);
-    rc |= submit_dsp_bandwidth(&opts, &state, 12, "airspy bw 12");
+    rc |= submit_dsp_bandwidth(&opts, &state, 72, "airspy bw 72 refused at start");
     guard_probe_disarm();
-    rc |= expect_int("airspy bw 12: failed", dsd_app_command_test_last_failed(), 1);
-    rc |= expect_int("airspy bw 12: tried, then restarted", g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
-    rc |= expect_int("airspy bw 12: restarted at 48 kHz", g_config_rtl_create_bw_khz, 48);
-    rc |= expect_int("airspy bw 12: the bandwidth that ran back", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_str("airspy bw 12: still the Airspy", opts.audio_in_dev, "airspy");
-    rc |= expect_toast("airspy bw 12 toast", &state, "Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
-    rc |= expect_int("airspy bw 12: one hold", g_guard_probe_holds, 1);
-    rc |= expect_int("airspy bw 12: the options and the state published under holds of their own",
+    rc |= expect_int("airspy bw 72 refused at start: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("airspy bw 72 refused at start: tried, then restarted",
+                     g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("airspy bw 72 refused at start: restarted at 48 kHz", g_config_rtl_create_bw_khz, 48);
+    rc |= expect_int("airspy bw 72 refused at start: the bandwidth that ran back", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_str("airspy bw 72 refused at start: still the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_toast("airspy bw 72 refused at start toast", &state,
+                       "Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+    rc |= expect_int("airspy bw 72 refused at start: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("airspy bw 72 refused at start: the options and the state published under holds of their own",
                      g_guard_probe_publish_holds, 2);
-    rc |= expect_int("airspy bw 12: no write outside the guard", g_guard_probe_unguarded, 0);
+    rc |= expect_int("airspy bw 72 refused at start: no write outside the guard", g_guard_probe_unguarded, 0);
+
+    /* RTL_SET_BW 72 on an Airspy reopens it at 72 kHz (it was refused: "no Airspy sample rate halves to it"). */
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= submit_dsp_bandwidth(&opts, &state, 72, "airspy bw 72");
+    rc |= expect_int("airspy bw 72: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("airspy bw 72: reopened at 72 kHz",
+                     opts.rtl_dsp_bw_khz == 72 && g_config_rtl_creates == 1 && g_config_rtl_create_bw_khz == 72, 1);
+    rc |= expect_str("airspy bw 72: on the Airspy", g_config_rtl_create_dev, "airspy");
+    rc |= expect_str("airspy bw 72 toast", state.ui_msg, "Applied: RTL DSP BW -> 72 kHz");
+    dsd_opts_set_rtl_dsp_bw(&opts, 48, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 
     /* A DMR session on an RTL-SDR at 48 kHz recording I/Q, whose device does not open at 24 kHz. */
     opts.analog_only = 0;
@@ -24711,7 +24852,7 @@ main(void) {
     rc |= test_refused_width_under_a_row_returns_to_the_width_run();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
-    rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
+    rc |= test_config_apply_holds_a_soapy_or_airspy_reopen_to_its_bandwidth();
     rc |= test_config_volume_only_reopen_holds_the_unchanged_width();
     rc |= test_config_reopen_that_fails_keeps_the_running_input();
     rc |= test_config_rollback_keeps_the_iq_capture();

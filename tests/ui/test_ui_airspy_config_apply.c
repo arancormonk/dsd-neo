@@ -302,15 +302,20 @@ test_config_apply(int failure) {
 }
 
 /*
- * Issue #578: a live Airspy at a 12 kHz DSP bandwidth delivers 19,531 Hz, which filters at most 16.377 kHz. A config
- * that reopens it for a new sample rate is held only to the rules every rate shares before it commits, so the reopened
- * stream's start refuses a 25 kHz width there. The apply then puts back what the start ran on (the Airspy settings, the
- * tuning, the decode mode and the widths), restarts the Airspy it had, says why and fails: the session keeps a stream,
- * instead of none and the refused width.
+ * Issue #578, #806: a live Airspy runs at its DSP bandwidth (the live rate step lands its capture rate on it), so a
+ * config that reopens it for a new sample rate at a 12 kHz bandwidth is held to 12 kHz before it commits, as an
+ * RTL-SDR's reopen is: a 25 kHz width is refused up front, with the bandwidths that fit, and nothing reopens or changes
+ * (before #806 the Airspy ran 19,531 Hz there, only the rules every rate shares were asked, and the reopened start
+ * refused it). A start that refuses a width the bandwidth filters anyway (the fake device here delivers 24 kHz for a
+ * 48 kHz request) still puts back what the start ran on (the Airspy settings, the tuning, the decode mode and the
+ * widths), restarts the Airspy it had, says why and fails: the session keeps a stream, instead of none and the refused
+ * width.
  */
 static void
 test_config_refused_width(void) {
-    for (int onto_analog = 0; onto_analog < 2; ++onto_analog) {
+    for (int case_index = 0; case_index < 4; ++case_index) {
+        const int onto_analog = case_index & 1;
+        const int up_front = case_index < 2;
         dsd_opts* opts = calloc(1, sizeof(*opts));
         dsd_state* state = calloc(1, sizeof(*state));
         struct dsd_app_command* cmd = calloc(1, sizeof(*cmd));
@@ -326,7 +331,7 @@ test_config_refused_width(void) {
         opts->audio_out_type = 9;
         opts->audio_in_type = AUDIO_IN_RTL;
         opts->rtlsdr_center_freq = 851000000;
-        opts->rtl_dsp_bw_khz = 12;
+        opts->rtl_dsp_bw_khz = up_front ? 12 : 24;
         opts->rtl_volume_multiplier = 2;
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy");
         state->rtl_ctx = (RtlSdrContext*)&test_context;
@@ -334,7 +339,7 @@ test_config_refused_width(void) {
         cfg->input_source = DSDCFG_INPUT_AIRSPY;
         cfg->airspy = opts->airspy;
         cfg->airspy.sample_rate = 2500000;
-        cfg->rtl_bw_khz = 12;
+        cfg->rtl_bw_khz = up_front ? 12 : 48;
         cfg->rtl_volume = 2;
         cfg->has_output = 1;
         cfg->output_backend = DSDCFG_OUTPUT_NULL;
@@ -349,21 +354,32 @@ test_config_refused_width(void) {
         cmd->n = sizeof(*cfg);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         test_creates = 0;
-        test_refuse_rate = 19531;
+        test_open_bw = -1;
+        test_refuse_rate = up_front ? 0 : 24000;
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
-        assert(test_creates == 2); /* the refused reopen, then the Airspy it had */
-        assert(state->rtl_ctx == (RtlSdrContext*)&test_context && opts->rtl_started == 1);
+        assert(state->rtl_ctx == (RtlSdrContext*)&test_context);
         assert(strcmp(opts->audio_in_dev, "airspy") == 0 && opts->airspy.sample_rate == 0);
-        assert(test_open_rate == 0 && test_open_bw == 12 && test_open_freq == 851000000);
-        assert(strncmp(state->ui_msg, "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate",
-                       strlen("Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate"))
-               == 0);
+        if (up_front) {
+            assert(test_creates == 0); /* refused before anything reopened */
+            assert(opts->rtl_dsp_bw_khz == 12);
+            assert(strcmp(state->ui_msg,
+                          "Config not applied: NFM 25 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); "
+                          "use a 48 or 72 kHz DSP bandwidth")
+                   == 0);
+        } else {
+            assert(test_creates == 2); /* the refused reopen, then the Airspy it had */
+            assert(opts->rtl_started == 1);
+            assert(test_open_rate == 0 && test_open_bw == 24 && test_open_freq == 851000000);
+            assert(strncmp(state->ui_msg, "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate",
+                           strlen("Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate"))
+                   == 0);
+        }
         if (onto_analog) {
-            assert(test_open_analog == 0);
+            assert(up_front || test_open_analog == 0);
             assert(dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_DMR && opts->analog_only == 0);
             assert(opts->analog_nfm_bandwidth_hz == 25000);
         } else {
-            assert(test_open_analog == 1 && test_open_width == 12500);
+            assert(up_front || (test_open_analog == 1 && test_open_width == 12500));
             assert(opts->analog_nfm_bandwidth_hz == 12500);
         }
         test_refuse_rate = 0;
@@ -374,6 +390,50 @@ test_config_refused_width(void) {
         free(state);
         free(opts);
     }
+}
+
+/*
+ * Issue #806 BUG-1: a config with rtl_bw_khz = 72 applied over a running Airspy at 48 kHz reopens it at 72 kHz, as
+ * RTL_SET_BW 72 does now. Both run the 72 kHz the live rate step lands the Airspy's capture rate on. Before, the config
+ * reopened it at 72 kHz while RTL_SET_BW refused 72, and the stream ran the 48 kHz chain under a 72 kHz label.
+ */
+static void
+test_config_apply_72(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    struct dsd_app_command* cmd = calloc(1, sizeof(*cmd));
+    dsdneoUserConfig* cfg = calloc(1, sizeof(*cfg));
+    assert(opts && state && cmd && cfg);
+    initOpts(opts);
+    initState(state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851000000;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->rtl_volume_multiplier = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy");
+    state->rtl_ctx = (RtlSdrContext*)&test_context;
+    cfg->has_input = 1;
+    cfg->input_source = DSDCFG_INPUT_AIRSPY;
+    cfg->airspy = opts->airspy;
+    cfg->rtl_bw_khz = 72;
+    cfg->rtl_volume = 2;
+    cfg->has_output = 1;
+    cfg->output_backend = DSDCFG_OUTPUT_NULL;
+    cmd->id = DSD_APP_CMD_CONFIG_APPLY;
+    cmd->n = sizeof(*cfg);
+    DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
+    test_creates = 0;
+    test_open_bw = -1;
+    assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+    assert(test_creates == 1 && test_open_bw == 72);
+    assert(opts->rtl_dsp_bw_khz == 72 && strcmp(opts->audio_in_dev, "airspy") == 0);
+    assert(strncmp(state->ui_msg, "Config not applied", strlen("Config not applied")) != 0);
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(cfg);
+    free(cmd);
+    free(state);
+    free(opts);
 }
 
 static void
@@ -407,6 +467,8 @@ main(int argc, char** argv) {
         test_serial_cli_override();
     } else if (strcmp(argv[1], "M11") == 0) {
         test_config_refused_width();
+    } else if (strcmp(argv[1], "BUG1") == 0) {
+        test_config_apply_72();
     } else {
         test_config_apply(strcmp(argv[1], "M7") == 0);
     }

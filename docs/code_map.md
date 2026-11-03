@@ -290,10 +290,11 @@ Generated (do not edit/commit):
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
-  - Input setup refuses an explicit analog channel width the DSP bandwidth of an RTL-SDR or rtl_tcp input cannot
-    filter (`dsd_engine_setup_check_analog_width()`, issue #525), from the bandwidth the input spec sets and before an
-    RTL-SDR input looks for its device, so the refusal depends on no dongle; other radio inputs are held to the rate
-    they deliver at stream start. Tests: `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` and `_RTL` (`tests/cmake/RunCliSmoke.cmake`:
+  - Input setup refuses an explicit analog channel width the DSP bandwidth of a live radio (RTL-SDR, rtl_tcp,
+    SoapySDR or Airspy, `dsd_input_dsp_rate_policy()`) cannot filter (`dsd_engine_setup_check_analog_width()`, issues
+    #525, #806), from the bandwidth the input spec sets and before an RTL-SDR input looks for its device, so the
+    refusal depends on no dongle; an I/Q replay is held to the rate it runs at stream start. Tests:
+    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` and `_RTL` (`tests/cmake/RunCliSmoke.cmake`:
     the message, a non-zero exit, and for `rtl` no device enumeration before it)
   - The decode loop's side of an input switch (issue #634, `live_scanner_main_loop()`): a frame-sync hunt read that
     left a silent input's wait for a queued command (`dsd_state::input_interrupted`) ended no reception, so the pass
@@ -640,20 +641,19 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   While the scan has such a row or target (`dsd_engine_scan_runs_configured_nfm_width()`, `_am_width()`, public in
   `trunk_scan.h`), app-control holds the configured width of that kind to the rate on any session, as under -fA: the
   width command, a config apply, `RTL_SET_BW` and Input > Switch source refuse a width or bandwidth that cannot run it,
-  whichever row is on air (`RTL_SET_BW` and the switch at the rate the DSP bandwidth gives an RTL-SDR or rtl_tcp
-  device; on a SoapySDR or Airspy device they leave the rate to the start, which checks only the width it opens on,
-  the one in force). What is left to warn about is a list loaded over such a width, or a rate a device forced. A
+  whichever row is on air (`RTL_SET_BW` and the switch at the rate the DSP bandwidth gives a live radio, a SoapySDR or
+  Airspy device included, issue #806). What is left to warn about is a list loaded over such a width. A
   trunk-scan retune in flight on an analog target keeps the width it queued; a width edit made meanwhile reaches the
   front end as a live request the landing retune can land over, so the coordinator requests the width in force again
   once the retune lands wherever it differs (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a
   tune. A channel map loaded at runtime is held to the DSP rate as it loads: `svc_channel_map_refused_rows()` asks
   `dsd_engine_channel_scan_refused_rows()` (public in `channel_scan.h`, read-only) for the rows the front end would
-  refuse at the running stream's rate, or on an RTL-SDR or rtl_tcp input with none running at the rate its DSP bandwidth
+  refuse at the running stream's rate, or on a live radio with none running at the rate its DSP bandwidth
   sets, and the import command's toast names the first and counts the rest. A map `-C` or `[trunking] chan_csv` loads at
   startup is held to the rate at scan start, once the stream has published it. The map still loads, since the DSP
   bandwidth that fits it can be set afterwards, and a width the rate cannot fit stays a warning and a skipped row, never
-  an import error: the rate a SoapySDR or Airspy device, or an I/Q replay, runs at is certain only once its stream runs,
-  so their rows are held to it at scan start, and the Qt/Android review and target-list preview (dry-run loaders with no
+  an import error: the rate an I/Q replay runs at is certain only once its stream runs, so its rows are held to it at
+  scan start, and the Qt/Android review and target-list preview (dry-run loaders with no
   session) check the width's range only. The describe records carry each row's width (`bandwidth_hz`) for the Qt/Android
   review to show it (see Scoped scan options). The receive family a row runs on is queued with its tune in
   `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`, issue #526): an analog row attaches the analog family,
@@ -2531,14 +2531,17 @@ suite runs under this compiler.
     `DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ`), `_nearest()` and `_list()`, which the input specs, the config schema, apply and
     validation, the services, the terminal menu, the interactive setup and the Qt session read rather than a copy, and
     `dsd_analog_rtl_bandwidths_with_whole_sps()`, the ones that give a symbol rate a whole number of samples per symbol
-    (at least 2), which the symbol timing warnings name;
-    `dsd_analog_airspy_dsp_bw_is_selectable()` caps it at `DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` (48), since no Airspy
-    sample rate halves to 72 kHz. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
-    (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
-    device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth
-    or narrow the width) or an I/Q replay's capture, whose rate plan follows the DSP bandwidth (the DSP bandwidths that
-    fit, as for the RTL DSP bandwidth, issue #701); where a device's rate filters no width of the kind it never names
-    narrowing, and for NFM names leaving the width unset. `dsd_analog_channel_lpf_off_check()` is the
+    (at least 2), which the symbol timing warnings name. An Airspy takes every one of them
+    (`DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` is the RTL maximum, 72; issue #806), through the same helpers.
+    `dsd_input_dsp_rate_policy()` / `dsd_input_dsp_rate_for()` are the one source-aware rate policy that the
+    predictive width checks (engine startup, `--validate-config`, the app-control services and width view, the
+    channel scan) and the stream start read: every live radio (RTL-SDR, rtl_tcp, SoapySDR, Airspy) runs at its DSP
+    bandwidth, known before it opens (a SoapySDR or Airspy device's capture rate is stepped to it exactly, or the open
+    refuses; whether a SoapySDR device can deliver such a rate is known only at open), and an I/Q replay's rate only
+    once it starts. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate (`dsd_analog_rate_source`
+    from that policy, fix text from `dsd_analog_width_rate_fix()`): the DSP bandwidths that fit, called the RTL DSP
+    bandwidth on an RTL-SDR or rtl_tcp input and the DSP bandwidth on a SoapySDR or Airspy device and an I/Q replay,
+    whose rate plan follows it (issue #701). `dsd_analog_channel_lpf_off_check()` is the
     `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default, cannot run), taking that state as an argument.
     It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
@@ -2568,7 +2571,8 @@ suite runs under this compiler.
     asked for in place of `-B`, issue #621) and the `[analog]` INI section (`has_analog`,
     `analog_nfm_bandwidth_hz`) parse through `dsd_analog_width_parse()` and never clamp: the loader warns and keeps the
     default, `--validate-config` reports an error, and also one when the width does not fit the DSP rate `rtl_bw_khz`
-    gives an `rtl`/`rtltcp` input that startup builds with it (`rtl_freq` set) under `decode = "analog"`. A save writes
+    gives a live radio that startup builds with it (`rtl`/`rtltcp` with `rtl_freq` set, `soapy`, `airspy`; issue #806)
+    under `decode = "analog"`, as the startup check holds it. A save writes
     the key only for an explicit width (0 is the default), but always the `[analog]` header: the loader marks a present
     section (`note_section_present()`) even with no key under it, so a config saved at the default loads back as the
     default over an explicit width. The saved width comes from `dsd_scan_mode_configured_view()`, since an nfm scan
@@ -2790,7 +2794,11 @@ suite runs under this compiler.
     multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its
     own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
-    the rate. Qt refuses such a start instead (issue #803): `session_args_effective_bandwidth_khz()` is the DSP
+    the rate: on a live radio, whose rate is its DSP bandwidth, the 72 kHz bandwidth in the input's own spec form and
+    that dsd-neo does not change it on its own, so a live switch to TETRA below 72 kHz keeps TETRA selected on the
+    rate chain it runs, with the chain inactive (D3 (a), issue #806, an Airspy included); on an I/Q replay that its
+    capture cannot be resampled to a TETRA rate.
+    Qt refuses such a start instead (issue #803): `session_args_effective_bandwidth_khz()` is the DSP
     bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized as the engine reads a USB
     or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`, or snapped for an Airspy), the one rule the start check,
     the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
@@ -3383,8 +3391,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     frontend ever writes `dsd_opts` itself
   - RadioReference receiver verdict (issue #803): `dsd_app_rr_receiver_verdict()` (pure, plain
     `dsd_app_rr_receiver_facts`, `src/app_control/rr_apply_verdict.c`) refuses an import under a running trunk scan,
-    AM or TETRA on audio, and TETRA where it decodes nothing (RTL-SDR/rtl_tcp off 72 kHz, an Airspy, a SoapySDR rate
-    that is no TETRA rate, `--tetra-uplink`); an unknown SoapySDR rate passes. The module-private
+    AM or TETRA on audio, and TETRA where it decodes nothing (a live radio, RTL-SDR, rtl_tcp, SoapySDR or Airspy, off
+    the 72 kHz DSP bandwidth, which is its rate, issue #806; `--tetra-uplink`). The module-private
     `rr_apply_verdict.h` fills the facts from a `dsd_opts` (a replay is `dsd_opts_input_is_iq_replay()`, never the
     stale-prone `iq_replay_active`) and asks the next-start rule (`rr_apply_next_start_refusal()`); the decoder's
     preflight and the frontends' advisory `dsd_app_rr_apply_block_reason()` (published snapshots only, no measured
@@ -3622,11 +3630,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   refused after the switch landed restores the width. `DSD_APP_CMD_CONFIG_APPLY` holds the width it leaves in force (an
   explicit one, or AM's; `cfg_analog_kind_after()`, `cfg_check_held_analog_width()`) to the rate it will run at before
   applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as given, when
-  the `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's (`cfg_radio_reopen()`),
-  otherwise the check above; one that reopens a SoapySDR or Airspy device (an Airspy `[input]` over a running Airspy
-  reopens it for a new sample rate, serial or DSP bandwidth, `svc_airspy_settings_reopen()`) is held only to the rules
-  every rate shares (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks the
-  width at the rate the device delivers. An Airspy reopened for its monitor volume alone, which the stream copies only
+  the `[input]` builds a live radio spec other than the running RTL-family input's (`cfg_radio_reopen()`), a SoapySDR
+  or Airspy one included, or reopens a running Airspy for a new sample rate, serial or DSP bandwidth
+  (`svc_airspy_settings_reopen()`): each runs at that bandwidth (issue #806), otherwise the check above. An Airspy
+  reopened for its monitor volume alone, which the stream copies only
   when it opens, delivers the rate it runs now, so the running front end holds the width as when nothing reopens
   (`CFG_REOPEN_AT_RUNNING_RATE`, issue #578), and holds it even where the config leaves it as it was: the reopened
   stream opens on the configured width, which a typed digital row on air leaves unused, and a DSP bandwidth lowered
@@ -3635,14 +3642,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the row's kind), and on a session the config leaves on another kind or none the configured width of a kind is held
   while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). An
   `rtl_bw_khz` above every selectable bandwidth that no width fits is refused as the setting, not as a
-  rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses a DSP bandwidth the configured preset's explicit width, or AM's
-  width, cannot run at on an RTL-SDR or rtl_tcp input, naming both and saying to narrow the width first (or, at a
+  rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) takes every selectable bandwidth on every live radio, 72 kHz on an
+  Airspy included (issue #806), and refuses one the configured preset's explicit width, or AM's width, cannot run at
+  on any of them, naming both and saying to narrow the width first (or, at a
   bandwidth that filters no width of the kind, to leave the NFM width unset, or keep a wider bandwidth for AM), and
   `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks `svc_check_rtl_input_analog_width()` before it
   rewrites the input and tears the running stream down, refusing a width the DSP bandwidth of the device it opens cannot
   filter; `DSD_APP_CMD_AIRSPY_ENABLE_INPUT` (Switch source > Airspy) asks `svc_check_airspy_input_analog_width()`, which
-  holds the same widths only to the rules every rate shares, since the Airspy sets its own rate (issue #578). Its start
-  then holds only the width it opens on to the delivered rate (`rtl_demod_finalize_analog_channel()`): the switch is
+  holds the same widths to the Airspy's DSP bandwidth, its rate once stepped (issues #578, #806). Its start then holds
+  only the width it opens on to the delivered rate (`rtl_demod_finalize_analog_channel()`): the switch is
   unscoped, so under a scan row that runs a digital protocol it opens on the row's digital profile and checks no analog
   width, and a configured width that rate cannot filter is left to the scan: its leave's refused return to the monitor
   is reconciled (`ui_settle_refused_scan_leave()`), and an analog row or target that runs it is skipped at every visit.
@@ -3660,8 +3668,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   input, the start and any rollback (`svc_rtl_enable_input_locked()`, `ui_radio_start_failed_locked()`), as a
   config apply's reopen does; an Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and
   the restart of the settings it replaced the same way. `RTL_SET_BW` does too (issue #578): its pre-check holds the
-  width only to an RTL-SDR or rtl_tcp input's DSP bandwidth, and a SoapySDR or Airspy device delivers a rate the new
-  bandwidth sets that no check knows, so the handler copies the input under the guard, stores and reopens through
+  width to the new DSP bandwidth on every live radio, but a start can still fail, so the handler copies the input under
+  the guard, stores and reopens through
   `svc_rtl_set_bandwidth_locked()` (which leaves a failed start with no stream and an empty reason), and a start that
   fails puts the bandwidth and input that ran back through `ui_radio_start_failed_locked()`, toasting `Refused: <why>`
   or `Failed: <why>`. On an I/Q replay `svc_rtl_set_bandwidth_locked()` stores the request as EXPLICIT and re-plans
@@ -3755,8 +3763,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   it started). A config that turns the conventional scanner off leaves the scope rather than resume it, by the rule
   `apply_cmd_scoped()` leaves it by (`ui_cmd_leaves_scanner_scope()`: the scanner on before the apply, as
   `ui_cfg_rollback` records it, and neither it nor a trunk scan on after), so the row it leaves is not asked of the new
-  stream. A SoapySDR or Airspy device sets a rate no check could know up front, so one that refuses it (an nfm
-  row's own 25 kHz at an Airspy's 19,531 Hz) fails the reopen as a failed start does, rolled back with `Config not
+  stream, and its own width is not held up front either (`cfg_leaves_scanner_scope()`). A reopen whose new
+  stream refuses the row anyway fails as a failed start does, rolled back with `Config not
   applied: <why>`, rather than leave the decoder on the row's monitor over a front end on the configured settings. The
   rest of the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the session
   overrides it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen

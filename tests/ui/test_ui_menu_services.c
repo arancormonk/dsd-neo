@@ -1717,12 +1717,14 @@ test_describe_start_failure(void) {
     g_start_refused = 1;
     g_start_refused_kind = DSD_ANALOG_DEMOD_FM;
     g_start_refused_width_hz = 25000;
-    g_start_refused_rate_hz = 19531;
+    /* Issue #806: an Airspy runs at its DSP bandwidth (its capture rate is stepped to it), so its fix names the
+       bandwidths that fit, as an RTL-SDR's does (it said "raise the DSP bandwidth or narrow the NFM width" for a
+       halved rate such as 19.531 kHz before). */
+    g_start_refused_rate_hz = 24000;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "airspy");
     rc |= expect_int("airspy refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
-    rc |= expect_str("airspy refusal names the delivered rate and the device fix", why,
-                     "NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); raise the DSP bandwidth or "
-                     "narrow the NFM width");
+    rc |= expect_str("airspy refusal names the delivered rate and the DSP bandwidths that fit", why,
+                     "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
 
     g_start_refused_rate_hz = 24000;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.375M:0:0:24");
@@ -1773,15 +1775,14 @@ test_describe_start_failure(void) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "airspy");
     g_analog_check_calls = 0;
     g_analog_check_result = -1;
-    g_demod_rate_hz = 19531;
+    g_demod_rate_hz = 24000;
     rc |= expect_int("started stream refuses the monitor",
                      svc_check_started_stream_analog(&opts, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
     rc |= expect_int(
         "started stream asked for the monitor",
         g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 25000, 1);
     rc |= expect_str("started stream refusal names the rate it runs", why,
-                     "NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); raise the DSP bandwidth or "
-                     "narrow the NFM width");
+                     "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     g_analog_check_result = 0;
     rc |= expect_int("started stream takes the monitor",
                      svc_check_started_stream_analog(&opts, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
@@ -1790,9 +1791,11 @@ test_describe_start_failure(void) {
     return rc;
 }
 
-/* Issue #578: Input > Switch source > Airspy is held only to the rules every rate shares, since the device sets its own
- * rate, which its start checks: DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default (APP_COMMAND_QUEUE
- * covers that refusal), never the RTL DSP bandwidth. */
+/* Issue #578, #806: Input > Switch source > Airspy is held to the DSP bandwidth, as Input > Switch source > RTL-SDR is:
+ * the live rate step lands the Airspy's capture rate on it (before #806 the device set its own rate and only the rules
+ * every rate shares were asked). DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default is
+ * APP_COMMAND_QUEUE's. D5: the Airspy's limits are the RTL-SDR's: NFM 12.5 kHz does not fit 12 kHz, AM 10 kHz does not
+ * fit 8 kHz. */
 static int
 test_airspy_input_analog_width(void) {
     static dsd_opts opts;
@@ -1808,10 +1811,18 @@ test_airspy_input_analog_width(void) {
     char why[160];
     int rc = expect_int("rtl input holds the width to 12 kHz",
                         svc_check_rtl_input_analog_width(&opts, &state, why, sizeof why), -1);
-    rc |= expect_int("airspy input holds no rate", svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why),
-                     0);
+    rc |= expect_int("airspy input holds the width to 12 kHz",
+                     svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), -1);
+    rc |= expect_str("airspy input: the reason names the bandwidths that fit", why,
+                     "NFM 25 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 48 or 72 kHz DSP bandwidth");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_int("airspy input at 12 kHz refuses NFM 12.5 kHz",
+                     svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), -1);
+    opts.rtl_dsp_bw_khz = 16;
+    rc |= expect_int("airspy input at 16 kHz takes NFM 12.5 kHz",
+                     svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), 0);
     rc |= expect_str("airspy input: no reason", why, "");
-    /* AM at 10 kHz on a running RTL-SDR at 8 kHz, which its DSP bandwidth cannot filter: the Airspy may. */
+    /* AM at 10 kHz on a running RTL-SDR at 8 kHz, which its DSP bandwidth cannot filter: nor can an Airspy's. */
     opts.audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:118.1M:0:0:8");
     opts.rtl_dsp_bw_khz = 8;
@@ -1819,7 +1830,10 @@ test_airspy_input_analog_width(void) {
     opts.analog_am_bandwidth_hz = 10000;
     rc |= expect_int("AM: rtl input holds the width to 8 kHz",
                      svc_check_rtl_input_analog_width(&opts, &state, why, sizeof why), -1);
-    rc |= expect_int("AM: airspy input holds no rate",
+    rc |= expect_int("AM: airspy input holds the width to 8 kHz",
+                     svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), -1);
+    opts.rtl_dsp_bw_khz = 16;
+    rc |= expect_int("AM: airspy input at 16 kHz takes it",
                      svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), 0);
     rc |= expect_int("null options", svc_check_airspy_input_analog_width(NULL, &state, why, sizeof why), -1);
     return rc;
@@ -1910,17 +1924,13 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_int("rtl bandwidth 72 kept", opts.rtl_dsp_bw_khz, 72);
     rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
-    /* No Airspy sample rate halves to 72 kHz: refused there, with nothing changed. */
+    /* Issue #806: an Airspy runs 72 kHz exactly (the live rate step lands its capture rate on it), so it takes it as an
+       RTL-SDR does, with the reopen marked (it was refused: "no Airspy sample rate halves to it"). */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:serial=0123456789abcdef");
     opts.rtl_needs_restart = 0;
-    rc |= expect_int("airspy refuses 72 kHz", svc_rtl_set_bandwidth(&opts, &state, 72, why, sizeof why), -1);
-    rc |= expect_int("airspy refusal keeps the bandwidth", opts.rtl_dsp_bw_khz, 12);
-    rc |= expect_int("airspy refusal marks no restart", opts.rtl_needs_restart, 0);
-    rc |= expect_int("airspy refusal says why",
-                     strcmp(why, "an Airspy cannot run a 72 kHz DSP bandwidth: no Airspy sample rate halves to it; use "
-                                 "48 kHz or less")
-                         == 0,
-                     1);
+    rc |= expect_int("airspy takes 72 kHz", svc_rtl_set_bandwidth(&opts, &state, 72, why, sizeof why), 0);
+    rc |= expect_int("airspy 72 kHz stored", opts.rtl_dsp_bw_khz == 72 && opts.rtl_needs_restart == 1, 1);
+    rc |= expect_str("airspy 72 kHz gives no reason", why, "");
     rc |= expect_int("airspy takes 48 kHz", svc_rtl_set_bandwidth(&opts, &state, 48, why, sizeof why), 0);
     rc |= expect_int("airspy 48 kHz stored", opts.rtl_dsp_bw_khz, 48);
     opts.audio_in_dev[0] = '\0';
@@ -1952,10 +1962,22 @@ test_rtl_service_option_contracts(void) {
                      strcmp(why, "DSP BW 12 kHz cannot filter AM 10 kHz (max 9.6 kHz); narrow the AM width first") == 0,
                      1);
     rc |= expect_int("explicit am width fits 16 kHz", svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why), 0);
-    /* A SoapySDR or Airspy device may force another rate: its stream start holds the width to that. */
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
-    rc |= expect_int("airspy bandwidth is left to the device rate",
-                     svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth too (its capture rate is stepped to it), so a
+       bandwidth that cannot filter the width is refused up front there as well, with nothing changed (before, it was
+       left to the stream start's check against the rate the device delivered). */
+    static const char* const devices[] = {"airspy", "soapy:driver=sdrplay"};
+    for (size_t d = 0; d < sizeof devices / sizeof devices[0]; d++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", devices[d]);
+        opts.rtl_needs_restart = 0;
+        rc |= expect_int(devices[d], svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), -1);
+        rc |= expect_int(devices[d], opts.rtl_dsp_bw_khz == 16 && opts.rtl_needs_restart == 0, 1);
+        rc |= expect_str(devices[d], why,
+                         "DSP BW 4 kHz cannot filter AM 10 kHz (max 2.4 kHz); no AM width fits it; "
+                         "keep a wider DSP bandwidth");
+        rc |= expect_int(devices[d], svc_rtl_set_bandwidth(&opts, &state, 24, why, sizeof why), 0);
+        rc |= expect_int(devices[d], opts.rtl_dsp_bw_khz, 24);
+        rc |= expect_int(devices[d], svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why), 0);
+    }
     /* FM (the unset NFM default, which no rate refuses) and digital modes hold no bandwidth. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
@@ -2852,44 +2874,49 @@ test_nfm_bandwidth_services(void) {
     rc |= expect_int("nfm svc live other refusal", strcmp(why, "the RTL front end refused NFM 12.5 kHz (see log)") == 0,
                      1);
 
-    /* On SoapySDR, Airspy and I/Q replay inputs the RTL DSP bandwidth is not the rate: the refusal names the demod
-       rate the stream publishes and the width's limit there. A device's rate is its capture rate decimated toward the
-       DSP bandwidth, so a wider DSP bandwidth raises it; a replay's rate plan follows the DSP bandwidth as an RTL-SDR's
-       does (issue #701), so it names the bandwidths that fit. Where no NFM width fits a device's rate, narrowing is
-       never the fix: leaving the width unset is. */
+    /* On an I/Q replay the RTL DSP bandwidth is not the rate: the refusal names the demod rate the stream publishes and
+       the width's limit there; its rate plan follows the DSP bandwidth as an RTL-SDR's does (issue #701), so it names
+       the bandwidths that fit. A SoapySDR or Airspy device runs at its DSP bandwidth (issue #806: its capture rate is
+       stepped to it), so its refusal is an RTL-SDR's, at that bandwidth. Before #806 a device's rate was its capture
+       rate decimated toward the bandwidth, and its fix "raise the DSP bandwidth or narrow the NFM width". */
     const struct {
         const char* dev;
+        int bw_follows_rate;
         const char* at_24k;
         const char* at_8k;
     } forced_rate_devs[] = {
-        {"soapy:driver=rtlsdr",
-         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
-         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
-        {"airspy",
-         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
-         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
-        {"iqreplay:capture.cu8",
+        {"soapy:driver=rtlsdr", 1,
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); use a 12, 16, 24, 48 or 72 kHz DSP bandwidth"},
+        {"airspy", 1, "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); use a 12, 16, 24, 48 or 72 kHz DSP bandwidth"},
+        {"iqreplay:capture.cu8", 0,
          "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth",
          "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); use a 12, 16, 24, 48 or 72 kHz DSP bandwidth"},
     };
 
     for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i].dev);
+        const int follows = forced_rate_devs[i].bw_follows_rate;
         g_demod_rate_hz = 24000;
+        opts.rtl_dsp_bw_khz = follows ? 24 : 16;
         rc |= expect_int("nfm svc forced rate refusal",
                          svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, 0, why, sizeof why), -1);
         rc |= expect_str("nfm svc forced rate reason", why, forced_rate_devs[i].at_24k);
         g_demod_rate_hz = 8000;
+        opts.rtl_dsp_bw_khz = follows ? 8 : 16;
         rc |= expect_int("nfm svc no width fits",
                          svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, 0, why, sizeof why), -1);
         rc |= expect_str("nfm svc no width fits reason", why, forced_rate_devs[i].at_8k);
         /* At a rate that filters it, the refusal is not the rate's. */
-        g_demod_rate_hz = 78125;
+        g_demod_rate_hz = follows ? 48000 : 78125;
+        opts.rtl_dsp_bw_khz = follows ? 48 : 16;
         rc |= expect_int("nfm svc forced rate other refusal",
                          svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, 0, why, sizeof why), -1);
         rc |= expect_int("nfm svc forced rate other reason",
                          strcmp(why, "the RTL front end refused NFM 25 kHz (see log)") == 0, 1);
     }
+    opts.rtl_dsp_bw_khz = 16;
     g_demod_rate_hz = 0;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
     g_analog_check_result = 0;

@@ -1884,10 +1884,11 @@ expect_rx_request_outcomes(void) {
 }
 
 /*
- * Where the RTL DSP bandwidth is not the DSP rate, a width that rate cannot filter fails the start with the fix that
- * rate allows, the fix a running stream's refusal names too: an I/Q replay's rate plan follows the DSP bandwidth (issue
- * #701), so it names the bandwidths that fit, as an RTL-SDR does, without calling them RTL's; a SoapySDR or Airspy device's capture rate is decimated toward the DSP bandwidth, so a wider DSP bandwidth
- * raises it. An RTL-SDR or rtl_tcp input at the same rate names the DSP bandwidths that would fit.
+ * Where the input is not an RTL-SDR, a width the DSP rate cannot filter fails the start with the fix that rate allows,
+ * the fix a running stream's refusal names too: an I/Q replay's rate plan follows the DSP bandwidth (issue #701), and a
+ * SoapySDR or Airspy device's capture rate is stepped to it (issue #806; before, it was only decimated toward it, and
+ * the fix was "raise the DSP bandwidth or narrow the NFM width"), so both name the bandwidths that fit, as an RTL-SDR
+ * does, without calling them RTL's. An RTL-SDR or rtl_tcp input at the same rate names the RTL DSP bandwidths.
  */
 static int
 expect_forced_rate_refusal_names_the_width(void) {
@@ -1898,8 +1899,8 @@ expect_forced_rate_refusal_names_the_width(void) {
         const char* fix;
     } rows[] = {
         {"iqreplay:/tmp/capture24k.iq.json", 1, 1, "; set the DSP bandwidth to 48 or 72 kHz"},
-        {"soapy:driver=airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
-        {"airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
+        {"soapy:driver=airspy", 0, 1, "; set the DSP bandwidth to 48 or 72 kHz"},
+        {"airspy", 0, 1, "; set the DSP bandwidth to 48 or 72 kHz"},
         {"rtl:0:851.375M:0:0:24", 0, 0, "; set the RTL DSP bandwidth to 48 or 72 kHz"},
         {"rtltcp:127.0.0.1:1234", 0, 0, "; set the RTL DSP bandwidth to 48 or 72 kHz"},
     };
@@ -2468,7 +2469,7 @@ count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx)
     if (text && std::strstr(text, "I/Q balance stays off while AM is demodulated")) {
         g_iq_balance_bypass_notes.fetch_add(1, std::memory_order_relaxed);
     }
-    if (level == LOG_LEVEL_WARN && text && std::strstr(text, "TETRA needs a DSP rate that is a multiple of 18 kHz")) {
+    if (level == LOG_LEVEL_WARN && text && std::strstr(text, "TETRA needs a 72 kHz DSP bandwidth, not ")) {
         g_tetra_rate_warnings.fetch_add(1, std::memory_order_relaxed);
     }
     if (level == LOG_LEVEL_WARN && text) {
@@ -2495,10 +2496,17 @@ expect_tetra_rate_warning(void) {
     tetra.rtl_dsp_bw_khz = 72;
     rc |= expect_int_eq("TETRA at 72 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 72000, 1), 0);
     rc |= expect_int_eq("TETRA at 54 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 54000, 1), 0);
-    /* An Airspy forces 78.125 kHz whatever the request. */
+    /* An Airspy runs at its DSP bandwidth (issue #806), and is told to set it to 72 kHz in its own spec form. */
     DSD_SNPRINTF(tetra.audio_in_dev, sizeof tetra.audio_in_dev, "%s", "airspy");
-    rc |= expect_int_eq("TETRA at another rate warns again", rtl_stream_test_warn_low_dsp_bw(&tetra, 78125, 1), 1);
+    tetra.rtl_dsp_bw_khz = 24;
+    (void)take_warnings();
+    rc |= expect_int_eq("TETRA at another rate warns again", rtl_stream_test_warn_low_dsp_bw(&tetra, 24000, 1), 1);
     rc |= expect_int_eq("TETRA warnings logged", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
+    rc |= expect_int_eq("the Airspy warning names its own spec",
+                        take_warnings().find("not 24 kHz; dsd-neo does not change it on its own, so set it to 72 kHz "
+                                             "(-i airspy:freq:72)")
+                            != std::string::npos,
+                        1);
 
     static dsd_opts dmr;
     DSD_MEMSET(&dmr, 0, sizeof(dmr));

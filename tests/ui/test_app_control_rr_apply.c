@@ -859,8 +859,10 @@ test_apply_tetra_receiver_refusals(void) {
     init_test_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
-    rc |= expect_refused_import("tetra on airspy", &opts, &state, &p,
-                                "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
+    /* Issue #806: an Airspy runs at its DSP bandwidth, so it is held to 72 kHz as an RTL-SDR is (every Airspy was
+       refused before: "an Airspy cannot decode TETRA yet"). */
+    rc |= expect_refused_import("tetra on airspy at 48 kHz", &opts, &state, &p,
+                                "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -971,6 +973,34 @@ test_apply_tetra_accepted(void) {
     }
     freeState(&state);
     (void)remove(k_tetra_group_csv);
+    return rc;
+}
+
+/* Issue #806: an Airspy at the 72 kHz DSP bandwidth decodes TETRA (its capture rate is stepped to 72 kHz), so the
+   import is taken there and leaves the bandwidth alone, as on an RTL-SDR. */
+static int
+test_apply_tetra_airspy_at_72(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    tetra_payload(&p);
+    p.tune_hz = 0U;
+    p.has_group = 0U;
+    p.group_path[0] = '\0';
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("airspy tetra import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("airspy tetra import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("airspy tetra import toast", state.ui_msg,
+                     "Applied: RR import (TETRA) +trunking; save via Config menu");
+    rc |= expect_int("airspy tetra mode", dsd_infer_decode_mode_preset(&opts), DSDCFG_MODE_TETRA);
+    rc |= expect_int("airspy bandwidth kept", opts.rtl_dsp_bw_khz, 72);
+    rc |= expect_str("airspy kept", opts.audio_in_dev, "airspy");
+    freeState(&state);
     return rc;
 }
 
@@ -1586,8 +1616,9 @@ test_apply_pending_tune_outcomes(void) {
     return rc;
 }
 
-/* New behaviour (D3): the decoder thread checks a SoapySDR device at the rate the running stream committed, which a
-   frontend cannot see. */
+/* Issue #806: a SoapySDR device runs at its DSP bandwidth (its capture rate is stepped to it), so the decoder thread
+   holds it to 72 kHz as it holds an RTL-SDR: a running 48 kHz stream is refused with the bandwidth text, where it was
+   judged by the rate the stream committed ("DSP rate 48 kHz is no multiple of 18 kHz") before. */
 static int
 test_apply_tetra_soapy_rate(void) {
     int rc = write_text(k_tetra_group_csv, "id,mode,name\n1001,A,Ops\n");
@@ -1602,9 +1633,9 @@ test_apply_tetra_soapy_rate(void) {
     state.rtl_ctx = (struct RtlSdrContext*)(void*)g_fake_stream;
     reset_replay_script();
     g_request_rate_hz = 48000;
-    rc |= expect_refused_import(
-        "tetra on a 48 kHz soapy device", &opts, &state, &p,
-        "Failed: RR import -> DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    rc |= expect_int("soapy default bandwidth", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_refused_import("tetra on a 48 kHz soapy device", &opts, &state, &p,
+                                "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
     state.rtl_ctx = NULL;
     reset_replay_script();
     freeState(&state);
@@ -1666,6 +1697,7 @@ main(void) {
     rc |= test_rr_account_set();
     rc |= test_apply_drops_an_owner_the_mode_cannot_decode();
     rc |= test_apply_tetra_accepted();
+    rc |= test_apply_tetra_airspy_at_72();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_apply_requests_the_tune();
     rc |= test_apply_tune_forgets_the_carrier_codes();

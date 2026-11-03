@@ -204,10 +204,11 @@ int dsd_app_analog_width_unset_hz(const dsd_app_analog_width_view* view, int kin
 /**
  * @brief The DSP rate, in Hz, an RTL DSP bandwidth of @p rtl_bw_khz gives an input, where that bandwidth sets the rate.
  *
- * It does on an RTL-SDR or rtl_tcp input. That is an "rtl" or "rtltcp" spec, and also any other device string on an RTL
- * input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > Switch source >
- * RTL-SDR row, say, leaves "pulse" there. The result is 0 elsewhere: a SoapySDR or Airspy device may force another
- * rate, an I/Q replay runs at its capture's, and PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too
+ * It does on every live radio (dsd_input_dsp_rate_policy()): an "rtl", "rtltcp", "soapy" or "airspy" spec, a SoapySDR
+ * or Airspy device's capture rate being stepped to the bandwidth exactly (issue #806), and also any other device string
+ * on an RTL input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > Switch
+ * source > RTL-SDR row, say, leaves "pulse" there. The result is 0 elsewhere: an I/Q replay runs at its capture's, and
+ * PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too
  * large for a rate in Hz (a loaded config keeps any integer) saturates at INT_MAX, a rate no channel width can be
  * filtered at.
  *

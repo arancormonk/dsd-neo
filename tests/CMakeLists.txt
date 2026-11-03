@@ -21768,6 +21768,10 @@ if(
         COMMAND dsd-neo_test_ui_airspy_config_apply M11
     )
     add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_72
+        COMMAND dsd-neo_test_ui_airspy_config_apply BUG1
+    )
+    add_test(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
@@ -21775,6 +21779,7 @@ if(
         UI_MENU_AIRSPY_CONFIG_FAILURE
         UI_MENU_AIRSPY_CONFIG_TUNING
         UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
+        UI_MENU_AIRSPY_CONFIG_72
         RUNTIME_AIRSPY_CLI_OVERRIDE
         PROPERTIES TIMEOUT 120
     )

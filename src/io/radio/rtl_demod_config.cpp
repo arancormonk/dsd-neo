@@ -1236,8 +1236,8 @@ rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opt
     }
     const int kind = opts->analog_demod;
     const int explicit_width_hz = dsd_opts_analog_width_hz(opts);
-    if (demod_check_analog_channel(kind, explicit_width_hz, demod->complex_rate, dsd_opts_analog_rate_source(opts), err,
-                                   err_size)
+    if (demod_check_analog_channel(kind, explicit_width_hz, demod->complex_rate, dsd_input_dsp_rate_policy(opts).source,
+                                   err, err_size)
         != 0) {
         return -1;
     }

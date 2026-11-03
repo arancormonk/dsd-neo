@@ -29,6 +29,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_CHANNEL_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_CHANNEL_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -140,13 +141,13 @@ int dsd_analog_width_max_for_rate(int rate_hz);
 /** @brief The widest selectable RTL DSP bandwidth, in kHz. */
 #define DSD_ANALOG_RTL_DSP_BW_MAX_KHZ     72
 /**
- * @brief The widest DSP bandwidth an Airspy input takes, in kHz.
+ * @brief The widest DSP bandwidth an Airspy input takes, in kHz: the widest RTL one.
  *
- * An Airspy delivers 2.5, 3, 6 or 10 MS/s, which the half-band cascade halves down to the first rate at or above the
- * DSP bandwidth: 78.125 kHz or 93.75 kHz for both 48 and 72 kHz. No Airspy rate halves to 72 kHz, or to any multiple
- * of the 18 kHz TETRA symbol rate, so 72 kHz is refused there rather than promised.
+ * An Airspy delivers 2.5, 3, 6 or 10 MS/s, which the half-band cascade halves to 78.125 or 93.75 kHz at 48 or 72 kHz,
+ * and the live rate step then takes exactly to the DSP bandwidth (issue #806), so an Airspy runs every selectable DSP
+ * bandwidth an RTL-SDR runs, through the same helpers.
  */
-#define DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ  48
+#define DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ  DSD_ANALOG_RTL_DSP_BW_MAX_KHZ
 
 /**
  * @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24, 48 or 72 kHz.
@@ -158,12 +159,6 @@ int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
 
 /** @brief @p khz when it is a selectable RTL DSP bandwidth, otherwise DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ. */
 int dsd_analog_rtl_dsp_bw_or_default(int khz);
-
-/** @brief Return 1 when an Airspy input takes @p khz: a selectable one up to DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ. */
-int dsd_analog_airspy_dsp_bw_is_selectable(int khz);
-
-/** @brief @p khz when an Airspy input takes it, otherwise DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ. */
-int dsd_analog_airspy_dsp_bw_or_default(int khz);
 
 /**
  * @brief The selectable RTL DSP bandwidth nearest @p khz among those up to @p max_khz; the narrower of two as near.
@@ -220,12 +215,42 @@ int dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_
 /** @brief What sets the DSP rate an analog channel runs at, which decides the fix a rate refusal names. */
 typedef enum dsd_analog_rate_source {
     DSD_ANALOG_RATE_RTL_BW = 0,  /**< An RTL-SDR or rtl_tcp input: the rate is the RTL DSP bandwidth (rtl_bw_khz). */
-    DSD_ANALOG_RATE_DEVICE = 1,  /**< A SoapySDR or Airspy device: the capture rate its device delivers, halved down to
-                                      the first rate at or above the DSP bandwidth, so a wider DSP bandwidth raises it
-                                      and a narrower one lowers it, but neither picks it. */
+    DSD_ANALOG_RATE_DEVICE = 1,  /**< A SoapySDR or Airspy device: the rate is the DSP bandwidth (rtl_bw_khz), which
+                                      the live rate step takes the device's capture rate to exactly (issue #806); a
+                                      device that cannot deliver a rate stepped to it is refused when it opens. */
     DSD_ANALOG_RATE_CAPTURE = 2, /**< An I/Q replay: its rate plan follows the DSP bandwidth (issue #701), a bandwidth
                                       change re-planning the chain to it and resampling the capture where it must. */
 } dsd_analog_rate_source;
+
+/**
+ * @brief The DSP rate an input runs at, as every check that predicts it and the stream start that builds it read it.
+ *
+ * Every live radio runs at its DSP bandwidth (rtl_bw_khz): an RTL-SDR or rtl_tcp input's half-band cascade lands on
+ * it, and a SoapySDR or Airspy device's capture rate is stepped to it exactly after the cascade (issue #806), or the
+ * stream refuses to open. So an analog width is held to that bandwidth before the stream opens, on every live radio.
+ * Whether a SoapySDR device can deliver a rate the step takes to the bandwidth is a separate question, known only when
+ * it opens, which refuses one it cannot. An I/Q replay's rate comes from its sidecar and the plan its start makes, so
+ * none is known before it starts; PCM input has no DSP rate.
+ */
+typedef struct dsd_input_dsp_rate {
+    int source;  /**< dsd_analog_rate_source: what sets the rate, which picks the fix a width refusal names. */
+    int rate_hz; /**< The DSP rate in Hz, known before the stream opens: the DSP bandwidth on every live radio
+                      (saturated, never overflowed, for an out-of-range bandwidth); 0 for an I/Q replay, PCM input
+                      or a bandwidth of 0 or less. */
+} dsd_input_dsp_rate;
+
+/**
+ * @brief dsd_input_dsp_rate_policy() for an input named by its device string @p audio_in_dev and @p audio_in_type,
+ * classified as the stream start classifies it (detect_radio_source()): an I/Q replay spec, or @p iq_replay_active,
+ * is a replay; a SoapySDR or Airspy spec is that device; an RTL-SDR or rtl_tcp spec, and any other device string under
+ * AUDIO_IN_RTL, is an RTL-SDR; anything else is PCM input. @p rtl_bw_khz is the DSP bandwidth it runs at.
+ */
+dsd_input_dsp_rate dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active,
+                                          int rtl_bw_khz);
+
+/** @brief The DSP rate the input @p opts names runs at (dsd_input_dsp_rate_for()); NULL reads as an RTL-SDR at no
+ * known bandwidth. */
+dsd_input_dsp_rate dsd_input_dsp_rate_policy(const dsd_opts* opts);
 
 /**
  * @brief dsd_analog_width_check() at a DSP rate that @p source (dsd_analog_rate_source) sets.
@@ -238,15 +263,10 @@ int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, c
 /**
  * @brief The fix a refusal names for a width @p rate_hz cannot filter, where @p source sets that rate.
  *
- * - DSD_ANALOG_RATE_RTL_BW: the RTL DSP bandwidths that would fit ("set the RTL DSP bandwidth to 24, 48 or 72
- *   kHz").
- * - DSD_ANALOG_RATE_DEVICE: "raise the DSP bandwidth or narrow the NFM width"; where the rate filters no width of the
- *   kind, raising the DSP bandwidth, and where it is past what the channel filter's taps cover, lowering it.
- * - DSD_ANALOG_RATE_CAPTURE: the DSP bandwidths that would fit, as for an RTL-SDR ("set the DSP bandwidth to 24, 48 or
- *   72 kHz"): a replay re-plans its rate to the bandwidth.
- *
- * Narrowing is never named where it cannot help. Where no NFM width fits a device's rate, the fix also names leaving
- * the NFM width unset: the unset NFM default runs at any rate, DSP-limited where it cannot filter.
+ * Every source's rate follows the DSP bandwidth, so the fix names the DSP bandwidths that would fit: "set the RTL DSP
+ * bandwidth to 24, 48 or 72 kHz" for DSD_ANALOG_RATE_RTL_BW, and "set the DSP bandwidth to 24, 48 or 72 kHz" for a
+ * SoapySDR or Airspy device (DSD_ANALOG_RATE_DEVICE, stepped to it) and an I/Q replay (DSD_ANALOG_RATE_CAPTURE, which
+ * re-plans its rate to it). @p kind and @p rate_hz do not change the text.
  *
  * @return 0 on success, -1 on a NULL or empty buffer.
  */

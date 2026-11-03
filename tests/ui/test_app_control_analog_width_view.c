@@ -397,8 +397,17 @@ main(void) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
     assert(view.width_hz == 12000 && view.dsp_limited && view.max_hz == 9600);
-    /* A SoapySDR device may force another rate: nothing is known before it runs. */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
+    /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth too (its capture rate is stepped to it), so the
+       next start's rate is known before it runs (before, nothing was: "16 kHz (default)" with no bound). */
+    static const char* const stepped[] = {"soapy:driver=airspy", "airspy"};
+    for (size_t i = 0; i < sizeof stepped / sizeof stepped[0]; i++) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", stepped[i]);
+        assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+        assert(view.width_hz == 12000 && view.dsp_limited && view.max_hz == 9600);
+        expect_reading(&view, "12 kHz (DSP-limited)");
+    }
+    /* An I/Q replay's rate is known only once it runs. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
     assert(view.width_hz == 16000 && !view.dsp_limited && view.max_hz == 0);
     expect_reading(&view, "16 kHz (default)");
@@ -616,8 +625,9 @@ main(void) {
     assert(dsd_app_analog_rtl_bw_rate_hz("pulse", AUDIO_IN_RTL, 12) == 12000);
     assert(dsd_app_analog_rtl_bw_rate_hz(NULL, AUDIO_IN_RTL, 48) == 48000);
     assert(dsd_app_analog_rtl_bw_rate_hz("pulse", AUDIO_IN_PULSE, 48) == 0);
-    assert(dsd_app_analog_rtl_bw_rate_hz("soapy", AUDIO_IN_RTL, 48) == 0);
-    assert(dsd_app_analog_rtl_bw_rate_hz("airspy:serial=0123456789abcdef", AUDIO_IN_RTL, 48) == 0);
+    /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth (it read 0, no rate known, before). */
+    assert(dsd_app_analog_rtl_bw_rate_hz("soapy", AUDIO_IN_RTL, 48) == 48000);
+    assert(dsd_app_analog_rtl_bw_rate_hz("airspy:serial=0123456789abcdef", AUDIO_IN_RTL, 72) == 72000);
     assert(dsd_app_analog_rtl_bw_rate_hz("iqreplay:/tmp/capture.iq.json", AUDIO_IN_RTL, 48) == 0);
     assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, 0) == 0);
     assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, -24) == 0);

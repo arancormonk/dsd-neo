@@ -569,29 +569,41 @@ validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* sec
                      "scan_max_visit_ms below 1000 ms is ignored; use 0 to disable or 1000..3600000");
 }
 
-/* An explicit NFM width the analog preset will use, on an input whose DSP rate is the configured RTL DSP bandwidth
-   (RTL-SDR and rtl_tcp), must fit that rate. Devices that can force another rate (SoapySDR, Airspy) are checked
-   against the rate they deliver when the stream starts. rtl_bw_khz is that rate only where startup builds the input
-   with it, which takes rtl_freq: without one an rtl source leaves the input as it was, and an rtl_tcp source connects
-   as "rtltcp:host:port" at the 48 kHz default (apply_input_source_rtl()/_rtltcp()). */
+/* An explicit NFM width the analog preset will use, on a live radio input, must fit the DSP rate it runs at, which is
+   the configured DSP bandwidth on every one (dsd_input_dsp_rate_policy(): an RTL-SDR's cascade lands on it, a SoapySDR
+   or Airspy device's capture rate is stepped to it, issue #806), as the startup check holds it
+   (dsd_engine_setup_check_analog_width()). Whether a SoapySDR device can deliver a rate stepped to that bandwidth is
+   known only when it opens, which refuses one it cannot; an I/Q replay's sidecar sets its rate at stream start.
+   rtl_bw_khz is that rate only where startup builds the input with it: an RTL-SDR source takes rtl_freq (without one it
+   leaves the input as it was), an rtl_tcp source a host too (without one it connects as "rtltcp:host:port" at the
+   48 kHz default, apply_input_source_rtl()/_rtltcp()), and a SoapySDR or Airspy source always applies it. */
 static int
 validate_configured_rtl_bw_khz(int bw) {
     /* What applying the config leaves in force: an unset or unsupported value is the 48 kHz default. */
     return dsd_analog_rtl_dsp_bw_or_default(bw);
 }
 
-/* Whether startup builds an RTL-SDR or rtl_tcp input with rtl_bw_khz (it takes rtl_freq, and a host for rtl_tcp). */
+/* The rate source of the live radio input startup builds with rtl_bw_khz (it takes rtl_freq, and a host for rtl_tcp;
+   a SoapySDR or Airspy source always applies it), or -1 when the config builds none. */
 static int
-validate_config_builds_rtl_input(const dsdneoUserConfig* cfg) {
-    return cfg->has_input && cfg->rtl_freq[0] != '\0'
-           && (cfg->input_source == DSDCFG_INPUT_RTL
-               || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
+validate_config_live_radio_source(const dsdneoUserConfig* cfg) {
+    if (!cfg->has_input) {
+        return -1;
+    }
+    switch (cfg->input_source) {
+        case DSDCFG_INPUT_RTL: return cfg->rtl_freq[0] != '\0' ? DSD_ANALOG_RATE_RTL_BW : -1;
+        case DSDCFG_INPUT_RTLTCP:
+            return (cfg->rtl_freq[0] != '\0' && cfg->rtltcp_host[0] != '\0') ? DSD_ANALOG_RATE_RTL_BW : -1;
+        case DSDCFG_INPUT_SOAPY:
+        case DSDCFG_INPUT_AIRSPY: return DSD_ANALOG_RATE_DEVICE;
+        default: return -1;
+    }
 }
 
 static int
 validate_analog_width_rate_applies(const dsdneoUserConfig* cfg) {
     return cfg->analog_nfm_bandwidth_hz > 0 && cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_ANALOG
-           && validate_config_builds_rtl_input(cfg);
+           && validate_config_live_radio_source(cfg) >= 0;
 }
 
 static void
@@ -602,7 +614,8 @@ validate_composed_analog_width(const dsdneoUserConfig* cfg, const char* section,
     }
     const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz, rtl_bw_khz * 1000, err, sizeof err)
+    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz, rtl_bw_khz * 1000,
+                                  validate_config_live_radio_source(cfg), err, sizeof err)
         != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "nfm_bandwidth_hz",
                          err);
@@ -610,14 +623,11 @@ validate_composed_analog_width(const dsdneoUserConfig* cfg, const char* section,
 }
 
 /* Issue #524: the AM width a config's decode = am runs (the 6000 Hz default included, which is held to the rate like an
-   explicit width), on an input whose DSP rate is the configured RTL DSP bandwidth (RTL-SDR and rtl_tcp), must fit that
-   rate, as the startup check does (dsd_engine_setup_check_analog_width()). Devices that can force another rate
-   (SoapySDR, Airspy) and I/Q replay are checked against the rate they deliver when the stream starts, and a PCM input
-   runs no channel filter (the session falls back to Analog there). rtl_bw_khz is that rate only where startup builds
-   the input with it, as for NFM. */
+   explicit width), on a live radio input, must fit the DSP rate it runs at, as for NFM above; an I/Q replay is checked
+   against its rate at stream start, and a PCM input runs no channel filter (the session falls back to Analog there). */
 static int
 validate_am_width_rate_applies(const dsdneoUserConfig* cfg) {
-    return cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_AM && validate_config_builds_rtl_input(cfg);
+    return cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_AM && validate_config_live_radio_source(cfg) >= 0;
 }
 
 static void
@@ -633,7 +643,9 @@ validate_composed_am_width(const dsdneoUserConfig* cfg, const char* section, con
     const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, configured_hz);
     const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rtl_bw_khz * 1000, err, sizeof err) != 0) {
+    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_AM, width_hz, rtl_bw_khz * 1000,
+                                  validate_config_live_radio_source(cfg), err, sizeof err)
+        != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "am_bandwidth_hz", err);
     }
 }

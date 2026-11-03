@@ -318,8 +318,10 @@ main(void) {
 
     check_rr_apply_tetra_refusal("on PulseAudio", AUDIO_IN_PULSE, "pulse", 48,
                                  "Failed: RR import -> TETRA needs an I/Q radio input or a symbol capture");
-    check_rr_apply_tetra_refusal("on an Airspy", AUDIO_IN_RTL, "airspy", 48,
-                                 "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
+    /* Issue #806: an Airspy runs at its DSP bandwidth, as an RTL-SDR does, and is held to the same 72 kHz (it was
+       refused at every bandwidth: "an Airspy cannot decode TETRA yet"). */
+    check_rr_apply_tetra_refusal("on an Airspy at 48 kHz", AUDIO_IN_RTL, "airspy", 48,
+                                 "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
     check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
                                  "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
 

@@ -281,6 +281,16 @@ test_predicate_truth_table(void) {
         return fail("alloc");
     }
     rc |= expect_int("NULL demod", dsd_demod_tetra_chain_wanted(NULL), 0);
+    /* D3 (a) (issue #806): TETRA switched on at any DSP bandwidth below 72 kHz on a live radio, whose rate is that
+       bandwidth, an Airspy's included, keeps the chain inactive: the bandwidth is not changed for it. */
+    static const int below_72_khz[] = {4, 6, 8, 12, 16, 24, 48};
+    for (int khz : below_72_khz) {
+        DSD_MEMSET(s, 0, sizeof(*s));
+        configure_cqpsk(s, khz * 1000, DSD_CH_LPF_PROFILE_TETRA, 18000, (khz * 1000 + 9000) / 18000);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "TETRA at a %d kHz DSP bandwidth stays inactive", khz);
+        rc |= expect_int(label, dsd_demod_tetra_chain_wanted(s), 0);
+    }
     for (int rate = 36000; rate <= 144000; rate += 18000) {
         DSD_MEMSET(s, 0, sizeof(*s));
         configure_tetra(s, rate);
