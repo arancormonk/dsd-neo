@@ -1177,11 +1177,12 @@ suite runs under this compiler.
   avoid counts stay the decoder's. The consumer read copies again while it holds a store that is not whole, without
   waiting for a new publication. Test: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - Invariant (`initState()` allocation failures, issue #672): a failed rolling dibit, DMR payload or audio output
-  buffer, or vocoder parameter set, sets `dsd_state::init_failed`; no cursor is built over a failed buffer and
-  `freeState()` releases a partial state. The DMR soft-metric buffer and the event history ring are optional (their
-  readers take NULL); a NULL ring is left NULL rather than set up through `&event_history_s[i]`. The CLI
-  (`apps/dsd-cli/main.c`) and the Android `nativeInit` refuse to start a state with `init_failed` set. Test builds fail
-  one checked allocation at a time through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
+  buffer, vocoder parameter set or event history ring sets `dsd_state::init_failed`; no cursor is built over a failed
+  buffer, a NULL ring is left NULL rather than set up through `&event_history_s[i]`, and `freeState()` releases a
+  partial state. Only the DMR soft-metric buffer is optional (its readers take NULL); `write_event_to_log_file()`
+  indexes the ring unchecked, so no decoder runs without it. The CLI (`apps/dsd-cli/main.c`) and the Android
+  `nativeInit` refuse to start a state with `init_failed` set. Test builds fail one checked allocation at a time
+  through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
 - API note (transmission): `dsd_call_snapshot::transmission_epoch` names the logical transmission an epoch belongs to:
   its own epoch, or for an epoch that reacquired a recoverably-ended one (`call_state_seed_reacquired_snapshot()`),
   that epoch's. `dsd_call_snapshot_transmission()` reads it (falling back to `epoch`). State bound to one call keys on

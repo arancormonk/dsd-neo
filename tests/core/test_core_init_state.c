@@ -258,7 +258,7 @@ static const init_alloc_site k_init_alloc_sites[] = {
     {"cur_mp2", 1},
     {"prev_mp2", 1},
     {"prev_mp_enhanced2", 1},
-    {"event_history_s", 0},
+    {"event_history_s", 1},
 };
 #define INIT_ALLOC_SITES ((long)(sizeof(k_init_alloc_sites) / sizeof(k_init_alloc_sites[0])))
 
@@ -303,8 +303,9 @@ init_alloc_failed_site(const dsd_state* st) {
 }
 
 /* Issue #672 B16: each of initState()'s checked allocations fails on its own. A required buffer marks the state
-   init_failed; the optional DMR soft buffer and event history leave it usable, the history NULL rather than a bogus
-   slot pointer; no cursor is built over a failed buffer; and freeState() releases what was allocated (ASan). */
+   init_failed -- the event history ring among them, since the event log writer indexes it unchecked, and left NULL
+   rather than a bogus slot pointer; only the optional DMR soft buffer leaves the state usable; no cursor is built over
+   a failed buffer; and freeState() releases what was allocated (ASan). */
 static int
 test_init_state_survives_each_allocation_failure(void) {
     for (long site = 0; site < INIT_ALLOC_SITES; site++) {

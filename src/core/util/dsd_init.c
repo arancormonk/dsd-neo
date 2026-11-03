@@ -1530,10 +1530,11 @@ init_state_codec2_and_events(dsd_state* state) {
     DSD_MEMSET(state->event_crc_invalid, 0, sizeof(state->event_crc_invalid));
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
 
-    /* Optional: every reader takes a NULL ring as "no history", so a decoder runs without one. The slots are set up
-       only when it exists -- &event_history_s[1] of a NULL ring is a non-NULL pointer those NULL checks would miss. */
+    /* Required: the event log writer (write_event_to_log_file()) indexes the ring without checking it, so a state
+       without one refuses to start. The slots are set up only when it exists -- &event_history_s[1] of a NULL ring is
+       a non-NULL pointer, not a usable slot. */
     if (state->event_history_s == NULL) {
-        LOG_ERROR("memory allocation failure for the event history; running without it\n");
+        init_required_failed(state, "event history");
     } else {
         //initialize event history items (0 to 255)
         for (uint8_t i = 0; i < 2; i++) {
