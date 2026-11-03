@@ -871,12 +871,12 @@ Item {
                 compare(prefs.lastStartedCompanions.join(), parks.uid);
                 decoderHost.stop();
                 tryCompare(decoderHost, "sessionState", 0);
-                // 4. Removing a companion takes it out of both remembered sessions, and an auto-start that still
-                // names it starts the rest.
+                // 4. Removing a companion takes it out of the next start's record (the accepted start's keeps its
+                // places; every start writes it anew), and an auto-start that still names it starts the rest.
                 prefs.acceptedStartCompanions = [hospital.uid, parks.uid];
                 prefs.lastStartedCompanions = [parks.uid, hospital.uid];
                 removeScanLists([parks.uid]);
-                compare(prefs.acceptedStartCompanions.join(), hospital.uid);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join());
                 compare(prefs.lastStartedCompanions.join(), hospital.uid);
                 app.startError = "";
                 uiController.requestAutoStart("scan", security.uid, [parks.uid, hospital.uid]);
@@ -938,6 +938,45 @@ Item {
             } finally {
                 clearScanMetrics();
                 testContext.setLifecyclePhase(0);
+                testContext.setLifecyclePhase(2);
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+                prefs.lastStartedCompanions = [];
+                removeScanLists([security.uid, parks.uid]);
+            }
+        }
+
+        // On Android the UI loads before the host is polled, so a recreated Activity reads the host idle while its
+        // session in fact runs: the load's prune must not cut the accepted start's record then, or list 3 is named
+        // after list 2's place once the host reads Running.
+        function test_a_removed_list_keeps_its_place_when_the_host_reads_idle_at_load() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var parks = addScanList("Parks", "Ranger", "853.0125");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                prefs.acceptedStartKind = "scan";
+                prefs.acceptedStartUid = security.uid;
+                prefs.acceptedStartCompanions = [hospital.uid, parks.uid];
+                removeScanLists([hospital.uid]);
+                // The Activity comes back with the host not yet polled.
+                testContext.setLifecyclePhase(0);
+                loader.active = false;
+                wait(0);
+                loader.active = true;
+                tryCompare(loader, "status", Loader.Ready);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join(),
+                        "the load cut the running session's record");
+                // The first poll finds the session running.
+                testContext.setLifecyclePhase(2);
+                tryVerify(function () { return app.sessionLists.length === 3; }, 5000);
+                compare(app.sessionListName(2), "");
+                compare(app.sessionListName(3), "Parks");
+                tryVerify(function () { return title() === "Security + 2 lists"; }, 5000, title());
+            } finally {
                 testContext.setLifecyclePhase(2);
                 prefs.acceptedStartKind = kind;
                 prefs.acceptedStartUid = uid;

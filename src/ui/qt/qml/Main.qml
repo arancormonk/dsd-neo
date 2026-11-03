@@ -669,12 +669,10 @@ Window {
     // A removed list leaves the remembered scan session with it, so the next
     // start (an auto-start included) does not look for it; so does one gone
     // before this start (a restore stopped short of forgetting them). The
-    // session that runs keeps its record whole while it runs: its lists are
-    // numbered by position, and a recreated Activity names them from it.
+    // accepted start's record is never cut: a recreated Activity names the
+    // running session's lists from it by position (the host can still read
+    // idle when this runs), and every start writes it anew.
     function pruneScanCompanions() {
-        var accepted = mainRoot.existingScanListUids(prefs.acceptedStartCompanions);
-        if (!decoderHost.sessionActive && accepted.length !== (prefs.acceptedStartCompanions || []).length)
-            prefs.acceptedStartCompanions = accepted;
         var started = mainRoot.existingScanListUids(prefs.lastStartedCompanions);
         if (started.length !== (prefs.lastStartedCompanions || []).length)
             prefs.lastStartedCompanions = started;
