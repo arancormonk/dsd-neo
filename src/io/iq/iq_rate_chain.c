@@ -49,20 +49,39 @@ iq_rate_within_tolerance(uint32_t rate_hz, uint64_t ref_hz) {
     return diff * 1000000U <= (uint64_t)DSD_RATE_PLAN_READBACK_TOLERANCE_PPM * ref_hz;
 }
 
+/* The RTL-shaped request of a recorded chain that @p sample_rate_hz is within tolerance of: the DSP bandwidth times the
+   base decimation, or that times the post decimation for a chain whose bandwidth names the rate after it; 0 for none. */
+static uint64_t
+iq_rate_chain_matched_request(uint32_t sample_rate_hz, int dsp_bw_khz, uint32_t base_decimation,
+                              uint32_t post_downsample) {
+    if (dsp_bw_khz <= 0 || base_decimation == 0U) {
+        return 0U;
+    }
+    const uint64_t request_hz = (uint64_t)dsp_bw_khz * 1000U * base_decimation;
+    if (iq_rate_within_tolerance(sample_rate_hz, request_hz)) {
+        return request_hz;
+    }
+    if (post_downsample > 1U && iq_rate_within_tolerance(sample_rate_hz, request_hz * post_downsample)) {
+        return request_hz * post_downsample;
+    }
+    return 0U;
+}
+
 int
 dsd_iq_rate_chain_derived_forced(uint32_t sample_rate_hz, int dsp_bw_khz, uint32_t base_decimation,
                                  uint32_t post_downsample) {
     if (dsp_bw_khz <= 0 || base_decimation == 0U) {
         return 0;
     }
-    const uint64_t request_hz = (uint64_t)dsp_bw_khz * 1000U * base_decimation;
-    if (iq_rate_within_tolerance(sample_rate_hz, request_hz)) {
-        return 0;
-    }
-    if (post_downsample > 1U && iq_rate_within_tolerance(sample_rate_hz, request_hz * post_downsample)) {
-        return 0;
-    }
-    return 1;
+    return iq_rate_chain_matched_request(sample_rate_hz, dsp_bw_khz, base_decimation, post_downsample) == 0U ? 1 : 0;
+}
+
+uint32_t
+dsd_iq_rate_chain_derived_nominal(uint32_t sample_rate_hz, int dsp_bw_khz, uint32_t base_decimation,
+                                  uint32_t post_downsample) {
+    const uint64_t request_hz =
+        iq_rate_chain_matched_request(sample_rate_hz, dsp_bw_khz, base_decimation, post_downsample);
+    return (request_hz != 0U && request_hz <= UINT32_MAX) ? (uint32_t)request_hz : sample_rate_hz;
 }
 
 /* The passes behind @p base_decimation, or -1 when it is no power of two the planner takes. */
@@ -123,7 +142,15 @@ iq_rate_chain_check_stepped(const dsd_iq_rate_chain* chain, uint32_t nominal_hz,
                             plan.message[0] ? ": " : "", plan.message);
         return DSD_IQ_ERR_RATE_CHAIN;
     }
-    if (plan.passes != passes || !plan.step.enabled) {
+    if (plan.passes != passes) {
+        iq_rate_chain_error(
+            err_buf, err_buf_size,
+            "base_decimation (%u) takes nominal_rate_hz (%u) below dsp_rate_hz (%u), which the recorded "
+            "step cannot reach",
+            (unsigned)base, (unsigned)nominal_hz, (unsigned)chain->dsp_rate_hz);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    if (!plan.step.enabled) {
         iq_rate_chain_error(err_buf, err_buf_size,
                             "iq_step_l/iq_step_m (%u/%u) say the chain steps, but nominal_rate_hz/base_decimation "
                             "(%u/%u) reaches dsp_rate_hz (%u) with no step",

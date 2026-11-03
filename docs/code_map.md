@@ -6364,10 +6364,11 @@ Key public headers:
     `origin` (KEEP, RESAMPLED, EXACT, WAV), `complex_rate_hz`, the rate planner's `chain` (`dsd_rate_plan`: passes,
     exact hb_out, step) and `forced` with its provenance (SIDECAR, DERIVED, PLAN); `dsd_iq_replay_rate_plan_equal()`
     compares every field. KEEP, for a sidecar with no explicit bandwidth request, from the recorded chain
-    (`replay_recorded_chain_of()`: the nominal rate, the forced flag recorded or derived,
-    `dsd_iq_rate_chain_derived_forced()`, and whether it stepped), first that applies: (i) a chain that does not step,
-    unchanged, where its complex rate is whole, a multiple of post, meets the requirement (post 1) and the domain; (ii)
-    a recorded step, to `dsp_rate_hz`; (iii) a forced post-1 chain, its passes kept, stepped to D through
+    (`replay_recorded_chain_of()`: the nominal rate, recorded or derived as live forms it from the RTL-shaped request
+    within 100 ppm (`dsd_iq_replay_nominal_rate_hz()`, `dsd_iq_rate_chain_derived_nominal()`), the forced flag recorded
+    or derived, `dsd_iq_rate_chain_derived_forced()`, and whether it stepped), first that applies: (i) a chain that does
+    not step, unchanged, where its complex rate is whole, a multiple of post, meets the requirement (post 1) and the
+    domain; (ii) a recorded step, to `dsp_rate_hz`; (iii) a forced post-1 chain, its passes kept, stepped to D through
     `dsd_rate_plan_compute()` (backend REPLAY_KEEP, request D x 2^p, so the planner sees it forced); (iv) folds of a
     chain that does not step: a power-of-two post into base under a requirement, then half-band passes down into the
     domain. Only KEEP steps: otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the

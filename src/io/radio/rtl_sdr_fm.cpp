@@ -1043,9 +1043,10 @@ rate_chain_sync_squelch_model(const dsd_rate_plan* plan) {
 
 /* Make the I/Q rate step run @p plan: the design the transaction began with when the plan is that one again (a
  * rollback), else the plan's own, designed now unless it is the running one, and the squelches' noise model with it.
- * Returns 0, or the step's refusal with the running design kept (g_rate_chain_refusal says why). */
+ * @p source names where the rate comes from in the refusal ("the device's", or "the capture's" for a replay). Returns
+ * 0, or the step's refusal with the running design kept (g_rate_chain_refusal says why). */
 static int
-rate_chain_sync_step_for(const dsd_rate_plan* plan) {
+rate_chain_sync_step_for(const dsd_rate_plan* plan, const char* source) {
     const dsd_live_iq_step_plan design = rate_plan_step_key(plan);
     dsd_live_iq_step* step = &demod.live_iq_step;
     if (step->retained_set && dsd_live_iq_step_plan_equal(&design, &step->retained_plan)) {
@@ -1058,7 +1059,7 @@ rate_chain_sync_step_for(const dsd_rate_plan* plan) {
         LOG_DEBUG("Rate step design refused: L/M %d/%d from %lld/2^%u Hz, status %d (resampler %d).\n", design.L,
                   design.M, (long long)design.hb_out_num, design.hb_out_shift, rc, step->design_status);
         DSD_SNPRINTF(g_rate_chain_refusal, sizeof g_rate_chain_refusal,
-                     "dsd-neo could not set up the conversion from the device's %u Hz to the %u Hz DSP bandwidth",
+                     "dsd-neo could not set up the conversion from %s %u Hz to the %u Hz DSP bandwidth", source,
                      (unsigned)plan->nominal_hz, (unsigned)plan->target_hz);
         return rc;
     }
@@ -1075,7 +1076,7 @@ rate_chain_sync_step(void) {
     if (!rate_plan_is_set(&g_live_rate_plan)) {
         return 0;
     }
-    return rate_chain_sync_step_for(&g_live_rate_plan);
+    return rate_chain_sync_step_for(&g_live_rate_plan, "the device's");
 }
 
 /* The legacy capture sidecar's demod rate: the capture rate over the base and post decimation, truncated, as the
@@ -6926,8 +6927,16 @@ rtl_replay_on_loop_restart(const dsd_iq_replay_config* cfg, void* user) {
     controller_enter_reconfigure_gate(&controller);
     const ReplayPurgeMark purge_mark = replay_input_purge_mark();
     controller_request_input_purge();
-    /* A fresh-stream finalize, which requests no purge of its own. */
-    (void)controller_apply_replay_settings(&controller, g_stream ? g_stream->opts : NULL, cfg);
+    /* A fresh-stream finalize, which requests no purge of its own. A rewind that cannot put the chain back (its I/Q
+       rate step's design failed, which the open's design of the same plan rules out but for memory) would run the
+       half-band output labelled as the step's rate: the replay stops instead, with the reason logged. */
+    if (controller_apply_replay_settings(&controller, g_stream ? g_stream->opts : NULL, cfg) != 0) {
+        LOG_ERROR("IQ replay: --iq-loop could not set the rate chain up again at the rewind; the replay stops.\n");
+        if (g_stream) {
+            g_stream->replay_forced_stop.store(1, std::memory_order_release);
+        }
+        replay_wake_all();
+    }
     const int step_on = demod.live_iq_step.enabled;
     g_replay_loop_restart_step_l.store(step_on ? demod.live_iq_step.plan.L : 0, std::memory_order_release);
     g_replay_loop_restart_step_m.store(step_on ? demod.live_iq_step.plan.M : 0, std::memory_order_release);
@@ -7118,7 +7127,7 @@ controller_apply_replay_step(const dsd_iq_replay_rate_plan* plan) {
         dsd_live_iq_step_disable(&demod.live_iq_step);
         return 0;
     }
-    if (rate_chain_sync_step_for(&plan->chain) != 0) {
+    if (rate_chain_sync_step_for(&plan->chain, "the capture's") != 0) {
         dsd_live_iq_step_disable(&demod.live_iq_step);
         LOG_ERROR("IQ replay: %s.\n", g_rate_chain_refusal);
         return -1;
@@ -8616,7 +8625,7 @@ replay_tetra_channel_runs(const dsd_iq_replay_config* cfg, int uplink, int ted_s
     if (env && env->channel_lpf_is_set && env->channel_lpf_enable == 0) {
         return 0;
     }
-    const uint32_t nominal_hz = cfg->rate_chain.has_nominal ? cfg->rate_chain.nominal_rate_hz : cfg->sample_rate_hz;
+    const uint32_t nominal_hz = dsd_iq_replay_nominal_rate_hz(cfg);
     if (cfg->base_decimation == 0U || nominal_hz % cfg->base_decimation != 0U) {
         return 0;
     }

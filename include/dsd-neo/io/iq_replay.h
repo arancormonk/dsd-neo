@@ -87,7 +87,10 @@ typedef struct {
         forced (backend REPLAY_KEEP), the I/Q rate step the replay runs after the half-band chain, as live ran it. Its
         step is off for every other plan, so the reader's resampler and the step never both run. */
     dsd_rate_plan chain;
-    int forced; /**< the capture rate the device forced, which digital_resample=auto follows */
+    /** The capture rate the device forced, which digital_resample=auto follows. Authoritative for the replay:
+        chain.device_forced is only what the planner was asked (a kept chain that does not step is planned with its
+        request as its nominal rate, so it reads 0 there even for a recorded forced chain). */
+    int forced;
     dsd_iq_replay_forced_provenance forced_provenance;
 } dsd_iq_replay_rate_plan;
 
@@ -272,6 +275,13 @@ size_t dsd_iq_replay_chunk_bytes(dsd_iq_sample_format format, uint32_t sample_ra
 #define DSD_IQ_REPLAY_MAX_PLAN_PASSES     10U
 
 /**
+ * @brief The nominal rate the recorded chain of @p cfg was planned from (issue #806): nominal_rate_hz when recorded,
+ *        else the RTL-shaped request the sample rate is within tolerance of (dsd_iq_rate_chain_derived_nominal()), else
+ *        the sample rate. 0 for NULL.
+ */
+uint32_t dsd_iq_replay_nominal_rate_hz(const dsd_iq_replay_config* cfg);
+
+/**
  * @brief The complex rate the replay of @p cfg hands the demodulator: dsp_input_rate_hz, or the capture's rate when
  *        that is 0.
  */
@@ -280,8 +290,8 @@ uint32_t dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg);
 /**
  * @brief Plan the rate chain a replay of @p cfg runs to reach @p target_dsp_hz (issues #701, #806).
  *
- * The recorded chain runs from its nominal rate (the sidecar's nominal_rate_hz, else its sample rate), over its
- * base_decimation, as R_rec. The mode's requirement (@p cqpsk_required_multiple_hz: TETRA's 18 kHz runs only where
+ * The recorded chain runs from its nominal rate (dsd_iq_replay_nominal_rate_hz()), over its base_decimation, as
+ * R_rec. The mode's requirement (@p cqpsk_required_multiple_hz: TETRA's 18 kHz runs only where
  * dsd_tetra_dsp_rate_runs(); any other is a plain multiple; 0 for none) applies to the CQPSK path, which skips
  * post_downsample. The filter domain (@p max_complex_rate_hz, 0 for none) is the highest complex rate the channel
  * filter the mode runs is designed at, which the caller works out.

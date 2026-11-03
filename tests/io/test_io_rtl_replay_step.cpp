@@ -272,6 +272,12 @@ test_derived_forced_edacs(void) {
     rc |= expect_eq("EDACS RTL 24 kHz: no step", r.step_enabled, 0);
     rc |= expect_eq("EDACS RTL 24 kHz: no FSK resample", r.output_rate_hz, 24000);
     rc |= expect_emitted("EDACS RTL 24 kHz: samples at 24 kHz", r.emitted, r.input_pairs, 24000, 1536000);
+    /* An RTL-SDR that read back 1 Hz under its request (§2): planned from the request, kept, not forced, no step. */
+    const dsd_iq_replay_config rtl_off = sidecar(1535999U, 32U, 1U, 48);
+    rc |= run("DMR RTL read back 1535999", dmr, &rtl_off, &plan, &r);
+    rc |= expect_eq("DMR RTL read back 1535999: kept, not resampled", plan.resample == 0 && r.passes == 5, 1);
+    rc |= expect_eq("DMR RTL read back 1535999: 48000 Hz, no step, not forced",
+                    r.complex_rate_hz == 48000 && r.step_enabled == 0 && r.forced == 0, 1);
     dsd_iq_replay_config forced = sidecar(1536000U, 64U, 1U, 24);
     forced.rate_chain.has_forced = 1;
     forced.rate_chain.device_forced = 1;
@@ -297,6 +303,9 @@ test_filter_domain_input(void) {
                     rtl_stream_test_replay_filter_domain_hz(&opts, &cc144, 4), digital);
     rc |= expect_eq("TETRA at 144 kHz with an 8 sps override: no ceiling",
                     rtl_stream_test_replay_filter_domain_hz(&opts, &cc144, 8), 0);
+    const dsd_iq_replay_config cc144_off = sidecar(144010U, 1U, 1U, 144);
+    rc |= expect_eq("TETRA at 144010 Hz (in tolerance of 144 kHz): its own filter",
+                    rtl_stream_test_replay_filter_domain_hz(&opts, &cc144_off, 0), 0);
     rc |= expect_eq("TETRA at 72 kHz with a 4 sps override: no ceiling",
                     rtl_stream_test_replay_filter_domain_hz(&opts, &cc72, 4), 0);
     opts.tetra_uplink = 1;

@@ -2264,6 +2264,18 @@ dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, 
 }
 
 uint32_t
+dsd_iq_replay_nominal_rate_hz(const dsd_iq_replay_config* cfg) {
+    if (!cfg) {
+        return 0U;
+    }
+    if (cfg->rate_chain.has_nominal) {
+        return cfg->rate_chain.nominal_rate_hz;
+    }
+    return dsd_iq_rate_chain_derived_nominal(cfg->sample_rate_hz, cfg->recorded_dsp_bw_khz, cfg->base_decimation,
+                                             cfg->post_downsample);
+}
+
+uint32_t
 dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg) {
     if (!cfg) {
         return 0U;
@@ -2332,7 +2344,7 @@ rate_fits_mode(uint32_t complex_hz, uint32_t post, const replay_plan_request* re
 /* The chain a sidecar recorded, as KEEP plans from it (issue #806). */
 typedef struct {
     uint32_t fs;
-    uint32_t nominal_hz; /* the recorded nominal rate, else the sample rate */
+    uint32_t nominal_hz; /* dsd_iq_replay_nominal_rate_hz() */
     uint32_t base;
     uint32_t post;
     int passes;
@@ -2347,7 +2359,7 @@ static void
 replay_recorded_chain_of(const dsd_iq_replay_config* cfg, replay_recorded_chain* rec) {
     const dsd_iq_rate_chain* chain = &cfg->rate_chain;
     rec->fs = cfg->sample_rate_hz;
-    rec->nominal_hz = chain->has_nominal ? chain->nominal_rate_hz : cfg->sample_rate_hz;
+    rec->nominal_hz = dsd_iq_replay_nominal_rate_hz(cfg);
     rec->base = cfg->base_decimation;
     rec->post = cfg->post_downsample;
     rec->passes = passes_of_u32(cfg->base_decimation);
@@ -3387,9 +3399,9 @@ dsd_iq_info_raw_bytes(const dsd_iq_replay_config* cfg, uint64_t actual_file_size
 static void
 dsd_iq_info_print_rate_chain(const dsd_iq_replay_config* cfg, FILE* out) {
     const dsd_iq_rate_chain* recorded = &cfg->rate_chain;
-    const uint32_t nominal_hz = recorded->has_nominal ? recorded->nominal_rate_hz : cfg->sample_rate_hz;
+    const uint32_t nominal_hz = dsd_iq_replay_nominal_rate_hz(cfg);
     DSD_FPRINTF(out, "  Nominal rate:        %u Hz (%s)\n", nominal_hz,
-                recorded->has_nominal ? "recorded" : "the sample rate; not recorded");
+                recorded->has_nominal ? "recorded" : "derived from the sample rate and the DSP bandwidth");
     const uint32_t bw_hz = cfg->recorded_dsp_bw_khz > 0 ? (uint32_t)cfg->recorded_dsp_bw_khz * 1000U : 48000U;
     dsd_iq_replay_rate_plan plan;
     char err[192] = {0};

@@ -393,6 +393,9 @@ test_live_resets_match_replay(void) {
     rc |= expect_true("live capture: a forced rate the half-band chain does not reach steps",
                       chain->device_forced == 1
                           && (chain->step_l != 0U) == (meta.sample_rate_hz / meta.base_decimation != 48000U));
+    /* The double's 10 MS/s over 2^7 is 78,125 Hz: the chain steps 384/625, so the replay below resets at each
+       driver_overflow MUTE on a stepped chain, the step included (dsd_demod_reset_filter_state()). */
+    rc |= expect_true("live capture: the chain steps", chain->step_l == 384U && chain->step_m == 625U);
     uint32_t overflows = 0U;
     for (uint32_t i = 0; i < meta.event_count; i++) {
         if (meta.events[i].kind == DSD_IQ_EVENT_MUTE

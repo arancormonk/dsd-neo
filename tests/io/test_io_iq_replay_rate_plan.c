@@ -579,12 +579,25 @@ test_recorded_chain(void) {
     rc |= expect_true("recorded RTL read-back 1535999: 48000 Hz, no step, not forced",
                       plan.complex_rate_hz == 48000U && !plan.chain.step.enabled && plan.forced == 0
                           && plan.chain.nominal_hz == 1536000U && plan.chain.passes == 5);
-    /* Without the nominal rate (a sidecar from before it) the nominal rate is the sample rate, whose half-band output
-       is not whole: a chain not forced is not kept with a fractional rate, so the general rule resamples it to the
-       largest 48 kHz x 2^k at or below it, 768 kHz, decimated by 16. */
-    rc |= expect_plan_in("legacy RTL read-back 1535999", sidecar_cfg(1535999U, 32U, 1U, 48), 48000U, 0U, 0, 0U, 768000U,
-                         16U, 1U, 48000U, 0, &plan);
-    rc |= expect_true("legacy RTL read-back 1535999: resampled", plan.origin == DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    /* Without the nominal rate (a sidecar from before it) the replay derives it as live forms it (issue #806 §2): the
+       sample rate is within 100 ppm of the RTL-SDR's request for the recorded chain, 48 kHz x 32, so that request is the
+       nominal rate. The chain is kept as recorded: 5 passes to 48000 Hz exactly, no step, not forced, and the reader
+       does not resample it (taking the sample rate as the nominal rate resampled it to 768 kHz). */
+    rc |= expect_plan_in("legacy RTL read-back 1535999", sidecar_cfg(1535999U, 32U, 1U, 48), 48000U, 0U, 0,
+                         DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, 1535999U, 32U, 1U, 47999U, 1, &plan);
+    rc |= expect_true("legacy RTL read-back 1535999: kept at 48000 Hz, no step, derived not forced",
+                      plan.origin == DSD_IQ_REPLAY_ORIGIN_KEEP && plan.complex_rate_hz == 48000U
+                          && !plan.chain.step.enabled && plan.chain.passes == 5 && plan.chain.nominal_hz == 1536000U
+                          && plan.forced == 0 && plan.forced_provenance == DSD_IQ_REPLAY_FORCED_DERIVED);
+    /* The post-decimated form: 144010 Hz with post 2 for a 72 kHz bandwidth plans from 144000 Hz. */
+    rc |= expect_plan_in("legacy 144010 Hz post 2", sidecar_cfg(144010U, 1U, 2U, 72), 72000U, 0U, 0, 0U, 144010U, 1U,
+                         2U, 72005U, 1, &plan);
+    rc |=
+        expect_true("legacy 144010 Hz post 2: 144000 Hz complex", plan.complex_rate_hz == 144000U && plan.forced == 0);
+    rc |= expect_true("derived nominal: within 100 ppm of the request",
+                      dsd_iq_rate_chain_derived_nominal(1535999U, 48, 32U, 1U) == 1536000U);
+    rc |= expect_true("derived nominal: the sample rate otherwise",
+                      dsd_iq_rate_chain_derived_nominal(2500000U, 48, 32U, 1U) == 2500000U);
     /* A device that picked a rate the half-band chain takes exactly: forced, but nothing to step. */
     rc |= expect_plan_in("recorded forced, no step", recorded_cfg(3072000U, 64U, 48, 3072000U, 1, 48000U, 0U, 0U, 0.0),
                          48000U, 0U, 0, 0U, 3072000U, 64U, 1U, 48000U, 1, &plan);

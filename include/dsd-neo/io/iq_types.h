@@ -61,8 +61,9 @@ typedef struct {
 
 /**
  * The live rate chain a capture recorded (issue #806): metadata v2's optional rate scalars, each set only with its has_
- * flag. A capture written before them records none: its nominal rate is its sample rate, and a replay works out
- * whether the device forced it from the sample rate and the DSP bandwidth (dsd_iq_rate_chain_derived_forced()).
+ * flag. A capture written before them records none: a replay works out its nominal rate and whether the device forced
+ * it from the sample rate and the DSP bandwidth (dsd_iq_rate_chain_derived_nominal(),
+ * dsd_iq_rate_chain_derived_forced()).
  */
 typedef struct {
     int has_nominal;
@@ -102,6 +103,16 @@ int dsd_iq_rate_chain_check(const dsd_iq_rate_chain* chain, uint32_t sample_rate
  */
 int dsd_iq_rate_chain_derived_forced(uint32_t sample_rate_hz, int dsp_bw_khz, uint32_t base_decimation,
                                      uint32_t post_downsample);
+
+/**
+ * @brief The nominal rate of a capture with no recorded nominal_rate_hz (issue #806 §2).
+ *
+ * The RTL-shaped request dsd_iq_rate_chain_derived_forced() matches when @p sample_rate_hz is within
+ * DSD_RATE_PLAN_READBACK_TOLERANCE_PPM of it, as a live stream takes the rate it asked for when the read-back is that
+ * close (an RTL-SDR that read back 1535999 Hz for 1536000 Hz plans 1536000 Hz); else the sample rate itself.
+ */
+uint32_t dsd_iq_rate_chain_derived_nominal(uint32_t sample_rate_hz, int dsp_bw_khz, uint32_t base_decimation,
+                                           uint32_t post_downsample);
 
 /**
  * @brief Return the required sample alignment in bytes for the sample format.

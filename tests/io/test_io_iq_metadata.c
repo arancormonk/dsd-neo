@@ -2125,7 +2125,7 @@ test_iq_info_rate_chain(void) {
          32U,
          48,
          "",
-         {"Nominal rate:        1536000 Hz (the sample rate; not recorded)",
+         {"Nominal rate:        1536000 Hz (derived from the sample rate and the DSP bandwidth)",
           "Replay rate chain:   kept: 5 half-band passes to 48000 Hz, no I/Q rate step",
           "DSP rate:            48000 Hz\n", "Device-forced rate:  no (derived)"}},
     };

@@ -92,7 +92,8 @@ The writer records:
   gives for those rates and passes, on a chain the device forced. The step's four fields come together. A sidecar
   that disagrees is refused with the field that does, for example `IQ replay metadata error: iq_step_l/iq_step_m
   (64/125) is not the step from nominal_rate_hz/base_decimation (2500000/32) to dsp_rate_hz (48000), which is
-  384/625`. Metadata written before them has none: its nominal rate is its sample rate.
+  384/625`. Metadata written before them has none: a replay then derives the nominal rate from the sample rate and the
+  DSP bandwidth (see [Rate Chain And Resampling](#rate-chain-and-resampling); `--iq-info` says `derived`).
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
 - `size_limit_reached`: `true` when the capture ended because `--iq-capture-max-mb` was reached rather than being cut
@@ -277,9 +278,11 @@ The chain:
 
 - **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded, as its live stream
   ran it, when the mode can run that. Its complex rate is its nominal rate over `base_decimation` (the nominal rate is
-  `nominal_rate_hz`, else `sample_rate_hz`). The mode decides two things: TETRA's requirement (that rate is a multiple
-  of 18 kHz from 36 to 144 kHz, with `post_downsample` 1), and the highest rate the mode's channel filter is designed at
-  (102,745 Hz for every digital mode, TETRA's own filter aside; none for the analog monitor). The first that applies:
+  `nominal_rate_hz`; for a sidecar without it, the rate an RTL-SDR asked for the recorded chain when `sample_rate_hz` is
+  within 100 ppm of it, as live plans a read-back that close, else `sample_rate_hz`). The mode decides two things:
+  TETRA's requirement (that rate is a multiple of 18 kHz from 36 to 144 kHz, with `post_downsample` 1), and the highest
+  rate the mode's channel filter is designed at (102,745 Hz for every digital mode, TETRA's own filter aside; none for
+  the analog monitor). The first that applies:
   1. A chain that does not step runs unchanged where that rate is whole and meets both (every committed fixture).
   2. A chain whose sidecar recorded a step runs that step, to `dsp_rate_hz`, where that rate meets both.
   3. A chain the device forced, with `post_downsample` 1, keeps its passes and runs the live I/Q rate step to D, as the
@@ -294,9 +297,10 @@ The chain:
   forced when its sample rate is not within 100 ppm of what an RTL-SDR asks for its chain, the DSP bandwidth times
   `base_decimation` (or times `post_downsample` too, for a chain whose bandwidth names the rate after it). This is a
   guess from the rates, not the device's decision: an RTL-SDR capture is never forced, so an RTL-SDR's 24 kHz EDACS
-  capture runs `digital_resample = "auto"` as the live RTL-SDR did, and does not resample its output to 48 kHz. A kept
-  chain that does not step and is not forced is not kept at a rate that is not a whole number of Hz (a sidecar from
-  before `nominal_rate_hz` of an RTL-SDR that read back 1,535,999 Hz is resampled).
+  capture runs `digital_resample = "auto"` as the live RTL-SDR did, and does not resample its output to 48 kHz. A
+  sidecar from before `nominal_rate_hz` of an RTL-SDR that read back 1,535,999 Hz plans from 1,536,000 Hz, so it is kept
+  at 48 kHz exactly, as live runs it. A chain that does not step and is not forced is not kept at a rate that is not a
+  whole number of Hz.
 - **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain the mode cannot run): a capture at
   D x 2^k (k from 0 to 10) is decimated by 2^k in the half-band chain with no resampling. Any other capture is
   resampled first, to R = D x 2^k, the largest such rate at or below its own (R = D when the capture is slower than

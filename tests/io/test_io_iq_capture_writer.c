@@ -2436,7 +2436,7 @@ test_rate_chain_written_and_checked(void) {
 }
 
 /* The pre-#806 replay planner (src/io/iq/iq_replay.c at b08406ebc, rate_plan_keep() and dsd_iq_replay_plan_rate()),
-   frozen: what a reader from before the rate chain's scalars plans for a capture, from its legacy fields. Fills the
+   frozen here by hand as that code reads, for the cases below (no post decimation): what a reader from before the rate chain's scalars plans for a capture, from its legacy fields. Fills the
    DSP input rate, base and demod rate; returns 1 when it kept the recorded chain. */
 static int
 old_reader_plan(uint32_t fs, uint32_t base, uint32_t demod, uint32_t target_hz, int tetra, uint32_t* dsp_in,
@@ -2533,7 +2533,9 @@ test_old_reader_golden(void) {
                       plan.chain.step.enabled && plan.complex_rate_hz == 72000U && !plan.resample);
     dsd_iq_replay_config_clear(&meta);
 
-    /* An unknown scalar, an integer or not, is ignored: the rule old readers apply to these fields. */
+    /* An unknown scalar, an integer or not, is ignored: the rule old readers apply to these fields. The fallthrough
+       that ignores it (metadata_parse_field_value() in src/io/iq/iq_replay.c: neither handled nor nested) is unchanged
+       since b08406ebc, so this reader runs it as an old one does. */
     char* end = strrchr((char*)text, '}');
     if (end) {
         DSD_SNPRINTF(end, sizeof(text) - (size_t)(end - (char*)text), "%s", ",\n  \"a_later_field\": 1.25\n}\n");
