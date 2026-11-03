@@ -1001,19 +1001,25 @@ scan_join_ppm(const QVariantMap& list, const SessionArgPrefs& prefs) {
     return ok ? QVariant(value) : QVariant(ppm);
 }
 
-/* Each session setting a list takes into its argv, after the app-wide defaults, in the order a conflict is named. */
+/* Each session setting a list takes into its argv, after the app-wide defaults, in the order a conflict is named. A
+   setting the list's source leaves out of its argv (append_input_args()) is no setting: gain, PPM and bias tee go
+   only into an RTL spec, the bandwidth only into an RTL or Airspy one, so an Airspy list's stored RTL gain, or a
+   network or file list's bandwidth, never keeps it out. */
 QList<QPair<QString, QVariant>>
 scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
     const QString source = list.value(QStringLiteral("sourceType")).toString();
     const int gain = stored_int_or(list.value(QStringLiteral("gainDb")), -1);
     const bool rtl = is_rtl_source(source);
+    const bool tuned = rtl || source == QLatin1String("airspy");
     return {
         {QStringLiteral("Different radio source"), scan_join_radio(list)},
-        {QStringLiteral("Different gain"), gain >= 0 ? gain : prefs.gainDb},
-        {QStringLiteral("Different PPM correction"), scan_join_ppm(list, prefs)},
+        {QStringLiteral("Different gain"), rtl ? QVariant(gain >= 0 ? gain : prefs.gainDb) : QVariant()},
+        {QStringLiteral("Different PPM correction"), rtl ? scan_join_ppm(list, prefs) : QVariant()},
         {QStringLiteral("Different bandwidth"),
-         session_args_effective_bandwidth_khz(
-             QString(), source, stored_int_or(list.value(QStringLiteral("bandwidthKhz")), -1), prefs.bandwidthKhz)},
+         tuned ? QVariant(session_args_effective_bandwidth_khz(
+                     QString(), source, stored_int_or(list.value(QStringLiteral("bandwidthKhz")), -1),
+                     prefs.bandwidthKhz))
+               : QVariant()},
         {QStringLiteral("Different bias tee"),
          rtl && bias_tee_effective(list.value(QStringLiteral("biasTee"), -1), prefs.biasTee)},
         {QStringLiteral("Different Airspy settings"), scan_join_airspy(list)},

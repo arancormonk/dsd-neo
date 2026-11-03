@@ -1826,6 +1826,34 @@ test_scan_join_conflict(void) {
         }
         expect(c.want, got == QLatin1String(c.want));
     }
+    /* A setting the source leaves out of its argv keeps no list out: an Airspy spec carries no RTL gain or PPM, and a
+       network or file source no gain, PPM or bandwidth. The same settings still differ between two RTL lists. */
+    const QVariantMap airspyList{{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}};
+    const auto withIn = [&with](const QVariantMap& source, const QVariantMap& changes) {
+        QVariantMap list = with(source);
+        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+            list.insert(it.key(), it.value());
+        }
+        return list;
+    };
+    expect(
+        "two Airspy lists with different stored RTL gain and PPM join",
+        conflict(withIn(airspyList, {{"gainDb", 10}, {"ppm", "4"}}), withIn(airspyList, {{"gainDb", 40}, {"ppm", ""}}))
+            .isEmpty());
+    expect("two Airspy lists with different bandwidths do not",
+           conflict(withIn(airspyList, {{"bandwidthKhz", 24}}), withIn(airspyList, {{"bandwidthKhz", 96}}))
+               == QStringLiteral("Different bandwidth"));
+    const QVariantMap udpList{{"sourceType", "udp"}, {"port", 7355}};
+    expect("two UDP lists with different stored gain, PPM and bandwidth join",
+           conflict(withIn(udpList, {{"gainDb", 10}, {"ppm", "4"}, {"bandwidthKhz", 24}}),
+                    withIn(udpList, {{"gainDb", 40}, {"ppm", "-3"}, {"bandwidthKhz", 48}}))
+               .isEmpty());
+    expect("two RTL lists with different gain do not",
+           conflict(with({{"gainDb", 10}}), with({{"gainDb", 40}})) == QStringLiteral("Different gain"));
+    expect("two rtl_tcp lists with different PPM do not",
+           conflict(with({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1}, {"ppm", "1"}}),
+                    with({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1}, {"ppm", "5"}}))
+               == QStringLiteral("Different PPM correction"));
     /* Airspy settings after the engine's defaults: unset and set to the default are one; a switch as true or 1. */
     const auto airspy = [&with](const QVariantMap& native) {
         QVariantMap settings{{"serial", "A1"}};
