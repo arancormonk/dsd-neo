@@ -608,6 +608,7 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_strn(w, "tg_label", view.tg_label, sizeof view.tg_label);
     (void)dsd_json_kv_strn(w, "protocol_label", view.protocol_label, sizeof view.protocol_label);
     dsd_call_snapshot snap;
+    DSD_MEMSET(&snap, 0, sizeof snap); /* read only when has_call, which MSVC's code generation cannot follow (C4701) */
     const int has_call = (view.state == DSD_APP_CALL_LINE_ACTIVE || view.state == DSD_APP_CALL_LINE_ENDED)
                          && dsd_call_state_get(state, (uint8_t)slot, &snap) > 0;
     (void)dsd_json_kv_str(w, "analog_mode", has_call ? api_analog_mode(snap.protocol, snap.analog_mode) : "");

@@ -1967,12 +1967,14 @@ file_exists(const char* path) {
     return 1;
 }
 
-static dsd_wav_recording_status
-recording_status(void) {
+/* The recording failures of @p kind counted so far (a dsd_wav_recording_error), read into a local: an array member of
+   a struct returned by value cannot be indexed on MSVC (C4223). */
+static long long
+recording_failures(int kind) {
     dsd_wav_recording_status status;
     DSD_MEMSET(&status, 0, sizeof status);
     dsd_wav_recording_status_get(&status);
-    return status;
+    return (long long)status.failures[kind];
 }
 
 /* The temporary recording of an analog reception that never became a call is discarded: closed through the segment
@@ -1992,14 +1994,12 @@ test_unpublished_analog_recording_is_discarded(void) {
     dsd_wav_test_set_io(short_write, counting_close);
     SNDFILE* wav = analog_segment(&r, path, sizeof path);
     rc |= expect_true("discard: the segment opened", wav != NULL && file_exists(path));
-    rc |= expect_int("discard: its short write latched it", recording_status().failures[DSD_WAV_RECORDING_ERROR_WRITE],
-                     1);
+    rc |= expect_int("discard: its short write latched it", recording_failures(DSD_WAV_RECORDING_ERROR_WRITE), 1);
     rc |= expect_true("discard: returns no handle", discard_analog_wav_file(wav, path) == NULL);
     dsd_wav_test_set_io(NULL, NULL);
     rc |= expect_int("discard: closed through the segment table", g_segment_closes, 1);
     /* What a write already reported stays reported (D1): the discard drops the latch, not the count. */
-    rc |= expect_int("discard: the write failure stays counted",
-                     recording_status().failures[DSD_WAV_RECORDING_ERROR_WRITE], 1);
+    rc |= expect_int("discard: the write failure stays counted", recording_failures(DSD_WAV_RECORDING_ERROR_WRITE), 1);
     rc |= expect_true("discard: the file is gone", !file_exists(path));
 
     dsd_wav_test_set_io(NULL, failing_close);
@@ -2008,7 +2008,7 @@ test_unpublished_analog_recording_is_discarded(void) {
     dsd_wav_test_set_io(NULL, NULL);
     rc |= expect_true("discard after a failed close: the file is gone", !file_exists(path));
     rc |= expect_int("discard after a failed close: counted as no close failure",
-                     recording_status().failures[DSD_WAV_RECORDING_ERROR_CLOSE], 0);
+                     recording_failures(DSD_WAV_RECORDING_ERROR_CLOSE), 0);
     /* Neither the removal warning nor the publishing closer's (count_discard_log_lines()). */
     rc |= expect_int("discard after a failed close: nothing logged", g_close_warnings + g_unremoved_warnings, 0);
 
@@ -2038,7 +2038,7 @@ test_failed_analog_open_keeps_its_error_through_a_discard(void) {
     rc |= expect_int("open failure: one record", g_j.count, 1);
     const char* err = record(&g_j, "error", 0);
     rc |= expect_str("open failure: its open error", err ? field_s(err, "kind") : "", "open");
-    rc |= expect_int("open failure: counted", recording_status().failures[DSD_WAV_RECORDING_ERROR_OPEN], 1);
+    rc |= expect_int("open failure: counted", recording_failures(DSD_WAV_RECORDING_ERROR_OPEN), 1);
     rc |= expect_int("open failure: no file", list_analog_names(&r, "NFM", "154430000").files, 0);
     end_call(&r, DSD_CALL_END_EXPLICIT);
     rig_close(&r);
