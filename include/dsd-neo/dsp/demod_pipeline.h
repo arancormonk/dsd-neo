@@ -14,6 +14,7 @@
 #ifndef DSP_DEMOD_PIPELINE_H
 #define DSP_DEMOD_PIPELINE_H
 
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -286,7 +287,8 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
 
 /**
  * Return the filter state to a fresh stream's: each half-band stage's history and pending count (its look-ahead and
- * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
+ * decimation phase), the live I/Q rate step's history and phase (its design stays), the channel FIR's history and
+ * pending outputs, and a replay's post-demod audio decimator on either
  * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is
  * centred on its next input sample, the decimator's next output comes with the post_downsample-th sample, and what
  * they held back is dropped. The auto squelch's tracker starts its windows over at its next block, keeping its floor
@@ -295,6 +297,17 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
  * @param d Demodulator state; NULL is ignored.
  */
 void dsd_demod_reset_filter_state(struct demod_state* d);
+
+/**
+ * Prepare @p plan as the live I/Q rate step's candidate (issue #806; dsd_live_iq_step_prepare() on
+ * demod_state::live_iq_step) with this pipeline's capacities: a block brings the step at most MAXIMUM_BUF_LENGTH / 2
+ * complex samples halved by each of the plan's passes, and the step writes it to a DSD_DEMOD_WORKBUF_LENGTH work
+ * buffer. A plan whose largest block would not fit (one that upsamples) is refused here, before any sample flows.
+ * Call it, and the commit, rollback and finish after it, on the controller thread while the demod thread is paused.
+ *
+ * @return DSD_LIVE_IQ_STEP_OK, or a negative dsd_live_iq_step_status.
+ */
+int dsd_demod_live_step_prepare(struct demod_state* d, const dsd_live_iq_step_plan* plan);
 
 /**
  * Channel edge (Hz) that the channel low-pass protects for a profile.

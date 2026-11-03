@@ -21,6 +21,7 @@ target_sources(
         pcm_input_staging.c
         rate_converter.c
         iq_resampler.c
+        live_iq_step.c
         analog_sink.c
         symbol_levels.c
         dsd_symbol.c

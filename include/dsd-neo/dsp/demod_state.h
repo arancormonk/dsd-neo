@@ -24,6 +24,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
@@ -228,6 +229,11 @@ struct demod_state {
     /* The downsample_passes the half-band state above belongs to: the cascade starts over when the count changes,
        since writers of the count (rate setup, restore_capture_rate_settings()) do not reset it. */
     int hb_state_passes;
+    /* The live I/Q rate step after the cascade (issue #806): hb_out to the DSP bandwidth rate when the device forced
+       its own rate. full_demod() runs the active design while live_iq_step.enabled; the controller thread designs and
+       swaps them (dsd_demod_live_step_prepare(), dsd_live_iq_step_commit()) while the demod thread is paused, and
+       dsd_demod_reset_filter_state() clears it with the cascade. */
+    dsd_live_iq_step live_iq_step;
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
      * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.

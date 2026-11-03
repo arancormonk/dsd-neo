@@ -631,6 +631,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/dsp/iq_resampler.h
   CXX
 )
+# The live I/Q rate step (issue #806).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_live_iq_step
+  HEADERS_PUBLIC_DSP_LIVE_IQ_STEP
+  dsd-neo/dsp/live_iq_step.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_live_iq_step_cxx
+  HEADERS_PUBLIC_DSP_LIVE_IQ_STEP_CXX
+  dsd-neo/dsp/live_iq_step.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_analog_sink
   HEADERS_PUBLIC_DSP_ANALOG_SINK
@@ -10900,6 +10913,22 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_resampler ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_IQ_RESAMPLER COMMAND dsd-neo_test_dsp_iq_resampler)
+
+# The live I/Q rate step in full_demod() and its design transaction (issue #806). The design-failure seam is in the
+# DSP module's test-hook build.
+add_executable(dsd-neo_test_dsp_live_iq_step dsp/test_dsp_live_iq_step.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_live_iq_step
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_live_iq_step
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_io_iq
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_LIVE_IQ_STEP COMMAND dsd-neo_test_dsp_live_iq_step)
 
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)

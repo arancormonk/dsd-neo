@@ -4780,6 +4780,36 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     key (L, M, input rate as a value, both edges; `max_in` is not part of it). Bounds for planning:
     `dsd_iq_resampler_tail_inputs()` (taps per phase - 1 input samples) and `dsd_iq_resampler_group_delay_inputs()`
     ((L x T - 1) / 2L input samples; 2.5 MS/s stepped to 4 kHz delays 5.3 ms).
+- Live I/Q rate step (issue #806): `src/dsp/live_iq_step.c`, `<dsd-neo/dsp/live_iq_step.h>`, run by `full_demod()`
+  right after `full_demod_apply_halfband_decimation()` (`full_demod_apply_live_step()`) and before the TETRA chain and
+  the channel filter. A device-forced rate leaves the cascade at hb_out (78,125 Hz for 2.5 MS/s at 48 kHz); the step
+  resamples the complex stream to the DSP bandwidth rate exactly with a `configure_ratio()` design, in passes of
+  `DSD_LIVE_IQ_STEP_PASS_PAIRS` (512) inputs, from the block's buffer into the work buffer it is not in (`hb_workbuf`
+  or `timing_buf`, as the channel filter writes). A chain with no step pays one branch on
+  `demod_state::live_iq_step.enabled` a block.
+  - Plan: `dsd_live_iq_step_plan` holds the rate planner's numbers as plain values (enabled, passes, hb_out as
+    numerator/shift, L, M, target, protected and stopband edges), since DSP does not depend on IO; its fields are the
+    design key (`dsd_live_iq_step_plan_equal()`). A plan whose L/M does not take hb_out to the target within
+    `DSD_IQ_RESAMPLER_MAX_APPROX_PPM` is refused.
+  - Capacity: `dsd_demod_live_step_prepare()` prepares with the pipeline's limits (a block brings the step at most
+    `MAXIMUM_BUF_LENGTH / 2` complex halved by each pass, written to a `DSD_DEMOD_WORKBUF_LENGTH` buffer) and refuses
+    a plan whose largest block would not fit (one that upsamples) before any sample flows. The step's output never
+    passes its input, so the stages after it keep their capacities.
+  - Transaction (controller thread, demod thread paused): `dsd_live_iq_step_prepare()` designs a candidate next to the
+    `active` design, or reuses the active one for an equal plan; `dsd_live_iq_step_commit()` keeps the active design as
+    `retained` (the first commit of a transaction; a later one releases what it replaces) and runs the candidate,
+    cleared; `dsd_live_iq_step_rollback()` puts the retained design back, cleared; `dsd_live_iq_step_finish()` releases
+    the retained design; `dsd_live_iq_step_disable()` releases all (stream cleanup, `rtl_demod_cleanup()`). A refused
+    prepare (bad plan, capacity, a design the resampler refuses, `design_status`) leaves no candidate and the active and
+    retained designs as they were. Nothing is allocated on the processing path. The DSP test-hook build can fail every
+    design (`dsd_live_iq_step_test_fail_design()`, `src/dsp/live_iq_step_test_support.h`).
+  - Reset: `dsd_demod_reset_filter_state()` clears the active design's history and phase with the cascade's, and a
+    commit or rollback that changes the design starts it over.
+  - Tests: `DSP_LIVE_IQ_STEP` (every planned Airspy/SoapySDR grid point; zero-output, one-pair and empty blocks;
+    maximum blocks at p = 0, p = 1 and the Airspy passes against the cascade's output through the same design; cuts;
+    reset; the transaction and its refusals), `DSP_CQPSK_EVM` (P25p1/P2 through the real cascade and the step at
+    78,125 and 93,750 Hz to 48 kHz and 39,062.5 and 46,875 Hz to 24 kHz: EVM and every symbol), and the
+    `dsd-neo_bench_dsp` cases `hb_cascade_*`, `iq_step_*` and `full_demod_cqpsk_p25p1_airspy_78k{,_nostep}`.
 - The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
   in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
   6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS
@@ -5421,7 +5451,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     rate setup and `restore_capture_rate_settings()` write the count without a reset. The cascade drops a stray odd
     float, as it always did.
   - `dsd_demod_reset_filter_state()` (`<dsd-neo/dsp/demod_pipeline.h>`) is the one filter reset: half-band histories
-    and pending counts, channel history, channel pending 0, and the post-demod decimator below on both paths, so every
+    and pending counts, the live I/Q rate step's history and phase, channel history, channel pending 0, and the
+    post-demod decimator below on both paths, so every
     filter's next output is centred on its next input and what they held is dropped (the latency above: a RESET or
     loop rewind drops the old dwell's last 74 samples or so, and as nothing flushes them at EOF, a replay never decodes
     a capture's last 1.5 ms). `rtl_demod_clear_filter_histories()` and stream open (`demod_init_common_defaults()`)

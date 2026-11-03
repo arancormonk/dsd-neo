@@ -19,6 +19,8 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/simd_fir.h>
@@ -704,6 +706,8 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
         return;
     }
     halfband_reset_state(d);
+    /* The live step filters the cascade's own stream, so it starts over where the cascade does. */
+    dsd_live_iq_step_clear(&d->live_iq_step);
     channel_lpf_reset_state(d);
     tetra_rrc_reset_state(d);
     if (d->tetra_chain) {
@@ -1876,8 +1880,10 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
         return;
     }
     if (d->hb_state_passes != d->downsample_passes) {
-        /* Another cascade: its stages run at other rates, so what the old one held is not their past. */
+        /* Another cascade: its stages run at other rates, so what the old one held is not their past. The live step
+           after it filters the same stream, so it starts over with it. */
         halfband_reset_state(d);
+        dsd_live_iq_step_clear(&d->live_iq_step);
         d->hb_state_passes = d->downsample_passes;
     }
     if (d->downsample_passes <= 0) {
@@ -1905,6 +1911,58 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
     }
     d->lowpassed = src;
     d->lp_len = in_len;
+}
+
+/* The most complex inputs a block brings to the live step after @p passes half-band passes: a live read carries at most
+   MAXIMUM_BUF_LENGTH / 2, and a pass makes at most (N + 1) / 2 of N. */
+static size_t
+live_step_max_block_in(int passes) {
+    size_t n = MAXIMUM_BUF_LENGTH / 2;
+    for (int i = 0; i < passes; i++) {
+        n = (n + 1U) / 2U;
+    }
+    return n;
+}
+
+extern "C" int
+dsd_demod_live_step_prepare(struct demod_state* d, const dsd_live_iq_step_plan* plan) {
+    if (!d) {
+        return DSD_LIVE_IQ_STEP_ERR_ARGS;
+    }
+    /* A plan out of range still goes to the step, which refuses it and drops any candidate, as for any refusal. */
+    const int passes = plan ? plan->passes : 0;
+    const size_t max_in =
+        (passes >= 0 && passes <= DSD_IQ_RESAMPLER_MAX_RATE_SHIFT) ? live_step_max_block_in(passes) : 1U;
+    return dsd_live_iq_step_prepare(&d->live_iq_step, plan, max_in, (size_t)DSD_DEMOD_WORKBUF_LENGTH / 2U);
+}
+
+/* The live step on a block: the active design from the block's buffer into the work buffer it is not in, as the
+   channel filter writes. Its output never passes its input (it never upsamples), so the stages after it keep their
+   capacities. */
+static void
+full_demod_run_live_step(struct demod_state* d) {
+    const int n = (d->lowpassed && d->lp_len > 0) ? (d->lp_len >> 1) : 0;
+    float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    const int made = dsd_iq_resampler_process(&d->live_iq_step.active, d->lowpassed, (size_t)n, out,
+                                              (size_t)DSD_DEMOD_WORKBUF_LENGTH / 2U);
+    if (made < 0) {
+        /* Not reachable: dsd_demod_live_step_prepare() refuses a plan whose largest block would not fit. Should it
+           happen, the step starts over and the block makes no samples. */
+        dsd_live_iq_step_clear(&d->live_iq_step);
+        d->lp_len = 0;
+        return;
+    }
+    d->lowpassed = out;
+    d->lp_len = made << 1;
+}
+
+/* The live I/Q rate step right after the half-band cascade (issue #806). A chain with no step pays this one branch. */
+static inline void
+full_demod_apply_live_step(struct demod_state* d) {
+    if (!d->live_iq_step.enabled) {
+        return;
+    }
+    full_demod_run_live_step(d);
 }
 
 /* The half-band cascade and the channel filter made no samples (a filter warm-up, or nothing in): the block has no
@@ -2816,6 +2874,7 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
+    full_demod_apply_live_step(d);
     dsd_demod_update_tetra_chain(d);
     tetra_stream_block streamed_block;
     const int streamed = full_demod_tetra_stream_block(d, &streamed_block);

@@ -28,6 +28,8 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -108,6 +110,7 @@ struct DemodHolder {
             return;
         }
         dsd_fsk_modem_release(&s->fsk_modem_state);
+        dsd_live_iq_step_disable(&s->live_iq_step);
         if (s->post_polydecim_taps) {
             dsd_neo_aligned_free(s->post_polydecim_taps);
         }
@@ -1293,6 +1296,175 @@ bench_full_demod(const BenchOptions& opts) {
     return ran;
 }
 
+/* A device-forced rate's live chain (issue #806): the half-band cascade on a maximum live block, the I/Q rate step on
+   what the cascade leaves of one, and the CQPSK chain at 2.5 MS/s with and without the step. */
+static constexpr int kLiveBlockPairs = MAXIMUM_BUF_LENGTH / 2;
+
+static int
+bench_one_hb_cascade(const BenchOptions& opts, const char* name, int rate_hz, int stages) {
+    std::vector<float> in((size_t)kLiveBlockPairs * 2U);
+    std::vector<float> work_a(in.size());
+    std::vector<float> work_b(in.size());
+    std::vector<std::vector<float>> hist_i((size_t)stages);
+    std::vector<std::vector<float>> hist_q((size_t)stages);
+    std::vector<int> pending((size_t)stages, 0);
+    fill_noise(&in, 0x806Au);
+    for (int stage = 0; stage < stages; stage++) {
+        const size_t hist_len = (stage == 0) ? 30U : (size_t)HB_TAPS - 1U;
+        hist_i[(size_t)stage].assign(hist_len, 0.0f);
+        hist_q[(size_t)stage].assign(hist_len, 0.0f);
+    }
+    BenchMeta meta;
+    meta.rate_hz = rate_hz;
+    meta.profile = "airspy";
+    meta.variant = stages == 5 ? "31/15x4" : "31/15x6";
+    return run_case(
+        opts, name, "input_pair", (double)kLiveBlockPairs,
+        [&]() -> float {
+            const float* src = in.data();
+            float* dst = work_a.data();
+            int in_len = (int)in.size();
+            for (int stage = 0; stage < stages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got =
+                    simd_hb_decim2_complex(src, in_len, dst, hist_i[(size_t)stage].data(), hist_q[(size_t)stage].data(),
+                                           &pending[(size_t)stage], stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == work_a.data()) ? work_b.data() : work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + (float)in_len;
+        },
+        &meta);
+}
+
+/* The step alone, on the 4096 pairs a maximum 2.5 or 3 MS/s block leaves after five passes, per output pair. */
+static int
+bench_one_iq_step(const BenchOptions& opts, const char* name, int hb_out_hz, int target_hz, int L, int M) {
+    constexpr int kStepIn = kLiveBlockPairs >> 5;
+    const int protect = target_hz * 9 / 20;
+    dsd_iq_resampler r;
+    dsd_iq_resampler_init(&r);
+    if (dsd_iq_resampler_configure_ratio(&r, L, M, hb_out_hz, 0U, protect, target_hz - protect,
+                                         DSD_LIVE_IQ_STEP_PASS_PAIRS)
+        != DSD_IQ_RESAMPLER_OK) {
+        DSD_FPRINTF(stderr, "%s: step design failed\n", name);
+        return 0;
+    }
+    std::vector<float> in((size_t)kStepIn * 2U);
+    fill_noise(&in, 0x806Bu);
+    const size_t cap = dsd_iq_resampler_max_out(&r, kStepIn);
+    std::vector<float> out(cap * 2U);
+    BenchMeta meta;
+    meta.rate_hz = hb_out_hz;
+    meta.profile = "iq_step";
+    meta.tap_count = r.taps_per_phase;
+    meta.variant = target_hz == 48000 ? "to_48k" : "to_72k";
+    const int ran = run_case(
+        opts, name, "out_pair", (double)kStepIn * (double)L / (double)M,
+        [&]() -> float {
+            const int made = dsd_iq_resampler_process(&r, in.data(), kStepIn, out.data(), cap);
+            return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + (float)made;
+        },
+        &meta);
+    dsd_iq_resampler_free(&r);
+    return ran;
+}
+
+/* A rectangular pi/4-DQPSK stream at @p rate_hz carrying @p symbol_hz symbols (not necessarily a whole sps). */
+static void
+fill_cqpsk_iq_rate(std::vector<float>* v, int rate_hz, int symbol_hz) {
+    static const float symbols[] = {-3.0f, -1.0f, 1.0f, 3.0f};
+    float phase = 0.0f;
+    long long last = -1;
+    const int pairs = (int)(v->size() >> 1);
+    for (int n = 0; n < pairs; n++) {
+        const long long k = ((long long)n * symbol_hz) / rate_hz;
+        if (k != last) {
+            last = k;
+            phase += symbols[k & 3] * (kPi / 4.0f);
+            while (phase > kPi) {
+                phase -= 2.0f * kPi;
+            }
+            while (phase < -kPi) {
+                phase += 2.0f * kPi;
+            }
+        }
+        (*v)[(size_t)n * 2] = std::cos(phase);
+        (*v)[(size_t)n * 2 + 1] = std::sin(phase);
+    }
+}
+
+/* full_demod() on maximum 2.5 MS/s blocks: five passes to 78,125 Hz, then the step to 48 kHz and P25p1 at 10 sps, or
+   (step 0) today's chain at the truncated 78,125 Hz with a rounded 16 sps. */
+static int
+bench_one_cqpsk_airspy_full_demod(const BenchOptions& opts, const char* name, int step) {
+    constexpr int kCaptureHz = 2500000;
+    std::vector<float> in((size_t)kLiveBlockPairs * 2U);
+    fill_cqpsk_iq_rate(&in, kCaptureHz, 4800);
+    DemodHolder state;
+    if (!state) {
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
+        return 0;
+    }
+    if (step) {
+        configure_common_cqpsk_state(state.s, 48000, 4800, 10);
+        dsd_live_iq_step_plan plan;
+        DSD_MEMSET(&plan, 0, sizeof(plan));
+        plan.enabled = 1;
+        plan.passes = 5;
+        plan.hb_out_num = 78125;
+        plan.L = 384;
+        plan.M = 625;
+        plan.target_hz = 48000;
+        plan.protect_hz = 21600;
+        plan.stop_hz = 26400;
+        int rc = dsd_demod_live_step_prepare(state.s, &plan);
+        if (rc == DSD_LIVE_IQ_STEP_OK) {
+            rc = dsd_live_iq_step_commit(&state.s->live_iq_step);
+        }
+        dsd_live_iq_step_finish(&state.s->live_iq_step);
+        if (rc != DSD_LIVE_IQ_STEP_OK) {
+            DSD_FPRINTF(stderr, "%s: step refused (%d)\n", name, rc);
+            return 0;
+        }
+    } else {
+        configure_common_cqpsk_state(state.s, 78125, 4800, 16);
+        state.s->sps_is_integer = 0;
+    }
+    state.s->downsample_passes = 5;
+    BenchMeta meta;
+    meta.rate_hz = kCaptureHz;
+    meta.profile = "cqpsk";
+    meta.variant = step ? "cascade+step" : "cascade";
+    return run_case(
+        opts, name, "input_pair", (double)kLiveBlockPairs,
+        [&]() -> float {
+            DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+            state.s->lowpassed = state.s->input_cb_buf;
+            state.s->lp_len = (int)in.size();
+            full_demod(state.s);
+            return state.s->result[0] + state.s->result[(state.s->result_len > 0) ? state.s->result_len - 1 : 0]
+                   + (float)state.s->result_len;
+        },
+        &meta);
+}
+
+static int
+bench_live_step(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_hb_cascade(opts, "hb_cascade_2500k", 2500000, 5);
+    ran += bench_one_hb_cascade(opts, "hb_cascade_10000k", 10000000, 7);
+    ran += bench_one_iq_step(opts, "iq_step_78k125_48k", 78125, 48000, 384, 625);
+    ran += bench_one_iq_step(opts, "iq_step_78k125_72k", 78125, 72000, 576, 625);
+    ran += bench_one_iq_step(opts, "iq_step_93k75_48k", 93750, 48000, 64, 125);
+    ran += bench_one_iq_step(opts, "iq_step_93k75_72k", 93750, 72000, 96, 125);
+    ran += bench_one_cqpsk_airspy_full_demod(opts, "full_demod_cqpsk_p25p1_airspy_78k", 1);
+    ran += bench_one_cqpsk_airspy_full_demod(opts, "full_demod_cqpsk_p25p1_airspy_78k_nostep", 0);
+    return ran;
+}
+
 /* One analog receive core case: lines (Hz, amplitude) and a voice-like line wandering 85-255 Hz, in white noise at
    snr_db in the sub-audible band against a 0.1 tone. */
 struct AnalogRxSignal {
@@ -1604,6 +1776,7 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_live_step(opts);
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);
