@@ -794,15 +794,18 @@ test_rate_correction_past_uint32_rolls_back(void) {
     rig_close(r);
 }
 
-/* The rate write for 960 kS/s is refused and the device still runs the rate it had, whose capture correction it refuses
- * too: the retune is refused and rolled back onto the capture the stream ran, as after a rate write that took. */
+/* The rate write for 960 kS/s is refused and the device reports 960,050 Hz (within 100 ppm of the rate written, so the
+ * rate chain takes it), whose capture correction it refuses too: the retune is refused and rolled back onto the
+ * capture the stream ran, as after a rate write that took. */
 void
 test_failed_rate_write_correction_rolls_back(void) {
     rig r;
     rig_open(r, kTunerR820T);
+    /* The device moved under the stream: the record no longer holds, and it reports this until a write takes. */
+    r.dongle->tuner.rate = 960050U;
     r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 1;
     r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value = (int)kCapture960kHz;
-    const uint32_t corrected_hz = kHopsHz[0] + r.start.capture_rate_hz / 4U;
+    const uint32_t corrected_hz = kHopsHz[0] + 960050U / 4U;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
     const int from = r.dongle->tuner.freq_log_count;
@@ -810,6 +813,57 @@ test_failed_rate_write_correction_rolls_back(void) {
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
     r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 0;
     expect_rolled_back(r, got);
+    assert(got.refused_status == DSD_RATE_PLAN_OK);
+    assert(r.dongle->tuner.freq_log_count == from + 2);
+    assert(freq_taken(r, from) == kHopsHz[0] + kCapture960kHz / 4U);
+    assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
+/* A refused rate write whose device reports a rate within 100 ppm of the one written (issue #806): the chain is the one
+ * planned for the rate written, not forced, with the capture on the rate the device runs. 1,535,968 Hz for 1.536 MS/s
+ * used to run 4 passes to a forced 95,998 Hz (a 24000/47999 FSK resampler), 960,050 Hz a forced 30,001 Hz. */
+void
+test_failed_rate_write_in_tolerance_runs(void) {
+    const struct {
+        int rate_in;
+        uint32_t written;
+        uint32_t reported;
+    } cases[] = {{kRateIn, 1536000U, 1535968U}, {kRateIn960k, kCapture960kHz, 960050U}};
+
+    for (const auto& c : cases) {
+        rig r;
+        rig_open(r, kTunerR820T);
+        r.dongle->tuner.rate = c.reported;
+        r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 1;
+        r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value = (int)c.written;
+        const rtl_stream_test_capture_result got = hop(kHopsHz[0], c.rate_in);
+        r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 0;
+        assert(got.rc != 0); /* the write's failure */
+        assert(got.capture_rate_hz == c.reported);
+        assert(got.downsample_passes == 5 && got.rate_out_hz == c.rate_in && got.rate_forced == 0);
+        assert(got.nominal_hz == c.written && got.step_enabled == 0);
+        assert(got.capture_freq_hz == kHopsHz[0] + c.reported / 4U && r.dongle->tuner.freq == got.capture_freq_hz);
+        rig_close(r);
+    }
+}
+
+/* A refused rate write for 960 kS/s whose device still runs its 1.536 MS/s (60 % off the rate written): an RTL-SDR's
+ * chain cannot run it, so the retune is refused and rolled back like a read-back out of tolerance, the reported rate and
+ * the forced flag in the refusal (issue #806). It used to run a forced 48 kHz chain at a 30 kHz DSP bandwidth. */
+void
+test_failed_rate_write_out_of_tolerance_refused(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value = (int)kCapture960kHz;
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 0;
+    expect_rolled_back(r, got);
+    assert(got.refused_status == DSD_RATE_PLAN_ERR_READBACK);
+    assert(got.refused_readback_hz == r.start.capture_rate_hz && got.refused_forced == 1);
+    /* The retune's capture, then the one the stream ran: no correction for a rate the chain refused. */
     assert(r.dongle->tuner.freq_log_count == from + 2);
     assert(freq_taken(r, from) == kHopsHz[0] + kCapture960kHz / 4U);
     assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
@@ -1086,6 +1140,8 @@ main(int argc, char** argv) {
         {"failed_rate_correction", test_failed_rate_correction_rolls_back},
         {"rate_correction_past_uint32", test_rate_correction_past_uint32_rolls_back},
         {"failed_rate_write_correction", test_failed_rate_write_correction_rolls_back},
+        {"failed_rate_write_in_tolerance", test_failed_rate_write_in_tolerance_runs},
+        {"failed_rate_write_refused", test_failed_rate_write_out_of_tolerance_refused},
         {"failed_rollback", test_failed_rollback_stops_stream},
         {"start_readback_refused", test_start_readback_out_of_tolerance_refused},
         {"retune_readback_refused", test_retune_readback_out_of_tolerance_refused},

@@ -749,7 +749,9 @@ void rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx),
  * rate the chain runs (the resampler chain, symbol timing, the output rate), in a stream open's order.
  * The stream's own state comes back afterwards. Returns -1 for bad arguments or with a stream or device open. */
 typedef struct {
-    int rc; /* 0, or the planner's refusal (a dsd_rate_plan_status); -1 when the finalize refused the options */
+    /* 0, or the planner's refusal (a dsd_rate_plan_status); -1 for a failed step design or options the finalize
+       refused */
+    int rc;
     int passes;
     int rate_out_hz; /* the exact rate after the step */
     int forced;      /* capture_rate_device_forced */
