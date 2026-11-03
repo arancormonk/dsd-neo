@@ -339,12 +339,12 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  * Cutoff is width/2 + DSD_ANALOG_CHANNEL_GUARD_HZ with the fixed
  * DSD_ANALOG_CHANNEL_TRANSITION_HZ Blackman transition, so the width is the
  * protected passband. 16000 Hz reproduces the WIDE profile's taps wherever the
- * WIDE design succeeds (rates from about 19.1 to 51.4 kHz: no 0.9 x Nyquist
- * clamp, within its 144-tap cap). Above that WIDE runs its 63-tap fallback
- * prototype, and this design gives 16000 Hz its full length instead (219 taps at
- * 78,125 Hz), up to the analog tap capacity at about 102.7 kHz. There is no
- * Nyquist clamp and no fallback prototype here: a width the rate cannot realize
- * (see dsd_analog_width_realizable()) is an error.
+ * WIDE design runs unclamped: rates from about 19.1 kHz, where its cutoff stops
+ * being held to 0.9 x Nyquist, up to the 288-tap capacity both share at about
+ * 102.7 kHz (DSD_DIGITAL_CHANNEL_MAX_RATE_HZ; 219 taps at 78,125 Hz). Above that
+ * WIDE runs its 63-tap fallback prototype. There is no Nyquist clamp and no
+ * fallback prototype here: a width the rate cannot realize (see
+ * dsd_analog_width_realizable()) is an error.
  *
  * @param rate_hz  Channel-filter sample rate (demod complex_rate) in Hz.
  * @param width_hz Full channel width in Hz.
@@ -376,11 +376,12 @@ int dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps);
  * Channel width the legacy WIDE profile plan protects at a rate.
  *
  * The plan the unset NFM default runs where the rate cannot realize the 16 kHz
- * width-driven design: the 144-tap WIDE design with its cutoff held to 0.9 x
- * Nyquist, or, at rates that design cannot fit (above about 51.4 kHz), the
- * 63-tap WIDE fallback prototype, whose response scales with the rate it runs
- * at. The width is the protected passband (twice the edge the transition
- * starts at), measured the same way as an analog width.
+ * width-driven design: the WIDE design within DSD_CHANNEL_LPF_MAX_TAPS with its
+ * cutoff held to 0.9 x Nyquist, or, at rates that design cannot fit (above
+ * DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, about 102.7 kHz), the 63-tap WIDE fallback
+ * prototype, whose response scales with the rate it runs at. The width is the
+ * protected passband (twice the edge the transition starts at), measured the
+ * same way as an analog width.
  *
  * @param rate_hz Channel-filter sample rate (demod complex_rate) in Hz.
  * @return Protected width in Hz, or 0 for a rate of 0 or less.

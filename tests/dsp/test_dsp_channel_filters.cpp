@@ -13,8 +13,10 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/digital_channel.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdio.h>
@@ -247,9 +249,9 @@ test_width_response(void) {
     return 0;
 }
 
-/* Device-forced rates above ~51.4 kHz need more than the 144 digital taps. The
- * analog path designs them properly instead of dropping to the 63-tap prototype
- * built for 24 kHz; digital profiles keep their 144-tap cap and fallback. */
+/* Device-forced rates above ~51.4 kHz need more than 144 taps. The analog path
+ * and, since issue #806, the digital profiles design them within the 288-tap
+ * capacity instead of dropping to the 63-tap prototype built for 24 kHz. */
 static int
 test_forced_rate_capacity(demod_state* s) {
     static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
@@ -268,15 +270,20 @@ test_forced_rate_capacity(demod_state* s) {
         DSD_FPRINTF(stderr, "analog 25 kHz at 96 kHz: %d taps, want 269\n", len);
         return 1;
     }
-    /* Digital WIDE (the digital fallback profile) at the same forced rate is untouched. */
+    /* Digital WIDE (the digital fallback profile) at the same forced rate runs the 16 kHz analog design's taps, and
+       12K5 its own 219-tap design: its 6.25 kHz edge passed, 50 dB down from 7750 Hz. */
+    static float analog[DSD_CHANNEL_LPF_MAX_TAPS];
+    int analog_len = 0;
+    design_plan(s, 78125, DSD_CH_LPF_PROFILE_WIDE, DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ, analog, &analog_len);
     design_plan(s, 78125, DSD_CH_LPF_PROFILE_WIDE, 0, taps, &len);
-    if (len != 63) {
-        DSD_FPRINTF(stderr, "digital WIDE at 78125 Hz: %d taps, want the 63-tap fallback\n", len);
+    if (len != 219 || len != analog_len || std::memcmp(taps, analog, (size_t)len * sizeof(float)) != 0) {
+        DSD_FPRINTF(stderr, "digital WIDE at 78125 Hz: %d taps, want the 219-tap 16 kHz design\n", len);
         return 1;
     }
     design_plan(s, 78125, DSD_CH_LPF_PROFILE_12K5, 0, taps, &len);
-    if (len != 63) {
-        DSD_FPRINTF(stderr, "digital 12K5 at 78125 Hz: %d taps, want the 63-tap fallback\n", len);
+    if (len != 219 || tap_response_db(taps, len, 78125.0, 6250.0) < -1.0
+        || tap_response_db(taps, len, 78125.0, 7750.0) > -50.0) {
+        DSD_FPRINTF(stderr, "digital 12K5 at 78125 Hz: %d taps without the 12.5 kHz shape, want 219\n", len);
         return 1;
     }
     return 0;
@@ -388,8 +395,9 @@ test_digital_row_profile_under_analog_family(demod_state* s) {
 }
 
 /* The width published for the legacy WIDE plan (the unset NFM default where the 16 kHz design does not fit) is the
- * passband that plan really has, at every rate: the 144-tap design, its cutoff held to 0.9 x Nyquist at low rates, and
- * the 63-tap fallback prototype above ~51.4 kHz, whose response scales with the rate. The plan passes that width within
+ * passband that plan really has, at every rate: the design within 288 taps, its cutoff held to 0.9 x Nyquist at low
+ * rates, and the 63-tap fallback prototype above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ (~102.7 kHz), whose response scales
+ * with the rate. The plan passes that width within
  * 1 dB and, where the rate leaves room, is down 20 dB a quarter past its own transition (Blackman,
  * 74 x R / (22 x taps)) beyond it, so the width is neither wider nor much narrower than what the plan passes. */
 static int
@@ -401,8 +409,15 @@ test_legacy_wide_width(demod_state* s) {
     };
 
     const legacy_case cases[] = {
-        {12000, 33, 9600},   {16000, 45, 13200}, {24000, 67, 16000}, {46875, 131, 16000},
-        {48000, 135, 16000}, {78125, 63, 0},     {104000, 63, 0},    {128000, 63, 0},
+        {12000, 33, 9600},
+        {16000, 45, 13200},
+        {24000, 67, 16000},
+        {46875, 131, 16000},
+        {48000, 135, 16000},
+        {78125, 219, 16000},
+        {DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, 287, 16000},
+        {104000, 63, 0},
+        {128000, 63, 0},
     };
     static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
     for (const legacy_case& c : cases) {
@@ -485,39 +500,41 @@ moment2_scale_of(const float* taps, int len) {
     return scale;
 }
 
-/* Every pre-TETRA profile's plan as the design produced it before the TETRA profile existed, at the rates TETRA runs
- * at and the 24/48 kHz rates the other modes run at: the 144-tap profile designs, and the 63-tap fallback prototypes
- * where those do not fit. Fingerprints within a tolerance rather than a hash of the float bits, as for kPinnedWide. */
+/* Every pre-TETRA profile's plan at the rates TETRA runs at and the 24/48 kHz rates the other modes run at: the
+ * profile designs as they were before the TETRA profile existed, and at 144 kHz, above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ,
+ * the 63-tap fallback prototypes. At 72 kHz each profile now runs its own design within the 288-tap capacity (issue
+ * #806) where it ran the fallback prototype, cut at a third of the rate, before. Fingerprints within a tolerance rather
+ * than a hash of the float bits, as for kPinnedWide. */
 static const pinned_profile_plan kPinnedProfilePlans[] = {
     {DSD_CH_LPF_PROFILE_WIDE, 24000, {67, 1.000000044123e+00, 7.010672899040e-01, 1.246256990636e-03}},
     {DSD_CH_LPF_PROFILE_WIDE, 36000, {101, 1.000000047609e+00, 4.674807939356e-01, 6.170353924117e-03}},
     {DSD_CH_LPF_PROFILE_WIDE, 48000, {135, 1.000000043625e+00, 3.506488793216e-01, 1.163743565682e-02}},
-    {DSD_CH_LPF_PROFILE_WIDE, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_WIDE, 72000, {201, 9.999999725643e-01, 2.337403369479e-01, 2.528430381746e-02}},
     {DSD_CH_LPF_PROFILE_WIDE, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
     {DSD_CH_LPF_PROFILE_6K25, 24000, {67, 1.000000029227e+00, 2.948037693301e-01, 2.315160999963e-02}},
     {DSD_CH_LPF_PROFILE_6K25, 36000, {101, 9.999999974000e-01, 1.966430407009e-01, 3.010174991654e-02}},
     {DSD_CH_LPF_PROFILE_6K25, 48000, {135, 9.999999585420e-01, 1.475220596537e-01, 3.172625972043e-02}},
-    {DSD_CH_LPF_PROFILE_6K25, 72000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 72000, {201, 1.000000003576e+00, 9.832151896291e-02, 1.205265591082e-01}},
     {DSD_CH_LPF_PROFILE_6K25, 144000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
     {DSD_CH_LPF_PROFILE_12K5, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
     {DSD_CH_LPF_PROFILE_12K5, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
     {DSD_CH_LPF_PROFILE_12K5, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
-    {DSD_CH_LPF_PROFILE_12K5, 72000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_12K5, 72000, {201, 1.000000037795e+00, 1.851323300283e-01, -5.185234030770e-02}},
     {DSD_CH_LPF_PROFILE_12K5, 144000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
     {DSD_CH_LPF_PROFILE_PROVOICE, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
     {DSD_CH_LPF_PROFILE_PROVOICE, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
     {DSD_CH_LPF_PROFILE_PROVOICE, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
-    {DSD_CH_LPF_PROFILE_PROVOICE, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 72000, {201, 1.000000037795e+00, 1.851323300283e-01, -5.185234030770e-02}},
     {DSD_CH_LPF_PROFILE_PROVOICE, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
     {DSD_CH_LPF_PROFILE_P25_C4FM, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
     {DSD_CH_LPF_PROFILE_P25_C4FM, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
     {DSD_CH_LPF_PROFILE_P25_C4FM, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
-    {DSD_CH_LPF_PROFILE_P25_C4FM, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 72000, {201, 1.000000037795e+00, 1.851323300283e-01, -5.185234030770e-02}},
     {DSD_CH_LPF_PROFILE_P25_C4FM, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
     {DSD_CH_LPF_PROFILE_P25_CQPSK, 24000, {67, 1.000000035420e+00, 5.885637850060e-01, 4.549548854177e-03}},
     {DSD_CH_LPF_PROFILE_P25_CQPSK, 36000, {101, 9.999999938664e-01, 3.924798176319e-01, 9.664304763394e-03}},
     {DSD_CH_LPF_PROFILE_P25_CQPSK, 48000, {135, 9.999999959922e-01, 2.943987285497e-01, 1.357281783322e-02}},
-    {DSD_CH_LPF_PROFILE_P25_CQPSK, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 72000, {201, 1.000000032672e+00, 1.962399100049e-01, 3.912490265602e-02}},
     {DSD_CH_LPF_PROFILE_P25_CQPSK, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
 };
 
@@ -695,13 +712,15 @@ run_tetra_profile_block(demod_state* s, int rate_hz, int active) {
 }
 
 /* The TETRA profile installs its own design only while the TETRA chain runs. Inactive, it runs the legacy WIDE plan
- * exactly as before the profile existed (the 144-tap design, or the 63-tap fallback where that does not fit), and the
+ * exactly (the design within 288 taps, or the 63-tap fallback above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ), and the
  * plan follows the chain both ways at one rate and profile. */
 static int
 test_tetra_profile_plan(demod_state* s) {
     static float wide[DSD_CHANNEL_LPF_MAX_TAPS];
     static float want[DSD_CHANNEL_LPF_MAX_TAPS];
-    const int inactive_rates[] = {24000, 36000, 48000, 72000, 144000};
+    const int inactive_rates[] = {
+        24000, 36000, 48000, 72000, 78125, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ + 1,
+        144000};
     for (int rate : inactive_rates) {
         int wide_len = 0;
         design_plan(s, rate, DSD_CH_LPF_PROFILE_WIDE, 0, wide, &wide_len);
@@ -746,6 +765,122 @@ test_tetra_profile_plan(demod_state* s) {
                     s->channel_lpf_plan_taps_len, tetra_len);
         return 1;
     }
+    return 0;
+}
+
+/* The digital profiles' cutoffs (demod_pipeline.cpp): the protected edge plus the 600 Hz guard, CQPSK's 7250 Hz. */
+namespace {
+struct digital_profile {
+    int profile;
+    const char* name;
+    double cutoff_hz;
+};
+} // namespace
+
+static const digital_profile kDigitalProfiles[] = {
+    {DSD_CH_LPF_PROFILE_WIDE, "WIDE", 8600.0},         {DSD_CH_LPF_PROFILE_6K25, "6K25", 3725.0},
+    {DSD_CH_LPF_PROFILE_12K5, "12K5", 6850.0},         {DSD_CH_LPF_PROFILE_PROVOICE, "PROVOICE", 6850.0},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, "P25_C4FM", 6850.0}, {DSD_CH_LPF_PROFILE_P25_CQPSK, "P25_CQPSK", 7250.0},
+};
+
+/* The rates the digital designs are checked at: the 24/36/48 kHz ones, past the old 144-tap cap (51,374 Hz), the RTL
+ * 72 kHz DSP bandwidth, the Airspy rates a capture leaves the half-band cascade at, and DSD_DIGITAL_CHANNEL_MAX_RATE_HZ
+ * itself. */
+static const int kDigitalDesignRates[] = {
+    24000, 36000, 48000, 51374, 62500, 72000, 78125, 93750, 96000, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ,
+};
+
+static int
+expect_digital_shape(const digital_profile& p, int rate, const float* taps, int len) {
+    const double fs = (double)rate;
+    const double edge_hz = dsd_channel_lpf_protected_edge_hz(p.profile);
+    for (int f_hz = 0; (double)f_hz <= edge_hz; f_hz += 50) {
+        if (tap_response_db(taps, len, fs, (double)f_hz) < -1.0) {
+            DSD_FPRINTF(stderr, "%s at %d Hz: %d Hz inside the %.0f Hz edge is below -1 dB\n", p.name, rate, f_hz,
+                        edge_hz);
+            return 1;
+        }
+    }
+    for (int f_hz = (int)p.cutoff_hz + 900; f_hz <= rate / 2; f_hz += 50) {
+        const double db = tap_response_db(taps, len, fs, (double)f_hz);
+        if (db > -50.0) {
+            DSD_FPRINTF(stderr, "%s at %d Hz: %d Hz at %.2f dB (> -50 dB)\n", p.name, rate, f_hz, db);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every digital profile runs its own design, the 1200 Hz Blackman low-pass at its cutoff within the 288-tap capacity,
+ * at every rate up to DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, with its passband to the protected edge and 50 dB down from
+ * 900 Hz past the cutoff (issue #806: above ~51.4 kHz they ran the 63-tap prototype for 24 kHz, cut at a third of the
+ * rate for WIDE and the P25 and ProVoice profiles). 1 Hz above that rate no design fits and every profile runs its
+ * fallback prototype, the same taps as at 144 kHz. */
+static int
+test_digital_designs_to_max_rate(demod_state* s) {
+    static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    static float want[DSD_CHANNEL_LPF_MAX_TAPS];
+    for (const digital_profile& p : kDigitalProfiles) {
+        for (int rate : kDigitalDesignRates) {
+            int len = 0;
+            design_plan(s, rate, p.profile, 0, taps, &len);
+            const int want_len = dsd_firdes_low_pass(1.0, (double)rate, p.cutoff_hz, 1200.0, DSD_WIN_BLACKMAN, want,
+                                                     DSD_CHANNEL_LPF_MAX_TAPS);
+            if (want_len <= 0 || len != want_len || std::memcmp(taps, want, (size_t)len * sizeof(float)) != 0) {
+                DSD_FPRINTF(stderr, "%s at %d Hz: a %d-tap plan, want its %d-tap design\n", p.name, rate, len,
+                            want_len);
+                return 1;
+            }
+            if (expect_digital_shape(p, rate, taps, len) != 0) {
+                return 1;
+            }
+        }
+        static float past[DSD_CHANNEL_LPF_MAX_TAPS];
+        int past_len = 0;
+        int high_len = 0;
+        design_plan(s, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ + 1, p.profile, 0, past, &past_len);
+        design_plan(s, 144000, p.profile, 0, taps, &high_len);
+        if (past_len != 63 || high_len != 63 || std::memcmp(past, taps, (size_t)past_len * sizeof(float)) != 0) {
+            DSD_FPRINTF(stderr,
+                        "%s 1 Hz above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ: a %d-tap plan, want the 63-tap fallback\n",
+                        p.name, past_len);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The noise bandwidth the SNR bias uses is the plan's own, Bn = (Fs/2) x sum(h^2) / sum(h)^2 over the taps that run:
+ * each profile's design up to DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, the fallback prototype above it. */
+static int
+test_noise_bandwidth_follows_plan(demod_state* s) {
+    const int rates[] = {
+        24000,  48000, 72000, 78125, 93750, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ + 1,
+        128000, 144000};
+    static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    double worst = 0.0;
+    for (const digital_profile& p : kDigitalProfiles) {
+        for (int rate : rates) {
+            int len = 0;
+            design_plan(s, rate, p.profile, 0, taps, &len);
+            double sum = 0.0;
+            double energy = 0.0;
+            for (int i = 0; i < len; i++) {
+                sum += (double)taps[i];
+                energy += (double)taps[i] * (double)taps[i];
+            }
+            const double bn = (double)rate * 0.5 * energy / (sum * sum);
+            const double got = dsd_snr_noise_bandwidth_hz(rate, p.profile, DSD_SNR_TETRA_STAGE_WIDE);
+            const double err = std::fabs(got / bn - 1.0);
+            worst = std::fmax(worst, err);
+            if (err > 0.005) {
+                DSD_FPRINTF(stderr, "%s at %d Hz: SNR noise bandwidth %.1f Hz, the %d-tap plan's is %.1f Hz\n", p.name,
+                            rate, got, len, bn);
+                return 1;
+            }
+        }
+    }
+    DSD_FPRINTF(stderr, "SNR noise bandwidth within %.3f%% of every plan's\n", worst * 100.0);
     return 0;
 }
 
@@ -805,6 +940,8 @@ main(void) {
     rc |= test_protected_edges();
     rc |= test_tetra_channel_design();
     rc |= test_tetra_profile_plan(s);
+    rc |= test_digital_designs_to_max_rate(s);
+    rc |= test_noise_bandwidth_follows_plan(s);
     dsd_neo_aligned_free(s);
     return rc;
 }

@@ -25,13 +25,18 @@ enum {
  *
  * The TETRA profile's bandwidth follows the stage that runs: 9000 Hz (its RRC
  * matched filter, one-sided) while the TETRA chain runs, 12114 Hz for the
- * TETRA channel filter alone, the WIDE plan's otherwise.
+ * TETRA channel filter alone, the WIDE plan's otherwise. Every other plan is
+ * its profile's design up to DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, whose bandwidth
+ * is the same in Hz at every such rate, and above it the 63-tap fallback
+ * prototype, whose bandwidth is a fixed fraction of the rate.
  *
+ * @param complex_rate_hz Rate the channel filter runs at (demod_state::complex_rate); 0 or less reads as one the
+ *                        profile designs at.
  * @param lpf_profile Channel LPF profile (DSD_CH_LPF_PROFILE_*).
  * @param tetra_stage DSD_SNR_TETRA_STAGE_* (dsd_demod_tetra_stage()); only the TETRA profile reads it.
- * @return Noise bandwidth in Hz; the WIDE bandwidth for unknown profiles.
+ * @return Noise bandwidth in Hz; the WIDE plan's bandwidth for unknown profiles.
  */
-double dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_stage);
+double dsd_snr_noise_bandwidth_hz(int complex_rate_hz, int lpf_profile, int tetra_stage);
 
 /**
  * @brief Compute total SNR bias for C4FM (4-level FSK) given DSP parameters.

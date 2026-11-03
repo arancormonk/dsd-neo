@@ -5,6 +5,7 @@
 
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/snr_bias.h>
+#include <dsd-neo/runtime/digital_channel.h>
 #include <math.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -96,7 +97,7 @@ main(void) {
         };
         for (size_t i = 0; i < sizeof(bw_cases) / sizeof(bw_cases[0]); i++) {
             const struct bw_case* bc = &bw_cases[i];
-            const double got = dsd_snr_noise_bandwidth_hz(bc->profile, bc->tetra_stage);
+            const double got = dsd_snr_noise_bandwidth_hz(72000, bc->profile, bc->tetra_stage);
             if (!nearly_equal(got, bc->noise_bw_hz, tol)) {
                 DSD_FPRINTF(stderr, "noise bandwidth for profile %d TETRA stage %d: got %.3f expected %.3f\n",
                             bc->profile, bc->tetra_stage, got, bc->noise_bw_hz);
@@ -113,6 +114,50 @@ main(void) {
         const double wide_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE);
         if (!nearly_equal(inactive_evm, wide_evm, tol)) {
             DSD_FPRINTF(stderr, "inactive TETRA EVM bias: got %.12f expected WIDE's %.12f\n", inactive_evm, wide_evm);
+            return 1;
+        }
+    }
+
+    /* The bandwidth follows the plan the rate runs (DSP_CHANNEL_FILTERS checks both against the plans' taps): each
+       profile's design up to DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, and above it the 63-tap fallback prototype, whose
+       bandwidth scales with the rate. TETRA's own stages design at every rate of its domain; inactive, it falls back as
+       WIDE does. An unknown rate reads as one the profile designs at. */
+    {
+        struct rate_case {
+            int rate_hz;
+            int profile;
+            int tetra_stage;
+            double noise_bw_hz;
+        };
+
+        const rate_case rate_cases[] = {
+            {0, DSD_CH_LPF_PROFILE_P25_C4FM, DSD_SNR_TETRA_STAGE_WIDE, 6665.0},
+            {DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, DSD_CH_LPF_PROFILE_P25_C4FM, DSD_SNR_TETRA_STAGE_WIDE, 6665.0},
+            {DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, DSD_CH_LPF_PROFILE_6K25, DSD_SNR_TETRA_STAGE_WIDE, 3540.0},
+            {144000, DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.32505},
+            {144000, DSD_CH_LPF_PROFILE_P25_C4FM, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.32505},
+            {144000, DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.32505},
+            {144000, DSD_CH_LPF_PROFILE_PROVOICE, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.32505},
+            {144000, DSD_CH_LPF_PROFILE_12K5, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.20003},
+            {144000, DSD_CH_LPF_PROFILE_6K25, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.20003},
+            {144000, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_WIDE, 144000.0 * 0.32505},
+            {144000, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHAIN, 9000.0},
+            {144000, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHANNEL, 12114.0},
+        };
+        for (const rate_case& rc : rate_cases) {
+            const double got = dsd_snr_noise_bandwidth_hz(rc.rate_hz, rc.profile, rc.tetra_stage);
+            if (!nearly_equal(got, rc.noise_bw_hz, tol)) {
+                DSD_FPRINTF(stderr, "noise bandwidth at %d Hz for profile %d TETRA stage %d: got %.3f expected %.3f\n",
+                            rc.rate_hz, rc.profile, rc.tetra_stage, got, rc.noise_bw_hz);
+                return 1;
+            }
+        }
+        const double fallback_evm =
+            dsd_snr_bias_evm_db(144000, 30, DSD_CH_LPF_PROFILE_P25_C4FM, DSD_SNR_TETRA_STAGE_WIDE);
+        const double want_fallback_evm = 1.92 + 10.0 * log10(144000.0 * 0.32505 / 4800.0);
+        if (!nearly_equal(fallback_evm, want_fallback_evm, tol)) {
+            DSD_FPRINTF(stderr, "fallback EVM bias at 144 kHz: got %.12f expected %.12f\n", fallback_evm,
+                        want_fallback_evm);
             return 1;
         }
     }

@@ -453,6 +453,15 @@ a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faN
 decodes 29 with the two-bit gate and 30 with the matcher before these rules, the same over eight sample shifts, and 10
 with the gate held to one bit.
 
+`p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` (`DERIVED_ADJACENT`, 288 kB each) are the two P25 control
+channels at the 72 kHz RTL-SDR DSP bandwidth, next to an equal-level copy of themselves, reversed in time, 12.5 kHz up
+(issue #806). Above about 51.4 kHz every non-TETRA digital channel profile used to run a 63-tap fallback filter cut at
+a third of the rate, which passes that neighbour whole, and neither replay decoded anything. With each profile's own
+design they decode what the clean captures do: 27 `NAC/CC: 140` lines and 41 `WACN: 92065; SYS: 0D5` lines
+(`DECODE_IQ_P25P1_C4FM_ADJACENT_72K` at least 24, `DECODE_IQ_P25P1_CQPSK_ADJACENT_72K` at least 36).
+`DSP_ADJACENT_CHANNEL` checks the same rejection on the live chain for every digital profile, at 72 kHz and stepped to
+48 kHz from Airspy rates.
+
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
 its decode margin (the original set still passed with ±45 counts of added
@@ -2086,7 +2095,7 @@ with the same 40 ms windows, thresholds and 3 dB halves rule.
 The plans and signals:
 - **EDACS:** every plan its FSK path runs at post-decimation 1 and a channel rate of 12 kHz or more (under it a symbol
   gets fewer than 1.25 samples and EDACS never decodes its control channel):
-  - PROVOICE, designed within the 144-tap cap, or on the 63-tap fallback at the device-forced rates;
+  - PROVOICE, designed within the 288-tap cap, or on the 63-tap fallback above about 102.7 kHz (an SDDC's 125 kHz);
   - no channel filter (`rate_in` under 20 kHz, or `DSD_NEO_CHANNEL_LPF=0`);
   - WIDE, where a live switch leaves that label in force.
 - **EDACS signals:**
@@ -2110,8 +2119,12 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
 
 | Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| EDACS | 51 of 51 pass | 8e-5 at worst | 0.02 % | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
-| M17 encoder | 60 of 60, one accepted | 8e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+| EDACS | 57 of 57 pass | 9e-5 at worst | 0.02 % | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+| M17 encoder | 64 of 64, one accepted | 9e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+
+Rerun after issue #806, when the digital profiles started designing within 288 taps (201 taps at 72 kHz, 219 at
+78,125 Hz, 263 at 93,750 Hz, where the 63-tap fallback ran before). The harness also gained the complex rate the
+channel filter designs at; without it every plan it printed was the fallback.
 
 - **Accepted plan:** the encoder's legacy WIDE filter forced on by `DSD_NEO_CHANNEL_LPF=1` at an SDDC's 7.8 kHz channel
   misses 1.26 % of 6 dB carriers. The run above accepted the analog monitor's forced 8 kHz plan at 1.1 %, and this
@@ -2123,9 +2136,11 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
   EDACS's 80 ms minimum hold (`EDACS_ANALOG_GATE_MIN_HOLD_MS`, two windows) stays clear of. At 48 kHz, which EDACS runs
   at whatever rate it reads, four triplets less the bound (155 ms) stay above it.
 - **The noise squelch:** NOISE on the encoder's monitor runs the noise squelch where its plan has a band.
-  `tools/noise_squelch_model.py --encoder-only` runs the three encoder plans no NFM plan shares, the 63-tap fallbacks
-  at 62.5, 78.1 and 93.75 kHz. All three pass the chosen design: worst wanted-modulation 1st percentile 62.4 dB against
-  the gate's 36, and no false open on noise. EDACS runs NOISE as auto, so its plans need no noise-model run.
+  `tools/noise_squelch_model.py --encoder-only` runs the encoder plans no NFM plan shares. Before issue #806 those were
+  the 63-tap fallbacks at 62.5, 78.1 and 93.75 kHz, and all three passed the chosen design (worst wanted-modulation 1st
+  percentile 62.4 dB against the gate's 36, no false open on noise). Now WIDE designs there, bit for bit the 16 kHz NFM
+  plan, so the NFM run covers them and `--encoder-only` finds no plan of its own. EDACS runs NOISE as auto, so its
+  plans need no noise-model run.
 - **Reproducing:** `python3 tools/squelch_paths_model.py` writes `build/squelch_paths_model/report.md` in about 20
   minutes on 14 workers; `--quick` takes under a minute.
 

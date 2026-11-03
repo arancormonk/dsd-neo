@@ -12,7 +12,7 @@
  * The first line holds the half-band decimator taps and the analog channel constants. Then each stdin line
  * "<rate_out_hz> <width_hz> <kind>" (kind 0 = FM, 1 = AM) gets one JSON line with the plan full_demod() designs for an
  * analog-family monitor at that demod rate: the width-driven analog design for width_hz > 0, the legacy WIDE profile
- * plan (144-tap cap, 63-tap fallback) for width_hz 0. It also reports the validator's view of the width
+ * plan (288-tap cap, 63-tap fallback) for width_hz 0. It also reports the validator's view of the width
  * (dsd_analog_width_realizable(), the tap count for the rate, the widest width the rate fits and the legacy WIDE
  * width) and whether dsd_channel_lpf_design_analog() called directly gives the same taps as the plan.
  *
@@ -56,6 +56,8 @@ design_plan(demod_state* s, int rate_hz, int kind, int width_hz, int profile) {
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
+    /* The channel filter designs at the complex rate (issue #806); left 0, every plan would be the fallback. */
+    s->complex_rate = rate_hz;
     s->rate_out2 = 0;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;

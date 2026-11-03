@@ -11710,6 +11710,19 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_cqpsk_evm)
 add_test(NAME DSP_CQPSK_EVM COMMAND dsd-neo_test_dsp_cqpsk_evm)
 
+# Digital channel-filter rejection of a neighbour 12.5 kHz away on the live chain: an RTL-SDR at the 72 kHz DSP
+# bandwidth, and Airspy-shaped captures stepped to 48 kHz (issue #806).
+add_executable(
+    dsd-neo_test_dsp_adjacent_channel
+    dsp/test_dsp_adjacent_channel.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_adjacent_channel
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_adjacent_channel)
+add_test(NAME DSP_ADJACENT_CHANNEL COMMAND dsd-neo_test_dsp_adjacent_channel)
+
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
 target_include_directories(
@@ -16844,6 +16857,26 @@ if(DSD_HAS_RADIO)
         p25p1_cqpsk_vc
         "-f1 -mq"
         "Group Voice Channel User"
+    )
+    # The two control channels at the 72 kHz RTL-SDR DSP bandwidth next to an equal-level neighbour 12.5 kHz up
+    # (DERIVED_ADJACENT in tools/build_iq_fixtures.py, issue #806). The P25 channel filters ran a 63-tap fallback cut at
+    # a third of the rate there, which passed the neighbour whole, and neither replay decoded anything; with each
+    # profile's own design they decode what the clean captures do (27 and 41).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_ADJACENT_72K
+        p25p1_c4fm_adjacent_72k
+        -f1
+        "NAC/CC: 140"
+        ""
+        24
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_ADJACENT_72K
+        p25p1_cqpsk_adjacent_72k
+        "-f1 -mq"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        36
     )
     # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
     # here with failing NIDs between the frames that decode, and consumption credit is bounded

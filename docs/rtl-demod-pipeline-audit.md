@@ -225,7 +225,8 @@ Blackman tap count `74 x R / 26400` (odd) fits the 288-tap analog capacity:
 There is no Nyquist clamp and no fallback prototype on this path: an
 unrealizable width is refused with a message naming the width, the DSP rate,
 the largest width it fits and the RTL DSP bandwidths that would fit. Digital
-profiles are unchanged (144-tap cap and 63-tap fallback).
+profiles design within the same 288 taps (since issue #806; they were held to
+144 before) and keep their 63-tap fallback above about 102.7 kHz.
 
 Enable rule and validation:
 
@@ -233,7 +234,7 @@ Enable rule and validation:
   on from a 20 kHz `rate_in`, or as `DSD_NEO_CHANNEL_LPF` says. Where the rate
   cannot fit 16 kHz, the legacy WIDE plan stays in charge instead of failing,
   and frontends see the channel as DSP-limited at the width that plan passes
-  (`dsd_channel_lpf_legacy_wide_width_hz()`): below ~19.1 kHz the 144-tap WIDE
+  (`dsd_channel_lpf_legacy_wide_width_hz()`): below ~19.1 kHz the WIDE
   design with its cutoff held to 0.9 x Nyquist (13.2 kHz at 16 kHz), and above
   the ~102.7 kHz tap capacity the 63-tap fallback prototype, cut at a third of
   the rate (about 78.5 kHz at 128 kHz), rather than the whole DSP span.

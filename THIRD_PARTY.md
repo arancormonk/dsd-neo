@@ -123,6 +123,9 @@ not a finding that every component is cleared for redistribution.
     from `noise_floor`; its recorded portion carries the `nxdn96` fixture's terms.
   - The `nxdn96_weak` and `nxdn96_weak_0db` fixtures are the `nxdn96` fixture with seeded complex Gaussian noise added
     by `tools/build_iq_fixtures.py` (no recorded material of its own); they carry the `nxdn96` fixture's terms.
+  - The `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` fixtures are the `p25p1_c4fm_cc` and `p25p1_cqpsk_cc`
+    fixtures resampled to 72 kHz with a time-reversed copy of themselves added 12.5 kHz up, by
+    `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures' terms.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source

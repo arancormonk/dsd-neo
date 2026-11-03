@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/digital_channel.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -149,8 +150,10 @@ clamp_float(float value, float lo, float hi) {
  * At 48 kHz with 1200 Hz transition width:
  *   - Hamming: ntaps = (53 * 48000) / (22 * 1200) = 97
  *   - Blackman: ntaps = (74 * 48000) / (22 * 1200) = 135
- * Digital profiles cap the design at 144 taps (headroom for higher rates) and
- * keep the 63-tap fallback. The analog family designs from the channel width
+ * Digital profiles design within the full DSD_CHANNEL_LPF_MAX_TAPS capacity
+ * too (201 taps at 72 kHz), which holds every rate up to
+ * DSD_DIGITAL_CHANNEL_MAX_RATE_HZ (about 102.7 kHz), and keep the 63-tap
+ * fallback for rates above it. The analog family designs from the channel width
  * instead (cutoff W/2 + guard) with the full DSD_CHANNEL_LPF_MAX_TAPS capacity,
  * no Nyquist clamp and no fallback: an unrealizable width yields no plan, and
  * the block then runs with no channel filter. The stream layer holds every
@@ -159,7 +162,6 @@ clamp_float(float value, float lo, float hi) {
  * retune that lands on a rate that cannot realize it, and stops the stream when
  * the device does not return to a capture where it runs. The transition, guard
  * and capacity are shared with that validator. */
-static const int kChannelLpfTaps = 144;
 static const double kChannelLpfTransitionHz = (double)DSD_ANALOG_CHANNEL_TRANSITION_HZ;
 static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
 
@@ -185,8 +187,17 @@ static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) >= DSD_DEMOD_WORKB
               "the channel LPF writes either work buffer");
 static_assert(DSD_DEMOD_WORKBUF_LENGTH / 2 >= MAXIMUM_BUF_LENGTH / 2 + (DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2,
               "a channel LPF work buffer holds a maximum block's outputs on a tap shrink");
-static_assert(kChannelLpfTaps <= DSD_CHANNEL_LPF_MAX_TAPS, "digital channel LPF cap exceeds the plan array");
 static_assert(DSD_ANALOG_DEMOD_FM == 0, "a zeroed demod_state must mean the FM analog demodulator");
+/* The Blackman tap count, (int)(74 x rate / (22 x 1200)) made odd, fits the even capacity while the quotient stays
+   below it: true at DSD_DIGITAL_CHANNEL_MAX_RATE_HZ and false 1 Hz above (DSP_CHANNEL_FILTERS designs both). */
+static_assert(DSD_CHANNEL_LPF_MAX_TAPS % 2 == 0
+                  && (long long)DSD_ANALOG_CHANNEL_WINDOW_ATTENUATION_DB * DSD_DIGITAL_CHANNEL_MAX_RATE_HZ
+                             / (22LL * DSD_ANALOG_CHANNEL_TRANSITION_HZ)
+                         < DSD_CHANNEL_LPF_MAX_TAPS
+                  && (long long)DSD_ANALOG_CHANNEL_WINDOW_ATTENUATION_DB * (DSD_DIGITAL_CHANNEL_MAX_RATE_HZ + 1)
+                             / (22LL * DSD_ANALOG_CHANNEL_TRANSITION_HZ)
+                         >= DSD_CHANNEL_LPF_MAX_TAPS,
+              "DSD_DIGITAL_CHANNEL_MAX_RATE_HZ is the last rate whose digital channel design fits the plan array");
 /* Protected channel edges: the highest frequency each profile's channel LPF is
  * designed to pass unattenuated. The cutoff constants below are these plus
  * design guard, and dsd_channel_lpf_protected_edge_hz() reports these — see its
@@ -619,9 +630,10 @@ dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps) {
                                taps_out, cap);
 }
 
-/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. The TETRA
- * profile designs its own channel, with no cap below the plan array and no fallback, while the TETRA channel filter
- * runs (dsd_demod_tetra_channel_runs(): the TETRA chain, or an uplink session); otherwise it runs the WIDE design. */
+/* Profile design for the digital and legacy paths: within the plan array's DSD_CHANNEL_LPF_MAX_TAPS, so every profile
+ * designs up to DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, with the 63-tap fallback only above it. The TETRA profile designs its
+ * own channel, with no fallback, while the TETRA channel filter runs (dsd_demod_tetra_channel_runs(): the TETRA chain,
+ * or an uplink session); otherwise it runs the WIDE design. */
 static int
 channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
     if (profile == DSD_CH_LPF_PROFILE_TETRA) {
@@ -635,7 +647,7 @@ channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out
     int taps_len = 0;
     if (rate_out > 0) {
         taps_len = channel_lpf_design_low_pass((double)rate_out, channel_lpf_cutoff_for_profile(profile),
-                                               d->channel_lpf_plan_taps, kChannelLpfTaps);
+                                               d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
     }
     if (taps_len <= 0) {
         int fallback_len = 0;
@@ -658,8 +670,8 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     const double rate = (double)rate_hz;
     double cutoff_hz = 0.0;
     double transition_hz = 0.0;
-    if (dsd_firdes_compute_ntaps(rate, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN) <= kChannelLpfTaps) {
-        /* channel_lpf_design_profile_plan() designs WIDE within the 144-tap cap. */
+    if (dsd_firdes_compute_ntaps(rate, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN) <= DSD_CHANNEL_LPF_MAX_TAPS) {
+        /* channel_lpf_design_profile_plan() designs WIDE within the plan array's capacity. */
         cutoff_hz = channel_lpf_profile_cutoff_hz(rate, kChannelLpfWideCutoffHz);
         transition_hz = kChannelLpfTransitionHz;
     } else {

@@ -40,9 +40,10 @@
 /* Maximum half-band tap count used to dimension complex-decimator histories. */
 #define HB_TAPS_MAX              31
 
-/* Channel LPF plan/history capacity. Digital profiles design at most 144 taps
- * (and keep their 63-tap fallback); the analog family uses the full capacity so
- * device-forced rates up to ~102 kHz get a real design. Static-asserted against
+/* Channel LPF plan/history capacity. The digital profiles and the analog family
+ * both design within it, so every rate up to ~102.7 kHz
+ * (DSD_DIGITAL_CHANNEL_MAX_RATE_HZ) gets a real design; above it the digital
+ * profiles keep their 63-tap fallback. Static-asserted against
  * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
 #define DSD_CHANNEL_LPF_MAX_TAPS 288
 
@@ -246,8 +247,8 @@ struct demod_state {
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
      * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.
-     * Digital profiles cap the design at 144 taps; the analog family may use
-     * the full DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
+     * Digital profiles and the analog family design within
+     * DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
      * samples whatever the taps. */
     int channel_lpf_enable; /* gate */
     /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was

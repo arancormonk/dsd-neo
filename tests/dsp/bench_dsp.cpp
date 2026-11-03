@@ -583,9 +583,8 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
 
 static int
 bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile, int pairs = 4096) {
-    constexpr int kMaxTaps = 144;
-    std::vector<float> taps(kMaxTaps);
-    int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
+    std::vector<float> taps(DSD_CHANNEL_LPF_MAX_TAPS);
+    int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
     if (taps_len <= 0) {
         DSD_FPRINTF(stderr, "channel LPF design failed for %s\n", name);
         return 0;
@@ -620,9 +619,10 @@ bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rat
                                   pairs);
 }
 
-/* What a digital profile runs at a device-forced rate above ~51.4 kHz, and what the analog path ran there before it
- * got the 288-tap capacity: the 144-tap design fails, so the demodulator plans the 63-tap fallback prototype. The
- * taps come from the demodulator's own plan, so the case measures exactly the filter it replaces. */
+/* What a digital profile runs above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, where no design fits the 288 taps, and what every
+ * digital profile ran above ~51.4 kHz while their designs were held to 144 taps (issue #806), as did the analog path
+ * before it got the 288-tap capacity: the 63-tap fallback prototype. The taps come from the demodulator's own plan, so
+ * the case measures exactly the filter the designs replace; per pair it costs the same at any rate. */
 static int
 bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
     DemodHolder holder;
@@ -641,7 +641,7 @@ bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int r
     s->channel_lpf_profile = profile;
     full_demod(s);
     const int taps_len = s->channel_lpf_plan_taps_len;
-    if (taps_len <= 0 || taps_len >= 144) {
+    if (taps_len != 63) {
         DSD_FPRINTF(stderr, "%s: expected the fallback prototype, got a %d-tap plan\n", name, taps_len);
         return 0;
     }
@@ -667,7 +667,10 @@ bench_channel_lpf(const BenchOptions& opts) {
     ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5", 24000, DSD_CH_LPF_PROFILE_12K5);
     ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5", 48000, DSD_CH_LPF_PROFILE_12K5);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_48k_analog_16k", 48000, 16000);
-    ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_78k_wide_fallback", 78125, DSD_CH_LPF_PROFILE_WIDE);
+    /* The RTL-SDR 72 kHz DSP bandwidth, which ran the fallback below before the profiles designed past 144 taps. */
+    ran += bench_one_channel_lpf(opts, "channel_lpf_72k_p25_c4fm", 72000, DSD_CH_LPF_PROFILE_P25_C4FM);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_72k_p25_cqpsk", 72000, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_128k_wide_fallback", 128000, DSD_CH_LPF_PROFILE_WIDE);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_78k_analog_16k", 78125, 16000);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k", 96000, 25000);
     /* A live 16 KiB RTL transfer leaves 256 pairs after five half-band stages. Also cover shorter history-spanning blocks. */
@@ -1291,6 +1294,7 @@ bench_full_demod(const BenchOptions& opts) {
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_lpf_on", 48000, 4800, 1, 0);
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_lpf_off", 48000, 4800, 0, 0);
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_squelched", 48000, 4800, 1, 1);
+    ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_72k_lpf_on", 72000, 4800, 1, 0);
 
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_24k_lpf_on", 24000, 4800, 1, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_24k_lpf_off", 24000, 4800, 0, 0);
@@ -1298,9 +1302,11 @@ bench_full_demod(const BenchOptions& opts) {
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_lpf_on", 48000, 4800, 1, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_lpf_off", 48000, 4800, 0, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_squelched", 48000, 4800, 1, 1);
+    ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_72k_lpf_on", 72000, 4800, 1, 0);
 
     ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1", 24000, 4800, 5);
     ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p2", 48000, 6000, 8);
+    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1_72k", 72000, 4800, 15);
 
     return ran;
 }

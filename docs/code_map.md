@@ -5261,22 +5261,28 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes`),
   `ENGINE_TRUNK_RETUNE_REGRESSION` (`test_chain_comparison_in_flight_tunes_on_the_leading_chain`), `ENGINE_TRUNK_SCAN`,
   `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
-- Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge, capped at 144 taps with the
-  63-tap fallback. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also the digital
-  fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed
-  1200 Hz Blackman transition, up to `DSD_CHANNEL_LPF_MAX_TAPS` (288), with no Nyquist clamp and no fallback — an
-  unrealizable width leaves no plan (`dsd_channel_lpf_design_analog()` returns -1) and the block runs with no channel
-  filter at all. The stream layer does not run such a width: it refuses one at start, on every request and on a retune
-  that lands on a rate that cannot realize it, and stops the stream when the device does not return to a capture
-  where it runs (see the IO notes). 16000 Hz runs
-  the same design call as WIDE, so its taps are bit-identical wherever WIDE's design succeeds. AM widths (5000..20000
-  Hz) use the same design.
-  `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the 144-tap design,
-  its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the
-  width published for an unset default that plan runs.
+- Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge within
+  `DSD_CHANNEL_LPF_MAX_TAPS` (288), so every one designs up to `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ` (102,745 Hz,
+  `include/dsd-neo/runtime/digital_channel.h`, a constant with no includes for the I/Q replay planner; 201 taps at
+  72 kHz), and runs the 63-tap fallback prototype only above it. Held to 144 taps they fell back from about 51.4 kHz,
+  and the WIDE-family prototype, cut at a third of the rate, passed a neighbour 12.5 kHz away whole at 72 kHz (issue
+  #806; `DSP_ADJACENT_CHANNEL`, `DECODE_IQ_P25P1_{C4FM,CQPSK}_ADJACENT_72K`). `dsd_snr_noise_bandwidth_hz()` takes the
+  complex rate and follows the plan that runs: each profile's bandwidth in Hz where it designs, a fixed fraction of the
+  rate for the fallback prototype. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also
+  the digital fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz,
+  the fixed 1200 Hz Blackman transition, up to `DSD_CHANNEL_LPF_MAX_TAPS` (288), with no Nyquist clamp and no
+  fallback — an unrealizable width leaves no plan (`dsd_channel_lpf_design_analog()` returns -1) and the block runs with
+  no channel filter at all. The stream layer does not run such a width: it refuses one at start, on every request and on
+  a retune that lands on a rate that cannot realize it, and stops the stream when the device does not return to a
+  capture where it runs (see the IO notes). 16000 Hz runs the same design call as WIDE, so its taps are bit-identical
+  wherever WIDE's design succeeds. AM widths (5000..20000 Hz) use the same design.
+  `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the design within
+  288 taps, its cutoff held to 0.9 x Nyquist, or above `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ` the 63-tap fallback prototype,
+  cut at a third of the rate), the width published for an unset default that plan runs.
   The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs a design of its own while the
   TETRA channel filter runs, and the legacy WIDE plan exactly otherwise (see "TETRA receive chain" below).
-  `DSP_CHANNEL_FILTERS` pins every other profile's plan at 24-144 kHz.
+  `DSP_CHANNEL_FILTERS` pins every other profile's plan at 24-144 kHz, checks each design and its response up to
+  `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ` and the fallback 1 Hz above it, and the SNR noise bandwidth against each plan.
   The plan cache key is (complex_rate, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their
   scratch per call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is
   seamless (issue #572):

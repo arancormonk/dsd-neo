@@ -920,11 +920,10 @@ configurable. The width is not the tuner bandwidth (`soapy_bandwidth_hz`), not t
 RTL input, `rtl_bw_khz`), and not the audio bandwidth.
 
 - Values are whole Hz from 8000 to 25000, with no `k` suffix: `12500` for a 12.5 kHz channel plan, `11250` for
-  11.25 kHz, `25000` for a wide 25 kHz channel. The default is 16000 (16 kHz), which is the historical analog
-  channel filter bit for bit wherever that design succeeded: at DSP rates from about 19.1 to 51.4 kHz, which takes in
-  the 24 and 48 kHz RTL DSP bandwidths. Above that range (a device-forced rate such as an Airspy's 78,125 Hz) 16 kHz
-  gets a full design where the historical filter fell back to a 63-tap prototype, and below it the unset default is
-  DSP-limited (see below).
+  11.25 kHz, `25000` for a wide 25 kHz channel. The default is 16000 (16 kHz), which is the WIDE profile's
+  channel filter bit for bit at DSP rates from about 19.1 to 102.7 kHz. That takes in the 24, 48 and 72 kHz RTL DSP
+  bandwidths and device-forced rates such as an Airspy's 78,125 Hz. Below that range the unset default is DSP-limited
+  (see below).
 - Match the width to the channel plan in use. A width wider than the channel spacing lets the adjacent channel into
   the demodulator: on a 12.5 kHz plan, 25000 passes the neighbours 12.5 kHz either side, which can clip the audio and
   raise its level.
