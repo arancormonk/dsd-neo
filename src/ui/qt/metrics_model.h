@@ -2500,6 +2500,16 @@ class MetricsModel : public QObject {
                    && am_bandwidth_unset_text == other.am_bandwidth_unset_text;
         }
 
+        /* Issue #697: the session's lists and the rotation's place among the lists that are on, with the scan
+           controls on controlChanged. */
+        bool
+        scanListsEquals(const View& other) const {
+            return scan_list_count == other.scan_list_count && scan_active_list == other.scan_active_list
+                   && scan_active_list_off == other.scan_active_list_off
+                   && scan_rotation_ordinal == other.scan_rotation_ordinal
+                   && scan_rotation_count == other.scan_rotation_count;
+        }
+
         /* The scan controls (#380) ride controlChanged with the rest; split out only so
            neither comparison outgrows the complexity ceiling as readings are added. */
         bool
@@ -2507,10 +2517,7 @@ class MetricsModel : public QObject {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
                    && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
                    && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
-                   && scan_list_count == other.scan_list_count && scan_active_list == other.scan_active_list
-                   && scan_active_list_off == other.scan_active_list_off
-                   && scan_rotation_ordinal == other.scan_rotation_ordinal
-                   && scan_rotation_count == other.scan_rotation_count && scan_hold == other.scan_hold
+                   && scanListsEquals(other) && scan_hold == other.scan_hold
                    && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
                    && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
                    && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
