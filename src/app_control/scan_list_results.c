@@ -81,6 +81,11 @@ dsd_app_scan_list_result_get(dsd_app_scan_list_result* out) {
 static int
 results_after_locked(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
     const uint64_t last = newest.sequence;
+    /* A cursor at or past the newest has nothing after it; checked first, so one at UINT64_MAX cannot wrap to the
+       start of the history. */
+    if (after_sequence >= last) {
+        return 0;
+    }
     uint64_t seq = after_sequence + 1U;
     if (last >= (uint64_t)DSD_APP_RESULT_HISTORY && seq < last - (uint64_t)DSD_APP_RESULT_HISTORY + 1U) {
         seq = last - (uint64_t)DSD_APP_RESULT_HISTORY + 1U;

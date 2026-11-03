@@ -25716,6 +25716,17 @@ test_scan_list_results_wrap(void) {
     rc |= expect_true("wrap: a reader just behind", n == 3 && out[0].sequence == newest - 2U);
     rc |= expect_int("wrap: a cap smaller than the backlog", dsd_app_scan_list_results_since(start, out, 5), 5);
     rc |= expect_int("wrap: nothing newer", dsd_app_scan_list_results_since(newest, out, 4), 0);
+    /* A cursor at the top of the sequence's range is past the newest: nothing, not the history from its start. */
+    rc |= expect_int("wrap: a cursor at UINT64_MAX", dsd_app_scan_list_results_since(UINT64_MAX, out, 4), 0);
+    rc |= expect_int("wrap: a session cursor at UINT64_MAX",
+                     dsd_app_scan_list_session_results_since(UINT64_MAX, out, 4), 0);
+    /* And so across a session change, where the history holds the earlier run's results. */
+    dsd_app_frontend_runtime_stop();
+    dsd_app_frontend_runtime_start(&opts, &state);
+    rc |= expect_int("wrap: a cursor at UINT64_MAX in the next session",
+                     dsd_app_scan_list_results_since(UINT64_MAX, out, 4), 0);
+    rc |= expect_int("wrap: a session cursor at UINT64_MAX in the next session",
+                     dsd_app_scan_list_session_results_since(UINT64_MAX, out, 4), 0);
     rc |= expect_int("wrap: no room", dsd_app_scan_list_results_since(start, out, 0), 0);
     rc |= expect_int("wrap: no buffer", dsd_app_scan_list_results_since(start, NULL, 4), 0);
     rc |= expect_int("wrap: NULL get", dsd_app_scan_list_result_get(NULL), 0);
