@@ -34,6 +34,9 @@ Item {
                     verify(control !== null, name);
                     compare(control.visible, source !== "airspy", source + ": " + name);
                 }
+                // The DSP bandwidth is every radio's (issue #806): TETRA and
+                // AM hold step 1 on an Airspy until it fits, so it is shown.
+                verify(findChild(wizard, "systemBandwidthField").visible, source + ": systemBandwidthField");
             }
         }
 

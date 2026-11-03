@@ -2799,12 +2799,15 @@ suite runs under this compiler.
     rate chain it runs, with the chain inactive (D3 (a), issue #806, an Airspy included); on an I/Q replay that its
     capture cannot be resampled to a TETRA rate.
     Qt refuses such a start instead (issue #803): `session_args_effective_bandwidth_khz()` is the DSP
-    bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized as the engine reads a USB
-    or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`, or snapped for an Airspy), the one rule the start check,
-    the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
-    `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on an Airspy and on a USB or rtl_tcp
-    radio off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`). Tests: `RUNTIME_DECODE_MODE`,
-    `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
+    bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized by
+    `session_args_dsp_bandwidth_khz()`: as the engine reads a USB or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`,
+    and for an Airspy the nearest selectable bandwidth, 48 for none or above 72, issue #806 D4), the one rule the start
+    check, the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
+    `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on any radio, an Airspy included,
+    off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`, one text: the 72 kHz bandwidth), and the
+    wizard offers the TETRA chip on every radio, with the bandwidth field shown on an Airspy too. Tests:
+    `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`,
+    `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_ROUNDTRIP`, QML `tst_wizard_decode_chip`, `tst_session_initialized`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
@@ -9485,9 +9488,11 @@ Qt Quick frontend (`src/ui/qt`):
   for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the radio
   (`dropRadioOnlyDecodeFlag()`) and holds step 1 while one remains, and `session_args_build()` refuses `-fM` on a
   network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before; the wizard's
-  `wizardDecodeIqNote` says why the chip is greyed out. On a USB or rtl_tcp radio the AM default has to fit the DSP
-  bandwidth the spec carries (the engine refuses 4 and 6 kHz before the device opens):
-  `session_args_am_fits_bandwidth()` is that rule, `session_args_build()` refuses the pair
+  `wizardDecodeIqNote` says why the chip is greyed out. On every radio the AM default has to fit the DSP
+  bandwidth the spec carries (the engine refuses 4 and 6 kHz before the device opens, an Airspy's too since issue #806):
+  `session_args_am_fits_bandwidth()` is that rule, through `session_args_analog_width_fits()` (the engine's rate policy,
+  `dsd_input_dsp_rate_for()`, at `session_args_dsp_bandwidth_khz()`, which the scan list editor's DSP-rate warning
+  shares), `session_args_build()` refuses the pair
   (`SessionArgsError::AmBandwidth`), and the wizard holds step 1 with `wizardDecodeAmBandwidthNote` through the
   `sessionArgs.amBandwidthError()` invokable. The Radio sheet's analog section is kind-aware: under the AM preset
   (`sectionAm`, which follows `MetricsModel::analogBandwidthAm` while an analog scan row is on air, since an nfm row

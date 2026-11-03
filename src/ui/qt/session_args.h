@@ -93,7 +93,7 @@ enum class SessionArgsError {
     UnsafeOption,
     /* Issue #524: an AM system (-fM) on a source whose audio arrives already demodulated (network or file). */
     AmNeedsRadio,
-    /* Issue #524: an AM system on a USB or rtl_tcp radio whose DSP bandwidth cannot filter the AM channel. */
+    /* Issue #524: an AM system on a radio whose DSP bandwidth cannot filter the AM channel. */
     AmBandwidth,
     /* A TETRA system (-fT) on a source that is neither a radio nor a symbol capture file: its audio arrives demodulated. */
     TetraNeedsIq,
@@ -106,8 +106,8 @@ enum class SessionArgsError {
     CallRecordingStaticWav,
     /* Issue #708: a per-call -P among the extra options while no storage is available for call recordings. */
     CallRecordingNoStorage,
-    /* Issue #803: a TETRA system (-fT) on a radio where it cannot decode: an Airspy, or a USB or rtl_tcp radio whose
-       DSP bandwidth is not a TETRA rate (session_args_tetra_runs_on()). */
+    /* Issue #803: a TETRA system (-fT) on a radio whose DSP bandwidth is not a TETRA rate
+       (session_args_tetra_runs_on()). */
     TetraRate
 };
 
@@ -171,12 +171,33 @@ bool session_args_profile_compatible(const QVariantMap& system);
 bool session_args_freq_valid(const QString& freqMhz);
 
 /**
+ * @brief The DSP bandwidth, in kHz, a radio of @p sourceType runs at when asked for @p requestedKhz: the bandwidth its
+ * -i spec carries (issue #806).
+ *
+ * A USB or rtl_tcp radio runs a value it does not select at its 48 kHz default (36 runs at 48). An Airspy runs the
+ * nearest one it takes (25 runs at 24; of two as near, the narrower), and the 48 kHz default for 0 or less and for one
+ * wider than 72 kHz, as a USB radio does. Any other source has no DSP bandwidth: the request comes back as it is. The
+ * one normalization the session's spec, its width checks and the scan list's rate warning share.
+ */
+int session_args_dsp_bandwidth_khz(const QString& sourceType, int requestedKhz);
+
+/**
+ * @brief Whether an analog channel of @p kind and @p widthHz fits the DSP rate a radio of @p sourceType asked for
+ * @p requestedKhz runs at, as the engine holds it before the stream opens (issue #806).
+ *
+ * Every live radio runs at its DSP bandwidth (dsd_input_dsp_rate_for() at session_args_dsp_bandwidth_khz()), an
+ * Airspy's capture rate stepped to it exactly, so the width is held to that bandwidth up front on each of them. Any
+ * other source runs no channel filter, so it always fits. On a refusal @p why (optional) gets the engine's reason
+ * (dsd_analog_width_check_at()).
+ */
+bool session_args_analog_width_fits(const QString& sourceType, int requestedKhz, int kind, int widthHz, QString* why);
+
+/**
  * @brief Whether a radio source of @p sourceType running at @p bandwidthKhz can filter the AM channel (issue #524).
  *
- * The session's AM channel is the 6 kHz default, and the engine holds it to the DSP bandwidth a USB or rtl_tcp spec
- * carries before the device opens (a bandwidth it does not run is its 48 kHz default): at 4 or 6 kHz it refuses to
- * start. Airspy is held where its device sets the rate, at stream start, and any other source runs no channel filter,
- * so both always fit here. An explicit --am-bandwidth-hz among the extra options is the engine's to check.
+ * The session's AM channel is the 6 kHz default, and the engine holds it to the radio's DSP bandwidth before the device
+ * opens (session_args_analog_width_fits()): at 4 or 6 kHz it refuses to start. Any other source runs no channel filter,
+ * so it always fits here. An explicit --am-bandwidth-hz among the extra options is the engine's to check.
  */
 bool session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz);
 
@@ -187,10 +208,9 @@ QString session_args_am_bandwidth_choices();
  * @brief The DSP bandwidth, in kHz, a system with @p decodeFlag runs at on @p sourceType (issue #803).
  *
  * The bandwidth asked for is the system's own (@p systemKhz above 0), else 72 kHz for TETRA (-fT, which runs only at a
- * multiple of 18 kHz), else the app-wide default @p prefsKhz. A USB or rtl_tcp radio runs a value it does not select
- * at its 48 kHz default (36 runs at 48), and an Airspy at the nearest one it takes (72 at 48); any other source has
- * no DSP bandwidth, so the request is returned as it is. The one rule the start check, the wizard's gate and its
- * bandwidth placeholder share.
+ * multiple of 18 kHz), else the app-wide default @p prefsKhz, run as the radio runs it
+ * (session_args_dsp_bandwidth_khz()). The one rule the start check, the wizard's gate and its bandwidth placeholder
+ * share.
  */
 int session_args_effective_bandwidth_khz(const QString& decodeFlag, const QString& sourceType, int systemKhz,
                                          int prefsKhz);
@@ -198,18 +218,18 @@ int session_args_effective_bandwidth_khz(const QString& decodeFlag, const QStrin
 /**
  * @brief Whether TETRA decodes on a radio of @p sourceType running at @p bandwidthKhz (issue #803).
  *
- * A USB or rtl_tcp radio decodes it only where its DSP bandwidth, as the engine runs it, is a TETRA rate
- * (dsd_tetra_dsp_rate_runs(): 72 kHz among the selectable ones). An Airspy never does: none of its sample rates
- * halves to a multiple of 18 kHz. Any other source is TetraNeedsIq's to judge, so it passes here.
+ * A radio decodes it only where its DSP bandwidth, as the engine runs it (session_args_dsp_bandwidth_khz()), is a
+ * TETRA rate (dsd_tetra_dsp_rate_runs(): 72 kHz among the selectable ones). Since issue #806 an Airspy's capture rate
+ * is stepped to that bandwidth, so an Airspy is judged as a USB or rtl_tcp radio is. Any other source is TetraNeedsIq's
+ * to judge, so it passes here.
  */
 bool session_args_tetra_runs_on(const QString& sourceType, int bandwidthKhz);
 
 /**
  * @brief Why TETRA cannot decode on @p sourceType at @p bandwidthKhz, or empty when it can (issue #803).
  *
- * Unlike session_args_error_text(SessionArgsError::TetraRate), which covers both cases, the text names the one fix
- * for this source: another radio for an Airspy, the 72 kHz bandwidth for a USB or rtl_tcp radio. A start refused
- * with TetraRate carries the same text for its system's source as its "errorText".
+ * The text is session_args_error_text(SessionArgsError::TetraRate), the one fix on every radio: a 72 kHz bandwidth. A
+ * start refused with TetraRate carries it as its "errorText".
  */
 QString session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz);
 

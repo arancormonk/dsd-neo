@@ -213,10 +213,14 @@ resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double
     return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
 }
 
-/** @brief Snap the shared bandwidth preference to the DSP bandwidths an Airspy takes (the narrower of two as near). */
+/**
+ * @brief Snap a requested bandwidth to the DSP bandwidths an Airspy takes: the nearest one (the narrower of two as
+ * near), or the 48 kHz default for none (0 or less) and for one wider than the widest, as a USB radio runs a value it
+ * does not take (issue #806: never a silent jump to 72 kHz for a mistyped 100).
+ */
 int
 airspy_bandwidth(int requested) {
-    if (requested <= 0) {
+    if (requested <= 0 || requested > DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ) {
         return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
     }
     return dsd_analog_rtl_dsp_bw_nearest(requested, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
@@ -604,16 +608,60 @@ session_args_freq_valid(const QString& freqMhz) {
     return dsd_parse_freq_hz(spec.constData()) != 0U;
 }
 
-bool
-session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
-    if (sourceType != QLatin1String("usb") && sourceType != QLatin1String("rtltcp")) {
-        return true;
+/* The -i spec type a radio source's session opens, which the engine's rate policy classifies; nullptr for a source
+   with no DSP rate. */
+static const char*
+radio_spec_type(const QString& source) {
+    if (source == QLatin1String("usb")) {
+        return "rtl";
+    }
+    if (source == QLatin1String("rtltcp")) {
+        return "rtltcp";
+    }
+    return source == QLatin1String("airspy") ? "airspy" : nullptr;
+}
+
+/* The DSP rate a radio of @p sourceType asked for @p requestedKhz runs at: the engine's rate policy at the bandwidth
+   its spec carries (session_args_dsp_bandwidth_khz()). Every live radio runs at its DSP bandwidth, an Airspy's capture
+   rate stepped to it (issue #806); rate 0 for a source with no DSP rate. */
+static dsd_input_dsp_rate
+radio_dsp_rate(const QString& sourceType, int requestedKhz) {
+    const char* spec = radio_spec_type(sourceType);
+    if (spec == nullptr) {
+        return dsd_input_dsp_rate{DSD_ANALOG_RATE_RTL_BW, 0};
+    }
+    return dsd_input_dsp_rate_for(spec, AUDIO_IN_RTL, 0, session_args_dsp_bandwidth_khz(sourceType, requestedKhz));
+}
+
+int
+session_args_dsp_bandwidth_khz(const QString& sourceType, int requestedKhz) {
+    if (sourceType == QLatin1String("airspy")) {
+        return airspy_bandwidth(requestedKhz);
     }
     /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
-    const int khz = dsd_analog_rtl_dsp_bw_or_default(bandwidthKhz);
-    return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), khz * 1000,
-                                  nullptr, 0U)
-           == 0;
+    return radio_spec_type(sourceType) != nullptr ? dsd_analog_rtl_dsp_bw_or_default(requestedKhz) : requestedKhz;
+}
+
+bool
+session_args_analog_width_fits(const QString& sourceType, int requestedKhz, int kind, int widthHz, QString* why) {
+    const dsd_input_dsp_rate rate = radio_dsp_rate(sourceType, requestedKhz);
+    if (rate.rate_hz <= 0) {
+        return true;
+    }
+    char text[DSD_ANALOG_ERROR_TEXT_MAX] = {};
+    if (dsd_analog_width_check_at(kind, widthHz, rate.rate_hz, rate.source, text, sizeof text) == 0) {
+        return true;
+    }
+    if (why != nullptr) {
+        *why = QString::fromUtf8(text);
+    }
+    return false;
+}
+
+bool
+session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
+    return session_args_analog_width_fits(sourceType, bandwidthKhz, DSD_ANALOG_DEMOD_AM,
+                                          dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), nullptr);
 }
 
 QString
@@ -735,9 +783,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     /* %1: session_args_am_bandwidth_choices(). */
     {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
                                     "narrower one. Set the bandwidth to %1 kHz, or choose another decode mode."},
-    {SessionArgsError::TetraNeedsIq, "TETRA needs a USB or rtl_tcp radio, or a symbol capture (.bin) file: network "
-                                     "audio and audio files arrive already demodulated. Choose a USB or rtl_tcp radio, "
-                                     "or another decode mode."},
+    {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB, Airspy or rtl_tcp), or a symbol capture (.bin) "
+                                     "file: network audio and audio files arrive already demodulated. Choose a radio "
+                                     "source, or another decode mode."},
     {SessionArgsError::RecordingMissing,
      "This system's recording is missing. Edit the system and choose its recording again."},
     {SessionArgsError::CallRecordingOption,
@@ -749,9 +797,8 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::CallRecordingNoStorage,
      "There's no storage for call recordings right now, so -P can't record. Remove it from the extra decoder "
      "arguments to listen without recording."},
-    {SessionArgsError::TetraRate,
-     "TETRA needs a USB or rtl_tcp radio at a bandwidth of 72 kHz: an Airspy can't decode it. Choose a USB or rtl_tcp "
-     "radio and set its bandwidth to 72 kHz, or choose another decode mode."},
+    {SessionArgsError::TetraRate, "TETRA needs a bandwidth of 72 kHz: no other bandwidth decodes it. Set the bandwidth "
+                                  "to 72 kHz, or choose another decode mode."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -850,11 +897,6 @@ is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
 }
 
-static bool
-is_rtl_source(const QString& source) {
-    return source == QLatin1String("usb") || source == QLatin1String("rtltcp");
-}
-
 /* The DSP bandwidth, in kHz, a system asks for, and its radio spec carries as it is: its own override (@p systemKhz
    above 0), else 72 kHz for TETRA, which runs only at a multiple of 18 kHz (as -fT takes it on the command line), else
    the app-wide default. */
@@ -869,36 +911,20 @@ requested_bandwidth_khz(const QString& decodeFlag, int systemKhz, int prefsKhz) 
 int
 session_args_effective_bandwidth_khz(const QString& decodeFlag, const QString& sourceType, int systemKhz,
                                      int prefsKhz) {
-    const int requested = requested_bandwidth_khz(decodeFlag, systemKhz, prefsKhz);
-    if (sourceType == QLatin1String("airspy")) {
-        return airspy_bandwidth(requested);
-    }
-    /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
-    return is_rtl_source(sourceType) ? dsd_analog_rtl_dsp_bw_or_default(requested) : requested;
+    return session_args_dsp_bandwidth_khz(sourceType, requested_bandwidth_khz(decodeFlag, systemKhz, prefsKhz));
 }
 
 bool
 session_args_tetra_runs_on(const QString& sourceType, int bandwidthKhz) {
-    if (sourceType == QLatin1String("airspy")) {
-        return false;
-    }
-    /* Normalized again so any request is safe to scale: a selectable bandwidth is at most 72 kHz. */
-    return !is_rtl_source(sourceType)
-           || dsd_tetra_dsp_rate_runs(dsd_analog_rtl_dsp_bw_or_default(bandwidthKhz) * 1000) != 0;
-}
-
-/* Why TETRA cannot decode on a radio of @p sourceType that session_args_tetra_runs_on() refused: the one fix for it. */
-static QString
-tetra_rate_text(const QString& sourceType) {
-    return sourceType == QLatin1String("airspy")
-               ? QStringLiteral("An Airspy can't decode TETRA. Choose a USB or rtl_tcp radio, or another decode mode.")
-               : QStringLiteral("TETRA needs a bandwidth of 72 kHz: no other bandwidth decodes it. Set the bandwidth "
-                                "to 72 kHz, or choose another decode mode.");
+    /* Normalized again (radio_dsp_rate()), so any request is safe to scale: a DSP bandwidth is at most 72 kHz. */
+    return !is_radio_source(sourceType)
+           || dsd_tetra_dsp_rate_runs(radio_dsp_rate(sourceType, bandwidthKhz).rate_hz) != 0;
 }
 
 QString
 session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz) {
-    return session_args_tetra_runs_on(sourceType, bandwidthKhz) ? QString() : tetra_rate_text(sourceType);
+    return session_args_tetra_runs_on(sourceType, bandwidthKhz) ? QString()
+                                                                : session_args_error_text(SessionArgsError::TetraRate);
 }
 
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
@@ -906,9 +932,9 @@ session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz) {
    and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
    channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()), and for -fT, whose symbols the
    engine reads from a radio's I/Q or a symbol capture file only (dsd_opts_audio_in_dev_is_symbol_capture()), and
-   decodes only on a radio whose DSP rate TETRA runs at (issue #803: never an Airspy; a USB or rtl_tcp radio at
-   72 kHz). @p bandwidthKhz is the DSP bandwidth the radio runs at (session_args_effective_bandwidth_khz()). A file
-   source needs its recording first (issue #580: a restored backup leaves every replay system without one), so the
+   decodes only on a radio whose DSP rate TETRA runs at (issue #803: a 72 kHz DSP bandwidth, an Airspy's included
+   since issue #806). @p bandwidthKhz is the DSP bandwidth the radio runs at (session_args_effective_bandwidth_khz()). A
+   file source needs its recording first (issue #580: a restored backup leaves every replay system without one), so the
    reason it cannot start names that, not what the decode mode would need of the file. */
 static SessionArgsError
 session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
@@ -1128,17 +1154,13 @@ error_category(SessionArgsError error) {
                                                                : QStringLiteral("encryption");
 }
 
-/* The start check's verdict for @p system. A TETRA rate refusal says the one fix for the system's source, as the
-   wizard's gate does (session_args_tetra_rate_error()). */
+/* The start check's verdict. */
 static QVariantMap
-validationResult(SessionArgsError error, const QVariantMap& system) {
+validationResult(SessionArgsError error) {
     QVariantMap result;
     result.insert(QStringLiteral("ok"), error == SessionArgsError::None);
     result.insert(QStringLiteral("error"), error_category(error));
-    result.insert(QStringLiteral("errorText"),
-                  error == SessionArgsError::TetraRate
-                      ? tetra_rate_text(system.value(QStringLiteral("sourceType")).toString())
-                      : session_args_error_text(error));
+    result.insert(QStringLiteral("errorText"), session_args_error_text(error));
     if (error == SessionArgsError::AmBandwidth) {
         result.insert(QStringLiteral("bandwidthChoices"), session_args_am_bandwidth_choices());
     }
@@ -1149,7 +1171,7 @@ QVariantMap
 SessionArgsBuilder::build(const QVariantMap& system) const {
     SessionArgsError error = SessionArgsError::None;
     (void)buildArgs(system, &error);
-    return validationResult(error, system);
+    return validationResult(error);
 }
 
 QStringList
@@ -1183,7 +1205,7 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
     const QStringList args = buildForStart(system, host, kind, &error, &recording);
-    auto result = validationResult(error, system);
+    auto result = validationResult(error);
     // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());

@@ -724,6 +724,25 @@ main(int argc, char** argv) {
     // An Airspy's gains are its native map's; the RTL tuner gain a detection records does not describe it.
     assert(airspySystem.value(QStringLiteral("gainDb")).typeId() == QMetaType::Int);
     assert(airspySystem.value(QStringLiteral("gainDb")).toInt() == -1);
+    // Issue #806: the found system's 48 kHz runs on an Airspy as on an RTL (its capture rate stepped to it), and the
+    // width check the session holds a radio to covers the Airspy too: an AM detection at the 6 kHz default starts there
+    // even under an app default its channel would not fit.
+    auto airspyAm = airspy;
+    airspyAm[QStringLiteral("confirmed")] = false;
+    airspyAm[QStringLiteral("am")] = true;
+    airspyAm[QStringLiteral("width")] = 6000;
+    dsd_qt::SessionArgPrefs narrowDefault;
+    narrowDefault.bandwidthKhz = 6;
+    for (const auto& found : {airspySystem, model.systemForHit(airspyAm, {})}) {
+        assert(found.value(QStringLiteral("bandwidthKhz")).toInt() == 48);
+        startError = dsd_qt::SessionArgsError::None;
+        const QStringList airspyArgs = dsd_qt::session_args_build(found, narrowDefault, &startError);
+        assert(startError == dsd_qt::SessionArgsError::None);
+        assert(airspyArgs.value(airspyArgs.indexOf(QStringLiteral("-i")) + 1).startsWith(QStringLiteral("airspy:")));
+        assert(airspyArgs.value(airspyArgs.indexOf(QStringLiteral("-i")) + 1).split(QLatin1Char(':')).value(2)
+               == QStringLiteral("48"));
+    }
+    assert(model.systemForHit(airspyAm, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fM"));
 
     // History is copied and rebuilt only when the store changed it, not on every status revision.
     int historySignals = 0, statusSignals = 0, avoidSignals = 0;

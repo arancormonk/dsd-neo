@@ -99,9 +99,9 @@ Item {
     readonly property bool isTetra: radioReference.systemDetails.protocolToken === "tetra"
     // What a TETRA import needs to decode, said in the preview before the
     // review and again in the review itself. An empty bandwidth runs TETRA at
-    // 72 kHz; the Airspy and the Tetrapol systems RadioReference lists as
-    // TETRA are the two things no setting fixes.
-    readonly property string tetraNote: qsTr("TETRA needs a USB or rtl_tcp radio at a 72 kHz bandwidth (leave the bandwidth empty for that). An Airspy can't decode it. Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
+    // 72 kHz on every radio; the Tetrapol systems RadioReference lists as
+    // TETRA are the one thing no setting fixes.
+    readonly property string tetraNote: qsTr("TETRA needs a radio at a 72 kHz bandwidth (leave the bandwidth empty for that). Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
 
     // Re-run per visit and whenever a new system's sites land: the options and
     // the selection belong to the system in hand, not to the screen.

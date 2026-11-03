@@ -1107,13 +1107,10 @@ Window {
             } else if (built.error === "recording-missing") {
                 mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);
             } else if (built.error === "tetra-needs-iq") {
-                mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a USB or rtl_tcp radio or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it.").arg(sys.name);
+                mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "tetra-rate") {
-                // An Airspy never decodes TETRA; a USB or rtl_tcp radio only at 72 kHz, which an empty field runs at.
-                if (sys.sourceType === "airspy")
-                    mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a USB or rtl_tcp radio: an Airspy can't decode it. Edit the source to correct it.").arg(sys.name);
-                else
-                    mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty.").arg(sys.name);
+                // Every radio decodes TETRA only at 72 kHz, which an empty field runs at.
+                mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty.").arg(sys.name);
             } else if (built.error === "am-bandwidth") {
                 mainRoot.startError = qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to %2 kHz.").arg(sys.name).arg(built.bandwidthChoices);
             } else {

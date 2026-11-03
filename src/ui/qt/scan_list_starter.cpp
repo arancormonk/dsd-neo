@@ -96,23 +96,22 @@ configuredAnalogWidthHz(const QString& extraArgs, int kind) {
 }
 
 /*
- * Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR or rtl_tcp list runs every target at the rate its
- * DSP bandwidth sets -- the list's own, else the app's, read as the engine reads the spec's bandwidth field -- so an
- * analog target whose width that rate cannot filter is skipped at every visit: its own width, else the configured width
- * of its kind the session runs (configuredAnalogWidthHz()), else the AM default an am target runs, which always runs
- * its channel filter. The unset NFM default runs at any rate. A SoapySDR or Airspy device sets its own rate, which the
- * engine checks once the scan starts. Said beside the targets ready, as the engine names such a row when a map loads,
- * not as a refusal: the rest of the list still scans.
+ * Issue #526: the editor's own DSP-rate row diagnostic. A radio list runs every target at the rate its DSP bandwidth
+ * sets -- the list's own, else the app's, read as the session's spec carries it (session_args_analog_width_fits(): an
+ * Airspy's snapped as the session snaps it, its capture rate stepped to it, issue #806) -- so an analog target whose
+ * width that rate cannot filter is skipped at every visit: its own width, else the configured width of its kind the
+ * session runs (configuredAnalogWidthHz()), else the AM default an am target runs, which always runs its channel
+ * filter. The unset NFM default runs at any rate. Said beside the targets ready, as the engine names such a row when a
+ * map loads, not as a refusal: the rest of the list still scans.
  */
 QString
 analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const QList<AnalogTarget>& targets) {
-    const QString source = list.value("sourceType").toString();
-    if (targets.isEmpty() || (source != QStringLiteral("usb") && source != QStringLiteral("rtltcp"))) {
+    if (targets.isEmpty()) {
         return {};
     }
+    const QString source = list.value("sourceType").toString();
     const int listKhz = stored_int_or(list.value("bandwidthKhz"), -1);
     const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
-    const int rateHz = dsd_analog_rtl_dsp_bw_or_default(khz) * 1000;
     const int nfmHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_FM);
     const int amHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_AM);
     int skipped = 0;
@@ -122,12 +121,12 @@ analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const Q
                                     ? (amHz > 0 ? amHz : dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM))
                                     : nfmHz;
         const int heldHz = target.widthHz > 0 ? target.widthHz : inheritedHz;
-        char why[DSD_ANALOG_ERROR_TEXT_MAX] = {};
-        if (heldHz <= 0 || dsd_analog_width_check(target.kind, heldHz, rateHz, why, sizeof why) == 0) {
+        QString why;
+        if (heldHz <= 0 || session_args_analog_width_fits(source, khz, target.kind, heldHz, &why)) {
             continue;
         }
         if (skipped++ == 0) {
-            first = target.label + QStringLiteral(": ") + QString::fromUtf8(why);
+            first = target.label + QStringLiteral(": ") + why;
         }
     }
     if (skipped == 0) {
