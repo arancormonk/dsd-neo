@@ -3653,7 +3653,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
     open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
     sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
-    `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then
+    `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then.
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the

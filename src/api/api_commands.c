@@ -638,7 +638,9 @@ submit_scan_list_set(const api_command_desc* d, const dsd_json_node* params, uin
     *request_id = p.request;
     const int rc = dsd_app_command_scan_list_set(&p);
     /* The queue refuses a toggle it has no room for instead of evicting an older command (so a refused one is never
-       pending and gets no result), and refuses everything while no decoder session is open. */
+       pending and gets no result), and refuses everything while no decoder session is open. Which of the two it was is
+       read after the submit, so a session opening in between can label a closed-session refusal queue_full; the label
+       is harmless, since nothing was submitted either way. */
     return (rc == DSD_APP_COMMAND_SUBMIT_REJECTED && dsd_app_command_session_generation() != 0U) ? API_QUEUE_FULL : rc;
 }
 

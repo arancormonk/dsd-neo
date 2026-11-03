@@ -930,6 +930,7 @@ never written to the list files or the config.
 
 * `list` is a list number, `1` to `8` in command-line (or config) order, or
   `"all"` with `"enabled":1` to switch every list on. `enabled` is `0` or `1`.
+  `"all"` with `0` is refused (`refused_last`).
   `session` is `status.scan.session` (`1` to `4294967295`); a request naming
   another session, or a list the session does not have, changes nothing.
 * The reply comes at once and only says the queue took the request. Its
@@ -964,11 +965,15 @@ never written to the list files or the config.
   | `search` | Signal search runs; stop it first. |
   | `dropped` | Never applied: the decoder stopped, or the queue overflowed, first. |
 
+  Treat any other code (`unknown` today) as a failure: the list may grow.
+
 * The result decides the outcome of a request; `status.scan` decides what the
-  lists are. A result can arrive before the status that shows its switch: until
-  `status.scan.lists_seq` reaches the result's `lists_seq`, show the state the
-  request asked for, and once it moves past it, the lists have changed again (a
-  refusal no longer describes them).
+  lists are. A result can arrive before the status that shows its switch: for
+  `ok` (and `unchanged`), until `status.scan.lists_seq` reaches the result's
+  `lists_seq`, show the state the request asked for; once it moves past it, the
+  lists have changed again. For a refusal, show `status.scan`: its `lists_seq`
+  can be behind another frontend's switch that the result already counts, and
+  once it moves past the result's, the refusal no longer describes the lists.
 * Switching off the list that holds the target on air leaves that target at
   once, as `scan_avoid` does (a hold carries over). A switch that would leave
   nothing to scan is refused, and so is any switch while the scan is paused.

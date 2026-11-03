@@ -818,9 +818,10 @@ int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
  * a refusal, an invalid payload, a Signal search refusal and a request dropped unapplied included. A result is
  * authoritative for what the request did and the toast it showed; dsd_state::trunk_scan_lists_seq in the snapshot is
  * authoritative for the lists to show. The result can arrive before the snapshot that shows its switch (a watchdog
- * tick can put that snapshot off), so a frontend clears its pending row on the result and, until the snapshot's
- * trunk_scan_lists_seq reaches the result's @c lists_seq, shows the state the switch asked for; once the snapshot
- * moves past it, a refusal the result gave no longer describes the lists. The code is the coordinator's answer even
+ * tick can put that snapshot off), so a frontend clears its pending row on the result and, for OK (and UNCHANGED),
+ * until the snapshot's trunk_scan_lists_seq reaches the result's @c lists_seq, shows the state the switch asked for;
+ * for a refusal it shows the snapshot's lists, and once the snapshot moves past the result's @c lists_seq the refusal
+ * no longer describes them. The code is the coordinator's answer even
  * when a later step of the same command (a rigctl passband follow-up the peer refused) fails the command: the list did
  * switch. */
 int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
