@@ -46,10 +46,20 @@ view_of(const dsd_opts* opts, const dsd_state* state) {
     return v;
 }
 
+/* Every entry's number, state and on-air mark at once, written as "1 [2] *3": "*" before a list that is off, the list
+   on air in brackets. */
 static void
-expect_strip(const char* what, const dsd_app_scan_list_view* v, const char* want) {
-    if (strcmp(v->strip, want) != 0) {
-        DSD_FPRINTF(stderr, "%s: strip \"%s\", want \"%s\"\n", what, v->strip, want);
+expect_entries(const char* what, const dsd_app_scan_list_view* v, const char* want) {
+    char got[64] = "";
+    size_t used = 0U;
+    for (int i = 0; i < (int)v->list_count; i++) {
+        const dsd_app_scan_list_entry* e = &v->lists[i];
+        DSD_SNPRINTF(got + used, sizeof got - used, "%s%s%s%u%s", i > 0 ? " " : "", e->has_active ? "[" : "",
+                     e->enabled ? "" : "*", (unsigned)e->number, e->has_active ? "]" : "");
+        used = strlen(got);
+    }
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: entries \"%s\", want \"%s\"\n", what, got, want);
         assert(0);
     }
 }
@@ -67,7 +77,7 @@ static void
 test_null_arguments(dsd_opts* opts, dsd_state* state) {
     dsd_app_scan_list_view v;
     DSD_MEMSET(&v, 0xA5, sizeof v);
-    assert(dsd_app_scan_list_view_get(NULL, state, &v) == -1 && v.list_count == 0U && v.strip[0] == '\0');
+    assert(dsd_app_scan_list_view_get(NULL, state, &v) == -1 && v.list_count == 0U);
     assert(dsd_app_scan_list_view_get(opts, NULL, &v) == -1);
     assert(dsd_app_scan_list_view_get(opts, state, NULL) == -1);
 }
@@ -77,19 +87,19 @@ static void
 test_no_lists(dsd_opts* opts, dsd_state* state) {
     reset(opts, state);
     dsd_app_scan_list_view v = view_of(opts, state);
-    assert(v.list_count == 0U && v.lists_on == 0U && v.targets_on == 0U && v.session == 0U && v.strip[0] == '\0');
+    assert(v.list_count == 0U && v.lists_on == 0U && v.targets_on == 0U && v.session == 0U);
     expect_toggleable("no scan", &v, 0, 0, 0);
 
     seed_lists(opts, state, 3);
     opts->trunk_scan_enabled = 0;
     v = view_of(opts, state);
-    assert(v.list_count == 0U && v.session == 0U && v.strip[0] == '\0');
+    assert(v.list_count == 0U && v.session == 0U);
     expect_toggleable("lists left behind, no scan", &v, 0, 0, 0);
 
     /* A trunk scan whose coordinator has not published yet. */
     seed_lists(opts, state, 0);
     v = view_of(opts, state);
-    assert(v.list_count == 0U && v.strip[0] == '\0' && v.session == 41U);
+    assert(v.list_count == 0U && v.session == 41U);
     expect_toggleable("no lists yet", &v, 0, 1, 0);
 }
 
@@ -102,7 +112,7 @@ test_one_list(dsd_opts* opts, dsd_state* state) {
     assert(v.list_count == 1U && v.lists_on == 1U && v.targets_on == 10U && v.active_list == 1U);
     assert(v.lists[0].number == 1U && v.lists[0].enabled == 1U && v.lists[0].has_active == 1U);
     assert(v.lists[0].targets == 10U && strcmp(v.lists[0].name, "list1") == 0);
-    expect_strip("one list", &v, "[1]");
+    expect_entries("one list", &v, "[1]");
     expect_toggleable("one list", &v, 0, 1, 0);
 }
 
@@ -124,7 +134,7 @@ test_three_lists(dsd_opts* opts, dsd_state* state) {
     assert(strcmp(v.lists[2].name, "list3") == 0);
     /* Entries past the count stay zeroed. */
     assert(v.lists[3].number == 0U && v.lists[3].name[0] == '\0');
-    expect_strip("three lists, 2 on air, 3 off", &v, "1 [2] *3");
+    expect_entries("three lists, 2 on air, 3 off", &v, "1 [2] *3");
     expect_toggleable("three lists running", &v, 1, 1, 0);
 
     /* The receiver still on a target whose list went off (it leaves when another target can take it). */
@@ -133,21 +143,21 @@ test_three_lists(dsd_opts* opts, dsd_state* state) {
     state->trunk_scan_active_list_off = 1U;
     v = view_of(opts, state);
     assert(v.active_list == 2U && v.active_list_off == 1U && v.lists_on == 2U && v.targets_on == 40U);
-    expect_strip("on air on a list that is off", &v, "1 [*2] 3");
+    expect_entries("on air on a list that is off", &v, "1 [*2] 3");
 
     /* Nothing on air: no list marked. */
     state->trunk_scan_active_list = 0U;
     state->trunk_scan_active_list_off = 0U;
     v = view_of(opts, state);
     assert(v.active_list == 0U && v.active_list_off == 0U);
-    expect_strip("none on air", &v, "1 *2 3");
+    expect_entries("none on air", &v, "1 *2 3");
 
     /* An active list past the count is no list. */
     state->trunk_scan_active_list = 5U;
     state->trunk_scan_active_list_off = 1U;
     v = view_of(opts, state);
     assert(v.active_list == 0U && v.active_list_off == 0U);
-    expect_strip("active list out of range", &v, "1 *2 3");
+    expect_entries("active list out of range", &v, "1 *2 3");
 }
 
 /* toggleable: running with 2+ lists only; paused and stopped (no coordinator configured) refuse it. */
@@ -164,7 +174,7 @@ test_toggleable(dsd_opts* opts, dsd_state* state) {
     v = view_of(opts, state);
     expect_toggleable("paused", &v, 0, 0, 1);
     assert(v.list_count == 2U && v.lists_on == 2U && v.session == 41U);
-    expect_strip("paused", &v, "1 2");
+    expect_entries("paused", &v, "1 2");
 
     state->trunk_scan_paused = 0U;
     opts->trunk_scan_enabled = 0;
@@ -172,7 +182,7 @@ test_toggleable(dsd_opts* opts, dsd_state* state) {
     expect_toggleable("stopped", &v, 0, 0, 0);
 }
 
-/* Every list there can be, and a published count past it clamped; each entry and the strip fit. */
+/* Every list there can be, and a published count past it clamped; each entry fits. */
 static void
 test_eight_lists(dsd_opts* opts, dsd_state* state) {
     seed_lists(opts, state, DSD_TRUNK_SCAN_MAX_LISTS);
@@ -186,13 +196,13 @@ test_eight_lists(dsd_opts* opts, dsd_state* state) {
     dsd_app_scan_list_view v = view_of(opts, state);
     assert(v.list_count == 8U && v.lists_on == 1U && v.targets_on == 10U);
     assert(strlen(v.lists[7].name) == sizeof v.lists[7].name - 1U && v.lists[7].has_active == 1U);
-    expect_strip("eight lists", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
+    expect_entries("eight lists", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
     expect_toggleable("eight lists", &v, 1, 1, 0);
 
     state->trunk_scan_list_count = 200U;
     v = view_of(opts, state);
     assert(v.list_count == 8U);
-    expect_strip("count past the cap", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
+    expect_entries("count past the cap", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
 }
 
 int

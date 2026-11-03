@@ -10,8 +10,8 @@
  * The coordinator publishes its lists on dsd_state (trunk_scan_lists[], trunk_scan_list_count, the list of the target
  * on air, trunk_scan_lists_seq). This view reads those fields, and the scan state view's running predicate, from a
  * published snapshot pair or the decoder's own structs, for the terminal's Scan lists modal and status rows, the
- * Qt/Android Scan lists sheet and the control API: one entry per list, the counts, whether a toggle can be offered
- * now, and the terminal's compact strip. It reads only the fields it names (no lock, no walk of the targets), so a
+ * Qt/Android Scan lists sheet and the control API: one entry per list, the counts, and whether a toggle can be
+ * offered now. It reads only the fields it names (no lock, no walk of the targets), so a
  * frontend reads it every frame and acts only when @c lists_seq or @c session moves.
  */
 
@@ -26,9 +26,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** Room for the strip: eight lists, each "[*8]" at most, a space between, and the terminator. */
-enum { DSD_APP_SCAN_LIST_STRIP_SIZE = 40 };
 
 /** @brief One target list. */
 typedef struct {
@@ -53,9 +50,6 @@ typedef struct {
     uint8_t paused;          /**< 1 = the operator paused it. */
     uint8_t toggleable;      /**< 1 = lists can be switched now: running, not paused, 2+ lists. */
     dsd_app_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS]; /**< lists[0 .. list_count - 1]. */
-    /** The terminal's strip: list numbers in order, "*" before one that is off, the list on air in brackets, e.g.
-     * "1 [2] *3"; "" with no lists. */
-    char strip[DSD_APP_SCAN_LIST_STRIP_SIZE];
 } dsd_app_scan_list_view;
 
 /**

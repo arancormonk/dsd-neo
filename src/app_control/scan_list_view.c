@@ -10,24 +10,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 _Static_assert(sizeof(((dsd_app_scan_list_entry*)0)->name) == sizeof(((dsd_trunk_scan_list_publication*)0)->name),
                "a list entry holds every published name");
-
-/* One list's place in the strip: "3", "*3" while off, in brackets while the target on air is its. */
-static size_t
-strip_append(char* strip, size_t used, const dsd_app_scan_list_entry* list) {
-    const char* sep = used > 0U ? " " : "";
-    const char* off = list->enabled ? "" : "*";
-    const char* open = list->has_active ? "[" : "";
-    const char* close = list->has_active ? "]" : "";
-    DSD_SNPRINTF(strip + used, DSD_APP_SCAN_LIST_STRIP_SIZE - used, "%s%s%s%u%s", sep, open, off,
-                 (unsigned)list->number, close);
-    return strlen(strip);
-}
 
 /* List @p number as published, named on air when the target on air is its. */
 static void
@@ -62,7 +48,6 @@ dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app
                                                                               : (uint8_t)DSD_TRUNK_SCAN_MAX_LISTS;
     out->active_list = state->trunk_scan_active_list <= out->list_count ? state->trunk_scan_active_list : 0U;
     out->active_list_off = (out->active_list != 0U && state->trunk_scan_active_list_off) ? 1U : 0U;
-    size_t used = 0U;
     for (uint8_t i = 0; i < out->list_count; i++) {
         dsd_app_scan_list_entry* e = &out->lists[i];
         list_entry_fill(e, &state->trunk_scan_lists[i], (uint8_t)(i + 1U), out->active_list);
@@ -70,7 +55,6 @@ dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app
             out->lists_on++;
             out->targets_on = (uint16_t)(out->targets_on + e->targets);
         }
-        used = strip_append(out->strip, used, e);
     }
     out->toggleable = (out->running && !out->paused && out->list_count >= 2U) ? 1U : 0U;
     return 0;

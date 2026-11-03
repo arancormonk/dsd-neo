@@ -4231,9 +4231,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `trunk_scan_active_list_off`, `trunk_scan_lists_seq`, `trunk_scan_session`) and the scan state view, from a snapshot
   pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
   per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
-  `active_list`, `running`/`paused`, `toggleable` (running, not paused, 2+ lists) and the terminal strip (`1 [2] *3`:
-  `*` before a list that is off, brackets round the list on air). A frontend acts when `lists_seq` or `session`
-  moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
+  `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
+  or `session` moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
