@@ -152,6 +152,10 @@ struct demod_state {
        Valid only while result_flags_active; otherwise every sample is open. */
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t result_flags[MAXIMUM_BUF_LENGTH];
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t resamp_outflags[MAXIMUM_BUF_LENGTH * 4];
+    /* The half-band decimator's work buffer. It sits here, not with the half-band state among the scalars below, so
+       their sizes cannot decide where its SIMD loads fall (one more int there moved it off a 64-byte boundary and
+       slowed the CQPSK chain by about 5 %). */
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -226,10 +230,7 @@ struct demod_state {
     int prev_lpr_index;
     int dc_block;
     float dc_avg;
-    /* Half-band decimator. The work buffer is aligned as the large buffers above are: the scalars ahead of it would
-       otherwise decide where its SIMD loads fall (one more int moved it off a 64-byte boundary and slowed the CQPSK
-       chain by about 5 %). */
-    alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
+    /* Half-band decimator */
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
     /* Per stage: input samples taken but not yet decimated past (simd_hb_decim2_complex()), the look-ahead and the
@@ -515,6 +516,8 @@ static_assert(sizeof(demod_state::result_flags) % DSD_DEMOD_BUF_ALIGN == 0,
               "result_flags must fill whole alignment blocks");
 static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,
               "resamp_outflags must fill whole alignment blocks");
+static_assert(sizeof(demod_state::hb_workbuf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "hb_workbuf must fill whole alignment blocks");
 
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
