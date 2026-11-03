@@ -5896,7 +5896,10 @@ Key public headers:
     sidecar decimates after the demodulator. Test: `IO_RTL_COMPLEX_RATE` (FSK, CQPSK and NFM x post 1-4: configured
     and landed rates, prediction, emitted sample counts; the bandwidth x symbol rate x digital_resample matrix, Airspy
     against RTL-SDR; the TED and output chain an SPS hunt, retune profiles, a P25 voice override and a control-channel
-    restore land on, `rtl_stream_test_live_chain_profile_steps()`, `rtl_stream_test_replay_post_chain()`).
+    restore land on, a TED-only retune, `rtl_stream_test_live_chain_profile_steps()`, `rtl_stream_test_replay_post_chain()`
+    with the metrics hooks read through `rtl_stream_test_set_post_chain_probe()`; a `-Y` NFM/DMR walk on a forced chain
+    under auto/on/off, `rtl_stream_test_retune_profile_sequence_mode()`), `ENGINE_NO_CARRIER_RESET` (trunk-scan targets on
+    a resampled chain), `RTL_SYMBOL_CACHE_GENERATION` (the decoder re-times when the FSK output rate moves).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path

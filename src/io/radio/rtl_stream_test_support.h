@@ -797,6 +797,7 @@ typedef struct {
     int published_ted_sps;
     int published_tetra_stage;
     double snr_bias_evm_db; /* rtl_stream_get_snr_bias_evm() */
+    int generation_moved;   /* the output generation moved: the ring the decoder reads was dropped */
 } rtl_stream_test_profile_step_result;
 
 /* rtl_stream_test_live_rate_chain()'s open for @p opts (no read-back other than the device's rate), then each of the
@@ -827,6 +828,12 @@ typedef struct {
  * Returns -1 for bad arguments or with a stream or device open, -3 when the open failed. */
 int rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz, uint32_t post, int blocks,
                                       int pairs, rtl_stream_test_post_chain_result* out);
+
+/* Call @p probe(@p out, @p ctx) inside rtl_stream_test_replay_post_chain() once the replay open landed and before the
+ * stream's own state comes back, so a test can read the stream through its public getters and the metrics hooks
+ * while the chain runs. NULL clears it. */
+void rtl_stream_test_set_post_chain_probe(void (*probe)(const rtl_stream_test_post_chain_result* out, void* ctx),
+                                          void* ctx);
 
 /* The rate planner's passes for a device that runs @p actual_rate_hz whatever is asked, at DSP bandwidth rate
  * @p rate_in_hz (0 when it refuses). */
@@ -1804,6 +1811,12 @@ int rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune
 int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_step* steps, size_t count,
                                                      int forced_rate_out_hz, uint32_t external_steps,
                                                      rtl_stream_test_retune_landing* out);
+
+/* rtl_stream_test_retune_profile_sequence_external() on a DMR stream opened under digital_resample
+ * @p digital_resample_mode (a DSD_DIGITAL_RESAMPLE_* value; the others run AUTO), issue #806. */
+int rtl_stream_test_retune_profile_sequence_mode(const rtl_stream_test_retune_step* steps, size_t count,
+                                                 int forced_rate_out_hz, int digital_resample_mode,
+                                                 uint32_t external_steps, rtl_stream_test_retune_landing* out);
 
 /* External backends' retunes landing NFM profiles on a running monitor (issue #572), each over stale filter state. */
 typedef struct rtl_stream_test_external_landing_filter_result {

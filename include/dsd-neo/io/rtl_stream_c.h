@@ -662,8 +662,9 @@ void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 /**
  * @brief Check a receive-family / analog profile request without queuing it.
  *
- * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published demod
- * rate and a replay's post-demod decimation, and logs a refusal the way rtl_stream_request_analog_profile() does. For
+ * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published complex
+ * rate (rtl_stream_get_request_rate_hz(), the rate the channel filter runs at, ahead of a replay's post-demod
+ * decimator), and logs a refusal the way rtl_stream_request_analog_profile() does. For
  * a caller that must change nothing else when the front end refuses, such as a decode-mode change: asked before the
  * caller commits its decoder, it keeps the decoder and the front end on the same family whenever the rate holds until
  * the request that follows lands (a retune that moves the rate in between gets that request refused, logged, with
@@ -705,11 +706,11 @@ int rtl_stream_get_complex_rate_hz(void);
  * @param out_width_hz Effective channel width in Hz: the configured width while the width-driven channel filter runs,
  *                     otherwise the width the DSP rate leaves: the passband of the legacy WIDE plan an unset default
  *                     runs where the rate cannot fit it (dsd_channel_lpf_legacy_wide_width_hz()), or the DSP rate
- *                     with no channel filter (0 outside the analog family). An I/Q replay that
- *                     decimates after the demodulator runs the filter at post_downsample times its design rate, and
- *                     reports that many times the designed width. May be NULL.
- * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it (including
- *                     a replay's post-demod decimation). May be NULL.
+ *                     with no channel filter (0 outside the analog family). The channel filter is designed for the
+ *                     complex rate it runs at, ahead of an I/Q replay's post-demod decimator too (issue #806), so
+ *                     the configured width is the width it passes. May be NULL.
+ * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it. May be
+ *                     NULL.
  * @return 1 while the analog family is active, 0 otherwise (digital output, or the M17 encoder's monitor path).
  */
 int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);

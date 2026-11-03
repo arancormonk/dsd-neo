@@ -1617,6 +1617,24 @@ main(void) {
     assert(state.samplesPerSymbol == 2);
     assert(state.rtl_fsk_sps_accum == 4800);
 
+    /* Issue #806: the hunt's ProVoice profile on a forced 24 kHz chain (an Airspy) moves the digital_resample decision,
+       and the stream redesigns its output to 48 kHz, dropping the ring under a new generation. The SPS hunt timed its
+       request for the 24 kHz it read before; the decoder re-times from the rate the next samples come at, a whole 5
+       samples per symbol with nothing left accumulated, and back to 2.5 when the output returns to 24 kHz. */
+    g_stream_generation++;
+    g_output_rate_hz = 48000U;
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 5);
+    assert(state.symbolCenter == dsd_opts_symbol_center(5));
+    assert(state.rtl_fsk_sps_accum == 0);
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 5);
+    g_stream_generation++;
+    g_output_rate_hz = 24000U;
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 2);
+    assert(state.rtl_fsk_sps_accum == 4800);
+
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;

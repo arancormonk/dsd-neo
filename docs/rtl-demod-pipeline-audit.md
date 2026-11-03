@@ -253,16 +253,11 @@ Enable rule and validation:
   the rate it is on when it applies it, and refuses it there, as it would have
   had the retune come first. That includes a request that moves the stream onto
   the monitor (see Live Switching below).
-- The design uses `rate_out`, which is the complex rate the channel filter runs
-  at only while `post_downsample` is 1. Live sources always run that way; only
-  IQ replay sidecars can set a larger post-demod decimation, and there a
-  requested width (explicit, or the AM default) is refused at start and on every
-  runtime request, since the filter would run at `rate_out` x `post_downsample`.
-  NFM can drop its explicit width; AM cannot run on such a capture at all
-  (`AM needs a capture with post_downsample 1`). The unset NFM default keeps the
-  legacy design, and is published as DSP-limited at the width that design passes
-  at the rate it really runs at (its width at `rate_out` times
-  `post_downsample`).
+- The design uses `complex_rate`, the rate the channel filter runs at, ahead of
+  any post-demod decimation (issue #806). Live sources never post-decimate;
+  only IQ replay sidecars can set a larger post-demod decimation, and there the
+  width (explicit, the NFM default or the AM default) is checked and designed at
+  `complex_rate`, so it runs and is published as the width asked for.
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
   They now get a real design (219 taps at 78,125 Hz).

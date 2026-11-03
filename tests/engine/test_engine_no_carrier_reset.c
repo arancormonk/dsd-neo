@@ -209,6 +209,9 @@ static int g_rtl_family_rates = 0;
 /* Issue #583: the output rate the fake front end lands the digital family at (0: as g_rtl_family_rates says), for a
  * front end whose live rate is not the one a switch to the digital family lands on. */
 static int g_rtl_digital_landing_rate = 0;
+/* Issue #806: the complex rate the fake front end runs at, for a front end whose output resampler moves its digital
+ * output off it (0: the digital family's output rate). */
+static int g_rtl_complex_rate_hz = 0;
 /* Issue #583: the live receive-family requests the fake stream has accepted, the count a retune profile recorded when
  * its family was attached (a request made since supersedes that family, rtl_stream_retune_family_superseded()), and a
  * live analog request (a width edit) still waiting for the demod thread. */
@@ -319,6 +322,7 @@ reset_rtl_profile_fakes(void) {
     g_hook_rate_explicit = -1;
     g_hook_rate_cqpsk = -1;
     g_rtl_digital_landing_rate = 0;
+    g_rtl_complex_rate_hz = 0;
     g_fail_in_flight_at_tune_snapshot = 0;
     g_timing_after_pending = -1;
     g_tuning_rises_after_timing = 0;
@@ -523,11 +527,11 @@ __wrap_rtl_stream_get_request_rate_hz(void) {
     return g_rtl_request_rate_hz;
 }
 
-/* The complex rate the fake front end runs at (issue #806): its digital family's rate, which no resampler moves here,
- * as on an RTL-SDR; the analog monitor resamples only its output. */
+/* The complex rate the fake front end runs at (issue #806): g_rtl_complex_rate_hz, else its digital family's rate,
+ * which no resampler moves then, as on an RTL-SDR; the analog monitor resamples only its output. */
 int
 __wrap_rtl_stream_get_complex_rate_hz(void) {
-    return (int)fake_output_rate_for_family(DSD_RX_FAMILY_DIGITAL);
+    return g_rtl_complex_rate_hz > 0 ? g_rtl_complex_rate_hz : (int)fake_output_rate_for_family(DSD_RX_FAMILY_DIGITAL);
 }
 
 int
@@ -3637,6 +3641,55 @@ stop_outstanding_trunk_scan(dsd_opts* opts, dsd_state* state, const char* path) 
         (void)remove(path);
     }
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #806: trunk-scan targets on a front end whose complex rate is not its output rate: an Airspy at a 12 kHz DSP
+ * bandwidth, whose FSK output digital_resample auto resamples to 48 kHz. Each target's decoder is timed for the 48 kHz
+ * output it reads (DMR 10, NXDN48 20 samples per symbol), including the DMR target's snapshot restored when the scan
+ * comes back to it, while the TED its retune queues is the front end's own, at 12 kHz (3 and 5). */
+static int
+test_trunk_scan_targets_on_a_resampled_chain(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = start_family_trunk_scan(opts, state, path, sizeof path,
+                                     "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n",
+                                     "dmr,dmr-conventional,461400000,,250,250,,\n"
+                                     "nx,nxdn48-conventional,461500000,,250,250,,\n",
+                                     0);
+    g_rtl_family_rates = 0;
+    g_rtl_output_rate = 48000;
+    g_rtl_complex_rate_hz = 12000;
+
+    static const struct {
+        const char* name;
+        uint32_t freq_hz;
+        int symbol_rate_hz;
+    } kVisits[] = {{"nxdn48 target", 461500000U, 2400},
+                   {"dmr target again", 461400000U, 4800},
+                   {"nxdn48 target again", 461500000U, 2400}};
+
+    char label[160];
+    for (size_t i = 0; i < sizeof kVisits / sizeof kVisits[0]; i++) {
+        DSD_SNPRINTF(label, sizeof label, "resampled chain: advance to the %s", kVisits[i].name);
+        rc |= expect_true(label, dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0
+                                     && g_rtl_tune_freq == kVisits[i].freq_hz
+                                     && g_rtl_symbol_rate_hz == kVisits[i].symbol_rate_hz);
+        DSD_SNPRINTF(label, sizeof label, "resampled chain: %s decoder timed for the 48 kHz output", kVisits[i].name);
+        rc |= expect_true(label,
+                          state->samplesPerSymbol == dsd_opts_compute_sps_rate(opts, kVisits[i].symbol_rate_hz, 48000));
+        DSD_SNPRINTF(label, sizeof label, "resampled chain: %s TED for the 12 kHz complex rate", kVisits[i].name);
+        rc |= expect_true(label, g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, kVisits[i].symbol_rate_hz, 12000));
+        if (rc) {
+            DSD_FPRINTF(stderr, "  %s: tune %u, symbol rate %d, decoder sps=%d, TED %d\n", kVisits[i].name,
+                        g_rtl_tune_freq, g_rtl_symbol_rate_hz, state->samplesPerSymbol, g_rtl_ted_sps);
+        }
+    }
+    rc |= stop_outstanding_trunk_scan(opts, state, path);
     return rc;
 }
 
@@ -8777,6 +8830,7 @@ main(void) {
     rc |= test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
+    rc |= test_trunk_scan_targets_on_a_resampled_chain();
     rc |= test_trunk_scan_moves_on_while_an_nfm_retune_is_in_flight(DSD_TRUNK_SCAN_CONTROL_ADVANCE,
                                                                     "advance while an nfm retune is in flight");
     rc |= test_trunk_scan_moves_on_while_an_nfm_retune_is_in_flight(DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE,

@@ -1269,9 +1269,8 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
 
 - Inputs: only inputs that deliver I/Q to DSD-neo's own front end run it: RTL-SDR (`-i rtl`), `rtl_tcp`
   (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`) and `--iq-replay`. A replay that keeps a sidecar's
-  recorded chain decimating after the demodulator (`post_downsample` above 1) cannot run AM: the channel filter would
-  run at a multiple of the demod rate, so the stream start refuses it (`...; AM needs a capture with post_downsample
-  1`). A DSP bandwidth asked for (a config `[input]` `rtl_bw_khz`) re-plans such a replay with `post_downsample` 1.
+  recorded chain decimating after the demodulator (`post_downsample` above 1) runs AM too: the channel filter and the
+  detector run ahead of that decimator, at the rate they are designed for.
   PCM inputs (Pulse, WAV and
   other files, stdin, symbol files, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup
   with `AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA`. That is the

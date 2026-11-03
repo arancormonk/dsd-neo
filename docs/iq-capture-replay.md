@@ -477,10 +477,10 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   such as the 78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
 - A width the replay's demod rate cannot filter is refused with the DSP bandwidths that would fit (`...; set the DSP
   bandwidth to 48 or 72 kHz`), since a DSP bandwidth change re-plans the replay's rate.
-- AM needs a replay that runs with `post_downsample` 1 (every committed fixture does): a sidecar that keeps a recorded
-  chain decimating after the demodulator would run the AM channel filter at a multiple of the demod rate, so the
-  stream start refuses it with `...; AM needs a capture with post_downsample 1`. A DSP bandwidth asked for re-plans the
-  chain with `post_downsample` 1, which AM runs. FM replays such a capture as before.
+- A sidecar that keeps a recorded chain decimating after the demodulator (`post_downsample` above 1; no committed
+  fixture does) runs the channel filter, the FM discriminator, the AM detector and the digital paths ahead of that
+  decimator, at the rate after the half-band chain. A width is checked and designed at that rate, so FM and AM run
+  such a capture with the width asked for; only the analog audio is decimated after the demodulator.
 - The power squelch, the monitor's voice filters (`-v`) and its gain stage (`-n`, the AGC by default) apply as they do
   live; `-o null` discards the audio.
 - The monitor plays a replayed signal at the level it plays at live: replay runs the FM discriminator output scale a

@@ -16043,6 +16043,7 @@ profile_step_capture(rtl_stream_test_profile_step_result* r) {
  * backend's retune does (no finalize designs the output chain after it). */
 static void
 profile_step_apply(const rtl_stream_test_profile_step* step, rtl_stream_test_profile_step_result* r) {
+    const uint32_t generation_before = rtl_stream_output_generation();
     r->predicted_rate_hz =
         rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, step->cqpsk > 0, step->symbol_rate_hz, 0);
     if (step->via_retune) {
@@ -16061,6 +16062,7 @@ profile_step_apply(const rtl_stream_test_profile_step* step, rtl_stream_test_pro
         test_stream_set(NULL);
     }
     profile_step_capture(r);
+    r->generation_moved = rtl_stream_output_generation() != generation_before ? 1 : 0;
 }
 
 extern "C" int
@@ -16072,6 +16074,12 @@ rtl_stream_test_live_chain_profile_steps(const dsd_opts* opts, int backend, int 
         return -1;
     }
     *open_out = {};
+    /* A ring to drop: a step that moves the output rate clears it and moves the output generation. */
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
     const FamilyTestSaved saved = family_test_save();
     const CaptureSettingsSnapshot outer = capture_settings_snapshot();
     const dsd_opts* const stream_opts = g_cqpsk_toggle_test_stream.opts;
@@ -16096,6 +16104,7 @@ rtl_stream_test_live_chain_profile_steps(const dsd_opts* opts, int backend, int 
     restore_capture_settings(&outer);
     family_test_restore(saved);
     family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
 }
 
@@ -16155,11 +16164,28 @@ post_chain_test_capture(const dsd_opts* opts, rtl_stream_test_post_chain_result*
                                                                demod.cqpsk_enable, demod.symbol_rate_hz, 0);
 }
 
+/* A post chain the hook can run: a decimation the rate holds, whole blocks that fit the input buffer, and no stream or
+ * device open. */
+static int
+post_chain_test_args_valid(uint32_t complex_rate_hz, uint32_t post, int blocks, int pairs) {
+    return post != 0U && complex_rate_hz >= post && blocks > 0 && pairs > 0 && pairs <= MAXIMUM_BUF_LENGTH / 2
+           && !g_stream && !rtl_device_handle;
+}
+
+static void (*g_test_post_chain_probe)(const rtl_stream_test_post_chain_result* out, void* ctx) = NULL;
+static void* g_test_post_chain_probe_ctx = NULL;
+
+extern "C" void
+rtl_stream_test_set_post_chain_probe(void (*probe)(const rtl_stream_test_post_chain_result* out, void* ctx),
+                                     void* ctx) {
+    g_test_post_chain_probe = probe;
+    g_test_post_chain_probe_ctx = ctx;
+}
+
 extern "C" int
 rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz, uint32_t post, int blocks, int pairs,
                                   rtl_stream_test_post_chain_result* out) {
-    if (!opts || !out || post == 0U || complex_rate_hz < post || blocks <= 0 || pairs <= 0
-        || pairs > MAXIMUM_BUF_LENGTH / 2 || g_stream || rtl_device_handle) {
+    if (!opts || !out || !post_chain_test_args_valid(complex_rate_hz, post, blocks, pairs)) {
         return -1;
     }
     *out = {};
@@ -16176,6 +16202,9 @@ rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz
         rc = -1;
     }
     post_chain_test_capture(opts, out);
+    if (rc == 0 && g_test_post_chain_probe) {
+        g_test_post_chain_probe(out, g_test_post_chain_probe_ctx);
+    }
     out->input_pairs = (long long)blocks * pairs;
     out->emitted = rc == 0 ? post_chain_test_run(blocks, pairs) : 0;
 
@@ -18563,6 +18592,14 @@ extern "C" int
 rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_step* steps, size_t count,
                                                  int forced_rate_out_hz, uint32_t external_steps,
                                                  rtl_stream_test_retune_landing* out) {
+    return rtl_stream_test_retune_profile_sequence_mode(steps, count, forced_rate_out_hz, DSD_DIGITAL_RESAMPLE_AUTO,
+                                                        external_steps, out);
+}
+
+extern "C" int
+rtl_stream_test_retune_profile_sequence_mode(const rtl_stream_test_retune_step* steps, size_t count,
+                                             int forced_rate_out_hz, int digital_resample_mode, uint32_t external_steps,
+                                             rtl_stream_test_retune_landing* out) {
     if (!steps || !out || count == 0U || count > 32U) {
         return -1;
     }
@@ -18571,6 +18608,7 @@ rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_st
     static dsd_opts dmr_opts;
     DSD_MEMSET(&dmr_opts, 0, sizeof dmr_opts);
     dmr_opts.frame_dmr = 1;
+    dmr_opts.digital_resample_mode = digital_resample_mode;
     g_cqpsk_toggle_test_stream.output = &output;
     g_cqpsk_toggle_test_stream.opts = &dmr_opts;
     if (family_test_seed_open(&dmr_opts, 48000, forced_rate_out_hz) != 0) {
