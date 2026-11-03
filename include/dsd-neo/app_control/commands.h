@@ -821,9 +821,8 @@ int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
  * tick can put that snapshot off), so a frontend clears its pending row on the result and, for OK (and UNCHANGED),
  * until the snapshot's trunk_scan_lists_seq reaches the result's @c lists_seq, shows the state the switch asked for;
  * for a refusal it shows the snapshot's lists, and once the snapshot moves past the result's @c lists_seq the refusal
- * no longer describes them. The code is the coordinator's answer even
- * when a later step of the same command (a rigctl passband follow-up the peer refused) fails the command: the list did
- * switch. */
+ * no longer describes them. The code is the coordinator's answer even when a later step of the same command (a rigctl
+ * passband follow-up the peer refused) fails the command: the list did switch. */
 int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
 /** dsd_app_scan_list_results_since() without the results of an earlier decoder run: only those published since the
  * command session last opened, so a reader that outlives the decoder, such as the control API, never serves a previous

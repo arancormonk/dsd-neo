@@ -3618,31 +3618,32 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan names no list on
     air and owes no departure), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
     that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
-    that apart walks the targets; a malformed payload takes it too. A waiting toggle stays queued, so it still gets its
-    one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or discarded first.
-    `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or all,
-    enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code alone
-    (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`, `... is off
-    already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the other scan
-    controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue took gets
-    a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
+    that apart walks the targets; so does a payload of the wrong size, or any toggle with no state to judge by. A
+    payload of the right size that the drain refuses (session 0, a list the scan does not have) is judged by its fields
+    like any other, so it waits unless it names this scan while a departure is owed. A waiting toggle stays queued, so
+    it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or
+    discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or
+    all, enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code
+    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`,
+    `... is off already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the
+    other scan controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue
+    took gets a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
     (`src/app_control/scan_list_results.c`): `lists_seq` is the decoder's `trunk_scan_lists_seq` once the drain handled
     the request, and for one dropped before a drain reached it the value the last drain left
-    (`dsd_app_scan_list_note_lists_seq()`);
-    the coordinator's `dsd_trunk_scan_list_set_result` passes through as `dsd_app_scan_list_set_code`, and app-control
-    adds `INVALID` (envelope or payload), `SEARCH` (`apply_cmd()` records it) and `DROPPED` (evicted by a later
-    command or discarded at a session stop). A full queue refuses a toggle at submit instead of evicting the oldest,
-    so a refused request is never pending and gets no result. Request ids come from the process-wide
-    `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each other's results.
-    The result is authoritative for the outcome and the toast; the snapshot's `trunk_scan_lists_seq` is for the
-    lists shown, and the result can come first (its publication precedes the drain's snapshot, which a watchdog
-    tick can also put off), so a frontend clears a pending row on its result, shows what the switch asked for while
-    the snapshot's `trunk_scan_lists_seq` is behind the result's `lists_seq`, and drops a refusal's note once the
-    snapshot moves past it. The code is the coordinator's even where the command's status is not: a rigctl
-    passband follow-up refused after a switch marks the command FAILED (and the recording view's outcome with it)
-    while the code stays OK. The handler hands its code back through an out-parameter along `apply_cmd()`, never a
-    shared static. Toggles are session-only: the coordinator's lists survive a config apply, running or paused, and a
-    save writes the configured start states (D3). Tests: `APP_COMMAND_QUEUE`.
+    (`dsd_app_scan_list_note_lists_seq()`); the coordinator's `dsd_trunk_scan_list_set_result` passes through as
+    `dsd_app_scan_list_set_code`, and app-control adds `INVALID` (envelope or payload), `SEARCH` (`apply_cmd()` records
+    it) and `DROPPED` (evicted by a later command or discarded at a session stop). A full queue refuses a toggle at
+    submit instead of evicting the oldest, so a refused request is never pending and gets no result. Request ids come
+    from the process-wide `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each
+    other's results. The result is authoritative for the outcome and the toast; the snapshot's `trunk_scan_lists_seq` is
+    for the lists shown, and the result can come first (its publication precedes the drain's snapshot, which a watchdog
+    tick can also put off), so a frontend clears a pending row on its result, shows what the switch asked for while the
+    snapshot's `trunk_scan_lists_seq` is behind the result's `lists_seq`, and drops a refusal's note once the snapshot
+    moves past it. The code is the coordinator's even where the command's status is not: a rigctl passband follow-up
+    refused after a switch marks the command FAILED (and the recording view's outcome with it) while the code stays OK.
+    The handler hands its code back through an out-parameter along `apply_cmd()`, never a shared static. Toggles are
+    session-only: the coordinator's lists survive a config apply, running or paused, and a save writes the configured
+    start states (D3). Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
@@ -4263,6 +4264,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
   or `session` moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/scan_list_rows.h` and `src/app_control/scan_list_rows.c` (issue #697) are the one rule
+  for what a switcher row shows between a switch and the snapshot that shows it, shared by the terminal's Scan lists
+  modal and Qt's `ScanListToggleModel`; each keeps its own wording, drawing and requests. A row
+  (`dsd_app_scan_list_row`, zeroed = idle) waits on its request (`dsd_app_scan_list_row_sent()`, or `_not_sent()` for a
+  submit the queue refused, which keeps `NOT_SENT` as its note); `dsd_app_scan_list_rows_answer()` matches a retained
+  result to its row, keeps the code as the note and, for OK, holds the state asked for (every list row, for the "every
+  list on" row kept at `list_count`); `dsd_app_scan_list_row_on()` reads that hold while the view's `lists_seq` is
+  behind the result's, then the view; `dsd_app_scan_list_rows_expire()`, once per frame after the frame's results,
+  retires a hold the view caught up with, a note once the view's `lists_seq` moves past the later of the result's and
+  the view's at the switch (`dsd_app_scan_list_seq_after()`, wrap-aware), and a `PAUSED` note on a resume that follows a
+  pause the frontend saw (`seen_paused`). A pause and resume that both fall between two frames are never seen, so that
+  note stays until the row is switched again, the lists change or the frontend drops its rows (a decided limit). No note
+  has a timeout. Tests: `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
   callbacks and actions do no file I/O):
@@ -4545,10 +4559,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the JSON literal or a decimal/hex string, never through a double; secret payloads are wiped; `config_apply`
     starts from `dsd_user_config_init()` like the INI loader. `scan_list_set` (issue #697) takes its request id from
     `dsd_app_scan_list_request_next()` (a client's `request` is refused, since its own ids would collide with the
-    terminal's and Qt's) and echoes it as `request`; a full queue refuses it as `queue_full` (no result follows). Its
-    results are pulled, not pushed: `get {"what":"scan_list_results","after","limit"}` in `api_server.c` copies up to
-    64 from `dsd_app_scan_list_session_results_since()` and formats them on the session thread outside every lock,
-    each code by a stable name
+    terminal's and Qt's) and echoes it as `request`; a full queue refuses it as `queue_full` (no result follows), told
+    apart from a closed session's `rejected` by reading the session after the submit, so a session opening in between
+    can label a closed-session refusal `queue_full` (a decided limit: nothing was submitted either way). Its results are
+    pulled, not pushed: `get {"what":"scan_list_results","after","limit"}` in `api_server.c` copies up to 64 from
+    `dsd_app_scan_list_session_results_since()` and formats them on the session thread outside every lock, each code by
+    a stable name
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
     and every buffer are wiped before their storage is released, since requests carry keys and tokens
 - Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;
@@ -9442,21 +9458,21 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     opened on and `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and
     the terminal's own toast in the modal's toast row at once. The row reads `Switching off…` until
     `dsd_app_scan_list_results_since()` (read from the latest sequence at open) returns its request; the result decides
-    the outcome and the note beside the list (the decoder's whole toast stays on the main screen's toast line). A
-    switched row shows the state it asked for while the view's `lists_seq` is behind the result's `lists_seq` (the
-    result can beat the snapshot), then the view's, also when the snapshot already holds a later switch at the answer.
-    A note goes once the view's `lists_seq` moves past the later of the result's and the view's at Enter (a request
-    dropped before a drain reached it carries the last drain's lists, which can be older; a submit not sent keys on the
-    view's), and a paused refusal goes on a resume the modal saw follow the pause (the frame an answer lands in can
-    predate the pause): neither is true any more. A "try again" note has no timeout and survives Enter on another row. A
-    waiting row ignores Enter; rows wait independently.
-    Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal closes on
-    Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The Trunk Scan row
-    (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count` (`(-/m)` while
-    the list on air is off) and, with 2+ lists, shows `[list off]` in the room `[avoided]` takes (11 cells then;
-    `[avoided]` when both hold, so 80 columns keep room for the list's name) and adds `List: <name>` after the target
-    (cut at a whole field: the count, then the list, then the id); the paused trunk row adds `Lists: n/m on`. The rigctl
-    rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
+    the outcome and the note beside the list (the decoder's whole toast stays on the main screen's toast line). By
+    app-control's row rule (`scan_list_rows.h`, which Qt's Scan lists sheet runs too), a switched row shows the state it
+    asked for while the view's `lists_seq` is behind the result's `lists_seq` (the result can beat the snapshot), then
+    the view's, also when the snapshot already holds a later switch at the answer. A note goes once the view's
+    `lists_seq` moves past the later of the result's and the view's at Enter (a request dropped before a drain reached
+    it carries the last drain's lists, which can be older; a submit not sent keys on the view's), and a paused refusal
+    goes on a resume the modal saw follow the pause (the frame an answer lands in can predate the pause): neither is
+    true any more. A "try again" note has no timeout and survives Enter on another row. A waiting row ignores Enter;
+    rows wait independently. Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
+    closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
+    Trunk Scan row (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count`
+    (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]` in the room `[avoided]` takes (11
+    cells then; `[avoided]` when both hold, so 80 columns keep room for the list's name) and adds `List: <name>` after
+    the target (cut at a whole field: the count, then the list, then the id); the paused trunk row adds `Lists: n/m on`.
+    The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
     `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
     out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
     already past the answer), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION` (routing and the modal-only
@@ -10942,7 +10958,9 @@ Qt Quick frontend (`src/ui/qt`):
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
     the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/`
     (`<uid>/<name>.csv`, issue #697, and the older `<uid>.csv`; the rule is the layout, so any CSV in a uid-shaped
-    folder there counts, whether or not a list still has that uid); anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
+    folder there counts, whether or not a list still has that uid); anything else there is kept, with the directories it
+    is in. Only those are deleted, and an applied restore forgets the scan session's companion lists (issue #697,
+    `AppPrefs::forgetScanCompanions()`). An incoming file whose
     destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir
     (n)`) and the stores' references follow. File contents are never rewritten, so a bundle whose row keeps its file
     outside it (a plain channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the
@@ -12310,6 +12328,70 @@ named by display name; issue #697), and delegates argv assembly to
 `session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
 the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
+
+Several lists in one session (issue #697, D12):
+
+- Files and names: a list's CSV is `scan_lists/<uid>/<name>.csv` (`scan_list_csv_path()`, `scan_list_csv_stem()`: the
+  list's name made safe for a file name and cut to the engine's 31 bytes, `list N` when nothing is left), so the
+  engine's list name (the file name without folder and extension) is the list's own on every surface: toasts, logs, the
+  API. A list over an imported target CSV gets a copy there at a start (`ScanListStarter::listCopyOf()`:
+  `copy_targets_for_list()` rewrites every companion the targets name with `dsd_app_scan_csv_rewrite()`, relative to the
+  copy's folder, then `dsd_app_trunk_scan_validate_bundle()` checks the copy); the imported file is never written. A
+  copy that cannot be made or does not check out leaves the list on the imported file, named after it, with a
+  `NOTICE: Scan list "<name>" runs from its imported file ...` log line (a decided limit, untested: an import never
+  writes a bundle path the rewrite refuses). `remove_other_list_csvs()` drops the list's older files there.
+- Who can join: `session_args_scan_join_conflict()` (`session_args.cpp`; QML asks `ScanListStarter::joinConflict()`)
+  compares the primary list with another after the app defaults and path resolution, in D12's order, and names the first
+  setting that differs (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
+  `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different default dwell`,
+  `Different default hold`, `Different fallback talkgroups`, `Different source aliases`; empty when it can join). The
+  radio source is the source type and device (Airspy serial, rtl_tcp/TCP host and port, UDP port, file path); bandwidth
+  is compared as the radio runs it; bias tee only on RTL sources; Airspy values are read with the engine's aliases
+  (`scan_join_airspy_value()`); dwell and hold 0 are the engine's defaults (`SessionArgsScan{Dwell,Hold}DefaultMs`,
+  pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
+- Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
+  checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
+  (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with
+  `dsd_app_trunk_scan_validate_target_lists()` (ids unique across lists, the union cap, errors by display name). One
+  recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
+  session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
+  passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state (D8).
+- Home: a ready card's More menu offers `Scan with other lists…` while another ready list exists (`HomeScreen.qml`
+  `canScanWithOthers()`), opening `ScanTogetherSheet.qml`: one `ToggleRow` per other ready list in Home order, off,
+  disabled with its conflict (or `A scan runs 8 lists at most` once full); the button reads `Start N lists`, disabled
+  with none chosen. `playScanLists(row, companionUids)` reaches `Main.qml` `startScanBundle()`. `ScanListCard` and the
+  sheet count through `ScanListsModel::entryCount()` (a CSV list's accepted rows) with whole singular and plural strings
+  (C-B3: `1 entry`).
+- Session identity: the bundle is the primary's uid plus the companions' uids in list order. `startWithMap()` carries
+  them (`attemptedSource.companions` for Retry, `pendingStartCompanions` across a USB permission wait); a host that
+  accepts the start writes `prefs.acceptedStartCompanions` beside `acceptedStartKind/Uid`, never pruned, since a
+  recreated Activity names the running session's lists from it by position (`adoptReattachedSession()`, `scanListsAt()`:
+  a removed list keeps its place as `{}`); `sessionInitialized` writes `lastStartedCompanions`, which auto-start replays
+  (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
+  removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
+  out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`.
+- In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
+  (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
+  every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the
+  scan list view over the held pair: `scanListCount`, `scanActiveList`, `scanActiveListOff`,
+  `scanRotationOrdinal`/`scanRotationCount` (D10) and `scanListModel`, a `ScanListToggleModel` (rows from the view, a
+  switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`, results from
+  `dsd_app_scan_list_results_since()`, the row state by app-control's `scan_list_rows.h`; the wording, Qt's own
+  sentences, is the model's). Session options offers `Scan lists` while the scan session has 2+ lists, paused too
+  (`ScanListsSheet.qml`: one `ToggleRow` per list with its targets and `On air`, `Switching off…` while pending, a
+  refusal in the row's new `note` line in `Theme.alert` and announced; rows disabled while paused,
+  `Resume the scan to change lists.`). The Monitor header reads `SCANNING · n/m · HOLD · <target> · <list>` with the
+  rotation's place (`-` while the list on air is off) and the title `<list> + N lists` (the count kept whole when the
+  name is elided).
+
+Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, auto-start,
+uid repair), `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkImportedListsNamedApart`: two imported bundles started together through
+the real coordinator), `UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions
+forgotten, the `<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites
+`tst_scan_lists.qml`, `tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and
+`tst_main_session_tools.qml` (`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission
+waits, retry, reattachment and removals).
 
 Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526), which
 map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly `-fA`

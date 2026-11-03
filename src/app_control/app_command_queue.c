@@ -10674,8 +10674,9 @@ scan_departure_owed(const dsd_state* state, uint32_t session) {
    switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
    and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
    walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
-   loop: telling that apart walks the targets. Without a state, or with a payload the drain will refuse, it takes the
-   frame loop. */
+   loop: telling that apart walks the targets. Without a state, or with a payload of the wrong size, it takes the frame
+   loop; a payload of the right size that the drain then refuses (session 0, a list the scan does not have) is judged
+   by its fields like any other, so it waits unless it names this scan while its target on air owes a departure. */
 static int
 command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
     if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
