@@ -383,10 +383,10 @@ During scanning:
   trunking state machine keeps following calls, and `J` and `L` still move while held (the hold then applies to the new
   target). Avoiding the last usable target is refused, as are `L` and `J` on a single-target list
   (`Trunk scan has only one target`). When `L` or `J` cannot move (no other target is eligible, the switch cannot be set
-  up, or every other target fails to retune and the receiver falls back), it says `Staying on target <id>`. Avoids are
-  not written back to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune
-  and the receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out
-  of the rotation.
+  up, or every other target fails to retune and the receiver falls back), it says `Staying on target #<place> <label>`
+  (the id when the target has no label). Avoids are not written back to the CSV. The Trunk Scan row shows `HOLD`, then
+  `[avoided]` when every alternate failed to retune and the receiver fell back onto a target that was avoided, and last
+  `Avoids: N`, the number of targets currently out of the rotation.
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
   frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the
   API's `scanner_toggle`) pauses it where it is without tuning, and so do Qt/Android **Explore from here** and the API's

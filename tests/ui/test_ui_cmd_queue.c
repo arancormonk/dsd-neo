@@ -5597,11 +5597,20 @@ test_trunk_scan_next_that_stays_says_so(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "stayed next");
     rc |= expect_int("stayed next reaches the hook", g_stay_control_calls, 1);
     rc |= expect_int("stayed next op", g_stay_control_last_op, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
-    rc |= expect_contains("stayed next names the target on air", state.ui_msg, "Staying on target county");
+    rc |= expect_str("stayed next names the target on air", state.ui_msg, "Staying on target county");
+    /* Named as the avoided channel list names a target: its place and label, or its place and id (issue #672). */
+    state.trunk_scan_active_ordinal = 4U;
+    DSD_SNPRINTF(state.trunk_scan_active_label, sizeof state.trunk_scan_active_label, "%s", "County Fire");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "stayed next, labelled");
+    rc |= expect_str("stayed next names the labelled target", state.ui_msg, "Staying on target #4 County Fire");
+    state.trunk_scan_active_label[0] = '\0';
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "stayed next, unlabelled");
+    rc |= expect_str("stayed next names the unlabelled target", state.ui_msg, "Staying on target #4 county");
+    state.trunk_scan_active_ordinal = 0U;
 
     g_stay_control_result = 0;
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "moved next");
-    rc |= expect_int("moved next reaches the hook", g_stay_control_calls, 2);
+    rc |= expect_int("moved next reaches the hook", g_stay_control_calls, 4);
     rc |= expect_true("moved next has no toast", state.ui_msg[0] == '\0');
 
     g_stay_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;

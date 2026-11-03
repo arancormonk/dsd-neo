@@ -7932,8 +7932,12 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
                 ui_set_toast(state, 3, "Trunk scan has only one target");
             } else if (rc == 1) {
                 /* Stayed: nothing else was eligible, no switch could be prepared, or every alternate failed and the
-                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. */
-                ui_set_toast(state, 3, "Staying on target %s", state->trunk_scan_active_id);
+                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. The
+                   target is the one on air now, named as the avoid toasts name one (issue #672). */
+                char stayed[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+                (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                            state->trunk_scan_active_id, stayed, sizeof stayed);
+                ui_set_toast(state, 3, "Staying on target %s", stayed);
             }
             break;
         default: break;

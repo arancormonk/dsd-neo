@@ -11,6 +11,10 @@
 # aside. The one exception is the terminal's own lifecycle, which is no menu
 # code: dsd_terminal_open() points stderr at the null device while curses owns
 # the screen.
+#
+# A decided limit: the audit reads one line at a time, so a call whose name and
+# opening parenthesis sit on different lines, or one reached through a macro or
+# a function pointer, gets past it. Reviews catch those; none exists today.
 
 get_filename_component(_DSD_NEO_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 

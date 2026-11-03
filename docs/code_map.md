@@ -3078,8 +3078,8 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
     a step or avoid lands on.
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
-    stayed advance or retreat toasts the outcome only ("Staying on target <id>"); avoid keeps its own toast. Avoid on a
-    target already avoided answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` and does nothing (issue #672).
+    stayed advance or retreat toasts the outcome only ("Staying on target #<ordinal> <label>", the id without a label);
+    avoid keeps its own toast. Avoid on a target already avoided answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` and does nothing (issue #672).
   - A paused scan takes clear alone (a flag edit, issue #672); the other ops answer "paused".
 - `dsd_trunk_scan_hook_unavoid()` — put one avoided target back by its identity, `(session, target id)` (issue #672):
   `DSD_TRUNK_SCAN_CONTROL_OK`, `_STALE` (another session, session 0 or no such id), `_NOT_AVOIDED`, or "unavailable"
