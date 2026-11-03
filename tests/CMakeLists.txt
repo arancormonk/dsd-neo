@@ -21837,16 +21837,43 @@ if(DSD_HAS_AIRSPY AND DSD_ENABLE_TERMINAL_UI)
                 ${_AIRSPY_TEST_SDK}
                 ${CMAKE_CURRENT_SOURCE_DIR}/io
         )
-        # The double comes first so its definitions precede libairspy's in the lookup order.
-        target_link_libraries(
-            dsd-neo_test_ui_airspy_menu_shadow
-            PRIVATE
-                dsd-neo_test_airspy_sdk_double_shared
-                dsd-neo_ui_terminal
-                dsd-neo_io_radio
-                ${LIBS}
-                dsd-neo_test_support
-        )
+        # The double comes first so its definitions precede libairspy's in the lookup order. The terminal UI
+        # reaches the engine through app-control, so group the static providers ahead of ${LIBS}, as
+        # ENGINE_CHANNEL_SCAN_SQUELCH_GATE does: linkers that default to --as-needed (Debian/Ubuntu) would
+        # otherwise drop librtlsdr and Codec2 before anything references them.
+        if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+            target_link_libraries(
+                dsd-neo_test_ui_airspy_menu_shadow
+                PRIVATE
+                    dsd-neo_test_airspy_sdk_double_shared
+                    "-Wl,--start-group"
+                    dsd-neo_ui_terminal
+                    dsd-neo_app_control
+                    dsd-neo_engine
+                    dsd-neo_dispatch
+                    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+                    "-Wl,--end-group"
+                    ${LIBS}
+                    dsd-neo_test_support
+            )
+            # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                target_link_options(
+                    dsd-neo_test_ui_airspy_menu_shadow
+                    PRIVATE "LINKER:--as-needed"
+                )
+            endif()
+        else()
+            target_link_libraries(
+                dsd-neo_test_ui_airspy_menu_shadow
+                PRIVATE
+                    dsd-neo_test_airspy_sdk_double_shared
+                    dsd-neo_ui_terminal
+                    dsd-neo_io_radio
+                    ${LIBS}
+                    dsd-neo_test_support
+            )
+        endif()
         add_test(
             NAME UI_AIRSPY_MENU_SHADOW
             COMMAND dsd-neo_test_ui_airspy_menu_shadow
