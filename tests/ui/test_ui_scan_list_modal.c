@@ -48,7 +48,9 @@ static dsd_app_scan_list_set_payload g_sent[32];
 static int g_sent_count;
 static int g_reject_next;
 static uint32_t g_next_request = 100U;
-static dsd_app_scan_list_result g_results[128];
+static dsd_app_scan_list_result g_results[512];
+/* Results that land while each read runs (a busy decoder): published at the start of every read. */
+static int g_publish_per_read;
 static int g_result_count;
 static uint64_t g_result_seq;
 static char g_toast[256];
@@ -79,9 +81,14 @@ dsd_app_scan_list_result_get(dsd_app_scan_list_result* out) {
     return 1;
 }
 
+static void publish_result_at(uint32_t request, int16_t list, uint8_t enabled, int32_t code, uint32_t lists_seq);
+
 /* As the real history does, only the last DSD_APP_RESULT_HISTORY results are kept. */
 int
 dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
+    for (int i = 0; i < g_publish_per_read; i++) {
+        publish_result_at(8000U + (uint32_t)g_result_count, 2, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED, 10U);
+    }
     const uint64_t oldest =
         g_result_seq > (uint64_t)DSD_APP_RESULT_HISTORY ? g_result_seq - (uint64_t)DSD_APP_RESULT_HISTORY + 1U : 1U;
     int n = 0;
@@ -174,6 +181,7 @@ fixture(void) {
        results ring keeps them, so a modal opened here reads on from the newest with no gap. */
     g_result_count = 0;
     g_result_seq = 0U;
+    g_publish_per_read = 0;
     g_toast[0] = '\0';
     scan_list_modal_close();
 }
@@ -630,6 +638,28 @@ test_an_answer_kept_past_a_history_gap_answers_its_row(void) {
     scan_list_modal_close();
 }
 
+/* Answers were lost while results kept coming, so no frame's read reached the newest: the row keeps waiting until a
+   read drains, then stops waiting and shows the snapshot. */
+static void
+test_a_gap_found_while_results_keep_coming_ends_the_wait_once_drained(void) {
+    fixture();
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    key('\n');
+    assert(g_sent_count == 1);
+    for (int i = 0; i < 100; i++) {
+        publish_result(9000U + (uint32_t)i, 2, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    g_publish_per_read = 16;
+    tick();
+    expect_waiting_row(0, "1  security      On   12 targets  on air  Switching off");
+    tick();
+    expect_waiting_row(0, "1  security      On   12 targets  on air  Switching off");
+    g_publish_per_read = 0;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    scan_list_modal_close();
+}
+
 int
 main(void) {
     test_opens_only_with_lists_to_switch();
@@ -645,6 +675,7 @@ main(void) {
     test_paused_answer_before_the_pause_shows();
     test_a_history_gap_ends_the_wait();
     test_an_answer_kept_past_a_history_gap_answers_its_row();
+    test_a_gap_found_while_results_keep_coming_ends_the_wait_once_drained();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

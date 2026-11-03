@@ -53,8 +53,17 @@ typedef struct {
     uint32_t note_seq;   /**< the lists the note describes: the later of the result's and @c submit_seq */
     uint32_t submit_seq; /**< the view's lists_seq at the switch */
     uint8_t seen_paused; /**< 1 = a PAUSED note has been seen with the scan paused, so a resume can retire it */
-    uint8_t pad[3];      /* explicit, so a copy carries no indeterminate padding */
+    uint8_t may_be_lost; /**< 1 = still waiting when a read found answers lost: resolved once a read drains */
+    uint8_t pad[2];      /* explicit, so a copy carries no indeterminate padding */
 } dsd_app_scan_list_row;
+
+/** @brief Where a frontend's reading of the retained results stands, kept from one read to the next. Zeroed, then
+ *  @c after set to the newest sequence when the frontend starts reading: nothing read, no answers lost. */
+typedef struct {
+    uint64_t after;   /**< the last result read */
+    uint8_t gap_open; /**< 1 = answers were lost and rows wait to be resolved: on the next read that drains */
+    uint8_t pad[7];   /* explicit, so a copy carries no indeterminate padding */
+} dsd_app_scan_list_reader;
 
 /** @brief @p a is a later lists_seq than @p b: the sequence only moves forward, and wraps past UINT32_MAX. */
 int dsd_app_scan_list_seq_after(uint32_t a, uint32_t b);
@@ -88,15 +97,17 @@ typedef int (*dsd_app_scan_list_results_reader)(void* ctx, uint64_t after_sequen
                                                 int cap);
 
 /**
- * @brief Read every retained result after @p *after with @p read, page by page, up to the newest: each answers its
- * row (dsd_app_scan_list_rows_answer()) and moves @p *after to its sequence. When the results do not follow on from
- * @p *after, the history moved past some never read (more than DSD_APP_RESULT_HISTORY since the last read), which may
- * have held a waiting row's answer: once every retained page is read, a row still waiting stops waiting and shows the
- * view, with no note, and a later answer to its request finds no row. An answer still retained, on any page, answers
- * its row first. NULL arguments change nothing.
+ * @brief Read the retained results after @p reader's @c after with @p read, page by page, up to the newest: each
+ * answers its row (dsd_app_scan_list_rows_answer()) and moves @c after to its sequence. When the results do not follow
+ * on from @c after, the history moved past some never read (more than DSD_APP_RESULT_HISTORY since the last read),
+ * which may have held the answer of a row then waiting: the reader keeps that (@c gap_open, and the row's
+ * @c may_be_lost) until a read drains every retained page, however many reads that takes while results keep coming.
+ * Then each such row still waiting stops waiting and shows the view, with no note, and a later answer to its request
+ * finds no row. An answer still retained, on any page, answers its row first; a row sent after the gap was found is
+ * not touched. NULL arguments change nothing.
  */
-void dsd_app_scan_list_rows_read(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
-                                 dsd_app_scan_list_results_reader read, void* ctx);
+void dsd_app_scan_list_rows_read(dsd_app_scan_list_row* rows, int row_count, int list_count,
+                                 dsd_app_scan_list_reader* reader, dsd_app_scan_list_results_reader read, void* ctx);
 
 /** @brief Retire, for @p view (the frame's), each hold the view has caught up with and each note that no longer
  *  describes the lists. Call once per frame, after the frame's results. */

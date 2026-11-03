@@ -180,7 +180,8 @@ ScanListToggleModel::refresh(const dsd_app_scan_list_view& view) {
     }
     m_view = view;
     if (!m_cursorSet && m_view.session != 0U && m_backend.latestSequence) {
-        m_after = m_backend.latestSequence();
+        m_reader = dsd_app_scan_list_reader{};
+        m_reader.after = m_backend.latestSequence();
         m_cursorSet = true;
     }
     takeResults();
@@ -229,7 +230,7 @@ ScanListToggleModel::takeResults() {
     const auto read = [](void* ctx, uint64_t after, dsd_app_scan_list_result* out, int cap) {
         return static_cast<const Backend*>(ctx)->resultsSince(after, out, cap);
     };
-    dsd_app_scan_list_rows_read(m_rows, count(), count(), &m_after, read, &m_backend);
+    dsd_app_scan_list_rows_read(m_rows, count(), count(), &m_reader, read, &m_backend);
 }
 
 } // namespace dsd_qt

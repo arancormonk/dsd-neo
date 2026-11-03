@@ -4283,11 +4283,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pause the frontend saw (`seen_paused`). A pause and resume that both fall between two frames are never seen, so that
   note stays until the row is switched again, the lists change or the frontend drops its rows (a decided limit). No note
   has a timeout. Both frontends read results through `dsd_app_scan_list_rows_read()` with a reader of the
-  `dsd_app_scan_list_results_since()` shape: it reads every retained page up to the newest, each result answering its
-  row and moving the cursor, and only then, when the results did not follow on from the cursor (64 or more went by
-  unread, so a waiting row's answer may be lost), ends every wait still open, the row showing the view with no note.
-  Tests:
-  `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
+  `dsd_app_scan_list_results_since()` shape and a `dsd_app_scan_list_reader` they keep between reads (the cursor and a
+  lost mark): it reads every retained page up to the newest, each result answering its row and moving the cursor.
+  Results that do not follow on from the cursor (64 or more went by unread) mark the reader and every row then
+  waiting (`may_be_lost`); the mark stays across reads that cannot reach the newest while results keep coming, and
+  the first read that drains ends the wait of each marked row still waiting, the row showing the view with no note.
+  Tests: `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
   callbacks and actions do no file I/O):

@@ -166,9 +166,10 @@ test_unchanged_holds_until_the_snapshot(void) {
 
 /* A results history as the queue keeps it: sequence 1 .. count, only the last DSD_APP_RESULT_HISTORY retained. */
 typedef struct {
-    dsd_app_scan_list_result results[200];
+    dsd_app_scan_list_result results[400];
     int count;
     int reads;
+    int publish_per_read; /* results that land while each read runs: a busy decoder */
 } test_history;
 
 static void
@@ -183,6 +184,9 @@ static int
 history_read(void* ctx, uint64_t after, dsd_app_scan_list_result* out, int cap) {
     test_history* h = (test_history*)ctx;
     h->reads++;
+    for (int i = 0; i < h->publish_per_read; i++) {
+        history_add(h, 8000U + (uint32_t)h->count, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
     const int oldest = h->count > DSD_APP_RESULT_HISTORY ? h->count - DSD_APP_RESULT_HISTORY + 1 : 1;
     int n = 0;
     for (int i = oldest - 1; i < h->count && n < cap; i++) {
@@ -205,15 +209,16 @@ test_read_recovers_from_a_history_gap(void) {
     const dsd_app_scan_list_view v = view_of(60U, on, 0);
     static test_history h;
     DSD_MEMSET(&h, 0, sizeof h);
-    uint64_t after = 0U;
+    dsd_app_scan_list_reader reader;
+    DSD_MEMSET(&reader, 0, sizeof reader);
     dsd_app_scan_list_row_sent(&rows[0], 601U, 0, v.lists_seq);
     dsd_app_scan_list_row_sent(&rows[1], 602U, 0, v.lists_seq);
     dsd_app_scan_list_row_sent(&rows[2], 603U, 0, v.lists_seq);
     /* In order: row 2's answer comes, rows 0 and 1 keep waiting. */
     history_add(&h, 990U, DSD_APP_SCAN_LIST_SET_OK);
     history_add(&h, 603U, DSD_APP_SCAN_LIST_SET_REFUSED_LAST);
-    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
-    assert(after == 2U && rows[0].request == 601U && rows[1].request == 602U);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(reader.after == 2U && rows[0].request == 601U && rows[1].request == 602U);
     assert(rows[2].request == 0U && rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
     /* 100 answers go by unread, so the history keeps sequences 39 .. 102. Row 1's is sequence 79, the 41st kept: on
        the third page. Row 0's never comes. */
@@ -221,8 +226,8 @@ test_read_recovers_from_a_history_gap(void) {
         history_add(&h, i == 76 ? 602U : 9000U + (uint32_t)i, DSD_APP_SCAN_LIST_SET_OK);
     }
     h.reads = 0;
-    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
-    assert(after == 102U && h.reads == 5);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(reader.after == 102U && h.reads == 5);
     assert(rows[1].request == 0U && rows[1].note == DSD_APP_SCAN_LIST_NOTE_ANSWER
            && rows[1].code == DSD_APP_SCAN_LIST_SET_OK && rows[1].held);
     assert(rows[0].request == 0U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
@@ -231,14 +236,42 @@ test_read_recovers_from_a_history_gap(void) {
     assert(rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
     /* The lost answer, were it to come after all, answers no row. */
     history_add(&h, 601U, DSD_APP_SCAN_LIST_SET_OK);
-    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
-    assert(after == 103U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(reader.after == 103U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
     /* Nothing new, or NULL arguments, change nothing. */
-    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
-    dsd_app_scan_list_rows_read(NULL, 4, 3, &after, history_read, &h);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    dsd_app_scan_list_rows_read(NULL, 4, 3, &reader, history_read, &h);
     dsd_app_scan_list_rows_read(rows, 4, 3, NULL, history_read, &h);
-    dsd_app_scan_list_rows_read(rows, 4, 3, &after, NULL, &h);
-    assert(after == 103U);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, NULL, &h);
+    assert(reader.after == 103U);
+}
+
+/* The answers lost while results keep coming: every read stops after its last page is still full, so none drains.
+   The lost mark is the reader's, kept from read to read: once publishing stops and a read drains, the row that was
+   waiting when the answers were lost stops waiting. A row sent after the loss was found is left waiting. */
+static void
+test_read_keeps_a_gap_until_it_drains(void) {
+    dsd_app_scan_list_row rows[4];
+    DSD_MEMSET(rows, 0, sizeof rows);
+    static test_history h;
+    DSD_MEMSET(&h, 0, sizeof h);
+    dsd_app_scan_list_reader reader;
+    DSD_MEMSET(&reader, 0, sizeof reader);
+    dsd_app_scan_list_row_sent(&rows[0], 701U, 0, 60U);
+    for (int i = 0; i < 100; i++) {
+        history_add(&h, 9000U + (uint32_t)i, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    h.publish_per_read = 16;
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(reader.gap_open && rows[0].request == 701U && rows[0].may_be_lost);
+    dsd_app_scan_list_row_sent(&rows[1], 702U, 0, 60U);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(reader.gap_open && rows[0].request == 701U);
+    h.publish_per_read = 0;
+    dsd_app_scan_list_rows_read(rows, 4, 3, &reader, history_read, &h);
+    assert(!reader.gap_open && reader.after == (uint64_t)h.count);
+    assert(rows[0].request == 0U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].may_be_lost);
+    assert(rows[1].request == 702U);
 }
 
 /* A refusal: the view's state, and the note until the lists move past the later of the answer's and the switch's. */
@@ -315,6 +348,7 @@ main(void) {
     test_every_list_row();
     test_unchanged_holds_until_the_snapshot();
     test_read_recovers_from_a_history_gap();
+    test_read_keeps_a_gap_until_it_drains();
     test_refusals_and_notes();
     test_paused_refusal();
     DSD_FPRINTF(stderr, "OK\n");

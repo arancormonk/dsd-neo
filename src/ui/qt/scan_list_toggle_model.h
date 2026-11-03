@@ -121,7 +121,7 @@ class ScanListToggleModel : public QAbstractListModel {
 
     Backend m_backend;
     dsd_app_scan_list_view m_view{};
-    uint64_t m_after = 0;
+    dsd_app_scan_list_reader m_reader{};
     bool m_cursorSet = false;
     /* The rows' state, by app-control's row rule (scan_list_rows.h), which the terminal modal shares. */
     dsd_app_scan_list_row m_rows[DSD_TRUNK_SCAN_MAX_LISTS]{};

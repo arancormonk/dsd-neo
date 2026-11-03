@@ -38,6 +38,7 @@ dsd_app_scan_list_row_sent(dsd_app_scan_list_row* row, uint32_t request, int wan
     row->want = want ? 1U : 0U;
     row->submit_seq = lists_seq;
     row->note = (uint8_t)DSD_APP_SCAN_LIST_NOTE_NONE;
+    row->may_be_lost = 0U;
 }
 
 void
@@ -98,42 +99,51 @@ enum {
     SCAN_LIST_ROWS_PAGES_MAX = (DSD_APP_RESULT_HISTORY / SCAN_LIST_ROWS_PAGE) + 4,
 };
 
-/* One page read on from @p *after: each result answers its row and moves the cursor. Returns how many came, and
-   sets @p *gap when one did not follow on from the cursor. */
+/* One page read on from @p reader's cursor: each result answers its row and moves the cursor. Returns how many came;
+   a result that does not follow on from the cursor marks the answers lost (scan_list_rows_mark_lost()). */
 static int
-scan_list_rows_read_page(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
-                         dsd_app_scan_list_results_reader read, void* ctx, int* gap) {
+scan_list_rows_read_page(dsd_app_scan_list_row* rows, int row_count, int list_count, dsd_app_scan_list_reader* reader,
+                         dsd_app_scan_list_results_reader read, void* ctx) {
     dsd_app_scan_list_result page[SCAN_LIST_ROWS_PAGE];
-    const int n = read(ctx, *after, page, SCAN_LIST_ROWS_PAGE);
+    const int n = read(ctx, reader->after, page, SCAN_LIST_ROWS_PAGE);
     for (int i = 0; i < n && i < SCAN_LIST_ROWS_PAGE; i++) {
-        *gap |= page[i].sequence != *after + 1U;
-        *after = page[i].sequence;
+        if (page[i].sequence != reader->after + 1U) {
+            /* Every row waiting now may have had its answer among those lost. */
+            reader->gap_open = 1U;
+            for (int r = 0; r < row_count; r++) {
+                rows[r].may_be_lost = rows[r].request != 0U ? 1U : rows[r].may_be_lost;
+            }
+        }
+        reader->after = page[i].sequence;
         (void)dsd_app_scan_list_rows_answer(rows, row_count, list_count, &page[i]);
     }
     return n;
 }
 
 void
-dsd_app_scan_list_rows_read(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
-                            dsd_app_scan_list_results_reader read, void* ctx) {
-    if (rows == NULL || after == NULL || read == NULL) {
+dsd_app_scan_list_rows_read(dsd_app_scan_list_row* rows, int row_count, int list_count,
+                            dsd_app_scan_list_reader* reader, dsd_app_scan_list_results_reader read, void* ctx) {
+    if (rows == NULL || reader == NULL || read == NULL) {
         return;
     }
-    int gap = 0;
     int drained = 0;
     for (int pages = 0; pages < SCAN_LIST_ROWS_PAGES_MAX && !drained; pages++) {
-        drained = scan_list_rows_read_page(rows, row_count, list_count, after, read, ctx, &gap) < SCAN_LIST_ROWS_PAGE;
+        drained = scan_list_rows_read_page(rows, row_count, list_count, reader, read, ctx) < SCAN_LIST_ROWS_PAGE;
     }
-    if (!gap || !drained) {
+    if (!reader->gap_open || !drained) {
+        /* Not drained yet (results kept coming): the lost mark stays for the next read. */
         return;
     }
-    /* Every retained answer has been read, and the history had moved past results never read, which may have held the
-       answer of a row still waiting: it stops waiting and shows the view, with nothing to say beside it. */
+    /* Every retained answer has been read since the history moved past results never read: a row that was waiting
+       then and still is had its answer among them, or it is late. It stops waiting and shows the view, with nothing to
+       say beside it. */
+    reader->gap_open = 0U;
     for (int r = 0; r < row_count; r++) {
-        if (rows[r].request != 0U) {
+        if (rows[r].may_be_lost && rows[r].request != 0U) {
             rows[r].request = 0U;
             rows[r].note = (uint8_t)DSD_APP_SCAN_LIST_NOTE_NONE;
         }
+        rows[r].may_be_lost = 0U;
     }
 }
 

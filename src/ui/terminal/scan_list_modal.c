@@ -43,13 +43,13 @@ enum {
 
 typedef struct {
     int active;
-    uint32_t session;            /* the trunk-scan session the modal opened on */
-    uint64_t after;              /* results read up to this sequence */
-    int sel;                     /* highlighted row */
-    int top;                     /* first row drawn */
-    int unicode;                 /* output decision, made once per open */
-    WINDOW* win;                 /* NULL until drawn, and after a resize */
-    dsd_app_scan_list_view view; /* the last frame's, owned */
+    uint32_t session;                /* the trunk-scan session the modal opened on */
+    dsd_app_scan_list_reader reader; /* results read up to reader.after */
+    int sel;                         /* highlighted row */
+    int top;                         /* first row drawn */
+    int unicode;                     /* output decision, made once per open */
+    WINDOW* win;                     /* NULL until drawn, and after a resize */
+    dsd_app_scan_list_view view;     /* the last frame's, owned */
     dsd_app_scan_list_row rows[SCAN_LIST_MODAL_ROWS_MAX];
 } ScanListModal;
 
@@ -244,8 +244,8 @@ scan_list_modal_read_results(void* ctx, uint64_t after, dsd_app_scan_list_result
 
 static void
 scan_list_modal_take_results(void) {
-    dsd_app_scan_list_rows_read(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count, &g_modal.after,
-                                scan_list_modal_read_results, NULL);
+    dsd_app_scan_list_rows_read(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count,
+                                &g_modal.reader, scan_list_modal_read_results, NULL);
 }
 
 /* Paused, the decoder can only refuse a switch: refuse it here, beside the row, as its answer would. Sending it would
@@ -311,7 +311,7 @@ scan_list_modal_open(const dsd_opts* opts, const dsd_state* state) {
     g_modal.unicode = ui_text_unicode_output();
     /* Only answers to requests made from here on are this modal's. */
     dsd_app_scan_list_result latest;
-    g_modal.after = dsd_app_scan_list_result_get(&latest) ? latest.sequence : 0U;
+    g_modal.reader.after = dsd_app_scan_list_result_get(&latest) ? latest.sequence : 0U;
     return 1;
 }
 
