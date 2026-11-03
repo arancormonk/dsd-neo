@@ -5946,7 +5946,10 @@ Key public headers:
     `rtl_device_end_for_receiver()`; either raises the exit flag and wakes the demod, and a stop is silent. A driver
     call that hangs cannot be cancelled: a hung read ends the session, and both controls and stop wait for the driver
     to release `soapy_lock`; a hung control or setup call holds the same lock, which pauses the silence count and
-    blocks the reader and the stop alike until the driver returns. Tests: `IO_SOAPY_STREAM_LOSS` (the reader runs against a stand-in driver,
+    blocks the reader and the stop alike until the driver returns. A control waiting for `soapy_lock` goes before the
+    reader's next read (`soapy_controls_waiting`, counted by `soapy_control_lock()`; the reader waits in
+    `soapy_reader_let_controls_in()`): the reader takes the lock again the moment a read returns, and on a busy CPU a
+    control woken by the unlock would otherwise lose it read after read. Tests: `IO_SOAPY_STREAM_LOSS` (the reader runs against a stand-in driver,
     `rtl_device_test_soapy_device()`; internal failures, restart counters, refused reader creation and competing
     grace verdicts included). Timeout, overflow and diagnostic counters reset before every reader start. Bench:
     `dsd-neo_bench_soapy_ingest`.

@@ -486,6 +486,9 @@ struct rtl_device {
     /* Set while a control or setup transaction holds soapy_lock (never a read): the progress monitor does not count
      * that time as silence, since the reader cannot read meanwhile. */
     std::atomic<int> soapy_control_hold{0};
+    /* Control transactions waiting to take soapy_lock (soapy_control_lock()): the reader lets them in before its next
+     * read. */
+    std::atomic<int> soapy_controls_waiting{0};
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total = 0U;
     uint64_t tcp_bytes_window = 0U;
@@ -4366,13 +4369,23 @@ soapy_control_hold_mark(struct rtl_device* dev, int held) {
     dev->soapy_control_hold.store(held, std::memory_order_relaxed);
 }
 
+/* Take soapy_lock for a control transaction, on any thread but the reader's: 0 once it is held. The waiting count
+ * makes the reader let it in before its next read (soapy_reader_let_controls_in()). */
+static int
+soapy_control_lock(struct rtl_device* dev) {
+    dev->soapy_controls_waiting.fetch_add(1, std::memory_order_acq_rel);
+    const int rc = dsd_mutex_lock(&dev->soapy_lock);
+    dev->soapy_controls_waiting.fetch_sub(1, std::memory_order_acq_rel);
+    return rc;
+}
+
 template <typename Fn>
 static int
 soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
     if (!dev || !dev->soapy_lock_inited) {
         return -1;
     }
-    if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
+    if (soapy_control_lock(dev) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for %s.\n", op);
         return -1;
     }
@@ -5047,12 +5060,31 @@ soapy_prepare_read_buffer(const struct rtl_device* dev, std::vector<std::complex
     return -1;
 }
 
+/* Before the reader's next read, wait while a control transaction waits for soapy_lock, until it took it or the device
+ * stops. The reader takes the lock again the moment a read returns, and a mutex goes to whichever thread runs first, so
+ * on a busy CPU a control (a retune) could otherwise wait behind read after read, for seconds. A yield is enough while
+ * the control is only being scheduled; one that waits behind another control holding the lock is waited for in
+ * sleeps, not spun on. */
+static void
+soapy_reader_let_controls_in(const struct rtl_device* dev) {
+    for (unsigned int tries = 0U; dev->soapy_controls_waiting.load(std::memory_order_acquire) > 0
+                                  && dev->run.load(std::memory_order_acquire) != 0;
+         ++tries) {
+        if (tries < 8U) {
+            dsd_thread_yield();
+        } else {
+            dsd_sleep_ms(1);
+        }
+    }
+}
+
 static int
 soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure) {
     *receiver_failure = 0;
     if (!dev || !buffs) {
         return INT_MIN;
     }
+    soapy_reader_let_controls_in(dev);
     if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for readStream.\n");
         return INT_MIN;
@@ -12254,6 +12286,16 @@ rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms) {
 #endif
 }
 
+extern "C" int
+rtl_device_test_soapy_controls_waiting(const struct rtl_device* dev) {
+#ifdef USE_SOAPYSDR
+    return dev != nullptr ? dev->soapy_controls_waiting.load(std::memory_order_acquire) : 0;
+#else
+    (void)dev;
+    return 0;
+#endif
+}
+
 extern "C" void
 rtl_device_test_soapy_internal_read_failure(int on) {
 #ifdef USE_SOAPYSDR
@@ -12285,7 +12327,7 @@ rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_st
     out->reader_exited = dev->reader_exited.load(std::memory_order_acquire);
     out->monitor_started = dev->progress_monitor_started;
 #ifdef USE_SOAPYSDR
-    if (dev->soapy_lock_inited && dsd_mutex_lock(&dev->soapy_lock) == 0) {
+    if (dev->soapy_lock_inited != 0 && soapy_control_lock(dev) == 0) {
         out->stream_open = dev->soapy_stream ? 1 : 0;
         (void)dsd_mutex_unlock(&dev->soapy_lock);
     }
