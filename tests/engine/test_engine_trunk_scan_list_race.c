@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -28,7 +29,7 @@
 #include "engine_hooks_install.h"
 #include "test_support.h"
 
-enum { RACE_ROUNDS = 400 };
+enum { RACE_ROUNDS = 400, SWITCH_DEADLINE_MS = 30000 };
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -114,21 +115,26 @@ write_list(const char* dir, const char* name, const char* row, char* path, size_
     return fclose(fp) == 0 && ok ? 0 : -1;
 }
 
-/* The decoder thread's switches: list 2 off and on again, list 1 holding the target on air throughout, so every
-   switch is applied (or refused busy while the watchdog holds the guard) and publishes the timing. */
+/* The decoder thread's switches: list 2 off and on again, list 1 holding the target on air throughout. A switch the
+   watchdog's hold on the guard refuses (BUSY) is asked again until it applies, so every round lands, and publishes the
+   timing, beside the watchdog's writes; a real-time deadline, not a count of tries, bounds the wait, so a watchdog the
+   scheduler holds back only slows the rounds down. Returns the rounds applied, or -1. */
 static int
 decoder_switches(void) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + SWITCH_DEADLINE_MS;
     int applied = 0;
     for (int i = 0; i < RACE_ROUNDS; i++) {
-        const int rc =
-            dsd_engine_trunk_scan_list_set(&g_opts, &g_state, g_state.trunk_scan_session, 2, i & 1, (uint32_t)i + 1U);
-        if (rc == DSD_TRUNK_SCAN_LIST_SET_OK) {
-            applied++;
-        } else if (rc != DSD_TRUNK_SCAN_LIST_SET_BUSY && rc != DSD_TRUNK_SCAN_LIST_SET_UNCHANGED) {
+        int rc = DSD_TRUNK_SCAN_LIST_SET_BUSY;
+        while (rc == DSD_TRUNK_SCAN_LIST_SET_BUSY && dsd_realtime_mono_ms() < deadline_ms) {
+            rc = dsd_engine_trunk_scan_list_set(&g_opts, &g_state, g_state.trunk_scan_session, 2, i & 1,
+                                                (uint32_t)i + 1U);
+            dsd_thread_yield();
+        }
+        if (rc != DSD_TRUNK_SCAN_LIST_SET_OK) {
             DSD_FPRINTF(stderr, "FAIL: list switch %d answered %d\n", i, rc);
             return -1;
         }
-        dsd_thread_yield();
+        applied++;
     }
     return applied;
 }
@@ -169,8 +175,8 @@ main(void) {
             const int applied = decoder_switches();
             atomic_store(&g_stop, 1);
             dsd_thread_join(watchdog);
-            if (applied <= 0) {
-                DSD_FPRINTF(stderr, "FAIL: no list switch was applied (%d)\n", applied);
+            if (applied != RACE_ROUNDS) {
+                DSD_FPRINTF(stderr, "FAIL: %d of %d list switches applied\n", applied, RACE_ROUNDS);
                 failed = 1;
             }
         }
