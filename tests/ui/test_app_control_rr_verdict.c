@@ -105,14 +105,10 @@ test_verdict_tetra_table(void) {
        for, as -fT sets it. */
     f.rtl_dsp_bw_khz = 36;
     rc |= expect_verdict("rtl at 36 kHz", &f, k_tetra_rtl_bw, 1);
-    /* A committed rate does not stand in for the bandwidth of an RTL-SDR: the bandwidth is its rate. */
-    f.actual_rate_hz = 72000U;
-    rc |= expect_verdict("rtl at 36 kHz with a rate", &f, k_tetra_rtl_bw, 1);
 
     /* Issue #806: an Airspy or a SoapySDR device runs at its DSP bandwidth too (the live rate step lands its capture
        rate on it), so it is held to the same 72 kHz: before, every Airspy was refused ("an Airspy cannot decode TETRA
-       yet") and a SoapySDR device was judged by the rate it had delivered. Every bandwidth but 72 kHz is refused, with
-       or without a rate the stream committed. */
+       yet") and a SoapySDR device was judged by the rate it had delivered. Every bandwidth but 72 kHz is refused. */
     static const int input_kinds[] = {DSD_APP_RR_INPUT_AIRSPY, DSD_APP_RR_INPUT_SOAPY};
     static const int bandwidths[] = {4, 6, 8, 12, 16, 24, 36, 48};
     for (size_t k = 0; k < sizeof input_kinds / sizeof input_kinds[0]; k++) {
@@ -122,16 +118,9 @@ test_verdict_tetra_table(void) {
         f.rtl_dsp_bw_khz = 72;
         DSD_SNPRINTF(tag, sizeof tag, "%s at 72 kHz", name);
         rc |= expect_verdict(tag, &f, NULL, 0);
-        f.actual_rate_hz = 72000U;
-        DSD_SNPRINTF(tag, sizeof tag, "%s at 72 kHz, running", name);
-        rc |= expect_verdict(tag, &f, NULL, 0);
         for (size_t b = 0; b < sizeof bandwidths / sizeof bandwidths[0]; b++) {
             f.rtl_dsp_bw_khz = bandwidths[b];
-            f.actual_rate_hz = 0U;
             DSD_SNPRINTF(tag, sizeof tag, "%s at %d kHz", name, bandwidths[b]);
-            rc |= expect_verdict(tag, &f, k_tetra_rtl_bw, 1);
-            f.actual_rate_hz = (uint32_t)bandwidths[b] * 1000U;
-            DSD_SNPRINTF(tag, sizeof tag, "%s at %d kHz, running", name, bandwidths[b]);
             rc |= expect_verdict(tag, &f, k_tetra_rtl_bw, 1);
         }
     }
@@ -204,7 +193,7 @@ input_kind_of(dsd_opts* opts, int type, const char* dev) {
     DSD_MEMSET(&p, 0, sizeof p);
     set_input(opts, type, dev);
     dsd_app_rr_receiver_facts f;
-    rr_apply_receiver_facts_fill(opts, &p, 0, 0, 0U, &f);
+    rr_apply_receiver_facts_fill(opts, &p, 0, 0, &f);
     return f.input_kind;
 }
 
@@ -236,7 +225,7 @@ test_facts_fill(void) {
         stale.decode_mode = (int32_t)DSDCFG_MODE_TETRA;
         opts.rtl_dsp_bw_khz = 48;
         dsd_app_rr_receiver_facts stale_facts;
-        rr_apply_receiver_facts_fill(&opts, &stale, 0, 0, 0U, &stale_facts);
+        rr_apply_receiver_facts_fill(&opts, &stale, 0, 0, &stale_facts);
         rc |= expect_verdict("stale replay flag: tetra at 48 kHz", &stale_facts, k_tetra_rtl_bw, 1);
     }
     rc |= expect_int("replay with the flag", input_kind_of(&opts, AUDIO_IN_RTL, "iqreplay:cap.json"),
@@ -253,10 +242,9 @@ test_facts_fill(void) {
     opts.tetra_uplink = 1;
     opts.trunk_scan_enabled = 1;
     dsd_app_rr_receiver_facts f;
-    rr_apply_receiver_facts_fill(&opts, &p, 1, 0, 72000U, &f);
+    rr_apply_receiver_facts_fill(&opts, &p, 1, 0, &f);
     rc |= expect_int("mode", f.decode_mode, (int32_t)DSDCFG_MODE_TETRA);
     rc |= expect_int("bandwidth", f.rtl_dsp_bw_khz, 72);
-    rc |= expect_int("rate", (int)f.actual_rate_hz, 72000);
     rc |= expect_int("uplink", f.tetra_uplink, 1);
     rc |= expect_int("trunk scan", f.trunk_scan_running, 1);
     rc |= expect_int("group from the caller", f.has_group, 1);

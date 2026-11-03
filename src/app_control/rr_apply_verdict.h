@@ -20,7 +20,6 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,11 +29,9 @@ extern "C" {
  * @brief Fill @p out from @p opts and the import @p p: the input as the stream start classifies it, the committed DSP
  *        bandwidth, --tetra-uplink, a running trunk scan, and the outputs the import leaves (@p has_group and
  *        @p has_chan, which a frontend takes from the plan before any file exists).
- *
- * @param actual_rate_hz The running stream's committed DSP rate, or 0 when unknown (no stream; always on a frontend).
  */
 void rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payload* p, int has_group, int has_chan,
-                                  uint32_t actual_rate_hz, dsd_app_rr_receiver_facts* out);
+                                  dsd_app_rr_receiver_facts* out);
 
 /**
  * @brief Whether the save the import would leave breaks a rule a trunk scan waiting for the next start needs (issue

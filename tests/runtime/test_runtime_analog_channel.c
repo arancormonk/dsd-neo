@@ -380,11 +380,11 @@ test_check_at_rate_source_messages(void) {
     expect_contains("device range names bounds", err, "8 to 25 kHz");
 
     char fix[96];
-    expect_int("fix text", dsd_analog_width_rate_fix(fm, 25000, 24000, DSD_ANALOG_RATE_DEVICE, fix, sizeof fix), 0);
+    expect_int("fix text", dsd_analog_width_rate_fix(25000, DSD_ANALOG_RATE_DEVICE, fix, sizeof fix), 0);
     expect_str("fix text device", fix, "set the DSP bandwidth to 48 or 72 kHz");
-    expect_int("fix text rtl", dsd_analog_width_rate_fix(fm, 25000, 24000, DSD_ANALOG_RATE_RTL_BW, fix, sizeof fix), 0);
+    expect_int("fix text rtl", dsd_analog_width_rate_fix(25000, DSD_ANALOG_RATE_RTL_BW, fix, sizeof fix), 0);
     expect_str("fix text rtl names it", fix, "set the RTL DSP bandwidth to 48 or 72 kHz");
-    expect_int("fix text no buffer", dsd_analog_width_rate_fix(fm, 25000, 24000, DSD_ANALOG_RATE_DEVICE, NULL, 0), -1);
+    expect_int("fix text no buffer", dsd_analog_width_rate_fix(25000, DSD_ANALOG_RATE_DEVICE, NULL, 0), -1);
 }
 
 /* The one rate policy every width check and the stream start read (issue #806): every live radio, an RTL-SDR, rtl_tcp,

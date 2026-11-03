@@ -87,6 +87,82 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-rtl")
     set(_forbid_output_regex
         "radio stream|RTL Input:|device[(]s[)]|No supported devices|RTL-SDR input"
     )
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-airspy")
+    # Issue #806: an Airspy runs at its DSP bandwidth (the live rate step lands
+    # its capture rate on it), so the same width is refused before the device
+    # opens, with the bandwidths that fit. A run that went on would look for
+    # the Airspy (or report the input unsupported) and open the stream.
+    set(_args
+        --frontend
+        none
+        -fA
+        -i
+        airspy:851.375M:24
+        --nfm-bandwidth-hz
+        25000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the DSP bandwidth to 48 or 72 kHz"
+    )
+    set(_forbid_output_regex
+        "radio stream|Airspy open|AIRSPY_ERROR|Airspy input"
+    )
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-soapy")
+    # The same for a SoapySDR spec, whose shorthand's bandwidth field sets the
+    # DSP bandwidth the device is stepped to: refused before any device opens.
+    set(_args
+        --frontend
+        none
+        -fA
+        -i
+        soapy:driver=nosuchdevice:851.375M:0:0:24
+        --nfm-bandwidth-hz
+        25000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the DSP bandwidth to 48 or 72 kHz"
+    )
+    # The spec's own "SoapySDR tuning" notice is printed as it is read; a device
+    # open would follow the refusal's place.
+    set(_forbid_output_regex "radio stream|Failed|makeDevice|SoapySDR device")
+elseif(
+    DSD_NEO_CLI_SMOKE_MODE STREQUAL "airspy-config-width-validate"
+    OR DSD_NEO_CLI_SMOKE_MODE STREQUAL "airspy-config-width-startup"
+)
+    # Issue #806 (BUG-4): --validate-config and the startup it vouches for agree
+    # on an Airspy [input] at a 24 kHz DSP bandwidth with an NFM width that
+    # bandwidth cannot filter: both refuse it, with the same text, and the
+    # startup before it looks for the Airspy. Each mode writes its own copy
+    # (the startup's autosave rewrites the file it loaded).
+    set(_config "${CMAKE_CURRENT_BINARY_DIR}/${DSD_NEO_CLI_SMOKE_MODE}.ini")
+    file(
+        WRITE "${_config}"
+        "[input]\nsource = \"airspy\"\nrtl_freq = \"851.375M\"\nrtl_bw_khz = 24\n"
+        "[output]\nbackend = \"null\"\nfrontend = \"none\"\n"
+        "[mode]\ndecode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n"
+    )
+    if(DSD_NEO_CLI_SMOKE_MODE STREQUAL "airspy-config-width-validate")
+        set(_args --validate-config "${_config}")
+    else()
+        set(_args --config "${_config}")
+    endif()
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the DSP bandwidth to 48 or 72 kHz"
+    )
+    set(_forbid_output_regex "radio stream|Airspy open|AIRSPY_ERROR")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-default-low-rate")
     # Issue #525: an existing low-rate -fA command line keeps starting. With
     # no width given, the unset default is DSP-limited below a 20 kHz DSP rate

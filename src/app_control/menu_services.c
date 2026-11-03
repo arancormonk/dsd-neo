@@ -1571,7 +1571,7 @@ svc_check_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kin
 }
 
 int
-svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why, size_t why_size) {
+svc_check_analog_bandwidth_any_rate(int kind, int width_hz, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
     return (dsd_analog_demod_is_valid(kind) && svc_analog_width_in_range(kind, width_hz, why, why_size)
             && svc_analog_width_env_allows(kind, width_hz, why, why_size))
@@ -1581,7 +1581,7 @@ svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why, siz
 
 int
 svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, char* why, size_t why_size) {
-    if (svc_check_analog_bandwidth_at_device_rate(kind, width_hz, why, why_size) != 0) {
+    if (svc_check_analog_bandwidth_any_rate(kind, width_hz, why, why_size) != 0) {
         return -1;
     }
     /* The reopened device is an RTL-SDR or rtl_tcp one, whose rate is its DSP bandwidth: saturated, never overflowed,
@@ -1608,7 +1608,7 @@ svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, ch
 
 int
 svc_check_analog_bandwidth_at_rate(int kind, int width_hz, int rate_hz, char* why, size_t why_size) {
-    if (svc_check_analog_bandwidth_at_device_rate(kind, width_hz, why, why_size) != 0) {
+    if (svc_check_analog_bandwidth_any_rate(kind, width_hz, why, why_size) != 0) {
         return -1;
     }
     const int held_hz = svc_analog_held_width_hz(kind, width_hz);

@@ -261,16 +261,16 @@ dsd_input_dsp_rate dsd_input_dsp_rate_policy(const dsd_opts* opts);
 int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, char* err, size_t err_size);
 
 /**
- * @brief The fix a refusal names for a width @p rate_hz cannot filter, where @p source sets that rate.
+ * @brief The fix a refusal names for a width of @p width_hz the DSP rate cannot filter, where @p source sets that rate.
  *
  * Every source's rate follows the DSP bandwidth, so the fix names the DSP bandwidths that would fit: "set the RTL DSP
  * bandwidth to 24, 48 or 72 kHz" for DSD_ANALOG_RATE_RTL_BW, and "set the DSP bandwidth to 24, 48 or 72 kHz" for a
  * SoapySDR or Airspy device (DSD_ANALOG_RATE_DEVICE, stepped to it) and an I/Q replay (DSD_ANALOG_RATE_CAPTURE, which
- * re-plans its rate to it). @p kind and @p rate_hz do not change the text.
+ * re-plans its rate to it).
  *
  * @return 0 on success, -1 on a NULL or empty buffer.
  */
-int dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char* out, size_t out_size);
+int dsd_analog_width_rate_fix(int width_hz, int source, char* out, size_t out_size);
 
 /**
  * @brief Refuse a width the channel filter being forced off leaves unfiltered.

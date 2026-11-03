@@ -111,7 +111,7 @@ rr_input_kind(const dsd_opts* opts) {
 
 void
 rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payload* p, int has_group, int has_chan,
-                             uint32_t actual_rate_hz, dsd_app_rr_receiver_facts* out) {
+                             dsd_app_rr_receiver_facts* out) {
     if (!out) {
         return;
     }
@@ -122,7 +122,6 @@ rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payloa
     out->decode_mode = p->decode_mode;
     out->input_kind = rr_input_kind(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
-    out->actual_rate_hz = actual_rate_hz;
     out->tetra_uplink = opts->tetra_uplink ? 1 : 0;
     out->trunk_scan_running = opts->trunk_scan_enabled == 1 ? 1 : 0;
     out->has_group = has_group ? 1 : 0;

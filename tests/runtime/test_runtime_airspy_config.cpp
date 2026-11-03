@@ -172,10 +172,12 @@ test_forgiving_tail() {
     }
 }
 
-/* Issue #806 BUG-4: --validate-config and the startup it vouches for agree on an Airspy at a 72 kHz DSP bandwidth
+/* Issue #806 BUG-4: --validate-config and the startup's config apply agree on an Airspy at a 72 kHz DSP bandwidth
    decoding TETRA. The validator said nothing while the startup fell back to 48 kHz with a warning (and TETRA decoded
-   nothing); now both run 72 kHz, which the live rate step lands the Airspy's capture rate on, with no word. A
-   bandwidth the Airspy cannot filter a width at is refused by both alike. */
+   nothing); now the apply and the Airspy spec normalization keep 72 kHz, which the live rate step lands the Airspy's
+   capture rate on, with no word. For a width the bandwidth cannot filter this checks the validator's error and that
+   the apply keeps the 24 kHz the startup check holds it to; that the startup itself refuses it, with the validator's
+   text, is RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP's (tests/cmake/RunCliSmoke.cmake). */
 static void
 test_validate_agrees_with_startup() {
     static const struct {

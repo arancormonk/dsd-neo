@@ -6388,18 +6388,11 @@ rr_apply_refuse(dsd_state* state, const char* why) {
 
 /* The session can take the import at all, and decode what it selects (dsd_app_rr_receiver_verdict(), issue #803), and
    it leaves a save that a trunk scan waiting for the next start can start with (issue #671). Same code the frontends'
-   pre-check runs (dsd_app_rr_apply_block_reason()), here with the running stream's committed rate. */
+   pre-check runs (dsd_app_rr_apply_block_reason()), here on the live options. */
 static int
 rr_apply_check_session(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    uint32_t rate_hz = 0U;
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        const int request_hz = rtl_stream_get_request_rate_hz();
-        rate_hz = request_hz > 0 ? (uint32_t)request_hz : 0U;
-    }
-#endif
     dsd_app_rr_receiver_facts facts;
-    rr_apply_receiver_facts_fill(opts, p, p->has_group, p->has_chan, rate_hz, &facts);
+    rr_apply_receiver_facts_fill(opts, p, p->has_group, p->has_chan, &facts);
     char why[256];
     if (dsd_app_rr_receiver_verdict(&facts, why, sizeof why) != 0) {
         return rr_apply_refuse(state, why);
@@ -8509,12 +8502,12 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reo
 }
 
 /* Whether the config turns a running conventional scanner off, so the command leaves the scan row's scope rather than
-   resume it (ui_cmd_leaves_scanner_scope()): its [trunking] leaves the scanner on only with trunking off, as the apply
-   stages it (one tuner owner, trunking winning). */
+   resume it (ui_cmd_leaves_scanner_scope()), by the rule the apply stages the scanner by
+   (dsd_user_config_scanner_after()). */
 static int
 cfg_leaves_scanner_scope(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
-    const int scanner_after = cfg->has_trunking ? (cfg->trunk_scanner && !cfg->trunk_enabled) : opts->scanner_mode;
-    return ui_cmd_leaves_scanner_scope_with(opts, state, opts->scanner_mode == 1, scanner_after);
+    return ui_cmd_leaves_scanner_scope_with(opts, state, opts->scanner_mode == 1,
+                                            dsd_user_config_scanner_after(cfg, opts));
 }
 
 /*

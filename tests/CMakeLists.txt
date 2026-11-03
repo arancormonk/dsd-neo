@@ -8941,9 +8941,44 @@ if(DSD_HAS_RADIO)
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-rtl -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
+    # Issue #806: an Airspy or SoapySDR device runs at its DSP bandwidth too, so its spec's bandwidth holds the
+    # width up front as well, before any device is looked for.
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_AIRSPY
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_SOAPY
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-soapy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # BUG-4: --validate-config and the startup it vouches for refuse the same Airspy [input] width alike.
+    add_test(
+        NAME RUNTIME_AIRSPY_CONFIG_WIDTH_VALIDATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=airspy-config-width-validate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=airspy-config-width-startup -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
     set_tests_properties(
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_AIRSPY
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_SOAPY
+        RUNTIME_AIRSPY_CONFIG_WIDTH_VALIDATE
+        RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP
         PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
     )
     # The same check lets existing low-rate -fA command lines start: the unset
@@ -21859,6 +21894,10 @@ if(DSD_ENABLE_API)
         dsd-neo_test_api_commands
         PRIVATE ${_dsd_neo_api_test_deps}
     )
+    if(DSD_HAS_RADIO)
+        # The radio commands (rtl_set_bw) are handled only in a build with radio support.
+        target_compile_definitions(dsd-neo_test_api_commands PRIVATE USE_RADIO)
+    endif()
     add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
     # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

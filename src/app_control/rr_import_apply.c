@@ -118,7 +118,7 @@ dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, 
     /* No measured rate here: the frontend metric lags the committed rate, and the stream belongs to the decoder
        thread. An RTL-SDR's rate is its committed DSP bandwidth; a SoapySDR device's is unknown, so it passes. */
     dsd_app_rr_receiver_facts facts;
-    rr_apply_receiver_facts_fill(osnap, p, has_group, has_chan, 0U, &facts);
+    rr_apply_receiver_facts_fill(osnap, p, has_group, has_chan, &facts);
     if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
         return 1;
     }
@@ -147,7 +147,7 @@ dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size)
     DSD_MEMSET(&keep_mode, 0, sizeof keep_mode);
     keep_mode.decode_mode = (int32_t)DSDCFG_MODE_UNSET;
     dsd_app_rr_receiver_facts facts;
-    rr_apply_receiver_facts_fill(osnap, &keep_mode, 0, 0, 0U, &facts);
+    rr_apply_receiver_facts_fill(osnap, &keep_mode, 0, 0, &facts);
     if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
         return 1;
     }

@@ -508,14 +508,14 @@ int svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz
  *
  * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
  */
-int svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why, size_t why_size);
+int svc_check_analog_bandwidth_any_rate(int kind, int width_hz, char* why, size_t why_size);
 
 /**
  * @brief Check a channel width of analog @p kind against DSP rate @p rate_hz a change is about to run (issue #701): the
  * rate a running I/Q replay re-plans to (svc_replay_planned_rate_hz()), where the running stream's rate says nothing
  * about the rate the width will run at.
  *
- * The rules every rate shares (svc_check_analog_bandwidth_at_device_rate()), then an explicit width, or the AM default,
+ * The rules every rate shares (svc_check_analog_bandwidth_any_rate()), then an explicit width, or the AM default,
  * must fit @p rate_hz; a refusal is reported and logged as svc_check_analog_bandwidth() reports one, with the DSP
  * bandwidth as the fix. The unset NFM default (0) and @p rate_hz <= 0 are never refused for a rate.
  *

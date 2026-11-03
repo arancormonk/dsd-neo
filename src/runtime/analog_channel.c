@@ -309,9 +309,7 @@ dsd_analog_rtl_bandwidths_with_whole_sps(int symbol_rate_hz, char* out, size_t o
 }
 
 int
-dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char* out, size_t out_size) {
-    (void)kind;
-    (void)rate_hz;
+dsd_analog_width_rate_fix(int width_hz, int source, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
@@ -332,7 +330,7 @@ analog_format_rate_error(int kind, int width_hz, int rate_hz, int source, char* 
     char fix_text[96];
     (void)dsd_analog_width_format(width_hz, width_text, sizeof width_text);
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix_text, sizeof fix_text);
+    (void)dsd_analog_width_rate_fix(width_hz, source, fix_text, sizeof fix_text);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS) {
         DSD_SNPRINTF(err, err_size,

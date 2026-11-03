@@ -1695,6 +1695,17 @@ apply_trunking_path(char* dst, size_t dst_size, const char* src) {
     }
 }
 
+int
+dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* opts) {
+    if (!cfg) {
+        return 0;
+    }
+    if (!cfg->has_trunking) {
+        return (opts && opts->scanner_mode == 1) ? 1 : 0;
+    }
+    return (cfg->trunk_scanner && !cfg->trunk_enabled) ? 1 : 0;
+}
+
 static void
 apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts || !cfg->has_trunking) {
@@ -1723,7 +1734,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
        because the trunk_enabled branch above is deliberately one-way and never
        clears. trunk_enabled wins when a config asks for both, matching
        rr_apply_tuner_owner. */
-    if (cfg->trunk_scanner && !cfg->trunk_enabled) {
+    if (dsd_user_config_scanner_after(cfg, opts)) {
         opts->scanner_mode = 1;
         opts->trunk_enable = 0;
     } else {

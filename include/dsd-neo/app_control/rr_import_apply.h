@@ -87,15 +87,14 @@ typedef enum {
 /**
  * @brief The session facts an import is checked against, in plain values (issue #803).
  *
- * The decoder thread fills them from the live options and the running stream's committed rate; a frontend fills them
- * from the published snapshots, with no measured rate. has_group, has_chan, trunking and scanner are what the import
+ * The decoder thread fills them from the live options, a frontend from the published snapshots: every live radio
+ * runs at its DSP bandwidth (issue #806), so the bandwidth decides and no measured rate is needed. has_group, has_chan, trunking and scanner are what the import
  * would leave (before its files exist, in a frontend), for the next-start check beside the verdict.
  */
 typedef struct {
     int32_t decode_mode;     /**< dsdneoUserDecodeMode the import selects */
     int input_kind;          /**< dsd_app_rr_input_kind */
     int rtl_dsp_bw_khz;      /**< dsd_opts::rtl_dsp_bw_khz, the committed DSP bandwidth */
-    uint32_t actual_rate_hz; /**< the running stream's committed DSP rate; 0 when unknown (no stream, a frontend) */
     int tetra_uplink;        /**< dsd_opts::tetra_uplink (--tetra-uplink) */
     int trunk_scan_running;  /**< dsd_opts::trunk_scan_enabled == 1 */
     int has_group, has_chan; /**< the import loads a group list / a channel map */
