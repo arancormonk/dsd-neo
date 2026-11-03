@@ -4084,7 +4084,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   MHz  Label` (the row or 1-based target position first, so duplicate names, shared id prefixes and narrow-terminal
   substitutions still read apart; `frequency unknown` for 0 Hz; MHz through `dsd_freq_hz_mhz_text()`). The identity
   is `dsd_app_scan_avoid_remove_payload`: LCN `(instance, list_rev, row, frequency_hz)`, trunk scan
-  `(session, target_id)`. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
+  `(session, target_id)`. A target id is valid UTF-8 (`dsd_trunk_scan_load_targets_csv()` refuses any other, through
+  `dsd_utf8_is_valid()`), so the Qt key, the QML entry and the API's JSON carry it byte for byte. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu

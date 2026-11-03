@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -801,6 +802,12 @@ scan_parse_target_base_fields(char** fields, const dsd_trunk_scan_target_list* p
     const char* id = scan_unquote(fields[0]);
     if (id[0] == '\0' || strlen(id) >= sizeof(parsed->targets[0].id)) {
         scan_set_error(parse->err, parse->err_sz, "row %u has an empty or too-long id", parse->row);
+        return -1;
+    }
+    /* The id names the target to the frontends: Qt and JSON carry it as text and hand it back for put back, and only
+       valid UTF-8 survives that byte for byte. */
+    if (!dsd_utf8_is_valid(id)) {
+        scan_set_error(parse->err, parse->err_sz, "row %u has an id that is not valid UTF-8", parse->row);
         return -1;
     }
     if (scan_has_duplicate_id(parsed, id)) {

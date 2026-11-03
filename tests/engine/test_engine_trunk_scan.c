@@ -1203,6 +1203,78 @@ test_parser_rejects_invalid_inputs(void) {
     return rc;
 }
 
+/* Issue #672: a target id is the target's name to the frontends, which carry it as text (Qt, JSON) and hand it back
+   for put back; only valid UTF-8 survives that byte for byte. The loader refuses any other id and names its row (the
+   header is row 1), and keeps a multibyte id -- a 4-byte character, a quote and a backslash among it -- as written. */
+static int
+test_parser_refuses_a_non_utf8_id(void) {
+    static const char* const k_bad[] = {
+        "caf\xE9",           /* Latin-1 */
+        "a\xC0\xAF",         /* overlong '/' */
+        "a\xED\xA0\x80",     /* a surrogate */
+        "a\xF4\x90\x80\x80", /* above U+10FFFF */
+        "a\xE2\x82",         /* cut short */
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_bad / sizeof k_bad[0] && rc == 0; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "ok,p25-trunk,851000000,,,,\n%s,dmr-trunk,452000000,,,,\n", k_bad[i]);
+        if (make_temp_dir(dir, sizeof dir) != 0) {
+            return 1;
+        }
+        if (write_targets_file(dir, body, target_path, sizeof target_path) != 0) {
+            cleanup_paths(dir, NULL, NULL);
+            return 1;
+        }
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        dsd_trunk_scan_target_list list;
+        DSD_MEMSET(&list, 0, sizeof list);
+        char err[256] = {0};
+        if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) == 0) {
+            DSD_FPRINTF(stderr, "non-UTF-8 id %zu was accepted\n", i);
+            rc = 1;
+        } else if (strstr(err, "row 3") == NULL || strstr(err, "UTF-8") == NULL) {
+            DSD_FPRINTF(stderr, "non-UTF-8 id %zu: unexpected error '%s'\n", i, err);
+            rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+        cleanup_paths(dir, target_path, NULL);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+
+    static const char k_good[] = "\"caf\xC3\xA9 \xF0\x9F\x93\xA1 \\ q\"\"\"";
+    static const char k_good_id[] = "caf\xC3\xA9 \xF0\x9F\x93\xA1 \\ q\"\"";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body, "%s,p25-trunk,851000000,,,,\n", k_good);
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    if (write_targets_file(dir, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) != 0 || list.count != 1U
+        || strcmp(list.targets[0].id, k_good_id) != 0) {
+        DSD_FPRINTF(stderr, "a UTF-8 id did not load as written: '%s'\n", err);
+        rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return rc;
+}
+
 static int
 test_parser_accepts_100_targets(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -16471,6 +16543,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_nxdn_targets);
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
+    rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);

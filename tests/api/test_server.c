@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1391,6 +1392,84 @@ scan_avoids_largest_page(avoid_rig* rig) {
     dsd_json_free(root);
 }
 
+/* A stand-in for the coordinator's unavoid: the target whose id matches byte for byte, as trunk_scan_edit_find() does,
+   and what it was asked for. */
+static char g_unavoid_id[sizeof(((dsd_trunk_scan_avoid_entry*)0)->id)];
+static uint32_t g_unavoid_ordinal = 0U;
+
+static int
+record_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+               dsd_trunk_scan_target_name* name) {
+    (void)opts;
+    DSD_SNPRINTF(g_unavoid_id, sizeof g_unavoid_id, "%s", target_id);
+    g_unavoid_ordinal = 0U;
+    if (session != state->trunk_scan_session) {
+        return DSD_TRUNK_SCAN_CONTROL_STALE;
+    }
+    for (size_t i = 0; i < state->trunk_scan_avoid_count; i++) {
+        if (strcmp(state->trunk_scan_avoids[i].id, target_id) == 0) {
+            g_unavoid_ordinal = state->trunk_scan_avoids[i].ordinal;
+            name->ordinal = g_unavoid_ordinal;
+            name->label[0] = '\0';
+            return DSD_TRUNK_SCAN_CONTROL_OK;
+        }
+    }
+    return DSD_TRUNK_SCAN_CONTROL_STALE;
+}
+
+/* Target ids are UTF-8 (the target list loader refuses any other), so each one crosses the API byte for byte: read
+   from `get scan_avoids`, decoded and encoded again as a client would, it puts back its own target -- never a
+   look-alike next to it -- whatever it holds: 2- and 4-byte characters, quotes, a backslash, a control, U+2028. */
+static void
+scan_avoids_trunk_scan_ids_round_trip(avoid_rig* rig) {
+    static const dsd_trunk_scan_avoid_entry k_targets[] = {
+        {1U, 0U, 851012500U, "caf\xC3\xA9 \xF0\x9F\x93\xA1", ""},
+        {2U, 0U, 852012500U, "caf\xC3\xA9 \xF0\x9F\x93\xA1 \"q\"\\\x01\xE2\x80\xA8", ""},
+        {3U, 0U, 853012500U, "cafe \xF0\x9F\x93\xA1", ""},
+    };
+
+    enum { TARGETS = (int)(sizeof k_targets / sizeof k_targets[0]) };
+
+    /* The -Y put back scan_avoids_lcn_paging() sent is still queued: off the queue first, so each drain below is the
+       one request it follows. */
+    (void)dsd_app_drain_cmds(rig->opts, rig->state);
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.unavoid = record_unavoid;
+    dsd_trunk_scan_hooks_set(&hooks);
+    rig->opts->trunk_scan_enabled = 1;
+    rig->state->trunk_scan_session = 77U;
+    set_trunk_avoids(rig->state, k_targets, TARGETS);
+    char want[320];
+    want_trunk_status(want, sizeof want, rig->state, 1, TARGETS);
+    await_status(rig, want);
+
+    dsd_json_node* root = get_scan_avoids(rig, -1, -1);
+    size_t count = 0U;
+    const dsd_json_node* entries = data_entries(root, &count);
+    assert(count == (size_t)TARGETS);
+    for (size_t i = 0; i < count; i++) {
+        const char* id = json_str(entries->items[i], "target_id");
+        assert(strcmp(id, k_targets[i].id) == 0);
+        dsd_json_buf request;
+        dsd_json_buf_init(&request);
+        assert(dsd_json_buf_puts(&request,
+                                 "{\"id\":8,\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\","
+                                 "\"session\":77,\"target_id\":\"")
+                   == 0
+               && dsd_json_buf_append_escaped(&request, id) == 0 && dsd_json_buf_puts(&request, "\"}}\n") == 0);
+        send_str(rig->get, request.data);
+        dsd_json_buf_free(&request);
+        expect_line(rig->get, "{\"id\":8,\"ok\":true");
+        assert(dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+        if (strcmp(g_unavoid_id, k_targets[i].id) != 0 || g_unavoid_ordinal != k_targets[i].ordinal) {
+            DSD_FPRINTF(stderr, "entry %zu put back target #%u\n", i, (unsigned)g_unavoid_ordinal);
+            assert(0);
+        }
+    }
+    dsd_json_free(root);
+    dsd_trunk_scan_hooks_set(NULL);
+}
+
 static void
 test_scan_avoids(void) {
     avoid_rig rig;
@@ -1426,6 +1505,7 @@ test_scan_avoids(void) {
     scan_avoids_restart(&rig);
     scan_avoids_concurrent_paging(&rig);
     scan_avoids_largest_page(&rig);
+    scan_avoids_trunk_scan_ids_round_trip(&rig);
 
     /* With no client connected the feed keeps no copy and no cached record, so a client connecting later is never
        served the list or the status the last one saw as current: null until the first update, which the next publish

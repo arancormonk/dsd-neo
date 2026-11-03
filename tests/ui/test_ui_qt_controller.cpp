@@ -975,6 +975,7 @@ test_scan_step_bridge() {
 static int g_unavoid_calls = 0;
 static uint32_t g_unavoid_session = 0;
 static QString g_unavoid_target;
+static QByteArray g_unavoid_bytes;
 
 static int
 record_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
@@ -984,6 +985,7 @@ record_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const c
     g_unavoid_calls++;
     g_unavoid_session = session;
     g_unavoid_target = QString::fromUtf8(target_id);
+    g_unavoid_bytes = QByteArray(target_id);
     if (name) {
         name->ordinal = 2U;
         DSD_SNPRINTF(name->label, sizeof name->label, "%s", "County Fire");
@@ -1108,6 +1110,32 @@ test_scan_avoid_restore_bridge() {
     check(g_unavoid_calls == 1 && g_unavoid_session == 9U && g_unavoid_target == QStringLiteral("county-p25"));
     /* The Monitor shows the decoder's answer: the target as the sheet lists it, never its entry UID. */
     check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Put back target #2 County Fire (0 avoided)"));
+
+    /* Target ids are UTF-8 (the target list loader refuses any other), so the list's key and the payload carry each
+       one byte for byte: look-alike ids -- 2- and 4-byte characters, quotes, a backslash, a control -- each put back
+       their own target. */
+    static const char* const k_ids[] = {
+        "caf\xC3\xA9 \xF0\x9F\x93\xA1",
+        "caf\xC3\xA9 \xF0\x9F\x93\xA1 \"q\"\\\x01",
+        "cafe \xF0\x9F\x93\xA1",
+    };
+    dsd_trunk_scan_avoid_entry lookalikes[3]{};
+    for (int i = 0; i < 3; ++i) {
+        lookalikes[i].ordinal = static_cast<uint32_t>(i + 1);
+        lookalikes[i].frequency_hz = 851012500ULL + (12500ULL * static_cast<uint64_t>(i));
+        DSD_SNPRINTF(lookalikes[i].id, sizeof lookalikes[i].id, "%s", k_ids[i]);
+    }
+    check(dsd_state_trunk_scan_avoids_set(&state, lookalikes, 3U) == 0);
+    state.trunk_scan_avoid_rev = dsd_state_rev_next();
+    metrics.refresh(&opts, &state);
+    check(list->rowCount() == 3);
+    for (int i = 0; i < 3; ++i) {
+        const QString row = list->data(list->index(i, 0), dsd_qt::ScanAvoidListModel::KeyRole).toString();
+        g_unavoid_bytes.clear();
+        check(bridge.restoreScanAvoid(row));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(g_unavoid_session == 9U && g_unavoid_bytes == QByteArray(k_ids[i]));
+    }
     dsd_app_frontend_runtime_stop();
     dsd_trunk_scan_hooks_set(nullptr);
     bridge.setScanAvoids(nullptr);
