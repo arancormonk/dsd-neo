@@ -4,23 +4,24 @@
  */
 
 /*
- * The dynamic squelches through the live I/Q rate step (issue #806). Noise is run through full_demod() itself (the real
- * half-band cascade, the real step and the real channel filter), and the plans the step model makes are held to what
- * that noise does:
+ * The dynamic squelches through the live I/Q rate step (issue #806), held to full_demod() itself (the real half-band
+ * cascade, the real step and the real channel filter). What can be computed is computed exactly; noise runs only as
+ * long as each bound's sampling error needs.
  *
- * - R_hb from the half-band recursion against white noise through the real cascade at 2.5 and 3 MS/s (lags within 2 %
- *   of R[0]); the spectral factor's autocorrelation against R_hb.
- * - The model's covariance after the real step, averaged over the period, against the step's measured output (lags
- *   0..64 within 2 % of R[0]), and its per-phase power spread (under 5 %).
- * - Every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass from twice
- *   that rate), with the widest NFM channel the bandwidth takes and with none, and windows starting at three phases of
- *   the step's period: the auto squelch's floor statistics (no opens over 60 s at +3/+6/+10 dB, the floor KNOWN within
- *   eight windows and within 0.5 dB, never learned again) and the noise squelch's (its references within 0.6 dB per
- *   band-pass and 0.3 dB over the band, noise reading about 0 dB and never opening at N = 3 over 20 s), the RTL-SDR
- *   chain at the same bandwidth held to the same bounds. The plans the half-band cascade alone gives (what a stepped
- *   chain ran before the model) miss the band by more. --matrix runs this part.
- * - Without a step full_demod()'s plans are today's designs, byte for byte; the plan key and the model follow the
- *   step's plan, and a build for the plan the model holds does nothing.
+ * - R_hb from the half-band recursion against the real cascade, exactly (an impulse at every input phase), at 2.5, 3
+ *   and 10 MS/s; the spectral factor's autocorrelation against R_hb.
+ * - The step model's averaged covariance against the real step, exactly, at every 12 to 72 kHz leg of 2.5 and 3 MS/s;
+ *   its per-phase power spread.
+ * - The periodic floor design at a period of one against today's stationary model; the averaged floor plan against
+ *   every output phase in full on every Airspy grid point and a SoapySDR ratio near the 4096-term limit.
+ * - The window statistics the classifier sees (N_eff, beta) against the covariance measured on a real stepped stream.
+ * - Without a step full_demod()'s plans are today's designs, bit for bit and pinned to b08406ebc's; the plan key and the
+ *   model follow the step's plan, and a build for the plan the model holds does nothing.
+ * - --matrix: every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass
+ *   from twice hb_out), the widest NFM channel the bandwidth takes and none: the auto squelch's floor (trackers at
+ *   +3/+6/+10 dB at three phases of the step's period), the noise squelch and the measured window statistics, held to
+ *   the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to (Durations says how long each runs
+ *   and why). The plans the half-band cascade alone gives (what a stepped chain ran before the model) miss the band.
  */
 
 #include <algorithm>
@@ -220,47 +221,67 @@ feed_noise(demod_state* s, Rng& rng, double var, long in_pairs, Sink&& sink) {
     }
 }
 
-/* E{z_n conj(z_{n+m})} measured over a stream (real part: the imaginary part is noise around 0). */
-struct AutoCorr {
-    int lags;
-    std::vector<double> hist_re, hist_im, sum;
-    long count = 0;
-    long pos = 0;
-
-    explicit AutoCorr(int n) : lags(n), hist_re((size_t)n, 0.0), hist_im((size_t)n, 0.0), sum((size_t)n, 0.0) {}
-
-    void
-    add(const float* iq, int pairs) {
-        for (int i = 0; i < pairs; i++) {
-            const double re = (double)iq[(size_t)i * 2U];
-            const double im = (double)iq[(size_t)i * 2U + 1U];
-            hist_re[(size_t)(pos % lags)] = re;
-            hist_im[(size_t)(pos % lags)] = im;
-            const int have = pos + 1 < lags ? (int)(pos + 1) : lags;
-            for (int m = 0; m < have; m++) {
-                const size_t at = (size_t)((pos - m) % lags);
-                sum[(size_t)m] += (re * hist_re[at]) + (im * hist_im[at]);
-            }
-            pos++;
-        }
-        count += pairs;
-    }
-
-    double
-    at(int m) const {
-        return sum[(size_t)m] / (double)(count - m);
-    }
-};
-
 /* ------------------------------------------------------------------------------------- the cascade and the step */
 
-/* R_hb from the recursion against white noise through the real cascade, at the real passes. */
+/* Unit impulses through full_demod(), one at every input phase of a chain whose statistics repeat every @p period
+   inputs: impulse k sits at lead + k x @p gap (gap = 1 mod period, so the period's phases are each hit once, and far
+   enough apart that no two responses meet within @p lags outputs). For white unit noise in, the summed output
+   autocorrelation is the output covariance summed over one output period, exactly: R(n, n') = sum_j g_n[j] g_n'[j]
+   over every input j, and shifting an input by a period shifts its response by an output period. */
+std::vector<double>
+impulse_autocorr(demod_state* s, int period, int gap, int lags) {
+    const long lead = 4L * gap;
+    const long total = lead + ((long)period * gap) + (4L * gap);
+    std::vector<double> sum((size_t)lags, 0.0);
+    std::vector<float> out;
+    std::vector<float> block((size_t)kBlockPairs * 2U);
+    for (long at = 0; at < total; at += kBlockPairs) {
+        const int n = total - at < kBlockPairs ? (int)(total - at) : kBlockPairs;
+        for (int i = 0; i < n; i++) {
+            const long j = at + i - lead;
+            block[(size_t)i * 2U] = (j >= 0 && j % gap == 0 && j / gap < period) ? 1.0f : 0.0f;
+            block[(size_t)i * 2U + 1U] = 0.0f;
+        }
+        DSD_MEMCPY(s->input_cb_buf, block.data(), (size_t)n * 2U * sizeof(float));
+        s->lowpassed = s->input_cb_buf;
+        s->lp_len = n * 2;
+        full_demod(s);
+        if (!s->front_end_empty && s->lowpassed != NULL && s->lp_len > 0) {
+            out.insert(out.end(), s->lowpassed, s->lowpassed + s->lp_len);
+        }
+    }
+    const size_t pairs = out.size() / 2U;
+    for (size_t n = 0; n < pairs; n++) {
+        const double y = (double)out[n * 2U];
+        if (y == 0.0) {
+            continue;
+        }
+        for (int m = 0; m < lags && n + (size_t)m < pairs; m++) {
+            sum[(size_t)m] += y * (double)out[(n + (size_t)m) * 2U];
+        }
+    }
+    return sum;
+}
+
+/* The smallest gap, 1 more than a multiple of @p period, that leaves @p spacing outputs between impulses at an output
+   rate of @p ratio outputs per input. */
+int
+impulse_gap(int period, double ratio, int spacing) {
+    int gap = period + 1;
+    while ((double)gap * ratio < (double)spacing) {
+        gap += period;
+    }
+    return gap;
+}
+
+/* R_hb from the recursion against the real cascade, exactly: impulses at each of the 2^passes input phases, white
+   noise of variance 2^(passes - 1). Within 1e-5 of R[0] (the cascade runs in float). */
 void
 test_halfband_recursion(void) {
     const struct {
         uint32_t device;
         int target;
-    } chains[] = {{2500000u, 48000}, {3000000u, 48000}, {2500000u, 16000}};
+    } chains[] = {{2500000u, 48000}, {3000000u, 48000}, {2500000u, 16000}, {10000000u, 48000}};
 
     for (const auto& c : chains) {
         const dsd_live_iq_step_plan plan = plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target);
@@ -272,46 +293,47 @@ test_halfband_recursion(void) {
         const DemodBox box;
         const double hb_out = std::ldexp((double)plan.hb_out_num, -(int)plan.hb_out_shift);
         configure(box.s, plan.passes, (int)hb_out, NULL, 0);
-        Rng rng(0x4B5EEDULL + c.device);
-        AutoCorr ac(m.hb_lags + 3);
-        /* White noise of variance 2^(passes - 1): the model's input; 50,000 outputs. */
-        const long in_pairs = 50000L << plan.passes;
-        feed_noise(box.s, rng, std::ldexp(1.0, plan.passes - 1), in_pairs,
-                   [&](const float* iq, int pairs) { ac.add(iq, pairs); });
+        const int period = 1 << plan.passes;
+        const int lags = m.hb_lags + 3;
+        /* A cascade's response spans under 64 outputs; 64 more keep the lags clear. */
+        const std::vector<double> r = impulse_autocorr(box.s, period, impulse_gap(period, 1.0 / period, 128), lags);
         double worst = 0.0;
-        for (int lag = 0; lag < m.hb_lags + 3; lag++) {
+        for (int lag = 0; lag < lags; lag++) {
             const double model = lag < m.hb_lags ? m.r_hb[lag] : 0.0;
-            worst = std::fmax(worst, std::fabs(ac.at(lag) - model) / m.r_hb[0]);
+            worst = std::fmax(worst, std::fabs(std::ldexp(r[(size_t)lag], plan.passes - 1) - model) / m.r_hb[0]);
         }
-        printf("R_hb %u Hz, %d passes: %d lags, R[0] %.5f (measured %.5f), worst lag %.4f of R[0]\n", c.device,
-               plan.passes, m.hb_lags, m.r_hb[0], ac.at(0), worst);
-        CHECK(worst < 0.02, "R_hb %u Hz: worst lag %.4f of R[0]", c.device, worst);
+        printf("R_hb %u Hz, %d passes: %d lags, R[0] %.6f, the real cascade within %.2e of R[0]\n", c.device,
+               plan.passes, m.hb_lags, m.r_hb[0], worst);
+        CHECK(worst < 1e-5, "R_hb %u Hz: worst lag %.3e of R[0]", c.device, worst);
 
         /* The spectral factor: odd, even, and its autocorrelation is R_hb. */
         CHECK(m.factor_len >= 1 && (m.factor_len & 1) == 1 && m.factor_len <= DSD_SQUELCH_STEP_MAX_FACTOR_TAPS,
               "factor taps %d", m.factor_len);
         double factor_worst = 0.0;
         for (int lag = 0; lag < m.factor_len; lag++) {
-            double r = 0.0;
+            double sum = 0.0;
             for (int t = 0; t + lag < m.factor_len; t++) {
-                r += m.factor[t] * m.factor[t + lag];
+                sum += m.factor[t] * m.factor[t + lag];
             }
             const double want = lag < m.hb_lags ? m.r_hb[lag] : 0.0;
-            factor_worst = std::fmax(factor_worst, std::fabs(r - want) / m.r_hb[0]);
+            factor_worst = std::fmax(factor_worst, std::fabs(sum - want) / m.r_hb[0]);
         }
-        int symmetric = 1;
+        bool symmetric = true;
         for (int t = 0; t < m.factor_len; t++) {
-            symmetric &= m.factor[t] == m.factor[m.factor_len - 1 - t];
+            symmetric = symmetric && m.factor[t] == m.factor[m.factor_len - 1 - t];
         }
         printf("  spectral factor: %d taps, autocorrelation within %.2e of R[0]\n", m.factor_len, factor_worst);
         /* A cut leaving e of the energy out moves the autocorrelation at most 2 sqrt(e) + e of R[0] (1e-6: 2e-3). */
-        CHECK(symmetric && factor_worst < 2.001e-3, "factor: symmetric %d, worst %.3e", symmetric, factor_worst);
+        CHECK(symmetric && factor_worst < 2.001e-3, "factor: symmetric %d, worst %.3e", symmetric ? 1 : 0,
+              factor_worst);
         dsd_squelch_step_model_release(&m);
     }
 }
 
-/* The model's covariance after the real step (no channel filter), averaged over the period, against the step's
-   measured output; its per-phase power spread. */
+/* The step model's averaged covariance against the real step in full_demod(), exactly: the chain with no pass ahead of
+   the step (white noise straight in at hb_out, the model's factor then a single tap), impulses at each of the M input
+   phases, every lag of the responses' support within 1e-5 of R[0]. Every 12 to 72 kHz leg of 2.5 and 3 MS/s; and the
+   model's per-phase power spread under 5 %. */
 void
 test_step_covariance(void) {
     const struct {
@@ -321,43 +343,34 @@ test_step_covariance(void) {
                   {2500000u, 12000}, {3000000u, 12000}, {2500000u, 72000}, {3000000u, 16000}};
 
     for (const auto& c : chains) {
-        const dsd_live_iq_step_plan plan = plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target);
+        dsd_live_iq_step_plan plan = plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target);
+        plan.passes = 0;
         const DemodBox box;
-        CHECK(configure(box.s, plan.passes, c.target, &plan, 0) == 0, "configure %u -> %d", c.device, c.target);
+        CHECK(configure(box.s, 0, c.target, &plan, 0) == 0, "configure %u -> %d", c.device, c.target);
         dsd_squelch_step_model* m = &box.s->squelch_step_model;
-        /* Every output phase's covariance in full: the table this test reads. */
+        CHECK(m->ready && m->factor_len == 1, "model %u -> %d", c.device, c.target);
+        const int lags = m->resp_len;
+        const double ratio = (double)plan.L / (double)plan.M;
+        const std::vector<double> r = impulse_autocorr(box.s, plan.M, impulse_gap(plan.M, ratio, (2 * lags) + 8), lags);
+        double worst = 0.0;
+        for (int lag = 0; lag < lags; lag++) {
+            worst = std::fmax(worst, std::fabs((r[(size_t)lag] / (double)plan.L) - m->ry_mean[lag]) / m->ry_mean[0]);
+        }
+        /* The per-phase power: every output phase's covariance in full. */
         dsd_squelch_floor_plan fp;
         CHECK(dsd_squelch_step_model_floor_plan_exact(m, &fp, NULL, 0, c.target) == 0, "floor plan");
-        const int L = plan.L;
-        const int lags = m->resp_len;
-        std::vector<double> avg((size_t)lags, 0.0);
         double lo = 1e300;
         double hi = 0.0;
-        for (int n = 0; n < L; n++) {
-            for (int lag = 0; lag < lags; lag++) {
-                /* Both sides of each lag: E z_n z_{n+m} and E z_{n-m} z_n average to the same. */
-                avg[(size_t)lag] += m->cov[(size_t)n * (size_t)lags + (size_t)lag] / (double)L;
-            }
+        for (int n = 0; n < plan.L; n++) {
             lo = std::fmin(lo, m->cov[(size_t)n * (size_t)lags]);
             hi = std::fmax(hi, m->cov[(size_t)n * (size_t)lags]);
         }
-        Rng rng(0xC0FA11ULL + c.device + (uint64_t)c.target);
-        const int measured_lags = lags < 65 ? lags : 65;
-        AutoCorr ac(measured_lags);
-        feed_noise(box.s, rng, std::ldexp(1.0, plan.passes - 1), (long)c.device * 2L,
-                   [&](const float* iq, int pairs) { ac.add(iq, pairs); });
-        double worst = 0.0;
-        for (int lag = 0; lag < measured_lags; lag++) {
-            worst = std::fmax(worst, std::fabs(ac.at(lag) - avg[(size_t)lag]) / avg[0]);
-        }
-        const double spread = (hi - lo) / avg[0];
-        printf("step %u Hz -> %d Hz (L/M %d/%d): power %.5f (measured %.5f), lags 0..%d within %.4f of R[0], "
-               "per-phase power spread %.4f %%, noise gain %.5f\n",
-               c.device, c.target, plan.L, plan.M, avg[0], ac.at(0), measured_lags - 1, worst, 100.0 * spread,
-               fp.noise_gain);
-        CHECK(worst < 0.02, "step %u -> %d: worst lag %.4f of R[0]", c.device, c.target, worst);
+        const double spread = (hi - lo) / m->ry_mean[0];
+        printf("step %u Hz -> %d Hz (L/M %d/%d): the real step within %.2e of R[0] at %d lags, per-phase power spread "
+               "%.4f %%\n",
+               c.device, c.target, plan.L, plan.M, worst, lags, 100.0 * spread);
+        CHECK(worst < 1e-5, "step %u -> %d: worst lag %.3e of R[0]", c.device, c.target, worst);
         CHECK(spread < 0.05, "step %u -> %d: per-phase spread %.4f", c.device, c.target, spread);
-        CHECK(std::fabs(fp.noise_gain - avg[0]) <= 1e-12 * avg[0], "noise gain %.9f vs %.9f", fp.noise_gain, avg[0]);
     }
 }
 
@@ -405,18 +418,21 @@ run_plans(demod_state* s, int mode, double in_rate) {
     s->squelch_mode = mode;
     s->squelch_margin_db = 10;
     Rng rng(0x91A5ULL);
-    feed_noise(s, rng, 1e-3, (long)(0.1 * in_rate), [](const float*, int) {});
+    /* Two blocks' worth: the first that leaves channel samples designs both plans. */
+    feed_noise(s, rng, 1e-3, (long)(0.01 * in_rate) + (2L * kBlockPairs), [](const float*, int) {});
 }
 
 /* Without a step full_demod()'s plans are today's designs (the cascade's last stage, or the whole cascade for the
    noise squelch), bit for bit. */
 void
 test_no_step_plans_are_todays(void) {
+    /* The noise plan (2 s of calibration noise apiece) on two of the chains: the whole cascade and none. */
     const struct {
         int passes;
         int rate;
         int width;
-    } chains[] = {{5, 48000, 12500}, {1, 24000, 0}, {6, 16000, 13200}, {0, 48000, 25000}};
+        int noise;
+    } chains[] = {{5, 48000, 12500, 1}, {1, 24000, 0, 0}, {6, 16000, 13200, 0}, {0, 48000, 25000, 1}};
 
     for (const auto& c : chains) {
         const DemodBox box;
@@ -424,7 +440,9 @@ test_no_step_plans_are_todays(void) {
         configure(s, c.passes, c.rate, NULL, c.width);
         const double in_rate = std::ldexp((double)c.rate, c.passes);
         run_plans(s, DSD_SQUELCH_MODE_AUTO, in_rate);
-        run_plans(s, DSD_SQUELCH_MODE_NOISE, in_rate);
+        if (c.noise != 0) {
+            run_plans(s, DSD_SQUELCH_MODE_NOISE, in_rate);
+        }
         const float* taps = c.width > 0 ? s->channel_lpf_plan_taps : NULL;
         const int taps_len = c.width > 0 ? s->channel_lpf_plan_taps_len : 0;
         dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
@@ -432,11 +450,14 @@ test_no_step_plans_are_todays(void) {
         dsd_squelch_floor_plan fp;
         (void)dsd_squelch_floor_plan_design(&fp, taps, taps_len, count > 0 ? st[count - 1].taps : NULL,
                                             count > 0 ? st[count - 1].len : 0, c.rate);
-        static dsd_noise_squelch_plan np;
-        (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, c.rate);
         CHECK(fp.valid && same_floor_plan(fp, s->squelch_floor.plan), "%d passes at %d Hz: floor plan differs",
               c.passes, c.rate);
-        CHECK(same_noise_plan(np, s->noise_squelch.plan), "%d passes at %d Hz: noise plan differs", c.passes, c.rate);
+        if (c.noise != 0) {
+            static dsd_noise_squelch_plan np;
+            (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, c.rate);
+            CHECK(same_noise_plan(np, s->noise_squelch.plan), "%d passes at %d Hz: noise plan differs", c.passes,
+                  c.rate);
+        }
         CHECK(!s->squelch_step_model.ready && s->squelch_plan.step.enabled == 0, "%d passes: a step model", c.passes);
     }
     printf("no step: full_demod()'s floor and noise plans are today's designs, bit for bit\n");
@@ -446,7 +467,8 @@ test_no_step_plans_are_todays(void) {
    kept for its plan and rebuilt for another; a stepping chain with no model has no valid plan (gate open). */
 void
 test_plan_key_follows_the_step(void) {
-    const int rate = 48000;
+    /* 24 kHz: the noise plans calibrate on half the samples 48 kHz takes. */
+    const int rate = 24000;
     const dsd_live_iq_step_plan a = plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, 2500000u, (uint32_t)rate);
     const dsd_live_iq_step_plan b = plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, 3000000u, (uint32_t)rate);
     const DemodBox box;
@@ -557,38 +579,56 @@ struct Meter {
 constexpr int kMargins[3] = {3, 6, 10};
 constexpr int kPhases = 3;
 constexpr int kTrackers = 3 * kPhases;
+/* The longest lag the measured covariance keeps: past it every chain's correlation is under 1e-3 of its power, so the
+   squares left out move N_eff by under 1e-4. */
+constexpr int kCovLags = 160;
 
-/* The auto squelch's trackers (every margin at every window start phase) and the noise squelch's (one per phase) on a
-   stream of channel samples, each starting @p offset[phase] samples in, and each band-pass's power over the stream. */
+/*
+ * How long each part of a chain runs, in channel samples, sized to what its bound needs:
+ *
+ * - floor: the trackers learn in 8 windows and then hold; the floor tracks NOISE windows with an 80 ms time constant,
+ *   whose steady-state scatter is sqrt(alpha / (2 - alpha)) / sqrt(N_eff) = 0.49 / sqrt(N_eff), 0.17 dB at the
+ *   narrowest plan (N_eff 158) against the 0.5 dB bound; a +3 dB sub-window on noise is more than 9 standard deviations
+ *   out (sqrt(2 / N_eff) per 20 ms at N_eff 79), so a longer run adds no opens. 4 s: 100 windows past learning.
+ * - noise: Q's maximum over n windows grows as sqrt(2 ln n), so 3 s (150 windows) reaches 84 % of what 20 s (1000)
+ *   reaches; the median's scatter is 1.25 sigma_Q / sqrt(150), a few hundredths of a dB against the 0.5 dB bound.
+ * - meter: a 300 Hz band-pass measured for T seconds scatters by 1 / sqrt(300 T) in power, 0.10 dB at 6 s; with the
+ *   plan's own 2 s calibration (0.18 dB) the worst of 29 band-passes stays under 0.5 dB (0.39 dB measured), under the
+ *   0.6 dB bound.
+ * - cov: the measured covariance's N_eff scatters by about 2 / sqrt(samples) (0.6 % at 100,000) against the 3 % bound.
+ */
+struct Durations {
+    long floor;
+    long noise;
+    long meter;
+    long cov;
+};
+
+/* The auto squelch's trackers (every margin at every window start phase), the noise squelch, the band-pass meters and
+   the measured covariance on one stream of channel samples. */
 struct Runners {
     dsd_squelch_floor floor[kTrackers];
     uint64_t opens[kTrackers] = {};
     uint64_t known_at[kTrackers] = {};
     int relearned[kTrackers] = {};
-    dsd_noise_squelch noise[kPhases];
-    uint64_t noise_opens[kPhases] = {};
-    std::vector<double> q[kPhases];
-    uint64_t q_seen[kPhases] = {};
+    dsd_noise_squelch noise;
+    uint64_t noise_opens = 0;
+    std::vector<double> q;
+    uint64_t q_seen = 0;
     int noise_valid = 0;
     long offset[kPhases] = {};
     long samples = 0;
-    long noise_end = 0; /* the noise squelch runs this many samples */
+    Durations len = {0, 0, 0, 0};
     float prev_re = 0.0f;
     float prev_im = 0.0f;
-    /* The classifier's own window statistics at each phase, measured: the plan's lag and window, the last unit-modulus
-       samples (u = z / |z|), the open window's power and lag-L coherence sums, and the closed windows' (the first one,
-       the filters settling, left out). */
+    /* The measured covariance: the last kCovLags samples, sum z_n conj(z_{n-m}) (real part) at each lag, and the mean
+       lag-L coherence Re(u_n conj(u_{n-L})), u = z / |z|. */
     int lag = 1;
-    int window = 1;
-    double u_re[64] = {};
-    double u_im[64] = {};
-    double w_power[kPhases] = {};
-    double w_coh[kPhases] = {};
-    int w_count[kPhases] = {};
-    long closed[kPhases] = {};
-    double sum_p[kPhases] = {};
-    double sum_p2[kPhases] = {};
-    double sum_coh[kPhases] = {};
+    double hist_re[kCovLags] = {};
+    double hist_im[kCovLags] = {};
+    double cov[kCovLags] = {};
+    double coh = 0.0;
+    long cov_n = 0;
 };
 
 void
@@ -632,57 +672,21 @@ meter_error(const Meter* m, double* worst, double* whole) {
 
 void
 runners_init(Runners* r, const dsd_squelch_floor_plan* fp, const dsd_noise_squelch_plan* np, int period,
-             long noise_end) {
+             const Durations& len) {
     for (int i = 0; i < kTrackers; i++) {
         DSD_MEMSET(&r->floor[i], 0, sizeof(r->floor[i]));
         dsd_squelch_floor_set_margin(&r->floor[i], kMargins[i % 3]);
         dsd_squelch_floor_set_plan(&r->floor[i], fp);
     }
     r->noise_valid = np->valid;
+    DSD_MEMSET(&r->noise, 0, sizeof(r->noise));
+    dsd_noise_squelch_set_threshold(&r->noise, DSD_SQUELCH_MARGIN_MIN_DB);
+    dsd_noise_squelch_set_plan(&r->noise, np);
     for (int p = 0; p < kPhases; p++) {
-        DSD_MEMSET(&r->noise[p], 0, sizeof(r->noise[p]));
-        dsd_noise_squelch_set_threshold(&r->noise[p], DSD_SQUELCH_MARGIN_MIN_DB);
-        dsd_noise_squelch_set_plan(&r->noise[p], np);
         r->offset[p] = (long)((period * p) / kPhases) + (p == kPhases - 1 ? 1 : 0);
     }
-    r->noise_end = noise_end;
+    r->len = len;
     r->lag = fp->lag;
-    r->window = fp->rate_hz / 25;
-}
-
-/* One sample into each phase's open window; a full window adds its mean power and coherence to the phase's sums. */
-void
-runners_window(Runners* r, const float* z) {
-    const double re = (double)z[0];
-    const double im = (double)z[1];
-    const double mag = std::sqrt((re * re) + (im * im));
-    const size_t at = (size_t)(r->samples % 64);
-    const size_t back = (size_t)((r->samples - r->lag + 64) % 64);
-    const double ur = mag > 0.0 ? re / mag : 0.0;
-    const double ui = mag > 0.0 ? im / mag : 0.0;
-    /* Re(u_k conj(u_{k-L})): the coherence's real part, which beta predicts (its imaginary part is noise about 0). */
-    const double coh = (ur * r->u_re[back]) + (ui * r->u_im[back]);
-    r->u_re[at] = ur;
-    r->u_im[at] = ui;
-    for (int p = 0; p < kPhases; p++) {
-        if (r->samples < r->offset[p]) {
-            continue;
-        }
-        r->w_power[p] += (re * re) + (im * im);
-        r->w_coh[p] += coh;
-        if (++r->w_count[p] < r->window) {
-            continue;
-        }
-        if (r->closed[p]++ > 0) {
-            const double mean_p = r->w_power[p] / (double)r->window;
-            r->sum_p[p] += mean_p;
-            r->sum_p2[p] += mean_p * mean_p;
-            r->sum_coh[p] += r->w_coh[p] / (double)r->window;
-        }
-        r->w_power[p] = 0.0;
-        r->w_coh[p] = 0.0;
-        r->w_count[p] = 0;
-    }
 }
 
 void
@@ -700,14 +704,38 @@ runners_track(Runners* r, int i, const float* iq) {
 }
 
 void
-runners_noise(Runners* r, int p, float d, const float* iq) {
+runners_noise(Runners* r, float d, const float* iq) {
     uint8_t flag = 0;
-    dsd_noise_squelch_process(&r->noise[p], &d, iq, 1, &flag);
-    r->noise_opens[p] += (flag & DSD_SQUELCH_FLAG_CLOSED) == 0U ? 1U : 0U;
-    if (r->noise[p].windows != r->q_seen[p]) {
-        r->q_seen[p] = r->noise[p].windows;
-        r->q[p].push_back(r->noise[p].quieting_db);
+    dsd_noise_squelch_process(&r->noise, &d, iq, 1, &flag);
+    r->noise_opens += (flag & DSD_SQUELCH_FLAG_CLOSED) == 0U ? 1U : 0U;
+    if (r->noise.windows != r->q_seen) {
+        r->q_seen = r->noise.windows;
+        r->q.push_back(r->noise.quieting_db);
     }
+}
+
+/* One sample into the measured covariance and coherence. */
+void
+runners_cov(Runners* r, const float* z) {
+    const double re = (double)z[0];
+    const double im = (double)z[1];
+    const long n = r->cov_n;
+    const int have = n + 1 < kCovLags ? (int)(n + 1) : kCovLags;
+    const size_t at = (size_t)(n % kCovLags);
+    r->hist_re[at] = re;
+    r->hist_im[at] = im;
+    for (int m = 0; m < have; m++) {
+        const size_t back = (size_t)((n - m) % kCovLags);
+        r->cov[m] += (re * r->hist_re[back]) + (im * r->hist_im[back]);
+    }
+    if (n >= r->lag) {
+        const size_t back = (size_t)((n - r->lag) % kCovLags);
+        const double br = r->hist_re[back];
+        const double bi = r->hist_im[back];
+        const double mags = std::sqrt(((re * re) + (im * im)) * ((br * br) + (bi * bi)));
+        r->coh += mags > 0.0 ? ((re * br) + (im * bi)) / mags : 0.0;
+    }
+    r->cov_n++;
 }
 
 /* One block of channel samples through every runner and the meters. */
@@ -720,22 +748,23 @@ runners_add(Runners* r, Meter* meters, int meter_count, const float* iq, int pai
         const float d = disc_step(im, re);
         r->prev_re = z[0];
         r->prev_im = z[1];
-        runners_window(r, z);
         for (int p = 0; p < kPhases; p++) {
-            if (r->samples < r->offset[p]) {
-                continue;
-            }
-            for (int m = 0; m < 3; m++) {
-                runners_track(r, (p * 3) + m, z);
-            }
-            if (r->noise_valid && r->samples < r->noise_end + r->offset[p]) {
-                runners_noise(r, p, d, z);
+            if (r->samples >= r->offset[p] && r->samples < r->offset[p] + r->len.floor) {
+                for (int m = 0; m < 3; m++) {
+                    runners_track(r, (p * 3) + m, z);
+                }
             }
         }
-        if (r->samples < r->noise_end) {
+        if (r->noise_valid != 0 && r->samples < r->len.noise) {
+            runners_noise(r, d, z);
+        }
+        if (r->samples < r->len.meter) {
             for (int i = 0; i < meter_count; i++) {
                 meter_add(&meters[i], d);
             }
+        }
+        if (r->samples < r->len.cov) {
+            runners_cov(r, z);
         }
     }
 }
@@ -764,134 +793,146 @@ struct Outcome {
     double cal_whole = 0.0;
     double interim_worst = 0.0;
     double interim_whole = 0.0;
-    double neff_off = 0.0; /* the worst phase's measured N_eff over the plan's, less 1 */
-    double beta_off = 0.0; /* the worst phase's measured coherence less beta */
+    double neff_off = 0.0; /* the measured N_eff over the plan's, less 1 */
+    double beta_off = 0.0; /* the measured coherence less beta */
 };
 
-/* The measured window statistics against the plan at every phase: a window's power varies as 1 / N_eff (within four of
-   the estimate's standard deviations, sqrt(2 / K) for K windows) and its lag-L coherence averages beta (within five of
-   its standard deviation, about 1 / sqrt(N_eff K)). */
+/* The 40 ms window statistics the classifier sees, from the stream's measured covariance: a window of N samples'
+   power varies as (sum over |m| < N of (N - |m|) R(m)^2) / (N R(0))^2, which is 1 / N_eff (within 3 %: its sampling
+   scatter is about 2 / sqrt(samples), 0.6 % at 100,000); the lag-L coherence averages beta (within five of its standard
+   deviations, sqrt(N / (2 N_eff samples))). */
 int
 window_stats_ok(const Runners& r, const dsd_squelch_floor_plan& fp, const char* name, Outcome* o) {
-    int ok = 1;
-    for (int p = 0; p < kPhases; p++) {
-        const double k = (double)(r.closed[p] - 1);
-        const double mean = r.sum_p[p] / k;
-        const double var = (r.sum_p2[p] / k) - (mean * mean);
-        const double neff_off = ((mean * mean) / var) / fp.neff - 1.0;
-        const double beta_off = (r.sum_coh[p] / k) - fp.beta;
-        o->neff_off = std::fabs(neff_off) > std::fabs(o->neff_off) ? neff_off : o->neff_off;
-        o->beta_off = std::fabs(beta_off) > std::fabs(o->beta_off) ? beta_off : o->beta_off;
-        if (std::fabs(neff_off) > 4.0 * std::sqrt(2.0 / k) || std::fabs(beta_off) > 5.0 / std::sqrt(fp.neff * k)) {
-            DSD_FPRINTF(stderr, "%s, phase %d: measured N_eff %+.1f %%, coherence %+.5f off the plan (%.0f windows)\n",
-                        name, p, 100.0 * neff_off, beta_off, k);
-            ok = 0;
-        }
+    const double count = (double)r.cov_n;
+    const int window = fp.rate_hz / 25;
+    const double r0 = r.cov[0] / count;
+    double var = (double)window * r0 * r0;
+    for (int m = 1; m < kCovLags && m < window; m++) {
+        const double rm = r.cov[m] / (count - (double)m);
+        var += 2.0 * (double)(window - m) * rm * rm;
     }
-    return ok;
+    const double neff = ((double)window * (double)window * r0 * r0) / var;
+    o->neff_off = neff / fp.neff - 1.0;
+    o->beta_off = (r.coh / (count - (double)r.lag)) - fp.beta;
+    const double coh_bound = 5.0 * std::sqrt((double)window / (2.0 * fp.neff * count));
+    if (std::fabs(o->neff_off) > 0.03 || std::fabs(o->beta_off) > coh_bound) {
+        DSD_FPRINTF(stderr, "%s: measured N_eff %+.2f %%, coherence %+.5f off the plan (bound %.5f)\n", name,
+                    100.0 * o->neff_off, o->beta_off, coh_bound);
+        return 0;
+    }
+    return 1;
 }
 
-/* @p seconds of unit noise into a chain (full_demod() with @p passes from @p in_rate, the step of @p plan or none) at
-   @p width_hz, its plans held to the bounds; @p interim, when given, also measures the plans the half-band stage alone
-   gives at the channel rate (what a stepped chain ran before the model). */
+/* The trackers' bounds (DSP_SQUELCH_FLOOR's): no opens, KNOWN within 5..8 windows, never learned again, the floor
+   within 0.5 dB of the noise power (unit noise in: the plan's noise gain). */
+void
+floor_bounds(const Runners& r, const dsd_squelch_floor_plan& fp, const char* name, Outcome* o) {
+    for (int i = 0; i < kTrackers; i++) {
+        dsd_squelch_floor_status st;
+        dsd_squelch_floor_get_status(&r.floor[i], &st);
+        const double off = std::fabs(db(st.floor_power / fp.noise_gain));
+        o->floor_worst_db = std::fmax(o->floor_worst_db, off);
+        o->known_max = r.known_at[i] > o->known_max ? r.known_at[i] : o->known_max;
+        const bool ok = r.opens[i] == 0U && r.known_at[i] >= (uint64_t)DSD_SQUELCH_FLOOR_LEARN_NEED
+                        && r.known_at[i] <= 8U && r.relearned[i] == 0 && st.state == DSD_SQUELCH_FLOOR_KNOWN
+                        && off <= 0.5;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "%s, margin %d, phase %d: opens %llu, known at %llu, relearned %d, floor %+.2f dB\n",
+                        name, kMargins[i % 3], i / 3, (unsigned long long)r.opens[i], (unsigned long long)r.known_at[i],
+                        r.relearned[i], db(st.floor_power / fp.noise_gain));
+            o->floor_ok = 0;
+        }
+    }
+}
+
+/* The noise squelch's bounds (DSP_NFM_NOISE_SQUELCH's): noise reads a median within 0.5 dB of 0 and never reaches
+   3 dB or opens; the references are within 0.6 dB per band-pass and 0.3 dB over the band. */
+void
+noise_bounds(const Runners& r, const Meter* meters, int meter_count, const char* name, Outcome* o) {
+    meter_error(&meters[0], &o->cal_worst, &o->cal_whole);
+    if (meter_count > 1) {
+        meter_error(&meters[1], &o->interim_worst, &o->interim_whole);
+    }
+    o->median_db = percentile(r.q, 2, 50.0);
+    o->top_db = percentile(r.q, 2, 100.0);
+    if (std::fabs(o->median_db) >= 0.5 || o->top_db >= 3.0 || r.noise_opens != 0U) {
+        DSD_FPRINTF(stderr, "%s: noise median %+.2f dB, max %+.2f dB, %llu open\n", name, o->median_db, o->top_db,
+                    (unsigned long long)r.noise_opens);
+        o->noise_ok = 0;
+    }
+    if (o->cal_worst >= 0.6 || std::fabs(o->cal_whole) >= 0.3) {
+        DSD_FPRINTF(stderr, "%s: calibration worst band-pass %.3f dB, whole band %+.3f dB\n", name, o->cal_worst,
+                    o->cal_whole);
+        o->noise_ok = 0;
+    }
+}
+
+/* Unit noise into a stepped chain (full_demod() from twice hb_out through one 31-tap pass, then the step of @p plan)
+   at @p width_hz, its plans held to the bounds for the lengths in @p len; @p interim also measures the plans the
+   half-band stage alone gives at the channel rate (what a stepped chain ran before the model). */
 Outcome
-run_chain(const char* name, int passes, double in_rate, int rate, const dsd_live_iq_step_plan* plan, int width_hz,
-          int interim, uint64_t seed, double seconds = 60.0) {
+run_chain(const char* name, const dsd_live_iq_step_plan& plan, int width_hz, int interim, uint64_t seed,
+          const Durations& len) {
     Outcome o;
     const DemodBox box;
     demod_state* s = box.s;
-    CHECK(configure(s, passes, rate, plan, width_hz) == 0, "%s: configure", name);
+    const int rate = plan.target_hz;
+    CHECK(configure(s, plan.passes, rate, &plan, width_hz) == 0, "%s: configure", name);
     Rng rng(seed);
-    /* One block designs the channel plan the squelch plans take. */
+    /* One block designs the channel plan the squelch plans take, and fills the filters. */
     feed_noise(s, rng, 1.0, 4096, [](const float*, int) {});
     const float* taps = width_hz > 0 ? s->channel_lpf_plan_taps : NULL;
     const int taps_len = width_hz > 0 ? s->channel_lpf_plan_taps_len : 0;
     static dsd_squelch_floor_plan fp;
     static dsd_noise_squelch_plan np;
     static dsd_noise_squelch_plan interim_np;
-    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
-    const int count = stages_for(passes, st);
-    const bool stepped = plan != NULL && plan->enabled != 0;
-    if (stepped) {
-        CHECK(dsd_squelch_step_model_floor_plan(&s->squelch_step_model, &fp, taps, taps_len, rate) == 0,
-              "%s: floor plan", name);
-        (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, &np, taps, taps_len, rate);
-    } else {
-        CHECK(dsd_squelch_floor_plan_design(&fp, taps, taps_len, count > 0 ? st[count - 1].taps : NULL,
-                                            count > 0 ? st[count - 1].len : 0, rate)
-                  == 0,
-              "%s: floor plan", name);
-        (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, rate);
+    CHECK(dsd_squelch_step_model_floor_plan(&s->squelch_step_model, &fp, taps, taps_len, rate) == 0, "%s: floor plan",
+          name);
+    (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, &np, taps, taps_len, rate);
+    DSD_MEMSET(&interim_np, 0, sizeof interim_np);
+    if (interim != 0) {
+        dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+        (void)dsd_noise_squelch_plan_design(&interim_np, taps, taps_len, st, stages_for(plan.passes, st), rate);
     }
-    (void)dsd_noise_squelch_plan_design(&interim_np, taps, taps_len, st, count, rate);
     static Runners r;
     r = Runners();
-    const long noise_samples = 20L * rate;
-    runners_init(&r, &fp, &np, stepped ? plan->L : 1, noise_samples);
+    Durations run = len;
+    if (np.valid == 0) {
+        run.noise = 0;
+        run.meter = 0;
+    }
+    runners_init(&r, &fp, &np, plan.L, run);
     static Meter meters[2];
     meter_init(&meters[0], &np, rate / 10);
     meter_init(&meters[1], &interim_np, rate / 10);
-    const int meter_count = !np.valid ? 0 : (interim && interim_np.valid ? 2 : 1);
-    feed_noise(s, rng, 1.0, (long)(seconds * in_rate),
+    const int meter_count = np.valid == 0 ? 0 : (interim_np.valid != 0 ? 2 : 1);
+    const long outputs = std::max(std::max(run.floor + r.offset[kPhases - 1], run.noise), std::max(run.meter, run.cov));
+    const double in_per_out = 2.0 * std::ldexp((double)plan.hb_out_num, -(int)plan.hb_out_shift) / (double)rate;
+    feed_noise(s, rng, 1.0, (long)((double)outputs * in_per_out) + 4096,
                [&](const float* iq, int pairs) { runners_add(&r, meters, meter_count, iq, pairs); });
-    /* Unit noise at the input: the channel's noise power is the plan's noise gain. */
-    const double expect = fp.noise_gain;
-    for (int i = 0; i < kTrackers; i++) {
-        dsd_squelch_floor_status st_now;
-        dsd_squelch_floor_get_status(&r.floor[i], &st_now);
-        const double off = std::fabs(db(st_now.floor_power / expect));
-        o.floor_worst_db = std::fmax(o.floor_worst_db, off);
-        o.known_max = r.known_at[i] > o.known_max ? r.known_at[i] : o.known_max;
-        const int ok = r.opens[i] == 0U && r.known_at[i] >= (uint64_t)DSD_SQUELCH_FLOOR_LEARN_NEED
-                       && r.known_at[i] <= 8U && !r.relearned[i] && st_now.state == DSD_SQUELCH_FLOOR_KNOWN
-                       && off <= 0.5;
-        if (!ok) {
-            DSD_FPRINTF(stderr, "%s, margin %d, phase %d: opens %llu, known at %llu, relearned %d, floor %+.2f dB\n",
-                        name, kMargins[i % 3], i / 3, (unsigned long long)r.opens[i], (unsigned long long)r.known_at[i],
-                        r.relearned[i], db(st_now.floor_power / expect));
-            o.floor_ok = 0;
-        }
+    if (run.floor > 0) {
+        floor_bounds(r, fp, name, &o);
     }
     const int stats_ok = window_stats_ok(r, fp, name, &o);
     o.noise_valid = np.valid;
-    if (np.valid) {
-        meter_error(&meters[0], &o.cal_worst, &o.cal_whole);
-        if (meter_count > 1) {
-            meter_error(&meters[1], &o.interim_worst, &o.interim_whole);
-        }
-        for (int p = 0; p < kPhases; p++) {
-            const double median = percentile(r.q[p], 2, 50.0);
-            const double top = percentile(r.q[p], 2, 100.0);
-            o.median_db = std::fabs(median) > std::fabs(o.median_db) ? median : o.median_db;
-            o.top_db = std::fmax(o.top_db, top);
-            if (std::fabs(median) >= 0.5 || top >= 3.0 || r.noise_opens[p] != 0U) {
-                DSD_FPRINTF(stderr, "%s, phase %d: noise median %+.2f dB, max %+.2f dB, %llu open\n", name, p, median,
-                            top, (unsigned long long)r.noise_opens[p]);
-                o.noise_ok = 0;
-            }
-        }
-        if (o.cal_worst >= 0.6 || std::fabs(o.cal_whole) >= 0.3) {
-            DSD_FPRINTF(stderr, "%s: calibration worst band-pass %.3f dB, whole band %+.3f dB\n", name, o.cal_worst,
-                        o.cal_whole);
-            o.noise_ok = 0;
-        }
+    if (run.noise > 0 && run.meter > 0) {
+        noise_bounds(r, meters, meter_count, name, &o);
     }
     printf(
-        "  %-34s lag %d rho %+.4f beta %+.4f N_eff %7.2f gain %.5f | measured N_eff %+5.1f %% coh %+.4f | floor %.2f "
-        "dB known <= %llu %s",
-        name, fp.lag, fp.rho_lag, fp.beta, fp.neff, fp.noise_gain, 100.0 * o.neff_off, o.beta_off, o.floor_worst_db,
-        (unsigned long long)o.known_max, o.floor_ok && stats_ok ? "ok" : "FAIL");
-    if (np.valid) {
+        "  %-30s lag %d beta %+.4f N_eff %7.2f | measured N_eff %+5.2f %% coh %+.4f | floor %.2f dB known <= %llu %s",
+        name, fp.lag, fp.beta, fp.neff, 100.0 * o.neff_off, o.beta_off, o.floor_worst_db,
+        (unsigned long long)o.known_max, (o.floor_ok != 0 && stats_ok != 0) ? "ok" : "FAIL");
+    if (run.noise > 0 && run.meter > 0) {
         printf(" | noise median %+.2f max %+.2f cal %.2f/%+.2f dB %s", o.median_db, o.top_db, o.cal_worst, o.cal_whole,
-               o.noise_ok ? "ok" : "FAIL");
+               o.noise_ok != 0 ? "ok" : "FAIL");
         if (meter_count > 1) {
             printf(" (half-band alone %.2f/%+.2f dB)", o.interim_worst, o.interim_whole);
         }
-    } else {
+    } else if (np.valid == 0) {
         printf(" | no noise plan");
     }
     printf("\n");
-    CHECK(o.floor_ok && o.noise_ok && stats_ok, "%s", name);
+    CHECK(o.floor_ok != 0 && o.noise_ok != 0 && stats_ok != 0, "%s", name);
     return o;
 }
 
@@ -1131,62 +1172,65 @@ test_no_step_noise_plans_pinned(void) {
     printf("no step: today's floor and noise plans match b08406ebc's\n");
 }
 
-/* The floor plan's statistics on the real stepped stream, at three window start phases (30 s of noise each). */
+/* The floor plan's window statistics measured on the real stepped stream: the covariance of 100,000 channel samples
+   behind the widest NFM channel at 48 and 72 kHz from 2.5 MS/s and 24 kHz from 3 MS/s, where the correlation is long
+   enough that a slip in N_eff's sum moves it by a quarter or more. */
 void
 test_window_statistics(void) {
     const struct {
         uint32_t device;
         int target;
         int width;
-    } chains[] = {{2500000u, 48000, 25000}, {3000000u, 24000, 20400}, {2500000u, 12000, 9600}};
+    } chains[] = {{2500000u, 48000, 25000}, {2500000u, 72000, 25000}, {3000000u, 24000, 20400}};
 
+    const Durations len = {0, 0, 0, 100000};
     for (const auto& c : chains) {
         const dsd_live_iq_step_plan plan =
             stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target));
-        const double hb_out = std::ldexp((double)plan.hb_out_num, -(int)plan.hb_out_shift);
         char name[96];
         DSD_SNPRINTF(name, sizeof name, "%u/%d Hz, width %d", c.device, c.target, c.width);
-        (void)run_chain(name, 1, 2.0 * hb_out, c.target, &plan, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target,
-                        30.0);
+        (void)run_chain(name, plan, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target, len);
     }
 }
 
-/* Every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s, against the RTL-SDR chain at the same
-   bandwidth. */
+/* Every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass from twice
+   hb_out), the widest NFM channel it takes and none: each chain's floor, noise squelch and window statistics held to
+   the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to, the trackers at three phases of the
+   step's period. The noise plan's validity is the band rule the RTL-SDR chain's takes too (the same arguments). */
 void
 test_matrix(void) {
     const uint32_t devices[] = {2500000u, 3000000u};
     const int targets[] = {4000, 6000, 8000, 12000, 16000, 24000, 48000, 72000};
     int interim_misses = 0;
-    int interim_plans = 0;
-    for (int target : targets) {
+    for (const int target : targets) {
         const int widths[2] = {widest_nfm_hz(target), 0};
+        /* Lengths in channel samples (Durations): 4 s of trackers, 3 s of noise squelch, 6 s of meters, 100,000
+           samples of covariance. */
+        const Durations len = {4L * target, 3L * target, 6L * target, 100000};
         for (int w = 0; w < 2; w++) {
             if (w == 0 && widths[0] == 0) {
                 continue;
             }
-            char name[96];
-            DSD_SNPRINTF(name, sizeof name, "RTL %d Hz, width %d", target, widths[w]);
-            const Outcome rtl = run_chain(name, 1, 2.0 * target, target, NULL, widths[w], 0,
-                                          0x5EED0000ULL + (uint64_t)target + (uint64_t)w);
-            for (uint32_t device : devices) {
+            for (const uint32_t device : devices) {
                 const dsd_live_iq_step_plan plan =
                     stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, device, (uint32_t)target));
-                const double hb_out = std::ldexp((double)plan.hb_out_num, -(int)plan.hb_out_shift);
+                char name[96];
                 DSD_SNPRINTF(name, sizeof name, "%u/%d Hz, width %d", device, target, widths[w]);
-                const Outcome step = run_chain(name, 1, 2.0 * hb_out, target, &plan, widths[w], 1,
-                                               0xA1E5ULL + device + (uint64_t)target + (uint64_t)w);
-                CHECK(step.noise_valid == rtl.noise_valid, "%s: noise plan valid %d, RTL %d", name, step.noise_valid,
-                      rtl.noise_valid);
-                if (step.noise_valid) {
-                    interim_plans++;
-                    interim_misses += (step.interim_worst >= 0.6 || std::fabs(step.interim_whole) >= 0.3) ? 1 : 0;
-                }
+                /* The half-band stage alone is measured where it misses: 24 kHz with no channel filter. */
+                const int interim = (target == 24000 && widths[w] == 0) ? 1 : 0;
+                /* There the meters run 20 s: both plans' references are compared to the 0.6 dB bound, the half-band
+                   stage alone's within a tenth of a dB of it. */
+                Durations chain_len = len;
+                chain_len.meter = interim != 0 ? 20L * target : len.meter;
+                const Outcome step = run_chain(name, plan, widths[w], interim,
+                                               0xA1E5ULL + device + (uint64_t)target + (uint64_t)w, chain_len);
+                interim_misses +=
+                    (interim != 0 && (step.interim_worst >= 0.6 || std::fabs(step.interim_whole) >= 0.3)) ? 1 : 0;
             }
         }
     }
-    printf("the half-band stage alone misses the noise references at %d of %d stepped plans\n", interim_misses,
-           interim_plans);
+    printf("the half-band stage alone misses the noise references at %d of 2 stepped plans at 24 kHz unfiltered\n",
+           interim_misses);
     /* What a stepped chain ran before the model: at 24 kHz with no channel filter its references are off by more than
        DSP_NFM_NOISE_SQUELCH allows (the matrix tells the two apart). */
     CHECK(interim_misses >= 1, "the half-band stage alone never missed: the matrix does not test the step");

@@ -10984,9 +10984,10 @@ target_link_libraries(
 )
 add_test(NAME DSP_LIVE_IQ_STEP COMMAND dsd-neo_test_dsp_live_iq_step)
 
-# The dynamic squelches through the live I/Q rate step (issue #806): R_hb and its spectral factor against the real
-# cascade, the step model's covariance against the real step, and, with --matrix, the auto and noise squelch plans at
-# every DSP bandwidth on the Airspy post-half-band rates against noise through full_demod() and the RTL-SDR chain.
+# The dynamic squelches through the live I/Q rate step (issue #806): R_hb and the step model's covariance against the
+# real cascade and step (exactly), the floor plan's arithmetic and window statistics, and, with --matrix, the auto and
+# noise squelch plans at every DSP bandwidth on the Airspy post-half-band rates against noise through full_demod(), held
+# to the RTL-SDR chain's bounds.
 add_executable(
     dsd-neo_test_dsp_squelch_step_model
     dsp/test_dsp_squelch_step_model.cpp
@@ -11006,12 +11007,12 @@ add_test(
     NAME DSP_SQUELCH_STEP_MODEL
     COMMAND dsd-neo_test_dsp_squelch_step_model
 )
-set_tests_properties(DSP_SQUELCH_STEP_MODEL PROPERTIES TIMEOUT 300)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL PROPERTIES TIMEOUT 60)
 add_test(
     NAME DSP_SQUELCH_STEP_MODEL_MATRIX
     COMMAND dsd-neo_test_dsp_squelch_step_model --matrix
 )
-set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 900)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 120)
 
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
