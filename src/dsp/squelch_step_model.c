@@ -353,23 +353,33 @@ ssm_pre_channel_stats(dsd_squelch_step_model* m) {
     m->cyclo_dev = dev;
 }
 
-/* The response store and the floor model's scratch. */
+/* The response store and the floor model's scratch. Every count is checked, by division so no product wraps, and
+   every size formed before the first allocation: none is read back from the model between the calls. */
 static int
 ssm_allocate(dsd_squelch_step_model* m) {
-    m->cov_lags = m->resp_len + DSD_NOISE_SQUELCH_MAX_TAPS - 1;
-    const size_t cov_count = (size_t)m->plan.L * (size_t)m->cov_lags;
-    const size_t resp_count = (size_t)m->plan.M * (size_t)m->resp_len;
-    if (cov_count > k_max_cov_doubles || resp_count > k_max_cov_doubles) {
+    const int L = m->plan.L;
+    const int M = m->plan.M;
+    const int resp_len = m->resp_len;
+    if (L < 1 || M < 1 || resp_len < 1 || (size_t)resp_len > k_max_cov_doubles / (size_t)M) {
         return -1;
     }
-    m->resp = (float*)dsd_neo_aligned_malloc(resp_count * sizeof(float));
-    m->cov = (double*)dsd_neo_aligned_malloc(cov_count * sizeof(double));
-    m->chan = (double*)dsd_neo_aligned_malloc((size_t)m->cov_lags * sizeof(double));
-    m->ry_mean = (double*)dsd_neo_aligned_malloc((size_t)m->resp_len * sizeof(double));
+    const int cov_lags = resp_len + DSD_NOISE_SQUELCH_MAX_TAPS - 1;
+    if ((size_t)cov_lags > k_max_cov_doubles / (size_t)L) {
+        return -1;
+    }
+    const size_t resp_bytes = (size_t)M * (size_t)resp_len * sizeof(float);
+    const size_t cov_bytes = (size_t)L * (size_t)cov_lags * sizeof(double);
+    const size_t chan_bytes = (size_t)cov_lags * sizeof(double);
+    const size_t ry_mean_bytes = (size_t)resp_len * sizeof(double);
+    m->cov_lags = cov_lags;
+    m->resp = (float*)dsd_neo_aligned_malloc(resp_bytes);
+    m->cov = (double*)dsd_neo_aligned_malloc(cov_bytes);
+    m->chan = (double*)dsd_neo_aligned_malloc(chan_bytes);
+    m->ry_mean = (double*)dsd_neo_aligned_malloc(ry_mean_bytes);
     if (!m->resp || !m->cov || !m->chan || !m->ry_mean) {
         return -1;
     }
-    DSD_MEMSET(m->resp, 0, resp_count * sizeof(float));
+    DSD_MEMSET(m->resp, 0, resp_bytes);
     return 0;
 }
 
