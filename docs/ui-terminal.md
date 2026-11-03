@@ -943,17 +943,18 @@ the list's `Avoids: N`.
 
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation (right
 aligned to the count's digits, `( 3/12)`): among the targets of the lists that are on, avoided ones included. With two
-or more target lists the row also names the list of the target on air after its id, and keeps a room for `[list off]`
-beside `[avoided]`. While the target on air belongs to a list that was just switched off, the position reads `(-/m)`
-until the receiver leaves it:
+or more target lists the row also names the list of the target on air after its id. While the target on air belongs to
+a list that was just switched off, the position reads `(-/m)` until the receiver leaves it, and `[list off]` shows in
+the room `[avoided]` takes (one cell wider then, so an 80-column row keeps room for the list's name); a target that is
+both shows `[avoided]`, since `(-/m)` already says its list is off:
 
 ```
-| Trunk Scan: (2/3)                           Target: gate-b List: security
-| Trunk Scan: (-/2)                [list off] Target: gate-b List: security
+| Trunk Scan: (2/3)                 Target: gate-b List: security
+| Trunk Scan: (-/2)      [list off] Target: gate-b List: security
 ```
 
-On a narrow terminal the row drops whole fields from its end, the list's name first. The row
-shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
+On a narrow terminal the row drops whole fields from its end: the avoid count, then the list's name, then the id. The
+row shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
 
 A scan paused by a frequency entry (or by `y` under `--trunk-scan`) keeps its row, without a row's frequency, a

@@ -1229,11 +1229,26 @@ ui_row_trunk_scan_position_field(ui_row* row, const dsd_state* state, int list_o
     }
 }
 
+/* Why the target on air is outside the rotation, in a room that is always there: [avoided] (a fallback the scan parked
+   on), and with two or more lists [list off] (its list was just switched off) in the same room, which an 80-column row
+   needs for the list's name. When both hold, [avoided]: "(-/m)" already says the list is off (issue #697 I1). */
+static void
+ui_row_trunk_scan_outside_field(ui_row* row, const dsd_state* state, int several, int list_off) {
+    static const char k_avoided[] = "[avoided]";
+    static const char k_list_off[] = "[list off]";
+    if (!several) {
+        ui_row_flag_field(row, state->trunk_scan_active_avoided, k_avoided);
+        return;
+    }
+    const char* word = state->trunk_scan_active_avoided ? k_avoided : (list_off ? k_list_off : "");
+    ui_row_field(row, " %-*s", (int)(sizeof k_list_off - 1U), word);
+}
+
 /* Which of the rotating --trunk-scan targets the receiver is parked on (issue #669 order): the position, the voice
-   gate, HOLD, [avoided] and, with two or more lists, [list off] for the target on air, each in a room that is always
-   there, then the target's id and its list's name, the fields of operator-chosen length, and the avoid count. The
-   park frequency has no snapshot field of its own; the protocol header lines already carry the frequency being
-   decoded. */
+   gate, HOLD and why the target on air is outside the rotation, each in a room that is always there, then the
+   target's id and, with two or more lists, its list's name, the fields of operator-chosen length, and the avoid count.
+   A narrow row drops whole fields from the end: the count, then the list's name, then the id. The park frequency has
+   no snapshot field of its own; the protocol header lines already carry the frequency being decoded. */
 static void
 ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
@@ -1249,10 +1264,7 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     // The target on air first: an operator hold, a receiver parked on a target the operator
     // avoided because every alternate failed to retune, or one whose list was switched off.
     ui_row_flag_field(&row, state->trunk_scan_hold, "HOLD");
-    ui_row_flag_field(&row, state->trunk_scan_active_avoided, "[avoided]");
-    if (several) {
-        ui_row_flag_field(&row, lists.active_list_off, "[list off]");
-    }
+    ui_row_trunk_scan_outside_field(&row, state, several, several && lists.active_list_off);
     ui_row_field(&row, " Target: %s", state->trunk_scan_active_id);
     if (several && lists.active_list != 0U) {
         ui_row_field(&row, " List: %s", lists.lists[lists.active_list - 1U].name);

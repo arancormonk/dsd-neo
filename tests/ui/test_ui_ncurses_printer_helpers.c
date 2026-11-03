@@ -2472,9 +2472,10 @@ test_trunk_scan_status_row_rendering(void) {
     reset_lcn_name_stub();
 }
 
-/* Issue #697: with two or more target lists the Trunk Scan row names the list on air after the target, keeps a room
-   for [list off] beside [avoided], and reads "(-/m)" while the target on air's list is off; one list adds neither. The
-   paused row says how many lists are on. A narrow terminal drops whole fields from the end, the list's name first. */
+/* Issue #697: with two or more target lists the Trunk Scan row names the list on air after the target, shows
+   [list off] in the room [avoided] has (wider by a cell; [avoided] when both hold), and reads "(-/m)" while the target
+   on air's list is off; one list changes nothing. The paused row says how many lists are on. A narrow terminal drops
+   whole fields from the end, the list's name first, and 80 columns hold a long id and list name whole. */
 static void
 test_trunk_scan_list_fields(void) {
     static dsd_opts opts;
@@ -2500,7 +2501,7 @@ test_trunk_scan_list_fields(void) {
 
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan: (1/4)                           Target: gate-a List: security\n");
+    assert_capture_equals("| Trunk Scan: (1/4)                 Target: gate-a List: security\n");
     const int target_col = capture_column_of(" Target:");
 
     /* Hospital off, the receiver still on security's second target: 1..3 of the three left. */
@@ -2510,7 +2511,7 @@ test_trunk_scan_list_fields(void) {
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-b");
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan: (2/3)                           Target: gate-b List: security\n");
+    assert_capture_equals("| Trunk Scan: (2/3)                 Target: gate-b List: security\n");
 
     /* Security switched off while on air: no position among the lists on, the flag says why, the column holds. */
     state.trunk_scan_lists[0].enabled = 0;
@@ -2520,32 +2521,52 @@ test_trunk_scan_list_fields(void) {
     state.trunk_scan_rotation_count = 2;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan: (-/2)                [list off] Target: gate-b List: security\n");
+    assert_capture_equals("| Trunk Scan: (-/2)      [list off] Target: gate-b List: security\n");
     assert(capture_column_of(" Target:") == target_col);
     state.trunk_scan_hold = 1;
     state.trunk_scan_active_avoided = 1;
     state.trunk_scan_avoided_count = 1;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided] [list off] Target: gate-b List: security Avoids: 1\n");
+    /* Avoided as well: [avoided] takes the room, and "(-/2)" still says the list is off. */
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided]  Target: gate-b List: security Avoids: 1\n");
     assert(capture_column_of(" Target:") == target_col);
 
     /* Cut at a whole field (issue #669): the list's name goes before the target's id, never half of either. */
-    g_stub_max_x = 75;
+    g_stub_max_x = 60;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided] [list off] Target: gate-b...\n");
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided]  Target: gate-b...\n");
     g_stub_max_x = 200;
     state.trunk_scan_hold = 0;
     state.trunk_scan_active_avoided = 0;
     state.trunk_scan_avoided_count = 0;
+
+    /* 80 columns: a long id and a long list name fit whole. */
+    g_stub_max_x = 80;
+    state.trunk_scan_lists[0].enabled = 1;
+    state.trunk_scan_active_list = 3;
+    state.trunk_scan_active_list_off = 0;
+    state.trunk_scan_rotation_ordinal = 4;
+    state.trunk_scan_rotation_count = 4;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "public-works");
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (4/4)                 Target: public-works List: municipality\n");
+    g_stub_max_x = 200;
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_active_list_off = 1;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_rotation_count = 2;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-b");
 
     /* A target on air with no list published names no list. */
     state.trunk_scan_active_list = 0;
     state.trunk_scan_active_list_off = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:                                 Target: gate-b\n");
+    assert_capture_equals("| Trunk Scan:                       Target: gate-b\n");
 
     /* One list: no list name and no [list off] room, as before lists existed. */
     state.trunk_scan_list_count = 1;

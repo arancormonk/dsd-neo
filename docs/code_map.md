@@ -9412,14 +9412,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal closes on
     Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The Trunk Scan row
     (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count` (`(-/m)` while
-    the list on air is off) and, with 2+ lists, keeps a `[list off]` room beside `[avoided]` and adds `List: <name>`
-    after the target (cut at a whole field); the paused trunk row adds `Lists: n/m on`. The rigctl rows moved to
-    Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests: `UI_SCAN_LIST_MODAL`
-    (pending, answers, refusals and when their notes go, the paused footer, repeat Enter, out-of-order answers, All
-    lists on, full queue, Esc, session change, results from before it opened, a snapshot already past the answer),
-    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
-    (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
-    key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+    the list on air is off) and, with 2+ lists, shows `[list off]` in the room `[avoided]` takes (11 cells then;
+    `[avoided]` when both hold, so 80 columns keep room for the list's name) and adds `List: <name>` after the target
+    (cut at a whole field: the count, then the list, then the id); the paused trunk row adds `Lists: n/m on`. The rigctl
+    rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
+    `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
+    out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
+    already past the answer), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION` (routing and the modal-only
+    overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its key, the rigctl rows in Input),
+    `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
