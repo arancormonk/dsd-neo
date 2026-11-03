@@ -2,20 +2,23 @@
 /* Link the real native adapter against the in-process SDK double (airspy_sdk_double.h). No USB access. */
 
 #include <dsd-neo/core/airspy_config.h>
-#include <dsd-neo/core/safe_api.h>
 #include <memory>
 #include "airspy_sdk_double.h"
 
 #ifndef DSD_TEST_AIRSPY_STREAM
-#include <airspy.h>
-#include <atomic>
-#include <cstring>
 #include <dsd-neo/io/rate_plan.h>
-#include <dsd-neo/runtime/input_failure.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <vector>
 #include "airspy_source.h"
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+/* For the adapter lifecycle tests, which run in the desktop build only. */
+#include <airspy.h>
+#include <atomic>
+#include <cstring>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/input_failure.h>
+#endif
 
 using namespace airspy_double;
 
@@ -220,6 +223,7 @@ main() {
 #include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream.h>

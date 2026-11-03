@@ -21,10 +21,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
-#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
@@ -39,7 +37,9 @@
 #include "test_support.h"
 
 #ifdef DSD_TEST_AIRSPY_LIVE
+#include <cstring>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream.h>
 #include "airspy_sdk_double.h"
 #endif
