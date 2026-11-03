@@ -426,13 +426,11 @@ run_plans(demod_state* s, int mode, double in_rate) {
    noise squelch), bit for bit. */
 void
 test_no_step_plans_are_todays(void) {
-    /* The noise plan (2 s of calibration noise apiece) on two of the chains: the whole cascade and none. */
     const struct {
         int passes;
         int rate;
         int width;
-        int noise;
-    } chains[] = {{5, 48000, 12500, 1}, {1, 24000, 0, 0}, {6, 16000, 13200, 0}, {0, 48000, 25000, 1}};
+    } chains[] = {{5, 48000, 12500}, {1, 24000, 0}, {6, 16000, 13200}, {0, 48000, 25000}};
 
     for (const auto& c : chains) {
         const DemodBox box;
@@ -440,9 +438,7 @@ test_no_step_plans_are_todays(void) {
         configure(s, c.passes, c.rate, NULL, c.width);
         const double in_rate = std::ldexp((double)c.rate, c.passes);
         run_plans(s, DSD_SQUELCH_MODE_AUTO, in_rate);
-        if (c.noise != 0) {
-            run_plans(s, DSD_SQUELCH_MODE_NOISE, in_rate);
-        }
+        run_plans(s, DSD_SQUELCH_MODE_NOISE, in_rate);
         const float* taps = c.width > 0 ? s->channel_lpf_plan_taps : NULL;
         const int taps_len = c.width > 0 ? s->channel_lpf_plan_taps_len : 0;
         dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
@@ -452,12 +448,9 @@ test_no_step_plans_are_todays(void) {
                                             count > 0 ? st[count - 1].len : 0, c.rate);
         CHECK(fp.valid && same_floor_plan(fp, s->squelch_floor.plan), "%d passes at %d Hz: floor plan differs",
               c.passes, c.rate);
-        if (c.noise != 0) {
-            static dsd_noise_squelch_plan np;
-            (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, c.rate);
-            CHECK(same_noise_plan(np, s->noise_squelch.plan), "%d passes at %d Hz: noise plan differs", c.passes,
-                  c.rate);
-        }
+        static dsd_noise_squelch_plan np;
+        (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, c.rate);
+        CHECK(same_noise_plan(np, s->noise_squelch.plan), "%d passes at %d Hz: noise plan differs", c.passes, c.rate);
         CHECK(!s->squelch_step_model.ready && s->squelch_plan.step.enabled == 0, "%d passes: a step model", c.passes);
     }
     printf("no step: full_demod()'s floor and noise plans are today's designs, bit for bit\n");
@@ -755,6 +748,9 @@ runners_add(Runners* r, Meter* meters, int meter_count, const float* iq, int pai
                 }
             }
         }
+        /* The noise squelch at window phase 0 only: the step's per-phase power spread is at most 2e-6 (its float
+           taps; test_step_covariance), so its 20 ms windows read the same noise at every start phase, and the trackers
+           already run all three. */
         if (r->noise_valid != 0 && r->samples < r->len.noise) {
             runners_noise(r, d, z);
         }
@@ -867,17 +863,35 @@ noise_bounds(const Runners& r, const Meter* meters, int meter_count, const char*
     }
 }
 
-/* Unit noise into a stepped chain (full_demod() from twice hb_out through one 31-tap pass, then the step of @p plan)
-   at @p width_hz, its plans held to the bounds for the lengths in @p len; @p interim also measures the plans the
-   half-band stage alone gives at the channel rate (what a stepped chain ran before the model). */
+/* The plans a chain runs: behind the step @p plan its model's, or with no step (NULL, the RTL-SDR chain: one 31-tap
+   pass from twice the rate) today's designs. */
+void
+design_chain_plans(demod_state* s, const dsd_live_iq_step_plan* plan, int rate, const float* taps, int taps_len,
+                   dsd_squelch_floor_plan* fp, dsd_noise_squelch_plan* np) {
+    if (plan != NULL) {
+        CHECK(dsd_squelch_step_model_floor_plan(&s->squelch_step_model, fp, taps, taps_len, rate) == 0,
+              "stepped floor plan at %d Hz", rate);
+        (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, np, taps, taps_len, rate);
+        return;
+    }
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = stages_for(1, st);
+    CHECK(dsd_squelch_floor_plan_design(fp, taps, taps_len, st[0].taps, st[0].len, rate) == 0, "floor plan at %d Hz",
+          rate);
+    (void)dsd_noise_squelch_plan_design(np, taps, taps_len, st, count, rate);
+}
+
+/* Unit noise into a chain at @p rate (full_demod() through one 31-tap pass, from twice hb_out then the step of
+   @p plan, or from twice the rate with no step when @p plan is NULL) at @p width_hz, its plans held to the bounds for
+   the lengths in @p len; @p interim also measures the plans the half-band stage alone gives at the channel rate (what
+   a stepped chain ran before the model). */
 Outcome
-run_chain(const char* name, const dsd_live_iq_step_plan& plan, int width_hz, int interim, uint64_t seed,
+run_chain(const char* name, const dsd_live_iq_step_plan* plan, int rate, int width_hz, int interim, uint64_t seed,
           const Durations& len) {
     Outcome o;
     const DemodBox box;
     demod_state* s = box.s;
-    const int rate = plan.target_hz;
-    CHECK(configure(s, plan.passes, rate, &plan, width_hz) == 0, "%s: configure", name);
+    CHECK(configure(s, 1, rate, plan, width_hz) == 0, "%s: configure", name);
     Rng rng(seed);
     /* One block designs the channel plan the squelch plans take, and fills the filters. */
     feed_noise(s, rng, 1.0, 4096, [](const float*, int) {});
@@ -886,13 +900,11 @@ run_chain(const char* name, const dsd_live_iq_step_plan& plan, int width_hz, int
     static dsd_squelch_floor_plan fp;
     static dsd_noise_squelch_plan np;
     static dsd_noise_squelch_plan interim_np;
-    CHECK(dsd_squelch_step_model_floor_plan(&s->squelch_step_model, &fp, taps, taps_len, rate) == 0, "%s: floor plan",
-          name);
-    (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, &np, taps, taps_len, rate);
+    design_chain_plans(s, plan, rate, taps, taps_len, &fp, &np);
     DSD_MEMSET(&interim_np, 0, sizeof interim_np);
     if (interim != 0) {
-        dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
-        (void)dsd_noise_squelch_plan_design(&interim_np, taps, taps_len, st, stages_for(plan.passes, st), rate);
+        dsd_squelch_floor_plan interim_fp;
+        design_chain_plans(s, NULL, rate, taps, taps_len, &interim_fp, &interim_np);
     }
     static Runners r;
     r = Runners();
@@ -901,13 +913,14 @@ run_chain(const char* name, const dsd_live_iq_step_plan& plan, int width_hz, int
         run.noise = 0;
         run.meter = 0;
     }
-    runners_init(&r, &fp, &np, plan.L, run);
+    runners_init(&r, &fp, &np, plan != NULL ? plan->L : 1, run);
     static Meter meters[2];
     meter_init(&meters[0], &np, rate / 10);
     meter_init(&meters[1], &interim_np, rate / 10);
     const int meter_count = np.valid == 0 ? 0 : (interim_np.valid != 0 ? 2 : 1);
     const long outputs = std::max(std::max(run.floor + r.offset[kPhases - 1], run.noise), std::max(run.meter, run.cov));
-    const double in_per_out = 2.0 * std::ldexp((double)plan.hb_out_num, -(int)plan.hb_out_shift) / (double)rate;
+    const double in_per_out =
+        plan != NULL ? 2.0 * std::ldexp((double)plan->hb_out_num, -(int)plan->hb_out_shift) / (double)rate : 2.0;
     feed_noise(s, rng, 1.0, (long)((double)outputs * in_per_out) + 4096,
                [&](const float* iq, int pairs) { runners_add(&r, meters, meter_count, iq, pairs); });
     if (run.floor > 0) {
@@ -1189,14 +1202,17 @@ test_window_statistics(void) {
             stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target));
         char name[96];
         DSD_SNPRINTF(name, sizeof name, "%u/%d Hz, width %d", c.device, c.target, c.width);
-        (void)run_chain(name, plan, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target, len);
+        (void)run_chain(name, &plan, c.target, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target, len);
     }
 }
 
 /* Every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass from twice
    hb_out), the widest NFM channel it takes and none: each chain's floor, noise squelch and window statistics held to
    the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to, the trackers at three phases of the
-   step's period. The noise plan's validity is the band rule the RTL-SDR chain's takes too (the same arguments). */
+   step's period, and the RTL-SDR chain at the same bandwidth (one 31-tap pass from twice the rate) held to the same
+   bounds for the same lengths. A stepped chain's noise plan is valid exactly where the RTL-SDR chain's is: the same band
+   rule, so a stepped design refused for any other reason (the factor's length, the step's output, a step refusing a
+   pass, no calibrated power) fails here. */
 void
 test_matrix(void) {
     const uint32_t devices[] = {2500000u, 3000000u};
@@ -1211,19 +1227,24 @@ test_matrix(void) {
             if (w == 0 && widths[0] == 0) {
                 continue;
             }
+            char name[96];
+            DSD_SNPRINTF(name, sizeof name, "RTL %d Hz, width %d", target, widths[w]);
+            const Outcome rtl =
+                run_chain(name, NULL, target, widths[w], 0, 0x5EED0000ULL + (uint64_t)target + (uint64_t)w, len);
             for (const uint32_t device : devices) {
                 const dsd_live_iq_step_plan plan =
                     stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, device, (uint32_t)target));
-                char name[96];
                 DSD_SNPRINTF(name, sizeof name, "%u/%d Hz, width %d", device, target, widths[w]);
-                /* The half-band stage alone is measured where it misses: 24 kHz with no channel filter. */
+                /* The half-band stage alone is measured where it misses: 24 kHz with no channel filter. There the
+                   meters run 20 s: both plans' references are compared to the 0.6 dB bound, the half-band stage
+                   alone's within a tenth of a dB of it. */
                 const int interim = (target == 24000 && widths[w] == 0) ? 1 : 0;
-                /* There the meters run 20 s: both plans' references are compared to the 0.6 dB bound, the half-band
-                   stage alone's within a tenth of a dB of it. */
                 Durations chain_len = len;
                 chain_len.meter = interim != 0 ? 20L * target : len.meter;
-                const Outcome step = run_chain(name, plan, widths[w], interim,
+                const Outcome step = run_chain(name, &plan, target, widths[w], interim,
                                                0xA1E5ULL + device + (uint64_t)target + (uint64_t)w, chain_len);
+                CHECK(step.noise_valid == rtl.noise_valid, "%s: noise plan valid %d, the RTL-SDR chain's %d", name,
+                      step.noise_valid, rtl.noise_valid);
                 interim_misses +=
                     (interim != 0 && (step.interim_worst >= 0.6 || std::fabs(step.interim_whole) >= 0.3)) ? 1 : 0;
             }
