@@ -209,15 +209,16 @@ ancestors(const QString& path) {
 /**
  * Whether @p relative names a file the app generates, the only files of decryption/ and scan_lists/ that count as
  * configuration: a compiled profile's key file, decryption/<uid>/<uuid>.(hex|dec|map).csv (DecryptionProfilesModel's
- * ProfileCompiler, a uid its validId() accepts), or a scan list's CSV, scan_lists/<uid>.csv (ScanListStarter, the same
- * uid rule). Anything else there is someone else's and survives a restore.
+ * ProfileCompiler, a uid its validId() accepts), or a scan list's CSV, scan_lists/<uid>/<name>.csv (ScanListStarter, the
+ * same uid rule; issue #697), or scan_lists/<uid>.csv as older versions wrote it. Anything else there is someone
+ * else's and survives a restore.
  */
 bool
 generated_file(const QString& relative) {
     static const QRegularExpression pattern(
         QStringLiteral("^(decryption/[A-Za-z0-9_-]{1,63}/"
                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(hex|dec|map)\\.csv"
-                       "|scan_lists/[A-Za-z0-9_-]{1,63}\\.csv)$"));
+                       "|scan_lists/[A-Za-z0-9_-]{1,63}(/[^/]+)?\\.csv)$"));
     return pattern.match(relative).hasMatch();
 }
 
@@ -1075,10 +1076,7 @@ class Applier {
             });
         }
         if (status == Status::Ok) {
-            // Issue #697: the restored lists can carry other UIDs than the ones a scan session's companions name.
-            status = step("forward.prefs", [this] {
-                return AppPrefs::replacePortable(m_staging.prefs) && AppPrefs::forgetScanCompanions();
-            });
+            status = step("forward.prefs", [this] { return AppPrefs::replacePortable(m_staging.prefs); });
         }
         return status;
     }
@@ -1134,6 +1132,13 @@ class Applier {
             // stay; the next start repeats the roll forward, which is idempotent (it reads only the journal and the
             // staging), and removes the marker then.
             return stuck();
+        }
+        // Issue #697: the restored lists can carry other UIDs than a remembered scan session's companions name, so
+        // they are forgotten, once the restore can no longer roll back (a rolled-back one keeps the old lists, and the
+        // session that names them). Device-local and best effort: a stop between the commit point and here keeps
+        // them, and the next start then drops any that name no list.
+        if (outcome == ApplyOutcome::Applied) {
+            (void)AppPrefs::forgetScanCompanions();
         }
         // An unmarked leftover is removed at the next start.
         if (step("cleanup", [this] { return m_root.removeTree(m_pending); }) == Status::Crashed) {

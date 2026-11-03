@@ -36,8 +36,22 @@ ModalSheet {
     }
     readonly property bool paused: !!lists && lists.paused
 
+    // A refusal is said aloud at once, as the failure card says a failure: a
+    // screen reader user switched the list and would otherwise not learn it
+    // went back (issue #697). The last one said, and how many, for tests.
+    property string announced: ""
+    property int announcements: 0
+    function announceRefusal(name, reason) {
+        if (!sheet.visible || reason.length === 0)
+            return;
+        sheet.announced = qsTr("%1: %2").arg(name).arg(reason);
+        sheet.announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(sheet.announced);
+    }
+
     function countText(n) {
-        return n === 1 ? qsTr("1 channel") : qsTr("%1 channels").arg(n);
+        return n === 1 ? qsTr("1 target") : qsTr("%1 targets").arg(n);
     }
 
     ReadableText {
@@ -86,6 +100,7 @@ ModalSheet {
                     return pending ? about + "\n" + (on ? qsTr("Switching on…") : qsTr("Switching off…")) : about;
                 }
                 note: reason
+                onReasonChanged: sheet.announceRefusal(title, reason)
                 checked: on
                 enabled: !!sheet.lists && sheet.lists.switchable && !pending
                 showDivider: index < sheet.count - 1

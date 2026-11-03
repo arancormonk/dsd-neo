@@ -746,8 +746,9 @@ Item {
                 testContext.setLifecyclePhase(0);
                 prefs.lastStartedCompanions = [];
                 app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, parks.uid]);
-                compare(trunkScanPaths(testContext.lastStartArgs()).join(),
-                        [security.uid + ".csv", hospital.uid + ".csv", parks.uid + ".csv"].join());
+                // Issue #697: each list's CSV is named after the list, in its own folder, so the decoder names it so.
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(), "Security.csv,Hospital.csv,Parks.csv");
+                verify(testContext.lastStartArgs().indexOf(testContext.scanListCsvPath(hospital.uid, "Hospital")) > 0);
                 // Accepted: the bundle is recorded with the start, the initialization edge records it as started.
                 compare(prefs.acceptedStartKind, "scan");
                 compare(prefs.acceptedStartUid, security.uid);
@@ -764,6 +765,8 @@ Item {
                 compare(app.scanTargetLabel(), "ER desk");
                 tryCompare(findChild(app, "monitorScreen"), "scanListName", "Hospital");
                 compare(header(), "SCANNING · 2/3 · ER desk · Hospital");
+                // The title names the session's own list and how many more.
+                tryVerify(function () { return title() === "Security + 2 lists"; }, 5000, title());
                 compare(metrics.channelNames[security.entries[0].uid], "Gate");
                 compare(metrics.channelNames[parks.entries[0].uid], "Ranger");
                 // Session options offers the lists while the scan has more than one.
@@ -773,7 +776,7 @@ Item {
                 // Recreated: the bundle comes back from the accepted start.
                 prefs.acceptedStartKind = "scan";
                 reattach();
-                compare(title(), "Security");
+                tryVerify(function () { return title() === "Security + 2 lists"; }, 5000, title());
                 compare(app.sessionStartCompanions.join(), [hospital.uid, parks.uid].join());
                 compare(app.sessionLists.map(function (l) { return l.name; }).join(), "Security,Hospital,Parks");
                 scanMetrics(parks.entries[0].uid, 3);
@@ -798,16 +801,94 @@ Item {
                 testContext.emitSessionInitialized();
                 compare(prefs.lastStartedCompanions.length, 0);
                 compare(app.sessionLists.length, 1);
-                // A list gone since the bundle was chosen starts none of them.
+                // A list gone since the bundle was chosen is left out; the rest start.
                 testContext.setLifecyclePhase(0);
-                var before = testContext.lastStartArgs();
                 var gone = parks.uid;
                 removeScanLists([gone]);
                 app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, gone]);
-                compare(app.startError, "A list in this scan was removed. Choose the lists again.");
-                compare(testContext.lastStartArgs(), before);
+                compare(app.startError, "");
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(), "Security.csv,Hospital.csv");
+                compare(prefs.acceptedStartCompanions.join(), hospital.uid);
             } finally {
                 clearScanMetrics();
+                testContext.setLifecycleFailure("");
+                testContext.setLifecyclePhase(2);
+                app.startError = "";
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+                prefs.lastStartedCompanions = [];
+                removeScanLists([security.uid, hospital.uid, parks.uid]);
+            }
+        }
+
+        // Issue #697: the paths a bundle takes that a person cannot see: a USB permission wait (the lists as saved at
+        // the grant, by uid), an auto-start with its companions, Retry after a start the host refused, and a removed
+        // list leaving the remembered sessions and an auto-start that names it.
+        function test_a_scan_bundle_through_waits_retries_and_removals() {
+            var addUsb = function (name, entryName, freq) {
+                scanLists.add({name: name, sourceType: "usb",
+                    entries: [{kind: "freq", name: entryName, protocol: "p25", freqMhz: freq, enabled: true}]});
+                return scanLists.get(scanLists.count - 1);
+            };
+            var security = addUsb("Security", "Gate", "851.0125");
+            var hospital = addUsb("Hospital", "ER desk", "852.0125");
+            var parks = addUsb("Parks", "Ranger", "853.0125");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                testContext.setLifecyclePhase(0);
+                // 1. A brokered receiver not ready yet: the start waits with the companions' uids.
+                testContext.setScanTestUsb(true, false);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, parks.uid]);
+                verify(app.awaitingUsbAccess);
+                compare(app.pendingStartCompanions.join(), [hospital.uid, parks.uid].join());
+                // A companion renamed during the dialog starts as it is saved then.
+                scanLists.update(scanLists.rowForUid(parks.uid), {name: "City parks"});
+                testContext.setScanTestUsb(true, true);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(), "Security.csv,Hospital.csv,City parks.csv");
+                compare(app.pendingStartCompanions.length, 0);
+                decoderHost.stop();
+                tryCompare(decoderHost, "sessionState", 0);
+                // 2. An auto-start hands Main the companions it was last started with.
+                uiController.requestAutoStart("scan", security.uid, [hospital.uid, parks.uid]);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(trunkScanPaths(testContext.lastStartArgs()).length, 3);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join());
+                decoderHost.stop();
+                tryCompare(decoderHost, "sessionState", 0);
+                // 3. The host refuses the start: Retry starts the same bundle, from the attempt the start recorded.
+                testContext.setScanTestAcceptStart(false);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [parks.uid]);
+                compare(decoderHost.sessionState, 0);
+                compare(app.attemptedSource.companions.join(), parks.uid);
+                testContext.setScanTestAcceptStart(true);
+                app.retrySource();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(), "Security.csv,City parks.csv");
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedCompanions.join(), parks.uid);
+                decoderHost.stop();
+                tryCompare(decoderHost, "sessionState", 0);
+                // 4. Removing a companion takes it out of both remembered sessions, and an auto-start that still
+                // names it starts the rest.
+                prefs.acceptedStartCompanions = [hospital.uid, parks.uid];
+                prefs.lastStartedCompanions = [parks.uid, hospital.uid];
+                removeScanLists([parks.uid]);
+                compare(prefs.acceptedStartCompanions.join(), hospital.uid);
+                compare(prefs.lastStartedCompanions.join(), hospital.uid);
+                app.startError = "";
+                uiController.requestAutoStart("scan", security.uid, [parks.uid, hospital.uid]);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(app.startError, "");
+                compare(trunkScanPaths(testContext.lastStartArgs()).join(), "Security.csv,Hospital.csv");
+            } finally {
+                testContext.setScanTestAcceptStart(true);
+                testContext.setScanTestUsb(false, false);
+                decoderHost.stop();
+                app.awaitingUsbAccess = false;
+                app.pendingStart = null;
                 testContext.setLifecycleFailure("");
                 testContext.setLifecyclePhase(2);
                 app.startError = "";

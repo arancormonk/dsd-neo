@@ -196,7 +196,73 @@ absolutePaths(QVariantMap map) {
     }
     return map;
 }
+
+/* The CSVs an earlier name of list @p uid left in its folder, and the one older versions wrote beside it
+   (scan_lists/<uid>.csv): every one but @p keep goes. */
+void
+remove_other_list_csvs(const QString& uid, const QString& keep) {
+    QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
+    const QDir folder(QFileInfo(keep).absolutePath());
+    for (const QFileInfo& file : folder.entryInfoList({QStringLiteral("*.csv")}, QDir::Files)) {
+        if (file.absoluteFilePath() != QFileInfo(keep).absoluteFilePath()) {
+            QFile::remove(file.absoluteFilePath());
+        }
+    }
+}
+
+/* Characters a file name cannot hold on Android or Windows, or that would make it a path. */
+bool
+unsafe_in_file_name(QChar c) {
+    static const QString refused = QStringLiteral("/\\<>:\"|?*");
+    return c.unicode() < 0x20 || c.unicode() == 0x7F || refused.contains(c);
+}
+
+/* @p text cut to at most @p bytes UTF-8 bytes, never inside a character. */
+QString
+cut_utf8(const QString& text, int bytes) {
+    QString out;
+    int used = 0;
+    for (qsizetype i = 0; i < text.size();) {
+        const qsizetype step = text.at(i).isHighSurrogate() && i + 1 < text.size() ? 2 : 1;
+        const QString ch = text.mid(i, step);
+        const int size = static_cast<int>(ch.toUtf8().size());
+        if (used + size > bytes) {
+            break;
+        }
+        out += ch;
+        used += size;
+        i += step;
+    }
+    return out;
+}
+
 } // namespace
+
+QString
+scan_list_csv_stem(const QString& name, int listNumber) {
+    QString stem;
+    for (const QChar c : name) {
+        stem += unsafe_in_file_name(c) ? QChar('_') : c;
+    }
+    /* The name the engine shows is cut there anyway; cut here, whole characters only, so the file says the same. */
+    stem = cut_utf8(stem.trimmed(), DSD_TRUNK_SCAN_LIST_NAME_SIZE - 1);
+    /* No file name ends in a dot or a blank on Windows, and "." or ".." is not a file. */
+    while (!stem.isEmpty() && (stem.endsWith(QLatin1Char('.')) || stem.endsWith(QLatin1Char(' ')))) {
+        stem.chop(1);
+    }
+    static const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    if (reserved.match(stem).hasMatch()) {
+        stem += QLatin1Char('_');
+    }
+    return stem.isEmpty() ? QStringLiteral("list %1").arg(listNumber) : stem;
+}
+
+QString
+scan_list_csv_path(const QString& uid, const QString& name, int listNumber) {
+    return json_store_path(QStringLiteral("scan_lists/") + uid + QLatin1Char('/') + scan_list_csv_stem(name, listNumber)
+                           + QStringLiteral(".csv"));
+}
 
 ScanListStarter::ScanListStarter(const AppPrefs* prefs, const SavedSystemsModel* systems, QObject* parent)
     : QObject(parent), m_prefs(prefs), m_systems(systems) {}
@@ -286,6 +352,11 @@ listsRefusal(const QString& error) {
 }
 } // namespace
 
+int
+ScanListStarter::maxLists() {
+    return DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
 QString
 ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other) const {
     return session_args_scan_join_conflict(primary, other, session_args_prefs(m_prefs));
@@ -321,7 +392,7 @@ ScanListStarter::materializeLists(const QVariantList& lists, QStringList* paths,
     QList<QByteArray> nameBytes;
     for (const auto& value : lists) {
         const QVariantMap list = value.toMap();
-        const auto built = prepare(list, true);
+        const auto built = prepare(list, true, QString(), false, QStringList(), static_cast<int>(paths->size()) + 1);
         if (!built.value("ok").toBool()) {
             return quotedName(list) + QStringLiteral(": ") + built.value("error").toString();
         }
@@ -490,7 +561,7 @@ validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize
 
 QVariantMap
 ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder,
-                         bool recordingUnavailable, const QStringList& companionPaths) const {
+                         bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const {
     const auto fail = [](const QString& error, const QStringList& warnings = QStringList()) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", warnings}, {"targetCount", 0}};
@@ -531,7 +602,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     auto prefs = session_args_prefs(m_prefs);
     prefs.recordingFolder = recordingFolder;
     prefs.recordingUnavailable = recordingUnavailable;
-    const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));
+    const QString path = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
     QString error;
     const auto args = session_args_scan_build_lists(prepared, generated.firstFreqMhz,
                                                     QStringList{path} + companionPaths, prefs, &error);
@@ -541,6 +612,9 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     int count = 0;
     if (!validateAndStoreCsv(generated.csv, path, materialize, &count, &error)) {
         return fail(error, generated.warnings);
+    }
+    if (materialize) {
+        remove_other_list_csvs(uid, path);
     }
 
     return {{"ok", true},           {"args", materialize ? args : QStringList()},

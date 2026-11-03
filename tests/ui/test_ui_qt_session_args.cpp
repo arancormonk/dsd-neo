@@ -1826,6 +1826,30 @@ test_scan_join_conflict(void) {
         }
         expect(c.want, got == QLatin1String(c.want));
     }
+    /* Airspy settings after the engine's defaults: unset and set to the default are one; a switch as true or 1. */
+    const auto airspy = [&with](const QVariantMap& native) {
+        QVariantMap settings{{"serial", "A1"}};
+        for (auto it = native.cbegin(); it != native.cend(); ++it) {
+            settings.insert(it.key(), it.value());
+        }
+        return with({{"sourceType", "airspy"}, {"airspy", settings}});
+    };
+    expect("an unset Airspy setting is its default", conflict(airspy({}), airspy({{"lna_gain", 1},
+                                                                                  {"mixer_gain", 5},
+                                                                                  {"gain_mode", "sensitivity"},
+                                                                                  {"sensitivity_gain", 10},
+                                                                                  {"lna_agc", false},
+                                                                                  {"bias_tee", 0},
+                                                                                  {"sample_rate", 0}}))
+                                                         .isEmpty());
+    expect("a switch is one setting however it is written",
+           conflict(airspy({{"lna_agc", true}}), airspy({{"lna_agc", "1"}})).isEmpty());
+    expect("a gain mode is one setting in any case",
+           conflict(airspy({{"gain_mode", "Linearity"}}), airspy({{"gain_mode", "linearity"}})).isEmpty());
+    expect("a value other than the default differs",
+           conflict(airspy({}), airspy({{"vga_gain", 6}})) == QStringLiteral("Different Airspy settings"));
+    expect("a switch away from its default differs",
+           conflict(airspy({}), airspy({{"mixer_agc", true}})) == QStringLiteral("Different Airspy settings"));
     /* Resolution: a host's case and blanks, an Airspy serial's case, a relative path and one with "..". */
     expect("a host is matched as the argv sends it",
            conflict(with({{"sourceType", "rtltcp"}, {"host", " Radio.lan "}, {"port", 1234}}),

@@ -49,7 +49,16 @@ Item {
     // should agree with the history rows it sits above. A map without a name (a
     // saved system removed while it plays reads back as an empty map) falls back
     // the same way rather than binding undefined to the header.
-    property string systemName: system && system.name ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
+    readonly property string sessionName: system && system.name ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
+    // Issue #697: how many other lists a scan session runs beside its own;
+    // Main sets it. The title then says so: "Security + 2 lists".
+    property int otherListCount: 0
+    function withOtherLists(name) {
+        if (screen.otherListCount <= 0)
+            return name;
+        return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : qsTr("%1 + %2 lists").arg(name).arg(screen.otherListCount);
+    }
+    property string systemName: withOtherLists(sessionName)
 
     // Which slot the hero shows: the earliest active call keeps the headline, then a
     // recently ended one; exact start ties and ended calls prefer the lower slot.
@@ -507,11 +516,26 @@ Item {
                 anchors.top: parent.top
                 spacing: 3
 
+                // A long list name gives way before "+ 2 lists" does: the count
+                // is what tells this session from a scan of the one list.
+                TextMetrics {
+                    id: titleNameMetrics
+                    font: monitorTitle.font
+                    text: screen.sessionName
+                    elide: Text.ElideRight
+                    elideWidth: Math.max(0, monitorTitle.width - titleSuffixMetrics.advanceWidth)
+                }
+                TextMetrics {
+                    id: titleSuffixMetrics
+                    font: monitorTitle.font
+                    text: screen.withOtherLists("")
+                }
                 ReadableText {
+                    id: monitorTitle
                     heading: true
                     width: parent.width
                     objectName: "monitorHeaderTitle"
-                    text: screen.systemName
+                    text: screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.systemName
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold

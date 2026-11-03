@@ -759,23 +759,48 @@ test_scan_bundle_prefs_and_uid_repair() {
         const dsd_qt::ScanListsModel lists;
         check(lists.count() == 2 && !lists.uidsRepaired());
     }
-    // A UID collision: the second "a" is given a new UID.
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions() == QStringList({"b", "c"})
+              && prefs.lastStartedCompanions() == QStringList{"b"});
+    }
+    // A UID collision (a restored or hand-edited store): the second "a" is given a new UID, and the load forgets the
+    // remembered companions, which may now name another list.
     rows.append(QJsonObject{{"uid", "a"}, {"name", "A copy"}});
     check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), rows));
     {
         const dsd_qt::ScanListsModel lists;
         check(lists.count() == 3 && lists.uidsRepaired() && lists.get(2).value("uid").toString() != "a");
     }
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+    }
     // And one with none.
+    {
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"b"});
+    }
     check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), QJsonArray{QJsonObject{{"name", "N"}}}));
     {
         const dsd_qt::ScanListsModel lists;
         check(lists.uidsRepaired());
     }
-    check(dsd_qt::AppPrefs::forgetScanCompanions());
-    const dsd_qt::AppPrefs prefs;
-    check(prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions().isEmpty());
+    }
     check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), QJsonArray{}));
+    // What Home and the Scan with other lists sheet count: the entries, or the rows a CSV list's import accepted.
+    const dsd_qt::ScanListsModel lists;
+    check(lists.entryCount({{"targetSource", "entries"}, {"entries", QVariantList{QVariantMap{}, QVariantMap{}}}})
+          == 2);
+    const QVariantMap csv{{"targetSource", "csv"}, {"targetsCsvPath", "/imports/targets.csv"}};
+    check(lists.entryCount(csv) == 0);
+    dsd_qt::ScanListsModel looked;
+    looked.setAcceptedRowsLookup([](const QString& path) { return path == "/imports/targets.csv" ? 12 : -1; });
+    check(looked.entryCount(csv) == 12);
+    check(looked.entryCount({{"targetSource", "csv"}, {"targetsCsvPath", "/gone.csv"}}) == 0);
 }
 
 namespace {
@@ -834,7 +859,7 @@ test_scan_lists_start_together() {
     check(host.starts.size() == 1);
     const QStringList args = host.starts.value(0);
     const auto csv = [](const QVariantMap& list) {
-        return dsd_qt::json_store_path(QStringLiteral("scan_lists/") + list.value("uid").toString() + ".csv");
+        return dsd_qt::scan_list_csv_path(list.value("uid").toString(), list.value("name").toString(), 1);
     };
     const qsizetype first = args.indexOf(QStringLiteral("--trunk-scan"));
     check(first > 0 && args.count(QStringLiteral("--trunk-scan")) == 3

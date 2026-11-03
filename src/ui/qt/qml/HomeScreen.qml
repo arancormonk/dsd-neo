@@ -531,9 +531,7 @@ Item {
                     listName: name
                     entryCount: {
                         var changed = importedFiles.count;
-                        if (targetSource !== "csv") return entries.length;
-                        var row = importedFiles.rowForPath(targetsCsvPath || "");
-                        return row >= 0 ? importedFiles.get(row).accepted : 0;
+                        return scanLists.entryCount({targetSource: targetSource, entries: entries, targetsCsvPath: targetsCsvPath || ""});
                     }
                     onPlay: screen.playScanList(index)
                     onEdit: scanMenu.openFor(index)

@@ -111,12 +111,15 @@ Item {
                 verify(hospitalRow.enabled && !hospitalRow.checked);
                 compare(hospitalRow.subtitle, "1 entry");
                 var start = row(together, "scanTogetherStart");
-                compare(start.text, "Start 1 list");
+                // Nothing chosen: nothing to start here (Play starts the one list).
+                compare(start.text, "Switch on a list first");
+                verify(!start.enabled);
                 louderRow.activate();
                 compare(together.chosen.length, 0);
                 parksRow.activate();
                 hospitalRow.activate();
                 compare(start.text, "Start 3 lists");
+                verify(start.enabled);
                 verify(hospitalRow.checked && parksRow.checked);
                 // Off again, then on: still Home order, whatever the order of the taps.
                 parksRow.activate();
@@ -130,7 +133,8 @@ Item {
                 // Opened again, nothing is on.
                 together.openFor(scanLists.rowForUid(security.uid));
                 compare(together.chosen.length, 0);
-                compare(row(together, "scanTogetherStart").text, "Start 1 list");
+                compare(row(together, "scanTogetherStart").text, "Switch on a list first");
+                verify(!row(together, "scanTogetherStart").enabled);
                 // A chosen list that becomes a draft leaves the choice and the rows.
                 row(together, "scanTogetherRow_" + hospital.uid).activate();
                 compare(together.chosen.join(), hospital.uid);
@@ -176,12 +180,12 @@ Item {
         function test_session_sheet_rows() {
             openSession();
             compare(row(session, "scanListsTitle").text, "Scan lists");
-            compare(row(session, "scanListsStatus").text, "3 of 3 on · 16 channels");
+            compare(row(session, "scanListsStatus").text, "3 of 3 on · 16 targets");
             var hospital = row(session, "scanListsRow_2");
             // The session's names, not the files'.
             compare(hospital.title, "Hospital");
-            compare(hospital.subtitle, "1 channel · On air");
-            compare(row(session, "scanListsRow_1").subtitle, "12 channels");
+            compare(hospital.subtitle, "1 target · On air");
+            compare(row(session, "scanListsRow_1").subtitle, "12 targets");
             verify(hospital.checked && hospital.enabled);
         }
 
@@ -196,19 +200,19 @@ Item {
             compare(sent[0].session, 7);
             // Waiting: the switch where it was put, the row saying so, no second tap taken.
             tryCompare(hospital, "checked", false);
-            compare(hospital.subtitle, "1 channel · On air\nSwitching off…");
+            compare(hospital.subtitle, "1 target · On air\nSwitching off…");
             verify(!hospital.enabled);
             hospital.activate();
             compare(testContext.scanListRequests().length, 1);
             // Answered ahead of the snapshot that shows it: it stays off.
             testContext.answerScanList(sent[0].request, 0, 11);
-            tryCompare(hospital, "subtitle", "1 channel · On air");
+            tryCompare(hospital, "subtitle", "1 target · On air");
             verify(!hospital.checked && hospital.enabled);
             compare(hospital.note, "");
-            compare(row(session, "scanListsStatus").text, "2 of 3 on · 15 channels");
+            compare(row(session, "scanListsStatus").text, "2 of 3 on · 15 targets");
             testContext.setScanLists(threeLists(11, {lists: [{name: "security", targets: 12},
                 {name: "hospital", on: false, targets: 1}, {name: "parks", targets: 3, onAir: true}]}));
-            tryCompare(hospital, "subtitle", "1 channel");
+            tryCompare(hospital, "subtitle", "1 target");
             verify(!hospital.checked);
         }
 
@@ -221,9 +225,13 @@ Item {
             // Refused: back on, the reason under the list until the lists move.
             testContext.answerScanList(sent[0].request, -1, 10);
             tryCompare(security, "checked", true);
-            compare(security.subtitle, "12 channels");
+            compare(security.subtitle, "12 targets");
             compare(security.note, "Nothing else to scan. Switch on another list first.");
+            // Said aloud once, with the list it is about.
+            compare(session.announced, "Security: Nothing else to scan. Switch on another list first.");
+            var said = session.announcements;
             testContext.setScanLists(threeLists(10));
+            compare(session.announcements, said);
             compare(security.note, "Nothing else to scan. Switch on another list first.");
             testContext.setScanLists(threeLists(11));
             tryCompare(security, "note", "");

@@ -313,7 +313,7 @@ Item {
             var paths = testContext.lastStartArgs().filter(function (arg, i, all) {
                 return i > 0 && all[i - 1] === "--trunk-scan";
             }).map(function (path) { return path.substring(path.lastIndexOf("/") + 1); });
-            compare(paths.join(), [scanLists.get(0).uid + ".csv", hospital.uid + ".csv"].join());
+            compare(paths.join(), "Scan.csv,Hospital.csv");
             compare(app.sessionStartCompanions.join(), hospital.uid);
             decoderHost.stop();
             prefs.onboardingDone = oldOnboarding;

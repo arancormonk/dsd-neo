@@ -30,6 +30,7 @@
 #include <Qt>
 #include <QtGlobal>
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -917,19 +918,51 @@ scan_join_radio(const QVariantMap& list) {
                : source;
 }
 
-/* Every Airspy setting the argv passes but the serial (the device, which the radio source compares), as "key=value"
-   in key order; nothing for any other source, which passes none. */
+/* An Airspy setting as the engine takes it: the gain mode by name, a switch as 0 or 1, a number as a number (anything
+   else as written, for the engine to refuse). */
+QString
+scan_join_airspy_value(const QString& key, const QVariant& value) {
+    if (key == QLatin1String("gain_mode")) {
+        return value.toString().trimmed().toLower();
+    }
+    if (key == QLatin1String("lna_agc") || key == QLatin1String("mixer_agc") || key == QLatin1String("bias_tee")) {
+        return value.toBool() ? QStringLiteral("1") : QStringLiteral("0");
+    }
+    bool ok = false;
+    const qlonglong number = value.toString().trimmed().toLongLong(&ok);
+    return ok ? QString::number(number) : value.toString();
+}
+
+/* Every Airspy setting the session runs with but the serial (the device, which the radio source compares), as
+   "key=value" in key order: the engine's default for each one the argv leaves out (dsd_airspy_config_defaults()),
+   so a key left unset and the same key set to its default are one setting; nothing for any other source. */
 QStringList
 scan_join_airspy(const QVariantMap& list) {
     QStringList settings;
     if (list.value(QStringLiteral("sourceType")).toString() != QLatin1String("airspy")) {
         return settings;
     }
+    dsd_airspy_config d;
+    dsd_airspy_config_defaults(&d);
+    const char* modes[] = {"sensitivity", "linearity", "manual"};
+    QVariantMap effective{{QStringLiteral("sample_rate"), d.sample_rate},
+                          {QStringLiteral("gain_mode"), QString::fromLatin1(modes[d.gain_mode])},
+                          {QStringLiteral("sensitivity_gain"), d.sensitivity_gain},
+                          {QStringLiteral("linearity_gain"), d.linearity_gain},
+                          {QStringLiteral("lna_gain"), d.lna_gain},
+                          {QStringLiteral("mixer_gain"), d.mixer_gain},
+                          {QStringLiteral("vga_gain"), d.vga_gain},
+                          {QStringLiteral("lna_agc"), d.lna_agc},
+                          {QStringLiteral("mixer_agc"), d.mixer_agc},
+                          {QStringLiteral("bias_tee"), d.bias_tee}};
     const QVariantMap native = list.value(QStringLiteral("airspy")).toMap();
     for (auto it = native.cbegin(); it != native.cend(); ++it) {
         if (it.key() != QLatin1String("serial")) {
-            settings << it.key() + QLatin1Char('=') + it.value().toString();
+            effective.insert(it.key(), it.value());
         }
+    }
+    for (auto it = effective.cbegin(); it != effective.cend(); ++it) {
+        settings << it.key() + QLatin1Char('=') + scan_join_airspy_value(it.key(), it.value());
     }
     return settings;
 }

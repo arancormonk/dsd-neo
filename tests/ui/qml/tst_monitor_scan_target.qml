@@ -21,6 +21,7 @@ Item {
             screen.sitesAvailable = false;
             screen.scanTargetName = "";
             screen.scanListName = "";
+            screen.otherListCount = 0;
             screen.system = null;
             decoderHost.localDeviceBrokered = false;
             decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
@@ -115,6 +116,30 @@ Item {
             tryCompare(header, "text", "SCANNING · -/14 · Dispatch");
             cleanup();
             tryCompare(header, "text", "");
+        }
+
+        // Issue #697: a session of several lists is titled by its own list and how many more; on a narrow phone at
+        // large text the list's name gives way before the count does.
+        function test_multi_list_title() {
+            var title = findChild(screen, "monitorHeaderTitle");
+            screen.system = {name: "Security", sourceType: "usb"};
+            tryCompare(title, "text", "Security");
+            screen.otherListCount = 2;
+            tryCompare(title, "text", "Security + 2 lists");
+            compare(screen.systemName, "Security + 2 lists");
+            screen.otherListCount = 1;
+            tryCompare(title, "text", "Security + 1 list");
+            screen.system = {name: "Countywide public safety and municipal services", sourceType: "usb"};
+            screen.otherListCount = 7;
+            root.width = 320;
+            Ui.Theme.fontScale = 2;
+            tryVerify(function () { return title.text.endsWith(" + 7 lists"); });
+            verify(title.text.indexOf("…") > 0, title.text);
+            verify(!title.truncated, "the count was elided");
+            compare(screen.systemName, "Countywide public safety and municipal services + 7 lists");
+            screen.otherListCount = 0;
+            Ui.Theme.resetFontScale();
+            root.width = 420;
         }
 
         // Issue #671: a paused scan is named as one, apart from the rotation's

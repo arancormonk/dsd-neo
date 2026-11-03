@@ -108,15 +108,6 @@ wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* pre
     });
 }
 
-// Issue #697: a list the load gave a new UID can be named by a stored scan session's companions; they are dropped,
-// as a restore drops them, rather than start another list or none.
-void
-forget_repaired_scan_companions(const ScanListsModel* scanLists) {
-    if (scanLists->uidsRepaired()) {
-        (void)AppPrefs::forgetScanCompanions();
-    }
-}
-
 } // namespace
 
 void
@@ -161,10 +152,15 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
 }
 
 static void
-wire_target_files(ScanListStarter* starter, const ImportedFilesModel* files) {
+wire_target_files(ScanListStarter* starter, ScanListsModel* scanLists, const ImportedFilesModel* files) {
     starter->setTargetFileLookup([files](const QString& path) {
         const int row = files->rowForPath(path);
         return row >= 0 && files->get(row).value("type") == "trunkTargets";
+    });
+    // Issue #697: Home and the Scan with other lists sheet count a CSV list's targets as its import accepted them.
+    scanLists->setAcceptedRowsLookup([files](const QString& path) {
+        const int row = files->rowForPath(path);
+        return row >= 0 ? files->get(row).value("accepted").toInt() : -1;
     });
 }
 
@@ -292,10 +288,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
 
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
-    forget_repaired_scan_companions(scanLists);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
-    wire_target_files(scanListStarter, importedFiles);
+    wire_target_files(scanListStarter, scanLists, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = make_history(engine);

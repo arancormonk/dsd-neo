@@ -9,6 +9,8 @@
 #include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
+#include <functional>
+#include <utility>
 
 namespace dsd_qt {
 class ScanListsModel : public QAbstractListModel {
@@ -41,9 +43,21 @@ class ScanListsModel : public QAbstractListModel {
     Q_INVOKABLE QStringList listsReferencingPath(const QString& path) const;
     Q_INVOKABLE bool clearCsvPath(const QString& path);
     Q_INVOKABLE void touch(int row);
+    /**
+     * @brief How many targets @p list holds as Home counts them (issue #697): its entries, or for a list over an
+     * imported target CSV the rows that file's import accepted (setAcceptedRowsLookup()), 0 when the file is gone.
+     */
+    Q_INVOKABLE int entryCount(const QVariantMap& list) const;
 
-    /** @brief Whether the load gave a list a new UID (none stored, or one another list had): what a stored scan
-     *  session names by UID (AppPrefs' companions, issue #697) may then be another list. */
+    /** @brief How entryCount() reads an imported target CSV's accepted rows by path: -1 for no such file. */
+    void
+    setAcceptedRowsLookup(std::function<int(const QString&)> lookup) {
+        m_acceptedRows = std::move(lookup);
+    }
+
+    /** @brief Whether the load gave a list a new UID (none stored, or one another list had). What a stored scan
+     *  session names by UID (AppPrefs' companions, issue #697) may then be another list, so such a load forgets them
+     *  (AppPrefs::forgetScanCompanions()). */
     bool
     uidsRepaired() const {
         return m_uidsRepaired;
@@ -56,6 +70,7 @@ class ScanListsModel : public QAbstractListModel {
     bool save(const QList<QVariantMap>& rows) const;
     QList<QVariantMap> m_rows;
     bool m_uidsRepaired = false;
+    std::function<int(const QString&)> m_acceptedRows;
 };
 } // namespace dsd_qt
 #endif

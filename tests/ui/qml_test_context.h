@@ -3851,6 +3851,12 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief Issue #697: where a manual scan list's generated targets are written (scan_list_csv_path()). */
+    Q_INVOKABLE QString
+    scanListCsvPath(const QString& uid, const QString& name) const {
+        return dsd_qt::scan_list_csv_path(uid, name, 1);
+    }
+
     /** @brief The switches the sheet sent, oldest first, as {request, session, list, enabled}. */
     Q_INVOKABLE QVariantList
     scanListRequests() const {
@@ -4781,6 +4787,10 @@ class Setup : public QObject {
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        scan_lists->setAcceptedRowsLookup([imported_files](const QString& path) {
+            const int row = imported_files->rowForPath(path);
+            return row >= 0 ? imported_files->get(row).value(QStringLiteral("accepted")).toInt() : -1;
+        });
         starter->setTargetFileLookup([imported_files](const QString& path) {
             const int row = imported_files->rowForPath(path);
             return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";

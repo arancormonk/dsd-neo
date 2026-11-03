@@ -381,7 +381,8 @@ Window {
     // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
-    // Issue #697: the other scan lists the waiting start scans with its own.
+    // Issue #697: the other scan lists the waiting start scans with its own,
+    // by uid: the grant starts the lists as they are saved then.
     property var pendingStartCompanions: []
     // Whether the waiting start, once granted, may become where Explore
     // resumes: an Explore-here start keeps false through the permission dialog.
@@ -470,6 +471,7 @@ Window {
             host.setDarkAppearance(Theme.dark);
     }
     Component.onCompleted: {
+        mainRoot.pruneScanCompanions();
         updateSystemBars();
         adoptReattachedSession();
         publishChannelNames();
@@ -639,16 +641,38 @@ Window {
         var list = mainRoot.sessionLists[number - 1];
         return list && list.name ? list.name : "";
     }
-    /** The lists @p uids name, in order, or null when one of them is gone. */
+    /** The lists @p uids name that still exist, in order: a list removed since is left out, each on its own. */
     function scanListsByUid(uids) {
         var lists = [];
         for (var uid of uids || []) {
             var list = scanLists.getByUid(uid);
-            if (!list || !list.uid)
-                return null;
-            lists.push(list);
+            if (list && list.uid)
+                lists.push(list);
         }
         return lists;
+    }
+    /** @p uids without the ones no list has any more. */
+    function existingScanListUids(uids) {
+        return mainRoot.scanListsByUid(uids).map(function (list) {
+            return list.uid;
+        });
+    }
+    // A removed list leaves the remembered scan sessions with it, so neither
+    // an auto-start nor a recreated Activity looks for it again; so does one
+    // gone before this start (a restore stopped short of forgetting them).
+    function pruneScanCompanions() {
+        var accepted = mainRoot.existingScanListUids(prefs.acceptedStartCompanions);
+        if (accepted.length !== (prefs.acceptedStartCompanions || []).length)
+            prefs.acceptedStartCompanions = accepted;
+        var started = mainRoot.existingScanListUids(prefs.lastStartedCompanions);
+        if (started.length !== (prefs.lastStartedCompanions || []).length)
+            prefs.lastStartedCompanions = started;
+    }
+    Connections {
+        target: scanLists
+        function onCountChanged() {
+            mainRoot.pruneScanCompanions();
+        }
     }
 
     property bool sessionReachedRunning: false
@@ -767,7 +791,7 @@ Window {
         mainRoot.sessionStartKind = prefs.acceptedStartKind || "";
         mainRoot.sessionStartUid = prefs.acceptedStartUid || "";
         mainRoot.sessionStartCompanions = mainRoot.sessionStartKind === "scan" ? prefs.acceptedStartCompanions : [];
-        mainRoot.sessionCompanions = mainRoot.scanListsByUid(mainRoot.sessionStartCompanions) || [];
+        mainRoot.sessionCompanions = mainRoot.scanListsByUid(mainRoot.sessionStartCompanions);
         if (mainRoot.sessionStartKind === "scan") {
             mainRoot.sessionScanList = true;
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
@@ -908,9 +932,9 @@ Window {
             var row = mainRoot.pendingStartRow;
             var scan = mainRoot.pendingScanList;
             var options = {
-                remember: mainRoot.pendingStartRemember,
-                companions: mainRoot.pendingStartCompanions
+                remember: mainRoot.pendingStartRemember
             };
+            var companionUids = mainRoot.pendingStartCompanions;
             mainRoot.pendingStartCompanions = [];
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
@@ -929,8 +953,18 @@ Window {
                 mainRoot.abandonSignalSearchStart();
                 mainRoot.signalSearchOpen = false;
             }
-            if (sys)
+            if (sys && scan) {
+                // Issue #697: the lists as they are saved now, by uid; one
+                // removed during the permission dialog is not started from its
+                // old map.
+                var listRow = scanLists.rowForUid(sys.uid || "");
+                if (listRow < 0)
+                    mainRoot.startError = qsTr("This source was removed. Choose another source.");
+                else
+                    mainRoot.startScanBundle(listRow, companionUids);
+            } else if (sys) {
                 mainRoot.startWithMap(sys, row, scan, options);
+            }
         }
     }
 
@@ -1076,21 +1110,15 @@ Window {
         mainRoot.startScanBundle(row, []);
     }
     // Issue #697: the list at @a row and the lists @a companionUids name, in
-    // that order, as one session on the first list's receiver. A list gone
-    // since they were chosen starts none of them.
+    // that order, as one session on the first list's receiver, each as it is
+    // saved now. A companion removed since is left out; the rest still start.
     function startScanBundle(row, companionUids) {
         cancelPendingRestart();
         var list = scanLists.get(row);
         if (!list || !list.uid)
             return;
-        var companions = mainRoot.scanListsByUid(companionUids);
-        if (companions === null) {
-            mainRoot.dismissedFailure = "";
-            mainRoot.startError = qsTr("A list in this scan was removed. Choose the lists again.");
-            return;
-        }
         mainRoot.startWithMap(list, row, true, {
-            companions: companions
+            companions: mainRoot.scanListsByUid(companionUids)
         });
     }
 
@@ -1140,7 +1168,7 @@ Window {
             mainRoot.pendingStart = sys;
             mainRoot.pendingStartRow = row;
             mainRoot.pendingScanList = !!scan;
-            mainRoot.pendingStartCompanions = companions;
+            mainRoot.pendingStartCompanions = companionUids;
             mainRoot.pendingStartRemember = remember;
             decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
@@ -1584,6 +1612,7 @@ Window {
         scanTargetName: mainRoot.scanTargetLabel()
         // Issue #697: the list on air, by the name this session knows it by.
         scanListName: mainRoot.sessionLists.length > 1 ? mainRoot.sessionListName(metrics.scanActiveList) : ""
+        otherListCount: mainRoot.operatorHolds ? 0 : Math.max(0, mainRoot.sessionLists.length - 1)
         sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
             mainRoot.cancelPendingRestart();

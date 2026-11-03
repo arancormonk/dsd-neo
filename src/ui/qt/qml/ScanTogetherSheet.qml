@@ -25,8 +25,8 @@ ModalSheet {
     // The uids switched on here, in Home order.
     property var chosen: []
     readonly property int listCount: 1 + chosen.length
-    // A session runs at most this many lists (DSD_TRUNK_SCAN_MAX_LISTS).
-    readonly property int maxLists: 8
+    // A session runs at most this many lists.
+    readonly property int maxLists: scanListStarter.maxLists
     property int revision: 0
     Connections {
         target: scanLists
@@ -53,12 +53,6 @@ ModalSheet {
         revision++;
         open();
     }
-    function entryCount(list) {
-        if (list.targetSource !== "csv")
-            return (list.entries || []).length;
-        var row = importedFiles.rowForPath(list.targetsCsvPath || "");
-        return row >= 0 ? importedFiles.get(row).accepted : 0;
-    }
     function otherLists() {
         var out = [];
         if (!primary || !primary.uid)
@@ -70,7 +64,7 @@ ModalSheet {
             out.push({
                 uid: list.uid,
                 name: list.name,
-                entryCount: entryCount(list),
+                entryCount: scanLists.entryCount(list),
                 reason: scanListStarter.joinConflict(primary, list)
             });
         }
@@ -141,8 +135,9 @@ ModalSheet {
     GradientButton {
         objectName: "scanTogetherStart"
         width: parent.width
-        text: sheet.listCount === 1 ? qsTr("Start 1 list") : qsTr("Start %1 lists").arg(sheet.listCount)
-        enabled: !decoderHost.transitioning && !!sheet.primary && !!sheet.primary.uid
+        // Nothing to add yet: Play on the card starts the one list.
+        text: sheet.chosen.length === 0 ? qsTr("Switch on a list first") : qsTr("Start %1 lists").arg(sheet.listCount)
+        enabled: sheet.chosen.length > 0 && !decoderHost.transitioning && !!sheet.primary && !!sheet.primary.uid
         onClicked: {
             var uids = sheet.chosen.slice();
             sheet.visible = false;
