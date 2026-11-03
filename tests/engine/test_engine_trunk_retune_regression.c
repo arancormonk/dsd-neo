@@ -158,6 +158,8 @@ static int g_rtl_after_pending_reads = 0;
 static int g_rtl_after_pending_fails_after_read = 0;
 /* The output rate the stub predicts for the digital family's landing. */
 static int g_rtl_digital_family_rate_hz = 48000;
+/* The complex rate the stub's front end runs at (rtl_stream_get_complex_rate_hz(), issue #806). */
+static int g_rtl_complex_rate_hz = 48000;
 /* Whether the scan row the retune is for was timed for the digital family's landing, until a preparation spends it
  * (dsd_scan_mode_take_timed_digital_family(), issue #583). No row by default. */
 static int g_scan_row_timed_digital_family = 0;
@@ -806,6 +808,11 @@ rtl_stream_get_request_rate_hz(void) {
     return 48000;
 }
 
+int
+rtl_stream_get_complex_rate_hz(void) {
+    return g_rtl_complex_rate_hz;
+}
+
 uint32_t
 rtl_stream_live_family_request_count(void) {
     return 0U;
@@ -893,7 +900,8 @@ dsd_neo_get_config(void) {
  * DSD_NEO_CQPSK forcing CQPSK off and the target asking for CQPSK. Its retune attaches the digital family, and says the
  * CQPSK request queued with it is the target's own, so the stream lands it on CQPSK as it would after a digital
  * target. Without a modulation of its own the request is left to the stream and the family says nothing; a DMR target
- * (the GFSK chain, CQPSK off) always says so, and times its TED by the same rule. */
+ * (the GFSK chain, CQPSK off) always says so. Its TED is timed for the complex rate the front end runs at, not for the
+ * family's landing output rate (issue #806), so the TED asks no landing prediction. */
 static void
 test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -943,7 +951,8 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     assert(g_rtl_analog_prepare_calls == 1);
     assert(g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
     assert(g_rtl_analog_prepared.cqpsk_explicit == 1);
-    assert(g_rtl_rate_for_family_explicit == 1);
+    assert(g_rtl_rate_for_family_explicit == -1);
+    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, g_rtl_complex_rate_hz));
 
     g_trunk_scan_active_gfsk_symbol_rate = 0;
     g_trunk_scan_target_count = 0;
@@ -1406,9 +1415,13 @@ test_trunk_retune_forgets_sync_join_histories(dsd_opts* opts, dsd_state* state) 
 
 /* Issue #583, one landing-family decision per retune preparation: a DMR control-channel tune outside a scan (no scan
  * row's timing for it to follow) asks the stream once whether the analog family runs, or the work outstanding lands a
- * family. An analog retune is outstanding at that read and fails right after it: the GFSK chain's TED,
- * timed for the rate the digital family lands on, and the digital family attached, which lands it there, both follow
- * that one answer, where a second read would attach no family to a retune whose TED was timed for one. */
+ * family. An analog retune is outstanding at that read and fails right after it: the digital family attached follows
+ * that one answer, where a second read would attach none.
+ *
+ * Issue #806 (X11): the GFSK chain's TED is the front end's own timing, for the complex rate it runs at, whatever
+ * output rate the family lands on or the stream runs now. An Airspy at a 12 kHz DSP bandwidth runs DMR's 4800 sym/s at
+ * 2.5 samples per symbol, and digital_resample auto resamples its output to 48 kHz: a TED timed for 48 kHz (10) would
+ * replace the discriminator's own (3) and the SNR bias paired with the complex rate. */
 static void
 test_gfsk_retune_decides_its_family_once(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1421,31 +1434,32 @@ test_gfsk_retune_decides_its_family_once(dsd_opts* opts, dsd_state* state) {
     g_rtl_family_landing_after_pending = 1;
     g_rtl_after_pending_fails_after_read = 1;
     g_rtl_after_pending_reads = 0;
-    g_rtl_digital_family_rate_hz = 24000;
+    g_rtl_digital_family_rate_hz = 48000;
+    g_rtl_complex_rate_hz = 12000;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_pending_active = 0;
     g_rtl_analog_prepare_calls = 0;
     DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461750000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 24000));
+    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 12000));
     assert(g_rtl_analog_prepare_calls == 1 && g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
     assert(g_rtl_after_pending_reads == 1);
 
     /* A scan row timed for the digital family's landing decides for its retune, whatever the stream answers by then
-       (the analog work it saw has failed since): the TED and the family follow the row's timing, and the stream is not
-       asked. The preparation spends the decision, so the next retune, which no timing of the row preceded, asks the
-       stream again, which answers 0 now: it attaches nothing and times its TED for the live rate. */
+       (the analog work it saw has failed since): the family follows the row's timing, and the stream is not asked. The
+       preparation spends the decision, so the next retune, which no timing of the row preceded, asks the stream again,
+       which answers 0 now: it attaches nothing. The TED stays timed for the complex rate either way. */
     g_scan_row_timed_digital_family = 1;
     g_rtl_after_pending_reads = 0;
     g_rtl_analog_prepare_calls = 0;
     DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461762500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 24000));
+    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 12000));
     assert(g_rtl_analog_prepare_calls == 1 && g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
     assert(g_rtl_after_pending_reads == 0 && g_scan_row_timed_digital_family == 0);
     g_rtl_analog_prepare_calls = 0;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461775000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 48000));
+    assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, 12000));
     assert(g_rtl_analog_prepare_calls == 0 && g_rtl_after_pending_reads == 1);
 
     /* An analog configured mode spends the row's decision too, and attaches nothing. */
@@ -1456,6 +1470,7 @@ test_gfsk_retune_decides_its_family_once(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 0;
 
     g_rtl_digital_family_rate_hz = 48000;
+    g_rtl_complex_rate_hz = 48000;
     g_rtl_family_landing_after_pending = 0;
     g_rtl_after_pending_fails_after_read = 0;
     rtl_stream_clear_pending_retune_profile();

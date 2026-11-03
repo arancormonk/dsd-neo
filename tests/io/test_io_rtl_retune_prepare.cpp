@@ -988,9 +988,10 @@ test_dmr_retune_after_an_analog_retune_lands_on_fsk(void) {
 
 /* The DSP rate the device settles on in these cases: CQPSK runs at it, the FSK discriminator is resampled to 48 kHz. */
 static const int kForcedDemodRateHz = 78125;
-/* The TED the test's symbol profiles queue (rtl_stream_test_retune_profile_sequence()), timed for 48 kHz. */
-static const int kQueuedTedSps = 10;
-/* The TED an open or a switch to the digital family times a 4800 sym/s profile with at the forced rate. */
+/* The TED a 4800 sym/s profile lands on at the forced rate, as an open times it: the samples per symbol at the complex
+ * rate. The test's symbol profiles queue 10 (rtl_stream_test_retune_profile_sequence()), timed for the 48 kHz output
+ * the FSK discriminator is resampled to; every profile without an override lands the complex rate's instead, with the
+ * digital family attached or not (issue #806, X11). */
 static const int kLandingTedSps = (kForcedDemodRateHz + (4800 / 2)) / 4800;
 
 namespace {
@@ -1181,16 +1182,17 @@ expect_digital_front_end_landings(const char* cqpsk_env, int from_profile, const
  * after a target that put the stream on CQPSK at 78125 Hz, is timed for the FSK discriminator at 48 kHz: it lands
  * there, with the P25 C4FM filter and the TED an open times for the demod rate. Under DSD_NEO_CQPSK=1 from the FSK
  * discriminator it lands on CQPSK at 78125 Hz. The same retune without the family retunes as a digital-only session
- * always has: the profile leaves the CQPSK state, and the TED it carries applies. */
+ * always has: the profile leaves the CQPSK state, and its TED is timed for the complex rate it lands at (issue #806),
+ * not the 48 kHz the queued TED was timed for. */
 static int
 test_digital_family_lands_where_timed_on_a_digital_front_end(void) {
     const digital_front_end_landing off_attached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM,
                                                     48000, kLandingTedSps};
     const digital_front_end_landing off_unattached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
-                                                      kForcedDemodRateHz, kQueuedTedSps};
+                                                      kForcedDemodRateHz, kLandingTedSps};
     const digital_front_end_landing on_attached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
                                                    kForcedDemodRateHz, kLandingTedSps};
-    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kQueuedTedSps};
+    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kLandingTedSps};
     int failed = expect_digital_front_end_landings("0", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, &off_attached,
                                                    &off_unattached, 0);
     failed |= expect_digital_front_end_landings("1", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, &on_attached,
@@ -1204,18 +1206,19 @@ test_digital_family_lands_where_timed_on_a_digital_front_end(void) {
  * carries the digital family still lands where the decoder was timed: from CQPSK at 78125 Hz under DSD_NEO_CQPSK=0, a
  * P25 target with no modulation lands the FSK discriminator resampled to 48 kHz with the P25 C4FM filter and the
  * landing TED, and under =1 from the FSK discriminator it lands CQPSK at 78125 Hz. So does a DMR target, whose FSK is
- * its own choice, from CQPSK under =0. A profile without a family applies as queued over the output chain it finds, as
- * a digital-only session's retune always has, and an analog target's retune before a DMR target's leaves the analog
+ * its own choice, from CQPSK under =0. A profile without a family applies over the output chain it finds, as a
+ * digital-only session's retune always has, timed for the complex rate (issue #806), and an analog target's retune
+ * before a DMR target's leaves the analog
  * family on the external path too. */
 static int
 test_external_backend_retune_lands_where_timed(void) {
     const digital_front_end_landing off_attached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM,
                                                     48000, kLandingTedSps};
     const digital_front_end_landing off_unattached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
-                                                      kForcedDemodRateHz, kQueuedTedSps};
+                                                      kForcedDemodRateHz, kLandingTedSps};
     const digital_front_end_landing on_attached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
                                                    kForcedDemodRateHz, kLandingTedSps};
-    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kQueuedTedSps};
+    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kLandingTedSps};
     int failed = expect_digital_front_end_landings("0", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, &off_attached,
                                                    &off_unattached, 1);
     failed |= expect_digital_front_end_landings("1", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, &on_attached,
@@ -1448,15 +1451,15 @@ expect_live_landing(const char* stage, const char* cqpsk_env, const rtl_stream_t
  * alone; taken before the retune, which it superseded and which then lands only its centre; taken after that
  * superseded retune kept the stream on CQPSK; and after the retune itself landed the same prediction. While it is
  * queued the stream counts it as outstanding work that lands a family. A plain request, or a marked one a plain one
- * replaced in the queue, keeps today's behaviour: the profile's CQPSK state and TED over the output chain the stream
- * runs. A target whose CQPSK is its own choice keeps it over the override; under DSD_NEO_CQPSK=1 a landing from the
+ * replaced in the queue, keeps today's behaviour: the profile's CQPSK state over the output chain the stream runs, its
+ * TED timed for the complex rate (issue #806). A target whose CQPSK is its own choice keeps it over the override; under DSD_NEO_CQPSK=1 a landing from the
  * FSK discriminator drops the 48 kHz resampler for CQPSK at the demod rate. */
 static int
 test_live_republish_lands_where_it_was_timed(void) {
     const live_landing_want fsk_48k = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM, 48000,
                                        kLandingTedSps};
     const live_landing_want cqpsk_queued = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
-                                            kForcedDemodRateHz, kQueuedTedSps};
+                                            kForcedDemodRateHz, kLandingTedSps};
     const live_landing_want cqpsk_landed = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
                                             kForcedDemodRateHz, kLandingTedSps};
 

@@ -36,24 +36,24 @@ double dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_stage);
 /**
  * @brief Compute total SNR bias for C4FM (4-level FSK) given DSP parameters.
  *
- * @param rate_out Output sample rate in Hz.
- * @param ted_sps Samples per symbol.
+ * @param complex_rate_hz Complex sample rate the TED runs at (demod_state::complex_rate).
+ * @param ted_sps Samples per symbol at @p complex_rate_hz.
  * @param lpf_profile Channel LPF profile (DSD_CH_LPF_PROFILE_*).
  * @param tetra_stage DSD_SNR_TETRA_STAGE_* (dsd_snr_noise_bandwidth_hz()).
  * @return Total bias in dB to subtract from raw SNR estimate.
  */
-double dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage);
+double dsd_snr_bias_c4fm_db(int complex_rate_hz, int ted_sps, int lpf_profile, int tetra_stage);
 
 /**
  * @brief Compute total SNR bias for EVM/GFSK/QPSK given DSP parameters.
  *
- * @param rate_out Output sample rate in Hz.
- * @param ted_sps Samples per symbol.
+ * @param complex_rate_hz Complex sample rate the TED runs at (demod_state::complex_rate).
+ * @param ted_sps Samples per symbol at @p complex_rate_hz.
  * @param lpf_profile Channel LPF profile (DSD_CH_LPF_PROFILE_*).
  * @param tetra_stage DSD_SNR_TETRA_STAGE_* (dsd_snr_noise_bandwidth_hz()).
  * @return Total bias in dB to subtract from raw SNR estimate.
  */
-double dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage);
+double dsd_snr_bias_evm_db(int complex_rate_hz, int ted_sps, int lpf_profile, int tetra_stage);
 
 #ifdef __cplusplus
 }

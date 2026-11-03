@@ -2434,7 +2434,11 @@ Advanced (env)
   `auto` engages only when the device forces a rate that yields a non-integer samples-per-symbol, which is what
   devices with a coarse rate grid (RX-888/SDDC, Airspy, SDRplay) do. `on` resamples whenever the target rate
   can produce an integer samples-per-symbol; `off` always keeps the raw demod rate. The key is not Soapy-specific:
-  it governs the whole rtl-family demod chain (RTL USB, RTL-TCP, SoapySDR, and IQ replay).
+  it governs the whole rtl-family demod chain (RTL USB, RTL-TCP, SoapySDR, and IQ replay). A device that forces its
+  own rate now runs at the DSP bandwidth, as an RTL-SDR does, so `auto` looks at that bandwidth: an Airspy at 24 kHz
+  gives 4800 sym/s a whole 5 samples per symbol and is no longer resampled to 48 kHz, while at 12 kHz (2.5 samples)
+  it still is. A mode change that moves the symbol rate (ProVoice's 9600 sym/s at 24 kHz) makes the same decision
+  again.
 - RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
   ADC clock, and throughput requirements.
 - `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input

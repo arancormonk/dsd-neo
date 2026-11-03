@@ -545,11 +545,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   without asking the stream again, until `trunk_tuning.c` spends the decision on the row's retune
   (`dsd_scan_mode_take_timed_digital_family()`); entering or staging a row clears it. The retune's preparation decides
   once (`dsd_engine_retune_lands_digital_family()`): the row's decision, or the stream's answer when the row has none,
-  and the GFSK chain's TED, the digital family attached and the `-Y` supersede accounting all follow it, so the
-  decoder, the TED the retune profile carries and the front end are timed for one family even when outstanding analog
+  and the digital family attached and the `-Y` supersede accounting follow it, so the decoder and the front end are
+  timed for one family even when outstanding analog
   work fails between the row's timing and its retune (the answer can only fall there: only the decoder thread queues
   receive work, and it queues analog work only for an analog row, with no row on air, or at a leave, and a retune that
-  carries the digital family only as a row's or control channel's own retune). A later retune of the row that no
+  carries the digital family only as a row's or control channel's own retune). The GFSK chain's TED is the front
+  end's own, for the published complex rate (`rtl_stream_get_complex_rate_hz()`), whatever family lands, and the
+  stream re-derives every non-override TED there anyway (issue #806, X11). A later retune of the row that no
   timing preceded (a parked trunked target's control channel hunt) decides by the stream's answer, as a retune outside
   a scan does, and a later timing of the row while its retune is outstanding (a resume after a scoped command) finds
   that retune in the stream's answer. The resume times the row once it runs the modulation it keeps: the row's
@@ -4891,7 +4893,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     keyed on the symbol profile, so a channel LPF that is off and leaves the WIDE label still counts).
 
   It runs with a plan for the channel filter in force, the half-band stage
-  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`rate_out` x `post_downsample`), and nothing
+  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`complex_rate`), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
@@ -5032,8 +5034,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   WAV input in every build).
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
-  |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
-  AM never runs where an I/Q replay decimates after the demodulator). It writes silence and holds C while
+  |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate
+  (`complex_rate`, ahead of an I/Q replay's post-demod decimator). It writes silence and holds C while
   `channel_squelched`, counting the closed run in `demod_state::am_squelched_samples`; past
   `DSD_AM_CARRIER_HOLD_MS` (100 ms) the next unsquelched block starts C over, since what opens the squelch then is
   another transmission. It warm-starts C from the block's mean magnitude when it is 0, and is silent below a 1e-9
@@ -5225,7 +5227,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs a design of its own while the
   TETRA channel filter runs, and the legacy WIDE plan exactly otherwise (see "TETRA receive chain" below).
   `DSP_CHANNEL_FILTERS` pins every other profile's plan at 24-144 kHz.
-  The plan cache key is (rate_out, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their
+  The plan cache key is (complex_rate, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their
   scratch per call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is
   seamless (issue #572):
   `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
@@ -5296,7 +5298,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     configuration is final, so a TETRA open publishes the TETRA profile before any block and the first block runs no
     transition. Setters never evaluate it. It reads `dsd_demod_tetra_chain_wanted()`: the TETRA profile on CQPSK at
     18 ksym/s, not an uplink session, an effective TED sps (the override when set) and `ted_sps` itself (what the
-    Gardner TED and the FLL run at, `dsd_cqpsk_timing_sps()`, ted_sps or 5) both exactly rate_out / 18000, a rate in
+    Gardner TED and the FLL run at, `dsd_cqpsk_timing_sps()`, ted_sps or 5) both exactly complex_rate / 18000, a rate in
     the 36-144 kHz domain (`dsd_tetra_dsp_rate_runs()`), the channel LPF on, and a TETRA channel design for the rate
     (checked for the rate, not read from the installed plan, and memoized by rate in
     `tetra_design_rate_out`/`tetra_design_ok`, which the block boundary refreshes, so no block designs the filter to
@@ -5459,7 +5461,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     loop rewind drops the old dwell's last 74 samples or so, and as nothing flushes them at EOF, a replay never decodes
     a capture's last 1.5 ms). `rtl_demod_clear_filter_histories()` and stream open (`demod_init_common_defaults()`)
     delegate to it, so a retune restarts the post-demod decimator too, as a family switch does.
-  - `channel_lpf_apply()` clears the channel state on a plan for another `rate_out` than the last one, and on the first
+  - `channel_lpf_apply()` clears the channel state on a plan for another `complex_rate` than the last one, and on the first
     block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
     keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
     `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block decision:
@@ -5474,7 +5476,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
     each buffer, bit-exact against the whole stream).
   - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
-    sets `post_downsample` above 1; every live source and committed fixture runs 1) streams on both paths: the 16-tap
+    sets `post_downsample` above 1; every live source and committed fixture runs 1; only the audio monitor runs it:
+    the FSK discriminator and the CQPSK chain emit at `complex_rate`) streams on both paths: the 16-tap
     polyphase decimator (its history and phase) and, when that allocation fails, the fallback, a one-pole low-pass
     and the mean of each M samples, whose one-pole output and part-filled group carry in `demod_state`
     (`post_fallback_*`). A block publishes the outputs its samples complete, 0 included, never its undecimated input.
@@ -5498,12 +5501,14 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   stream's published rate, or only for kind, range and `DSD_NEO_CHANNEL_LPF` with no stream running, and checked
   again on the demod thread at the rate it lands on; a refusal logged with the validator's text once per kind, width
   and rate, and applied on the demod thread ahead of any demod profile queued after it; a demod profile queued
-  before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_request_rate_hz()` (the published rate
-  those caller-thread checks use, from the stream's start; 0 with no stream), `rtl_stream_get_analog_profile()`,
+  before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_request_rate_hz()` (the published
+  complex rate those caller-thread checks use, from the stream's start; 0 with no stream),
+  `rtl_stream_get_complex_rate_hz()` (the published `complex_rate`, issue #806), `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
   `rtl_stream_get_analog_setting()` (the kind and width setting that family runs, on the monitor output or off it),
-  `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce),
+  `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce: every family from the
+  published `complex_rate`, the monitor over `post_downsample`, then the output resampler or digital_resample),
   `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target), and
@@ -5856,7 +5861,8 @@ Key public headers:
     step. A start, a retune and a PPM correction are one transaction with the demod thread parked:
     `optimal_settings()` plans provisionally from the RTL-shaped request and the device's nearest rate (nothing is
     designed for it); the device is programmed; the read-back gives the final plan (`rate_chain_replan()`: passes
-    picked again for its nominal rate, `rate_out` the exact rate after the step, `capture_rate_device_forced` the
+    picked again for its nominal rate, `complex_rate` and `rate_out` the exact rate after the step (a live chain never
+    post-decimates), `capture_rate_device_forced` the
     plan's `device_forced`, the dongle rate the read-back itself, which the Fs/4 centre and the capture-rate consumers
     use) and `rate_chain_sync_step()` designs its step, before the capture correction (`apply_actual_capture_rate()`).
     `g_live_rate_plan` is the plan the chain runs, and `CaptureSettingsSnapshot` carries it (plain values; its key is
@@ -5878,6 +5884,19 @@ Key public headers:
     `rtl_stream_test_fail_step_designs()`), `IO_RTL_DEMOD_CONFIG` and `IO_AIRSPY_INGEST`
     (`rtl_stream_test_live_rate_chain()`: the open's chain for an Airspy's rates in FSK, CQPSK and TETRA, and the
     RTL-SDR tolerance edges), `IO_RTL_OFFSET_TUNING`.
+  - Complex rate (issue #806): `demod_state::complex_rate` is the rate after the half-band chain and the step, which
+    the channel filter, the FSK discriminator and modem, the CQPSK chain and TETRA chain, the TED, the squelch, the
+    discriminator's output scale, the SNR bias and the I/Q spectrum run at; `rate_out` keeps its meaning, the analog
+    rate after the post-demod decimator (`complex_rate / post_downsample`). Every rate chain sets both (the live plan,
+    `controller_apply_replay_settings()`, the snapshot restore), and the stream publishes both
+    (`rtl_stream_get_complex_rate_hz()`). `rtl_demod_emitted_rate_hz()` is what `full_demod()` emits ahead of the
+    output resampler: the complex rate on the FSK and CQPSK paths, which never post-decimate, `rate_out` on the audio
+    monitor; the output resampler, the output rate and the family prediction start from it (X10: the FSK path was
+    configured from the post-divided `rate_out` under a replay's `post_downsample`). They differ only on a replay whose
+    sidecar decimates after the demodulator. Test: `IO_RTL_COMPLEX_RATE` (FSK, CQPSK and NFM x post 1-4: configured
+    and landed rates, prediction, emitted sample counts; the bandwidth x symbol rate x digital_resample matrix, Airspy
+    against RTL-SDR; the TED and output chain an SPS hunt, retune profiles, a P25 voice override and a control-channel
+    restore land on, `rtl_stream_test_live_chain_profile_steps()`, `rtl_stream_test_replay_post_chain()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
@@ -6265,9 +6284,11 @@ Notes:
 - Analog receive path (`rtl_demod_config.cpp`, `rtl_sdr_fm.cpp`; audit in `docs/rtl-demod-pipeline-audit.md`):
   - Stream start configures the analog channel from the options and validates it once the rate chain is final
     (`rtl_demod_finalize_analog_channel()`), including a rate the device forced. An explicit width the rate cannot
-    realize, an explicit width with `DSD_NEO_CHANNEL_LPF=0`, or an explicit width on an IQ replay whose sidecar
-    decimates after the demodulator (`post_downsample` above 1, `rtl_demod_check_analog_post_decimation()`) fails the
-    start with the validator's text; the unset AM default is held to the same rules. The refusal is also recorded, with
+    realize, or an explicit width with `DSD_NEO_CHANNEL_LPF=0`, fails the start with the validator's text; the unset
+    AM default is held to the same rules. Widths are checked and designed at `complex_rate`, the rate the channel
+    filter runs at: on an IQ replay whose sidecar decimates after the demodulator (`post_downsample` above 1) that is
+    ahead of the post-demod decimator (issue #806; such a capture refused every explicit width before, while its filter
+    ran wider than designed). The refusal is also recorded, with
     the kind, the configured width and the rate it was held to (`rtl_stream_start_analog_refusal()`, relaxed atomics
     that every `rtl_stream_create()` and stream open clear), since the caller of a failed start has no stream left to
     name the rate the device delivered (issue #578; test: `IO_RTL_STREAM_START_FAILURE`). So is whether the start
@@ -6288,9 +6309,8 @@ Notes:
     de-emphasis back. `rtl_demod_reset_audio_monitor_state()`, which every open, retune and family or kind switch runs,
     returns the detector's carrier estimate to cold (`demod_state::am_carrier` 0 and its closed-squelch run
     `am_squelched_samples` 0; the next block warm-starts it), and `demod_init_common_defaults()` clears both for a fresh
-    open. An AM start on a replay whose kept sidecar chain decimates after the demodulator is refused with
-    `AM needs a capture with post_downsample 1`: no AM width runs there, the default included (a planned chain always
-    has `post_downsample` 1).
+    open. On a replay whose kept sidecar chain decimates after the demodulator the detector runs at the complex rate
+    ahead of the decimator, and its width is checked there like any other.
     `demod_write_output_block()` skips the output scale for AM (`dsd_demod_am_active()`), which normalises its own
     level. A configured I/Q DC blocker and I/Q balance are bypassed under AM, each with a one-time note
     (`rtl_demod_note_am_iq_dc_bypass()`, `rtl_demod_note_am_iq_balance_bypass()`, from configuration, a kind switch, a
@@ -6308,7 +6328,7 @@ Notes:
     the CQPSK-off profiles via `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the
     FM or AM monitor, taken and refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live
     output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi x rate / 48000
-    for FM at the rate the discriminator runs at (rate_out x post_downsample, which a fixed-grid device forces), so a
+    for FM at the rate the discriminator runs at (`complex_rate`), so a
     deviation plays at one level whatever the demod rate, none for AM or digital output; IQ replay runs
     the live scale whatever an earlier session left, via
     `rtl_stream_test_replay_output_scale()`), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
@@ -6343,8 +6363,8 @@ Notes:
     family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
     its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
     output but filters with the row's channel profile and publishes no analog profile. An IQ replay that decimates
-    after the demodulator (`post_downsample` above 1) runs the channel filter at that multiple of the rate it was
-    designed for, so its analog width is published as DSP-limited, scaled by `post_downsample`.
+    after the demodulator (`post_downsample` above 1) designs and runs the channel filter at `complex_rate`, ahead of
+    that decimator, and publishes the width it filters.
   - While the pipeline runs, `demod_state` is written by the demod thread, or by a thread holding the reconfigure or
     family-switch gate while the demod thread is parked (a retune's finalize on the controller thread, a gated CQPSK
     toggle, an external backend's retune landing on the decoder's thread). Both gates are one gate with one owner
@@ -6477,10 +6497,14 @@ Notes:
     the output generation; a width-only change redesigns the filter and keeps its histories and the half-band cascade's,
     so the edit is seamless while the channel filter stays on (see Channel LPF). A switch to digital also
     keeps the open's floor of two samples per symbol for the TED, which the symbol-profile setter it applies does not
-    (ProVoice at a 12 kHz DSP rate), and times a profile it does not override for the demod rate it lands on, as an
-    open does, not for the rate the decoder read when it queued the profile: a retune can settle the device on
-    another rate in between, and the CQPSK timing loop takes the SPS it is given (`rtl_stream_landing_ted_sps()`; a
-    retune that carries the digital family is timed the same way, not with the TED the decoder queued). The analog
+    (ProVoice at a 12 kHz DSP rate). Every symbol profile it does not override, by a switch, a live request or a retune
+    profile with a family or without, is timed for the complex rate it lands on, as an open does, not with the TED the
+    decoder queued for the output rate it read (issue #806, X11; `rtl_stream_landing_ted_sps()`): a retune can settle
+    the device on another rate in between, digital_resample moves the FSK output off the complex rate, and `ted_sps` is
+    paired with `complex_rate` by the SNR bias and saved profiles. A live request or an external backend's retune whose
+    new symbol rate moves the digital_resample decision on the FSK discriminator designs the output chain again
+    (`rtl_stream_follow_fsk_resample_decision()`; a controller retune's finalize does it anyway), so the decoder lands
+    the rate it predicted. The analog
     family never runs
     CQPSK: a `-fA` open demodulates FM whatever `DSD_NEO_CQPSK` or the modulation say, as a switch to analog does. The
     CQPSK family after a switch to digital follows the symbol profile requested with it unless `DSD_NEO_CQPSK` is set,
@@ -6506,7 +6530,8 @@ Notes:
     landing by one decision per row (`scan_timing_rate_hz()` records it, `dsd_engine_retune_lands_digital_family()`
     spends it), so its symbol profile
     runs the same CQPSK state and channel filter (`rtl_stream_resolve_landing_profile()`), the controller's finalize
-    designs the resampler and output rate for them from the same inputs, and the TED is the landing one. Only the switch
+    designs the resampler and output rate for them from the same inputs, and the TED is the complex rate's. Only the
+    switch
     itself is left out there: no loop resets beyond a retune's and a CQPSK change's, and no `rx_family_switch` record,
     so a stream still on the digital family it opened on keeps taking its FSK channel profile from its options. An
     external backend's retune (`rtl_stream_apply_pending_retune_profile_for_target()`: a rigctl peer that tuned an RTL
@@ -6547,7 +6572,8 @@ Notes:
     picked; a typed digital row under `-fA` and on a DMR session switched
     to analog; width-only changes, seamless through the half-band cascade and the channel filter at one tap count and
     onto more and fewer taps; requests with no stream; live requests and
-    retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
+    retune profiles refused against a running stream's complex rate (a replay's ahead of its `post_downsample`), and a
+    live request
     refused at the rate a retune moved the stream to before it was consumed, a DMR session's switch onto the monitor
     included (also one requested after a retune moved the rate its check accepted), with the unset default switching
     at a rate that cannot fit 16 kHz instead; a demod

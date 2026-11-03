@@ -142,6 +142,7 @@ void
 configure_cqpsk(demod_state* s, int rate, int profile, int symbol_rate, int sps) {
     s->rate_in = rate;
     s->rate_out = rate;
+    s->complex_rate = rate;
     s->rate_out2 = 0;
     s->mode_demod = &dsd_fm_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;

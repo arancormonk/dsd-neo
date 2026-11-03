@@ -631,6 +631,7 @@ bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int r
     }
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
@@ -989,6 +990,7 @@ bench_carrier_loops(const BenchOptions& opts) {
     fll_state.s->lp_len = kInLen;
     fll_state.s->ted_sps = 5;
     fll_state.s->rate_out = 24000;
+    fll_state.s->complex_rate = 24000;
 
     ran += run_case(opts, "op25_fll_band_edge_cc", "pair", (double)kPairs, [&]() -> float {
         op25_fll_band_edge_cc(fll_state.s);
@@ -1000,6 +1002,7 @@ bench_carrier_loops(const BenchOptions& opts) {
     costas_state.s->lp_len = kInLen;
     costas_state.s->ted_sps = 5;
     costas_state.s->rate_out = 24000;
+    costas_state.s->complex_rate = 24000;
 
     ran += run_case(opts, "op25_costas_loop_cc", "pair", (double)kPairs, [&]() -> float {
         op25_costas_loop_cc(costas_state.s);
@@ -1014,6 +1017,7 @@ configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps) {
     s->cqpsk_enable = 1;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->symbol_rate_hz = (sps > 0) ? sample_rate / sps : 4800;
     s->symbol_levels = 4;
     s->ted_sps = sps;
@@ -1127,6 +1131,7 @@ static void
 configure_common_fsk_state(demod_state* s, int sample_rate, int symbol_rate, int channel_lpf_enable, int squelched) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
@@ -1155,6 +1160,7 @@ configure_common_c4fm_audio_state(demod_state* s, int sample_rate, int symbol_ra
                                   int squelched) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
@@ -1178,6 +1184,7 @@ static void
 configure_common_cqpsk_state(demod_state* s, int sample_rate, int symbol_rate, int sps) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;

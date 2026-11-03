@@ -442,7 +442,7 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
 
 /* Whether a digital retune carries the digital family, which lands it where the digital family's prediction says
  * (rtl_stream_output_rate_for_family()), after an analog scan row or target (issues #526, #583). A retune preparation
- * decides it once, and the GFSK chain's TED and the digital family it attaches both follow that one answer. Only when
+ * decides it once, and the digital family it attaches follows that one answer. Only when
  * the configured mode is digital, and when the scan row the retune is for was timed for the digital family's landing
  * (dsd_scan_mode_take_timed_digital_family(); with @p spend the decision is taken, so a later retune no timing of the
  * row preceded decides afresh), or the front end runs the analog family now, or the work already outstanding lands a
@@ -486,36 +486,23 @@ dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
                : 0;
 }
 
-/* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
- * rate, or the digital family's when the retune carries that family (@p lands_digital_family, the preparation's
- * dsd_engine_retune_lands_digital_family()), which it lands on from the analog monitor, resampled to its audio rate,
- * or from a digital front end alike. A trunk-scan target's FSK stands over DSD_NEO_CQPSK there
- * (dsd_engine_trunk_scan_cqpsk_explicit()). */
-static int
-dsd_engine_gfsk_landing_rate(const dsd_state* state, int symbol_rate_hz, int lands_digital_family) {
-    if (lands_digital_family) {
-        const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz,
-                                                                          dsd_engine_trunk_scan_cqpsk_explicit(state));
-        if (landing_hz > 0U) {
-            return (int)landing_hz;
-        }
-    }
-    return (int)rtl_stream_output_rate(state->rtl_ctx);
-}
-
 /*
  * Four-level GFSK control/park channel. The symbol rate is a parameter because the family spans
  * two of them: DMR and NXDN96 at 4800 sym/s in a 12.5 kHz channel, NXDN48 at 2400 sym/s in a
  * 6.25 kHz one. dsd_rtl_channel_profile_for() owns the rate-to-filter mapping, so the front end
  * and the SPS hunt cannot drift apart on which filter a rate wants.
+ *
+ * The TED is the front end's own timing, at the complex rate the discriminator runs at (issue #806), not at the
+ * decoder's output rate: the digital family a retune lands, or digital_resample, resamples only the output, and a TED
+ * for that rate would pair the wrong samples per symbol with the complex rate.
  */
 static void
 dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,
-                                     int symbol_rate_hz, int lands_digital_family) {
+                                     int symbol_rate_hz) {
     int retune_ted_sps = ted_sps;
-    if (state->rtl_ctx) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(
-            opts, symbol_rate_hz, dsd_engine_gfsk_landing_rate(state, symbol_rate_hz, lands_digital_family));
+    const int complex_rate_hz = rtl_stream_get_complex_rate_hz();
+    if (state->rtl_ctx && complex_rate_hz > 0) {
+        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, complex_rate_hz);
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
                                                  dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
@@ -604,10 +591,8 @@ dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lan
     (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 
-/* @p lands_digital_family is the preparation's one landing-family decision (dsd_engine_retune_lands_digital_family()). */
 static void
-dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps,
-                                int lands_digital_family) {
+dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
@@ -618,7 +603,7 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
     if (ted_sps > 0) {
         const int gfsk_rate = dsd_engine_gfsk_cc_symbol_rate(state);
         if (gfsk_rate > 0) {
-            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate, lands_digital_family);
+            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate);
             return;
         }
     }
@@ -1272,7 +1257,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
-        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, lands_digital_family);
+        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
 #endif
     }
@@ -1326,7 +1311,7 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
                                                          dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
                                                          ted_sps, 0);
         } else {
-            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, lands_digital_family);
+            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         }
         dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
     }

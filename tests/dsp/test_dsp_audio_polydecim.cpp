@@ -102,6 +102,7 @@ main(void) {
     d1->post_downsample = M;
     d1->mode_demod = &copy_i_to_audio_demod;
     d1->rate_out = (int)Fs;
+    d1->complex_rate = (int)Fs;
     d1->squelch_gate_open = 1;
     d1->squelch_env = 1.0f;
     d1->squelch_env_attack = 0.125f;
@@ -127,6 +128,7 @@ main(void) {
     d2->post_downsample = M;
     d2->mode_demod = &copy_i_to_audio_demod;
     d2->rate_out = (int)Fs;
+    d2->complex_rate = (int)Fs;
     d2->squelch_gate_open = 1;
     d2->squelch_env = 1.0f;
     d2->squelch_env_attack = 0.125f;

@@ -70,6 +70,7 @@ make_am_monitor(demod_state* s) {
     s->cqpsk_enable = 0;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
 }
 
 /* Fill @p pairs complex samples of a carrier at 0 Hz with amplitude @p a and phase @p phi, plus a receiver DC offset

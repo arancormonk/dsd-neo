@@ -767,6 +767,7 @@ expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted
     s->lowpassed = buf;
     s->lp_len = pairs * 2;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
     s->ted_sps = sps;
     s->ted_gain = ted_gain;
     s->ted_gain_is_set = ted_gain_is_set;
@@ -829,6 +830,7 @@ expect_tetra_chain_gain(const char* label, float ted_gain, int ted_gain_is_set, 
     s->lowpassed = buf.data();
     s->lp_len = pairs * 2;
     s->rate_out = 72000;
+    s->complex_rate = 72000;
     s->ted_sps = sps;
     s->ted_gain = ted_gain;
     s->ted_gain_is_set = ted_gain_is_set;
@@ -1316,6 +1318,7 @@ gardner_split_state(void) {
         s->cqpsk_enable = 1;
         s->ted_sps = kGardnerSps;
         s->rate_out = 4800 * kGardnerSps; /* P25p1: below the adaptive gain's symbol rate, so the gain holds */
+        s->complex_rate = 4800 * kGardnerSps;
         s->ted_gain = 0.025f;
     }
     return s;
@@ -1548,6 +1551,7 @@ test_fll_band_edge_processes_block(void) {
     s->lp_len = pairs * 2;
     s->ted_sps = 5;
     s->rate_out = 24000;
+    s->complex_rate = 24000;
 
     op25_fll_band_edge_cc(s);
 
@@ -1613,6 +1617,7 @@ test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
         s->lp_len = pairs * 2;
         s->ted_sps = 5;
         s->rate_out = 24000;
+        s->complex_rate = 24000;
 
         op25_fll_band_edge_cc(s);
         dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;

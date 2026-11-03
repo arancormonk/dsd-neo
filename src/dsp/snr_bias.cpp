@@ -66,22 +66,22 @@ dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_stage) {
 }
 
 double
-dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage) {
-    if (rate_out <= 0 || ted_sps <= 0) {
+dsd_snr_bias_c4fm_db(int complex_rate_hz, int ted_sps, int lpf_profile, int tetra_stage) {
+    if (complex_rate_hz <= 0 || ted_sps <= 0) {
         return kC4fmEstimatorBiasDb + 2.2; /* fallback to original ~7.95 dB */
     }
-    double symbol_rate = (double)rate_out / (double)ted_sps;
+    double symbol_rate = (double)complex_rate_hz / (double)ted_sps;
     double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_stage);
     /* Total bias = estimator bias + bandwidth penalty */
     return kC4fmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
 }
 
 double
-dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage) {
-    if (rate_out <= 0 || ted_sps <= 0) {
+dsd_snr_bias_evm_db(int complex_rate_hz, int ted_sps, int lpf_profile, int tetra_stage) {
+    if (complex_rate_hz <= 0 || ted_sps <= 0) {
         return kEvmEstimatorBiasDb + 0.5; /* fallback to original ~2.43 dB */
     }
-    double symbol_rate = (double)rate_out / (double)ted_sps;
+    double symbol_rate = (double)complex_rate_hz / (double)ted_sps;
     double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_stage);
     /* Total bias = estimator bias + bandwidth penalty */
     return kEvmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);

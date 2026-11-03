@@ -76,7 +76,13 @@ int rtl_demod_digital_resample_target_hz(const struct demod_state* demod);
  * inputs, or 0 when the stream is not resampled.
  */
 int rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode, int resamp_target_hz,
-                                          int symbol_rate_hz, int rate_out_hz, int capture_rate_device_forced);
+                                          int symbol_rate_hz, int complex_rate_hz, int capture_rate_device_forced);
+
+/**
+ * The rate full_demod() emits ahead of the output resampler: demod_state::complex_rate on the CQPSK and FSK
+ * discriminator paths, which never post-decimate, and demod_state::rate_out on the audio monitor.
+ */
+int rtl_demod_emitted_rate_hz(const struct demod_state* demod);
 
 /**
  * Output rate of the analog monitor stream for a demod rate: the resampler target when the monitor resamples to it,
@@ -115,19 +121,6 @@ int rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz);
 int rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size);
 
 /**
- * Check an analog channel against a rate chain that decimates after the demodulator.
- *
- * An I/Q replay sidecar may set post_downsample above 1: the channel filter then runs at @p rate_out_hz x
- * @p post_downsample, while the analog design and rtl_demod_check_analog_channel() work at @p rate_out_hz, so a
- * requested width would be neither applied nor refused. Such a width (explicit, or the AM default) is refused; the
- * unset NFM default keeps the legacy design, and @p post_downsample <= 1 (every live source) always passes.
- *
- * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
- */
-int rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate_out_hz, int post_downsample,
-                                           char* err, size_t err_size);
-
-/**
  * Put @p demod on the analog channel for @p kind at its current rates.
  *
  * Marks the analog family, selects the WIDE profile, and sets the channel width: a requested width (explicit, or the
@@ -154,9 +147,10 @@ int rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int expl
 int rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size);
 
 /**
- * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start): the checks of
- * rtl_demod_check_analog_channel() at rate_out and of rtl_demod_check_analog_post_decimation(). No-op outside the
- * analog family (including the M17 encoder). Where a SoapySDR or Airspy device or an I/Q replay sets rate_out rather
+ * Validate and apply the analog channel @p opts ask for once the rate chain is final (stream start): the checks of
+ * rtl_demod_check_analog_channel() at complex_rate, the rate the channel filter runs at (an I/Q replay that decimates
+ * after the demodulator runs it ahead of that decimator). No-op outside the analog family (including the M17
+ * encoder). Where a SoapySDR or Airspy device or an I/Q replay sets the rate rather
  * than the RTL DSP bandwidth, a width it cannot filter is refused with the fix that rate allows
  * (dsd_analog_width_check_at()): on a device, raising the DSP bandwidth (which raises the rate its capture is decimated
  * to) or narrowing the width; on a replay, narrowing the width.

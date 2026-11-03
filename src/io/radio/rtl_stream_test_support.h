@@ -765,10 +765,68 @@ typedef struct {
     unsigned int output_rate_hz;
     int published_rate_out_hz;
     int published_forced;
+    int complex_rate_hz; /* demod_state::complex_rate (issue #806) */
+    int published_complex_rate_hz;
 } rtl_stream_test_live_chain_result;
 
 int rtl_stream_test_live_rate_chain(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
                                     uint32_t readback_hz, rtl_stream_test_live_chain_result* out);
+
+/* One symbol profile the decoder asks the front end for (rtl_stream_test_live_chain_profile_steps()). */
+typedef struct {
+    int cqpsk; /* 0/1, or -1 to leave the CQPSK state */
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile;
+    int ted_sps;      /* the TED the decoder queues with it, timed for the output rate it read */
+    int ted_override; /* 1: ted_sps is an override (a P25 voice channel's) */
+    int via_retune;   /* 1: a retune profile landed as an external backend's retune does; 0: a live request */
+} rtl_stream_test_profile_step;
+
+typedef struct {
+    int taken;
+    unsigned int predicted_rate_hz; /* rtl_stream_output_rate_for_family() for the step's profile, asked before it */
+    int ted_sps;
+    int ted_sps_override;
+    int symbol_rate_hz;
+    int output_kind;
+    int channel_profile;
+    unsigned int output_rate_hz;
+    int resamp_enabled;
+    int published_complex_rate_hz;
+    int published_ted_sps;
+    int published_tetra_stage;
+    double snr_bias_evm_db; /* rtl_stream_get_snr_bias_evm() */
+} rtl_stream_test_profile_step_result;
+
+/* rtl_stream_test_live_rate_chain()'s open for @p opts (no read-back other than the device's rate), then each of the
+ * @p count steps in order, each result in @p out (issue #806: the TED timing and the digital_resample decision a
+ * symbol profile lands on). The stream's own state comes back afterwards. Returns -1 for bad arguments or with a
+ * stream or device open; @p open_out->rc reports the open. */
+int rtl_stream_test_live_chain_profile_steps(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
+                                             const rtl_stream_test_profile_step* steps, size_t count,
+                                             rtl_stream_test_live_chain_result* open_out,
+                                             rtl_stream_test_profile_step_result* out);
+
+typedef struct {
+    int complex_rate_hz;
+    int rate_out_hz;
+    int ted_sps;
+    int fsk_sample_rate_hz; /* the FSK modem's configured sample rate */
+    int output_kind;
+    int cqpsk_enable;
+    unsigned int output_rate_hz;    /* the output rate the stream landed on */
+    unsigned int predicted_rate_hz; /* rtl_stream_output_rate_for_family() for the family @p opts runs */
+    long long input_pairs;
+    long long emitted; /* samples (CQPSK: symbols) full_demod() and the output resampler emitted for them */
+} rtl_stream_test_post_chain_result;
+
+/* An I/Q replay open of @p opts on a sidecar with no half-band pass and post-demod decimation @p post (the complex rate
+ * @p complex_rate_hz, its demod rate that over @p post), then @p blocks blocks of @p pairs complex noise samples
+ * through the demodulator and the output resampler (issue #806, X10). The stream's own state comes back afterwards.
+ * Returns -1 for bad arguments or with a stream or device open, -3 when the open failed. */
+int rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz, uint32_t post, int blocks,
+                                      int pairs, rtl_stream_test_post_chain_result* out);
 
 /* The rate planner's passes for a device that runs @p actual_rate_hz whatever is asked, at DSP bandwidth rate
  * @p rate_in_hz (0 when it refuses). */
@@ -1448,7 +1506,8 @@ typedef struct rtl_stream_test_live_request_result {
 } rtl_stream_test_live_request_result;
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
- * with @p post_downsample published as an I/Q replay sidecar would set it, give it a designed channel plan, and ask
+ * with @p post_downsample published as an I/Q replay sidecar would set it (@p rate_hz is then the demod rate after
+ * that decimator, and the complex rate @p rate_hz x @p post_downsample), give it a designed channel plan, and ask
  * it while it runs for the analog profile (@p kind, @p width_hz): first through the check a decode-mode change makes
  * before it commits, then as a live request consumed at one demod-thread block boundary (made whatever the check
  * said), then as a retune profile for a target. */

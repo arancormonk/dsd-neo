@@ -187,9 +187,9 @@ void full_demod(struct demod_state* d);
  *
  * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol
  * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) and ted_sps
- * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal rate_out / 18000 exactly;
- * rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is enabled; and
- * dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now. That last answer is memoized by rate
+ * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal complex_rate / 18000
+ * exactly; complex_rate is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is
+ * enabled; and dsd_tetra_channel_design() succeeds at complex_rate, whatever plan is installed now. That last answer is memoized by rate
  * (demod_state::tetra_design_rate_out): full_demod() checks the design once per rate, and the predicate reads the memo
  * for its rate, designing only when the memo is for another one.
  *
@@ -335,7 +335,7 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  * Nyquist clamp and no fallback prototype here: a width the rate cannot realize
  * (see dsd_analog_width_realizable()) is an error.
  *
- * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz  Channel-filter sample rate (demod complex_rate) in Hz.
  * @param width_hz Full channel width in Hz.
  * @param taps_out Output taps; must hold @p max_taps floats.
  * @param max_taps Capacity of @p taps_out (at most DSD_ANALOG_CHANNEL_MAX_TAPS is used).
@@ -354,7 +354,7 @@ int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, in
  * does not clear the 13750 Hz stopband edge, or a design longer than the
  * capacity, is an error.
  *
- * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz  Channel-filter sample rate (demod complex_rate) in Hz.
  * @param taps_out Output taps; must hold @p max_taps floats.
  * @param max_taps Capacity of @p taps_out (at most DSD_CHANNEL_LPF_MAX_TAPS is used).
  * @return Number of taps written, or -1 when the rate cannot be designed for (nothing written).
@@ -371,7 +371,7 @@ int dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps);
  * at. The width is the protected passband (twice the edge the transition
  * starts at), measured the same way as an analog width.
  *
- * @param rate_hz Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz Channel-filter sample rate (demod complex_rate) in Hz.
  * @return Protected width in Hz, or 0 for a rate of 0 or less.
  */
 int dsd_channel_lpf_legacy_wide_width_hz(int rate_hz);

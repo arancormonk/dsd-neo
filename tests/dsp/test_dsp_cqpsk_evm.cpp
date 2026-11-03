@@ -256,6 +256,7 @@ make_state(const Leg& leg, const dsd_live_iq_step_plan& plan) {
 
     s->rate_in = leg.target_hz;
     s->rate_out = leg.target_hz;
+    s->complex_rate = leg.target_hz;
     s->downsample_passes = plan.passes;
     s->cqpsk_enable = 1;
     s->ted_sps = leg.target_hz / leg.symbol_hz;

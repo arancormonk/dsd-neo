@@ -523,6 +523,13 @@ __wrap_rtl_stream_get_request_rate_hz(void) {
     return g_rtl_request_rate_hz;
 }
 
+/* The complex rate the fake front end runs at (issue #806): its digital family's rate, which no resampler moves here,
+ * as on an RTL-SDR; the analog monitor resamples only its output. */
+int
+__wrap_rtl_stream_get_complex_rate_hz(void) {
+    return (int)fake_output_rate_for_family(DSD_RX_FAMILY_DIGITAL);
+}
+
 int
 __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     if (out_kind) {
@@ -3845,12 +3852,18 @@ test_trunk_scan_p25_modulation_stands_after_nfm(void) {
 }
 
 /* The GFSK sibling: a DMR target always runs the FSK discriminator, and the GFSK chain queues CQPSK off for it. Under
- * DSD_NEO_CQPSK=1 that stands after an nfm target as it does after a digital one, and the TED the tuning side computes
- * for the landing is asked for the same way. */
+ * DSD_NEO_CQPSK=1 that stands after an nfm target as it does after a digital one. The TED the tuning side queues is
+ * the front end's own, for the complex rate it runs at (issue #806), so it asks no landing rate. */
 static int
 test_trunk_scan_dmr_target_stays_fsk_after_nfm(void) {
-    static const cqpsk_choice_case c = {
-        "dmr target under DSD_NEO_CQPSK=1", "1", "dmr,dmr-conventional,461400000,,250,250,,\n", 461400000U, 0, 1, 2, 1};
+    static const cqpsk_choice_case c = {"dmr target under DSD_NEO_CQPSK=1",
+                                        "1",
+                                        "dmr,dmr-conventional,461400000,,250,250,,\n",
+                                        461400000U,
+                                        0,
+                                        1,
+                                        2,
+                                        -1};
     return run_cqpsk_choice_case(&c);
 }
 

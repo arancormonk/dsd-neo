@@ -754,11 +754,11 @@ channel_lpf_plan_current(const struct demod_state* d, int rate_out, int profile,
  *
  * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
- * per-block profile dispatch. The plan is cached by (rate_out, profile, width, TETRA chain): the analog
+ * per-block profile dispatch. The plan is cached by (complex_rate, profile, width, TETRA chain): the analog
  * family's width-driven design when it has a width, the profile design otherwise (for the TETRA profile, the TETRA
  * design while the TETRA chain runs and the WIDE design while it does not).
  *
- * A plan for another rate_out than the previous one starts the channel over, since its history holds samples at the
+ * A plan for another complex_rate than the previous one starts the channel over, since its history holds samples at the
  * old rate. A width or profile change at the same rate keeps the history and pending outputs: the streaming FIR
  * reconciles a new tap count through pending.
  */
@@ -768,28 +768,28 @@ channel_lpf_ensure_plan(struct demod_state* d) {
         return;
     }
     const int profile = d->channel_lpf_profile;
-    const int rate_out = d->rate_out;
+    const int complex_rate_hz = d->complex_rate;
     const int width_hz = channel_lpf_plan_width_hz(d);
     const int tetra = channel_lpf_plan_tetra(d, profile, width_hz);
-    if (channel_lpf_plan_current(d, rate_out, profile, width_hz, tetra)) {
+    if (channel_lpf_plan_current(d, complex_rate_hz, profile, width_hz, tetra)) {
         return;
     }
 
-    if (d->channel_lpf_plan_rate_out > 0 && d->channel_lpf_plan_rate_out != rate_out) {
+    if (d->channel_lpf_plan_rate_out > 0 && d->channel_lpf_plan_rate_out != complex_rate_hz) {
         channel_lpf_reset_state(d);
     }
 
     int taps_len = 0;
     if (width_hz > 0) {
-        taps_len =
-            dsd_channel_lpf_design_analog(rate_out, width_hz, d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
+        taps_len = dsd_channel_lpf_design_analog(complex_rate_hz, width_hz, d->channel_lpf_plan_taps,
+                                                 DSD_CHANNEL_LPF_MAX_TAPS);
         if (taps_len < 0) {
             taps_len = 0; /* no clamp and no fallback: the block passes unfiltered */
         }
     } else {
-        taps_len = channel_lpf_design_profile_plan(d, profile, rate_out);
+        taps_len = channel_lpf_design_profile_plan(d, profile, complex_rate_hz);
     }
-    d->channel_lpf_plan_rate_out = rate_out;
+    d->channel_lpf_plan_rate_out = complex_rate_hz;
     d->channel_lpf_plan_profile = profile;
     d->channel_lpf_plan_width_hz = width_hz;
     d->channel_lpf_plan_tetra = tetra;
@@ -1011,12 +1011,10 @@ static const float kAmOutputGain = 0.25f;
 static const float kAmEnvelopeClamp = 2.0f;
 static const float kAmCarrierFloor = 1e-9f;
 
-/* The rate the AM detector runs at: the demod rate. An I/Q replay that decimates after the demodulator
-   (post_downsample above 1) would run it faster, but no AM front end runs there: the stream start and every runtime
-   request refuse AM on such a capture (rtl_demod_check_analog_post_decimation()). */
+/* The rate the AM detector runs at: the complex rate, ahead of any post-demod decimator. */
 static int
 am_detector_rate_hz(const struct demod_state* d) {
-    return d->rate_out > 0 ? d->rate_out : 48000;
+    return d->complex_rate > 0 ? d->complex_rate : 48000;
 }
 
 /* One-pole coefficient for the DSD_AM_CARRIER_TAU_MS carrier estimate at the rate the detector runs. */
@@ -1407,11 +1405,12 @@ tetra_channel_design_realizable(int rate) {
    the predicate, so the predicate reads the memo rather than designing. */
 static void
 tetra_design_memo_refresh(struct demod_state* d) {
-    if (!tetra_chain_requested(d) || !dsd_tetra_dsp_rate_runs(d->rate_out) || d->tetra_design_rate_out == d->rate_out) {
+    if (!tetra_chain_requested(d) || !dsd_tetra_dsp_rate_runs(d->complex_rate)
+        || d->tetra_design_rate_out == d->complex_rate) {
         return;
     }
-    d->tetra_design_ok = tetra_channel_design_realizable(d->rate_out);
-    d->tetra_design_rate_out = d->rate_out;
+    d->tetra_design_ok = tetra_channel_design_realizable(d->complex_rate);
+    d->tetra_design_rate_out = d->complex_rate;
 }
 
 extern "C" int
@@ -1421,7 +1420,7 @@ dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
     if (!d || !tetra_chain_requested(d) || d->tetra_uplink) {
         return 0;
     }
-    const int rate = d->rate_out;
+    const int rate = d->complex_rate;
     if (!dsd_tetra_dsp_rate_runs(rate) || !d->channel_lpf_enable) {
         return 0;
     }
@@ -1447,7 +1446,7 @@ dsd_demod_tetra_channel_runs(const struct demod_state* d) {
     if (!d || !tetra_chain_requested(d)) {
         return 0;
     }
-    const int rate = d->rate_out;
+    const int rate = d->complex_rate;
     if (!d->tetra_uplink || !d->channel_lpf_enable || !dsd_tetra_dsp_rate_runs(rate)) {
         return 0;
     }
@@ -1577,7 +1576,7 @@ tetra_chain_warn_inactive(struct demod_state* d) {
         return;
     }
     const char* what = tetra_inactive_what(d);
-    const int rate = d->rate_out;
+    const int rate = d->complex_rate;
     if (rate > 0 && !dsd_tetra_dsp_rate_runs(rate) && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_RATE)) {
         LOG_WARN("%s: DSP rate %d Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on the generic "
                  "CQPSK path.\n",
@@ -1634,7 +1633,7 @@ dsd_demod_update_tetra_chain(struct demod_state* d) {
     if (want) {
         const float total = dsd_fll_band_edge_total_freq(f);
         dsd_fll_band_edge_init_params(f, fll_sps, dsd_fll_band_edge_params_for(1));
-        dsd_fll_band_edge_split_total(f, total, dsd_tetra_pre_limit_rad(d->rate_out));
+        dsd_fll_band_edge_split_total(f, total, dsd_tetra_pre_limit_rad(d->complex_rate));
     } else {
         dsd_fll_band_edge_init_params(f, fll_sps, dsd_fll_band_edge_params_for(0));
         dsd_fll_band_edge_fold(f);
@@ -1993,13 +1992,10 @@ mean_square_iq(const float* samples, int len) {
 
 /* ---------------- The auto squelch (issue #518 follow-up) ---------------- */
 
-/* The rate the channel-filtered I/Q runs at: the demod rate before any post-decimation. */
+/* The rate the channel-filtered I/Q runs at: the complex rate, ahead of any post-decimation. */
 static int
 squelch_channel_rate_hz(const struct demod_state* d) {
-    if (d->rate_out <= 0) {
-        return 0;
-    }
-    return d->rate_out * (d->post_downsample > 1 ? d->post_downsample : 1);
+    return d->complex_rate > 0 ? d->complex_rate : 0;
 }
 
 /* A dynamic setting runs on the analog monitor, the M17 encoder's monitor and the 9600 bit/s FSK path EDACS analog
@@ -2313,8 +2309,8 @@ full_demod_debug_op25_state(const struct demod_state* d, int pre_len) {
     const dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
     const ted_state_t* ted = &d->ted_state;
     const float kTwoPi = 6.28318530717958647692f;
-    float fll_be_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
-    int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
+    float fll_be_freq_hz = f->freq * ((float)d->complex_rate / kTwoPi);
+    int sym_rate = (d->ted_sps > 0 && d->complex_rate > 0) ? (d->complex_rate / d->ted_sps) : 4800;
     float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
     float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
     DSD_FPRINTF(stderr,
@@ -2475,7 +2471,7 @@ full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
     r->fll_before = *f;
     r->agc_before = d->cqpsk_agc_avg;
-    const float pre_limit = dsd_tetra_pre_limit_rad(d->rate_out);
+    const float pre_limit = dsd_tetra_pre_limit_rad(d->complex_rate);
     const int n = d->lp_len >> 1;
     /* The channel filter writes the work buffer the input is not in, the matched filter the other one, as on a whole
        block. When that is the input's own buffer it writes behind what the block still has to read (a filter makes no
@@ -2553,7 +2549,7 @@ full_demod_run_cqpsk_chain(struct demod_state* d, int streamed) {
         if (d->tetra_chain) {
             /* Not reachable: the chain's blocks with an FLL run streamed (full_demod_tetra_stream_block()). Should one
                run whole, the FLL's residual moves into the mixer after it, up to its bound. */
-            dsd_fll_band_edge_transfer(&d->fll_band_edge_state, dsd_tetra_pre_limit_rad(d->rate_out));
+            dsd_fll_band_edge_transfer(&d->fll_band_edge_state, dsd_tetra_pre_limit_rad(d->complex_rate));
         }
     }
     op25_gardner_cc(d);

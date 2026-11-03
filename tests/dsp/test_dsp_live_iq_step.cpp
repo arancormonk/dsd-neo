@@ -136,6 +136,7 @@ void
 configure_front_end(demod_state* s, int passes, int target_hz) {
     s->rate_in = target_hz;
     s->rate_out = target_hz;
+    s->complex_rate = target_hz;
     s->downsample_passes = passes;
     s->mode_demod = &raw_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
@@ -527,7 +528,7 @@ test_transaction_commit_rollback(void) {
     CHECK(dsd_live_iq_step_plan_equal(&st->plan, &b) && st->candidate_set == 0 && st->candidate.configured == 0,
           "b not active");
     dsd_demod_reset_filter_state(box.s); /* a retune resets the cascade with it */
-    box.s->rate_in = box.s->rate_out = b.target_hz;
+    box.s->rate_in = box.s->rate_out = box.s->complex_rate = b.target_hz;
     CHECK(same_output(stream_blocks(box.s, iq, 15000, 5), stream_blocks(fresh_b.s, iq, 15000, 5), 0.0),
           "b after the commit is not a fresh b");
 
@@ -539,7 +540,7 @@ test_transaction_commit_rollback(void) {
           "rollback kept a design");
     CHECK(st->active.phase == 0, "rollback did not clear a");
     dsd_demod_reset_filter_state(box.s);
-    box.s->rate_in = box.s->rate_out = a.target_hz;
+    box.s->rate_in = box.s->rate_out = box.s->complex_rate = a.target_hz;
     CHECK(same_output(stream_blocks(box.s, iq, 20000, 5), stream_blocks(fresh_a.s, iq, 20000, 5), 0.0),
           "a after the rollback is not a fresh a");
     dsd_live_iq_step_finish(st);

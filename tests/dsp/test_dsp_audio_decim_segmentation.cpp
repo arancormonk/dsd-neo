@@ -90,6 +90,7 @@ configure(demod_state* s, int factor, int rate_out) {
     s->channel_lpf_enable = 0;
     s->post_downsample = factor;
     s->rate_out = rate_out;
+    s->complex_rate = rate_out;
     s->rate_out2 = 0;
     s->mode_demod = &copy_i_demod;
     s->squelch_gate_open = 1;
@@ -478,6 +479,7 @@ test_rate_change(Path p, const std::vector<float>& x) {
     }
     fill_part(used.s, p, 4, kRateOutHz, x);
     used.s->rate_out = 16000;
+    used.s->complex_rate = 16000;
     configure(fresh.s, 4, 16000);
     char what[96];
     DSD_SNPRINTF(what, sizeof what, "RATE %s: rate_out %d -> 16000 at M 4", path_name(p), kRateOutHz);

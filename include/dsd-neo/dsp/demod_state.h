@@ -182,7 +182,12 @@ struct demod_state {
     int lp_len;
     int result_len;
     int rate_in;
+    /* The analog audio rate after the post-demod decimator: complex_rate / post_downsample. */
     int rate_out;
+    /* The complex I/Q rate after the half-band chain and the live rate step (issue #806): what the channel filter,
+       the CQPSK and FSK chains, the squelch and the discriminator run at. It equals rate_out except on an I/Q replay
+       whose sidecar decimates after the demodulator (post_downsample above 1). Every rate chain sets both. */
+    int complex_rate;
     int rate_out2;
     float pre_r, pre_j;
     /* 1 once pre_r/pre_j hold a valid sample from a prior block; 0 before the
@@ -218,8 +223,10 @@ struct demod_state {
     int prev_lpr_index;
     int dc_block;
     float dc_avg;
-    /* Half-band decimator */
-    float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
+    /* Half-band decimator. The work buffer is aligned as the large buffers above are: the scalars ahead of it would
+       otherwise decide where its SIMD loads fall (one more int moved it off a 64-byte boundary and slowed the CQPSK
+       chain by about 5 %). */
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
     /* Per stage: input samples taken but not yet decimated past (simd_hb_decim2_complex()), the look-ahead and the
@@ -250,7 +257,7 @@ struct demod_state {
        the filter took samples since. */
     int channel_lpf_pending;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
-    int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
+    int channel_lpf_plan_rate_out; /* cached rate (complex_rate) for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
     int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
     int channel_lpf_plan_tetra;    /* cached: 1 when channel_lpf_plan_taps is the TETRA chain's design */
@@ -366,7 +373,7 @@ struct demod_state {
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
     int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
     float ted_effective_gain; /* loop gain actually used by mode-specific TED */
-    int ted_sps;              /* nominal samples per symbol */
+    int ted_sps;              /* nominal samples per symbol at complex_rate */
     int ted_sps_override;     /* >0 = manual override (used during P25P2 VC tunes) */
     int costas_reset_pending; /* 1 = reset Costas loop on next retune (set when SPS override changes) */
     float ted_mu;             /* fractional phase [0.0, 1.0) */
@@ -415,7 +422,7 @@ struct demod_state {
        profile whose chain cannot run. The stream open clears them. */
     int tetra_chain_warned;
     /* Whether the TETRA channel design (dsd_tetra_channel_design()) is realizable at tetra_design_rate_out, the rate
-       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose rate_out differs, and
+       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose complex_rate differs, and
        dsd_demod_tetra_chain_wanted() reads it for that rate, so no block designs the filter just to ask. */
     int tetra_design_rate_out;
     int tetra_design_ok;

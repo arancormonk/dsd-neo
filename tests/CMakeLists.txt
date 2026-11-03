@@ -7153,6 +7153,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_family_landing_after_pending"
             "-Wl,--wrap=rtl_stream_get_analog_profile"
             "-Wl,--wrap=rtl_stream_get_request_rate_hz"
+            "-Wl,--wrap=rtl_stream_get_complex_rate_hz"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
@@ -15089,6 +15090,28 @@ if(DSD_HAS_RADIO)
         )
     endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
+
+    # Issue #806: the complex rate beside rate_out, X10 (FSK/CQPSK under a replay's post-demod decimation) and X11 (the
+    # TED a symbol profile lands on).
+    add_executable(
+        dsd-neo_test_io_rtl_complex_rate
+        io/test_io_rtl_complex_rate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_complex_rate
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_complex_rate
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_complex_rate
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_COMPLEX_RATE COMMAND dsd-neo_test_io_rtl_complex_rate)
 
     add_executable(
         dsd-neo_test_io_rtl_wideband_spectrum

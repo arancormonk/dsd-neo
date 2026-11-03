@@ -438,6 +438,7 @@ fallback_taps(void) {
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = 78125;
     s->rate_out = 78125;
+    s->complex_rate = 78125;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
@@ -1472,6 +1473,7 @@ static void
 configure_raw(demod_state* s, int rate_out, int profile, int passes) {
     s->rate_in = rate_out << passes;
     s->rate_out = rate_out;
+    s->complex_rate = rate_out;
     s->mode_demod = &raw_demod;
     s->downsample_passes = passes;
     s->channel_lpf_enable = 1;
@@ -1603,6 +1605,7 @@ test_channel_state_rules(void) {
     /* A rate change starts the channel over: 67 taps at 24 kHz, 10 samples make nothing yet. */
     s->rate_in = 24000;
     s->rate_out = 24000;
+    s->complex_rate = 24000;
     run_block(s, small);
     if (s->channel_lpf_plan_taps_len != 67 || s->result_len != 0 || *channel_pending_of(s) != 10) {
         DSD_FPRINTF(stderr, "  FAIL: a rate change: %d taps, %d floats out, pending %d; want 67, 0, 10\n",
@@ -1647,6 +1650,7 @@ static void
 configure_hb_raw(demod_state* s, int passes) {
     s->rate_in = 48000 << passes;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
     s->mode_demod = &raw_demod;
     s->downsample_passes = passes;
     s->channel_lpf_enable = 0;
@@ -1779,6 +1783,7 @@ test_empty_front_end_block(void) {
         }
         s->rate_in = 48000;
         s->rate_out = 48000;
+        s->complex_rate = 48000;
         s->channel_lpf_enable = 1;
         s->channel_lpf_profile = t.cqpsk ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_WIDE;
         s->mode_demod = &dsd_fm_demod;

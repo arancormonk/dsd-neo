@@ -124,6 +124,7 @@ expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sp
     DSD_MEMSET(&output, 0, sizeof(output));
     demod.cqpsk_enable = opts.mod_qpsk ? 1 : 0;
     demod.rate_out = rate_hz;
+    demod.complex_rate = rate_hz;
     demod.ted_sps_override = override_sps;
     output.rate = static_cast<unsigned int>(rate_hz);
 
@@ -154,6 +155,7 @@ expect_preserved_profile(const char* label, const dsd_opts* opts, int rate_hz, i
     DSD_MEMSET(&output, 0, sizeof(output));
     demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod.rate_out = rate_hz;
+    demod.complex_rate = rate_hz;
     demod.symbol_rate_hz = seed_rate;
     demod.symbol_levels = seed_levels;
     demod.ted_sps_override = override_sps;
@@ -226,6 +228,7 @@ expect_cqpsk_retune_keeps_profile_filter(const char* label, const dsd_opts* opts
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     demod.cqpsk_enable = 1;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     demod.symbol_rate_hz = seed_rate;
     demod.symbol_levels = 4;
     demod.channel_lpf_profile = seed_profile;
@@ -290,6 +293,7 @@ expect_preserved_profile_keeps_fsk_modem_config(void) {
         DSD_MEMSET(&output, 0, sizeof(output));
         demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
         demod.rate_out = 48000;
+        demod.complex_rate = 48000;
         demod.symbol_rate_hz = 2400;
         demod.symbol_levels = 4;
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
@@ -649,6 +653,7 @@ expect_tetra_cqpsk_installs(void) {
     demod.symbol_rate_hz = 18000;
     demod.symbol_levels = 4;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     rtl_stream_toggle_cqpsk(1);
     rc |= expect_int_eq("TETRA: CQPSK on installs the TETRA profile", demod.channel_lpf_profile,
                         DSD_CH_LPF_PROFILE_TETRA);
@@ -662,6 +667,7 @@ expect_tetra_cqpsk_installs(void) {
     demod.symbol_rate_hz = 18000;
     demod.symbol_levels = 4;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     demod.ted_sps = 4;
     rtl_stream_set_ted_sps_no_override(4);
     rc |= expect_int_eq("TETRA: TED sps 4 at 72 kHz keeps the TETRA profile", demod.channel_lpf_profile,
@@ -682,6 +688,7 @@ expect_tetra_cqpsk_installs(void) {
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
     demod.rate_out = 48000;
+    demod.complex_rate = 48000;
     rtl_stream_set_ted_sps_no_override(10);
     rc |= expect_int_eq("P25: TED sps 10 at 48 kHz installs the P25 CQPSK profile", demod.channel_lpf_profile,
                         DSD_CH_LPF_PROFILE_P25_CQPSK);
@@ -696,6 +703,7 @@ expect_tetra_cqpsk_installs(void) {
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
     demod.rate_out = 48000;
+    demod.complex_rate = 48000;
     rtl_stream_toggle_cqpsk(1);
     rc |= expect_int_eq("P25: CQPSK on installs the P25 CQPSK profile", demod.channel_lpf_profile,
                         DSD_CH_LPF_PROFILE_P25_CQPSK);
@@ -704,6 +712,7 @@ expect_tetra_cqpsk_installs(void) {
     demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     rc |= expect_int_eq("TETRA profile on the FSK discriminator",
                         rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
     rc |= expect_int_eq("  stores WIDE", demod.channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
@@ -715,6 +724,7 @@ expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.cqpsk_enable = 1;
     demod.rate_out = 48000;
+    demod.complex_rate = 48000;
     demod.ted_sps = 10;
     demod.fll_band_edge_state.initialized = 1;
     demod.fll_band_edge_state.min_freq = -1.0f;
@@ -773,6 +783,7 @@ expect_rtl_metrics_combined_cfo(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.cqpsk_enable = 1;
     demod.rate_out = rate_hz;
+    demod.complex_rate = rate_hz;
     demod.ted_sps = 4;
     demod.fll_band_edge_state.initialized = 1;
     demod.fll_band_edge_state.min_freq = -1.0f;
@@ -831,6 +842,7 @@ expect_rtl_metrics_exports_and_toggles(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.cqpsk_enable = 1;
     demod.rate_out = rate_hz;
+    demod.complex_rate = rate_hz;
     demod.ted_sps = 5;
     demod.fll_band_edge_state.initialized = 1;
     demod.fll_band_edge_state.max_freq = 1.0f;
@@ -944,6 +956,7 @@ expect_public_control_wrapper_contracts(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod.rate_out = 48000;
+    demod.complex_rate = 48000;
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
@@ -980,6 +993,7 @@ expect_public_control_wrapper_contracts(void) {
     // TED controls clamp override and active SPS paths independently.
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.rate_out = 48000;
+    demod.complex_rate = 48000;
     demod.symbol_levels = 4;
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
     demod.ted_sps = 10;
@@ -1195,6 +1209,7 @@ expect_resampler_publishes_the_rate_it_delivers(void) {
     DSD_MEMSET(&output, 0, sizeof(output));
     demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     demod->rate_out = kHugeRate;
+    demod->complex_rate = kHugeRate;
     demod->resamp_target_hz = INT_MAX;
     rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, kHugeRate);
     rc |= expect_int_eq("retune INT_MAX target leaves the resampler off", demod->resamp_enabled, 0);
@@ -1208,6 +1223,7 @@ expect_resampler_publishes_the_rate_it_delivers(void) {
     DSD_MEMSET(&output, 0, sizeof(output));
     demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     demod->rate_out = 24000;
+    demod->complex_rate = 24000;
     demod->resamp_target_hz = 48000;
     g_fail_aligned_malloc = 1;
     rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, 24000);
@@ -1647,6 +1663,7 @@ expect_analog_default_enable_survives_replay_rate(void) {
         const int configured_enable = demod->channel_lpf_enable;
         demod->rate_in = replay_rate_in[i];
         demod->rate_out = 48000;
+        demod->complex_rate = 48000;
         char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
         rc |= expect_int_eq("replay finalize", rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), 0);
         rc |=
@@ -1687,6 +1704,7 @@ expect_channel_lpf_default_published(void) {
         rc |= expect_int_eq("LPF default: configured",
                             configure_and_finalize(configured, &opts, row.configured_bw, err, sizeof err), 0);
         configured->rate_out = row.delivered_rate;
+        configured->complex_rate = row.delivered_rate;
         rc |= expect_int_eq("LPF default: delivered rate settles",
                             rtl_demod_finalize_analog_channel(configured, &opts, err, sizeof err), 0);
         rc |= expect_int_eq("LPF default: the monitor keeps the configured decision", configured->channel_lpf_enable,
@@ -1695,6 +1713,7 @@ expect_channel_lpf_default_published(void) {
         DSD_MEMSET(&demod, 0, sizeof(demod));
         demod.channel_lpf_default_enable = configured->channel_lpf_default_enable;
         demod.rate_out = row.delivered_rate;
+        demod.complex_rate = row.delivered_rate;
         rtl_stream_test_publish_demod_snapshot();
         rc |= expect_int_eq("LPF default: published as configured", rtl_stream_channel_lpf_default(), row.want);
         rtl_demod_cleanup(configured);
@@ -2230,6 +2249,7 @@ expect_tetra_published_profile_follows_chain(void) {
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     demod.cqpsk_enable = 1;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     demod.tetra_chain = 0;
     rc |= expect_int_eq("TETRA profile set", rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
     int configured = -1;
@@ -2270,6 +2290,7 @@ expect_tetra_profile_validators(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     demod.rate_out = 72000;
+    demod.complex_rate = 72000;
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
@@ -2294,6 +2315,7 @@ expect_tetra_profile_validators(void) {
         output_state output;
         DSD_MEMSET(&output, 0, sizeof(output));
         d->rate_out = 72000;
+        d->complex_rate = 72000;
         output.rate = 72000U;
         rtl_demod_enter_digital_family(d, &output, profiles[i], 1, 18000, 0);
         char label[96];
@@ -2763,6 +2785,7 @@ expect_unset_default_rule_keyed_on_nfm(void) {
      * rate change resolves the channel again from the setting, so the default stays unset across it. */
     rc |= expect_int_eq("AM default setting stays unset", demod->analog_width_setting_hz, 0);
     demod->rate_out = 24000;
+    demod->complex_rate = 24000;
     rc |= expect_int_eq("AM default refreshed for a new rate",
                         rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
     rc |= expect_int_eq("AM default setting stays unset across a rate change", demod->analog_width_setting_hz, 0);
@@ -2838,62 +2861,69 @@ expect_negative_width_refused(void) {
 }
 
 /*
- * An I/Q replay whose sidecar decimates after the demodulator runs the channel filter at rate_out x post_downsample,
- * not at the rate_out a width is designed and checked at: a requested width is refused there with the cause and the
- * fix, while the unset NFM default and every post_downsample-1 chain pass.
+ * An I/Q replay whose sidecar decimates after the demodulator runs the channel filter ahead of that decimator, at the
+ * complex rate (issue #806): the stream-start finalize checks and designs a width there, so a width the complex rate
+ * fits runs at the configured width and one it does not is refused with that rate's text. Before, the width was
+ * checked and designed at the post-decimated rate_out while the filter ran faster, so every requested width was
+ * refused on such a capture.
  */
 static int
-expect_post_decimation_rule(void) {
-    int rc = 0;
-    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
-    rc |=
-        expect_int_eq("no post decimation passes",
-                      rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 12500, 16000, 1, err, sizeof err), 0);
-    rc |= expect_int_eq("unset NFM default passes post decimation",
-                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 0, 16000, 3, err, sizeof err), 0);
-    rc |= expect_int_eq("explicit width refused under post decimation",
-                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 12500, 16000, 3, err, sizeof err),
-                        -1);
-    if (!std::strstr(err, "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: post_downsample 3 runs the "
-                          "channel filter at 48000 Hz, not the 16000 Hz demod rate")
-        || !std::strstr(err, "use a capture with post_downsample 1")) {
-        DSD_FPRINTF(stderr, "post-decimation message: %s\n", err);
-        rc = 1;
-    }
-    rc |= expect_int_eq("unset AM default is a requested width",
-                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_AM, 0, 16000, 2, err, sizeof err), -1);
-    /* No AM width runs there, the default included, so the fix is the capture, not dropping a width. */
-    if (!std::strstr(err, "AM bandwidth 6 kHz cannot be applied to this I/Q replay: post_downsample 2")
-        || !std::strstr(err, "; AM needs a capture with post_downsample 1") || std::strstr(err, "drop the explicit")) {
-        DSD_FPRINTF(stderr, "AM post-decimation message: %s\n", err);
-        rc = 1;
-    }
+expect_post_decimation_checks_complex_rate(void) {
+    struct post_case {
+        const char* name;
+        int kind;
+        int width_hz;
+        int post;
+        int complex_hz;
+        int want_rc;
+        int want_width_hz;
+        const char* refusal;
+    };
 
-    /* The stream-start finalize applies the same rule against the stream's own chain. */
+    static const post_case cases[] = {
+        {"NFM 12.5 kHz, 16 kHz after post 3", DSD_ANALOG_DEMOD_FM, 12500, 3, 48000, 0, 12500, NULL},
+        {"NFM default, 16 kHz after post 3", DSD_ANALOG_DEMOD_FM, 0, 3, 48000, 0, 16000, NULL},
+        {"AM default, 16 kHz after post 2", DSD_ANALOG_DEMOD_AM, 0, 2, 32000, 0, 6000, NULL},
+        {"NFM 25 kHz, 8 kHz after post 3", DSD_ANALOG_DEMOD_FM, 25000, 3, 24000, -1, 0,
+         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate"},
+    };
+    int rc = 0;
     set_channel_lpf_env(NULL);
-    demod_state* demod = alloc_zeroed_demod();
-    if (!demod) {
-        DSD_FPRINTF(stderr, "post decimation finalize: allocation failed\n");
-        return 1;
+    for (const post_case& c : cases) {
+        demod_state* demod = alloc_zeroed_demod();
+        if (!demod) {
+            DSD_FPRINTF(stderr, "post decimation finalize: allocation failed\n");
+            return 1;
+        }
+        output_state output;
+        DSD_MEMSET(&output, 0, sizeof(output));
+        output.rate = 48000;
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        opts.analog_demod = c.kind;
+        opts.analog_nfm_bandwidth_hz = c.kind == DSD_ANALOG_DEMOD_FM ? c.width_hz : 0;
+        rtl_demod_init_for_mode(demod, &output, &opts, 48000);
+        rtl_demod_config_from_env_and_opts(demod, &opts);
+        rtl_demod_select_defaults_for_mode(demod, &opts, &output);
+        demod->post_downsample = c.post;
+        demod->complex_rate = c.complex_hz;
+        demod->rate_out = c.complex_hz / c.post;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: finalize", c.name);
+        rc |= expect_int_eq(label, rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), c.want_rc);
+        if (c.want_rc == 0) {
+            DSD_SNPRINTF(label, sizeof label, "%s: filter width", c.name);
+            rc |= expect_int_eq(label, demod->channel_lpf_width_hz, c.want_width_hz);
+            DSD_SNPRINTF(label, sizeof label, "%s: realizable at the complex rate", c.name);
+            rc |= expect_int_eq(label, dsd_analog_width_realizable(demod->channel_lpf_width_hz, c.complex_hz), 1);
+        } else if (!std::strstr(err, c.refusal) || std::strstr(err, "post_downsample")) {
+            DSD_FPRINTF(stderr, "%s: refusal message: %s\n", c.name, err);
+            rc = 1;
+        }
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
     }
-    output_state output;
-    DSD_MEMSET(&output, 0, sizeof(output));
-    output.rate = 48000;
-    static dsd_opts opts;
-    make_analog_opts(&opts);
-    opts.analog_nfm_bandwidth_hz = 12500;
-    rtl_demod_init_for_mode(demod, &output, &opts, 48000);
-    rtl_demod_config_from_env_and_opts(demod, &opts);
-    rtl_demod_select_defaults_for_mode(demod, &opts, &output);
-    demod->post_downsample = 3;
-    demod->rate_out = 16000;
-    rc |= expect_int_eq("finalize refuses a width under post decimation",
-                        rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), -1);
-    opts.analog_nfm_bandwidth_hz = 0;
-    rc |= expect_int_eq("finalize keeps the default under post decimation",
-                        rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), 0);
-    rtl_demod_cleanup(demod);
-    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -2922,6 +2952,7 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
     demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     const int enable_before = demod->channel_lpf_enable;
     demod->rate_out = 78125;
+    demod->complex_rate = 78125;
     rc |=
         expect_int_eq("CQPSK under -fA refresh", rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
     rc |= expect_int_eq("CQPSK profile kept across the rate change", demod->channel_lpf_profile,
@@ -3151,7 +3182,7 @@ main(void) {
     rc |= expect_analog_kind_switch();
     rc |= expect_unset_default_rule_keyed_on_nfm();
     rc |= expect_negative_width_refused();
-    rc |= expect_post_decimation_rule();
+    rc |= expect_post_decimation_checks_complex_rate();
     rc |= expect_rate_refresh_leaves_cqpsk_profile();
 
     rc |= expect_live_symbol_status();

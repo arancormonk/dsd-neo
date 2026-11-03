@@ -165,7 +165,7 @@ test_eye_cache_tracks_inputs(void) {
     (void)check_c4fm(&in, 0u);
 
     /* Bias inputs alone. */
-    in.rate_out = 24000;
+    in.complex_rate = 24000;
     const double c4fm_rate = check_c4fm(&in, 1u);
     assert(!same_bits(c4fm_rate, c4fm_sps));
     (void)check_gfsk(&in, 1u);
@@ -228,7 +228,7 @@ test_qpsk_cache_tracks_inputs(void) {
 
     in.ted_sps = 10; /* only the bias reads it here */
     assert(!same_bits(check_qpsk(&in, 1u), batch));
-    in.rate_out = 96000;
+    in.complex_rate = 96000;
     (void)check_qpsk(&in, 1u);
     in.channel_profile = DSD_CH_LPF_PROFILE_6K25;
     (void)check_qpsk(&in, 1u);

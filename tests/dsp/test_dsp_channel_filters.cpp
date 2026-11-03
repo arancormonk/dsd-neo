@@ -72,6 +72,7 @@ design_plan(demod_state* s, int rate_hz, int profile, int analog_width_hz, float
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
     s->rate_out2 = 0;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
@@ -333,6 +334,7 @@ test_cqpsk_under_analog_family_keeps_profile(demod_state* s) {
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = 48000;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
@@ -676,6 +678,7 @@ static void
 run_tetra_profile_block(demod_state* s, int rate_hz, int active) {
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
     s->rate_out2 = 0;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;

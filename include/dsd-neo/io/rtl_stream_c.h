@@ -106,8 +106,8 @@ int rtl_stream_start(RtlSdrContext* ctx);
  *
  * A start checks the analog channel of the options it opens with once the rate chain is final, at the DSP rate the
  * device actually delivers (a SoapySDR or Airspy device can force one, an I/Q replay runs at its capture's), and fails
- * when it cannot run the width there: a width that rate cannot filter, any explicit width or the AM default while
- * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, or a replay whose sidecar decimates after the demodulator. The
+ * when it cannot run the width there: a width that rate cannot filter, or any explicit width or the AM default while
+ * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
  * refusal is logged with the validator's text and recorded here. Every stream create and every start forgets the
  * last record, so after a start that failed for any other reason (a missing device, a failed open) this returns 0.
  * The rate is otherwise lost once the start fails: rtl_stream_get_request_rate_hz() reads 0 with no stream, and
@@ -464,7 +464,14 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
  * @param ted_sps_is_override When ted_sps>0: nonzero applies it as a sticky
  *                            override (rtl_stream_set_ted_sps), zero applies
  *                            it without override so later rate changes may
- *                            recalculate SPS.
+ *                            recalculate SPS. Without an override and with a
+ *                            symbol rate, the stream derives the value from
+ *                            the complex rate the profile lands at
+ *                            (rtl_stream_get_complex_rate_hz()), whatever
+ *                            output rate the caller timed it for (issue #806).
+ *                            An FSK profile whose symbol rate moves the
+ *                            digital_resample decision redesigns the output
+ *                            chain where it applies.
  * @return 0 on success, negative on invalid input.
  */
 int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
@@ -669,7 +676,8 @@ int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 /**
  * @brief Report the demod (DSP) rate an analog profile request is held to on the caller's thread.
  *
- * The rate the running stream published, from its start on, which rtl_stream_check_analog_profile(),
+ * The complex rate the channel filter runs at (rtl_stream_get_complex_rate_hz()), as the running stream published it,
+ * from its start on, which rtl_stream_check_analog_profile(),
  * rtl_stream_request_analog_profile() and rtl_stream_prepare_retune_analog_profile_for_target() check a width against.
  * Unlike rtl_stream_get_demod_rate_hz(), a metrics value the demod thread publishes with its first processed block,
  * it needs no block to have run.
@@ -677,6 +685,18 @@ int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
  * @return The rate in Hz, or 0 with no stream running.
  */
 int rtl_stream_get_request_rate_hz(void);
+
+/**
+ * @brief Report the complex I/Q rate the front end runs at (issue #806).
+ *
+ * The rate after the half-band chain and the live rate step, which the channel filter, the FSK discriminator, the
+ * CQPSK chain and the TED's samples per symbol run at: the DSP bandwidth on every live source, and an I/Q replay's
+ * post-half-band rate, above the analog demod rate when its sidecar decimates after the demodulator. The last value a
+ * stream published (48000 before any), so it is safe from any thread.
+ *
+ * @return The rate in Hz.
+ */
+int rtl_stream_get_complex_rate_hz(void);
 
 /**
  * @brief Report the published analog receive profile.
