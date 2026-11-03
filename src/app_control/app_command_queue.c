@@ -10617,10 +10617,8 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
     /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
-    /* Scan avoid flag edits (issue #672): put back and clear never retune, so they wait for the carrier to end. Avoid
+    /* Put back and clear (issue #672) are judged by their payload: command_scan_flag_edit_needs_frame_loop(). Avoid
        stays out: it steps the scan off the channel on air. */
-    DSD_APP_CMD_SCAN_AVOID_CLEAR,
-    DSD_APP_CMD_SCAN_AVOID_REMOVE,
 };
 
 /* The Airspy settings that are front-end tweaks; a device serial or a sample rate reopens the input. */
@@ -10658,13 +10656,25 @@ command_dsp_op_deferred(const struct dsd_app_command* c) {
            || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
 }
 
-/* A trunk-scan list switch (issue #697) moves the receiver only when it switches off the list that holds the target on
-   air, which leaves that target at once (D4), as avoid does. Any other switch, "all lists on" included, edits flags and
-   never retunes, so it waits for the carrier to end like put back and clear (issue #672). Judged against @p state, the
-   asking decoder's own, which the coordinator writes at every hop, switch and pause (on its thread), so the answer is
-   current and costs no walk; a paused scan names no list on air. A switch of the list on air that the coordinator then
-   refuses as the last one to scan still takes the frame loop: telling that apart walks the targets. Without a state,
-   or with a payload the drain will refuse, it takes the frame loop. */
+/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation, its
+   list off or it is the avoided fallback, so the receiver leaves as soon as another target can take it. A scan flag
+   edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's tick runs
+   before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or hold the
+   receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state, which
+   the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
+static int
+scan_departure_owed(const dsd_state* state, uint32_t session) {
+    return session != 0U && session == state->trunk_scan_session
+           && (state->trunk_scan_active_list_off != 0U || state->trunk_scan_active_avoided != 0U);
+}
+
+/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the list that holds the target on air,
+   which leaves that target at once (D4), as avoid does, or when that target owes a departure (above). Any other
+   switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
+   and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
+   walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
+   loop: telling that apart walks the targets. Without a state, or with a payload the drain will refuse, it takes the
+   frame loop. */
 static int
 command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
     if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
@@ -10672,10 +10682,34 @@ command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state*
     }
     dsd_app_scan_list_set_payload set;
     DSD_MEMCPY(&set, c->data, sizeof(set));
+    if (scan_departure_owed(state, set.session)) {
+        return 0;
+    }
     const int leaves_on_air =
         set.enabled == 0U && set.list > 0 && set.session != 0U && set.session == state->trunk_scan_session
         && (uint32_t)set.list == (uint32_t)state->trunk_scan_active_list && state->trunk_scan_active_list_off == 0U;
     return !leaves_on_air;
+}
+
+/* Put back and clear (issue #672) only edit avoid flags, so they wait for the carrier to end, unless this scan's
+   target on air owes a departure the edit can start or cancel (scan_departure_owed()): a trunk-scan put back of this
+   session, or a clear. A -Y put back, another session's, a malformed one, or any while no state is given keeps
+   waiting. */
+static int
+command_scan_flag_edit_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR) {
+        return scan_departure_owed(state, state->trunk_scan_session);
+    }
+    if (c->n != sizeof(dsd_app_scan_avoid_remove_payload)) {
+        return 0;
+    }
+    dsd_app_scan_avoid_remove_payload put_back;
+    DSD_MEMCPY(&put_back, c->data, sizeof(put_back));
+    return put_back.kind == (uint32_t)DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN
+           && scan_departure_owed(state, put_back.session);
 }
 
 /* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
@@ -10689,6 +10723,9 @@ command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state
     }
     if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
         return !command_scan_list_set_deferred(c, state);
+    }
+    if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR || c->id == DSD_APP_CMD_SCAN_AVOID_REMOVE) {
+        return command_scan_flag_edit_needs_frame_loop(c, state);
     }
     for (size_t i = 0; i < sizeof(k_deferred_commands) / sizeof(k_deferred_commands[0]); i++) {
         if (k_deferred_commands[i] == c->id) {

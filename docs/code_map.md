@@ -3583,8 +3583,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     lists it) and still be avoided, then only its flag clears (`dsd_state_trunk_lcn_avoid_set()`, which stamps
     `lcn_avoid_rev`); the drain's visit tick gives the visit cap as for clear. Put back never tunes, so a paused scan,
     a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command. Put
-    back and `SCAN_AVOID_CLEAR` are flag edits on the deferred list (`k_deferred_commands`), so neither ends a DMR
-    repeater loop (`dmrBS()`) and its call; `SCAN_AVOID` is not, since it steps off the channel on air.
+    back and `SCAN_AVOID_CLEAR` are flag edits that wait for a DMR repeater loop (`dmrBS()`) to end, so neither ends
+    its call (`command_scan_flag_edit_needs_frame_loop()`), unless this scan's target on air owes a departure the edit
+    can start or cancel (issue #697, `scan_departure_owed()`: its list is off or it is the avoided fallback); then a
+    trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it, since it steps
+    off the channel on air.
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
@@ -3603,12 +3606,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
     the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), and refused under Signal search. It is
     judged by its payload for `dmrBS()`'s frame-loop question (`command_scan_list_set_deferred()`, beside `DSP_OP` and
-    `AIRSPY_SET`): only switching off the list that holds the target on air moves the tuner (D4: it leaves at once),
-    so only that toggle returns a held repeater carrier to the frame loop at a burst boundary; any other switch, "all
-    lists on" included, is a flag edit that waits for the carrier to end, like put back and clear, so it never ends a
-    DMR repeater call. The answer reads the asking decoder's own `trunk_scan_session`, `trunk_scan_active_list` and
-    `trunk_scan_active_list_off`, which the coordinator writes on the decoder thread at every hop, switch and pause (a
-    paused scan names no list on air), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
+    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (D4: it leaves at once), and
+    so does any switch of this scan while its target on air owes a departure (`scan_departure_owed()`: its list is
+    off or it is the avoided fallback), since the switch starts or cancels it; only those return a held repeater
+    carrier to the frame loop at a burst boundary. Waiting would lose the race: the synced-frames loop ticks the
+    coordinator before it drains, so a cooldown ending under the carrier would depart before a list switched back on
+    could keep the target, and a list switched on that gives the departure its alternate would wait for the call. Any
+    other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
+    so it never ends a DMR repeater call on a target that stays. The answer reads the asking decoder's own
+    `trunk_scan_session`, `trunk_scan_active_list`, `trunk_scan_active_list_off` and `trunk_scan_active_avoided`,
+    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan publishes none of
+    them), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
     that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
     that apart walks the targets; a malformed payload takes it too. A waiting toggle stays queued, so it still gets its
     one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or discarded first.
@@ -12415,9 +12423,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
   `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
   those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks, the runtime
-  config re-parse, the scan avoid put back and clear), with `DSP_OP`, `AIRSPY_SET` and `SCAN_LIST_SET` judged by their
-  payload, the last against the decoder state `dmrBS()` passes in) lets `dmrBS()`, which holds the decoder for a whole
-  repeater carrier, return to the frame loop at a burst boundary; other commands wait for the carrier to end.
+  config re-parse), with `DSP_OP`, `AIRSPY_SET`, `SCAN_LIST_SET`, `SCAN_AVOID_REMOVE` and `SCAN_AVOID_CLEAR` judged
+  by their payload, the last three against the decoder state `dmrBS()` passes in) lets `dmrBS()`, which holds the
+  decoder for a whole repeater carrier, return to the frame loop at a burst boundary; other commands wait for the
+  carrier to end.
   EDACS analog voice (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the
   call, which cannot be re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored,
   and the runtime config's snapshot comparison includes `no_signal_handlers_*`.

@@ -440,17 +440,21 @@ During scanning:
   autosave), and a restart starts each list in its configured state. Switching off the list that holds the target on air
   leaves that target at once, as `L` does: the call in progress ends under that target's name, its carrier is handed
   back, and a `Y` hold carries over to the target the scan lands on. It does so on a DMR repeater carrier too, which the
-  decoder otherwise holds for the whole call; any other switch (another list, or all lists on) only changes which
-  targets the rotation takes, so on such a carrier it waits for the carrier to end and the call goes on undisturbed.
-  When no other target can take the receiver yet (they are cooling down from a failed retune, or from a switch that
-  could not be set up), the scan stays, marked as outside the lists that are on, and leaves as soon as one can, ahead of
-  its hold, dwell and activity, even while a DMR carrier stays keyed; a list switched back on before then keeps it.
-  Putting a target back never switches its list on. A switch that would leave nothing to scan is refused (every other
-  list off, or holding only avoided targets or targets skipped for their width), and so is any while the scan is paused.
-  A resume from a target whose list was switched off resumes on the next target the rotation would take; if none can
-  take the receiver yet, it resumes where it paused and leaves as soon as one can, and if every one it tries fails the
-  scan stays paused and the status line names the frequency it tried last. The "n of m" readout counts the targets of
-  the lists that are on, avoided ones included, and a target outside them reads as `-` for n; the log names each list at
+  decoder otherwise holds for the whole call, and so does any switch, put back or Clear avoids while the target on air
+  is waiting to leave (its list is off, below, or it is the avoided fallback above), since it lets it go or keeps it; an
+  attempt to switch off the last list to scan, which is refused, also interrupts that carrier for a moment. Any other
+  switch (another list, or all lists on) only changes which targets the rotation takes, so on such a carrier it waits
+  for the carrier to end and the call goes on undisturbed. When no other target can take the receiver yet (they are
+  cooling down from a failed retune, or from a switch that could not be set up), the scan stays, marked as outside the
+  lists that are on, and leaves as soon as one can, ahead of its hold, dwell and activity, even while a DMR carrier
+  stays keyed; a list switched back on before then keeps it. Putting a target back never switches its list on. A switch
+  that would leave nothing to scan is refused (every other list off, or holding only avoided targets or targets skipped
+  for their width), and so is any while the scan is paused. A resume from a target whose list was switched off resumes
+  on the next target the rotation would take; if none can take the receiver yet, it resumes where it paused and leaves
+  as soon as one can, and if every one it tries fails the scan stays paused and the status line names the frequency it
+  tried last. The "n of m" readout counts the targets of the lists that are on, avoided ones included, and a target
+  outside them reads as `-` for n. The `#<place>` that names a target in the avoided-channels list and in the avoid,
+  put-back and stay messages counts every loaded list, on or off, so it can differ from n. The log names each list at
   start and each switch (`Trunk scan list 2 (hospital) off; 2 of 3 lists on, 14 targets`).
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
   frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the

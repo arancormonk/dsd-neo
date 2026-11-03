@@ -134,6 +134,8 @@ static int g_mod_state_resets = 0;
 /* The frequency the stub reports the controller applied on success; 0 applies the request (issue #670). */
 static uint32_t g_io_control_applied_freq = 0U;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+/* While nonzero, a control-channel tune to any other frequency fails (issue #697's departure rigs). */
+static long int g_cc_tune_refuse_except_hz = 0;
 static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
@@ -458,6 +460,9 @@ __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long i
     g_cc_tune_freq = freq;
     g_cc_tune_ted_sps = ted_sps;
     g_cc_profile_at_tune = state ? state->sps_hunt_idx : -1;
+    if (g_cc_tune_refuse_except_hz != 0 && freq != g_cc_tune_refuse_except_hz) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     return g_cc_tune_result;
 }
 
@@ -26128,6 +26133,212 @@ test_scan_list_set_waits_for_a_held_carrier(void) {
     return rc;
 }
 
+/* While a target on air owes a departure (its list off, or the avoided fallback), a scan flag edit of that scan starts
+   or cancels it, so a list switch, a trunk-scan put back and a clear take the frame loop; with no departure owed, or
+   for another scan, a put back of a -Y row or a malformed one, they wait for the carrier to end (issue #672, #697).
+   Judged against the asking decoder's state, here written by hand. */
+static int
+test_scan_flag_edits_while_a_departure_is_owed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    const dsd_app_scan_list_set_payload other_on = {.session = 1U, .request = 1U, .list = 3, .enabled = 1U};
+    const dsd_app_scan_list_set_payload other_off = {.session = 1U, .request = 2U, .list = 3, .enabled = 0U};
+    const dsd_app_scan_list_set_payload stale_on = {.session = 2U, .request = 3U, .list = 3, .enabled = 1U};
+    dsd_app_scan_avoid_remove_payload put_back;
+    DSD_MEMSET(&put_back, 0, sizeof put_back);
+    put_back.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    put_back.session = 1U;
+    DSD_SNPRINTF(put_back.target_id, sizeof put_back.target_id, "%s", "a");
+    dsd_app_scan_avoid_remove_payload stale_put_back = put_back;
+    stale_put_back.session = 2U;
+    dsd_app_scan_avoid_remove_payload row_put_back = put_back;
+    row_put_back.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+
+    /* owed: 0 none, 1 the list on air is off, 2 the target on air is the avoided fallback. */
+    const struct {
+        const void* payload;
+        size_t size;
+        const char* name;
+        int id;
+        int owed;
+        int needs;
+    } cases[] = {
+        {&other_on, sizeof other_on, "another list on, nothing owed", DSD_APP_CMD_SCAN_LIST_SET, 0, 0},
+        {&other_on, sizeof other_on, "another list on, list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1, 1},
+        {&other_off, sizeof other_off, "another list off, list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1, 1},
+        {&other_on, sizeof other_on, "another list on, avoided fallback", DSD_APP_CMD_SCAN_LIST_SET, 2, 1},
+        {&stale_on, sizeof stale_on, "another scan's list on, list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1, 0},
+        {&put_back, sizeof put_back, "put back, nothing owed", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0, 0},
+        {&put_back, sizeof put_back, "put back, avoided fallback", DSD_APP_CMD_SCAN_AVOID_REMOVE, 2, 1},
+        {&put_back, sizeof put_back, "put back, list on air off", DSD_APP_CMD_SCAN_AVOID_REMOVE, 1, 1},
+        {&put_back, sizeof put_back - 1U, "a short put back, avoided fallback", DSD_APP_CMD_SCAN_AVOID_REMOVE, 2, 0},
+        {&stale_put_back, sizeof stale_put_back, "another scan's put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 2, 0},
+        {&row_put_back, sizeof row_put_back, "a -Y row's put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 2, 0},
+        {NULL, 0U, "clear, nothing owed", DSD_APP_CMD_SCAN_AVOID_CLEAR, 0, 0},
+        {NULL, 0U, "clear, avoided fallback", DSD_APP_CMD_SCAN_AVOID_CLEAR, 2, 1},
+        {NULL, 0U, "clear, list on air off", DSD_APP_CMD_SCAN_AVOID_CLEAR, 1, 1},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        state.trunk_scan_session = 1U;
+        state.trunk_scan_active_list = 2U;
+        state.trunk_scan_active_list_off = cases[i].owed == 1 ? 1U : 0U;
+        state.trunk_scan_active_avoided = cases[i].owed == 2 ? 1U : 0U;
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_true("flag edit queued", dsd_app_command_submit(cases[i].id, cases[i].payload, cases[i].size) > 0);
+        if (dsd_runtime_controls_need_frame_loop(&state) != cases[i].needs) {
+            DSD_FPRINTF(stderr, "%s: needs the frame loop %d, want %d\n", cases[i].name,
+                        dsd_runtime_controls_need_frame_loop(&state), cases[i].needs);
+            rc = 1;
+        }
+        rc |= expect_int("no state: a put back or a clear waits", dsd_runtime_controls_need_frame_loop(NULL),
+                         cases[i].id == DSD_APP_CMD_SCAN_LIST_SET);
+        dsd_app_frontend_runtime_stop();
+    }
+    dsd_app_frontend_runtime_start(&opts, &state);
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+/* Every rig retune but a's (851 MHz) refused or not, so a departure from a finds each alternate cooling down: on the
+   wrap toolchains through __wrap_dsd_trunk_tuning_hook_tune_to_cc(), elsewhere through the tuning hook below. */
+static void
+scan_list_rig_only_a(int on) {
+    g_cc_tune_refuse_except_hz = on ? 851000000L : 0;
+}
+
+static dsd_trunk_tune_result
+scan_list_rig_tune_only_a(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    if (g_cc_tune_refuse_except_hz != 0 && freq != g_cc_tune_refuse_except_hz) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    return pause_scan_tune_to_cc_ok(opts, state, freq, ted_sps, request_id);
+}
+
+/* The rig on the TEST decode clock at @p start_ms, with retunes away from a refused while scan_list_rig_only_a() is
+   on. */
+static int
+init_departure_rig(dsd_opts* opts, dsd_state* state, scan_list_rig* rig, uint64_t start_ms) {
+    dsd_decode_clock_use_test(start_ms * 1000000ULL);
+    int rc = init_scan_list_rig(opts, state, rig);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = scan_list_rig_tune_only_a});
+    return rc;
+}
+
+static void
+finish_departure_rig(dsd_opts* opts, dsd_state* state, const scan_list_rig* rig) {
+    scan_list_rig_only_a(0);
+    finish_scan_list_rig(opts, state, rig);
+    dsd_decode_clock_use_system();
+}
+
+/* One burst boundary at decode time @p now_ms of a decoder holding a DMR carrier (dmrBS()): it unwinds when a queued
+   command needs the frame loop or the departure the target on air owes is due, and the frame loop then ticks the
+   coordinator before it drains the commands, in engine.c's order. Returns 1 when it unwound. */
+static int
+held_carrier_burst(dsd_opts* opts, dsd_state* state, uint64_t now_ms) {
+    dsd_decode_clock_test_set_ns(now_ms * 1000000ULL);
+    if (!dsd_runtime_controls_need_frame_loop(state) && !dsd_engine_trunk_scan_departure_due(opts, state)) {
+        return 0;
+    }
+    dsd_engine_trunk_scan_tick(opts, state);
+    (void)dsd_app_drain_cmds(opts, state);
+    return 1;
+}
+
+/* The list on air switched off with every alternate failing: the receiver stays on a, out of the lists that are on,
+   owing a departure once a cooldown ends (2 s). */
+static int
+leave_list_one_with_every_alternate_failing(dsd_opts* opts, dsd_state* state, uint32_t session, const char* what) {
+    scan_list_rig_only_a(1);
+    uint32_t request = 0U;
+    const uint64_t after = scan_list_newest_seq();
+    int rc = expect_int(what, submit_list_set(session, 1, 0, &request), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(what, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_list_result(what, after, request, session, 1, 0, DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_str(what, state->trunk_scan_active_id, "a");
+    rc |= expect_int(what, state->trunk_scan_active_list_off, 1);
+    /* The alternates' tuners work again; they still cool down. */
+    scan_list_rig_only_a(0);
+    return rc;
+}
+
+/* Switching the list on air back on during a held DMR carrier, before the departure it owed is due, keeps the
+   receiver: the switch takes the frame loop at the next burst, ahead of the cooldown's end. */
+static int
+test_scan_list_back_on_during_a_held_carrier_keeps_the_target(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_departure_rig(&opts, &state, &rig, 1000000U);
+    const uint32_t session = state.trunk_scan_session;
+    rc |= leave_list_one_with_every_alternate_failing(&opts, &state, session, "list on air off, nowhere to go");
+
+    rc |= expect_int("list 1 back on queued", submit_list_set(session, 1, 1, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("list 1 back on unwinds the carrier", held_carrier_burst(&opts, &state, 1000100U), 1);
+    rc |= expect_lists_on("list 1 back on", &state, 1, 1, 1);
+    rc |= expect_int("list 1 back on: a owes nothing", state.trunk_scan_active_list_off, 0);
+    rc |= expect_int("past the cooldown, the carrier is kept", held_carrier_burst(&opts, &state, 1003000U), 0);
+    rc |= expect_str("past the cooldown, still on a", state.trunk_scan_active_id, "a");
+    finish_departure_rig(&opts, &state, &rig);
+    return rc;
+}
+
+/* With the list on air off and its alternates cooling, switching on a list whose target is ready leaves at once, as
+   the switch would with no carrier held. */
+static int
+test_scan_list_on_during_a_held_carrier_lets_the_departure_go(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_departure_rig(&opts, &state, &rig, 1000000U);
+    const uint32_t session = state.trunk_scan_session;
+    rc |= drain_list_set(&opts, &state, session, 3, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 3 (municipality) off: 2 of 3 lists on, 3 targets", "list 3 off first");
+    rc |= leave_list_one_with_every_alternate_failing(&opts, &state, session, "list on air off, b and c cooling");
+
+    rc |= expect_int("list 3 on queued", submit_list_set(session, 3, 1, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("list 3 on unwinds the carrier", held_carrier_burst(&opts, &state, 1000100U), 1);
+    rc |= expect_str("list 3 on leaves a for d at once", state.trunk_scan_active_id, "d");
+    rc |= expect_int("on d, nothing owed", state.trunk_scan_active_list_off, 0);
+    finish_departure_rig(&opts, &state, &rig);
+    return rc;
+}
+
+/* Putting back the avoided fallback during a held DMR carrier, before the departure it owed is due, keeps the
+   receiver on it (#672's put back, judged as a list switch is). */
+static int
+test_put_back_during_a_held_carrier_keeps_the_fallback(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_departure_rig(&opts, &state, &rig, 1000000U);
+    const uint32_t session = state.trunk_scan_session;
+    scan_list_rig_only_a(1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "avoid a, every alternate failing");
+    rc |= expect_str("avoided fallback: on a", state.trunk_scan_active_id, "a");
+    rc |= expect_int("avoided fallback: a avoided", state.trunk_scan_active_avoided, 1);
+    scan_list_rig_only_a(0);
+
+    dsd_app_scan_avoid_remove_payload put_back;
+    DSD_MEMSET(&put_back, 0, sizeof put_back);
+    put_back.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    put_back.session = session;
+    DSD_SNPRINTF(put_back.target_id, sizeof put_back.target_id, "%s", "a");
+    rc |= expect_int("put back a queued",
+                     dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, &put_back, sizeof put_back),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("put back a unwinds the carrier", held_carrier_burst(&opts, &state, 1000100U), 1);
+    rc |= expect_int("put back a: no longer avoided", state.trunk_scan_active_avoided, 0);
+    rc |= expect_int("past the cooldown, the carrier is kept", held_carrier_burst(&opts, &state, 1003000U), 0);
+    rc |= expect_str("past the cooldown, still on a", state.trunk_scan_active_id, "a");
+    finish_departure_rig(&opts, &state, &rig);
+    return rc;
+}
+
 /* Two requests before one drain (two rows switched quickly, or the same one twice): neither coalesces, both apply in
    order, and each gets its own result in order. */
 static int
@@ -26570,6 +26781,10 @@ main(void) {
     rc |= test_scan_list_set_answers();
     rc |= test_scan_list_set_busy_and_frame_loop();
     rc |= test_scan_list_set_waits_for_a_held_carrier();
+    rc |= test_scan_flag_edits_while_a_departure_is_owed();
+    rc |= test_scan_list_back_on_during_a_held_carrier_keeps_the_target();
+    rc |= test_scan_list_on_during_a_held_carrier_lets_the_departure_go();
+    rc |= test_put_back_during_a_held_carrier_keeps_the_fallback();
     rc |= test_scan_list_set_two_requests_one_drain();
     rc |= test_config_apply_keeps_the_live_lists();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
