@@ -849,7 +849,8 @@ the step's `iq_step_l`/`iq_step_m`. It reads each sidecar back through the repla
 | `DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM` | `p25p1_cqpsk_vc` at 375,000 Hz: fast, realtime, short-read and jitter legs of the replay determinism harness decode line for line the same (below). `_STALLED_SINK` (where the harness can wrap the audio device) adds a sink that stalls. |
 
 `ENGINE_AIRSPY_FORCED_RATE_*` (`tests/engine/test_engine_airspy_forced_rate.cpp`, Airspy builds with GNU or Clang
-outside macOS) run the same samples live. The real engine runs `-i airspy:F:BW` in-process, its stream workers and the
+outside macOS) run the same samples live. They link the private test-hook archives in a linker group
+(`--start-group`), which Apple's linker and MSVC do not take, so macOS and Windows have no live forced-rate test. The real engine runs `-i airspy:F:BW` in-process, its stream workers and the
 native adapter on the SDK double (`tests/io/airspy_sdk_double.h`) at the forced rate, with the stream and DSP test hooks
 from the private test-hook archives. The test feeds the SDK's receive callback in transfers of the size a replay of the
 capture reads (`dsd_iq_replay_chunk_bytes_for()`), paced by acknowledgement, never by time. A transfer goes in once the

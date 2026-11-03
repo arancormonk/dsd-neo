@@ -355,9 +355,9 @@ count_lines(const std::vector<std::string>& lines, const char* text) {
    "(single)"). */
 bool
 clock_throttled(const std::string& l) {
-    /* " SLOT n" is 7 characters. */
+    /* " SLOT n" is 7 characters; a line that ends inside them (" SLOT " alone) is no such line. */
     const size_t from = (l.compare(0, 6U, " SLOT ") == 0) ? 7U : 0U;
-    return l.compare(from, 4U, " SLC") == 0 && l.find("(single)", from) != std::string::npos;
+    return l.size() >= from && l.compare(from, 4U, " SLC") == 0 && l.find("(single)", from) != std::string::npos;
 }
 
 /* The stable decoded fields: every decoder record (a line stamped HH:MM:SS, its stamp left out, and the indented lines
