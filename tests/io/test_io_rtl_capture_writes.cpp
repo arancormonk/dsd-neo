@@ -37,6 +37,8 @@
  *   48 kHz exactly, not forced), while the capture still follows the rate the dongle runs;
  * - an RTL-SDR read-back out of tolerance fails the start, and refuses a retune with the device put back, the
  *   read-back and the forced flag reported in the refusal;
+ * - a retune whose read-back changes the rate while an I/Q capture records seals the capture: it ends with the samples
+ *   before, replays, says so once, and leaves the retunes and drops after it out of its sidecar (X9);
  * - a device whose driver snaps the rate (a SoapySDR device, stood in for by the fake dongle planned as one) has its
  *   passes picked again for a far read-back, and its I/Q rate step designed for it and published; a design that fails
  *   after programming refuses the retune with the device put back; a rollback whose own read-back plans the step's
@@ -45,24 +47,31 @@
  */
 
 #include <assert.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <memory>
 #include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 #include "test_env.h"
+#include "test_support.h"
 
 struct rtl_device;
 
@@ -1103,6 +1112,107 @@ test_rollback_third_rate_design_failure_stops(void) {
     rig_close_snapping(r);
 }
 
+/* The stream notices posted (dsd_runtime_stream_notice_post()), by kind. */
+int g_notices[4];
+
+void
+count_notice(int kind) {
+    if (kind >= 0 && kind < 4) {
+        g_notices[kind]++;
+    }
+}
+
+/* Issue #806 X9: a retune whose read-back changes the device rate while an I/Q capture records. The capture used to
+ * refuse the retune's event and go on taking the new rate's samples under a sidecar naming the old rate. Now the event
+ * seals it: the stream says so once (a notice its decoder shows; the log), the file ends with the samples before it and
+ * still replays, and the retunes, samples and input-ring drops after it are not in it, however the stream's totals
+ * grow until its shutdown finalizes the capture. */
+void
+test_rate_change_seals_capture(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char data_path[DSD_TEST_PATH_MAX];
+    char meta_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_capture_seal") != nullptr);
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "seal.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "seal.iq.json") == 0);
+
+    rig r;
+    rig_open_snapping(r, 0U);
+    expect_chain_at(r, r.start, kCenterHz, 1536000U, 5, kRateIn, 0);
+    r.opts->rtlsdr_center_freq = kCenterHz;
+    r.opts->iq_capture_requested = 1;
+    r.opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(r.opts->iq_capture_path, sizeof r.opts->iq_capture_path, "%s", data_path);
+    dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(r.opts);
+    assert(writer != nullptr);
+    DSD_MEMSET(g_notices, 0, sizeof g_notices);
+    dsd_runtime_stream_notice_set(count_notice);
+
+    static uint8_t samples[1024];
+    for (size_t i = 0; i < sizeof samples; i++) {
+        samples[i] = (uint8_t)(i * 7U);
+    }
+    assert(dsd_iq_capture_submit(writer, samples, 512U) == DSD_IQ_OK);
+    /* A retune at the capture's rate is recorded, its RETUNE and RESET. */
+    assert(manual_retune(kHopsHz[0], 0).completion == RTL_STREAM_TUNE_OK);
+    assert(dsd_iq_capture_submit(writer, samples + 512U, 256U) == DSD_IQ_OK);
+    r.ring->producer_drops.store(7U);
+
+    /* The driver moves the rate: the retune lands on 2 MS/s, and its RETUNE seals the capture. */
+    r.dongle->tuner.actual_rate = 2000000U;
+    r.dongle->tuner.rate = 2000000U;
+    const rtl_stream_test_capture_result moved = manual_retune(kHopsHz[1], 0);
+    assert(moved.completion == RTL_STREAM_TUNE_OK);
+    expect_chain_at(r, moved, kHopsHz[1], 2000000U, 5, kRateIn, 1);
+    assert(g_notices[DSD_STREAM_NOTICE_CAPTURE_STOPPED] == 1);
+    assert(dsd_iq_capture_submit(writer, samples, 128U) == DSD_IQ_ERR_SEALED);
+
+    /* What follows is the stream's, not the capture's: more retunes, more drops; said once. */
+    assert(manual_retune(kHopsHz[2], 0).completion == RTL_STREAM_TUNE_OK);
+    assert(manual_retune(kHopsHz[0], 0).completion == RTL_STREAM_TUNE_OK);
+    r.ring->producer_drops.store(1007U);
+    assert(g_notices[DSD_STREAM_NOTICE_CAPTURE_STOPPED] == 1 && g_notices[DSD_STREAM_NOTICE_USB_RECOVERED] == 0);
+    rtl_stream_test_capture_session_close_capture(r.ring->producer_drops.load());
+    dsd_runtime_stream_notice_set(nullptr);
+
+    dsd_iq_replay_config meta{};
+    char err[256] = {0};
+    assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+    assert(meta.sample_rate_hz == 1536000U && meta.base_decimation == 32U);
+    assert(meta.data_bytes == 768U);
+    assert(meta.event_count == 2U && meta.events[0].kind == DSD_IQ_EVENT_RETUNE);
+    assert(meta.events[1].kind == DSD_IQ_EVENT_RESET && meta.events[1].byte_offset == 512U);
+    assert(meta.capture_retune_count == 1U && meta.contains_retunes == 1);
+    assert(meta.input_ring_drops == 7U);
+    dsd_iq_replay_config_clear(&meta);
+    /* The whole file replays: every byte the sidecar names is there to read. */
+    dsd_iq_replay_source* src = nullptr;
+    assert(dsd_iq_replay_open(meta_path, &meta, &src, err, sizeof err) == DSD_IQ_OK && src != nullptr);
+    uint8_t back[1024];
+    size_t total = 0U;
+    for (;;) {
+        size_t got = 0U;
+        assert(dsd_iq_replay_read(src, back + total, sizeof back - total, &got) == DSD_IQ_OK);
+        if (got == 0U) {
+            break;
+        }
+        total += got;
+    }
+    assert(total == 768U && memcmp(back, samples, 768U) == 0);
+    dsd_iq_replay_close(src);
+    dsd_iq_replay_config_clear(&meta);
+    char text[4096] = {0};
+    FILE* fp = dsd_fopen_private(meta_path, "rb");
+    assert(fp != nullptr);
+    const size_t n = fread(text, 1, sizeof text - 1U, fp);
+    (void)fclose(fp);
+    assert(n > 0U && strstr(text, "\"capture_end_reason\": \"rate_changed\"") != nullptr);
+
+    rig_close_snapping(r);
+    static const char* const kFiles[] = {"seal.iq", "seal.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
 } // namespace
 
 int
@@ -1151,6 +1261,7 @@ main(int argc, char** argv) {
         {"rollback_swaps_back", test_rollback_swaps_step_back},
         {"rollback_third_rate", test_rollback_designs_third_rate},
         {"rollback_third_rate_fails", test_rollback_third_rate_design_failure_stops},
+        {"rate_change_seals_capture", test_rate_change_seals_capture},
     };
 
     /* An argument runs that case alone. */

@@ -89,6 +89,15 @@ struct dsd_iq_capture_writer {
      * event_m; read at close once the writer thread has been joined. */
     int size_limit_reached;
 
+    /* Sealed (issue #806 X9): an event changed the capture's rate, so the file ends with the samples before it.
+     * Every later submission and event is refused with DSD_IQ_ERR_SEALED. Set under event_m, which every submission
+     * and event holds, and read under it; close reads it once the producers are gone. frozen_stats holds the caller's
+     * stream counts at the seal (dsd_iq_capture_freeze_final_stats()), which the sidecar reports in place of the
+     * stream's totals at close. */
+    int sealed;
+    int have_frozen_stats;
+    dsd_iq_capture_final_stats frozen_stats;
+
     uint64_t last_drop_warn_ns;
     char capture_started_utc[32];
 };
@@ -432,6 +441,7 @@ typedef struct {
     int contains_retunes;
     uint32_t capture_retune_count;
     int size_limit_reached;
+    const char* end_reason; /* capture_end_reason, or NULL: the capture ran to the stream's end */
 } dsd_iq_capture_metadata_stats;
 
 static const char*
@@ -568,6 +578,10 @@ metadata_write_stats_fields(FILE* fp, const dsd_iq_capture_metadata_stats* stats
      * reached" from "capture is still running": both leave capture_drops at 0
      * and a file that simply stops growing. */
     if (write_json_bool_field(fp, "size_limit_reached", stats->size_limit_reached, 0) != 0) {
+        return -1;
+    }
+    /* Only a capture that ended before its stream did says why (issue #806 X9: "rate_changed"). */
+    if (stats->end_reason && write_json_string_field(fp, "capture_end_reason", stats->end_reason, 0) != 0) {
         return -1;
     }
     if (write_json_string_field(fp, "notes", notes ? notes : "", event_count == 0U) != 0) {
@@ -1613,6 +1627,12 @@ dsd_iq_capture_submit(dsd_iq_capture_writer* writer, const void* data, size_t by
     if (writer->event_m_inited) {
         dsd_mutex_lock(&writer->event_m);
     }
+    if (writer->sealed) {
+        if (writer->event_m_inited) {
+            dsd_mutex_unlock(&writer->event_m);
+        }
+        return DSD_IQ_ERR_SEALED;
+    }
 
     int writer_failed = 0;
     dsd_mutex_lock(&writer->q_m);
@@ -1642,6 +1662,37 @@ dsd_iq_capture_submit(dsd_iq_capture_writer* writer, const void* data, size_t by
     return rc;
 }
 
+/* An event boundary: a cu8 byte waiting for its pair never gets one, and is counted as dropped. Caller holds
+ * event_m. */
+static void
+writer_drop_cu8_carry_locked(struct dsd_iq_capture_writer* writer) {
+    if (writer->cfg.format == DSD_IQ_FORMAT_CU8 && writer->cu8_carry_valid) {
+        writer_count_drop(writer, 1, 1);
+        writer->cu8_carry_valid = 0;
+    }
+}
+
+/*
+ * Seal the writer (issue #806 X9): an event changed the capture's rate, so what follows it cannot be described by
+ * this file's sidecar. The file ends at the event: nothing more is accepted, the block being packed goes to the
+ * writer thread now (as a stale one would), and the queue drains as it would anyway. The writer stays attached and
+ * open until the stream's normal shutdown closes it, so producers that still hold it only see their submissions
+ * refused. Caller holds event_m.
+ */
+static void
+writer_seal_locked(struct dsd_iq_capture_writer* writer) {
+    writer_drop_cu8_carry_locked(writer);
+    writer->sealed = 1;
+    if (!writer->queue_inited) {
+        return;
+    }
+    dsd_mutex_lock(&writer->q_m);
+    if (writer->fill_valid && writer->fill_len > 0U && !writer->writer_failed) {
+        writer_publish_fill_locked(writer);
+    }
+    dsd_mutex_unlock(&writer->q_m);
+}
+
 int
 dsd_iq_capture_record_event(dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
     if (!writer || !event) {
@@ -1651,21 +1702,43 @@ dsd_iq_capture_record_event(dsd_iq_capture_writer* writer, const dsd_iq_event* e
         return DSD_IQ_ERR_QUEUE_INIT;
     }
 
+    dsd_mutex_lock(&writer->event_m);
+    if (writer->sealed) {
+        dsd_mutex_unlock(&writer->event_m);
+        return DSD_IQ_ERR_SEALED;
+    }
     int vrc = validate_capture_event_for_replay(writer, event);
+    if (vrc == DSD_IQ_ERR_RATE_CHAIN) {
+        /* The capture's chain identity is its rate: an event that changes it ends the capture here. */
+        writer_seal_locked(writer);
+    }
     if (vrc != DSD_IQ_OK) {
+        dsd_mutex_unlock(&writer->event_m);
         return vrc;
     }
 
-    dsd_mutex_lock(&writer->event_m);
-    if (writer->cfg.format == DSD_IQ_FORMAT_CU8 && writer->cu8_carry_valid) {
-        writer_count_drop(writer, 1, 1);
-        writer->cu8_carry_valid = 0;
-    }
+    writer_drop_cu8_carry_locked(writer);
 
     dsd_iq_event stamped = *event;
     stamped.byte_offset = dsd_atomic_u64_load_relaxed(&writer->accepted_bytes);
     stamped.reason[sizeof(stamped.reason) - 1U] = '\0';
     int rc = writer_event_append_locked(writer, &stamped);
+    dsd_mutex_unlock(&writer->event_m);
+    return rc;
+}
+
+int
+dsd_iq_capture_freeze_final_stats(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* stats) {
+    if (!writer || !stats || !writer->event_m_inited) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    dsd_mutex_lock(&writer->event_m);
+    int rc = DSD_IQ_ERR_INVALID_ARG;
+    if (writer->sealed && !writer->have_frozen_stats) {
+        writer->frozen_stats = *stats;
+        writer->have_frozen_stats = 1;
+        rc = DSD_IQ_OK;
+    }
     dsd_mutex_unlock(&writer->event_m);
     return rc;
 }
@@ -1772,6 +1845,61 @@ writer_stop_thread(struct dsd_iq_capture_writer* writer) {
     }
 }
 
+/* What the sidecar's notes say about how the capture ended (empty when it ran to its stream's end). */
+static const char*
+writer_close_notes(const struct dsd_iq_capture_writer* writer, int clamped_events) {
+    if (writer->writer_failed) {
+        return "capture ended early: the data file could not be fully written";
+    }
+    if (clamped_events) {
+        return "event byte_offsets clamped to data_bytes after capture drops";
+    }
+    if (writer->sealed) {
+        return "capture ended early: the device sample rate changed on a retune";
+    }
+    return "";
+}
+
+/* The retunes the sidecar reports: those in its events, or the caller's count when it is higher. */
+static uint32_t
+writer_capture_retune_count(const struct dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* final_stats) {
+    uint32_t event_retune_count = 0;
+    for (size_t i = 0; i < writer->event_count; i++) {
+        if (writer->events[i].kind == DSD_IQ_EVENT_RETUNE && event_retune_count < UINT32_MAX) {
+            event_retune_count++;
+        }
+    }
+    return final_stats->retune_count > event_retune_count ? final_stats->retune_count : event_retune_count;
+}
+
+/* Write the finished capture's sidecar, once the writer thread is joined and the data file closed. */
+static void
+writer_write_final_metadata(struct dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* final_stats) {
+    char err_buf[256];
+    uint64_t written_bytes = dsd_atomic_u64_load_relaxed(&writer->written_bytes);
+    int clamped_events = writer_clamp_event_offsets(writer, written_bytes);
+    const char* notes = writer_close_notes(writer, clamped_events);
+    dsd_iq_capture_metadata_stats stats;
+
+    /* A sealed capture reports the stream's counts at the seal, not at the stream's end: retunes and drops after it
+       belong to samples this file does not hold. */
+    if (writer->have_frozen_stats) {
+        final_stats = &writer->frozen_stats;
+    }
+
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    stats.data_bytes = written_bytes;
+    stats.capture_drops = dsd_atomic_u64_load_relaxed(&writer->dropped_bytes);
+    stats.capture_drop_blocks = dsd_atomic_u64_load_relaxed(&writer->dropped_blocks);
+    stats.input_ring_drops = final_stats->input_ring_drops;
+    stats.size_limit_reached = writer->size_limit_reached;
+    stats.end_reason = writer->sealed ? DSD_IQ_CAPTURE_END_RATE_CHANGED : NULL;
+    stats.capture_retune_count = writer_capture_retune_count(writer, final_stats);
+    stats.contains_retunes = stats.capture_retune_count > 0 ? 1 : 0;
+    (void)metadata_write_file(&writer->cfg, writer->capture_started_utc, &stats, notes, writer->cfg.metadata_path,
+                              writer->events, writer->event_count, err_buf, sizeof(err_buf));
+}
+
 void
 dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* final_stats) {
     if (!writer) {
@@ -1803,45 +1931,7 @@ dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_s
     /* After the close, so a failure that only surfaces there is still caught. */
     writer_reconcile_written_bytes(writer);
 
-    {
-        char err_buf[256];
-        uint64_t written_bytes = dsd_atomic_u64_load_relaxed(&writer->written_bytes);
-        uint64_t dropped_bytes;
-        uint64_t dropped_blocks;
-        int clamped_events = writer_clamp_event_offsets(writer, written_bytes);
-        const char* notes = "";
-        dsd_iq_capture_metadata_stats stats;
-
-        if (writer->writer_failed) {
-            notes = "capture ended early: the data file could not be fully written";
-        } else if (clamped_events) {
-            notes = "event byte_offsets clamped to data_bytes after capture drops";
-        }
-
-        dropped_bytes = dsd_atomic_u64_load_relaxed(&writer->dropped_bytes);
-        dropped_blocks = dsd_atomic_u64_load_relaxed(&writer->dropped_blocks);
-
-        DSD_MEMSET(&stats, 0, sizeof(stats));
-        stats.data_bytes = written_bytes;
-        stats.capture_drops = dropped_bytes;
-        stats.capture_drop_blocks = dropped_blocks;
-        stats.input_ring_drops = final_stats->input_ring_drops;
-        stats.size_limit_reached = writer->size_limit_reached;
-        uint32_t event_retune_count = 0;
-        for (size_t i = 0; i < writer->event_count; i++) {
-            if (writer->events[i].kind == DSD_IQ_EVENT_RETUNE && event_retune_count < UINT32_MAX) {
-                event_retune_count++;
-            }
-        }
-        uint32_t capture_retune_count = event_retune_count;
-        if (final_stats->retune_count > capture_retune_count) {
-            capture_retune_count = final_stats->retune_count;
-        }
-        stats.contains_retunes = capture_retune_count > 0 ? 1 : 0;
-        stats.capture_retune_count = capture_retune_count;
-        (void)metadata_write_file(&writer->cfg, writer->capture_started_utc, &stats, notes, writer->cfg.metadata_path,
-                                  writer->events, writer->event_count, err_buf, sizeof(err_buf));
-    }
+    writer_write_final_metadata(writer, final_stats);
 
     writer_queue_destroy(writer);
     writer_event_destroy(writer);

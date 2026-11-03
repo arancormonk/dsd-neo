@@ -10375,28 +10375,54 @@ dsd_app_commands_pending(void) {
 /* The stream notice the next drain shows (dsd_app_stream_notice_post()); DSD_STREAM_NOTICE_NONE for none. One slot: a
    notice is a fact about the stream now, so a newer one replaces one not yet shown. */
 static atomic_int g_stream_notice = DSD_STREAM_NOTICE_NONE;
+/* The I/Q capture stopped recording (DSD_STREAM_NOTICE_CAPTURE_STOPPED), in a slot of its own: it changes the
+   options, so a newer notice must not replace it. */
+static atomic_int g_capture_stopped_notice = 0;
 
 void
 dsd_app_stream_notice_post(int kind) {
+    if (kind == DSD_STREAM_NOTICE_CAPTURE_STOPPED) {
+        atomic_store(&g_capture_stopped_notice, 1);
+        return;
+    }
     atomic_store(&g_stream_notice, kind);
 }
 
 void
 dsd_app_stream_notice_clear(void) {
     atomic_store(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+    atomic_store(&g_capture_stopped_notice, 0);
 }
 
-/* Show a posted stream notice as a toast. It is news, not a failure: nothing is latched, and the session goes on. */
+/* The stream's I/Q capture stopped recording at a retune that changed the device's sample rate (issue #806 X9): the
+   file keeps what it recorded until then. The capture stays off for the rest of the session, so no later start writes
+   over that file, and the options and the toast say so. */
 static void
-ui_show_stream_notice(dsd_state* state) {
-    if (!state || atomic_load(&g_stream_notice) == DSD_STREAM_NOTICE_NONE) {
+ui_show_capture_stopped(dsd_opts* opts, dsd_state* state) {
+    if (!opts || atomic_load(&g_capture_stopped_notice) == 0 || atomic_exchange(&g_capture_stopped_notice, 0) == 0) {
         return;
     }
-    const int kind = atomic_exchange(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
-    if (kind == DSD_STREAM_NOTICE_USB_RECOVERED) {
-        ui_set_toast(state, 5, "%s", "RTL-SDR stopped sending samples; reset and reopened");
-        dsd_telemetry_publish_snapshot(state);
+    opts->iq_capture_requested = 0;
+    ui_set_toast(state, 5, "%s", "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+    dsd_telemetry_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_snapshot(state);
+}
+
+/* Show a posted stream notice as a toast. It is news, not a failure: nothing is latched, and the session goes on. A
+   stopped capture's toast comes last, so it is the one left showing when both arrive at once. */
+static void
+ui_show_stream_notice(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
     }
+    if (atomic_load(&g_stream_notice) != DSD_STREAM_NOTICE_NONE) {
+        const int kind = atomic_exchange(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+        if (kind == DSD_STREAM_NOTICE_USB_RECOVERED) {
+            ui_set_toast(state, 5, "%s", "RTL-SDR stopped sending samples; reset and reopened");
+            dsd_telemetry_publish_snapshot(state);
+        }
+    }
+    ui_show_capture_stopped(opts, state);
 }
 
 /* Ask the frontends to redraw once what the drain published has landed. A publication a watchdog tick put off asks at
@@ -10430,7 +10456,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
     ui_publish_deferred_snapshots(opts, state);
-    ui_show_stream_notice(state);
+    ui_show_stream_notice(opts, state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed

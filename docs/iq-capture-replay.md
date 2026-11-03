@@ -91,6 +91,8 @@ The writer records:
   written by older builds has no `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and
   replays without one, and any other reads as known.
 - retune fields (`contains_retunes`, `capture_retune_count`).
+- `capture_end_reason`: present only when the capture stopped before its stream did. `"rate_changed"`: a retune changed
+  the device's sample rate (below).
 - for v2 captures, an `events` array describing scheduled replay events.
 
 The v2 `events` array is ordered by capture-data `byte_offset`, not wall-clock time. Replay dispatches every event at an
@@ -119,6 +121,18 @@ live (the frame being decoded is dropped and calls end as after a fade, while th
 followed stay), before it reads the first sample after them. That holds for the symbol-rate reader and for the analog
 monitor's one-sample reader, in fast and realtime replay alike, so a capture with a recovery in it decodes the same in
 every run.
+
+Samples a receiver's driver lost (an Airspy reports how many it dropped) are recorded as a `MUTE` with reason
+`driver_overflow` where they would have been. The live stream starts its filters over at the first sample after them,
+as after a stream gap, and so does a replay at that `MUTE`. A `MUTE` a retune records (`retune_mute`,
+`retune_reconfigure`) is not a gap: the retune's `RESET` starts the filters over.
+
+A capture records one sample rate. When a retune changes the device's rate while a capture runs (a device that reads
+back another rate than before), the capture stops there: the log says `I/Q capture stopped: the device rate changed
+from X to Y Hz on a retune; the file ends at the last sample at X Hz`, the decoder shows a notice, and `--iq-capture`
+stays off for the rest of the session so no later start writes over the file. The stream goes on. The file keeps every
+sample and event from before the retune and replays as usual; its sidecar is written when the stream stops, with
+`capture_end_reason: "rate_changed"` and the drop and retune counts as they were when the capture stopped.
 
 `data_bytes` is reconciled against the finished file at close, so it reports what is actually on disk rather than what
 the writer handed to `fwrite`. Anything the file system refused — a full disk, a size-limited file system — shows up in

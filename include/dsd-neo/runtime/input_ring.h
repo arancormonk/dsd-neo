@@ -19,6 +19,9 @@
 
 #include <dsd-neo/platform/threading.h>
 
+/** Gap marks the input ring holds at once (input_ring_note_gap()); a producer with more pending moves the newest. */
+#define INPUT_RING_GAP_SLOTS 32U
+
 /* Simple SPSC ring for interleaved I/Q float samples (input path) */
 struct input_ring_state {
     float* buffer = nullptr;
@@ -32,6 +35,16 @@ struct input_ring_state {
     std::atomic<uint64_t> producer_drops{0U}; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts{0U};  /* waits for data */
     std::atomic<uint64_t> discard_generation{0U};
+    /* Stream positions in floats, counted since init: what the producer committed and what the consumer released
+       (read, committed or discarded). The consumer is at stream position consumed_total, the sample at tail. */
+    std::atomic<uint64_t> produced_total{0U};
+    std::atomic<uint64_t> consumed_total{0U};
+    /* Gap marks (issue #806 X12): the stream positions where samples the producer lost would have been, so the
+       samples after one do not follow the ones before it. A SPSC queue: the producer writes gap_at[gap_write % N] and
+       moves gap_write, the consumer reads from gap_read. */
+    std::atomic<uint64_t> gap_at[INPUT_RING_GAP_SLOTS];
+    std::atomic<uint64_t> gap_write{0U};
+    std::atomic<uint64_t> gap_read{0U};
 };
 
 /**
@@ -188,7 +201,46 @@ void input_ring_read_commit(struct input_ring_state* r, size_t consumed);
 static inline void
 input_ring_discard_all_consumer(struct input_ring_state* r) {
     size_t h = r->head.load(std::memory_order_acquire);
+    size_t t = r->tail.load(std::memory_order_relaxed);
+    size_t discarded = (h >= t) ? h - t : r->capacity - t + h;
     r->tail.store(h, std::memory_order_release);
+    r->consumed_total.store(r->consumed_total.load(std::memory_order_relaxed) + discarded, std::memory_order_relaxed);
 }
+
+/**
+ * @brief Producer: mark a gap at the current end of the ring (issue #806 X12).
+ *
+ * Call when samples were lost before they reached the ring (a driver overflow, a full ring dropping the rest of a
+ * transfer): the next sample committed does not follow the last one. The mark travels with the ring's data, so the
+ * consumer finds it exactly between the two (input_ring_take_gap()) however it splits its reads. A second mark at
+ * the same place adds nothing. With INPUT_RING_GAP_SLOTS marks pending the newest moves here instead, so the gap
+ * before it goes unmarked; only a consumer that far behind loses one.
+ */
+void input_ring_note_gap(struct input_ring_state* r);
+
+/** @brief Consumer: whether any gap mark is pending (one load each, for the per-block check). */
+static inline int
+input_ring_gap_pending(const struct input_ring_state* r) {
+    return r->gap_read.load(std::memory_order_relaxed) != r->gap_write.load(std::memory_order_acquire);
+}
+
+/**
+ * @brief Consumer: take the gap marks up to the read position.
+ *
+ * Marks the consumer has gone past (a purge discarded the samples around them) are dropped. A mark at the read
+ * position is taken and reported in @p out_gap_at_read: the next sample read follows a gap.
+ *
+ * @param r                Input ring state.
+ * @param out_gap_at_read  [out] 1 when a gap mark sat at the read position, else 0.
+ * @return The floats the consumer may read before the next pending mark, or SIZE_MAX when none is pending.
+ */
+size_t input_ring_take_gap(struct input_ring_state* r, int* out_gap_at_read);
+
+/**
+ * @brief Start the stream positions and gap marks over (the ring's storage was replaced, its contents dropped).
+ *
+ * Only with no producer or consumer running.
+ */
+void input_ring_reset_positions(struct input_ring_state* r);
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_ */

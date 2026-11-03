@@ -8962,6 +8962,54 @@ test_notice_toast_without_failure_latch(void) {
     return rc;
 }
 
+/* Issue #806 X9: a capture a retune's rate change sealed. The decoder's next drain turns the capture off for the rest of
+   the session (no later start writes over the file it kept) and says so in a toast, which a USB notice arriving with
+   it does not replace; nothing is latched. One the session did not get to show is not the next session's. */
+static int
+test_capture_stopped_notice(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    static const char k_toast[] = "I/Q capture stopped: the device sample rate changed; what was recorded is kept";
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    state->ui_msg[0] = '\0';
+    opts->iq_capture_requested = 1;
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    rc |= expect_int("capture stopped: no command", dsd_app_drain_cmds(opts, state), 0);
+    rc |= expect_int("capture stopped: off for the session", opts->iq_capture_requested, 0);
+    rc |= expect_str("capture stopped: its toast is left showing", state->ui_msg, k_toast);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    rc |= expect_int("capture stopped: no failure latched", failure.kind, DSD_INPUT_FAILURE_NONE);
+    rc |= expect_int("capture stopped: the session runs on", (int)dsd_exitflag_load(), 0);
+
+    state->ui_msg[0] = '\0';
+    opts->iq_capture_requested = 1;
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("capture stopped: shown once", state->ui_msg, "");
+    rc |= expect_int("capture stopped: applied once", opts->iq_capture_requested, 1);
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
+    dsd_app_frontend_runtime_stop();
+    dsd_app_frontend_runtime_start(opts, state);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("capture stopped: never the next session's", state->ui_msg, "");
+    rc |= expect_int("capture stopped: the next session's capture stands", opts->iq_capture_requested, 1);
+    dsd_app_frontend_runtime_stop();
+
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A post that took the session's sink and was then held off the CPU, delivering only after the session ended: the
    sink below stands in for app-control's (dsd_app_stream_notice_post()) and pauses where a preempted post would, after
    it took the sink and before the notice lands. Its notice belongs to the ended session and never reaches the next. */
@@ -24580,6 +24628,7 @@ main(void) {
     rc |= test_radio_control_unavailable_toasts();
 #endif
     rc |= test_notice_toast_without_failure_latch();
+    rc |= test_capture_stopped_notice();
     rc |= test_stale_notice_post_stays_in_its_session();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();

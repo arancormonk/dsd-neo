@@ -78,9 +78,11 @@ main() {
     float output[8] = {};
     size_t count = 8;
     uint64_t drops = 0;
-    rtl_device_test_airspy_request request{samples, 4, 16, 12, 0, 0, 0};
+    uint64_t gap_at[4] = {};
+    size_t gaps = 99U;
+    rtl_device_test_airspy_request request{samples, 4, 16, 12, 0, 0, 0, gap_at, 4U, &gaps};
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0);
-    CHECK(count == 8 && drops == 0);
+    CHECK(count == 8 && drops == 0 && gaps == 0U);
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
@@ -90,9 +92,12 @@ main() {
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i + 4]) < 1e-6f);
     }
+    // Issue #806 X12: what a retune omits on purpose (its mute, its reconfigure hold) is no gap: the retune resets.
+    CHECK(gaps == 0U);
     request.hold = 1;
     count = 8;
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0 && count == 0);
+    CHECK(gaps == 0U);
     request.hold = request.mute = 0;
     request.capacity = 8;
     request.start = 4;
@@ -103,6 +108,9 @@ main() {
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
+    // Issue #806 X12: each loss leaves a gap mark where its samples would have been: the driver overflow before the
+    // transfer's first sample, the full ring after the last one it took.
+    CHECK(gaps == 2U && gap_at[0] == 0U && gap_at[1] == 6U);
     for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
         int passes = rtl_stream_test_passes_for_actual_rate(rate, 48000);
         CHECK(passes > 0 && passes <= 10);

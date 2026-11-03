@@ -194,6 +194,11 @@ typedef struct {
     int mute;
     int hold;
     uint64_t hardware_drops;
+    /* Optional (NULL: not reported): the input ring's gap marks after the delivery, as stream positions in floats from
+       the ring's first sample (issue #806 X12), up to gap_capacity of them, and how many. */
+    uint64_t* gap_at;
+    size_t gap_capacity;
+    size_t* gap_count;
 } rtl_device_test_airspy_request;
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
@@ -554,6 +559,12 @@ enum {
 
 /* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */
 int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out);
+/* Open the session's I/Q capture as a stream start does (stream_open_capture_writer(), @p opts naming it), attached to
+ * the session's device; returns the writer, NULL when it did not open. A producer's samples are the caller's to submit
+ * (dsd_iq_capture_submit()); the session's retunes record their events as the stream's do (issue #806 X9). */
+struct dsd_iq_capture_writer* rtl_stream_test_capture_session_open_capture(const dsd_opts* opts);
+/* Finalize it as the stream's shutdown does, with @p ring_drops the input ring's drops at the stream's end. */
+void rtl_stream_test_capture_session_close_capture(uint64_t ring_drops);
 void rtl_stream_test_capture_session_end(void);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
@@ -1992,6 +2003,7 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
     uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
+    uint64_t input_gap_reset_count;   /* demod resets at producer gaps in the input (issue #806 X12), process-wide */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);

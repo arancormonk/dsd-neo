@@ -494,6 +494,9 @@ static thread_local const RtlTuneCompletionRegistration* g_active_tune_completio
 
 static struct input_ring_state input_ring;
 static dsd_iq_capture_writer* g_iq_capture_writer = NULL;
+/* The sample rate the open I/Q capture records (dsd_iq_capture_config::sample_rate_hz), for the notice of its end. */
+static std::atomic<uint32_t> g_iq_capture_rate_hz{0U};
+
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
 static std::atomic<int> g_ring_purge_pending{0};
 /* Input purges applied in an I/Q replay (replay_note_input_purge_consumed()), whoever took the flag: the replay reader
@@ -607,6 +610,37 @@ store_dongle_frequency(uint32_t frequency_hz) {
 static inline uint32_t
 load_dongle_rate(void) {
     return dongle.rate.load(std::memory_order_acquire);
+}
+
+/* A capture RETUNE or RESET's result (rtl_device_record_capture_retune()): the event that sealed the capture, at a
+ * retune that changed the device rate (issue #806 X9), is said once, in the log and as a notice the decoder's thread
+ * shows. The capture stays open, refusing what follows, until the stream's shutdown finalizes it. */
+static void
+stream_note_capture_event_result(int rc, uint32_t event_rate_hz) {
+    if (rc != DSD_IQ_ERR_RATE_CHAIN) {
+        return;
+    }
+    const uint32_t capture_rate_hz = g_iq_capture_rate_hz.load(std::memory_order_relaxed);
+    LOG_WARN("I/Q capture stopped: the device rate changed from %u to %u Hz on a retune; the file ends at the last "
+             "sample at %u Hz.\n",
+             capture_rate_hz, event_rate_hz, capture_rate_hz);
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
+}
+
+static void
+stream_record_capture_retune(uint32_t center_hz, const char* reason) {
+    const uint32_t rate_hz = load_dongle_rate();
+    stream_note_capture_event_result(
+        rtl_device_record_capture_retune(rtl_device_handle, center_hz, load_dongle_frequency(), rate_hz, reason),
+        rate_hz);
+}
+
+static void
+stream_record_capture_reset(uint32_t center_hz, const char* reason) {
+    const uint32_t rate_hz = load_dongle_rate();
+    stream_note_capture_event_result(
+        rtl_device_record_capture_reset(rtl_device_handle, center_hz, load_dongle_frequency(), rate_hz, reason),
+        rate_hz);
 }
 
 /*
@@ -2730,10 +2764,22 @@ rtl_stream_test_get_last_reset_plan(rtl_stream_test_reset_plan* out) {
 }
 #endif
 
+/* Whether the stream's demod filtered any input since its filters last started over (demod_reset_on_retune()): the
+ * demod thread sets it as it runs a block, every reset clears it. A gap in the input with nothing filtered since the
+ * last reset needs none of its own (demod_reset_at_input_gap()), so a gap at the sample a retune or a RESET reset at
+ * resets once. Written by the demod thread and by a reset's holder of the reconfigure gate, never at once. */
+static std::atomic<int> g_demod_fed_since_reset{0};
+/* Resets the demod thread ran at gaps the producer marked in the input (issue #806 X12), which the internal test hooks
+ * read; process-wide and never back. */
+static std::atomic<uint64_t> g_input_gap_reset_count{0U};
+
 static DemodRetuneResetPlan
 demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (!s) {
         return plan;
+    }
+    if (s == &demod) {
+        g_demod_fed_since_reset.store(0, std::memory_order_relaxed);
     }
     /* The combined carrier estimate (the TETRA mixer's part included) is what every decision below acts on. */
     const float fll_freq_before = dsd_fll_band_edge_total_freq(&s->fll_band_edge_state);
@@ -3308,6 +3354,7 @@ struct DemodInputSpan {
     float* input_block;
     int replay; /* an I/Q replay block: chunk holds the capture chunk's metadata */
     struct rtl_replay_chunk_meta chunk;
+    int gap_before; /* the producer lost samples just before this block's first (input_ring_take_gap()) */
 };
 
 struct DemodRetuneDiagBlock {
@@ -3447,6 +3494,48 @@ demod_input_span_init(DemodInputSpan* span) {
     span->input_block = NULL;
     span->replay = 0;
     span->chunk = rtl_replay_chunk_meta{};
+    span->gap_before = 0;
+}
+
+/* Issue #806 X12: the samples a producer lost (an Airspy driver overflow, a full ring dropping the rest of a transfer,
+ * a replayed driver overflow) leave a gap mark in the input ring. A block never spans one: it ends at the next mark,
+ * and the block that starts at a mark carries gap_before, so the demod starts its filters over exactly at the first
+ * sample after the gap however the producer and the demod split the stream. One load with no mark pending. */
+static void
+demod_input_span_stop_at_gap(DemodInputSpan* span) {
+    if (!input_ring_gap_pending(&input_ring)) {
+        return;
+    }
+    int at_read = 0;
+    const size_t until = input_ring_take_gap(&input_ring, &at_read);
+    span->gap_before = at_read;
+    if (until >= span->reserved_count) {
+        return;
+    }
+    span->reserved_count = until;
+    span->got = (int)until;
+    if (until <= span->ring_n1) {
+        span->ring_n1 = until;
+        span->ring_p2 = NULL;
+        span->ring_n2 = 0U;
+    } else {
+        span->ring_n2 = until - span->ring_n1;
+    }
+}
+
+/* The demod thread, holding its processing block, before the first sample of @p span when a gap precedes it: the
+ * filters, the step, the channel and timing histories start over, the set a stream gap resets
+ * (DemodRetuneResetReason::StreamGap, which keeps the carrier's FLL estimate), unless nothing was filtered since the
+ * last reset. */
+static void
+demod_reset_at_input_gap(struct demod_state* d, const DemodInputSpan* span) {
+    if (!span->gap_before || !g_demod_fed_since_reset.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const uint32_t center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    (void)demod_reset_on_retune(d, demod_retune_reset_plan(DemodRetuneResetReason::StreamGap, center_hz, center_hz,
+                                                           d->complex_rate, d->complex_rate));
+    g_input_gap_reset_count.fetch_add(1U, std::memory_order_relaxed);
 }
 
 static void
@@ -3560,9 +3649,10 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     if (span->got <= 0) {
         return 0;
     }
+    span->reserved_count = (size_t)span->got;
+    demod_input_span_stop_at_gap(span);
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
-    span->reserved_count = (size_t)span->got;
     span->replay = stream_is_replay_active();
     if (span->replay && g_stream) {
         /* In replay the ring holds exactly one capture chunk (the reader commits a chunk only into an empty ring), and
@@ -4948,6 +5038,8 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         demod_discard_iteration_input(span);
         return 0;
     }
+    /* Before the block's input is copied: the reset clears the copy buffer. */
+    demod_reset_at_input_gap(d, span);
     if (!demod_prepare_input_block(d, span)) {
         demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
@@ -5262,6 +5354,7 @@ demod_thread_fn(void* arg) {
         }
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
+        g_demod_fed_since_reset.store(1, std::memory_order_relaxed);
         full_demod(d);
         demod_publish_block_state(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_realtime_mono_ns() - perf_full_start_ns) : 0ULL;
@@ -6140,8 +6233,7 @@ controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, 
     demod_reset_on_retune(&demod, reset_plan);
     /* A stream gap records its RETUNE and RESET pair itself, named after the gap (rtl_stream_note_discontinuity()). */
     if (mark_reconfigure && reset_plan.reason != DemodRetuneResetReason::StreamGap) {
-        rtl_device_record_capture_reset(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
-                                        retune_reset_reason_name(reset_plan.reason));
+        stream_record_capture_reset(center_freq_hz, retune_reset_reason_name(reset_plan.reason));
     }
     /* Reconfigures invalidate after the configured output drain/clear policy runs. */
     if (!mark_reconfigure) {
@@ -6325,8 +6417,7 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     (void)controller_refuse_programmed_retune(refusal, &previous_capture, previous_complex_rate_hz,
                                               previous_center_freq_hz, &finalized_center_freq_hz, &finalized_profile,
                                               &rc);
-    rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
-                                     load_dongle_rate(), retune_reset_reason_name(reset_reason));
+    stream_record_capture_retune(finalized_center_freq_hz, retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_complex_rate_hz, finalized_profile);
     controller_arm_retune_mute("post-reset", 1);
@@ -6389,8 +6480,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     }
     DemodRetuneResetReason reset_reason =
         ppm_changed ? DemodRetuneResetReason::PpmCorrection : DemodRetuneResetReason::FrequencyRetune;
-    rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
-                                     load_dongle_rate(), retune_reset_reason_name(reset_reason));
+    stream_record_capture_retune(finalized_center_freq_hz, retune_reset_reason_name(reset_reason));
     if (controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
                                         previous_center_freq_hz, previous_complex_rate_hz, finalized_profile)) {
         /* The retune landed, but the analog channel its row asked for does not run at the rate it landed on (issue
@@ -8127,6 +8217,7 @@ stream_open_capture_writer(const dsd_opts* opts, RadioSourceKind source_kind) {
     }
 
     g_iq_capture_writer = writer;
+    g_iq_capture_rate_hz.store(cfg.sample_rate_hz, std::memory_order_relaxed);
     rtl_device_set_iq_capture_writer(rtl_device_handle, writer);
     return 0;
 }
@@ -8143,8 +8234,10 @@ stream_abort_capture_writer(void) {
     g_iq_capture_writer = NULL;
 }
 
+/* Finalize the capture at the stream's shutdown, its producers stopped, with the stream's counts: @p ring_drops the
+ * input ring's. A capture sealed earlier reports its counts at the seal instead (dsd_iq_capture_freeze_final_stats()). */
 static void
-stream_close_capture_writer(void) {
+stream_close_capture_writer_with(uint64_t ring_drops) {
     if (!g_iq_capture_writer) {
         return;
     }
@@ -8152,10 +8245,15 @@ stream_close_capture_writer(void) {
         rtl_device_set_iq_capture_writer(rtl_device_handle, NULL);
     }
     dsd_iq_capture_final_stats stats = {};
-    stats.input_ring_drops = input_ring.producer_drops.load(std::memory_order_acquire);
+    stats.input_ring_drops = ring_drops;
     stats.retune_count = rtl_device_get_capture_retune_count(rtl_device_handle);
     dsd_iq_capture_close(g_iq_capture_writer, &stats);
     g_iq_capture_writer = NULL;
+}
+
+static void
+stream_close_capture_writer(void) {
+    stream_close_capture_writer_with(input_ring.producer_drops.load(std::memory_order_acquire));
 }
 
 /* rtl_device_handle is cleared, and the tuner gain published as no reading, before the device is destroyed (B15). */
@@ -9212,6 +9310,7 @@ stream_open_rtltcp_resize_ring_if_needed(size_t min_capacity, int pre_ms) {
     input_ring.capacity = min_capacity;
     input_ring.head.store(0);
     input_ring.tail.store(0);
+    input_ring_reset_positions(&input_ring);
     LOG_INFO("rtltcp resized input ring to %zu samples (%.2f MiB) for ~%d ms prebuffer.\n", input_ring.capacity,
              (double)input_ring.capacity * sizeof(float) / (1024.0 * 1024.0), pre_ms);
 }
@@ -10600,10 +10699,8 @@ rtl_stream_note_discontinuity(const char* reason) {
     /* The events first, then the count: both precede every sample past the gap, which the producer only resumes
        delivering after this returns, in the capture and in the output the decoder reads. */
     const uint32_t center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
-    rtl_device_record_capture_retune(rtl_device_handle, center_hz, load_dongle_frequency(), load_dongle_rate(),
-                                     gap_reason);
-    rtl_device_record_capture_reset(rtl_device_handle, center_hz, load_dongle_frequency(), load_dongle_rate(),
-                                    gap_reason);
+    stream_record_capture_retune(center_hz, gap_reason);
+    stream_record_capture_reset(center_hz, gap_reason);
     g_rtl_discontinuity_seq.fetch_add(1U, std::memory_order_acq_rel);
 }
 
@@ -12494,6 +12591,19 @@ rtl_stream_test_fail_step_designs(int ok, int failing) {
     const int seen = g_test_step_designs_seen;
     g_test_step_designs_seen = 0;
     return seen;
+}
+
+extern "C" dsd_iq_capture_writer*
+rtl_stream_test_capture_session_open_capture(const dsd_opts* opts) {
+    if (!g_test_capture_session.open || !opts || g_iq_capture_writer) {
+        return NULL;
+    }
+    return stream_open_capture_writer(opts, detect_radio_source(opts)) == 0 ? g_iq_capture_writer : NULL;
+}
+
+extern "C" void
+rtl_stream_test_capture_session_close_capture(uint64_t ring_drops) {
+    stream_close_capture_writer_with(ring_drops);
 }
 
 extern "C" void
@@ -15553,6 +15663,7 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_out_acked = g_stream->replay_out_acked.load(std::memory_order_acquire);
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     out_state->dongle_rate_hz = load_dongle_rate();
+    out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
     return 0;
 }
 

@@ -2435,6 +2435,14 @@ suite runs under this compiler.
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
+  - Input ring (`include/dsd-neo/runtime/input_ring.h`, `src/runtime/input_ring.cpp`): the SPSC ring of interleaved
+    float I/Q between a radio producer and the demod. Stream positions (`produced_total`, `consumed_total`, floats since
+    init; a purge moves the consumer's) place gap marks (issue #806 X12): a producer that lost samples before they
+    reached the ring (`input_ring_note_gap()`) marks the place, and the consumer finds it exactly there
+    (`input_ring_gap_pending()`, one load a block; `input_ring_take_gap()`: the floats before the next mark, and whether
+    one sits at the read position) however the two split the stream. Marks a purge discarded around are dropped, a
+    second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
+    Test: `RUNTIME_INPUT_RING_GAP` (arbitrary short blocks on one thread and two, purge, duplicate, full queue).
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
     `dsd_decode_now_realtime_s()`) with SYSTEM (platform clocks, default), REPLAY (`anchor + media_ns`, anchor floored
@@ -2617,10 +2625,12 @@ suite runs under this compiler.
     back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
     `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
-    the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`), posted from the stream's controller with
-    `dsd_runtime_stream_notice_post()` into the sink app-control installs at session start
-    (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; NULL at session
-    end); with no sink it is dropped, and nothing is latched in the input failure. The sink runs under the hook's lock,
+    the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
+    posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at
+    session start (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; a
+    stopped capture has a slot of its own, which turns `iq_capture_requested` off for the session, publishes the options
+    and shows its toast last; NULL at session end); with no sink it is dropped, and nothing is latched in the input
+    failure. The sink runs under the hook's lock,
     so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after
     that removal and again at session start, so a late post never reaches the next session. A failed notice-mutex initialization
     leaves the sink disabled without accessing an uninitialized lock (`RUNTIME_STREAM_NOTICE_INIT_FAILURE`).
@@ -5385,7 +5395,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     it waits for the boundary's idle pipeline (`replay_wait_for_event_idle()` for an event), the demod flushes on it as
     on EOF, and `replay_pipeline_idle_locked()` is not idle while that flush is owed, so a burst that ends just before
     the boundary is decoded before it rather than dropped by the reset or the rewind, and its block carries the centre
-    and stream gap count from before the boundary. A `MUTE` starts nothing over and flushes nothing. While such a flush
+    and stream gap count from before the boundary, and so does a driver overflow's `MUTE`, which resets (below); any
+    other `MUTE` starts nothing over and flushes nothing. While such a flush
     is owed the demod waits for the next chunk in `demod_replay_input_or_flush()`, not in the input ring, whose wait
     returns only with data: paced in real time the demod is already waiting there when the input ends, and would never
     reach the flush. A live stream's stop drops it with the rest of the pipeline's in-flight blocks, and so do a live
@@ -6191,6 +6202,33 @@ Key public headers:
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
 - I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
   `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
+  - Producer gaps (issue #806 X12): samples a producer lost before the input ring (an Airspy `driver_overflow`, a
+    full ring dropping the rest of an RTL/rtl_tcp transfer or a SoapySDR read) leave a gap mark there
+    (`input_ring_note_gap()`; a retune's mute and reconfigure hold, and a purge's stale writes, are not gaps). The
+    demod's block stops at the next mark (`demod_input_span_stop_at_gap()`), and the block starting at one runs
+    `demod_reset_at_input_gap()` once it holds its processing block, before its input is copied: the stream-gap reset
+    set (`demod_reset_on_retune()` with `StreamGap`, so `dsd_demod_reset_filter_state()` takes the cascade and the I/Q
+    rate step, and the channel and timing histories go; the FLL keeps its estimate), unless nothing was filtered since
+    the last reset (`g_demod_fed_since_reset`), so an overflow at the sample a retune or a RESET reset at resets once. A
+    replay resets at the recorded `MUTE` the same way. A full ring's samples reached the capture before the ring, so
+    its replay has no gap there. The count is `rtl_stream_test_replay_state::input_gap_reset_count`. Tests:
+    `IO_AIRSPY_INGEST`, `IO_RTL_RETUNE_PREPARE` (marks at the losses, none at a retune's omitted spans),
+    `IO_RTL_STREAM_INPUT_GAP` (replay: a reset at each overflow's first sample, once with a RETUNE+RESET, none at
+    `retune_mute`; live Airspy on the SDK double with arbitrary transfers: a reset at each drop after filtered input,
+    and its capture's replay resets as often).
+  - Rate change while capturing (issue #806 X9): the capture's chain identity is its rate. A RETUNE or RESET at another
+    rate (a retune whose read-back moved the rate) seals the writer under its own mutexes
+    (`dsd_iq_capture_record_event()` returns `DSD_IQ_ERR_RATE_CHAIN`, every later submission and event
+    `DSD_IQ_ERR_SEALED`); the block being packed goes to the writer thread and the queue drains, the writer stays
+    attached and open, and the stream's normal shutdown finalizes it. `rtl_record_capture_event()` returns the code:
+    on the seal the device freezes the counts the sidecar reports (`dsd_iq_capture_freeze_final_stats()`: the input
+    ring's drops, the retunes so far) and counts no retune after it; `rtl_device_record_capture_retune()`/`_reset()`
+    return it to the stream's wrappers (`stream_record_capture_retune()`/`_reset()`), which log one WARN and post
+    `DSD_STREAM_NOTICE_CAPTURE_STOPPED`. The retune and its capture hold go on as before. The sidecar then holds only
+    the samples and events before the seal, with `capture_end_reason` `"rate_changed"` (absent when a capture ran to
+    its stream's end). Tests: `IO_IQ_CAPTURE_WRITER` (seal by RETUNE and by RESET, frozen counts, end reason; producers
+    on their own threads racing a seal, under TSan), `IO_RTL_CAPTURE_WRITES` (`rate_change_seals_capture`: a fake
+    device's read-back changes on a retune while recording), `APP_COMMAND_QUEUE` (the notice).
   - Tuner gain (issue #669): `rtl_device_get_tuner_gain(dev, &tenth_db)` returns a status separate from the value,
     since librtlsdr's gains reach below zero (E4K -1.0 dB, FC0012/FC0013 -9.9 dB); its callers (`rtl_stream_get_gain()`,
     the autogain latch, the capture metadata, the retune note) all read it that way. A capture whose tuner reports no
@@ -6797,6 +6835,10 @@ Notes:
       restores the cached seed). A rewind clears it.
     - A replay block's output always fits the empty output ring (a `static_assert` on `resamp_outbuf` and `result`
       against `kOutputRingCapacity`); a shortfall would be counted (`replay_output_truncated`) and logged.
+    - A `MUTE` the live stream recorded for samples its driver lost (`RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW`,
+      `replay_event_is_stream_gap()`) leaves a gap mark in the input ring (issue #806 X12), where the next chunk
+      starts, so the demod resets at the sample the live stream did (IO, "Producer gaps"); a retune's omitted span
+      (`retune_mute`, `retune_reconfigure`) is no gap, its RESET resets.
 
     Tests: `IO_RTL_REPLAY_DETERMINISM` (an eventful capture: RETUNE, MUTE and RESET groups off chunk boundaries, a lone
     MUTE, a MUTE at offset 0 and at the end, identical across the fast, slow and realtime readers with every chunk a

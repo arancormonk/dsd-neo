@@ -9,7 +9,10 @@ extern "C" {
 typedef enum {
     DSD_STREAM_NOTICE_NONE = 0,
     /** A stalled RTL-SDR was reset and reopened under the running stream. */
-    DSD_STREAM_NOTICE_USB_RECOVERED = 1
+    DSD_STREAM_NOTICE_USB_RECOVERED = 1,
+    /** The I/Q capture (--iq-capture) stopped recording: a retune changed the device's sample rate, which the file
+     *  cannot describe (issue #806 X9). The stream goes on; the file ends at the last sample at its rate. */
+    DSD_STREAM_NOTICE_CAPTURE_STOPPED = 2
 } dsd_stream_notice_kind;
 
 typedef void (*dsd_stream_notice_fn)(int kind);

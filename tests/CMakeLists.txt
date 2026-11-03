@@ -2556,6 +2556,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_input_ring_init
 )
 
+# Issue #806 X12: gap marks travel with the input ring's data.
+add_executable(
+    dsd-neo_test_runtime_input_ring_gap
+    runtime/test_runtime_input_ring_gap.cpp
+)
+target_include_directories(
+    dsd-neo_test_runtime_input_ring_gap
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_input_ring_gap
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_INPUT_RING_GAP
+    COMMAND dsd-neo_test_runtime_input_ring_gap
+)
+
 # A commit between the reader's first look at an empty input ring and its lock is read
 # without waiting out the 10 ms timeout. GNU ld --wrap puts the commit exactly there, so
 # the case exists only where that links, like the other wrap tests.
@@ -15609,6 +15627,41 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_replay_resample
     )
 
+    # Issue #806 X12: samples a producer lost leave a gap the demod starts over at, live and in a replay of the capture.
+    # The live case runs an Airspy on the SDK double, added below where the build has Airspy support.
+    add_executable(
+        dsd-neo_test_io_rtl_stream_input_gap
+        io/test_io_rtl_stream_input_gap.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_stream_input_gap
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_stream_input_gap
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_dsp
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_STREAM_INPUT_GAP
+        COMMAND dsd-neo_test_io_rtl_stream_input_gap
+    )
+    set_tests_properties(IO_RTL_STREAM_INPUT_GAP PROPERTIES TIMEOUT 120)
+
     # Issue #701: a run-time re-plan reopens an I/Q replay where the stopped stream left it. The checkpoint after a
     # MUTE, a RETUNE and a completed --iq-loop pass names the event to apply next and the media time so far, and the
     # resumed replay goes on with the straight replay's blocks, at the capture's rate, an explicit 24 kHz bandwidth or
@@ -15980,7 +16033,11 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_capture_writes
-        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
     )
     add_test(
         NAME IO_RTL_CAPTURE_WRITES
@@ -21541,6 +21598,23 @@ if(DSD_HAS_AIRSPY)
         COMMAND dsd-neo_test_io_rtl_stream_start_failure
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
+
+    if(TARGET dsd-neo_test_io_rtl_stream_input_gap)
+        target_sources(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE
+                io/airspy_sdk_double.cpp
+                ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE USE_AIRSPY DSD_TEST_AIRSPY_LIVE
+        )
+    endif()
 
     if(TARGET dsd-neo_test_io_usb_progress_monitor)
         target_sources(

@@ -32,6 +32,8 @@ typedef enum DSD_ATTR_PACKED {
     DSD_IQ_ERR_ALLOC = -8,
     DSD_IQ_ERR_QUEUE_INIT = -9,
     DSD_IQ_ERR_INVALID_ARG = -10,
+    /** The capture writer is sealed (dsd_iq_capture_record_event()): the submission or event was not taken. */
+    DSD_IQ_ERR_SEALED = -11,
 } dsd_iq_error;
 
 typedef enum DSD_ATTR_PACKED {

@@ -81,7 +81,8 @@ extern "C" int rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_ph
                                                    uint8_t* out_carry_byte, int* out_first_status,
                                                    int* out_second_status);
 extern "C" int rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_t* out_full_events,
-                                                 int* out_phase, int* out_status);
+                                                 int* out_phase, int* out_status, size_t* out_gaps,
+                                                 uint64_t* out_gap_at);
 extern "C" int rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, int* out_dev_carry_valid,
                                                         int* out_local_carry_valid, int* out_status);
 extern "C" int rtl_device_test_u8_moment_accounting(dsd_input_level_cu8_moments* out, size_t out_count);
@@ -3326,13 +3327,19 @@ main(void) {
     uint64_t u8_drops = 0U;
     uint64_t full_events = 0U;
     int full_status = -1;
-    rc = rtl_device_test_u8_full_ring_drop(&u8_used, &u8_drops, &full_events, &u8_phase, &full_status);
+    size_t full_gaps = 0U;
+    uint64_t full_gap_at = 0U;
+    rc = rtl_device_test_u8_full_ring_drop(&u8_used, &u8_drops, &full_events, &u8_phase, &full_status, &full_gaps,
+                                           &full_gap_at);
     failed |= expect_int_eq("u8 full-ring helper rc", rc, 0);
     failed |= expect_int_eq("u8 full-ring reports exhaustion", full_status, 1);
     failed |= expect_size_eq("u8 full-ring keeps one pair", u8_used, 2U);
     failed |= expect_size_eq("u8 full-ring drops aligned remainder", (size_t)u8_drops, 4U);
     failed |= expect_size_eq("u8 full-ring counts reserve exhaustion", (size_t)full_events, 1U);
     failed |= expect_int_eq("u8 full-ring advances phase over committed and dropped pairs", u8_phase, 3);
+    /* Issue #806 X12: the next transfer does not follow the pair the ring took; a gap mark sits right after it. */
+    failed |= expect_size_eq("u8 full-ring marks one gap", full_gaps, 1U);
+    failed |= expect_size_eq("u8 full-ring gap after the committed pair", (size_t)full_gap_at, 2U);
 
     int stale_dev_carry_valid = -1;
     int stale_local_carry_valid = -1;
