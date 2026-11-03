@@ -177,8 +177,10 @@ Notes:
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
   holds that LCN's place, also when an EDACS site names that LCN as its control channel (the frequency it is heard on
   is recorded there only with no list imported). Under `-T` that control channel is still learned from the frequency
-  it is heard on, so the returns to it work while the list keeps its 0. Frequencies learned from site broadcasts
-  (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
+  it is heard on, so the returns to it work while the list keeps its 0; on audio input with a rigctl peer that
+  frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
+  itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
+  learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
 
 Example:
 

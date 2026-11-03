@@ -164,7 +164,7 @@ waiting). Error codes:
 | `unknown_command` | No such command. |
 | `invalid_params` | A parameter is missing, of the wrong type, out of range, or too long for its field. Nothing was submitted. |
 | `rejected` | The command queue did not admit the command: no decoder session is open. |
-| `queue_full` | `scan_list_set` only: the command queue is full. Nothing was submitted and no result follows; try again. (Other commands make room by dropping the oldest queued one.) |
+| `queue_full` | `scan_list_set` only: the command queue is full. Nothing was submitted and no result follows; try again. (Other commands make room by dropping the oldest queued one.) A request refused just as a decoder session opens can read `queue_full` where `rejected` was meant; nothing was submitted either way, so trying again is safe. |
 | `internal_error` | The server could not build the response. |
 | `busy` | Sent in place of `welcome` when all client slots are in use; the connection is then closed. |
 

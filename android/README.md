@@ -2171,6 +2171,12 @@ refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-
 
 Validate checks a draft without saving. Save validates first; Save draft retains incomplete lists as **Not ready**, which cannot start. Cancel discards only unapplied edits, and removal asks for confirmation.
 
+Several lists can scan in one session: a ready list's More menu offers **Scan with other lists…**, where you switch on
+the other lists to scan with it and tap **Start N lists** (up to 8 lists, all on the first list's receiver and
+settings; a list whose receiver or scan settings differ is greyed out with the first difference). While that session
+runs, Session options → **Scan lists** switches each list on or off for the session only. Every list starts switched
+on. See [Several lists](../docs/trunk-scan.md#qt-and-android-several-lists).
+
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only
 after engine initialization; an **Explore from here** taken while the list is

@@ -2103,7 +2103,8 @@ is delayed.
     give `--trunk-scan-off <file>` for a list that starts switched off; both also take the `=FILE` form. Lists are
     numbered in command-line order across both options, and a list's name is its file name without folder and
     extension. A ninth list, the same path twice, a path of 1024 bytes or more and a start with every list off are
-    refused. Lists on the command line replace a config file's lists as a whole.
+    refused. Lists on the command line replace a config file's lists as a whole. How the lists behave and are switched
+    while scanning: [Several lists](trunk-scan.md#several-lists).
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
@@ -2135,9 +2136,9 @@ is delayed.
   the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
   uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
-  `-C`, `-G`, `--trunk-scan`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name, `--frame-log`,
-  `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also take device
-  specs, so theirs is refused with "value is too long".
+  `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name,
+  `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also
+  take device specs, so theirs is refused with "value is too long".
 - P25 band plan CSV: `--p25-bandplan <file>` — one row per band-plan identifier (base, spacing, type, offset,
   bandwidth, optional WACN/SYS) for sites that never broadcast `IDEN_UP`; rows yield to a real `IDEN_UP`. Format
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.
