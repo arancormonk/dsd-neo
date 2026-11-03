@@ -368,9 +368,9 @@ refuses rather than clamps, and the checks sit where the rate is known:
   too), so it is never left on Analog over a digital front end.
 - A config apply that changes the width, or reopens an RTL-SDR or rtl_tcp
   device under an explicit one, is held to the rate the width will run at: the
-  `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
-  an input spec other than the running one (from any RTL-family input),
-  otherwise the running stream. A refusal leaves the whole config unapplied.
+  `rtl_bw_khz` the reopen stores (an unsupported value as the 48 kHz default,
+  as at startup), when the config's `[input]` builds an input spec other than
+  the running one (from any RTL-family input), otherwise the running stream. A refusal leaves the whole config unapplied.
   An `[input]` that reopens a SoapySDR or Airspy device (an Airspy source over
   a running Airspy reopens it for a new sample rate, serial or DSP bandwidth,
   `svc_airspy_settings_reopen()`) is held the same way, to the DSP bandwidth it

@@ -884,7 +884,7 @@ capture_frequency_for_rate(uint32_t center_freq_hz, uint32_t capture_rate_hz, ui
 /* Log a capture frequency that cannot be programmed for @p center_freq_hz at @p capture_rate_hz. */
 static void
 log_capture_frequency_out_of_range(uint32_t center_freq_hz, uint32_t capture_rate_hz) {
-    LOG_ERROR("Cannot tune the RTL-SDR to %u Hz: its capture frequency at %u Hz sample rate is outside 1..%u Hz.\n",
+    LOG_ERROR("Cannot tune the device to %u Hz: its capture frequency at %u Hz sample rate is outside 1..%u Hz.\n",
               center_freq_hz, capture_rate_hz, (unsigned)UINT32_MAX);
 }
 
@@ -5811,7 +5811,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     if (rc != 0) {
         capture_writes_forget_tuning();
         restore_capture_settings(&previous);
-        LOG_ERROR("Failed to apply RTL-SDR center frequency %u Hz (rc=%d).\n", programmed.capture_freq_hz, rc);
+        LOG_ERROR("Failed to apply the device center frequency %u Hz (rc=%d).\n", programmed.capture_freq_hz, rc);
         return rc;
     }
     capture_writes_note_frequency();
@@ -6250,7 +6250,7 @@ controller_refuse_retune_for_capture(int refusal, const CaptureSettingsSnapshot*
                                      const RtlRetuneProfile** profile) {
     const uint32_t kept_center_hz = previous_center_freq_hz != 0U ? previous_center_freq_hz : *center_freq_hz;
     if (refusal == kCaptureRefusalCorrection) {
-        LOG_ERROR("The retune to %u Hz is refused: the RTL-SDR did not take the capture correction for the sample "
+        LOG_ERROR("The retune to %u Hz is refused: the device did not take the capture correction for the sample "
                   "rate it reports; the front end stays on %u Hz.\n",
                   *center_freq_hz, kept_center_hz);
     } else {
@@ -7068,7 +7068,7 @@ static int
 controller_set_initial_frequency(uint32_t capture_freq_hz) {
     int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     if (rc != 0) {
-        LOG_ERROR("Failed to apply initial RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
+        LOG_ERROR("Failed to apply the initial device center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
     } else {
         capture_writes_note_frequency();
     }
@@ -7095,7 +7095,7 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)capture_rate_hz);
     rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     if (rc != 0) {
-        LOG_ERROR("Failed to apply initial RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
+        LOG_ERROR("Failed to apply the initial device sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
         return rc;
     }
     uint32_t actual_rate_hz = 0U;
