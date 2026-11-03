@@ -196,7 +196,7 @@ dsd_win32_temp_create(const char* path, int flags) {
 }
 
 int
-dsd_win32_temp_open(char* path, char* suffix, int flags) {
+dsd_win32_temp_open(const char* path, char* suffix, int flags) {
     for (int attempt = 0; attempt < DSD_WIN32_TEMP_NAME_ATTEMPTS; attempt++) {
         dsd_win32_temp_name_fill(suffix);
         int fd = dsd_win32_temp_create(path, flags);
