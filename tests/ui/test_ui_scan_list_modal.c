@@ -432,9 +432,12 @@ test_all_lists_on(void) {
     expect_row(2, "3  municipality  On    3 targets");
     expect_row(3, "All lists on");
     expect_title("Scan lists (3 of 3 on, 16 targets)");
-    publish_result(g_sent[1].request, 1, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    /* Already on: answered at the lists the All switch left (11), so the row holds On as an OK would until the
+       snapshot shows it. */
+    publish_result_at(g_sent[1].request, 1, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED, 11U);
     tick();
     expect_row(0, "1  security      On   12 targets");
+    expect_title("Scan lists (3 of 3 on, 16 targets)");
     scan_list_modal_close();
 }
 

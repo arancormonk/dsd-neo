@@ -49,8 +49,8 @@ dsd_app_scan_list_row_not_sent(dsd_app_scan_list_row* row, uint32_t lists_seq) {
     row->note_seq = lists_seq;
 }
 
-/* Switched: hold what it asked for until the snapshot reaches the lists it left. "Every list on" switches every
-   list row. */
+/* Switched, or already as asked: hold what it asked for until the snapshot reaches the lists it left. "Every list on"
+   holds every list row on. */
 static void
 scan_list_rows_hold(dsd_app_scan_list_row* rows, int answered, int list_count, const dsd_app_scan_list_result* result) {
     const int every = answered >= list_count;
@@ -82,7 +82,9 @@ dsd_app_scan_list_rows_answer(dsd_app_scan_list_row* rows, int row_count, int li
         row->note_seq =
             dsd_app_scan_list_seq_after(row->submit_seq, result->lists_seq) ? row->submit_seq : result->lists_seq;
         row->seen_paused = 0U;
-        if (result->code == DSD_APP_SCAN_LIST_SET_OK) {
+        /* UNCHANGED too: the list already was as asked, though the snapshot on screen may not show it yet (another
+           frontend switched it). */
+        if (result->code == DSD_APP_SCAN_LIST_SET_OK || result->code == DSD_APP_SCAN_LIST_SET_UNCHANGED) {
             scan_list_rows_hold(rows, r, list_count, result);
         }
         return r;

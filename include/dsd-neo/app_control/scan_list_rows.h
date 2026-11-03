@@ -11,8 +11,9 @@
  * A row's state comes from two places, as the result API asks (dsd_app_scan_list_results_since()): the retained
  * result of the row's own request says what that request did, and the view's lists_seq says what the lists are. The
  * result carries the lists' sequence it left them at, and can come a frame or more before the snapshot that shows
- * its switch, so a row a request switched shows the state it asked for while the view's lists_seq is behind the
- * result's; from then on the snapshot is the truth, whatever else switched the list since. A refusal describes the
+ * its switch, so a row a request switched (or found already as asked: UNCHANGED) shows the state it asked for while
+ * the view's lists_seq is behind the result's; from then on the snapshot is the truth, whatever else switched the list
+ * since. A refusal describes the
  * lists the result saw, or those on screen at the switch when they are later (a request dropped before a drain
  * reached it carries the lists the last drain left): its note goes once the view's lists_seq moves past them, and a
  * paused refusal goes on a resume that follows a pause the frontend has seen.
@@ -74,8 +75,8 @@ void dsd_app_scan_list_row_not_sent(dsd_app_scan_list_row* row, uint32_t lists_s
 /**
  * @brief Match @p result to the row waiting on its request among @p rows[0 .. row_count - 1], of which the first
  * @p list_count are lists (a row at list_count is "every list on"). The row stops waiting and keeps the answer as its
- * note; an OK holds what it asked for (every list row, for the every-list row) until the view reaches the result's
- * lists_seq.
+ * note; an OK or UNCHANGED holds what it asked for (every list row, for the every-list row) until the view reaches the
+ * result's lists_seq.
  * @return The row answered, or -1 when none waits on that request.
  */
 int dsd_app_scan_list_rows_answer(dsd_app_scan_list_row* rows, int row_count, int list_count,

@@ -134,6 +134,36 @@ test_every_list_row(void) {
     assert(rows[1].request == 202U);
 }
 
+/* UNCHANGED: the list was already as asked, though the view on screen may not show it yet (another frontend switched
+   it, the snapshot not yet published). The row holds what it asked for until the view reaches the answer's lists, as an
+   OK does; the "every list on" row holds every list row on. */
+static void
+test_unchanged_holds_until_the_snapshot(void) {
+    dsd_app_scan_list_row rows[4];
+    DSD_MEMSET(rows, 0, sizeof rows);
+    const int all_on[3] = {1, 1, 1};
+    const int two_off[3] = {1, 0, 1};
+    dsd_app_scan_list_view v = view_of(50U, all_on, 0);
+    dsd_app_scan_list_row_sent(&rows[1], 501U, 0, v.lists_seq);
+    const dsd_app_scan_list_result unchanged = result_of(501U, DSD_APP_SCAN_LIST_SET_UNCHANGED, 51U);
+    assert(dsd_app_scan_list_rows_answer(rows, 4, 3, &unchanged) == 1);
+    assert(rows[1].request == 0U && rows[1].held && rows[1].held_seq == 51U);
+    dsd_app_scan_list_rows_expire(rows, 4, &v);
+    assert(dsd_app_scan_list_row_on(&rows[1], &v, 1) == 0); /* held ahead of the snapshot */
+    v = view_of(51U, two_off, 0);
+    dsd_app_scan_list_rows_expire(rows, 4, &v);
+    assert(!rows[1].held && dsd_app_scan_list_row_on(&rows[1], &v, 1) == 0);
+
+    /* Every list on, already so though the view shows one off. */
+    dsd_app_scan_list_row_sent(&rows[3], 502U, 1, v.lists_seq);
+    const dsd_app_scan_list_result all_unchanged = result_of(502U, DSD_APP_SCAN_LIST_SET_UNCHANGED, 52U);
+    assert(dsd_app_scan_list_rows_answer(rows, 4, 3, &all_unchanged) == 3);
+    dsd_app_scan_list_rows_expire(rows, 4, &v);
+    for (int i = 0; i < 3; i++) {
+        assert(dsd_app_scan_list_row_on(&rows[i], &v, i) == 1);
+    }
+}
+
 /* A refusal: the view's state, and the note until the lists move past the later of the answer's and the switch's. */
 static void
 test_refusals_and_notes(void) {
@@ -206,6 +236,7 @@ main(void) {
     test_null_arguments();
     test_switch_holds_until_the_snapshot();
     test_every_list_row();
+    test_unchanged_holds_until_the_snapshot();
     test_refusals_and_notes();
     test_paused_refusal();
     DSD_FPRINTF(stderr, "OK\n");
