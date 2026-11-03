@@ -302,20 +302,49 @@ fallbackFilesValid(const QVariantMap& prepared) {
 
 } // namespace
 
+namespace {
+/* @p stem cut to the engine's list name size, whole characters only, so the file says what the engine shows, and
+   without the trailing dots and blanks no Windows file name ends in ("." or ".." is not a file either). */
+QString
+fit_stem(const QString& stem) {
+    QString out = cut_utf8(stem, DSD_TRUNK_SCAN_LIST_NAME_SIZE - 1);
+    while (!out.isEmpty() && (out.endsWith(QLatin1Char('.')) || out.endsWith(QLatin1Char(' ')))) {
+        out.chop(1);
+    }
+    return out;
+}
+
+/* A Windows device name (CON, LPT1, ...) is one whatever follows its first dot, and blanks before that dot do not
+   count: "CON.local" is CON. Such a stem gets a '_' after the device name. */
+QString
+avoid_device_name(const QString& stem) {
+    static const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    const qsizetype dot = stem.indexOf(QLatin1Char('.'));
+    QString device = dot < 0 ? stem : stem.left(dot);
+    while (device.endsWith(QLatin1Char(' '))) {
+        device.chop(1);
+    }
+    if (!reserved.match(device).hasMatch()) {
+        return stem;
+    }
+    QString out = stem;
+    out.insert(device.size(), QLatin1Char('_'));
+    return out;
+}
+} // namespace
+
 QString
 scan_list_csv_stem(const QString& name, int listNumber) {
     QString stem = name;
     std::replace_if(stem.begin(), stem.end(), unsafe_in_file_name, QChar('_'));
-    /* The name the engine shows is cut there anyway; cut here, whole characters only, so the file says the same. */
-    stem = cut_utf8(stem.trimmed(), DSD_TRUNK_SCAN_LIST_NAME_SIZE - 1);
-    /* No file name ends in a dot or a blank on Windows, and "." or ".." is not a file. */
-    while (!stem.isEmpty() && (stem.endsWith(QLatin1Char('.')) || stem.endsWith(QLatin1Char(' ')))) {
-        stem.chop(1);
-    }
-    static const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"),
-                                             QRegularExpression::CaseInsensitiveOption);
-    if (reserved.match(stem).hasMatch()) {
-        stem += QLatin1Char('_');
+    /* The engine opens the list through its path expansion (dsd_config_expand_path()), which reads "$NAME" and
+       "${NAME}" as variables and a leading '~' as the home folder: a file name keeps none of them. */
+    std::replace(stem.begin(), stem.end(), QChar('$'), QChar('_'));
+    stem = fit_stem(stem.trimmed());
+    stem = fit_stem(avoid_device_name(stem));
+    if (stem.startsWith(QLatin1Char('~'))) {
+        stem[0] = QLatin1Char('_');
     }
     return stem.isEmpty() ? QStringLiteral("list %1").arg(listNumber) : stem;
 }
@@ -639,6 +668,13 @@ validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize
         if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
             || file.write(csv) != csv.size() || !file.commit()) {
             *error = QStringLiteral("Cannot save the scan-list CSV.");
+            return false;
+        }
+        /* The engine reads the saved file by its path, through its own opener: checked the same way here, so a path
+           the opener reads as another file cannot pass. */
+        if (dsd_app_trunk_scan_validate_targets_csv(path.toUtf8().constData(), count, detail, sizeof detail) != 0) {
+            QFile::remove(path);
+            *error = QStringLiteral("Scan list rejected: ") + QString::fromUtf8(detail);
             return false;
         }
     }

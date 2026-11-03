@@ -28,6 +28,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <qsystemdetection.h>
@@ -352,7 +353,8 @@ checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
 
 // Issue #697: a manual list's CSV is named after the list, so the engine names the list (toasts, logs, the API) as
 // the app does, never by its UUID: unsafe characters made "_", blanks and trailing dots dropped, device names kept
-// apart, cut to 31 UTF-8 bytes on a character, and "list N" for nothing left.
+// apart (with or without an extension), no '$' or leading '~' for the engine's path expansion to read, cut to 31 UTF-8
+// bytes on a character, and "list N" for nothing left.
 static void
 checkCsvStem() {
     const struct {
@@ -371,6 +373,18 @@ checkCsvStem() {
         {"CON", "CON_"},
         {"lpt1", "lpt1_"},
         {"Console", "Console"},
+        /* A device name is one whatever follows its first dot, blanks before the dot not counting. */
+        {"CON.local", "CON_.local"},
+        {"LPT1.backup", "LPT1_.backup"},
+        {"aux .txt", "aux_ .txt"},
+        {"Console.local", "Console.local"},
+        /* Nothing the engine's path expansion reads: no '$', and no '~' to start. */
+        {"Fire $5", "Fire _5"},
+        {"$HOME", "_HOME"},
+        {"${X}", "_{X}"},
+        {"~home", "_home"},
+        {"  ~home", "_home"},
+        {"a~b", "a~b"},
         {"0123456789012345678901234567890123456789", "0123456789012345678901234567890"},
         /* 15 two-byte characters fit in 30 bytes; the 16th would make 32. */
         {"\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3"
@@ -396,6 +410,28 @@ checkCsvStem() {
         check(got.toUtf8().size() <= 31);
     }
     check(scan_list_csv_path("u-1", "Security", 1).endsWith("/scan_lists/u-1/Security.csv"));
+}
+
+// A list named with characters the engine's path expansion reads ("Fire $5") runs: its CSV, as saved, is the file the
+// engine's opener reads at that path, not "Fire " and an empty variable.
+static void
+checkCsvPathReadsAsSaved() {
+    QVariantMap entry{
+        {"kind", "freq"}, {"name", "Simplex"}, {"protocol", "p25"}, {"freqMhz", "851.5"}, {"enabled", true}};
+    ScanListsModel model;
+    check(model.add({{"name", "Fire $5"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}}));
+    const int row = model.count() - 1;
+    ScanListStarter starter(nullptr, nullptr);
+    const auto built = starter.build(model.get(row));
+    const QString path = built.value("csvPath").toString();
+    check(built.value("ok").toBool() && QFile::exists(path));
+    char opened[2048] = {};
+    const bool reads = dsd_path_resolve_user_read_file(path.toUtf8().constData(), opened, sizeof opened) == 0;
+    if (!reads || QString::fromUtf8(opened) != path) {
+        std::fprintf(stderr, "'%s' opens as '%s'\n", path.toUtf8().constData(), reads ? opened : "(nothing)");
+    }
+    check(reads && QString::fromUtf8(opened) == path);
+    check(model.remove(row));
 }
 
 // The list's folder holds its one CSV: a rename leaves no file under the old name, the file older versions wrote
@@ -585,6 +621,7 @@ main(int argc, char** argv) {
     const QString uid = list.value("uid").toString();
     check(!uid.isEmpty() && !list.value("entries").toList().first().toMap().value("uid").toString().isEmpty());
     checkCsvStem();
+    checkCsvPathReadsAsSaved();
     checkCsvFolder();
     checkImportedListsNamedApart(dir);
     model.update(0, {{"name", "Updated"}, {"uid", "replacement"}});
