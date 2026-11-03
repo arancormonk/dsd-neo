@@ -123,6 +123,12 @@
 #include "test_env.h"
 #include "test_support.h"
 
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) || defined(USE_RADIO)
+/* While nonzero, a control-channel tune to any other frequency fails (issue #697's departure rigs). The wrapped tune
+   stub and the tuning-hook rig used without wrapping both read it. */
+static long int g_cc_tune_refuse_except_hz = 0;
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
@@ -134,8 +140,6 @@ static int g_mod_state_resets = 0;
 /* The frequency the stub reports the controller applied on success; 0 applies the request (issue #670). */
 static uint32_t g_io_control_applied_freq = 0U;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-/* While nonzero, a control-channel tune to any other frequency fails (issue #697's departure rigs). */
-static long int g_cc_tune_refuse_except_hz = 0;
 static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;

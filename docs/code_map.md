@@ -3615,8 +3615,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
     so it never ends a DMR repeater call on a target that stays. The answer reads the asking decoder's own
     `trunk_scan_session`, `trunk_scan_active_list`, `trunk_scan_active_list_off` and `trunk_scan_active_avoided`,
-    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan publishes none of
-    them), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
+    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan names no list on
+    air and owes no departure), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
     that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
     that apart walks the targets; a malformed payload takes it too. A waiting toggle stays queued, so it still gets its
     one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or discarded first.
