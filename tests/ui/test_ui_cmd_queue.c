@@ -9179,7 +9179,7 @@ test_talkgroup_row_record_after_mode(void) {
 
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks, the runtime config
-   re-parse); a command that mixes both
+   re-parse, the scan avoid put back and clear); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
 static int
 test_commands_that_need_the_frame_loop(void) {
@@ -9196,6 +9196,9 @@ test_commands_that_need_the_frame_loop(void) {
     DSD_MEMSET(&lna, 0, sizeof lna);
     DSD_SNPRINTF(serial.key, sizeof serial.key, "%s", "airspy_serial");
     DSD_SNPRINTF(lna.key, sizeof lna.key, "%s", "airspy_lna_gain");
+    dsd_app_scan_avoid_remove_payload put_back;
+    DSD_MEMSET(&put_back, 0, sizeof put_back);
+    put_back.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
 
     const struct {
         const void* payload;
@@ -9231,6 +9234,9 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "NFM max gap", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0},
         {&value, sizeof value, "NFM pre-roll", DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0},
         {NULL, 0U, "runtime config re-parse", DSD_APP_CMD_RUNTIME_CONFIG_APPLY, 0},
+        {NULL, 0U, "clear avoids", DSD_APP_CMD_SCAN_AVOID_CLEAR, 0},
+        {&put_back, sizeof put_back, "put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0},
+        {NULL, 0U, "avoid", DSD_APP_CMD_SCAN_AVOID, 1},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

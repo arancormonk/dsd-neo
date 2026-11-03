@@ -10466,6 +10466,10 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
     /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
+    /* Scan avoid flag edits (issue #672): put back and clear never retune, so they wait for the carrier to end. Avoid
+       stays out: it steps the scan off the channel on air. */
+    DSD_APP_CMD_SCAN_AVOID_CLEAR,
+    DSD_APP_CMD_SCAN_AVOID_REMOVE,
 };
 
 /* The Airspy settings that are front-end tweaks; a device serial or a sample rate reopens the input. */

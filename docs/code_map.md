@@ -3469,7 +3469,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     and frequency (`dsd_app_scan_avoid_lcn_match()`, `src/app_control/scan_avoid_view_internal.h`, read as the view
     lists it) and still be avoided, then only its flag clears (`dsd_state_trunk_lcn_avoid_set()`, which stamps
     `lcn_avoid_rev`); the drain's visit tick gives the visit cap as for clear. Put back never tunes, so a paused scan,
-    a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command.
+    a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command. Put
+    back and `SCAN_AVOID_CLEAR` are flag edits on the deferred list (`k_deferred_commands`), so neither ends a DMR
+    repeater loop (`dmrBS()`) and its call; `SCAN_AVOID` is not, since it steps off the channel on air.
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
