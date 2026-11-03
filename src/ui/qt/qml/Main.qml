@@ -651,18 +651,29 @@ Window {
         }
         return lists;
     }
+    /** The lists @p uids name, by position: a list removed since keeps its
+     *  place as an empty map, so list N of a running session stays list N
+     *  (the decoder still runs it; its own name stands in). */
+    function scanListsAt(uids) {
+        return (uids || []).map(function (uid) {
+            var list = scanLists.getByUid(uid);
+            return list && list.uid ? list : {};
+        });
+    }
     /** @p uids without the ones no list has any more. */
     function existingScanListUids(uids) {
         return mainRoot.scanListsByUid(uids).map(function (list) {
             return list.uid;
         });
     }
-    // A removed list leaves the remembered scan sessions with it, so neither
-    // an auto-start nor a recreated Activity looks for it again; so does one
-    // gone before this start (a restore stopped short of forgetting them).
+    // A removed list leaves the remembered scan session with it, so the next
+    // start (an auto-start included) does not look for it; so does one gone
+    // before this start (a restore stopped short of forgetting them). The
+    // session that runs keeps its record whole while it runs: its lists are
+    // numbered by position, and a recreated Activity names them from it.
     function pruneScanCompanions() {
         var accepted = mainRoot.existingScanListUids(prefs.acceptedStartCompanions);
-        if (accepted.length !== (prefs.acceptedStartCompanions || []).length)
+        if (!decoderHost.sessionActive && accepted.length !== (prefs.acceptedStartCompanions || []).length)
             prefs.acceptedStartCompanions = accepted;
         var started = mainRoot.existingScanListUids(prefs.lastStartedCompanions);
         if (started.length !== (prefs.lastStartedCompanions || []).length)
@@ -791,7 +802,7 @@ Window {
         mainRoot.sessionStartKind = prefs.acceptedStartKind || "";
         mainRoot.sessionStartUid = prefs.acceptedStartUid || "";
         mainRoot.sessionStartCompanions = mainRoot.sessionStartKind === "scan" ? prefs.acceptedStartCompanions : [];
-        mainRoot.sessionCompanions = mainRoot.scanListsByUid(mainRoot.sessionStartCompanions);
+        mainRoot.sessionCompanions = mainRoot.scanListsAt(mainRoot.sessionStartCompanions);
         if (mainRoot.sessionStartKind === "scan") {
             mainRoot.sessionScanList = true;
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
@@ -1611,7 +1622,9 @@ Window {
         }
         scanTargetName: mainRoot.scanTargetLabel()
         // Issue #697: the list on air, by the name this session knows it by.
-        scanListName: mainRoot.sessionLists.length > 1 ? mainRoot.sessionListName(metrics.scanActiveList) : ""
+        // A list removed while this session runs keeps its place; the decoder's
+        // name for it stands in.
+        scanListName: mainRoot.sessionLists.length > 1 ? mainRoot.sessionListName(metrics.scanActiveList) || metrics.scanListModel.listName(metrics.scanActiveList) : ""
         otherListCount: mainRoot.operatorHolds ? 0 : Math.max(0, mainRoot.sessionLists.length - 1)
         sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {

@@ -94,6 +94,11 @@ ScanListToggleModel::rowOn(int i) const {
     return dsd_app_scan_list_row_on(&row, &m_view, i) != 0;
 }
 
+QString
+ScanListToggleModel::listName(int number) const {
+    return data(index(number - 1), NameRole).toString();
+}
+
 int
 ScanListToggleModel::listsOn() const {
     int on = 0;

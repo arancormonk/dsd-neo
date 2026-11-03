@@ -900,6 +900,53 @@ Item {
             }
         }
 
+        // A list removed on Home while its session runs keeps its place: the decoder still runs it as list 2, so after
+        // a recreated Activity list 3 is still Parks, the title still counts two more lists, and the list removed is
+        // named by the decoder. The next start forgets it; the running session's record does not.
+        function test_a_removed_list_keeps_its_place_in_a_running_session() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var parks = addScanList("Parks", "Ranger", "853.0125");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid, parks.uid]);
+                testContext.emitSessionInitialized();
+                testContext.setLifecyclePhase(2);
+                verify(decoderHost.sessionActive);
+                testContext.setScanLists({session: 7, seq: 3, lists: [{name: "Security", targets: 1},
+                    {name: "Hospital", targets: 1, onAir: true}, {name: "Parks", targets: 1}]});
+                var er = hospital.entries[0].uid;
+                scanMetrics(er, 2);
+                removeScanLists([hospital.uid]);
+                compare(prefs.acceptedStartCompanions.join(), [hospital.uid, parks.uid].join(),
+                        "the running session's record was cut");
+                compare(prefs.lastStartedCompanions.join(), parks.uid);
+                prefs.acceptedStartKind = "scan";
+                reattach();
+                compare(app.sessionListName(1), "Security");
+                compare(app.sessionListName(2), "");
+                compare(app.sessionListName(3), "Parks");
+                tryVerify(function () { return title() === "Security + 2 lists"; }, 5000, title());
+                var monitor = findChild(app, "monitorScreen");
+                tryCompare(monitor, "scanListName", "Hospital");
+                scanMetrics(parks.entries[0].uid, 3);
+                tryCompare(monitor, "scanListName", "Parks");
+                compare(app.scanTargetLabel(), "Ranger");
+            } finally {
+                clearScanMetrics();
+                testContext.setLifecyclePhase(0);
+                testContext.setLifecyclePhase(2);
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+                prefs.lastStartedCompanions = [];
+                removeScanLists([security.uid, parks.uid]);
+            }
+        }
+
         // A list that cannot join, or two lists sharing a target id, start nothing; the refusal names the list.
         function test_a_scan_bundle_refused_starts_nothing() {
             var security = addScanList("Security", "Gate", "851.0125");

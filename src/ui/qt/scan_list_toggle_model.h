@@ -86,6 +86,8 @@ class ScanListToggleModel : public QAbstractListModel {
      * now, the row is still waiting, or the queue refused it (the row then says so).
      */
     Q_INVOKABLE bool setEnabled(int number, bool on);
+    /** @brief The decoder's name for list @p number (its file name without folder and extension), or empty. */
+    Q_INVOKABLE QString listName(int number) const;
 
     int
     count() const {
