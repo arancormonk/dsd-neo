@@ -1265,7 +1265,7 @@ test_input_freq_label(void) {
     return rc;
 }
 
-/* Scan lists... (issue #697 D11): offered only while a running trunk scan has two or more lists, and its label counts
+/* Scan lists... (issue #697): offered only while a running trunk scan has two or more lists, and its label counts
    the lists on from the published lists. */
 static int
 test_scan_lists_row(void) {

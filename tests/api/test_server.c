@@ -502,7 +502,7 @@ test_feed(void) {
     DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
 
     /* Issue #671 (D12): status carries the scan state every frontend shows: none, a -Y list running, held, paused,
-       and a trunk scan paused, with its target count. Issue #697 (C-B4): and the hold of the scan on air, which
+       and a trunk scan paused, with its target count. Issue #697: and the hold of the scan on air, which
        scan_hold_toggle flips; the trunk scan's position and lists are empty outside a trunk scan. */
     static const struct {
         int scanner_mode;
@@ -1586,9 +1586,9 @@ set_scan_position(dsd_state* state, uint8_t active_list, uint8_t list_off, uint1
     state->trunk_scan_lists_seq++;
 }
 
-/* C-B4 and the lists: status.scan with no list published yet, one list, and three, the target on air in a list just
-   switched off (a fallback: no position, "-" in every frontend), in a list that is on, and paused. Each field comes
-   from the scan list view and the published position, as the terminal and Qt read them. */
+/* The hold, the position and the lists: status.scan with no list published yet, one list, and three, the target on air
+   in a list just switched off (a fallback: no position, "-" in every frontend), in a list that is on, and paused. Each
+   field comes from the scan list view and the published position, as the terminal and Qt read them. */
 static void
 scan_lists_status(avoid_rig* rig) {
     dsd_state* state = rig->state;

@@ -954,7 +954,7 @@ encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
 }
 
 /* The operator's hold on the row or target on air (scan_hold_toggle), and the trunk scan's position as every frontend
-   shows it (issue #697 D10): the target on air's place among the targets of the lists switched on (null while its list
+   shows it (issue #697): the target on air's place among the targets of the lists switched on (null while its list
    is off, or none is on air) and their count, avoided targets included. */
 static void
 encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, const dsd_state* state) {

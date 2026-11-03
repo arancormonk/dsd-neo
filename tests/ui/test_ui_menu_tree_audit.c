@@ -539,7 +539,7 @@ expect_avoid_row(const NcMenuItem* it, const char* id, nc_action_fn on_select, n
 
 /* Trunking > Avoids (issue #672 D1): right after Scan hold, it holds Avoid current channel (`b`, a running rotation),
    Avoided channels... and, last after a separator, Clear avoids (both whenever avoids exist). Trunking is twelve rows
-   since the rigctl rows went to Input (issue #697 D11). */
+   since the rigctl rows went to Input (issue #697). */
 static void
 audit_avoid_rows(void) {
     if (TRUNK_MENU_ITEMS_LEN != 12) {
@@ -596,7 +596,7 @@ count_rows_running(const NcMenuItem* items, size_t n, nc_action_fn on_select) {
     return count;
 }
 
-/* Issue #697 D11: the rigctl peer is a receiver, so Rigctl (`9`) and Rigctl setmod bandwidth... sit in Input right after
+/* Issue #697: the rigctl peer is a receiver, so Rigctl (`9`) and Rigctl setmod bandwidth... sit in Input right after
    the width rows it is asked for, in every build, and nowhere else; Trunking keeps no separator or rigctl row for
    them. */
 static void
@@ -625,7 +625,7 @@ audit_rigctl_rows(const NcMenuItem* root, size_t n) {
     }
 }
 
-/* Issue #697 D11: Scan lists... right after the Avoids submenu, before Trunking's first separator: the lists modal
+/* Issue #697: Scan lists... right after the Avoids submenu, before Trunking's first separator: the lists modal
    (`#`), offered only while a running trunk scan has two or more lists. */
 static void
 audit_scan_lists_row(void) {

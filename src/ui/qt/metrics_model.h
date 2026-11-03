@@ -230,7 +230,7 @@ class MetricsModel : public QObject {
     /* Issue #697: the session's trunk-scan lists (the app-control scan list view over the held snapshot). The count of
        lists, the list of the target on air (1-based, 0 for none) and whether it is switched off, and the target's
        place among the targets of the lists that are on (0 while its list is off) and how many those are: the
-       header's "n/m" with more than one list (D10). The rows to switch are the toggle model's. */
+       header's "n/m" with more than one list. The rows to switch are the toggle model's. */
     Q_PROPERTY(int scanListCount READ scanListCount NOTIFY controlChanged)
     Q_PROPERTY(int scanActiveList READ scanActiveList NOTIFY controlChanged)
     Q_PROPERTY(bool scanActiveListOff READ scanActiveListOff NOTIFY controlChanged)

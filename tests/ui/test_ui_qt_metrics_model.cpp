@@ -506,7 +506,7 @@ test_scan_list_toggle_session_change() {
 }
 
 /* The header's readings and the sheet's rows from a snapshot: the lists, the list on air, and the rotation's place
-   among the targets of the lists that are on (D10). */
+   among the targets of the lists that are on. */
 static void
 test_scan_list_readings() {
     static dsd_opts opts;

@@ -1334,7 +1334,7 @@ MetricsModel::fillControlViews(View& next, const dsd_opts* opts_snapshot, const 
  * The session's trunk-scan lists (issue #697), from the app-control scan list view over the held pair (a few loads,
  * no walk of the targets): the readings the header names the list on air with, and the rows the Scan lists sheet
  * switches, which also take the switch results published since the last refresh. The rotation's "n/m" is the
- * coordinator's (D10): the place among the targets of the lists that are on, 0 while the target on air's list is off.
+ * coordinator's: the place among the targets of the lists that are on, 0 while the target on air's list is off.
  */
 void
 MetricsModel::refreshScanLists(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {

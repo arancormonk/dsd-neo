@@ -23354,7 +23354,7 @@ expect_trunk_scan_spec(const char* what, const dsd_trunk_scan_list_spec* lists, 
 }
 
 /*
- * Issue #697 (D2): under a running coordinator, running or paused, a config's trunk-scan lists wait for the next
+ * Issue #697: under a running coordinator, running or paused, a config's trunk-scan lists wait for the next
  * start as one spec, paths and start states together, built over what already waits: a config naming lists_off alone
  * keeps the paths an earlier apply left waiting, and one naming the running spec again takes it all back. The running
  * lists never change.
@@ -25874,7 +25874,7 @@ finish_scan_list_rig(dsd_opts* opts, dsd_state* state, const scan_list_rig* rig)
 }
 
 /* Every coordinator answer through the queue, each with its toast and its result; a switch of the list on air leaves
-   it at once (D4); the refusals change nothing. */
+   it at once; the refusals change nothing. */
 static int
 test_scan_list_set_answers(void) {
     static dsd_opts opts;
@@ -25898,13 +25898,13 @@ test_scan_list_set_answers(void) {
     rc |= expect_true("unchanged keeps the lists' sequence", state.trunk_scan_lists_seq == seq_after_off);
     rc |= expect_int("list 2 off again completed", dsd_app_command_test_last_failed(), 0);
 
-    /* The list on air: the receiver leaves for the only target left on (D4). */
+    /* The list on air: the receiver leaves at once for the only target left on. */
     rc |= drain_list_set(&opts, &state, session, 1, 0, DSD_APP_SCAN_LIST_SET_OK,
                          "Scan list 1 (security) off: 1 of 3 lists on, 1 target", "list 1 off");
     rc |= expect_true("list 1 off leaves a for d", strcmp(state.trunk_scan_active_id, "d") == 0
                                                        && state.trunk_scan_active_list == 3U
                                                        && state.trunk_scan_active_list_off == 0U);
-    /* D5: the last list that is on. */
+    /* The last list that is on: refused, nothing would be left to scan. */
     rc |= drain_list_set(&opts, &state, session, 3, 0, DSD_APP_SCAN_LIST_SET_REFUSED_LAST,
                          "Nothing else to scan: switch on another list first", "list 3 off");
     rc |= expect_int("list 3 off failed", dsd_app_command_test_last_failed(), 1);
@@ -25953,7 +25953,7 @@ test_scan_list_set_answers(void) {
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
     rc |= expect_true("invalid payloads change nothing", state.trunk_scan_lists_seq == seq);
 
-    /* Paused (D7): refused with the pause's wording, the lists as they were, until a resume. */
+    /* Paused: refused with the pause's wording, the lists as they were, until a resume. */
     rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "lists: pause");
     rc |= expect_int("lists: paused", state.trunk_scan_paused, 1);
     rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_PAUSED, "Scan paused: resume it first",
@@ -26074,7 +26074,7 @@ expect_carrier_kept(const char* what, const dsd_state* state, const held_carrier
 /* A list switch that does not leave the target on air is a flag edit (#672's rule for put back and clear): a decoder
    holding a DMR repeater carrier in a loop of its own (dmrBS()) keeps the carrier and its call, the switch stays
    queued, and the drain after the carrier applies it with its one result. Switching off the list on air returns that
-   decoder to the frame loop at once (D4). A waiting switch the session discards is still answered, DROPPED. */
+   decoder to the frame loop at once. A waiting switch the session discards is still answered, DROPPED. */
 static int
 test_scan_list_set_waits_for_a_held_carrier(void) {
     static dsd_opts opts;
@@ -26384,7 +26384,7 @@ test_scan_list_set_two_requests_one_drain(void) {
 }
 
 /* Issue #697: a config apply over a running or paused scan keeps the live lists (a live toggle included), and a save
-   writes the configured start states, never a live toggle (D3). Lists the config changes wait for the next start. */
+   writes the configured start states, never a live toggle. Lists the config changes wait for the next start. */
 static int
 test_config_apply_keeps_the_live_lists(void) {
     static dsd_opts opts;

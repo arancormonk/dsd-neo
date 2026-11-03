@@ -131,7 +131,7 @@ scan_avoids_manageable(const void* ctx) {
     return summary.can_manage != 0;
 }
 
-/* Scan lists... (issue #697 D11): only while a running trunk scan has two or more lists to switch. A paused scan refuses
+/* Scan lists... (issue #697): only while a running trunk scan has two or more lists to switch. A paused scan refuses
    every switch, so the row goes with Avoid current channel; the `#` key still opens the lists then, where Enter says
    why. */
 bool

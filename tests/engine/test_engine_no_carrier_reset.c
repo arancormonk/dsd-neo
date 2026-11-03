@@ -1389,7 +1389,7 @@ test_typed_scan_async_move_is_a_carrier_boundary(void) {
     return rc;
 }
 
-/* Issue #697 (B-B3, typed lists): a channel learned over the air while a typed step's tune is pending moves the learned
+/* Issue #697 (typed lists): a channel learned over the air while a typed step's tune is pending moves the learned
    map, not the list. A late success still lands the row it tuned, the row on air is then that one, and a late failure
    still counts against its row: the cursor moves past it. */
 static int
@@ -2193,9 +2193,9 @@ test_legacy_step_landing_after_the_scan_changed_commits_nothing(void) {
     return rc;
 }
 
-/* Issue #697 (B-B3): a channel learned over the air while an untyped step's tune is pending (here a P25 grant on the
-   row left resolving one not seen before) moves the learned map, not the list. The landing still commits the row it
-   tuned: row 1's cursor, its keys and its name, not row 0's left behind for the whole visit. */
+/* Issue #697: a channel learned over the air while an untyped step's tune is pending (here a P25 grant on the row left
+   resolving one not seen before) moves the learned map, not the list. The landing still commits the row it tuned: row
+   1's cursor, its keys and its name, not row 0's left behind for the whole visit. */
 static int
 test_legacy_step_landing_after_a_learned_channel_commits_the_row(void) {
     dsd_opts* opts = NULL;

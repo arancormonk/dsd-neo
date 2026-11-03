@@ -1749,7 +1749,7 @@ test_scan_lists_argv(void) {
     }
 }
 
-/* Issue #697 D12: which list can join a session, after the app-wide defaults and path resolution, and the first
+/* Issue #697: which list can join a session, after the app-wide defaults and path resolution, and the first
    setting that keeps one out, in order. */
 static void
 test_scan_join_conflict(void) {

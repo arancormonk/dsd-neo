@@ -302,7 +302,7 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
              "and must fit the DSP bandwidth; on audio input with a rigctl peer (-U) it is the AM passband the peer is "
              "asked for.",
      .on_select = act_set_am_bw},
-    /* The rigctl peer is a receiver like the inputs above: beside the passband rows it is asked for (issue #697 D11). */
+    /* The rigctl peer is a receiver like the inputs above: beside the passband rows it is asked for (issue #697). */
     {.id = "input.rigctl",
      .label_fn = lbl_rigctl,
      .help = "Tune an external radio through a rigctl server.",
@@ -727,7 +727,7 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .help = "Avoid the channel on air, list the avoided ones, put them back.",
      .submenu = TRUNK_AVOID_ITEMS,
      .submenu_len = NC_LEN(TRUNK_AVOID_ITEMS)},
-    /* Issue #697 D11: the --trunk-scan target lists, switched on or off for the session. */
+    /* Issue #697: the --trunk-scan target lists, switched on or off for the session. */
     {.id = "trunk.scan_lists",
      .label_fn = lbl_scan_lists,
      .help = "Switch the trunk scan's target lists on or off for this session; the rotation scans the lists that are "

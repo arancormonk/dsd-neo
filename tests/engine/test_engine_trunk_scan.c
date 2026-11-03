@@ -17219,7 +17219,7 @@ expect_list_rc(const char* stage, int got, int want) {
     return 0;
 }
 
-/* The list on air (1-based, 0 none), whether its list is off, and the D10 readout: n of m over the lists on. */
+/* The list on air (1-based, 0 none), whether its list is off, and the readout: n of m over the lists on. */
 static int
 expect_list_on_air(const dsd_state* state, const char* stage, unsigned list, unsigned list_off, unsigned ordinal,
                    unsigned count) {
@@ -17539,7 +17539,7 @@ test_lists_start_on_the_first_reachable_target_and_all_on(void) {
     return test_rc;
 }
 
-/* D4: switching off the list that holds the target on air leaves it at once, as `L` does: the call in progress ends
+/* Switching off the list that holds the target on air leaves it at once, as `L` does: the call in progress ends
  * and commits under the target it was heard on, its carrier is handed back, and the operator's hold carries over to
  * the target it lands on. Two lists of one target each: switching the first off moves to the second. */
 static int
@@ -17581,10 +17581,10 @@ test_lists_switching_off_the_list_on_air_leaves_at_once(void) {
     return test_rc;
 }
 
-/* Issue #668 beside D4: switching off the list of an NFM target on air leaves it through the release `b` and `L` use
- * (trunk_scan_release_active_carrier()), whose dsd_engine_release_tuned_call_state() ends the NFM call first, so its
- * recording (pre-roll included) and its row close once, under its own name, before the next target's replace them.
- * A switch of a list not on air releases nothing. */
+/* Issue #668 beside issue #697: switching off the list of an NFM target on air leaves it through the release `b` and
+ * `L` use (trunk_scan_release_active_carrier()), whose dsd_engine_release_tuned_call_state() ends the NFM call first,
+ * so its recording (pre-roll included) and its row close once, under its own name, before the next target's replace
+ * them. A switch of a list not on air releases nothing. */
 static int
 test_lists_switching_off_an_nfm_target_ends_its_call_once(void) {
     static const char* const names[] = {"a", "b", "c"};
@@ -17630,7 +17630,7 @@ test_lists_switching_off_an_nfm_target_ends_its_call_once(void) {
     return test_rc;
 }
 
-/* D5 and D7: a toggle that would leave nothing to scan is refused -- the last list on, every list at once, a list
+/* A toggle that would leave nothing to scan is refused -- the last list on, every list at once, a list
  * whose others hold only avoided targets or targets the DSP rate cannot filter -- and so is any while the scan is
  * paused, while the tick guard is held, or that names another session or a list it does not have. None changes a
  * list. */
@@ -17925,7 +17925,7 @@ test_lists_departure_backs_off_a_failed_preparation(void) {
 }
 
 /* A departure onto b whose retune then fails asynchronously leaves b with no alternate in the rotation (a's list is
- * off), so b is retried in place after its cooldown (A-B1 for the target in the rotation). */
+ * off), so b is retried in place after its cooldown, as a target in the rotation with no alternate is. */
 static int
 test_lists_departure_with_an_async_failure_retries_the_landing(void) {
     static const char* const names[] = {"a", "b"};

@@ -2427,7 +2427,7 @@ trunk_scan_publish_avoids(dsd_state* state, dsd_trunk_scan_coord* coord) {
     state->trunk_scan_avoid_rev = dsd_state_rev_next();
 }
 
-/* The targets of the lists switched on, avoided ones included: the "n of m" readout's m (issue #697, D10). */
+/* The targets of the lists switched on, avoided ones included: the "n of m" readout's m (issue #697). */
 static size_t
 trunk_scan_enabled_count(const dsd_trunk_scan_coord* coord) {
     size_t count = 0U;
@@ -2458,7 +2458,7 @@ trunk_scan_publish_lists(dsd_state* state, const dsd_trunk_scan_coord* coord) {
     state->trunk_scan_lists_seq = coord->lists_seq;
 }
 
-/* The target on air's position among the targets of the lists switched on (D10), 0 while its own list is off. */
+/* The target on air's position among the targets of the lists switched on ("n of m"), 0 while its own list is off. */
 static size_t
 trunk_scan_rotation_ordinal(const dsd_trunk_scan_coord* coord) {
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -3339,8 +3339,8 @@ trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, 
 }
 
 /* The first list at or after @p l (0-based) that is switched on, other than @p skip (0-based, -1 for none), or
- * coord->list_count. A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a list
- * that is off in one step, however many targets it holds. */
+ * coord->list_count. A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a
+ * list that is off in one step, however many targets it holds. */
 static int
 trunk_scan_next_list_on(const dsd_trunk_scan_coord* coord, int l, int skip) {
     while (l < coord->list_count && (!coord->lists[l].enabled || l == skip)) {
@@ -3388,8 +3388,8 @@ trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
-/* The targets the rotation can reach besides @p except (coord->count for none), with list @p skip (0-based, -1 for none)
- * taken as off: in the rotation and not skipped at every visit for a width the published DSP rate cannot filter,
+/* The targets the rotation can reach besides @p except (coord->count for none), with list @p skip (0-based, -1 for
+ * none) taken as off: in the rotation and not skipped at every visit for a width the published DSP rate cannot filter,
  * cooling down or not. What avoid's and a list toggle's last-usable refusals count, so neither leaves the operator on a
  * target the scan can only pass over. */
 static size_t
@@ -3410,7 +3410,7 @@ trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_
 }
 
 /* Whether targets @p a and @p b are one channel: the same type on the same frequency, which two lists may both hold
- * (issue #697, D6). */
+ * (issue #697). */
 static int
 trunk_scan_targets_are_copies(const dsd_trunk_scan_target_runtime* a, const dsd_trunk_scan_target_runtime* b) {
     return a->target.type == b->target.type && a->target.frequency_hz == b->target.frequency_hz;
@@ -4839,7 +4839,7 @@ trunk_scan_log_list_switch(const dsd_trunk_scan_coord* coord, int list, int enab
 }
 
 /* Switch the lists (the caller holds the P25 SM tick guard). The target on air that leaves the rotation leaves it at
-   once (D4, trunk_scan_service_departure()); one that stays gets a fresh visit cap when the change gave it its first
+   once (trunk_scan_service_departure()); one that stays gets a fresh visit cap when the change gave it its first
    eligible alternate, as clearing the avoids does. */
 static void
 trunk_scan_list_switch(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int list, int enabled) {

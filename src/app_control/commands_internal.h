@@ -20,7 +20,8 @@ int dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state);
 /* 1 when a command waits to be drained (the runtime's controls-pending query; issue #634). */
 int dsd_app_commands_pending(void);
 /* Whether a queued command needs the frame loop (dsd_runtime_controls_need_frame_loop(), issue #637), judged against
-   the asking decoder's own @p state (NULL: a payload-judged command takes the frame loop). Decoder thread. */
+   the asking decoder's own @p state (NULL: a list switch takes the frame loop, a put back or a clear waits). Decoder
+   thread. */
 int dsd_app_commands_need_frame_loop(const dsd_state* state);
 /* The stream notice sink app-control installs (dsd_runtime_stream_notice_set()): any thread posts, the next drain
    shows it as a toast. Cleared at the end of a session, so a notice is never the next session's. */

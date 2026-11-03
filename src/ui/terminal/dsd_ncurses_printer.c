@@ -1208,7 +1208,7 @@ ui_row_lcn_avoids_field(ui_row* row, const dsd_opts* opts, const dsd_state* stat
     }
 }
 
-/* The position on the Trunk Scan row (issue #697 D10): the target on air's place among the targets of the lists switched
+/* The position on the Trunk Scan row (issue #697): the target on air's place among the targets of the lists switched
    on, "-" in the ordinal's room while its own list is off (the receiver leaves it as soon as another target can take
    it), and the room alone before a position is published. Half a position is no position: no rotation length, no
    room either. */
@@ -1422,7 +1422,7 @@ ui_render_paused_scan_row(const dsd_app_scan_state_view* view, const dsd_opts* o
     ui_io_row_begin(&row);
     if (view->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK) {
         ui_row_field(&row, "| Trunk Scan: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
-        /* With two or more lists, how many the resume will scan; switching one waits for the resume (issue #697 D7). */
+        /* With two or more lists, how many the resume will scan; switching one waits for the resume (issue #697). */
         dsd_app_scan_list_view lists;
         if (dsd_app_scan_list_view_get(opts, state, &lists) == 0 && lists.list_count >= 2U) {
             ui_row_field(&row, " Lists: %u/%u on", (unsigned)lists.lists_on, (unsigned)lists.list_count);

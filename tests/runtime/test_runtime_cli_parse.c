@@ -9167,7 +9167,7 @@ inherit_every_list_off(dsd_opts* opts) {
     opts->trunk_scan_list_count = 1;
 }
 
-/* Issue #697 (A-B5): every --trunk-scan and --trunk-scan-off adds a list, in command-line order; a second
+/* Issue #697: every --trunk-scan and --trunk-scan-off adds a list, in command-line order; a second
    --trunk-scan used to replace the first. The command line's lists replace the config's as a whole. */
 static int
 test_trunk_scan_lists_accumulate_in_order(void) {

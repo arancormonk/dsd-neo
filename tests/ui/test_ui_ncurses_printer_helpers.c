@@ -2348,7 +2348,7 @@ test_trunk_scan_status_row_rendering(void) {
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
     state.trunk_scan_rotation_ordinal = 3;
     state.trunk_scan_rotation_count = 6;
-    /* Issue #697 D10: the position is among the targets of the lists switched on, not the target's place among every
+    /* Issue #697: the position is among the targets of the lists switched on, not the target's place among every
        loaded one (the identity ordinal), which the row no longer reads. */
     state.trunk_scan_active_ordinal = 8;
     state.trunk_scan_target_count = 11;

@@ -2131,7 +2131,7 @@ test_nfm_row_warnings_follow_the_dsp_rate(void) {
     tunes = reset_count = 0;
 }
 
-/* Issue #697 (B-B4): the rows are checked once per list. A channel a site announces over the air
+/* Issue #697: the rows are checked once per list. A channel a site announces over the air
  * (dsd_state_set_trunk_chan_freq(), which the protocols' channel learning runs) moves the learned map, not the list, so
  * it names no row again and reposts no "Skipped at every visit" toast; a replaced list
  * (dsd_state_trunk_lcn_replace_begin(), which every list replacement runs) is checked afresh. */
@@ -3349,7 +3349,7 @@ test_typed_previous_refusal_keeps_the_cursor(void) {
     typed_walk_fixture_free(opts, state);
 }
 
-/* Issue #697 (B-B3, typed lists): a channel a site announces while a row's tune is pending
+/* Issue #697 (typed lists): a channel a site announces while a row's tune is pending
    (dsd_state_set_trunk_chan_freq(), which the protocols' channel learning runs) moves the learned map, not the list, so
    the row is still the scan's: a late success lands it, and a late refusal is still that row's, the one the next
    Previous retries. */

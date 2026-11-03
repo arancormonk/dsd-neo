@@ -88,7 +88,7 @@ constexpr int SessionArgsScanDwellDefaultMs = 3000;
 constexpr int SessionArgsScanHoldDefaultMs = 1200;
 
 /**
- * @brief Why scan list @p other cannot join a session started from @p primary, or empty when it can (issue #697 D12).
+ * @brief Why scan list @p other cannot join a session started from @p primary, or empty when it can (issue #697).
  *
  * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its
  * argv has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side

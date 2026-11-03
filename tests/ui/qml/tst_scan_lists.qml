@@ -11,7 +11,7 @@ import "../../../src/ui/qt/qml" as Ui
 // start), the session's Scan lists sheet over the real toggle model (a switch
 // waits for its answer, a refusal goes back and says why until the lists
 // move, paused rows say how to get back), and a scan-list card's entry count
-// in the singular and plural (C-B3).
+// in the singular and plural.
 Item {
     id: root
     width: 411
@@ -60,7 +60,7 @@ Item {
                 scanLists.remove(0);
         }
 
-        // ---- C-B3 ----
+        // ---- Entry count ----
 
         function test_card_count_data() {
             return [{tag: "none", n: 0, text: "0 entries"}, {tag: "one", n: 1, text: "1 entry"},

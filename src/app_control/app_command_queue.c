@@ -10670,7 +10670,7 @@ scan_departure_owed(const dsd_state* state, uint32_t session) {
 }
 
 /* A trunk-scan list switch (issue #697) moves the receiver when it switches off the list that holds the target on air,
-   which leaves that target at once (D4), as avoid does, or when that target owes a departure (above). Any other
+   which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
    switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
    and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
    walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
