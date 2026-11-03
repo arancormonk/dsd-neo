@@ -25,6 +25,18 @@ rules supplied by the driver package. On Windows the device must be accessible
 through WinUSB. Android obtains USB permission through its normal system dialog;
 the application's native code uses the descriptor owned by the USB manager.
 
+The release packages (the Windows ZIP, the Linux AppImage, the macOS DMG and the
+Android app) build libairspy from the pinned source with one dsd-neo patch:
+stopping, closing or restarting a stream waits until the USB stack has handed
+back every transfer before the library frees or reuses it. Upstream libairspy
+can free a transfer that is still in flight, which can crash the decoder or stop
+the stream from coming back after a retune or a settings change. A build from
+source against a distribution's or Homebrew's libairspy uses that library as it
+is packaged, without the patch. To use the patched library there, build it from
+the pinned source with `tools/usb_dependency_patches.sh fetch libairspy <dir>`
+and point CMake at its install prefix. The same applies to librtlsdr; see
+[Dependencies](dependencies.md).
+
 ## Select and tune
 
 ```sh

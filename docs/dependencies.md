@@ -28,6 +28,15 @@ Optional compiled dependencies are:
   librtlsdr 2.0.3 or newer (older releases misdetect their R828D/R828S tuners
   as an R820T); the versions this project pins for CI, Windows and Android
   builds are 2.0.3
+- The release packages (Windows, AppImage, macOS and Android) build librtlsdr
+  and libairspy from their pinned sources with dsd-neo's USB transfer patches
+  from `android/third_party/patches/`: librtlsdr's `0002` and `0003` (its
+  `0001` is Android-only) and libairspy's `0001`. Without them a stop, a
+  retune or a lost transfer can free a USB transfer that is still in flight, or
+  leave the RTL-SDR reader waiting forever. Builds against a distribution's or
+  Homebrew's librtlsdr and libairspy use those libraries as packaged.
+  `tools/usb_dependency_patches.sh fetch <libairspy|librtlsdr> <dir>` checks out
+  a pinned source with the patches applied, for a build of your own
 - libusb-1.0 (headers, library and `libusb_reset_device`) for RTL-SDR stall
   recovery: a dongle that stops delivering samples is reset and reopened in
   place (see `docs/cli.md`, "Stall recovery"). Without it the build still works

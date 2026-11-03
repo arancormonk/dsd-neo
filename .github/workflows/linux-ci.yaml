@@ -177,12 +177,22 @@ jobs:
             echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
+      # The DESKTOP_* transfer tests build these, the sources the AppImage ships;
+      # the `both` legs (x86_64 and arm64) run them.
+      - name: Fetch the patched libairspy and librtlsdr sources
+        if: env.CI_RUN_CHECK == 'true' && matrix.variant == 'both'
+        run: tools/usb_dependency_patches.sh fetch-all "$RUNNER_TEMP/desktop-usb"
+
       - name: Configure (${{ matrix.variant }})
         if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-${{ matrix.variant }}.log"
-          cmake --preset dev-debug ${{ matrix.cmake_flags }} 2>&1 | tee "$log"
+          desktop_usb=()
+          if [ -d "$RUNNER_TEMP/desktop-usb" ]; then
+            desktop_usb=("-DDSD_TEST_DESKTOP_USB_SOURCES=$RUNNER_TEMP/desktop-usb")
+          fi
+          cmake --preset dev-debug ${{ matrix.cmake_flags }} "${desktop_usb[@]}" 2>&1 | tee "$log"
           grep -F "RTL-SDR backend enabled: ${{ matrix.rtl_enabled }} (available: ${{ matrix.rtl_available }})" "$log"
           grep -F "Airspy backend enabled: ${{ matrix.airspy_enabled }} (available: ${{ matrix.airspy_available }})" "$log"
           grep -F "SoapySDR backend enabled: ${{ matrix.soapy_enabled }} (available: ${{ matrix.soapy_available }})" "$log"

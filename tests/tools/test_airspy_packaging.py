@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Hardware-free regressions for Airspy dependency and packaging contracts."""
+"""Hardware-free regressions for Airspy dependency and packaging contracts, and for the libairspy and librtlsdr
+patches the desktop releases share with the Android app's vendored copies."""
 
 import hashlib
 import json
@@ -8,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -33,6 +35,8 @@ UPSTREAM_HASHES = {
 # SHA256 of upstream libairspy/LICENSE.md, which the vendored LICENSE ends with verbatim.
 UPSTREAM_LICENSE_MD = "dc49b4210fb03af14b881f8f6fdea053446c28181854ed3712e2e5e73fb0f10c"
 COPYRIGHT_HOLDERS = ("Michael Ossmann", "Jared Boone", "Youssef Touil", "Benjamin Vernoux", "Ian Gilmour")
+PATCHES = ROOT / "android/third_party/patches"
+USB_PATCHES = ROOT / "tools/usb_dependency_patches.sh"
 
 
 def run(args, **kwargs):
@@ -66,6 +70,137 @@ class AirspyPackaging(unittest.TestCase):
                 # hunk leaves a .orig backup, which the file list check below rejects as well.
                 self.assert_success(run([patch, "-R", "-p1", "-F0", "-i", str(path)], cwd=upstream))
         return source, series
+
+    def git_tree(self, path):
+        """Makes @p path the top of a Git work tree, as tools/fetch-pinned-git.sh leaves a checkout."""
+        self.assert_success(run(["git", "init", "-q", str(path)]))
+
+    def upstream_librtlsdr_from_vendored(self):
+        """Rebuild upstream librtlsdr's reader and header by reverting the Android series from the vendored tree."""
+        vendor = ROOT / "android/third_party/librtlsdr"
+        upstream = self.work / "rtl-sdr"
+        for name in ("src/librtlsdr.c", "include/rtl-sdr.h"):
+            (upstream / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(vendor / name, upstream / name)
+        for path in reversed(sorted(PATCHES.glob("*-librtlsdr-*.patch"))):
+            self.assert_success(run(["patch", "-R", "-p1", "-F0", "-s", "-i", str(path)], cwd=upstream))
+        return upstream
+
+    def test_t15_desktop_series_matches_the_vendored_change(self):
+        # The desktop libairspy is the vendored one: the same patch on the same upstream snapshot.
+        airspy_src, _ = self.upstream_from_vendored()
+        airspy = airspy_src.parents[1]
+        self.git_tree(airspy)
+        self.assert_success(run([str(USB_PATCHES), "apply", "libairspy", str(airspy)]))
+        self.assertEqual((airspy_src / "airspy.c").read_bytes(),
+                         (ROOT / "android/third_party/libairspy/airspy.c").read_bytes())
+
+        # The desktop librtlsdr is the vendored one without 0001's Android-only open path.
+        rtlsdr = self.upstream_librtlsdr_from_vendored()
+        self.git_tree(rtlsdr)
+        self.assert_success(run([str(USB_PATCHES), "apply", "librtlsdr", str(rtlsdr)]))
+        expected = self.work / "expected"
+        for name in ("src/librtlsdr.c", "include/rtl-sdr.h"):
+            (expected / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "android/third_party/librtlsdr" / name, expected / name)
+        self.assert_success(run(["patch", "-R", "-p1", "-F0", "-s", "-i",
+                                 str(PATCHES / "0001-librtlsdr-add-rtlsdr_open_fd.patch")], cwd=expected))
+        self.assertEqual((rtlsdr / "src/librtlsdr.c").read_bytes(), (expected / "src/librtlsdr.c").read_bytes())
+
+        series = run([str(USB_PATCHES), "series", "librtlsdr"])
+        self.assert_success(series)
+        self.assertEqual(series.stdout.split(), ["0002-librtlsdr-check-async-buffer-allocation.patch",
+                                                 "0003-librtlsdr-account-for-every-transfer.patch"])
+        digest = run([str(USB_PATCHES), "digest", "librtlsdr"])
+        self.assert_success(digest)
+        joined = b"".join((PATCHES / name).read_bytes() for name in series.stdout.split())
+        self.assertEqual(digest.stdout.strip(), hashlib.sha256(joined).hexdigest())
+
+    def test_t15_patches_are_portable_and_keep_their_notices(self):
+        for name in ("0001-libairspy-wait-for-cancelled-transfers.patch",
+                     "0003-librtlsdr-account-for-every-transfer.patch"):
+            with self.subTest(patch=name):
+                added = "\n".join(line for line in (PATCHES / name).read_text().splitlines()
+                                  if line.startswith("+"))
+                # MSVC's C compiler has neither the GCC builtins nor C11 atomics by default.
+                self.assertNotIn("__atomic", added)
+                self.assertNotIn("_Atomic", added)
+                self.assertIn("#if defined(_MSC_VER)", added)
+                self.assertIn("Interlocked", added)
+                self.assertIn("#include <stdatomic.h>", added)
+        # Only additions: the upstream licence headers stay as they are.
+        for name, notice in (("0001-libairspy-wait-for-cancelled-transfers.patch", "All rights reserved."),
+                             ("0003-librtlsdr-account-for-every-transfer.patch", "GNU General Public License")):
+            removed = [line for line in (PATCHES / name).read_text().splitlines()
+                       if line.startswith("-") and not line.startswith("---")]
+            self.assertFalse(any(notice in line for line in removed), name)
+        self.assertIn("android/third_party/patches/*.patch text eol=lf",
+                      (ROOT / ".gitattributes").read_text().splitlines())
+
+    @unittest.skipUnless(shutil.which("cc") and shutil.which("nm") and sys.platform.startswith("linux"),
+                         "a Linux C compiler and nm are required")
+    def test_t15_patched_library_probe(self):
+        libusb = ROOT / "android/third_party/libusb/libusb"
+        probe = ROOT / "tools/check_patched_usb_libs.sh"
+
+        def shared(name, sources, includes):
+            out = self.work / name
+            args = ["cc", "-std=gnu17", "-shared", "-fPIC", "-O2", "-w", "-o", str(out)]
+            args += [f"-I{path}" for path in includes] + [str(path) for path in sources] + ["-lpthread"]
+            self.assert_success(run(args))
+            return out
+
+        airspy_vendor = ROOT / "android/third_party/libairspy"
+        airspy_upstream, _ = self.upstream_from_vendored()
+        rtlsdr_vendor = ROOT / "android/third_party/librtlsdr"
+        rtlsdr_upstream = self.upstream_librtlsdr_from_vendored()
+        tuners = sorted((rtlsdr_vendor / "src").glob("tuner_*.c"))
+        converters = [airspy_vendor / "iqconverter_float.c", airspy_vendor / "iqconverter_int16.c"]
+        patched = (shared("libairspy-patched.so", [airspy_vendor / "airspy.c"] + converters, [airspy_vendor, libusb]),
+                   shared("librtlsdr-patched.so", [rtlsdr_vendor / "src/librtlsdr.c"] + tuners,
+                          [rtlsdr_vendor / "include", libusb]))
+        upstream = (shared("libairspy-upstream.so", [airspy_upstream / "airspy.c"] + converters,
+                           [airspy_vendor, libusb]),
+                    shared("librtlsdr-upstream.so", [rtlsdr_upstream / "src/librtlsdr.c"] + tuners,
+                           [rtlsdr_vendor / "include", libusb]))
+        self.assert_success(run([str(probe), "--airspy", str(patched[0]), "--rtlsdr", str(patched[1])]))
+        for which, (airspy, rtlsdr) in (("airspy", (upstream[0], patched[1])), ("rtlsdr", (patched[0], upstream[1]))):
+            with self.subTest(unpatched=which):
+                result = run([str(probe), "--airspy", str(airspy), "--rtlsdr", str(rtlsdr)])
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("ERROR", result.stdout)
+
+    def test_t15_release_builds_apply_and_check_the_patches(self):
+        appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text()
+        for repo, series in (("airspy/airspyone_host", "libairspy"), ("arancormonk/rtl-sdr", "librtlsdr")):
+            with self.subTest(appimage=series):
+                line = next(line for line in appimage.splitlines()
+                            if line.strip().startswith(f"build_dep https://github.com/{repo} "))
+                self.assertTrue(line.rstrip().endswith(" " + series), line)
+                key = series.removeprefix("lib")
+                self.assertIn(f'grep -Fxq "{key}_patches=${{{{ steps.dep-shas.outputs.{key}_patches }}}}"', appimage)
+                self.assertIn(f'echo "{key}_patches=$(/work/tools/usb_dependency_patches.sh digest {series})"',
+                              appimage)
+        self.assertIn("/work/tools/usb_dependency_patches.sh apply \"$patches\"", appimage)
+        self.assertIn("usb_patches_key }}", appimage)
+        self.assertEqual(appimage.count("/work/tools/check_patched_usb_libs.sh"), 2)
+
+        for workflow in ("macos-ci.yaml", "macos-pr.yaml"):
+            with self.subTest(workflow=workflow):
+                text = (ROOT / ".github/workflows" / workflow).read_text()
+                if workflow == "macos-ci.yaml":
+                    text = text[text.index("  package-portable-dmg:"):text.index("  publish-portable-dmg:")]
+                installs = [line for line in text.splitlines() if "brew install" in line or "soapysdr" in line]
+                self.assertTrue(installs)
+                for line in installs:
+                    self.assertNotIn("airspy", line)
+                    self.assertNotIn("rtl-sdr", line)
+                self.assertIn('tools/usb_dependency_patches.sh fetch "$lib"', text)
+                self.assertIn("build_patched libairspy libairspy airspy", text)
+                self.assertIn("build_patched librtlsdr librtlsdr rtlsdr", text)
+                self.assertIn("steps.dep-shas.outputs.airspy_patches }}", text)
+                self.assertIn("steps.dep-shas.outputs.rtlsdr_patches }}", text)
+                self.assertIn("tools/check_patched_usb_libs.sh", text)
 
     def test_b1_upstream_snapshot_and_notices(self):
         vendor = ROOT / "android/third_party/libairspy"
@@ -113,6 +248,9 @@ class AirspyPackaging(unittest.TestCase):
         build_dep = next(line for line in appimage.splitlines()
                          if "build_dep https://github.com/airspy/airspyone_host " in line)
         self.assertIn("-DCMAKE_POLICY_VERSION_MINIMUM=3.5", build_dep)
+        macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
+        self.assertIn('cp -f android/third_party/libairspy/LICENSE "$DOCDIR/licenses/' + NOTICE + '"', macos)
+        self.assertIn(" licenses/" + NOTICE + " ", macos)
         windows = (ROOT / ".github/workflows/windows-ci.yaml").read_text()
         self.assertIn("'licenses/" + NOTICE + "'", windows)
         self.assertIn("Copy-Item -Force 'android/third_party/libairspy/LICENSE' "
@@ -174,11 +312,13 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertNotIn("airspy-dev", packages)
 
     def test_m8_overlay_drift_is_rejected_and_repaired(self):
-        for name in ("tools/ci-dependency-pins.env", "tools/check_vcpkg_overlay_pins.sh"):
+        for name in ("tools/ci-dependency-pins.env", "tools/check_vcpkg_overlay_pins.sh",
+                     "tools/usb_dependency_patches.sh"):
             dest = self.work / name
             dest.parent.mkdir(exist_ok=True)
-            shutil.copyfile(ROOT / name, dest)
+            shutil.copy2(ROOT / name, dest)
         shutil.copytree(ROOT / "vcpkg-ports", self.work / "vcpkg-ports")
+        shutil.copytree(PATCHES, self.work / "android/third_party/patches")
         command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
         self.assert_success(run(command, cwd=self.work))
         port = self.work / "vcpkg-ports/airspy/portfile.cmake"
@@ -192,6 +332,30 @@ class AirspyPackaging(unittest.TestCase):
                 self.assert_success(run(command + ["--fix"], cwd=self.work))
                 self.assertEqual(port.read_text(), original)
                 self.assert_success(run(command, cwd=self.work))
+        # A changed patch: its port's recorded digest is stale until --fix records the new one.
+        for port_name, patch_name in (("airspy", "0001-libairspy-wait-for-cancelled-transfers.patch"),
+                                      ("rtlsdr", "0003-librtlsdr-account-for-every-transfer.patch")):
+            with self.subTest(patch=patch_name):
+                patch = self.work / "android/third_party/patches" / patch_name
+                patch_text = patch.read_text()
+                portfile = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
+                port_text = portfile.read_text()
+                patch.write_text(patch_text + "\n")
+                rejected = run(command, cwd=self.work)
+                self.assertEqual(rejected.returncode, 1, rejected.stdout)
+                self.assertIn(f"{port_name}/portfile.cmake: DSD_NEO_PATCH_SERIES_SHA256", rejected.stdout)
+                self.assert_success(run(command + ["--fix"], cwd=self.work))
+                self.assertNotEqual(portfile.read_text(), port_text)
+                self.assert_success(run(command, cwd=self.work))
+                patch.write_text(patch_text)
+                portfile.write_text(port_text)
+        # A port that stops applying the series is a hard failure that --fix leaves alone.
+        portfile = self.work / "vcpkg-ports/airspy/portfile.cmake"
+        portfile.write_text(portfile.read_text().replace("set(DSD_NEO_PATCH_SERIES 0001-", "set(DSD_NEO_PATCH_SERIES 0009-"))
+        for args in ([], ["--fix"]):
+            rejected = run(command + args, cwd=self.work)
+            self.assertEqual(rejected.returncode, 1, rejected.stdout)
+            self.assertIn("does not list tools/usb_dependency_patches.sh series libairspy", rejected.stdout)
 
     def test_m9_aur_declares_and_requires_airspy(self):
         workflow = (ROOT / ".github/workflows/linux-ci.yaml").read_text()

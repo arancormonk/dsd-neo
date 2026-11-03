@@ -6,6 +6,39 @@
 # rebased onto that snapshot (the builtin ones no longer apply cleanly).
 # Drop this overlay once the builtin port ships >= 2.0.3.
 # See docs/supply-chain-guardrails.md for the refresh process.
+
+# dsd-neo's librtlsdr patches, the files the Android app's vendored copy
+# carries (tools/usb_dependency_patches.sh), applied after vcpkg's own. vcpkg
+# keys its binary cache on this port's own files, so the series digest is
+# recorded here and checked before the patches apply: a changed patch fails this
+# build until tools/check_vcpkg_overlay_pins.sh --fix records its digest, and
+# with it the new cache key.
+set(DSD_NEO_PATCH_SERIES
+    0002-librtlsdr-check-async-buffer-allocation.patch
+    0003-librtlsdr-account-for-every-transfer.patch
+)
+set(DSD_NEO_PATCH_SERIES_SHA256
+    421834f26123a101d5722461b1ea482bf5ef4ae316b75c8cbea1139a02df5d3d
+)
+set(dsd_neo_patches "")
+set(dsd_neo_series_text "")
+foreach(name IN LISTS DSD_NEO_PATCH_SERIES)
+    set(path
+        "${CMAKE_CURRENT_LIST_DIR}/../../android/third_party/patches/${name}"
+    )
+    file(READ "${path}" text)
+    string(APPEND dsd_neo_series_text "${text}")
+    list(APPEND dsd_neo_patches "${path}")
+endforeach()
+string(SHA256 dsd_neo_series_sha256 "${dsd_neo_series_text}")
+if(NOT dsd_neo_series_sha256 STREQUAL DSD_NEO_PATCH_SERIES_SHA256)
+    message(
+        FATAL_ERROR
+        "The librtlsdr patch series changed (SHA256 ${dsd_neo_series_sha256}); "
+        "run tools/check_vcpkg_overlay_pins.sh --fix"
+    )
+endif()
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/rtl-sdr
@@ -15,6 +48,7 @@ vcpkg_from_github(
         dependencies.diff
         library-linkage.diff
         tools.diff
+        ${dsd_neo_patches}
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS options

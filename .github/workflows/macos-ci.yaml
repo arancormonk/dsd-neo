@@ -252,12 +252,18 @@ jobs:
           pkg-config --modversion libpulse || true
           pkg-config --modversion sndfile || true
 
+      # The DESKTOP_* transfer tests build these, the sources the DMG ships.
+      - name: Fetch the patched libairspy and librtlsdr sources
+        shell: bash
+        run: tools/usb_dependency_patches.sh fetch-all "$RUNNER_TEMP/desktop-usb"
+
       - name: Configure (dev-debug)
         shell: bash
         run: |
           cmake --preset dev-debug -G Ninja \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
+            -DDSD_TEST_DESKTOP_USB_SOURCES="$RUNNER_TEMP/desktop-usb"
 
       # -k 0 keeps going past a failed target, so one run reports every compile
       # error on a platform that is not reproduced locally.
@@ -344,6 +350,10 @@ jobs:
             echo "mbe_sha=$MBELIB_NEO_SHA"
             echo "codec2_sha=$CODEC2_SHA"
             echo "rtlsdr_sha=$RTL_SDR_SHA"
+            echo "airspy_sha=$AIRSPY_SHA"
+            # dsd-neo's libairspy and librtlsdr patches (tools/usb_dependency_patches.sh).
+            echo "airspy_patches=$(tools/usb_dependency_patches.sh digest libairspy)"
+            echo "rtlsdr_patches=$(tools/usb_dependency_patches.sh digest librtlsdr)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Prepare dependency environment
@@ -360,13 +370,15 @@ jobs:
             echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${DYLD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
+      # Its own key family: this tree holds the patched libairspy and librtlsdr,
+      # which the test job's cache does not.
       - name: Restore dependency cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-dmg-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.airspy_sha }}-${{ steps.dep-shas.outputs.rtlsdr_patches }}-${{ steps.dep-shas.outputs.airspy_patches }}
           restore-keys: |
-            deps-${{ runner.os }}-
+            deps-dmg-${{ runner.os }}-
 
       - name: Validate dependency cache
         shell: bash
@@ -377,7 +389,10 @@ jobs:
             if [ -f "$mf" ] &&
                grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
                grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
-               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf"; then
+               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf" &&
+               grep -Fxq "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}" "$mf" &&
+               grep -Fxq "rtlsdr_patches=${{ steps.dep-shas.outputs.rtlsdr_patches }}" "$mf" &&
+               grep -Fxq "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}" "$mf"; then
               echo "Dependency cache manifest matches requested SHAs"
             else
               echo "Dependency cache manifest is missing or stale; clearing $DEPS_PREFIX"
@@ -390,11 +405,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Many deps we build from source (cached) to align with Linux/Windows flows
+          # Many deps we build from source (cached) to align with Linux/Windows flows.
+          # libairspy and librtlsdr are built below with dsd-neo's transfer patches,
+          # so their bottles are not installed: only the patched builds can be found.
           brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb ncurses soapysdr airspy
+            libsndfile pulseaudio fftw libusb ncurses soapysdr
           # Prefer Homebrew packages when available
-          brew install codec2 rtl-sdr || true
+          brew install codec2 || true
           brew --version
           cmake --version
           pkg-config --version
@@ -481,33 +498,38 @@ jobs:
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
 
-      - name: Ensure RTL-SDR (cached fallback if not found)
+      # The pinned sources with dsd-neo's transfer patches (tools/usb_dependency_patches.sh),
+      # never a system copy: these are the libraries the DMG bundles.
+      - name: Build patched librtlsdr and libairspy (cached)
         shell: bash
+        env:
+          RTLSDR_SHA: ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          RTLSDR_PATCHES: ${{ steps.dep-shas.outputs.rtlsdr_patches }}
+          AIRSPY_SHA: ${{ steps.dep-shas.outputs.airspy_sha }}
+          AIRSPY_PATCHES: ${{ steps.dep-shas.outputs.airspy_patches }}
         run: |
           set -euxo pipefail
           mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.rtlsdr_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^rtlsdr_sha=$want_sha$" "$mf"; then
-              echo "Using cached rtl-sdr in $DEPS_PREFIX"
-              exit 0
+          build_patched() {
+            local lib="$1" pc="$2" mf_prefix="$3" sha="$4" patches="$5"
+            shift 5
+            if { [ -f "$DEPS_PREFIX/lib/pkgconfig/$pc.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/$pc.pc" ]; } &&
+               [ -f "$mf" ] && grep -Fxq "${mf_prefix}_sha=$sha" "$mf" &&
+               grep -Fxq "${mf_prefix}_patches=$patches" "$mf"; then
+              echo "Using cached patched $lib in $DEPS_PREFIX"
+              return
             fi
-            echo "Cached rtl-sdr does not match desired SHA; rebuilding"
-          else
-            if pkg-config --exists librtlsdr; then
-              echo "Using system rtl-sdr"
-              exit 0
-            fi
-          fi
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/rtl-sdr "$want_sha" /tmp/rtl-sdr
-          cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON \
-            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-          cmake --build /tmp/rtl-sdr/build -j
-          cmake --install /tmp/rtl-sdr/build
+            tools/usb_dependency_patches.sh fetch "$lib" "/tmp/$lib"
+            cmake -S "/tmp/$lib" -B "/tmp/$lib/build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 "$@"
+            cmake --build "/tmp/$lib/build" -j
+            cmake --install "/tmp/$lib/build"
+          }
+          build_patched librtlsdr librtlsdr rtlsdr "$RTLSDR_SHA" "$RTLSDR_PATCHES" -DDETACH_KERNEL_DRIVER=ON
+          build_patched libairspy libairspy airspy "$AIRSPY_SHA" "$AIRSPY_PATCHES" \
+            -DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Update deps manifest
         shell: bash
@@ -519,6 +541,9 @@ jobs:
             echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
             echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
             echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
+            echo "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}"
+            echo "rtlsdr_patches=${{ steps.dep-shas.outputs.rtlsdr_patches }}"
+            echo "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}"
             echo "updated=$(date -u +%FT%TZ)"
           } > "$mf"
 
@@ -541,6 +566,21 @@ jobs:
             -DDSD_ENABLE_LTO=OFF -DDSD_ENABLE_NATIVE=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
             -DBUILD_TESTING=OFF
+
+      - name: Verify dsd-neo links the patched libairspy and librtlsdr
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache=build/dev-release/CMakeCache.txt
+          airspy=$(sed -n 's/^AIRSPY_LIBRARY:FILEPATH=//p' "$cache")
+          rtlsdr=$(sed -n 's/^RTLSDR_LIBRARY:FILEPATH=//p' "$cache")
+          for lib in "$airspy" "$rtlsdr"; do
+            case "$lib" in
+              "$DEPS_PREFIX"/*) ;;
+              *) echo "ERROR: dsd-neo links '$lib', not a patched build in $DEPS_PREFIX" >&2; exit 1 ;;
+            esac
+          done
+          tools/check_patched_usb_libs.sh --airspy "$airspy" --rtlsdr "$rtlsdr"
 
       - name: Verify curses selection
         shell: bash
@@ -616,7 +656,9 @@ jobs:
           cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
           cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
           cp -f build/dev-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt "$DOCDIR/licenses/"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
+          # The bundled libairspy is built here from the pinned source; BSD-3 and MIT ask for its notice.
+          cp -f android/third_party/libairspy/LICENSE "$DOCDIR/licenses/libairspy-LICENSE.txt"
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
             if [ ! -f "$DOCDIR/$f" ]; then
               echo "ERROR: missing required license file $f in $DOCDIR" >&2
               exit 1
@@ -789,6 +831,23 @@ jobs:
 
           # Emit manifest for auditing
           find "$STAGE/lib" -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort -f > "$STAGE/dylibs-manifest.txt"
+
+      - name: Verify the bundled libairspy and librtlsdr are the patched builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          staged() {
+            local found
+            found=$(find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name "$1*.dylib" -print -quit)
+            if [ -z "$found" ]; then
+              echo "ERROR: the portable tree bundles no $1" >&2
+              return 1
+            fi
+            echo "$found"
+          }
+          airspy=$(staged libairspy)
+          rtlsdr=$(staged librtlsdr)
+          tools/check_patched_usb_libs.sh --airspy "$airspy" --rtlsdr "$rtlsdr"
 
       - name: Sign staged Mach-O files
         shell: bash

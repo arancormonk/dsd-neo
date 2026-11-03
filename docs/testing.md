@@ -3439,6 +3439,14 @@ script tests only where bash is (not Windows), so the macOS and Windows suites
 are smaller than the Linux one; each job prints its registered test count before
 running.
 
+The libairspy and librtlsdr transfer tests (`VENDORED_LIBAIRSPY_TRANSFERS`,
+`VENDORED_LIBRTLSDR_TRANSFERS`, `VENDORED_LIBRTLSDR_ASYNC_ALLOC`) build the
+Android app's patched copies on all three. The `backend-matrix (both, …)` legs
+and the macOS job also build their `DESKTOP_*` twins against the pinned upstream
+sources with the patches the AppImage and the DMG ship: they run
+`tools/usb_dependency_patches.sh fetch-all <dir>` and configure with
+`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally.
+
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,
 `TOOLS_IWYU` needs git and Python, and the `ANDROID_*_JVM` tests need Java and

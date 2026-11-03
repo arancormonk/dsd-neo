@@ -143,6 +143,12 @@ jobs:
           esac
           image_pin="${image_ref##*@}"
           image_pin="${image_pin#sha256:}"
+          # dsd-neo's libairspy and librtlsdr patches (tools/usb_dependency_patches.sh).
+          # The cache key takes one digest of both, since GitHub caps a key at 512
+          # characters; the validation step compares each in full.
+          airspy_patches=$(tools/usb_dependency_patches.sh digest libairspy)
+          rtlsdr_patches=$(tools/usb_dependency_patches.sh digest librtlsdr)
+          usb_patches_key=$(printf '%s %s\n' "$airspy_patches" "$rtlsdr_patches" | sha256sum | cut -d' ' -f1)
           {
             echo "mbe_sha=$MBELIB_NEO_SHA"
             echo "codec2_sha=$CODEC2_SHA"
@@ -155,6 +161,9 @@ jobs:
             echo "image_ref=$image_ref"
             echo "image_pin=$image_pin"
             echo "cmake_sha=$cmake_sha"
+            echo "airspy_patches=$airspy_patches"
+            echo "rtlsdr_patches=$rtlsdr_patches"
+            echo "usb_patches_key=$usb_patches_key"
           } >> "$GITHUB_OUTPUT"
 
       - name: Prepare cache directories
@@ -167,7 +176,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
-          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}-${{ steps.dep-shas.outputs.airspy_sha }}
+          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}-${{ steps.dep-shas.outputs.airspy_sha }}-${{ steps.dep-shas.outputs.usb_patches_key }}
           restore-keys: |
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -182,6 +191,8 @@ jobs:
                grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
                grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf" &&
                grep -Fxq "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}" "$mf" &&
+               grep -Fxq "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}" "$mf" &&
+               grep -Fxq "rtlsdr_patches=${{ steps.dep-shas.outputs.rtlsdr_patches }}" "$mf" &&
                grep -Fxq "soapy_sdr_sha=${{ steps.dep-shas.outputs.soapy_sdr_sha }}" "$mf" &&
                grep -Fxq "soapy_sdr_root=${{ steps.dep-shas.outputs.soapy_sdr_root }}" "$mf" &&
                grep -Fxq "openssl_sha=${{ steps.dep-shas.outputs.openssl_sha }}" "$mf" &&
@@ -336,19 +347,32 @@ jobs:
                 )
               }
 
+              # An optional sixth argument names the dsd-neo patch series for the
+              # library (tools/usb_dependency_patches.sh). It is applied between the
+              # fetch and the configure, and its digest is recorded in the manifest
+              # next to the SHA as <name>_patches, so a cached build made from other
+              # patches is rebuilt.
               build_dep() {
-                repo="$1" sha="$2" name="$3" mf_key="$4" cmake_opts="$5"
+                repo="$1" sha="$2" name="$3" mf_key="$4" cmake_opts="$5" patches="${6:-}"
                 dst="$DEPS/lib/pkgconfig/${name}.pc"
                 dst64="$DEPS/lib64/pkgconfig/${name}.pc"
                 mf="$DEPS/.manifest"
+                patch_line=""
+                if [ -n "$patches" ]; then
+                  patch_line="${mf_key%_sha}_patches=$(/work/tools/usb_dependency_patches.sh digest "$patches")"
+                fi
                 if [ -f "$dst" ] || [ -f "$dst64" ]; then
-                  if [ -f "$mf" ] && grep -q "^${mf_key}=${sha}$" "$mf"; then
+                  if [ -f "$mf" ] && grep -q "^${mf_key}=${sha}$" "$mf" &&
+                     { [ -z "$patch_line" ] || grep -Fxq "$patch_line" "$mf"; }; then
                     echo "Using cached ${name} in $DEPS"
                     return
                   fi
-                  echo "Cached ${name} does not match desired SHA; rebuilding"
+                  echo "Cached ${name} does not match desired SHA or patches; rebuilding"
                 fi
                 /work/tools/fetch-pinned-git.sh "$repo" "$sha" "/tmp/${name}"
+                if [ -n "$patches" ]; then
+                  /work/tools/usb_dependency_patches.sh apply "$patches" "/tmp/${name}"
+                fi
                 cmake -S "/tmp/${name}" -B "/tmp/${name}/build" -G Ninja \
                   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS" $cmake_opts
                 cmake --build "/tmp/${name}/build" -j
@@ -358,8 +382,8 @@ jobs:
               build_openssl "$openssl_sha"
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha "-DMBELIB_ENABLE_NATIVE=OFF"
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
-              build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
-              build_dep https://github.com/airspy/airspyone_host "$airspy_sha" libairspy airspy_sha "-DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+              build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON" librtlsdr
+              build_dep https://github.com/airspy/airspyone_host "$airspy_sha" libairspy airspy_sha "-DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5" libairspy
               build_dep https://github.com/pothosware/SoapySDR "$soapy_sdr_sha" SoapySDR soapy_sdr_sha \
                 "-DENABLE_APPS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_PYTHON=OFF -DENABLE_PYTHON3=OFF -DSOAPY_SDR_ROOT=$soapy_sdr_root"
 
@@ -369,6 +393,8 @@ jobs:
                 echo "codec2_sha=$codec2_sha"
                 echo "rtlsdr_sha=$rtlsdr_sha"
                 echo "airspy_sha=$airspy_sha"
+                echo "airspy_patches=$(/work/tools/usb_dependency_patches.sh digest libairspy)"
+                echo "rtlsdr_patches=$(/work/tools/usb_dependency_patches.sh digest librtlsdr)"
                 echo "soapy_sdr_sha=$soapy_sdr_sha"
                 echo "soapy_sdr_root=$soapy_sdr_root"
                 echo "openssl_sha=$openssl_sha"
@@ -395,6 +421,20 @@ jobs:
                 -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
               cmake --build build/appimage -j
               ./build/appimage/apps/dsd-cli/dsd-neo -h || true
+
+              # The libairspy and librtlsdr dsd-neo loads are the patched builds in $DEPS.
+              linked_lib() {
+                path=$(ldd build/appimage/apps/dsd-cli/dsd-neo | while read -r soname _ resolved _; do
+                  case "$soname" in "$1".so*) echo "$resolved"; break ;; esac
+                done)
+                case "$path" in
+                  "$DEPS"/*) echo "$path" ;;
+                  *) echo "ERROR: dsd-neo loads $1 from \"$path\", not from $DEPS" >&2; return 1 ;;
+                esac
+              }
+              airspy_lib=$(linked_lib libairspy)
+              rtlsdr_lib=$(linked_lib librtlsdr)
+              /work/tools/check_patched_usb_libs.sh --airspy "$airspy_lib" --rtlsdr "$rtlsdr_lib"
               /work/tools/check_release_hardening.sh /work/build/appimage/apps/dsd-cli/dsd-neo /work/build/appimage
 
               rm -rf AppDir
@@ -498,6 +538,17 @@ jobs:
                 -d /work/packaging/appimage/dsd-neo.desktop \
                 -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
                 --output appimage
+              # The libairspy and librtlsdr the AppImage bundles are the patched builds.
+              bundled_lib() {
+                found=$(find /work/AppDir/usr/lib -maxdepth 1 -type f -name "$1.so*" -print -quit)
+                if [ -z "$found" ]; then
+                  echo "ERROR: the AppDir bundles no $1" >&2
+                  return 1
+                fi
+                echo "$found"
+              }
+              /work/tools/check_patched_usb_libs.sh \
+                --airspy "$(bundled_lib libairspy)" --rtlsdr "$(bundled_lib librtlsdr)"
               # Ensure the expected output file exists
               if [ ! -s "/work/${{ steps.names.outputs.OUT }}" ]; then
                 echo "ERROR: AppImage output not produced at /work/${{ steps.names.outputs.OUT }}" >&2

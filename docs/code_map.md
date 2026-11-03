@@ -5828,36 +5828,43 @@ Key public headers:
   An open with no rate configured programs `airspy_pick_default_rate()` of the listed rates: the lowest on Android
   (`AIRSPY_SOURCE_PREFER_LOWEST_RATE`), the highest elsewhere. Tests: `IO_AIRSPY_SOURCE` and
   `IO_AIRSPY_SOURCE_PREFER_LOWEST` (the adapter built with Android's preference), each with the plan that follows.
-  The vendored Android libairspy's stop (0001-libairspy) waits until libusb has called back every cancelled transfer,
-  so `airspy_close()` and the restart after a retune never free or resubmit one still in flight; system libairspy
-  keeps upstream's single poll. Test: `VENDORED_LIBAIRSPY_TRANSFERS`.
+  The libairspy stop patch (0001-libairspy) waits until libusb has called back every cancelled transfer, so
+  `airspy_close()` and the restart after a retune never free or resubmit one still in flight. The vendored Android
+  copy and the Windows, AppImage and macOS release builds carry it (`tools/usb_dependency_patches.sh`; the vcpkg
+  overlay records its digest, the release jobs check the bundled library with `tools/check_patched_usb_libs.sh`); a
+  build against a system libairspy keeps upstream's single poll. Its shared fields go through a C11 / MSVC
+  `Interlocked*` shim, so one patch file builds everywhere. Tests: `VENDORED_LIBAIRSPY_TRANSFERS` (MSVC included) and
+  `DESKTOP_LIBAIRSPY_TRANSFERS`, the pinned upstream source with the patch, registered when
+  `DSD_TEST_DESKTOP_USB_SOURCES` names a `tools/usb_dependency_patches.sh fetch-all` tree (Linux and macOS CI).
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
     flight (the device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) is a device
     failure, whatever its code: -1 for a lost device (unplugged, or librtlsdr gave up after repeated transfer errors;
-    the vendored Android librtlsdr also once no transfer is left, since its patch 0003), a failed submission or event
+    the patched librtlsdr also once no transfer is left, since its patch 0003), a failed submission or event
     poll, even 0. It goes through `rtl_device_end_for_receiver()`, the one path that ends
     a session for its receiver: after the unplug-owner grace (`rtl_device_set_unplug_owner_grace_ms()`, process-wide,
     default 0; the Android host sets 2000 ms so its USB detach broadcast can own an unplug, and a stop or exit request
     inside the grace keeps the failure silent), it latches `DSD_INPUT_FAILURE_DEVICE` with that code, commits the
     receiver ending (`dsd_input_failure_receiver_ended()`) and ends the session (exit flag, input ring waiters woken).
-    `-ENOMEM` (librtlsdr could not allocate its USB transfers and submitted none; the vendored Android librtlsdr
+    `-ENOMEM` (librtlsdr could not allocate its USB transfers and submitted none; the patched librtlsdr
     returns it since `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`) is the host's:
     reported at once, without the grace or the committed ending. Stop handshake (`rtl_usb_reader_stop()`, shared by
     `rtl_device_stop_async()` and `rtl_device_destroy()`): clear `run`, then retry `rtlsdr_cancel_async()` every
     1 ms until the reader published `reader_exited`, then join. librtlsdr refuses a cancel until the reader streams,
     so a single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks
-    `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. The vendored librtlsdr's
-    teardown (0003) frees transfers only once libusb has called each back; system librtlsdr keeps upstream's, so
-    desktop builds get this exit rule, the handshake and the progress monitor but not the safe teardown. A stop that
+    `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. The patched librtlsdr's
+    teardown (0003, on top of 0002) frees transfers only once libusb has called each back. The vendored Android copy
+    and the Windows, AppImage and macOS release builds carry both patches, the same way as libairspy's above; a build
+    against a system librtlsdr keeps upstream's teardown, so it gets this exit rule, the handshake and the progress
+    monitor but not the safe teardown. A stop that
     lands between a verdict's last check and its report is still reported and committed; on Android the stop's cause,
     latched first, decides what the UI shows. Tests:
-    `IO_RTL_READER_EXIT`, and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` and `VENDORED_LIBRTLSDR_TRANSFERS` for the vendored
-    allocation path and transfer accounting.
+    `IO_RTL_READER_EXIT`, and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` and `VENDORED_LIBRTLSDR_TRANSFERS` (with their
+    `DESKTOP_*` twins on the patched upstream source) for the patched allocation path and transfer accounting.
   - USB sample-progress monitor (RTL-SDR and Airspy; SoapySDR's is below; replay and rtl_tcp have none): a receiver can
     stay enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each error
-    status and waits forever once none is left, where the vendored copy returns -1; a device that stops completing
+    status and waits forever once none is left, where the patched copy returns -1; a device that stops completing
     transfers, which have no timeout, leaves either SDK waiting). `rtlsdr_callback()` counts each callback that carries
     bytes (a stalled transfer can still complete with none, which is no progress) and the Airspy source's receive
     callback each callback, as their first statement (one relaxed increment, no clock read: `rtl_device::progress`,

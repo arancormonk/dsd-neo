@@ -35,7 +35,9 @@ not a finding that every component is cleared for redistribution.
   `0002-librtlsdr-check-async-buffer-allocation.patch` makes the async reader check its transfer allocations and
   return `-ENOMEM` instead of submitting NULL transfers, and `0003-librtlsdr-account-for-every-transfer.patch` makes
   it count the transfers libusb owns, return `-1` once none is left, and free nothing until every transfer has been
-  called back. Not part of any non-Android build.
+  called back. The snapshot is not part of any non-Android build, but the Windows, AppImage and macOS release
+  packages build librtlsdr from the same pinned upstream revision with `0002` and `0003` applied
+  (`tools/usb_dependency_patches.sh`).
 - **libusb** (`android/third_party/libusb`; https://github.com/libusb/libusb) - LGPL-2.1-or-later; license text
   `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
   own Android build uses) built into the Android app. Not part of any non-Android build.
@@ -171,4 +173,4 @@ and the selected mbelib installation's documentation under `licenses/mbelib-neo/
 This does not close the separate complete-runtime-notice or corresponding-source
 findings in `legal/status.md`.
 
-Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, and AppImage builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`. The Android copy (`android/third_party/libairspy`) carries one project patch, kept in `android/third_party/patches/`: `0001-libairspy-wait-for-cancelled-transfers.patch` makes stop, close, restart and a packing change wait until libusb has called back every cancelled transfer before freeing or resubmitting any. Windows overlay and AppImage builds use upstream unpatched.
+Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, AppImage builds and macOS DMG builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`. The Android copy (`android/third_party/libairspy`) carries one project patch, kept in `android/third_party/patches/`: `0001-libairspy-wait-for-cancelled-transfers.patch` makes stop, close, restart and a packing change wait until libusb has called back every cancelled transfer before freeing or resubmitting any. Windows overlay, AppImage and macOS DMG builds apply the same patch (`tools/usb_dependency_patches.sh`); builds against a system libairspy use it unpatched.

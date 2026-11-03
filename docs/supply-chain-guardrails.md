@@ -69,6 +69,21 @@ tools/check_vcpkg_overlay_pins.sh
 
 Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
+### Patched USB libraries
+
+The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
+`android/third_party/patches/`, the files the Android app's vendored copies carry. `tools/usb_dependency_patches.sh`
+names each library's series (`series`), hashes it (`digest`) and applies it to a pinned checkout (`apply`, `fetch`).
+vcpkg keys its binary cache on a port's own files only, so each portfile records the series and its SHA-256 and fails
+its build when the patch files no longer match. After changing a patch, run `tools/check_vcpkg_overlay_pins.sh --fix`
+to record the new digest; the check also fails when a portfile stops listing the series.
+
+The AppImage and macOS release jobs apply the same series between fetch and configure, record each digest in their
+dependency manifest and cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
+libairspy that never imports `usleep()` or a librtlsdr without the reader's "no transfer left" message was built
+without the patches). The patch files are checked out with LF line endings everywhere (`.gitattributes`), so the
+digests agree on Windows.
+
 ## Vulnerability Scanning
 
 - `tools/osv_scan.sh` runs OSV-Scanner source scanning for lockfiles, manifests, and vendored C/C++ dependency fingerprints.

@@ -1446,7 +1446,9 @@ they came from.
 
 The `*-librtlsdr-*` patches in `third_party/patches/` are already applied to the
 vendored copy, in order; they are kept as files so the delta stays reviewable and can be re-applied
-when the snapshot is refreshed.
+when the snapshot is refreshed. The desktop release packages (Windows, AppImage, macOS) apply `0002`
+and `0003` to the same pinned upstream source, so those two files have a second consumer; see
+"Patches the desktop releases share" below.
 
 - `0001-librtlsdr-add-rtlsdr_open_fd.patch` adds `rtlsdr_open_fd()` and splits the
   claim/probe tail of `rtlsdr_open()` into a shared helper so both open paths run
@@ -1488,7 +1490,7 @@ vendored copy, like the librtlsdr ones.
   of the transfers it never submitted, and the stop after it waits for the rest.
   A stream that ended by itself is reaped the same way before a start or a
   packing change reuses its transfers. `streaming` and `stop_requested` become
-  C11 atomics, since the library's own threads share them.
+  atomic too, since the library's own threads share them.
   `VENDORED_LIBAIRSPY_TRANSFERS` (a desktop test) drives the library's threads
   against a stub libusb whose cancellations call back late.
 
@@ -1502,6 +1504,31 @@ cd /tmp/airspy && for p in <repo>/android/third_party/patches/*-libairspy-*.patc
 # the new baseline, and update the table above, README.dsd-neo and the upstream
 # hashes in tests/tools/test_airspy_packaging.py
 ```
+
+### Patches the desktop releases share
+
+The Windows ZIP, the Linux AppImage and the macOS DMG build libairspy and
+librtlsdr from the pinned upstream sources with the same patch files:
+`0001-libairspy-*` and librtlsdr's `0002` and `0003` (`0001` adds the
+Android-only open path). `tools/usb_dependency_patches.sh` names that series and
+applies it; the vcpkg overlays in `vcpkg-ports/airspy` and `vcpkg-ports/rtlsdr`
+list it with its SHA-256, and the AppImage and macOS jobs key their dependency
+caches on it.
+
+So every access the patches add to shared fields goes through a small atomics
+shim at the top of the patched file: C11 `<stdatomic.h>`, or the `Interlocked*`
+functions under MSVC, which has no `<stdatomic.h>` without
+`/experimental:c11atomics`. Keep it that way when a patch changes: no GCC
+`__atomic` builtins and no `_Atomic` fields.
+
+After changing a patch, regenerate the vendored file from it, run
+`tools/check_vcpkg_overlay_pins.sh --fix` to record the new digest in the
+overlays (a stale one fails their build), and run the transfer tests:
+`VENDORED_LIBAIRSPY_TRANSFERS`, `VENDORED_LIBRTLSDR_TRANSFERS` and
+`VENDORED_LIBRTLSDR_ASYNC_ALLOC` build the vendored copies (MSVC included), and
+the `DESKTOP_*` tests build the patched upstream sources when you configure with
+`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>` after
+`tools/usb_dependency_patches.sh fetch-all <dir>`. Linux and macOS CI do that.
 
 ## Codec2, libcurl and expat
 
