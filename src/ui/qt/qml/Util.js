@@ -126,7 +126,7 @@ var DECODE_MODES = [
         // iqOrSymbols: its pi/4-DQPSK symbols come from a radio's I/Q, or from
         // a symbol capture (.bin) of them; demodulated audio has lost them.
         label: "TETRA", short: "TETRA", flag: "-fT", iqOrSymbols: true,
-        hint: "TETRA — trunked networks (TMO) and direct mode (DMO). Needs a radio at a 72 kHz bandwidth, or a symbol capture."
+        hint: "TETRA — trunked networks (TMO) and direct mode (DMO). Needs a radio source at a 72 kHz bandwidth, or a symbol capture."
     },
     {
         // -fA is the analog monitor. On a radio it receives narrowband FM through

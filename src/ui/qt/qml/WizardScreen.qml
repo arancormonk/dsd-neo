@@ -1340,8 +1340,11 @@ Item {
 
                             Text {
                                 id: advSubtitle
+                                objectName: "wizardAdvancedSubtitle"
                                 width: parent.width
-                                text: wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
+                                // Only what the pane shows: an Airspy has its own
+                                // gain controls and bias tee, and takes no PPM.
+                                text: wizard.sourceType === "airspy" ? qsTr("Gain, bandwidth, bias tee — defaults work") : wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
                                 color: Theme.textSubdued
@@ -1467,11 +1470,16 @@ Item {
                                 }
                             }
 
+                            // Alone on an Airspy, the field takes the row and
+                            // its own label, without the caption the three
+                            // narrow columns share.
                             Column {
-                                width: (parent.width - 20) / 3
+                                width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 20) / 3
                                 spacing: 6
 
                                 ReadableText {
+                                    objectName: "wizardBandwidthCaption"
+                                    visible: wizard.sourceType !== "airspy"
                                     text: qsTr("BW kHz")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)

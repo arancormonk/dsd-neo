@@ -778,14 +778,15 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::ForceKey, "Choose force key mode 0, 1, or 2."},
     {SessionArgsError::UnsafeOption, "Extra options contain a prohibited option or grouped short options. "
                                      "Remove prohibited options and write each short option separately."},
-    {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
-                                     "arrives already demodulated. Choose a radio source, or another decode mode."},
+    {SessionArgsError::AmNeedsRadio,
+     "AM needs a radio source (USB dongle, Airspy or RTL-TCP): network and file audio arrives already demodulated. "
+     "Choose a radio source, or another decode mode."},
     /* %1: session_args_am_bandwidth_choices(). */
     {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
                                     "narrower one. Set the bandwidth to %1 kHz, or choose another decode mode."},
-    {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB, Airspy or rtl_tcp), or a symbol capture (.bin) "
-                                     "file: network audio and audio files arrive already demodulated. Choose a radio "
-                                     "source, or another decode mode."},
+    {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB dongle, Airspy or RTL-TCP), or a symbol "
+                                     "capture (.bin) file: network audio and audio files arrive already demodulated. "
+                                     "Choose a radio source, or another decode mode."},
     {SessionArgsError::RecordingMissing,
      "This system's recording is missing. Edit the system and choose its recording again."},
     {SessionArgsError::CallRecordingOption,

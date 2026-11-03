@@ -921,9 +921,9 @@ test_am_system(void) {
     expect(
         "the TETRA refusal says why and names the radios TETRA runs on",
         session_args_error_text(SessionArgsError::TetraNeedsIq)
-            == QStringLiteral("TETRA needs a radio source (USB, Airspy or rtl_tcp), or a symbol capture (.bin) file: "
-                              "network audio and audio files arrive already demodulated. Choose a radio source, or "
-                              "another decode mode."));
+            == QStringLiteral("TETRA needs a radio source (USB dongle, Airspy or RTL-TCP), or a symbol capture (.bin) "
+                              "file: network audio and audio files arrive already demodulated. Choose a radio source, "
+                              "or another decode mode."));
     const dsd_qt::SessionArgsBuilder tetraBuilder(nullptr);
     QVariantMap tcpTetra = tetra;
     tcpTetra.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));

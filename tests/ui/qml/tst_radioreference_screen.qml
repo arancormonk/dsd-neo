@@ -254,7 +254,7 @@ Item {
             var note = findChild(tc.screen, "radioReferenceTetraNote")
             verify(note !== null, "the TETRA note is missing")
             tryVerify(function () { return note.visible }, 2000, "the TETRA note is not shown for a TETRA system")
-            compare(note.text, "TETRA needs a radio at a 72 kHz bandwidth (leave the bandwidth empty for that). Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
+            compare(note.text, "TETRA needs a radio source at a 72 kHz bandwidth (leave the bandwidth empty for that). Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
             verify(note.text.indexOf("Airspy") < 0, "the TETRA note still turns an Airspy away: " + note.text)
             compare(note.Accessible.name, note.text, "the TETRA note is not read by its own words")
 
