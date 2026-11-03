@@ -37,6 +37,49 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <unistd.h>
 #endif
 
+/* streaming, stop_requested and the transfer count are shared by the
+ * caller's thread, the transfer and consumer threads and the libusb
+ * callbacks, so every access goes through these. MSVC's C compiler has no
+ * <stdatomic.h> without /experimental:c11atomics, so it uses the Interlocked
+ * functions (windows.h comes in through libusb.h). Every access is
+ * sequentially consistent either way. */
+#if defined(_MSC_VER)
+typedef volatile LONG shared_int;
+
+static int shared_load(shared_int* value)
+{
+	return (int)InterlockedCompareExchange(value, 0, 0);
+}
+
+static void shared_store(shared_int* value, int new_value)
+{
+	InterlockedExchange(value, new_value);
+}
+
+static void shared_add(shared_int* value, int delta)
+{
+	InterlockedExchangeAdd(value, delta);
+}
+#else
+#include <stdatomic.h>
+typedef atomic_int shared_int;
+
+static int shared_load(shared_int* value)
+{
+	return atomic_load(value);
+}
+
+static void shared_store(shared_int* value, int new_value)
+{
+	atomic_store(value, new_value);
+}
+
+static void shared_add(shared_int* value, int delta)
+{
+	atomic_fetch_add(value, delta);
+}
+#endif
+
 #include "airspy.h"
 #include "iqconverter_float.h"
 #include "iqconverter_int16.h"
@@ -85,8 +128,8 @@ typedef struct airspy_device
 	libusb_device_handle* usb_device;
 	struct libusb_transfer** transfers;
 	airspy_sample_block_cb_fn callback;
-	_Atomic bool streaming;
-	_Atomic bool stop_requested;
+	shared_int streaming;
+	shared_int stop_requested;
 	pthread_t transfer_thread;
 	pthread_t consumer_thread;
 	bool transfer_thread_running;
@@ -99,7 +142,7 @@ typedef struct airspy_device
 	uint32_t buffer_size;
 	/* transfers libusb still owns (submitted, not called back for good);
 	 * a callback runs on whichever thread handles events */
-	int transfers_outstanding;
+	shared_int transfers_outstanding;
 	uint32_t dropped_buffers;
 	uint32_t dropped_buffers_queue[RAW_BUFFER_COUNT];
 	uint16_t *received_samples_queue[RAW_BUFFER_COUNT];
@@ -285,7 +328,7 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
 	{
 		/* Every transfer takes its slot before it is submitted, so the count
 		 * cannot reach zero while the rest are still going out. */
-		__atomic_store_n(&device->transfers_outstanding, (int)device->transfer_count, __ATOMIC_RELEASE);
+		shared_store(&device->transfers_outstanding, (int)device->transfer_count);
 
 		for (transfer_index = 0; transfer_index<device->transfer_count; transfer_index++)
 		{
@@ -297,7 +340,7 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
 			{
 				/* this transfer and the ones never submitted give their
 				 * slots back */
-				__atomic_sub_fetch(&device->transfers_outstanding, (int)(device->transfer_count - transfer_index), __ATOMIC_ACQ_REL);
+				shared_add(&device->transfers_outstanding, -(int)(device->transfer_count - transfer_index));
 				return AIRSPY_ERROR_LIBUSB;
 			}
 		}
@@ -366,13 +409,13 @@ static void* consumer_threadproc(void *arg)
 
 	pthread_mutex_lock(&device->consumer_mp);
 
-	while (device->streaming && !device->stop_requested)
+	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 	{
-		while (device->received_buffer_count == 0 && device->streaming && !device->stop_requested)
+		while (device->received_buffer_count == 0 && shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 		{
 			pthread_cond_wait(&device->consumer_cv, &device->consumer_mp);
 		}
-		if (!device->streaming || device->stop_requested)
+		if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
 		{
 			break;
 		}
@@ -443,14 +486,14 @@ static void* consumer_threadproc(void *arg)
 
 		if (device->callback(&transfer) != 0)
 		{
-			device->streaming = false;
+			shared_store(&device->streaming, false);
 		}
 
 		pthread_mutex_lock(&device->consumer_mp);
 		device->received_buffer_count--;
 	}
 
-	device->streaming = false;
+	shared_store(&device->streaming, false);
 
 	pthread_mutex_unlock(&device->consumer_mp);
 
@@ -462,7 +505,7 @@ static void* consumer_threadproc(void *arg)
  * free the transfers. */
 static void transfer_returned(airspy_device_t* device)
 {
-	__atomic_sub_fetch(&device->transfers_outstanding, 1, __ATOMIC_ACQ_REL);
+	shared_add(&device->transfers_outstanding, -1);
 }
 
 static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
@@ -470,7 +513,7 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
 	uint16_t *temp;
 	airspy_device_t* device = (airspy_device_t*)usb_transfer->user_data;
 
-	if (!device->streaming || device->stop_requested)
+	if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
 	{
 		transfer_returned(device);
 		return;
@@ -503,13 +546,13 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
 
 		if (libusb_submit_transfer(usb_transfer) != 0)
 		{
-			device->streaming = false;
+			shared_store(&device->streaming, false);
 			transfer_returned(device);
 		}
 	}
 	else
 	{
-		device->streaming = false;
+		shared_store(&device->streaming, false);
 		transfer_returned(device);
 	}
 }
@@ -526,17 +569,17 @@ static void* transfer_threadproc(void* arg)
 
 #endif
 
-	while (device->streaming && !device->stop_requested)
+	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 	{
 		error = libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL);
 		if (error < 0)
 		{
 			if (error != LIBUSB_ERROR_INTERRUPTED)
-				device->streaming = false;
+				shared_store(&device->streaming, false);
 		}
 	}
 	
-	device->streaming = false;
+	shared_store(&device->streaming, false);
 
 	return NULL;
 }
@@ -551,7 +594,7 @@ static void wait_for_transfers(airspy_device_t* device)
 {
 	struct timeval timeout = { 0, 500000 };
 
-	while (__atomic_load_n(&device->transfers_outstanding, __ATOMIC_ACQUIRE) > 0)
+	while (shared_load(&device->transfers_outstanding) > 0)
 	{
 		cancel_transfers(device);
 		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
@@ -568,10 +611,10 @@ static void wait_for_transfers(airspy_device_t* device)
 
 static int kill_io_threads(airspy_device_t* device)
 {
-	if (device->stop_requested)
+	if (shared_load(&device->stop_requested))
 	{
-		device->stop_requested = false;
-		device->streaming = false;
+		shared_store(&device->stop_requested, false);
+		shared_store(&device->streaming, false);
 		cancel_transfers(device);
 
 		pthread_mutex_lock(&device->consumer_mp);
@@ -598,7 +641,7 @@ static int kill_io_threads(airspy_device_t* device)
  * that may still be in flight: reap it as a stop would. */
 static void reap_ended_stream(airspy_device_t* device)
 {
-	device->stop_requested = true;
+	shared_store(&device->stop_requested, true);
 	kill_io_threads(device);
 }
 
@@ -607,10 +650,10 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 	int result;
 	pthread_attr_t attr;
 
-	if (!device->streaming && !device->stop_requested)
+	if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 	{
 		device->callback = callback;
-		device->streaming = true;
+		shared_store(&device->streaming, true);
 
 		result = prepare_transfers(device, LIBUSB_ENDPOINT_IN | 1, (libusb_transfer_cb_fn)airspy_libusb_transfer_callback);
 		if (result != AIRSPY_SUCCESS)
@@ -938,8 +981,8 @@ static int airspy_open_init(airspy_device_t** device, uint64_t serial_number, in
 	lib_device->transfer_count = 16;
 	lib_device->buffer_size = 262144;
 	lib_device->packing_enabled = false;
-	lib_device->streaming = false;
-	lib_device->stop_requested = false;
+	shared_store(&lib_device->streaming, false);
+	shared_store(&lib_device->stop_requested, false);
 	lib_device->sample_type = AIRSPY_SAMPLE_FLOAT32_IQ;
 
 	result = airspy_read_samplerates_from_fw(lib_device, &lib_device->supported_samplerate_count, 0);
@@ -1252,7 +1295,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 		/* A stream that ended by itself is reaped first: its consumer may
 		 * still use the converters reset below, and its transfers may
 		 * still be in flight. */
-		if (!device->streaming && !device->stop_requested)
+		if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 		{
 			reap_ended_stream(device);
 		}
@@ -1285,7 +1328,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 	{
 		int result1, result2;
 
-		device->stop_requested = true;
+		shared_store(&device->stop_requested, true);
 		result1 = airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
 		result2 = kill_io_threads(device);
 
@@ -1722,7 +1765,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 
 	int ADDCALL airspy_set_conversion_filter_float32(struct airspy_device* device, const float *kernel, const uint32_t len)
 	{
-		if (device->streaming)
+		if (shared_load(&device->streaming))
 		{
 			return AIRSPY_ERROR_BUSY;
 		}
@@ -1735,7 +1778,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 
 	int ADDCALL airspy_set_conversion_filter_int16(struct airspy_device* device, const int16_t *kernel, const uint32_t len)
 	{
-		if (device->streaming)
+		if (shared_load(&device->streaming))
 		{
 			return AIRSPY_ERROR_BUSY;
 		}
@@ -1969,7 +2012,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 		uint8_t retval;
 		bool packing_enabled;
 
-		if (device->streaming)
+		if (shared_load(&device->streaming))
 		{
 			return AIRSPY_ERROR_BUSY;
 		}
@@ -2010,7 +2053,7 @@ int airspy_list_devices(uint64_t *serials, int count)
 
 	int ADDCALL airspy_is_streaming(airspy_device_t* device)
 	{
-		return (device->streaming == true && device->stop_requested == false);
+		return (shared_load(&device->streaming) == true && shared_load(&device->stop_requested) == false);
 	}
 
 	const char* ADDCALL airspy_error_name(enum airspy_error errcode)

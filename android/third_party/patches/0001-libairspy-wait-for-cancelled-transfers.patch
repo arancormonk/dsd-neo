@@ -10,7 +10,7 @@ them back to back: freeing a transfer libusb still owns is undefined
 behaviour, and libusb refuses to submit one as busy. A failed submission at
 start left the transfers already submitted the same way.
 
-The device now counts the transfers libusb owns (__atomic, since a callback
+The device now counts the transfers libusb owns (atomically, since a callback
 runs on whichever thread handles events). A start reserves the whole batch
 before the first submission, and a failed submission gives back its own slot
 and those of the transfers never submitted. The callback keeps the slot when
@@ -26,73 +26,152 @@ callback asking to stop) left its threads unjoined and its other transfers in
 flight. airspy_start_rx() and a packing change now reap it first, as a stop
 would, before they reset the converters, resubmit or free anything.
 
-streaming and stop_requested become C11 atomics. The caller's stop, the
+streaming and stop_requested become atomic too. The caller's stop, the
 transfer thread, the consumer thread and the callbacks all read and write
 them, which was a data race on plain volatile fields; ThreadSanitizer reports
 it as soon as a test drives the library's own threads.
 
-The vendored copy builds with clang for Android; the __atomic builtins and
-_Atomic are GCC/clang C11 and are not meant for upstream's MSVC build.
+Every access to the count and the two flags goes through a small shim:
+C11 <stdatomic.h>, or the Interlocked functions on MSVC, whose C compiler
+has no <stdatomic.h> without /experimental:c11atomics. dsd-neo applies this
+patch to its vendored Android copy and to the libairspy it builds for its
+Windows, Linux AppImage and macOS releases.
 
 Generated against airspyone_host bd15be38e91ebaa3e0bebb1e320255bde4ccf059.
 
 diff --git a/libairspy/src/airspy.c b/libairspy/src/airspy.c
-index a2caf38..6ee8b35 100644
+index a2caf38..4a443a2 100644
 --- a/libairspy/src/airspy.c
 +++ b/libairspy/src/airspy.c
-@@ -33,6 +33,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
+@@ -33,6 +33,52 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  #endif
  
  #include <pthread.h>
 +#ifndef _WIN32
 +#include <unistd.h>
 +#endif
++
++/* streaming, stop_requested and the transfer count are shared by the
++ * caller's thread, the transfer and consumer threads and the libusb
++ * callbacks, so every access goes through these. MSVC's C compiler has no
++ * <stdatomic.h> without /experimental:c11atomics, so it uses the Interlocked
++ * functions (windows.h comes in through libusb.h). Every access is
++ * sequentially consistent either way. */
++#if defined(_MSC_VER)
++typedef volatile LONG shared_int;
++
++static int shared_load(shared_int* value)
++{
++	return (int)InterlockedCompareExchange(value, 0, 0);
++}
++
++static void shared_store(shared_int* value, int new_value)
++{
++	InterlockedExchange(value, new_value);
++}
++
++static void shared_add(shared_int* value, int delta)
++{
++	InterlockedExchangeAdd(value, delta);
++}
++#else
++#include <stdatomic.h>
++typedef atomic_int shared_int;
++
++static int shared_load(shared_int* value)
++{
++	return atomic_load(value);
++}
++
++static void shared_store(shared_int* value, int new_value)
++{
++	atomic_store(value, new_value);
++}
++
++static void shared_add(shared_int* value, int delta)
++{
++	atomic_fetch_add(value, delta);
++}
++#endif
  
  #include "airspy.h"
  #include "iqconverter_float.h"
-@@ -82,8 +85,8 @@ typedef struct airspy_device
+@@ -82,8 +128,8 @@ typedef struct airspy_device
  	libusb_device_handle* usb_device;
  	struct libusb_transfer** transfers;
  	airspy_sample_block_cb_fn callback;
 -	volatile bool streaming;
 -	volatile bool stop_requested;
-+	_Atomic bool streaming;
-+	_Atomic bool stop_requested;
++	shared_int streaming;
++	shared_int stop_requested;
  	pthread_t transfer_thread;
  	pthread_t consumer_thread;
  	bool transfer_thread_running;
-@@ -94,6 +97,9 @@ typedef struct airspy_device
+@@ -94,6 +140,9 @@ typedef struct airspy_device
  	uint32_t *supported_samplerates;
  	uint32_t transfer_count;
  	uint32_t buffer_size;
 +	/* transfers libusb still owns (submitted, not called back for good);
 +	 * a callback runs on whichever thread handles events */
-+	int transfers_outstanding;
++	shared_int transfers_outstanding;
  	uint32_t dropped_buffers;
  	uint32_t dropped_buffers_queue[RAW_BUFFER_COUNT];
  	uint16_t *received_samples_queue[RAW_BUFFER_COUNT];
-@@ -277,6 +283,10 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
+@@ -277,6 +326,10 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
  	uint32_t transfer_index;
  	if (device->transfers != NULL)
  	{
 +		/* Every transfer takes its slot before it is submitted, so the count
 +		 * cannot reach zero while the rest are still going out. */
-+		__atomic_store_n(&device->transfers_outstanding, (int)device->transfer_count, __ATOMIC_RELEASE);
++		shared_store(&device->transfers_outstanding, (int)device->transfer_count);
 +
  		for (transfer_index = 0; transfer_index<device->transfer_count; transfer_index++)
  		{
  			device->transfers[transfer_index]->endpoint = endpoint_address;
-@@ -285,6 +295,9 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
+@@ -285,6 +338,9 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
  			error = libusb_submit_transfer(device->transfers[transfer_index]);
  			if (error != 0)
  			{
 +				/* this transfer and the ones never submitted give their
 +				 * slots back */
-+				__atomic_sub_fetch(&device->transfers_outstanding, (int)(device->transfer_count - transfer_index), __ATOMIC_ACQ_REL);
++				shared_add(&device->transfers_outstanding, -(int)(device->transfer_count - transfer_index));
  				return AIRSPY_ERROR_LIBUSB;
  			}
  		}
-@@ -444,6 +457,14 @@ static void* consumer_threadproc(void *arg)
+@@ -353,13 +409,13 @@ static void* consumer_threadproc(void *arg)
+ 
+ 	pthread_mutex_lock(&device->consumer_mp);
+ 
+-	while (device->streaming && !device->stop_requested)
++	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+-		while (device->received_buffer_count == 0 && device->streaming && !device->stop_requested)
++		while (device->received_buffer_count == 0 && shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 		{
+ 			pthread_cond_wait(&device->consumer_cv, &device->consumer_mp);
+ 		}
+-		if (!device->streaming || device->stop_requested)
++		if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
+ 		{
+ 			break;
+ 		}
+@@ -430,27 +486,36 @@ static void* consumer_threadproc(void *arg)
+ 
+ 		if (device->callback(&transfer) != 0)
+ 		{
+-			device->streaming = false;
++			shared_store(&device->streaming, false);
+ 		}
+ 
+ 		pthread_mutex_lock(&device->consumer_mp);
+ 		device->received_buffer_count--;
+ 	}
+ 
+-	device->streaming = false;
++	shared_store(&device->streaming, false);
+ 
+ 	pthread_mutex_unlock(&device->consumer_mp);
+ 
  	return NULL;
  }
  
@@ -101,35 +180,57 @@ index a2caf38..6ee8b35 100644
 + * free the transfers. */
 +static void transfer_returned(airspy_device_t* device)
 +{
-+	__atomic_sub_fetch(&device->transfers_outstanding, 1, __ATOMIC_ACQ_REL);
++	shared_add(&device->transfers_outstanding, -1);
 +}
 +
  static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
  {
  	uint16_t *temp;
-@@ -451,6 +472,7 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
+ 	airspy_device_t* device = (airspy_device_t*)usb_transfer->user_data;
  
- 	if (!device->streaming || device->stop_requested)
+-	if (!device->streaming || device->stop_requested)
++	if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
  	{
 +		transfer_returned(device);
  		return;
  	}
  
-@@ -482,11 +504,13 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
+@@ -481,12 +546,14 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
+ 
  		if (libusb_submit_transfer(usb_transfer) != 0)
  		{
- 			device->streaming = false;
+-			device->streaming = false;
++			shared_store(&device->streaming, false);
 +			transfer_returned(device);
  		}
  	}
  	else
  	{
- 		device->streaming = false;
+-		device->streaming = false;
++		shared_store(&device->streaming, false);
 +		transfer_returned(device);
  	}
  }
  
-@@ -517,10 +541,33 @@ static void* transfer_threadproc(void* arg)
+@@ -502,29 +569,52 @@ static void* transfer_threadproc(void* arg)
+ 
+ #endif
+ 
+-	while (device->streaming && !device->stop_requested)
++	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+ 		error = libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL);
+ 		if (error < 0)
+ 		{
+ 			if (error != LIBUSB_ERROR_INTERRUPTED)
+-				device->streaming = false;
++				shared_store(&device->streaming, false);
+ 		}
+ 	}
+ 	
+-	device->streaming = false;
++	shared_store(&device->streaming, false);
+ 
  	return NULL;
  }
  
@@ -145,8 +246,11 @@ index a2caf38..6ee8b35 100644
 -	struct timeval timeout = { 0, 0 };
 +	struct timeval timeout = { 0, 500000 };
  
-+	while (__atomic_load_n(&device->transfers_outstanding, __ATOMIC_ACQUIRE) > 0)
-+	{
+-	if (device->stop_requested)
++	while (shared_load(&device->transfers_outstanding) > 0)
+ 	{
+-		device->stop_requested = false;
+-		device->streaming = false;
 +		cancel_transfers(device);
 +		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
 +		{
@@ -162,10 +266,14 @@ index a2caf38..6ee8b35 100644
 +
 +static int kill_io_threads(airspy_device_t* device)
 +{
- 	if (device->stop_requested)
- 	{
- 		device->stop_requested = false;
-@@ -540,12 +587,21 @@ static int kill_io_threads(airspy_device_t* device)
++	if (shared_load(&device->stop_requested))
++	{
++		shared_store(&device->stop_requested, false);
++		shared_store(&device->streaming, false);
+ 		cancel_transfers(device);
+ 
+ 		pthread_mutex_lock(&device->consumer_mp);
+@@ -540,21 +630,30 @@ static int kill_io_threads(airspy_device_t* device)
  		    device->consumer_thread_running = false;
  		}
  
@@ -181,21 +289,43 @@ index a2caf38..6ee8b35 100644
 + * that may still be in flight: reap it as a stop would. */
 +static void reap_ended_stream(airspy_device_t* device)
 +{
-+	device->stop_requested = true;
++	shared_store(&device->stop_requested, true);
 +	kill_io_threads(device);
 +}
 +
  static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn callback)
  {
  	int result;
-@@ -1193,6 +1249,14 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 	pthread_attr_t attr;
+ 
+-	if (!device->streaming && !device->stop_requested)
++	if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+ 		device->callback = callback;
+-		device->streaming = true;
++		shared_store(&device->streaming, true);
+ 
+ 		result = prepare_transfers(device, LIBUSB_ENDPOINT_IN | 1, (libusb_transfer_cb_fn)airspy_libusb_transfer_callback);
+ 		if (result != AIRSPY_SUCCESS)
+@@ -882,8 +981,8 @@ static int airspy_open_init(airspy_device_t** device, uint64_t serial_number, in
+ 	lib_device->transfer_count = 16;
+ 	lib_device->buffer_size = 262144;
+ 	lib_device->packing_enabled = false;
+-	lib_device->streaming = false;
+-	lib_device->stop_requested = false;
++	shared_store(&lib_device->streaming, false);
++	shared_store(&lib_device->stop_requested, false);
+ 	lib_device->sample_type = AIRSPY_SAMPLE_FLOAT32_IQ;
+ 
+ 	result = airspy_read_samplerates_from_fw(lib_device, &lib_device->supported_samplerate_count, 0);
+@@ -1193,6 +1292,14 @@ int airspy_list_devices(uint64_t *serials, int count)
  	{
  		int result;
  
 +		/* A stream that ended by itself is reaped first: its consumer may
 +		 * still use the converters reset below, and its transfers may
 +		 * still be in flight. */
-+		if (!device->streaming && !device->stop_requested)
++		if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
 +		{
 +			reap_ended_stream(device);
 +		}
@@ -203,7 +333,43 @@ index a2caf38..6ee8b35 100644
  		iqconverter_float_reset(device->cnv_f);
  		iqconverter_int16_reset(device->cnv_i);
  
-@@ -1928,7 +1992,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1221,7 +1328,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 	{
+ 		int result1, result2;
+ 
+-		device->stop_requested = true;
++		shared_store(&device->stop_requested, true);
+ 		result1 = airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
+ 		result2 = kill_io_threads(device);
+ 
+@@ -1658,7 +1765,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 
+ 	int ADDCALL airspy_set_conversion_filter_float32(struct airspy_device* device, const float *kernel, const uint32_t len)
+ 	{
+-		if (device->streaming)
++		if (shared_load(&device->streaming))
+ 		{
+ 			return AIRSPY_ERROR_BUSY;
+ 		}
+@@ -1671,7 +1778,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 
+ 	int ADDCALL airspy_set_conversion_filter_int16(struct airspy_device* device, const int16_t *kernel, const uint32_t len)
+ 	{
+-		if (device->streaming)
++		if (shared_load(&device->streaming))
+ 		{
+ 			return AIRSPY_ERROR_BUSY;
+ 		}
+@@ -1905,7 +2012,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 		uint8_t retval;
+ 		bool packing_enabled;
+ 
+-		if (device->streaming)
++		if (shared_load(&device->streaming))
+ 		{
+ 			return AIRSPY_ERROR_BUSY;
+ 		}
+@@ -1928,7 +2035,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  		packing_enabled = value ? true : false;
  		if (packing_enabled != device->packing_enabled)
  		{
@@ -212,3 +378,12 @@ index a2caf38..6ee8b35 100644
  			free_transfers(device);
  
  			device->packing_enabled = packing_enabled;
+@@ -1946,7 +2053,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 
+ 	int ADDCALL airspy_is_streaming(airspy_device_t* device)
+ 	{
+-		return (device->streaming == true && device->stop_requested == false);
++		return (shared_load(&device->streaming) == true && shared_load(&device->stop_requested) == false);
+ 	}
+ 
+ 	const char* ADDCALL airspy_error_name(enum airspy_error errcode)

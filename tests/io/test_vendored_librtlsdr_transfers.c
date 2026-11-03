@@ -1,18 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * The vendored librtlsdr's async reader (android/third_party/librtlsdr) accounting for its USB transfers.
- * rtlsdr_read_async() is compiled from the vendored source against stub libusb entry points: a submitted transfer
- * waits in a queue, and a second thread calls it back with the status the case picks. It does so while the reader
- * polls for events, as libusb runs callbacks inside an event poll, and in one case while the reader is still
- * submitting, as a synchronous control transfer polling on another thread does. A reader with no transfer left must
- * return -1 instead of waiting forever, and whatever ends it, it must keep handling events until every transfer it
- * submitted has been called back: libusb owns a transfer from its submission to its callback, so freeing it or its
- * buffer before then is undefined behaviour.
+ * The vendored librtlsdr's async reader (android/third_party/librtlsdr) accounting for its USB transfers, and the same
+ * patched reader as the desktop releases build it (DESKTOP_LIBRTLSDR_TRANSFERS, tests/CMakeLists.txt).
+ * rtlsdr_read_async() is compiled against stub libusb entry points: a submitted transfer waits in a queue, and a second
+ * thread calls it back with the status the case picks. It does so while the reader polls for events, as libusb runs
+ * callbacks inside an event poll, and in one case while the reader is still submitting, as a synchronous control
+ * transfer polling on another thread does. A reader with no transfer left must return -1 instead of waiting forever,
+ * and whatever ends it, it must keep handling events until every transfer it submitted has been called back: libusb
+ * owns a transfer from its submission to its callback, so freeing it or its buffer before then is undefined behaviour.
  */
 
 /* Every system header librtlsdr.c uses comes in here, before its heap calls are renamed below. */
+#ifdef _WIN32
+/* struct timeval, which WIN32_LEAN_AND_MEAN keeps out of windows.h; libusb.h then brings windows.h. */
+#include <winsock2.h> // IWYU pragma: keep
+#endif
+#ifdef _MSC_VER
+/* As airspy.c does before it: the CRT's time.h has struct timespec, so PThreads4W's pthread.h must not declare it. */
+#define HAVE_STRUCT_TIMESPEC
+#endif
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/timing.h>
 #include <libusb.h>
 #include <pthread.h>
 #include <rtl-sdr.h>
@@ -20,11 +29,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>   // IWYU pragma: keep
-#include <sys/time.h> // IWYU pragma: keep
+#include <string.h> // IWYU pragma: keep
 #include <sys/types.h>
-#include <time.h>
-#include <unistd.h> // IWYU pragma: keep
+#ifdef _WIN32
+#include <windows.h> // IWYU pragma: keep
+/* timeBeginPeriod() */
+#include <timeapi.h>
+#else
+#include <sys/time.h> // IWYU pragma: keep
+#include <unistd.h>   // IWYU pragma: keep
+#endif
 
 enum { kMaxQueued = 64, kMaxLive = 128, kMaxQuarantined = 128 };
 
@@ -56,15 +70,12 @@ static int g_quarantined_count;
 
 static long long
 now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000L;
+    return (long long)dsd_time_monotonic_ms();
 }
 
 static void
 sleep_us(long us) {
-    const struct timespec ts = {0, us * 1000L};
-    nanosleep(&ts, NULL);
+    dsd_sleep_us((uint64_t)us);
 }
 
 static void
@@ -160,7 +171,7 @@ test_free(void* p) {
     free(p);
 }
 
-/* The vendored source, with its heap calls routed through the accounting above and its zero-copy buffers enabled
+/* The library source, with its heap calls routed through the accounting above and its zero-copy buffers enabled
  * (libusb_dev_mem_alloc() below hands them out or refuses, per case). It keeps upstream style, so only the warnings
  * it raises under the project's flags are silenced, and only for it. */
 #define ENABLE_ZEROCOPY 1
@@ -181,11 +192,21 @@ test_free(void* p) {
 #pragma GCC diagnostic ignored "-Wuninitialized"
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
-// The test needs the source's private struct rtlsdr_dev and static helpers, so it compiles the file itself.
+#ifdef _MSC_VER
+#pragma warning(push, 0)
+#endif
+#if defined(_WIN32) && !defined(min)
+/* librtlsdr.c takes min() from windows.h on Windows, where NOMINMAX (cmake/Platform.cmake) keeps it out. */
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+// The test needs the source's private struct rtlsdr_dev and static helpers, so it compiles the file itself:
+// DSD_TEST_LIBRTLSDR_SOURCE names the vendored or the desktop librtlsdr.c.
 // NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "../../android/third_party/librtlsdr/src/librtlsdr.c"
+#include DSD_TEST_LIBRTLSDR_SOURCE
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 #undef malloc
 #undef calloc
@@ -798,7 +819,11 @@ depletes_to_minus_one(void) {
     const struct outcome out = run_case(&sc);
     expect(sc.name, out.rc == -1, "rc == -1", &out);
     expect(sc.name, out.dev_lost == 1, "device lost", &out);
+#ifndef _WIN32
+    /* Upstream's Windows build has no error count: its first failed completion marks the device lost, and how many
+     * completions come in before the reader sees that depends on timing. */
     expect(sc.name, out.completions == 16 * 7, "every transfer gone after 112 completions", &out);
+#endif
     expect_clean_exit(sc.name, &out);
 }
 
@@ -809,7 +834,10 @@ completions_then_all_fail(void) {
     const struct outcome out = run_case(&sc);
     expect(sc.name, out.rc == -1, "rc == -1", &out);
     expect(sc.name, out.dev_lost == 1, "device lost", &out);
+#ifndef _WIN32
+    /* As above: on Windows the first ERROR marks the device lost. */
     expect(sc.name, out.completions == 100 + 16, "each transfer failed once after 100 completions", &out);
+#endif
     expect_clean_exit(sc.name, &out);
 }
 
@@ -907,21 +935,31 @@ events_error_keeps_first_error(int error) {
 }
 
 /* The first transfer fails on the other thread while the reader is still submitting the rest: three transfers are
- * still out, so the stream goes on until a stop. */
+ * still out, so the stream goes on until a stop. On Windows that failure marks the device lost, and the reader must
+ * still drain the three before it returns. */
 static void
 error_during_initial_submission_on_other_thread(void) {
     struct scenario sc = base_scenario("error_during_initial_submission_on_other_thread", 4);
     sc.first_fails_during_submit = 1;
     sc.cancel_after_samples = 40;
     const struct outcome out = run_case(&sc);
+#ifdef _WIN32
+    expect(sc.name, out.rc == -1, "rc == -1", &out);
+    expect(sc.name, out.dev_lost == 1, "device lost", &out);
+#else
     expect(sc.name, out.rc == 0, "rc == 0", &out);
     expect(sc.name, out.dev_lost == 0, "device not lost", &out);
     expect(sc.name, out.samples >= 40, "stream continued", &out);
+#endif
     expect_clean_exit(sc.name, &out);
 }
 
 int
 main(void) {
+#ifdef _WIN32
+    /* The harness paces in steps of about 1 ms, which Windows stretches to its 15.6 ms timer tick unless asked. */
+    (void)timeBeginPeriod(1);
+#endif
     if (pthread_create(&g_completer, NULL, completer_main, NULL) != 0) {
         DSD_FPRINTF(stderr, "could not start the completing thread\n");
         return 1;
@@ -933,7 +971,10 @@ main(void) {
     partial_initial_submit();
     partial_initial_submit_then_unplug();
     deferred_cancellation(0);
+#ifdef __linux__
+    /* librtlsdr has zero-copy buffers on Linux only. */
     deferred_cancellation(1);
+#endif
     unplug_drains();
     events_error_keeps_first_error(LIBUSB_ERROR_IO);
     events_error_keeps_first_error(LIBUSB_ERROR_PIPE);

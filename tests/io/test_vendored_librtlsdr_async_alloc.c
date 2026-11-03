@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * The vendored librtlsdr's async reader (android/third_party/librtlsdr) when its USB transfer setup runs out of
- * memory. rtlsdr_read_async() is compiled from the vendored source against stub libusb entry points, with every
- * allocation the setup makes counted, and the k-th one failed for each k a complete setup reaches: the reader must
- * return -ENOMEM, free everything it obtained and go back to inactive, rather than submit NULL transfers.
+ * memory, and the same patched reader as the desktop releases build it (DESKTOP_LIBRTLSDR_ASYNC_ALLOC,
+ * tests/CMakeLists.txt). rtlsdr_read_async() is compiled against stub libusb entry points, with every allocation the
+ * setup makes counted, and the k-th one failed for each k a complete setup reaches: the reader must return -ENOMEM,
+ * free everything it obtained and go back to inactive, rather than submit NULL transfers.
  */
 
 /* Every system header librtlsdr.c uses comes in here, before its heap calls are renamed below. */
+#ifdef _WIN32
+/* struct timeval, which WIN32_LEAN_AND_MEAN keeps out of windows.h; libusb.h then brings windows.h. */
+#include <winsock2.h> // IWYU pragma: keep
+#endif
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <errno.h>
@@ -16,10 +21,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>   // IWYU pragma: keep
-#include <sys/time.h> // IWYU pragma: keep
+#include <string.h> // IWYU pragma: keep
 #include <sys/types.h>
-#include <unistd.h> // IWYU pragma: keep
+#ifndef _WIN32
+#include <sys/time.h> // IWYU pragma: keep
+#include <unistd.h>   // IWYU pragma: keep
+#endif
 
 /* Allocation accounting: every live block the reader holds, and a countdown to the allocation that fails. */
 enum { kMaxLive = 64 };
@@ -91,7 +98,7 @@ test_free(void* p) {
     free(p);
 }
 
-/* The vendored source, with its heap calls routed through the accounting above. It keeps upstream style, so only the
+/* The library source, with its heap calls routed through the accounting above. It keeps upstream style, so only the
  * warnings it raises under the project's flags are silenced, and only for it. */
 #define malloc test_malloc
 #define calloc test_calloc
@@ -110,11 +117,21 @@ test_free(void* p) {
 #pragma GCC diagnostic ignored "-Wuninitialized"
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
-// The test needs the source's private struct rtlsdr_dev and static helpers, so it compiles the file itself.
+#ifdef _MSC_VER
+#pragma warning(push, 0)
+#endif
+#if defined(_WIN32) && !defined(min)
+/* librtlsdr.c takes min() from windows.h on Windows, where NOMINMAX (cmake/Platform.cmake) keeps it out. */
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+// The test needs the source's private struct rtlsdr_dev and static helpers, so it compiles the file itself:
+// DSD_TEST_LIBRTLSDR_SOURCE names the vendored or the desktop librtlsdr.c.
 // NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "../../android/third_party/librtlsdr/src/librtlsdr.c"
+#include DSD_TEST_LIBRTLSDR_SOURCE
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 #undef malloc
 #undef calloc

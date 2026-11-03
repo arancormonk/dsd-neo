@@ -1,26 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * The vendored libairspy's teardown of its USB transfers (android/third_party/libairspy). airspy.c is compiled from the
- * vendored source against stub libusb entry points: a submitted transfer waits in a queue, and whichever thread polls
- * for events calls it back, one poller at a time, as libusb does under its event lock. libairspy's own transfer thread
- * polls while it streams, and its stop, close, restart and packing change run on the caller's thread. A cancel returns
- * at once and its CANCELLED callback comes later; libusb owns a transfer from its submission to its callback, so
- * freeing it or its buffer before then is undefined behaviour, and submitting it again is refused as busy.
+ * The vendored libairspy's teardown of its USB transfers (android/third_party/libairspy), and the same patched source
+ * as the desktop releases build it (DESKTOP_LIBAIRSPY_TRANSFERS, tests/CMakeLists.txt). airspy.c is compiled against
+ * stub libusb entry points: a submitted transfer waits in a queue, and whichever thread polls for events calls it back,
+ * one poller at a time, as libusb does under its event lock. libairspy's own transfer thread polls while it streams,
+ * and its stop, close, restart and packing change run on the caller's thread. A cancel returns at once and its
+ * CANCELLED callback comes later; libusb owns a transfer from its submission to its callback, so freeing it or its
+ * buffer before then is undefined behaviour, and submitting it again is refused as busy.
  */
 
 /* Every system header airspy.c uses comes in here, before its heap calls are renamed below. */
+#ifdef _WIN32
+/* struct timeval, which WIN32_LEAN_AND_MEAN keeps out of windows.h; libusb.h then brings windows.h. */
+#include <winsock2.h> // IWYU pragma: keep
+#endif
+#ifdef _MSC_VER
+/* As airspy.c does before it: the CRT's time.h has struct timespec, so PThreads4W's pthread.h must not declare it. */
+#define HAVE_STRUCT_TIMESPEC
+#endif
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/timing.h>
 #include <libusb.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>   // IWYU pragma: keep
-#include <sys/time.h> // IWYU pragma: keep
+#include <string.h> // IWYU pragma: keep
 #include <sys/types.h>
-#include <time.h>
-#include <unistd.h> // IWYU pragma: keep
+#ifdef _WIN32
+#include <windows.h> // IWYU pragma: keep
+/* timeBeginPeriod() */
+#include <timeapi.h>
+#else
+#include <sys/time.h> // IWYU pragma: keep
+#include <unistd.h>   // IWYU pragma: keep
+#endif
 /* The SDK's own headers come in through airspy.c below. */
 // IWYU pragma: no_include <airspy.h>
 // IWYU pragma: no_include <airspy_commands.h>
@@ -56,15 +71,12 @@ static int g_quarantined_count;
 
 static long long
 now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000L;
+    return (long long)dsd_time_monotonic_ms();
 }
 
 static void
 sleep_us(long us) {
-    const struct timespec ts = {0, us * 1000L};
-    nanosleep(&ts, NULL);
+    dsd_sleep_us((uint64_t)us);
 }
 
 static void
@@ -159,7 +171,7 @@ test_free(void* p) {
     free(p);
 }
 
-/* The vendored source, with its heap calls routed through the accounting above. It keeps upstream style, so only the
+/* The library source, with its heap calls routed through the accounting above. It keeps upstream style, so only the
  * warnings it raises under the project's flags are silenced, and only for it. */
 #define malloc test_malloc
 #define calloc test_calloc
@@ -168,12 +180,17 @@ test_free(void* p) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#elif defined(_MSC_VER)
+#pragma warning(push, 0)
 #endif
-// The test needs the source's private struct airspy_device and static helpers, so it compiles the file itself.
+// The test needs the source's private struct airspy_device and static helpers, so it compiles the file itself:
+// DSD_TEST_LIBAIRSPY_SOURCE names the vendored or the desktop airspy.c.
 // NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "../../android/third_party/libairspy/airspy.c"
+#include DSD_TEST_LIBAIRSPY_SOURCE
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 #undef malloc
 #undef calloc
@@ -872,7 +889,8 @@ drain_cancels_a_late_resubmit(int on_other_thread) {
                                        : "drain_cancels_a_late_resubmit (on the transfer thread)";
     airspy_device_t* dev = open_case(name);
     stream_run(name, dev, "start");
-    pthread_t poller;
+    /* A value on every path, for compilers that cannot tell the join below is as conditional as the start. */
+    pthread_t poller = g_main_thread;
     pthread_mutex_lock(&g_mu);
     g_park_cancel_passes = on_other_thread ? 2 : 1;
     g_park_on_thread = on_other_thread;
@@ -908,6 +926,10 @@ drain_cancels_a_late_resubmit(int on_other_thread) {
 
 int
 main(void) {
+#ifdef _WIN32
+    /* The harness paces in steps of about 1 ms, which Windows stretches to its 15.6 ms timer tick unless asked. */
+    (void)timeBeginPeriod(1);
+#endif
     g_main_thread = pthread_self();
     stop_waits_for_deferred_cancel();
     close_after_stop_frees_nothing_outstanding(1);

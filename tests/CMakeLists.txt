@@ -16278,118 +16278,148 @@ if(DSD_HAS_RADIO)
     endif()
 endif()
 
-# The Android app's vendored librtlsdr, async reader setup under allocation
-# failure. The test includes librtlsdr.c itself against stub libusb entry points,
-# so it needs only a POSIX host and the vendored headers, not an SDR library;
-# Windows and macOS skip it.
-if(
-    UNIX
-    AND NOT APPLE
-    AND NOT ANDROID
-    AND NOT CYGWIN
-    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+# The libraries' USB transfer handling, each source compiled into its test
+# against stub libusb entry points: librtlsdr's async reader setup under
+# allocation failure and its accounting for every transfer, and libairspy's
+# stop, close, restart and packing change waiting for cancelled transfers. They
+# need no SDR library, only threads (PThreads4W under MSVC, which vcpkg already
+# installs for libairspy) and the vendored libusb header. VENDORED_* build the
+# Android app's copies. DESKTOP_* build the pinned upstream sources with the
+# patches the Windows, AppImage and macOS releases carry, from the tree that
+# tools/usb_dependency_patches.sh fetch-all writes, when
+# DSD_TEST_DESKTOP_USB_SOURCES names it.
+set(DSD_TEST_DESKTOP_USB_SOURCES
+    ""
+    CACHE PATH
+    "Patched desktop libairspy and librtlsdr sources (tools/usb_dependency_patches.sh fetch-all)"
 )
-    set(_DSD_NEO_VENDORED_RTLSDR
-        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+
+function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
+    string(TOUPPER "${kind}" _kind_upper)
+    set(_libusb_include
+        "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
     )
+
     # The tuner drivers stay in upstream style, built without the project
     # warnings as android/third_party/CMakeLists.txt builds them.
+    set(_tuners dsd-neo_test_${kind}_rtlsdr_tuners)
     add_library(
-        dsd-neo_test_vendored_rtlsdr_tuners
+        ${_tuners}
         STATIC
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_e4k.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0012.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0013.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc2580.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_r82xx.c
+        ${rtlsdr_root}/src/tuner_e4k.c
+        ${rtlsdr_root}/src/tuner_fc0012.c
+        ${rtlsdr_root}/src/tuner_fc0013.c
+        ${rtlsdr_root}/src/tuner_fc2580.c
+        ${rtlsdr_root}/src/tuner_r82xx.c
     )
-    set_property(
-        TARGET dsd-neo_test_vendored_rtlsdr_tuners
-        PROPERTY LINK_LIBRARIES ""
-    )
-    target_include_directories(
-        dsd-neo_test_vendored_rtlsdr_tuners
-        SYSTEM
-        PRIVATE ${_DSD_NEO_VENDORED_RTLSDR}/include
+    set_property(TARGET ${_tuners} PROPERTY LINK_LIBRARIES "")
+    target_include_directories(${_tuners} SYSTEM PRIVATE ${rtlsdr_root}/include)
+
+    foreach(_case async_alloc transfers)
+        string(TOUPPER "${_case}" _case_upper)
+        set(_target dsd-neo_test_${kind}_librtlsdr_${_case})
+        add_executable(${_target} io/test_vendored_librtlsdr_${_case}.c)
+        target_include_directories(
+            ${_target}
+            SYSTEM
+            PRIVATE ${rtlsdr_root}/include ${_libusb_include}
+        )
+        target_compile_definitions(
+            ${_target}
+            PRIVATE
+                rtlsdr_STATIC
+                "DSD_TEST_LIBRTLSDR_SOURCE=\"${rtlsdr_root}/src/librtlsdr.c\""
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                ${_tuners}
+                dsd-neo_platform
+                ${threads}
+                ${DSD_NEO_TEST_MATH_LIB}
+        )
+        add_test(
+            NAME ${_kind_upper}_LIBRTLSDR_${_case_upper}
+            COMMAND ${_target}
+        )
+    endforeach()
+    set_tests_properties(
+        ${_kind_upper}_LIBRTLSDR_TRANSFERS
+        PROPERTIES TIMEOUT 120
     )
 
-    add_executable(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        io/test_vendored_librtlsdr_async_alloc.c
-    )
+    get_filename_component(_airspy_dir "${airspy_src}" DIRECTORY)
+    set(_target dsd-neo_test_${kind}_libairspy_transfers)
+    add_executable(${_target} io/test_vendored_libairspy_transfers.c)
     target_include_directories(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
+        ${_target}
         SYSTEM
-        PRIVATE
-            ${_DSD_NEO_VENDORED_RTLSDR}/include
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+        PRIVATE ${_airspy_dir} ${_libusb_include}
     )
     target_compile_definitions(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        PRIVATE rtlsdr_STATIC
+        ${_target}
+        PRIVATE "DSD_TEST_LIBAIRSPY_SOURCE=\"${airspy_src}\""
     )
-    target_link_libraries(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        PRIVATE dsd-neo_test_vendored_rtlsdr_tuners ${DSD_NEO_TEST_MATH_LIB}
+    target_link_libraries(${_target} PRIVATE dsd-neo_platform ${threads})
+    add_test(NAME ${_kind_upper}_LIBAIRSPY_TRANSFERS COMMAND ${_target})
+    set_tests_properties(
+        ${_kind_upper}_LIBAIRSPY_TRANSFERS
+        PROPERTIES TIMEOUT 120
     )
-    add_test(
-        NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
-        COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
-    )
+endfunction()
 
-    # The same reader accounting for every USB transfer: a stub libusb whose
-    # transfers a second thread completes, fails and cancels.
-    add_executable(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        io/test_vendored_librtlsdr_transfers.c
+set(_dsd_neo_usb_test_threads "")
+if(NOT ANDROID AND NOT CYGWIN)
+    if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(_dsd_neo_usb_test_threads Threads::Threads)
+    elseif(MSVC)
+        # Windows CI requires Airspy, whose vcpkg port brings PThreads4W.
+        if(DSD_REQUIRE_AIRSPY)
+            find_package(PThreads4W REQUIRED)
+        else()
+            find_package(PThreads4W QUIET)
+        endif()
+        if(PThreads4W_FOUND)
+            # winmm: the tests ask for a 1 ms timer resolution.
+            set(_dsd_neo_usb_test_threads PThreads4W::PThreads4W winmm)
+        endif()
+    endif()
+endif()
+if(_dsd_neo_usb_test_threads)
+    dsd_neo_add_usb_library_tests(
+        vendored
+        "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy.c"
+        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+        "${_dsd_neo_usb_test_threads}"
     )
-    target_include_directories(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        SYSTEM
-        PRIVATE
-            ${_DSD_NEO_VENDORED_RTLSDR}/include
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    if(DSD_TEST_DESKTOP_USB_SOURCES)
+        set(_desktop_airspy
+            "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspy/libairspy/src/airspy.c"
+        )
+        set(_desktop_rtlsdr "${DSD_TEST_DESKTOP_USB_SOURCES}/librtlsdr")
+        if(
+            NOT EXISTS "${_desktop_airspy}"
+            OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
+        )
+            message(
+                FATAL_ERROR
+                "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
+                "libairspy/ and librtlsdr/ trees; create them with "
+                "tools/usb_dependency_patches.sh fetch-all"
+            )
+        endif()
+        dsd_neo_add_usb_library_tests(
+            desktop
+            "${_desktop_airspy}"
+            "${_desktop_rtlsdr}"
+            "${_dsd_neo_usb_test_threads}"
+        )
+    endif()
+elseif(DSD_TEST_DESKTOP_USB_SOURCES)
+    message(
+        FATAL_ERROR
+        "DSD_TEST_DESKTOP_USB_SOURCES is set, but this toolchain cannot build the USB library tests"
     )
-    target_compile_definitions(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        PRIVATE rtlsdr_STATIC
-    )
-    target_link_libraries(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        PRIVATE
-            dsd-neo_test_vendored_rtlsdr_tuners
-            Threads::Threads
-            ${DSD_NEO_TEST_MATH_LIB}
-    )
-    add_test(
-        NAME VENDORED_LIBRTLSDR_TRANSFERS
-        COMMAND dsd-neo_test_vendored_librtlsdr_transfers
-    )
-    set_tests_properties(VENDORED_LIBRTLSDR_TRANSFERS PROPERTIES TIMEOUT 120)
-
-    # The vendored libairspy's stop, close, restart and packing change waiting
-    # for cancelled USB transfers: airspy.c against the same kind of stub libusb,
-    # its own transfer thread polling for events.
-    add_executable(
-        dsd-neo_test_vendored_libairspy_transfers
-        io/test_vendored_libairspy_transfers.c
-    )
-    target_include_directories(
-        dsd-neo_test_vendored_libairspy_transfers
-        SYSTEM
-        PRIVATE
-            ${PROJECT_SOURCE_DIR}/android/third_party/libairspy
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
-    )
-    target_link_libraries(
-        dsd-neo_test_vendored_libairspy_transfers
-        PRIVATE Threads::Threads
-    )
-    add_test(
-        NAME VENDORED_LIBAIRSPY_TRANSFERS
-        COMMAND dsd-neo_test_vendored_libairspy_transfers
-    )
-    set_tests_properties(VENDORED_LIBAIRSPY_TRANSFERS PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(
