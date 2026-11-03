@@ -495,7 +495,8 @@ dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
  * The TED is the front end's own timing, at the complex rate the discriminator runs at (issue #806), not at the
  * decoder's output rate: the digital family a retune lands, or digital_resample, resamples only the output, and a TED
  * for that rate would pair the wrong samples per symbol with the complex rate. The value is advisory: the stream
- * times every profile without an override for the complex rate it lands at (rtl_stream_landing_ted_sps()).
+ * times every profile without an override for the complex rate it lands at (rtl_stream_landing_ted_sps()). It is kept
+ * so the queued request names the timing the landing runs, which the engine's retune tests check without a stream.
  */
 static void
 dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,

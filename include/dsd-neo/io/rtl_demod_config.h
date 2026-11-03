@@ -151,9 +151,9 @@ int rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* e
  * rtl_demod_check_analog_channel() at complex_rate, the rate the channel filter runs at (an I/Q replay that decimates
  * after the demodulator runs it ahead of that decimator). No-op outside the analog family (including the M17
  * encoder). Where a SoapySDR or Airspy device or an I/Q replay sets the rate rather
- * than the RTL DSP bandwidth, a width it cannot filter is refused with the fix that rate allows
- * (dsd_analog_width_check_at()): on a device, raising the DSP bandwidth (which raises the rate its capture is decimated
- * to) or narrowing the width; on a replay, narrowing the width.
+ * than the RTL DSP bandwidth, a width it cannot filter is refused with the DSP bandwidths that fit it
+ * (dsd_analog_width_check_at(), dsd_analog_width_rate_fix()): a device's capture rate is stepped to the DSP bandwidth,
+ * and a replay re-plans its rate chain to it.
  *
  * @return 0 on success, -1 with the refusal text in @p err (the stream must not start).
  */

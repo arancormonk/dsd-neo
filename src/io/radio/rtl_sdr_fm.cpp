@@ -5675,7 +5675,7 @@ static int
 capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
                           const CaptureSettingsSnapshot* previous, int rc, int* out_refusal) {
     capture_writes_forget_tuning();
-    LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
+    LOG_ERROR("Failed to apply the device sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0) {
         const dsd_rate_plan_backend backend = rate_chain_backend();
@@ -6179,7 +6179,7 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     }
     const int frequency_rc = device->set_frequency(rtl_device_handle, previous->dongle_frequency_hz);
     if (frequency_rc != 0) {
-        LOG_ERROR("Failed to return the RTL-SDR to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
+        LOG_ERROR("Failed to return the device to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
                   frequency_rc);
     } else {
         capture_writes_note_frequency();
@@ -6187,7 +6187,7 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     const uint32_t programmed_hz = capture_snapshot_programmed_rate_hz(previous);
     const int rate_rc = device->set_sample_rate(rtl_device_handle, programmed_hz);
     if (rate_rc != 0) {
-        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", programmed_hz, rate_rc);
+        LOG_ERROR("Failed to return the device to sample rate %u Hz (rc=%d).\n", programmed_hz, rate_rc);
     }
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
     int correction_rc = 0;
@@ -6217,7 +6217,7 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
  * rather than run on a capture it cannot vouch for. */
 static void
 controller_stop_for_unrestored_capture(uint32_t kept_center_hz, int device_rc) {
-    LOG_ERROR("The RTL-SDR could not be put back on %u Hz after a refused retune (rc=%d); the stream stops.\n",
+    LOG_ERROR("The device could not be put back on %u Hz after a refused retune (rc=%d); the stream stops.\n",
               kept_center_hz, device_rc);
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, device_rc);
     dsd_exitflag_store(1);
@@ -7043,9 +7043,6 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
     }
 }
 
-/* The rate the device read back after the start's rate write (0 when it gave none) in @p out_actual_hz, the final plan
- * for it and its I/Q rate step (issue #806). Returns 0 with @p io_capture_rate_hz the rate the chain runs at, or
- * kCaptureRateChainRefused (logged): the start fails. */
 /* The start's read-back @p actual_hz (0: none) of @p io_capture_rate_hz: the final plan and its I/Q rate step. */
 static int
 controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t actual_hz) {
@@ -7057,6 +7054,9 @@ controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t actual_h
     return 0;
 }
 
+/* The rate the device read back after the start's rate write (0 when it gave none) in @p out_actual_hz, the final plan
+ * for it and its I/Q rate step (issue #806). Returns 0 with @p io_capture_rate_hz the rate the chain runs at, or
+ * kCaptureRateChainRefused (logged): the start fails. */
 static int
 controller_sync_initial_capture_rate(uint32_t* io_capture_rate_hz, uint32_t* out_actual_hz) {
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
