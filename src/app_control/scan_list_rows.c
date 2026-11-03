@@ -92,6 +92,31 @@ dsd_app_scan_list_rows_answer(dsd_app_scan_list_row* rows, int row_count, int li
     return -1;
 }
 
+void
+dsd_app_scan_list_rows_take(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
+                            const dsd_app_scan_list_result* results, int n) {
+    if (rows == NULL || after == NULL || results == NULL || n <= 0) {
+        return;
+    }
+    int gap = 0;
+    for (int i = 0; i < n; i++) {
+        gap |= results[i].sequence != *after + 1U;
+        *after = results[i].sequence;
+        (void)dsd_app_scan_list_rows_answer(rows, row_count, list_count, &results[i]);
+    }
+    if (!gap) {
+        return;
+    }
+    /* The history moved past results never read: a waiting row's answer may be among them, and would never come. It
+       stops waiting and shows the view, with nothing to say beside it. */
+    for (int r = 0; r < row_count; r++) {
+        if (rows[r].request != 0U) {
+            rows[r].request = 0U;
+            rows[r].note = (uint8_t)DSD_APP_SCAN_LIST_NOTE_NONE;
+        }
+    }
+}
+
 /* Whether @p row's note no longer describes the lists: they moved past the ones it described, or a paused refusal
    saw the scan paused and then resumed. Only a pause seen counts: the frame an answer arrives in can predate the
    pause that refused it. */

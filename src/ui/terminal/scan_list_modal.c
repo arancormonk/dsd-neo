@@ -242,11 +242,8 @@ scan_list_modal_take_results(void) {
     dsd_app_scan_list_result results[SCAN_LIST_MODAL_RESULTS_BATCH];
     for (;;) {
         const int n = dsd_app_scan_list_results_since(g_modal.after, results, SCAN_LIST_MODAL_RESULTS_BATCH);
-        for (int i = 0; i < n; i++) {
-            g_modal.after = results[i].sequence;
-            (void)dsd_app_scan_list_rows_answer(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count,
-                                                &results[i]);
-        }
+        dsd_app_scan_list_rows_take(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count,
+                                    &g_modal.after, results, n);
         if (n < SCAN_LIST_MODAL_RESULTS_BATCH) {
             return;
         }

@@ -298,10 +298,13 @@ struct ToggleRig {
             sent << payload;
             return static_cast<int>(DSD_APP_COMMAND_SUBMIT_QUEUED);
         };
+        /* As the real history does, only the last DSD_APP_RESULT_HISTORY results are kept. */
         b.resultsSince = [this](uint64_t after, dsd_app_scan_list_result* out, int cap) {
+            const uint64_t oldest =
+                latest > uint64_t{DSD_APP_RESULT_HISTORY} ? latest - DSD_APP_RESULT_HISTORY + 1U : 1U;
             int n = 0;
             for (const auto& result : results) {
-                if (result.sequence > after && n < cap) {
+                if (result.sequence > after && result.sequence >= oldest && n < cap) {
                     out[n++] = result;
                 }
             }
@@ -402,6 +405,24 @@ test_scan_list_toggle_switch_and_hold() {
     /* Switched back on from elsewhere: the snapshot is the truth from then on. */
     model.refresh(three_lists(12, true, true));
     expect("a later change from elsewhere shows", toggle_row_is(model, 1, true, false, QString()));
+}
+
+/* More answers than the history keeps went by between two refreshes: the row's own may be among those lost, so it
+   stops waiting and shows the snapshot, with no reason, and takes a switch again. */
+static void
+test_scan_list_toggle_history_gap() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    expect("the row waits", toggle_row_is(model, 0, false, true, QString()));
+    for (int i = 0; i < DSD_APP_RESULT_HISTORY + 4; ++i) {
+        rig.answer(9000U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+    }
+    model.refresh(three_lists(10));
+    expect("a gap ends the wait: the snapshot, no reason", toggle_row_is(model, 0, true, false, QString()));
+    expect("and the row switches again", model.setEnabled(1, false) && rig.sent.size() == 2);
 }
 
 /* A refusal puts the switch back and says why beside it, until the lists move past the ones it described; a paused
@@ -2776,6 +2797,7 @@ main(int argc, char** argv) {
     test_scan_avoid_list_model_diff();
     test_scan_list_toggle_switch_and_hold();
     test_scan_list_toggle_refusals();
+    test_scan_list_toggle_history_gap();
     test_scan_list_toggle_session_change();
     test_scan_list_readings();
     test_scan_avoids();

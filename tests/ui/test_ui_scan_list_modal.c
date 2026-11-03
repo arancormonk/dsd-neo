@@ -48,7 +48,7 @@ static dsd_app_scan_list_set_payload g_sent[32];
 static int g_sent_count;
 static int g_reject_next;
 static uint32_t g_next_request = 100U;
-static dsd_app_scan_list_result g_results[32];
+static dsd_app_scan_list_result g_results[128];
 static int g_result_count;
 static uint64_t g_result_seq;
 static char g_toast[256];
@@ -79,11 +79,14 @@ dsd_app_scan_list_result_get(dsd_app_scan_list_result* out) {
     return 1;
 }
 
+/* As the real history does, only the last DSD_APP_RESULT_HISTORY results are kept. */
 int
 dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
+    const uint64_t oldest =
+        g_result_seq > (uint64_t)DSD_APP_RESULT_HISTORY ? g_result_seq - (uint64_t)DSD_APP_RESULT_HISTORY + 1U : 1U;
     int n = 0;
     for (int i = 0; i < g_result_count && n < cap; i++) {
-        if (g_results[i].sequence > after_sequence) {
+        if (g_results[i].sequence > after_sequence && g_results[i].sequence >= oldest) {
             out[n++] = g_results[i];
         }
     }
@@ -167,7 +170,10 @@ fixture(void) {
     g_state.trunk_scan_active_list = 1;
     g_sent_count = 0;
     g_reject_next = 0;
+    /* A fresh history: the newest result (none) and the sequence the next one takes start over together, as the
+       results ring keeps them, so a modal opened here reads on from the newest with no gap. */
     g_result_count = 0;
+    g_result_seq = 0U;
     g_toast[0] = '\0';
     scan_list_modal_close();
 }
@@ -585,6 +591,25 @@ test_paused_answer_before_the_pause_shows(void) {
     scan_list_modal_close();
 }
 
+/* More answers than the history keeps went by between two frames: the row's own may be among those lost, so it stops
+   waiting and shows the snapshot, with no note, and Enter on it switches again. */
+static void
+test_a_history_gap_ends_the_wait(void) {
+    fixture();
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    key('\n');
+    assert(g_sent_count == 1);
+    expect_waiting_row(0, "1  security      On   12 targets  on air  Switching off");
+    for (int i = 0; i < DSD_APP_RESULT_HISTORY + 4; i++) {
+        publish_result(9000U + (uint32_t)i, 2, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    key('\n');
+    assert(g_sent_count == 2 && g_sent[1].list == 1 && g_sent[1].enabled == 0);
+    scan_list_modal_close();
+}
+
 int
 main(void) {
     test_opens_only_with_lists_to_switch();
@@ -598,6 +623,7 @@ main(void) {
     test_snapshot_already_past_the_answer();
     test_dropped_answer_behind_the_view();
     test_paused_answer_before_the_pause_shows();
+    test_a_history_gap_ends_the_wait();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

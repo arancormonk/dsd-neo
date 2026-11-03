@@ -82,6 +82,16 @@ void dsd_app_scan_list_row_not_sent(dsd_app_scan_list_row* row, uint32_t lists_s
 int dsd_app_scan_list_rows_answer(dsd_app_scan_list_row* rows, int row_count, int list_count,
                                   const dsd_app_scan_list_result* result);
 
+/**
+ * @brief Take @p n results read with dsd_app_scan_list_results_since() from @p *after, oldest first: each answers its
+ * row (dsd_app_scan_list_rows_answer()) and moves @p *after to its sequence. Results that do not follow on from
+ * @p *after mean the retained history moved past some never read (more than DSD_APP_RESULT_HISTORY since the last
+ * read), which may hold a waiting row's answer: every row still waiting then stops waiting and shows the view, with no
+ * note. A later answer to its request finds no row and is ignored. NULL arguments or @p n <= 0 change nothing.
+ */
+void dsd_app_scan_list_rows_take(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
+                                 const dsd_app_scan_list_result* results, int n);
+
 /** @brief Retire, for @p view (the frame's), each hold the view has caught up with and each note that no longer
  *  describes the lists. Call once per frame, after the frame's results. */
 void dsd_app_scan_list_rows_expire(dsd_app_scan_list_row* rows, int row_count, const dsd_app_scan_list_view* view);

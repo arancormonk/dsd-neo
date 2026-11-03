@@ -235,10 +235,7 @@ ScanListToggleModel::takeResults() {
     dsd_app_scan_list_result results[kResultsBatch];
     for (;;) {
         const int n = m_backend.resultsSince(m_after, results, kResultsBatch);
-        for (int i = 0; i < n; ++i) {
-            m_after = results[i].sequence;
-            (void)dsd_app_scan_list_rows_answer(m_rows, count(), count(), &results[i]);
-        }
+        dsd_app_scan_list_rows_take(m_rows, count(), count(), &m_after, results, n);
         if (n < kResultsBatch) {
             return;
         }

@@ -164,6 +164,49 @@ test_unchanged_holds_until_the_snapshot(void) {
     }
 }
 
+/* Results taken in order answer their rows and move the cursor. A batch that does not follow on from the cursor (the
+   history moved past 64 or more answers never read) may have lost a waiting row's answer: the row stops waiting and
+   shows the view, with no note, and its answer, should it come later, finds no row. */
+static void
+test_take_recovers_from_a_history_gap(void) {
+    dsd_app_scan_list_row rows[4];
+    DSD_MEMSET(rows, 0, sizeof rows);
+    const int on[3] = {1, 1, 1};
+    const dsd_app_scan_list_view v = view_of(60U, on, 0);
+    uint64_t after = 100U;
+    dsd_app_scan_list_row_sent(&rows[0], 601U, 0, v.lists_seq);
+    dsd_app_scan_list_row_sent(&rows[2], 602U, 0, v.lists_seq);
+    /* In order: row 2's answer comes, row 0 keeps waiting. */
+    dsd_app_scan_list_result batch[2];
+    batch[0] = result_of(990U, DSD_APP_SCAN_LIST_SET_OK, 61U);
+    batch[0].sequence = 101U;
+    batch[1] = result_of(602U, DSD_APP_SCAN_LIST_SET_REFUSED_LAST, 61U);
+    batch[1].sequence = 102U;
+    dsd_app_scan_list_rows_take(rows, 4, 3, &after, batch, 2);
+    assert(after == 102U && rows[0].request == 601U);
+    assert(rows[2].request == 0U && rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
+    /* 64 more answers went by unread: the oldest still kept is 167, not 103. */
+    dsd_app_scan_list_result late = result_of(991U, DSD_APP_SCAN_LIST_SET_OK, 62U);
+    late.sequence = 167U;
+    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &late, 1);
+    assert(after == 167U);
+    assert(rows[0].request == 0U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
+    assert(dsd_app_scan_list_row_on(&rows[0], &v, 0) == 1);
+    /* Row 2's answered note is not a waiting row's: it stays. */
+    assert(rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
+    /* The lost answer, were it to come after all, answers no row. */
+    dsd_app_scan_list_result lost = result_of(601U, DSD_APP_SCAN_LIST_SET_OK, 63U);
+    lost.sequence = 168U;
+    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &lost, 1);
+    assert(after == 168U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
+    /* Nothing to take changes nothing. */
+    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &lost, 0);
+    dsd_app_scan_list_rows_take(NULL, 4, 3, &after, &lost, 1);
+    dsd_app_scan_list_rows_take(rows, 4, 3, NULL, &lost, 1);
+    dsd_app_scan_list_rows_take(rows, 4, 3, &after, NULL, 1);
+    assert(after == 168U);
+}
+
 /* A refusal: the view's state, and the note until the lists move past the later of the answer's and the switch's. */
 static void
 test_refusals_and_notes(void) {
@@ -237,6 +280,7 @@ main(void) {
     test_switch_holds_until_the_snapshot();
     test_every_list_row();
     test_unchanged_holds_until_the_snapshot();
+    test_take_recovers_from_a_history_gap();
     test_refusals_and_notes();
     test_paused_refusal();
     DSD_FPRINTF(stderr, "OK\n");
