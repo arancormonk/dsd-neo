@@ -164,47 +164,81 @@ test_unchanged_holds_until_the_snapshot(void) {
     }
 }
 
-/* Results taken in order answer their rows and move the cursor. A batch that does not follow on from the cursor (the
-   history moved past 64 or more answers never read) may have lost a waiting row's answer: the row stops waiting and
-   shows the view, with no note, and its answer, should it come later, finds no row. */
+/* A results history as the queue keeps it: sequence 1 .. count, only the last DSD_APP_RESULT_HISTORY retained. */
+typedef struct {
+    dsd_app_scan_list_result results[200];
+    int count;
+    int reads;
+} test_history;
+
 static void
-test_take_recovers_from_a_history_gap(void) {
+history_add(test_history* h, uint32_t request, int32_t code) {
+    assert(h->count < (int)(sizeof h->results / sizeof h->results[0]));
+    dsd_app_scan_list_result* r = &h->results[h->count];
+    *r = result_of(request, code, 61U);
+    r->sequence = (uint64_t)++h->count;
+}
+
+static int
+history_read(void* ctx, uint64_t after, dsd_app_scan_list_result* out, int cap) {
+    test_history* h = (test_history*)ctx;
+    h->reads++;
+    const int oldest = h->count > DSD_APP_RESULT_HISTORY ? h->count - DSD_APP_RESULT_HISTORY + 1 : 1;
+    int n = 0;
+    for (int i = oldest - 1; i < h->count && n < cap; i++) {
+        if (h->results[i].sequence > after) {
+            out[n++] = h->results[i];
+        }
+    }
+    return n;
+}
+
+/* Results read in order answer their rows and move the cursor. When the history moved past answers never read (more
+   than 64 since the last read), every retained page is read first: an answer still kept, here on the third page of
+   sixteen, answers its row. Only a row whose answer is still missing then stops waiting and shows the view, with no
+   note, and its answer, should it come later, finds no row. */
+static void
+test_read_recovers_from_a_history_gap(void) {
     dsd_app_scan_list_row rows[4];
     DSD_MEMSET(rows, 0, sizeof rows);
     const int on[3] = {1, 1, 1};
     const dsd_app_scan_list_view v = view_of(60U, on, 0);
-    uint64_t after = 100U;
+    static test_history h;
+    DSD_MEMSET(&h, 0, sizeof h);
+    uint64_t after = 0U;
     dsd_app_scan_list_row_sent(&rows[0], 601U, 0, v.lists_seq);
-    dsd_app_scan_list_row_sent(&rows[2], 602U, 0, v.lists_seq);
-    /* In order: row 2's answer comes, row 0 keeps waiting. */
-    dsd_app_scan_list_result batch[2];
-    batch[0] = result_of(990U, DSD_APP_SCAN_LIST_SET_OK, 61U);
-    batch[0].sequence = 101U;
-    batch[1] = result_of(602U, DSD_APP_SCAN_LIST_SET_REFUSED_LAST, 61U);
-    batch[1].sequence = 102U;
-    dsd_app_scan_list_rows_take(rows, 4, 3, &after, batch, 2);
-    assert(after == 102U && rows[0].request == 601U);
+    dsd_app_scan_list_row_sent(&rows[1], 602U, 0, v.lists_seq);
+    dsd_app_scan_list_row_sent(&rows[2], 603U, 0, v.lists_seq);
+    /* In order: row 2's answer comes, rows 0 and 1 keep waiting. */
+    history_add(&h, 990U, DSD_APP_SCAN_LIST_SET_OK);
+    history_add(&h, 603U, DSD_APP_SCAN_LIST_SET_REFUSED_LAST);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
+    assert(after == 2U && rows[0].request == 601U && rows[1].request == 602U);
     assert(rows[2].request == 0U && rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
-    /* 64 more answers went by unread: the oldest still kept is 167, not 103. */
-    dsd_app_scan_list_result late = result_of(991U, DSD_APP_SCAN_LIST_SET_OK, 62U);
-    late.sequence = 167U;
-    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &late, 1);
-    assert(after == 167U);
+    /* 100 answers go by unread, so the history keeps sequences 39 .. 102. Row 1's is sequence 79, the 41st kept: on
+       the third page. Row 0's never comes. */
+    for (int i = 0; i < 100; i++) {
+        history_add(&h, i == 76 ? 602U : 9000U + (uint32_t)i, DSD_APP_SCAN_LIST_SET_OK);
+    }
+    h.reads = 0;
+    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
+    assert(after == 102U && h.reads == 5);
+    assert(rows[1].request == 0U && rows[1].note == DSD_APP_SCAN_LIST_NOTE_ANSWER
+           && rows[1].code == DSD_APP_SCAN_LIST_SET_OK && rows[1].held);
     assert(rows[0].request == 0U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
     assert(dsd_app_scan_list_row_on(&rows[0], &v, 0) == 1);
     /* Row 2's answered note is not a waiting row's: it stays. */
     assert(rows[2].note == DSD_APP_SCAN_LIST_NOTE_ANSWER);
     /* The lost answer, were it to come after all, answers no row. */
-    dsd_app_scan_list_result lost = result_of(601U, DSD_APP_SCAN_LIST_SET_OK, 63U);
-    lost.sequence = 168U;
-    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &lost, 1);
-    assert(after == 168U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
-    /* Nothing to take changes nothing. */
-    dsd_app_scan_list_rows_take(rows, 4, 3, &after, &lost, 0);
-    dsd_app_scan_list_rows_take(NULL, 4, 3, &after, &lost, 1);
-    dsd_app_scan_list_rows_take(rows, 4, 3, NULL, &lost, 1);
-    dsd_app_scan_list_rows_take(rows, 4, 3, &after, NULL, 1);
-    assert(after == 168U);
+    history_add(&h, 601U, DSD_APP_SCAN_LIST_SET_OK);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
+    assert(after == 103U && rows[0].note == DSD_APP_SCAN_LIST_NOTE_NONE && !rows[0].held);
+    /* Nothing new, or NULL arguments, change nothing. */
+    dsd_app_scan_list_rows_read(rows, 4, 3, &after, history_read, &h);
+    dsd_app_scan_list_rows_read(NULL, 4, 3, &after, history_read, &h);
+    dsd_app_scan_list_rows_read(rows, 4, 3, NULL, history_read, &h);
+    dsd_app_scan_list_rows_read(rows, 4, 3, &after, NULL, &h);
+    assert(after == 103U);
 }
 
 /* A refusal: the view's state, and the note until the lists move past the later of the answer's and the switch's. */
@@ -280,7 +314,7 @@ main(void) {
     test_switch_holds_until_the_snapshot();
     test_every_list_row();
     test_unchanged_holds_until_the_snapshot();
-    test_take_recovers_from_a_history_gap();
+    test_read_recovers_from_a_history_gap();
     test_refusals_and_notes();
     test_paused_refusal();
     DSD_FPRINTF(stderr, "OK\n");

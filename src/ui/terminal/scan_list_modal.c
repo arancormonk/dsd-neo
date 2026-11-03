@@ -39,7 +39,6 @@
 enum {
     SCAN_LIST_MODAL_ROWS_MAX = DSD_TRUNK_SCAN_MAX_LISTS + 1, /* every list, then All lists on */
     SCAN_LIST_MODAL_TEXT_MAX = 256,
-    SCAN_LIST_MODAL_RESULTS_BATCH = 16,
 };
 
 typedef struct {
@@ -237,17 +236,16 @@ scan_list_format_title(char* out, size_t out_size) {
 
 /* ---- Requests and answers ---- */
 
+static int
+scan_list_modal_read_results(void* ctx, uint64_t after, dsd_app_scan_list_result* out, int cap) {
+    (void)ctx;
+    return dsd_app_scan_list_results_since(after, out, cap);
+}
+
 static void
 scan_list_modal_take_results(void) {
-    dsd_app_scan_list_result results[SCAN_LIST_MODAL_RESULTS_BATCH];
-    for (;;) {
-        const int n = dsd_app_scan_list_results_since(g_modal.after, results, SCAN_LIST_MODAL_RESULTS_BATCH);
-        dsd_app_scan_list_rows_take(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count,
-                                    &g_modal.after, results, n);
-        if (n < SCAN_LIST_MODAL_RESULTS_BATCH) {
-            return;
-        }
-    }
+    dsd_app_scan_list_rows_read(g_modal.rows, scan_list_modal_row_count(), (int)g_modal.view.list_count, &g_modal.after,
+                                scan_list_modal_read_results, NULL);
 }
 
 /* Paused, the decoder can only refuse a switch: refuse it here, beside the row, as its answer would. Sending it would

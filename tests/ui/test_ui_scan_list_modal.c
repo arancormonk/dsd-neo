@@ -610,6 +610,26 @@ test_a_history_gap_ends_the_wait(void) {
     scan_list_modal_close();
 }
 
+/* More than the history keeps went by between two frames, but the row's own answer is still kept, on the third page
+   of sixteen: every kept page is read before any wait is given up, so the row takes its answer. */
+static void
+test_an_answer_kept_past_a_history_gap_answers_its_row(void) {
+    fixture();
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    key('\n');
+    assert(g_sent_count == 1);
+    for (int i = 0; i < 50; i++) {
+        publish_result(9000U + (uint32_t)i, 2, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    publish_result(g_sent[0].request, 1, 0, DSD_APP_SCAN_LIST_SET_OK);
+    for (int i = 0; i < 30; i++) {
+        publish_result(9100U + (uint32_t)i, 2, 1, DSD_APP_SCAN_LIST_SET_UNCHANGED);
+    }
+    tick();
+    expect_row(0, "1  security      Off  12 targets  on air");
+    scan_list_modal_close();
+}
+
 int
 main(void) {
     test_opens_only_with_lists_to_switch();
@@ -624,6 +644,7 @@ main(void) {
     test_dropped_answer_behind_the_view();
     test_paused_answer_before_the_pause_shows();
     test_a_history_gap_ends_the_wait();
+    test_an_answer_kept_past_a_history_gap_answers_its_row();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

@@ -425,6 +425,26 @@ test_scan_list_toggle_history_gap() {
     expect("and the row switches again", model.setEnabled(1, false) && rig.sent.size() == 2);
 }
 
+/* More than the history keeps went by between two refreshes, but the row's own answer is still kept, on the third
+   page of sixteen: every kept page is read before any wait is given up, so the row takes its answer. */
+static void
+test_scan_list_toggle_answer_kept_past_a_gap() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    for (int i = 0; i < 50; ++i) {
+        rig.answer(9000U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+    }
+    rig.answer(rig.sent.at(0).request, DSD_APP_SCAN_LIST_SET_OK, 11);
+    for (int i = 0; i < 30; ++i) {
+        rig.answer(9100U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 11);
+    }
+    model.refresh(three_lists(10));
+    expect("the kept answer switches the row: off, not waiting", toggle_row_is(model, 0, false, false, QString()));
+}
+
 /* A refusal puts the switch back and says why beside it, until the lists move past the ones it described; a paused
    refusal also goes once a resume this model saw follows the pause. */
 static void
@@ -2798,6 +2818,7 @@ main(int argc, char** argv) {
     test_scan_list_toggle_switch_and_hold();
     test_scan_list_toggle_refusals();
     test_scan_list_toggle_history_gap();
+    test_scan_list_toggle_answer_kept_past_a_gap();
     test_scan_list_toggle_session_change();
     test_scan_list_readings();
     test_scan_avoids();

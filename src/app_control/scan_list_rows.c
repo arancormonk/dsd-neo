@@ -92,23 +92,43 @@ dsd_app_scan_list_rows_answer(dsd_app_scan_list_row* rows, int row_count, int li
     return -1;
 }
 
+enum {
+    SCAN_LIST_ROWS_PAGE = 16,
+    /* The history holds DSD_APP_RESULT_HISTORY; a few pages more let results that land during the read in too. */
+    SCAN_LIST_ROWS_PAGES_MAX = (DSD_APP_RESULT_HISTORY / SCAN_LIST_ROWS_PAGE) + 4,
+};
+
+/* One page read on from @p *after: each result answers its row and moves the cursor. Returns how many came, and
+   sets @p *gap when one did not follow on from the cursor. */
+static int
+scan_list_rows_read_page(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
+                         dsd_app_scan_list_results_reader read, void* ctx, int* gap) {
+    dsd_app_scan_list_result page[SCAN_LIST_ROWS_PAGE];
+    const int n = read(ctx, *after, page, SCAN_LIST_ROWS_PAGE);
+    for (int i = 0; i < n && i < SCAN_LIST_ROWS_PAGE; i++) {
+        *gap |= page[i].sequence != *after + 1U;
+        *after = page[i].sequence;
+        (void)dsd_app_scan_list_rows_answer(rows, row_count, list_count, &page[i]);
+    }
+    return n;
+}
+
 void
-dsd_app_scan_list_rows_take(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
-                            const dsd_app_scan_list_result* results, int n) {
-    if (rows == NULL || after == NULL || results == NULL || n <= 0) {
+dsd_app_scan_list_rows_read(dsd_app_scan_list_row* rows, int row_count, int list_count, uint64_t* after,
+                            dsd_app_scan_list_results_reader read, void* ctx) {
+    if (rows == NULL || after == NULL || read == NULL) {
         return;
     }
     int gap = 0;
-    for (int i = 0; i < n; i++) {
-        gap |= results[i].sequence != *after + 1U;
-        *after = results[i].sequence;
-        (void)dsd_app_scan_list_rows_answer(rows, row_count, list_count, &results[i]);
+    int drained = 0;
+    for (int pages = 0; pages < SCAN_LIST_ROWS_PAGES_MAX && !drained; pages++) {
+        drained = scan_list_rows_read_page(rows, row_count, list_count, after, read, ctx, &gap) < SCAN_LIST_ROWS_PAGE;
     }
-    if (!gap) {
+    if (!gap || !drained) {
         return;
     }
-    /* The history moved past results never read: a waiting row's answer may be among them, and would never come. It
-       stops waiting and shows the view, with nothing to say beside it. */
+    /* Every retained answer has been read, and the history had moved past results never read, which may have held the
+       answer of a row still waiting: it stops waiting and shows the view, with nothing to say beside it. */
     for (int r = 0; r < row_count; r++) {
         if (rows[r].request != 0U) {
             rows[r].request = 0U;

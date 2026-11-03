@@ -20,12 +20,6 @@
 
 namespace dsd_qt {
 
-namespace {
-
-constexpr int kResultsBatch = 16;
-
-} // namespace
-
 ScanListToggleModel::Backend
 ScanListToggleModel::appControlBackend() {
     Backend backend;
@@ -232,14 +226,10 @@ ScanListToggleModel::takeResults() {
     if (!m_cursorSet || !m_backend.resultsSince) {
         return;
     }
-    dsd_app_scan_list_result results[kResultsBatch];
-    for (;;) {
-        const int n = m_backend.resultsSince(m_after, results, kResultsBatch);
-        dsd_app_scan_list_rows_take(m_rows, count(), count(), &m_after, results, n);
-        if (n < kResultsBatch) {
-            return;
-        }
-    }
+    const auto read = [](void* ctx, uint64_t after, dsd_app_scan_list_result* out, int cap) {
+        return static_cast<const Backend*>(ctx)->resultsSince(after, out, cap);
+    };
+    dsd_app_scan_list_rows_read(m_rows, count(), count(), &m_after, read, &m_backend);
 }
 
 } // namespace dsd_qt
