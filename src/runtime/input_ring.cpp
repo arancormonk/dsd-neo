@@ -114,7 +114,8 @@ input_ring_note_gap(struct input_ring_state* r) {
             return;
         }
         if (pending >= INPUT_RING_GAP_SLOTS) {
-            /* The consumer reads that slot only once it took every one before it, which a full queue rules out. */
+            /* Best effort: the consumer may have caught up since `pending` was read and taken that slot's old value
+               already, and then this mark is lost too. Either way the consumer is a full queue of losses behind. */
             newest.store(at, std::memory_order_release);
             return;
         }

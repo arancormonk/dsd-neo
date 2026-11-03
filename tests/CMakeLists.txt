@@ -15847,7 +15847,11 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_test_io_soapy_stream_loss
-        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
     )
     add_test(
         NAME IO_SOAPY_STREAM_LOSS

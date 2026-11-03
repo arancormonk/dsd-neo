@@ -2630,7 +2630,8 @@ suite runs under this compiler.
     session start (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; a
     stopped capture has a slot of its own, which turns `iq_capture_requested` off for the session, publishes the options
     and shows its toast last; NULL at session end); with no sink it is dropped, and nothing is latched in the input
-    failure. The sink runs under the hook's lock,
+    failure. A capture-stopped notice not shown before the session ended is dropped with the rest: the next session is
+    a new run and keeps its own `--iq-capture`. The sink runs under the hook's lock,
     so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after
     that removal and again at session start, so a late post never reaches the next session. A failed notice-mutex initialization
     leaves the sink disabled without accessing an uninitialized lock (`RUNTIME_STREAM_NOTICE_INIT_FAILURE`).
@@ -6202,20 +6203,24 @@ Key public headers:
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
 - I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
   `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
-  - Producer gaps (issue #806 X12): samples a producer lost before the input ring (an Airspy `driver_overflow`, a
-    full ring dropping the rest of an RTL/rtl_tcp transfer or a SoapySDR read) leave a gap mark there
+  - Producer gaps (issue #806 X12): samples a producer lost before the input ring (an Airspy or SoapySDR driver
+    overflow, a full ring dropping the rest of an RTL/rtl_tcp transfer or a SoapySDR read) leave a gap mark there
     (`input_ring_note_gap()`; a retune's mute and reconfigure hold, and a purge's stale writes, are not gaps). The
     demod's block stops at the next mark (`demod_input_span_stop_at_gap()`), and the block starting at one runs
     `demod_reset_at_input_gap()` once it holds its processing block, before its input is copied: the stream-gap reset
     set (`demod_reset_on_retune()` with `StreamGap`, so `dsd_demod_reset_filter_state()` takes the cascade and the I/Q
     rate step, and the channel and timing histories go; the FLL keeps its estimate), unless nothing was filtered since
-    the last reset (`g_demod_fed_since_reset`), so an overflow at the sample a retune or a RESET reset at resets once. A
+    the last reset (`g_demod_fed_since_reset`), so an overflow at the sample a retune or a RESET reset at resets once.
+    A taken mark owes the reset (`g_demod_gap_reset_owed`) until a block runs it or any reset pays it, so a block
+    dropped before the demod enters it loses none. A SoapySDR overflow, whose loss the driver does not count, marks a
+    gap and records a one-sample `driver_overflow` MUTE (the fs/4 rotation moves on by that sample live too). A
     replay resets at the recorded `MUTE` the same way. A full ring's samples reached the capture before the ring, so
     its replay has no gap there. The count is `rtl_stream_test_replay_state::input_gap_reset_count`. Tests:
     `IO_AIRSPY_INGEST`, `IO_RTL_RETUNE_PREPARE` (marks at the losses, none at a retune's omitted spans),
+    `IO_SOAPY_STREAM_LOSS` (`overflow_marks_gap_and_capture`),
     `IO_RTL_STREAM_INPUT_GAP` (replay: a reset at each overflow's first sample, once with a RETUNE+RESET, none at
-    `retune_mute`; live Airspy on the SDK double with arbitrary transfers: a reset at each drop after filtered input,
-    and its capture's replay resets as often).
+    `retune_mute`, a dropped block's owed reset at the next block; live Airspy on the SDK double with arbitrary
+    transfers: a reset at each drop after filtered input, and its capture's replay resets as often).
   - Rate change while capturing (issue #806 X9): the capture's chain identity is its rate. A RETUNE or RESET at another
     rate (a retune whose read-back moved the rate) seals the writer under its own mutexes
     (`dsd_iq_capture_record_event()` returns `DSD_IQ_ERR_RATE_CHAIN`, every later submission and event

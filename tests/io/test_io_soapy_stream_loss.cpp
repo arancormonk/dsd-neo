@@ -13,6 +13,9 @@
 
 #include <assert.h>
 #include <atomic>
+#include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
@@ -28,6 +31,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+#include "test_support.h"
 
 struct rtl_device;
 
@@ -66,6 +70,8 @@ struct fake_soapy {
     std::atomic<int> sample_reads{0};
     std::atomic<int> hung{0};
     std::atomic<int> release{0};
+    /* READ_SAMPLES: the read after this many sample reads overflows once (0: never). */
+    std::atomic<int> overflow_after{0};
 };
 
 fake_soapy g_fake;
@@ -104,6 +110,12 @@ fake_read(void* ctx, void* buff, size_t elems, long timeout_us) {
             return RTL_DEVICE_TEST_SOAPY_TIMEOUT;
         case READ_SAMPLES:
         default:
+            if (fake->overflow_after.load(std::memory_order_acquire) > 0
+                && fake->sample_reads.load(std::memory_order_acquire)
+                       == fake->overflow_after.load(std::memory_order_acquire)) {
+                fake->overflow_after.store(0, std::memory_order_release);
+                return RTL_DEVICE_TEST_SOAPY_OVERFLOW;
+            }
             dsd_sleep_ms(5U);
             fake->sample_reads.fetch_add(1, std::memory_order_acq_rel);
             return (int)(elems < 256U ? elems : 256U);
@@ -124,6 +136,7 @@ reset_fake(int mode) {
     g_fake.sample_reads.store(0);
     g_fake.hung.store(0);
     g_fake.release.store(0);
+    g_fake.overflow_after.store(0);
 }
 
 void
@@ -684,7 +697,79 @@ struct test_case {
     void (*run)(input_ring_state* ring);
 };
 
+/* Issue #806 X12: a driver overflow loses samples the driver does not count. The ring takes a gap mark right after
+ * the reads before it, so the demod starts over at the first sample after it, and the capture records a
+ * driver_overflow MUTE there (one sample standing for the loss), so a replay resets at the same sample. */
+void
+overflow_marks_gap_and_capture(input_ring_state* shared) {
+    (void)shared;
+    constexpr int kBefore = 4;
+    constexpr uint32_t kElems = 256U;
+    auto ring = std::make_unique<input_ring_state>();
+    const int initialized = input_ring_init(ring.get(), 1U << 20);
+    assert(initialized == 0);
+    char dir[DSD_TEST_PATH_MAX];
+    char data_path[DSD_TEST_PATH_MAX];
+    char meta_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_soapy_overflow") != nullptr);
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "ovf.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "ovf.iq.json") == 0);
+    dsd_iq_capture_config cfg{};
+    DSD_SNPRINTF(cfg.data_path, sizeof cfg.data_path, "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof cfg.metadata_path, "%s", meta_path);
+    cfg.format = DSD_IQ_FORMAT_CS16;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof cfg.capture_stage, "%s", "post_mute_pre_widen");
+    cfg.sample_rate_hz = 1536000U;
+    cfg.center_frequency_hz = 851375000ULL;
+    cfg.capture_center_frequency_hz = 851375000ULL;
+    cfg.rtl_dsp_bw_khz = 48;
+    cfg.base_decimation = 32U;
+    cfg.post_downsample = 1U;
+    cfg.demod_rate_hz = 48000U;
+    cfg.muted_bytes_excluded = 1;
+    DSD_SNPRINTF(cfg.source_backend, sizeof cfg.source_backend, "%s", "soapy");
+    dsd_iq_capture_writer* writer = nullptr;
+    char err[256] = {0};
+    assert(dsd_iq_capture_open(&cfg, &writer, err, sizeof err) == DSD_IQ_OK && writer);
+
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
+    reset_session();
+    reset_fake(READ_SAMPLES);
+    g_fake.overflow_after.store(kBefore);
+    rtl_device* dev = make_device(ring.get());
+    rtl_device_set_iq_capture_writer(dev, writer);
+    const int started = rtl_device_start_async(dev, kBufLen);
+    assert(started == 0);
+    for (int i = 0; i < 2000 && g_fake.sample_reads.load() < kBefore + 3; i++) {
+        dsd_sleep_ms(1);
+    }
+    assert(g_fake.sample_reads.load() >= kBefore + 3);
+    const int stopped = rtl_device_stop_async(dev);
+    assert(stopped == 0);
+    assert(device_state(dev).overflows == 1U);
+    rtl_device_set_iq_capture_writer(dev, nullptr);
+    const dsd_iq_capture_final_stats stats{};
+    dsd_iq_capture_close(writer, &stats);
+
+    /* The gap sits after the kBefore reads' samples, and nothing but it is marked. */
+    assert(ring->gap_write.load() - ring->gap_read.load() == 1U);
+    assert(ring->gap_at[ring->gap_read.load() % INPUT_RING_GAP_SLOTS].load() == (uint64_t)kBefore * kElems * 2U);
+    dsd_iq_replay_config meta{};
+    assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+    assert(meta.event_count == 1U && meta.events[0].kind == DSD_IQ_EVENT_MUTE);
+    assert(strcmp(meta.events[0].reason, RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW) == 0);
+    assert(meta.events[0].byte_offset == (uint64_t)kBefore * kElems * 4U);
+    assert(meta.events[0].duration_bytes == 4U);
+    dsd_iq_replay_config_clear(&meta);
+
+    rtl_device_test_soapy_device_free(dev);
+    input_ring_destroy(ring.get());
+    static const char* const kFiles[] = {"ovf.iq", "ovf.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
 const test_case kCases[] = {
+    {"overflow_marks_gap_and_capture", overflow_marks_gap_and_capture},
     {"internal_read_failure_is_not_receiver_loss", internal_read_failure_is_not_receiver_loss},
     {"restart_clears_stream_counters", restart_clears_stream_counters},
     {"reader_create_failure_joins_monitor", reader_create_failure_joins_monitor},

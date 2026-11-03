@@ -5112,6 +5112,20 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
     return ret;
 }
 
+/* A SoapySDR driver overflow (issue #806 X12): the driver lost samples before the next read, and does not say how
+ * many. The ring takes a gap mark there, so the demod starts its filters over at the next sample, and the capture
+ * records a driver_overflow MUTE of one sample standing for the loss, so a replay resets at the same sample. The fs/4
+ * rotation moves on by that one sample here too, as the replay's does over the MUTE, keeping the two in step. */
+static void
+soapy_note_driver_overflow(struct rtl_device* dev) {
+    rtl_record_capture_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
+    rtl_finish_capture_mute_span(dev);
+    if (fs4_shift_capture_active(dev)) {
+        dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, 1U);
+    }
+    input_ring_note_gap(dev->input_ring);
+}
+
 static int
 soapy_handle_read_result(struct rtl_device* dev, int ret) {
     if (!dev) {
@@ -5131,6 +5145,7 @@ soapy_handle_read_result(struct rtl_device* dev, int ret) {
             DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)overflows);
             dev->soapy_last_overflow_log_ns = now_ns;
         }
+        soapy_note_driver_overflow(dev);
         return 1;
     }
     if (ret < 0) {

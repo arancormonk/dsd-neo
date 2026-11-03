@@ -612,6 +612,30 @@ load_dongle_rate(void) {
     return dongle.rate.load(std::memory_order_acquire);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The capture-stopped warnings logged (stream_note_capture_event_result()) and the last one's text
+ * (rtl_stream_test_capture_stopped_warnings()). */
+static std::mutex g_test_capture_warning_mutex;
+static int g_test_capture_warning_count = 0;
+static char g_test_capture_warning_text[192] = {0};
+
+static void
+stream_test_note_capture_stopped_warning(const char* text) {
+    std::lock_guard<std::mutex> lock(g_test_capture_warning_mutex);
+    g_test_capture_warning_count++;
+    DSD_SNPRINTF(g_test_capture_warning_text, sizeof g_test_capture_warning_text, "%s", text);
+}
+
+extern "C" int
+rtl_stream_test_capture_stopped_warnings(char* out_last, size_t out_size) {
+    std::lock_guard<std::mutex> lock(g_test_capture_warning_mutex);
+    if (out_last && out_size > 0U) {
+        DSD_SNPRINTF(out_last, out_size, "%s", g_test_capture_warning_text);
+    }
+    return g_test_capture_warning_count;
+}
+#endif
+
 /* A capture RETUNE or RESET's result (rtl_device_record_capture_retune()): the event that sealed the capture, at a
  * retune that changed the device rate (issue #806 X9), is said once, in the log and as a notice the decoder's thread
  * shows. The capture stays open, refusing what follows, until the stream's shutdown finalizes it. */
@@ -621,9 +645,15 @@ stream_note_capture_event_result(int rc, uint32_t event_rate_hz) {
         return;
     }
     const uint32_t capture_rate_hz = g_iq_capture_rate_hz.load(std::memory_order_relaxed);
-    LOG_WARN("I/Q capture stopped: the device rate changed from %u to %u Hz on a retune; the file ends at the last "
-             "sample at %u Hz.\n",
-             capture_rate_hz, event_rate_hz, capture_rate_hz);
+    char text[192];
+    DSD_SNPRINTF(text, sizeof text,
+                 "I/Q capture stopped: the device rate changed from %u to %u Hz on a retune; the file ends at the last "
+                 "sample at %u Hz.",
+                 capture_rate_hz, event_rate_hz, capture_rate_hz);
+    LOG_WARN("%s\n", text);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    stream_test_note_capture_stopped_warning(text);
+#endif
     dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
 }
 
@@ -1322,6 +1352,15 @@ static std::atomic<uint64_t> g_test_replay_discard_sequence{0U};
 extern "C" void
 rtl_stream_test_replay_discard_chunk(uint64_t sequence) {
     g_test_replay_discard_sequence.store(sequence, std::memory_order_release);
+}
+
+/* The chunk whose replay block the demod drops before it enters its processing block (rtl_stream_test_replay_refuse_
+ * chunk()); 0: none. */
+static std::atomic<uint64_t> g_test_replay_refuse_sequence{0U};
+
+extern "C" void
+rtl_stream_test_replay_refuse_chunk(uint64_t sequence) {
+    g_test_replay_refuse_sequence.store(sequence, std::memory_order_release);
 }
 
 static void replay_wake_all(void);
@@ -2769,6 +2808,10 @@ rtl_stream_test_get_last_reset_plan(rtl_stream_test_reset_plan* out) {
  * last reset needs none of its own (demod_reset_at_input_gap()), so a gap at the sample a retune or a RESET reset at
  * resets once. Written by the demod thread and by a reset's holder of the reconfigure gate, never at once. */
 static std::atomic<int> g_demod_fed_since_reset{0};
+/* A gap mark the demod thread took when it read a block (demod_input_span_stop_at_gap()) owes the demod a reset, which
+ * the next block it processes runs (demod_reset_at_input_gap()), so a block dropped before that (a gate closing on it)
+ * loses none. Any reset pays it. Same writers as g_demod_fed_since_reset. */
+static std::atomic<int> g_demod_gap_reset_owed{0};
 /* Resets the demod thread ran at gaps the producer marked in the input (issue #806 X12), which the internal test hooks
  * read; process-wide and never back. */
 static std::atomic<uint64_t> g_input_gap_reset_count{0U};
@@ -2780,6 +2823,7 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     }
     if (s == &demod) {
         g_demod_fed_since_reset.store(0, std::memory_order_relaxed);
+        g_demod_gap_reset_owed.store(0, std::memory_order_relaxed);
     }
     /* The combined carrier estimate (the TETRA mixer's part included) is what every decision below acts on. */
     const float fll_freq_before = dsd_fll_band_edge_total_freq(&s->fll_band_edge_state);
@@ -3354,7 +3398,6 @@ struct DemodInputSpan {
     float* input_block;
     int replay; /* an I/Q replay block: chunk holds the capture chunk's metadata */
     struct rtl_replay_chunk_meta chunk;
-    int gap_before; /* the producer lost samples just before this block's first (input_ring_take_gap()) */
 };
 
 struct DemodRetuneDiagBlock {
@@ -3494,13 +3537,13 @@ demod_input_span_init(DemodInputSpan* span) {
     span->input_block = NULL;
     span->replay = 0;
     span->chunk = rtl_replay_chunk_meta{};
-    span->gap_before = 0;
 }
 
 /* Issue #806 X12: the samples a producer lost (an Airspy driver overflow, a full ring dropping the rest of a transfer,
  * a replayed driver overflow) leave a gap mark in the input ring. A block never spans one: it ends at the next mark,
- * and the block that starts at a mark carries gap_before, so the demod starts its filters over exactly at the first
- * sample after the gap however the producer and the demod split the stream. One load with no mark pending. */
+ * and a mark at the block's start owes the demod a reset (g_demod_gap_reset_owed), so it starts its filters over
+ * exactly at the first sample after the gap however the producer and the demod split the stream. Two loads with no
+ * mark pending. */
 static void
 demod_input_span_stop_at_gap(DemodInputSpan* span) {
     if (!input_ring_gap_pending(&input_ring)) {
@@ -3508,7 +3551,9 @@ demod_input_span_stop_at_gap(DemodInputSpan* span) {
     }
     int at_read = 0;
     const size_t until = input_ring_take_gap(&input_ring, &at_read);
-    span->gap_before = at_read;
+    if (at_read) {
+        g_demod_gap_reset_owed.store(1, std::memory_order_relaxed);
+    }
     if (until >= span->reserved_count) {
         return;
     }
@@ -3523,13 +3568,17 @@ demod_input_span_stop_at_gap(DemodInputSpan* span) {
     }
 }
 
-/* The demod thread, holding its processing block, before the first sample of @p span when a gap precedes it: the
+/* The demod thread, holding its processing block, before the block's first sample, when a gap owes a reset: the
  * filters, the step, the channel and timing histories start over, the set a stream gap resets
  * (DemodRetuneResetReason::StreamGap, which keeps the carrier's FLL estimate), unless nothing was filtered since the
  * last reset. */
 static void
-demod_reset_at_input_gap(struct demod_state* d, const DemodInputSpan* span) {
-    if (!span->gap_before || !g_demod_fed_since_reset.load(std::memory_order_relaxed)) {
+demod_reset_at_input_gap(struct demod_state* d) {
+    if (!g_demod_gap_reset_owed.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_demod_gap_reset_owed.store(0, std::memory_order_relaxed);
+    if (!g_demod_fed_since_reset.load(std::memory_order_relaxed)) {
         return;
     }
     const uint32_t center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
@@ -5013,6 +5062,22 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* A test asked the demod to drop the replay block holding this span's chunk where a closed gate would, before its
+ * processing block (rtl_stream_test_replay_refuse_chunk()). */
+static int
+demod_test_replay_refuse_requested(const DemodInputSpan* span) {
+    const uint64_t sequence = g_test_replay_refuse_sequence.load(std::memory_order_acquire);
+    if (sequence == 0U || !span->replay || span->chunk.sequence != sequence) {
+        return 0;
+    }
+    demod_leave_processing_block(&controller);
+    return 1;
+}
+#else
+#define demod_test_replay_refuse_requested(span) 0
+#endif
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* A test asked the demod to discard the replay block holding this span's chunk (rtl_stream_test_replay_discard_chunk()). */
 static int
 demod_test_replay_discard_requested(const DemodInputSpan* span) {
@@ -5020,6 +5085,17 @@ demod_test_replay_discard_requested(const DemodInputSpan* span) {
     return (sequence != 0U && span->replay && span->chunk.sequence == sequence) ? 1 : 0;
 }
 #endif
+
+/* Enter the demod's processing block for @p span, or, with the reconfigure gate up (or a test refusing the block),
+ * drop the span; returns 1 when entered. A gap reset the span's read took stays owed. */
+static int
+demod_enter_block_or_discard(DemodInputSpan* span) {
+    if (!demod_enter_processing_block(&controller) || demod_test_replay_refuse_requested(span)) {
+        demod_discard_iteration_input(span);
+        return 0;
+    }
+    return 1;
+}
 
 static int
 demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodInputSpan* span,
@@ -5034,12 +5110,11 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
-    if (!demod_enter_processing_block(&controller)) {
-        demod_discard_iteration_input(span);
+    if (!demod_enter_block_or_discard(span)) {
         return 0;
     }
     /* Before the block's input is copied: the reset clears the copy buffer. */
-    demod_reset_at_input_gap(d, span);
+    demod_reset_at_input_gap(d);
     if (!demod_prepare_input_block(d, span)) {
         demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);

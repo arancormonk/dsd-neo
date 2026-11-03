@@ -1147,6 +1147,7 @@ test_rate_change_seals_capture(void) {
     assert(writer != nullptr);
     DSD_MEMSET(g_notices, 0, sizeof g_notices);
     dsd_runtime_stream_notice_set(count_notice);
+    const int warnings_before = rtl_stream_test_capture_stopped_warnings(nullptr, 0U);
 
     static uint8_t samples[1024];
     for (size_t i = 0; i < sizeof samples; i++) {
@@ -1172,6 +1173,11 @@ test_rate_change_seals_capture(void) {
     assert(manual_retune(kHopsHz[0], 0).completion == RTL_STREAM_TUNE_OK);
     r.ring->producer_drops.store(1007U);
     assert(g_notices[DSD_STREAM_NOTICE_CAPTURE_STOPPED] == 1 && g_notices[DSD_STREAM_NOTICE_USB_RECOVERED] == 0);
+    char warning[192] = {0};
+    assert(rtl_stream_test_capture_stopped_warnings(warning, sizeof warning) == warnings_before + 1);
+    assert(strcmp(warning, "I/Q capture stopped: the device rate changed from 1536000 to 2000000 Hz on a retune; the "
+                           "file ends at the last sample at 1536000 Hz.")
+           == 0);
     rtl_stream_test_capture_session_close_capture(r.ring->producer_drops.load());
     dsd_runtime_stream_notice_set(nullptr);
 

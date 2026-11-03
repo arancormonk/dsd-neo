@@ -122,8 +122,8 @@ followed stay), before it reads the first sample after them. That holds for the 
 monitor's one-sample reader, in fast and realtime replay alike, so a capture with a recovery in it decodes the same in
 every run.
 
-Samples a receiver's driver lost (an Airspy reports how many it dropped) are recorded as a `MUTE` with reason
-`driver_overflow` where they would have been. The live stream starts its filters over at the first sample after them,
+Samples a receiver's driver lost are recorded as a `MUTE` with reason `driver_overflow` where they would have been. An
+Airspy reports how many it dropped; a SoapySDR driver only reports that it overflowed, so its `MUTE` lasts one sample. The live stream starts its filters over at the first sample after them,
 as after a stream gap, and so does a replay at that `MUTE`. A `MUTE` a retune records (`retune_mute`,
 `retune_reconfigure`) is not a gap: the retune's `RESET` starts the filters over.
 

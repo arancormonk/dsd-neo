@@ -565,6 +565,9 @@ int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value
 struct dsd_iq_capture_writer* rtl_stream_test_capture_session_open_capture(const dsd_opts* opts);
 /* Finalize it as the stream's shutdown does, with @p ring_drops the input ring's drops at the stream's end. */
 void rtl_stream_test_capture_session_close_capture(uint64_t ring_drops);
+/* The I/Q capture-stopped warnings the stream logged since the process started (issue #806 X9), the last one's text
+ * (without its newline) in @p out_last (may be NULL). */
+int rtl_stream_test_capture_stopped_warnings(char* out_last, size_t out_size);
 void rtl_stream_test_capture_session_end(void);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
@@ -2085,6 +2088,10 @@ void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook,
 /* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
  * closing on it would; 0 disarms. Set while no replay runs. */
 void rtl_stream_test_replay_discard_chunk(uint64_t sequence);
+/* The demod drops the I/Q replay block that holds chunk @p sequence before it enters its processing block, as a
+ * controller gate closed on it then would (issue #806 X12: a gap reset owed at that block is run by the next one); 0
+ * disarms. Set while no replay runs. */
+void rtl_stream_test_replay_refuse_chunk(uint64_t sequence);
 /* Raise the running I/Q replay's forced-stop flag and wake every replay wait, as the replay device's stop does, without
  * tearing the stream down. */
 void rtl_stream_test_replay_force_stop(void);

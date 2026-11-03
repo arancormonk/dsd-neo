@@ -213,12 +213,12 @@ input_ring_discard_all_consumer(struct input_ring_state* r) {
  * Call when samples were lost before they reached the ring (a driver overflow, a full ring dropping the rest of a
  * transfer): the next sample committed does not follow the last one. The mark travels with the ring's data, so the
  * consumer finds it exactly between the two (input_ring_take_gap()) however it splits its reads. A second mark at
- * the same place adds nothing. With INPUT_RING_GAP_SLOTS marks pending the newest moves here instead, so the gap
- * before it goes unmarked; only a consumer that far behind loses one.
+ * the same place adds nothing. With INPUT_RING_GAP_SLOTS marks pending the newest moves here instead, best effort, so
+ * a gap before it can go unmarked; only a consumer that far behind loses one.
  */
 void input_ring_note_gap(struct input_ring_state* r);
 
-/** @brief Consumer: whether any gap mark is pending (one load each, for the per-block check). */
+/** @brief Consumer: whether any gap mark is pending (two loads, for the per-block check). */
 static inline int
 input_ring_gap_pending(const struct input_ring_state* r) {
     return r->gap_read.load(std::memory_order_relaxed) != r->gap_write.load(std::memory_order_acquire);

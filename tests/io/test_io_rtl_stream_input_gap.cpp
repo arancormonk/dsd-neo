@@ -10,7 +10,8 @@
  *
  * - Replay: a capture with driver overflows (MUTE driver_overflow) resets the demod once at each, at the block that
  *   starts at the overflow's offset; an overflow at the offset of a retune's RETUNE and RESET resets once (the RESET);
- *   a retune's omitted span (MUTE retune_mute) is no gap and resets nothing.
+ *   a retune's omitted span (MUTE retune_mute) is no gap and resets nothing; a block after a gap that is dropped
+ *   before the demod enters it (a closing gate) hands the reset it owed to the next block.
  * - Live (an Airspy on the in-process SDK double): transfers of arbitrary short sizes, some reporting samples the SDK
  *   dropped before them, reset the demod at each drop that follows filtered input (a drop before any input follows
  *   the stream start's own reset); the capture records each drop as a driver_overflow MUTE, and its replay resets
@@ -80,6 +81,7 @@ gap_resets_now(void) {
 
 /* Each replay block's capture data offset and the gap resets counted once the demod ran it. */
 struct Block {
+    uint64_t sequence;
     uint64_t data_offset;
     uint64_t resets_before;
     uint64_t resets_after;
@@ -95,7 +97,7 @@ void
 block_hook(const rtl_stream_test_replay_block* block, void* ctx) {
     BlockLog* log = static_cast<BlockLog*>(ctx);
     const uint64_t now = gap_resets_now();
-    log->blocks.push_back(Block{log->next_offset, now, now});
+    log->blocks.push_back(Block{block->sequence, log->next_offset, now, now});
     log->next_offset += (uint64_t)block->float_count * log->bytes_per_float;
 }
 
@@ -278,6 +280,31 @@ test_replay_resets_at_overflows(void) {
     }
     rc |= expect_true("each reset at the first sample after its overflow",
                       reset_at == std::vector<uint64_t>({kOverflow1At, kOverflow2At}));
+
+    /* The block after the first overflow is dropped before the demod enters it, as a gate closing on it would: the
+       reset it owed runs at the next block, and no gap goes without one. */
+    uint64_t refused = 0U;
+    uint64_t next_offset = 0U;
+    for (size_t i = 0; i + 1U < run.log.blocks.size(); i++) {
+        if (run.log.blocks[i].data_offset == kOverflow1At) {
+            refused = run.log.blocks[i].sequence;
+            next_offset = run.log.blocks[i + 1U].data_offset;
+        }
+    }
+    rc |= expect_true("the overflow's block found", refused != 0U);
+    rtl_stream_test_replay_refuse_chunk(refused);
+    Run dropped;
+    rc |= replay(meta, 1U, &dropped);
+    rtl_stream_test_replay_refuse_chunk(0U);
+    rc |= expect_true("a dropped block keeps the reset it owed", dropped.resets == 2U);
+    reset_at.clear();
+    for (const Block& b : dropped.log.blocks) {
+        if (b.resets_after != b.resets_before) {
+            reset_at.push_back(b.data_offset);
+        }
+    }
+    rc |= expect_true("the owed reset runs at the next block",
+                      reset_at == std::vector<uint64_t>({next_offset, kOverflow2At}));
     return rc;
 }
 
