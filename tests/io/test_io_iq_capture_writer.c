@@ -1091,18 +1091,27 @@ test_same_offset_mute_events_merge_duration(void) {
     uint8_t payload[2] = {1, 2};
     rc |= expect_int("submit mute merge", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
+    /* Two MUTEs for the same reason at one offset (a retune's settle hold, block after block) merge into one. */
     dsd_iq_event ev;
     DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 2;
-    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "first_mute");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
     rc |= expect_int("record first merge mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 4;
-    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "second_mute");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
     rc |= expect_int("record second merge mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
+
+    /* A MUTE for another reason at the same offset stays its own event (issue #806 X12): merged into the settle MUTE,
+       a driver overflow lost its reason, and the replay did not reset at the gap it marks. */
+    DSD_MEMSET(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_MUTE;
+    ev.duration_bytes = 2;
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "driver_overflow");
+    rc |= expect_int("record overflow mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
     DSD_MEMSET(&stats, 0, sizeof(stats));
@@ -1112,11 +1121,16 @@ test_same_offset_mute_events_merge_duration(void) {
     DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("mute merge metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
-    rc |= expect_int("mute merge event_count", (int)meta.event_count, 1);
-    if (meta.event_count == 1) {
+    rc |= expect_int("mute merge event_count", (int)meta.event_count, 2);
+    if (meta.event_count == 2) {
         rc |= expect_int("mute merge kind", (int)meta.events[0].kind, (int)DSD_IQ_EVENT_MUTE);
         rc |= expect_u64("mute merge offset", meta.events[0].byte_offset, 2);
         rc |= expect_u64("mute merge duration", meta.events[0].duration_bytes, 6);
+        rc |= expect_true("mute merge reason", strcmp(meta.events[0].reason, "retune_mute") == 0);
+        rc |= expect_int("overflow mute kind", (int)meta.events[1].kind, (int)DSD_IQ_EVENT_MUTE);
+        rc |= expect_u64("overflow mute offset", meta.events[1].byte_offset, 2);
+        rc |= expect_u64("overflow mute duration", meta.events[1].duration_bytes, 2);
+        rc |= expect_true("overflow mute keeps its reason", strcmp(meta.events[1].reason, "driver_overflow") == 0);
     }
     dsd_iq_replay_config_clear(&meta);
     cleanup_capture(dir, data_path, metadata_path);

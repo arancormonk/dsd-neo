@@ -935,13 +935,17 @@ writer_event_find_retune_insert_at(const struct dsd_iq_capture_writer* w, const 
     return insert_at;
 }
 
+/* A MUTE at the offset of the one before it, for the same reason, lengthens that one. A MUTE for another reason stays
+ * its own event: a replay treats some reasons (a driver overflow, issue #806 X12) as a gap it resets at, which a merge
+ * into a retune's settle MUTE would hide. */
 static int
 writer_event_try_merge_mute(struct dsd_iq_capture_writer* w, const dsd_iq_event* event) {
     if (!w || !event || event->kind != DSD_IQ_EVENT_MUTE || w->event_count == 0U) {
         return 0;
     }
     dsd_iq_event* prev = &w->events[w->event_count - 1U];
-    if (prev->kind != DSD_IQ_EVENT_MUTE || prev->byte_offset != event->byte_offset) {
+    if (prev->kind != DSD_IQ_EVENT_MUTE || prev->byte_offset != event->byte_offset
+        || strncmp(prev->reason, event->reason, sizeof(prev->reason)) != 0) {
         return 0;
     }
     if (UINT64_MAX - prev->duration_bytes < event->duration_bytes) {
