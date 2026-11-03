@@ -37,6 +37,18 @@ void dsd_demod_test_tetra_linear_front_end(struct demod_state* d);
  */
 void dsd_demod_test_cqpsk_rms_agc(struct demod_state* d);
 
+/** What a post-step tap is handed: a block's complex samples right after the I/Q rate step (issue #806). */
+typedef void (*dsd_demod_test_post_step_tap_fn)(const float* iq, int pairs, void* ctx);
+
+/**
+ * @brief Test hook: full_demod() hands @p tap (with @p ctx) every block's samples after the half-band decimation and
+ * the I/Q rate step, before anything else runs on them, on the demod thread; a chain with no step hands the half-band
+ * output. Install while no stream runs; NULL removes it.
+ *
+ * Defined only in the test-hook build of the DSP module, like the hooks above.
+ */
+void dsd_demod_test_set_post_step_tap(dsd_demod_test_post_step_tap_fn tap, void* ctx);
+
 #ifdef __cplusplus
 }
 #endif

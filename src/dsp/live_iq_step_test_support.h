@@ -3,6 +3,8 @@
 #ifndef DSD_NEO_SRC_DSP_LIVE_IQ_STEP_TEST_SUPPORT_H_
 #define DSD_NEO_SRC_DSP_LIVE_IQ_STEP_TEST_SUPPORT_H_
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +18,14 @@ extern "C" {
  * DSD_NEO_TEST_HOOKS); the shipped library has no such symbol.
  */
 void dsd_live_iq_step_test_fail_design(int fail);
+
+/**
+ * @brief Test hook: how many times dsd_live_iq_step_clear() has started a running step over (one that was on, with a
+ * design), process-wide: a retune's reset, a stream gap's, a stream open's (issue #806).
+ *
+ * Defined only in the test-hook build of the DSP module, like the hook above.
+ */
+uint64_t dsd_live_iq_step_test_clears(void);
 
 #ifdef __cplusplus
 }

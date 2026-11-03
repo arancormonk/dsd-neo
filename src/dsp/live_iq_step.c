@@ -17,6 +17,7 @@
 
 #include "dsd-neo/core/safe_api.h"
 #ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/platform/atomic_compat.h>
 #include "live_iq_step_test_support.h"
 #endif
 
@@ -27,6 +28,14 @@ static int g_live_iq_step_test_fail_design = 0;
 void
 dsd_live_iq_step_test_fail_design(int fail) {
     g_live_iq_step_test_fail_design = fail ? 1 : 0;
+}
+
+/* Clears of a running step (dsd_live_iq_step_test_clears()): written on the demod thread, read by a test thread. */
+static dsd_atomic_u64 g_live_iq_step_test_clears;
+
+uint64_t
+dsd_live_iq_step_test_clears(void) {
+    return dsd_atomic_u64_load_acquire(&g_live_iq_step_test_clears);
 }
 #endif
 
@@ -219,5 +228,10 @@ dsd_live_iq_step_clear(dsd_live_iq_step* s) {
     if (!s) {
         return;
     }
+#ifdef DSD_NEO_TEST_HOOKS
+    if (s->enabled && s->active.configured) {
+        (void)dsd_atomic_u64_fetch_add_release(&g_live_iq_step_test_clears, 1U);
+    }
+#endif
     dsd_iq_resampler_clear(&s->active);
 }

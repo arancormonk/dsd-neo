@@ -4828,7 +4828,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the retained design; `dsd_live_iq_step_disable()` releases all (stream cleanup, `rtl_demod_cleanup()`). A refused
     prepare (bad plan, capacity, a design the resampler refuses, `design_status`) leaves no candidate and the active and
     retained designs as they were. Nothing is allocated on the processing path. The DSP test-hook build can fail every
-    design (`dsd_live_iq_step_test_fail_design()`, `src/dsp/live_iq_step_test_support.h`).
+    design (`dsd_live_iq_step_test_fail_design()`, `src/dsp/live_iq_step_test_support.h`), counts the clears of a
+    running step (`dsd_live_iq_step_test_clears()`), and hands a test every block right after the step
+    (`dsd_demod_test_set_post_step_tap()`, `src/dsp/demod_pipeline_test_support.h`).
   - Reset: `dsd_demod_reset_filter_state()` clears the active design's history and phase with the cascade's, and a
     commit or rollback that changes the design starts it over.
   - Wiring: the radio's live rate chain prepares, commits, rolls back and finishes it inside each programming
@@ -4837,7 +4839,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     maximum blocks at p = 0, p = 1 and the Airspy passes against the cascade's output through the same design; cuts;
     reset; the transaction and its refusals), `DSP_CQPSK_EVM` (P25p1/P2 through the real cascade and the step at
     78,125 and 93,750 Hz to 48 kHz and 39,062.5 and 46,875 Hz to 24 kHz: EVM and every symbol), and the
-    `dsd-neo_bench_dsp` cases `hb_cascade_*`, `iq_step_*` and `full_demod_cqpsk_p25p1_airspy_78k{,_nostep}`.
+    `dsd-neo_bench_dsp` cases `hb_cascade_*`, `iq_step_*` and `full_demod_cqpsk_p25p1_airspy_78k{,_nostep}`. End to
+    end: `ENGINE_AIRSPY_FORCED_RATE_*` (a live Airspy session in the real engine on the SDK double at forced rates,
+    paced by `rtl_stream_test_get_live_sequence()`, against its captured-then-replayed run) and the
+    `DECODE_IQ_*_AIRSPY_*` kept-chain replays (`docs/testing.md`, "Device-forced rates, live and replayed").
 - The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
   in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
   6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS

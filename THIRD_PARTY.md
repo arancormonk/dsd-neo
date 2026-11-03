@@ -128,6 +128,11 @@ not a finding that every component is cleared for redistribution.
     `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures' terms. The
     `p25p1_c4fm_adjacent_78k`, `p25p1_c4fm_adjacent_94k`, `p25p1_cqpsk_adjacent_78k` and `p25p1_cqpsk_adjacent_94k`
     fixtures are the same mix at 78,125 and 93,750 Hz and carry the same terms.
+  - The forced-rate recordings the `DECODE_IQ_*_AIRSPY_*` and `ENGINE_AIRSPY_FORCED_RATE_*` tests use are not committed:
+    `tests/io/forced_rate_input.c` makes them at test time from excerpts of the `p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`,
+    `p25p1_cqpsk_cc_simulcast`, `p25p2_cc`, `dmr_voice_synth` and `tetra_call_real_air_72k` fixtures, upsampled to an
+    Airspy's rates with seeded noise added before and after (no recorded material of their own). They carry their
+    source fixtures' terms.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source

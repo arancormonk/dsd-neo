@@ -2036,6 +2036,37 @@ typedef struct rtl_stream_test_replay_state {
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 
+/* The three boundaries a live stream's samples cross, counted for a test that paces a live source as the replay's
+ * decoder pacing paces a replay (issue #806): it feeds a transfer once the demod and the decoder are done with the one
+ * before it, so each transfer is one demod block and the decoder reads its output before the next block starts, as in
+ * a replay of the capture. Counts run from process start. */
+typedef struct {
+    uint64_t input_produced;         /* floats the producer committed to the input ring */
+    uint64_t demod_idle_consumed;    /* floats the demod had released when it last came back for input (boundary 1) */
+    uint64_t published;              /* output samples live blocks wrote to the output ring (boundary 2) */
+    uint64_t decoder_idle_published; /* published as of a read that then found the output ring empty (boundary 3) */
+    uint64_t blocks;                 /* live input blocks the demod took */
+    uint64_t producer_drops;         /* the input ring's producer_drops */
+} rtl_stream_test_live_sequence;
+
+void rtl_stream_test_get_live_sequence(rtl_stream_test_live_sequence* out);
+
+/* The chain the running stream's demod runs (issue #806): its half-band passes, its I/Q rate step, the complex rate
+ * after them and the capture rate the capture-domain consumers (the wideband spectrum, the signal search, the capture
+ * writer) see. Returns -1 with no stream. Read it while the demod waits for input. */
+typedef struct {
+    int passes;
+    int step_enabled;
+    int step_l;
+    int step_m;
+    int step_target_hz;
+    int complex_rate_hz;
+    uint32_t capture_rate_hz;
+    int forced;
+} rtl_stream_test_running_chain;
+
+int rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out);
+
 /* Points of the I/Q replay pipeline a test can stop at (issue #572). Each is reported to the hook that
  * rtl_stream_test_set_replay_stage_hook() installs, on the thread named, with the count the stage names (0 where it
  * names none). The reporting thread holds no stream lock, so a hook may wait there for another thread to reach its own

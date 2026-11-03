@@ -1734,6 +1734,27 @@ tetra_rrc_apply(struct demod_state* d) {
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
+static dsd_demod_test_post_step_tap_fn g_demod_test_post_step_tap = NULL;
+static void* g_demod_test_post_step_ctx = NULL;
+
+extern "C" void
+dsd_demod_test_set_post_step_tap(dsd_demod_test_post_step_tap_fn tap, void* ctx) {
+    g_demod_test_post_step_tap = tap;
+    g_demod_test_post_step_ctx = ctx;
+}
+
+/* The block after the half-band decimation and the step, to the installed tap. */
+static void
+full_demod_test_post_step_tap(const struct demod_state* d) {
+    if (g_demod_test_post_step_tap) {
+        g_demod_test_post_step_tap(d->lowpassed, d->lowpassed ? d->lp_len >> 1 : 0, g_demod_test_post_step_ctx);
+    }
+}
+#else
+#define full_demod_test_post_step_tap(d) ((void)0)
+#endif
+
+#ifdef DSD_NEO_TEST_HOOKS
 extern "C" void
 dsd_demod_test_tetra_linear_front_end(struct demod_state* d) {
     if (!d) {
@@ -2948,6 +2969,7 @@ void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
     full_demod_apply_live_step(d);
+    full_demod_test_post_step_tap(d);
     dsd_demod_update_tetra_chain(d);
     tetra_stream_block streamed_block;
     const int streamed = full_demod_tetra_stream_block(d, &streamed_block);

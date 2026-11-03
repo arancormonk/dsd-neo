@@ -817,6 +817,68 @@ The unit tests:
 | `RUNTIME_CONFIG_APPLY` | A startup RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an explicit request that outlives the input `--iq-replay` replaces; one that names no bandwidth requests none. |
 | `FUZZ_IO_IQ_WAV` (fuzz presets) | `dsd_iq_wav_read_info()` and the replay reader over a WAV (open, read, seek) on arbitrary input; seeds in `tests/fuzz/corpus/io_iq_wav/`. |
 
+#### Device-forced rates, live and replayed (issue #806)
+
+An Airspy delivers its own rate. The half-band passes leave 78,125 or 93,750 Hz, and the live I/Q rate step takes that
+to the DSP bandwidth rate. No capture at a raw Airspy rate is committed. `tests/io/forced_rate_input.c` makes one at
+test time from a committed 48 or 72 kHz `cu8` fixture: an excerpt (2 s at most), upsampled to the device rate with
+`dsd_iq_resampler` (625/96 and 125/24 up, never a ratio the step uses, since the step only decimates), with 50 ms of
+seeded complex Gaussian noise at `noise_floor`'s level (16 LSB) before and after it, then quantized to `cu8` at 0.9 of
+the source's scale (headroom for the interpolation's overshoot). The noise covers the chain's tail bound (the
+upsampler's, the half-band cascade's and the step's, about 2 ms) many times over. It is noise, not silence: no receiver
+delivers exact zeros, and an exact-zero lead-in made the DMR decoder's audio error count swing with the rate.
+
+Any lead-in costs `dmr_voice_synth` its first superframe, since the call starts at the fixture's first sample: at the
+native rate the same samples decode 16 voice bursts in their first 2 s, against 52 in the fixture's 4.4 s whole and more
+audio errors at the start. So every threshold below compares with the same samples at the native rate (48 kHz, 72 kHz
+for TETRA, no half-band pass, no step), less an allowance for frames at the excerpt's edges.
+
+`dsd-neo_test_iq_forced_rate_fixture_tool` (`tests/io/iq_forced_rate_fixture_tool.c`) writes the recordings into the
+build tree (`<build>/tests/iq_forced_rate_fixtures/<name>/`, one directory per test), with the sidecar a live Airspy
+capture of that chain writes: the device's rate as `nominal_rate_hz`, `capture_rate_device_forced`, `dsp_rate_hz` and
+the step's `iq_step_l`/`iq_step_m`. It reads each sidecar back through the replay reader, which checks the chain. The
+`IQ_FORCED_RATE_FIXTURES` test, a CTest fixture setup in the `iq-decode` label, runs it once.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_P25P1_CQPSK_CC_AIRSPY_312K` | `p25p1_cqpsk_cc` at 312,500 Hz under `-f1 -mq`: the replay keeps the chain (`base_decim=4`, `I/Q step L/M=384/625`, no resampling) and decodes at least 39 network status lines and 16 grants (41 and 18 at the native rate). |
+| `DECODE_IQ_P25P1_CQPSK_SIMULCAST_AIRSPY_375K` | `p25p1_cqpsk_cc_simulcast` at 375,000 Hz (`L/M=64/125`): at least 39 network status lines and 16 implicit grant updates (41 and 18). |
+| `DECODE_IQ_P25P2_CC_AIRSPY_375K` | `p25p2_cc` at 375,000 Hz under `-f2`: at least 8 SACCH (10). The capture is remodulated audio with no RS-checkable payload, so this is DUID-FEC-level evidence only, and weak. |
+| `DECODE_IQ_DMR_VOICE_AIRSPY_312K` | `dmr_voice_synth`'s first 2 s at 312,500 Hz under `-fs`: at least 10 voice bursts (16, less one superframe) and the voice header. FSK modes ran right at these rates before the step too; this is the control. |
+| `DECODE_IQ_TETRA_CALL_AIRSPY_375K` | `tetra_call_real_air_72k`'s first 2 s at 375,000 Hz under `-fT -Z` at a 72 kHz DSP bandwidth (`L/M=96/125`): at least 66 identities and 23 TCH/FS bursts whose CRC passed (70 and 25), with no rate warning. |
+| `DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM` | `p25p1_cqpsk_vc` at 375,000 Hz: fast, realtime, short-read and jitter legs of the replay determinism harness decode line for line the same (below). `_STALLED_SINK` (where the harness can wrap the audio device) adds a sink that stalls. |
+
+`ENGINE_AIRSPY_FORCED_RATE_*` (`tests/engine/test_engine_airspy_forced_rate.cpp`, Airspy builds with GNU or Clang
+outside macOS) run the same samples live. The real engine runs `-i airspy:F:BW` in-process, its stream workers and the
+native adapter on the SDK double (`tests/io/airspy_sdk_double.h`) at the forced rate, with the stream and DSP test hooks
+from the private test-hook archives. The test feeds the SDK's receive callback in transfers of the size a replay of the
+capture reads (`dsd_iq_replay_chunk_bytes_for()`), paced by acknowledgement, never by time. A transfer goes in once the
+demod came back for input with the one before it released, and the decoder found the output ring empty after reading
+everything that block published (`rtl_stream_test_get_live_sequence()`). These are the three boundaries the replay's
+decoder pacing holds, so each transfer is one demod block and the decoder takes its output before the next block
+starts, as in a replay.
+
+Each case asserts, live: the CRC- or FEC-checked counts above (TSBKs whose CRC passed, at least 50 of 52, and the WACN
+in the state for the P25 Phase 1 control channels; 6 of the voice capture's 8 grants), no producer drop, and the chain
+the demod runs (`rtl_stream_test_get_running_chain()`: the passes, the step to the DSP rate, and the device's rate for
+the capture-domain consumers: the wideband spectrum, the signal search, the capture writer). The live capture
+(`--iq-capture`, `cf32`) must record that chain. The engine then replays the capture, and the replay must run the same
+chain (the plan key, field by field), read the capture in the live transfers' partition, hand the demod the same samples
+after the step bit for bit (`dsd_demod_test_set_post_step_tap()`), meet the same thresholds, and print the same stable
+decoded fields in the same order: every decoder record (a line stamped `HH:MM:SS` and the indented lines that go on with
+it) and the TETRA and P25 Phase 2 lines that carry no stamp. Left out of the comparison: each line's stamp (the wall
+clock live, the capture's time in the replay); lines a throttle on the decode clock gates, which the live feed, faster
+than real time, prints fewer of (the DMR CACH short LC, `(single)`, at most once a second a slot); and every line that
+is not decoded content (startup notices, and the live device's and the replay's own messages). The cases cover
+`p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`, the simulcast control channel, `p25p2_cc`, `dmr_voice_synth` and
+`tetra_call_real_air_72k` at 312,500 or 375,000 Hz, and `p25p1_cqpsk_cc` at 2,500,000 Hz (five half-band passes).
+`_RETUNE_375K` retunes the running stream half way: the step starts over with the half-band cascade
+(`dsd_live_iq_step_test_clears()` moves), keeps its plan, and the capture-domain consumers keep the device's rate.
+
+Before issue #806 a replay ran these recordings' chains unstepped at 78,125 or 93,750 Hz: the two P25 Phase 1 control
+channels decoded no network status and no grant, P25 Phase 2 one SACCH, the DMR control the same 16 voice bursts, and
+TETRA ran only through a resampled replay (288 kHz), not the recorded chain.
+
 #### stdout audio (issue #659)
 
 `DECODE_IQ_STDOUT_*` (`tests/audio_stdout_check.cmake`, radio builds on POSIX) run the `-o -` output end to end.

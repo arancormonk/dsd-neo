@@ -1411,6 +1411,49 @@ rtl_stream_test_replay_force_stop(void) {
 #define RTL_REPLAY_TEST_STAGE(stage, count) ((void)0)
 #endif
 
+/* The live acknowledgement a test paces a live stream by (rtl_stream_test_get_live_sequence(), issue #806): the three
+ * boundaries the replay's decoder pacing holds (see "Replay decoder pacing"), counted where a live stream crosses them.
+ * Nothing outside test builds. */
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+static std::atomic<uint64_t> g_test_live_blocks{0U};
+static std::atomic<uint64_t> g_test_live_demod_idle_consumed{0U};
+static std::atomic<uint64_t> g_test_live_published{0U};
+static std::atomic<uint64_t> g_test_live_decoder_idle_published{0U};
+/* The demod is back for input: everything it took before is processed and its output written. */
+#define RTL_LIVE_TEST_DEMOD_IDLE()                                                                                     \
+    g_test_live_demod_idle_consumed.store(input_ring.consumed_total.load(std::memory_order_acquire),                   \
+                                          std::memory_order_release)
+#define RTL_LIVE_TEST_BLOCK_TAKEN(replay)                                                                              \
+    do {                                                                                                               \
+        if (!(replay)) {                                                                                               \
+            g_test_live_blocks.fetch_add(1U, std::memory_order_acq_rel);                                               \
+        }                                                                                                              \
+    } while (0)
+/* A live block's output is in the ring: counted after the head moved, so a decoder that read this count before it found
+   the ring empty had taken all of it. */
+#define RTL_LIVE_TEST_PUBLISHED(replay_pull, written)                                                                  \
+    do {                                                                                                               \
+        if (!(replay_pull) && (written) > 0U) {                                                                        \
+            g_test_live_published.fetch_add((uint64_t)(written), std::memory_order_acq_rel);                           \
+        }                                                                                                              \
+    } while (0)
+#define RTL_LIVE_TEST_READ_START()                                                                                     \
+    const uint64_t live_test_published = g_test_live_published.load(std::memory_order_acquire)
+/* The decoder found the live output ring empty: it had read everything published up to its read's start. */
+#define RTL_LIVE_TEST_DECODER_IDLE()                                                                                   \
+    do {                                                                                                               \
+        if (ring_is_empty(&output)) {                                                                                  \
+            g_test_live_decoder_idle_published.store(live_test_published, std::memory_order_release);                  \
+        }                                                                                                              \
+    } while (0)
+#else
+#define RTL_LIVE_TEST_DEMOD_IDLE()                    ((void)0)
+#define RTL_LIVE_TEST_BLOCK_TAKEN(replay)             ((void)0)
+#define RTL_LIVE_TEST_PUBLISHED(replay_pull, written) ((void)0)
+#define RTL_LIVE_TEST_READ_START()                    ((void)0)
+#define RTL_LIVE_TEST_DECODER_IDLE()                  ((void)0)
+#endif
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* The blocks a replay's demod has published, the virtual block 0 included (0 with no stream): the count of the demod's
  * stages. */
@@ -3742,6 +3785,7 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
         span->chunk = g_stream->replay_chunk;
     }
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE, span->reserved_count);
+    RTL_LIVE_TEST_BLOCK_TAKEN(span->replay);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     if (g_test_replay_block_hook && span->replay) {
         rtl_stream_test_replay_block block = {};
@@ -5139,6 +5183,7 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         return 0;
     }
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT, replay_test_blocks_published());
+    RTL_LIVE_TEST_DEMOD_IDLE();
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
@@ -5293,6 +5338,7 @@ demod_emit_output_block(struct demod_state* d, struct output_state* o, const Dem
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE, 0U);
     const size_t written = replay_pull ? demod_publish_replay_output_block(d, o, span) : demod_write_output_block(d, o);
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE, written);
+    RTL_LIVE_TEST_PUBLISHED(replay_pull, written);
     return written;
 }
 
@@ -10382,9 +10428,13 @@ rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd
         }
 
         int gated = 0;
+        RTL_LIVE_TEST_READ_START();
         int got = rtl_stream_read_live_available(&controller, &output, out, flags, count, &gated);
         if (got != 0) {
             return got;
+        }
+        if (!gated) {
+            RTL_LIVE_TEST_DECODER_IDLE();
         }
 
         /* An empty producer must not trap the decoder inside a search visit. The decoder
@@ -15891,6 +15941,36 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     out_state->dongle_rate_hz = load_dongle_rate();
     out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
+    return 0;
+}
+
+extern "C" void
+rtl_stream_test_get_live_sequence(rtl_stream_test_live_sequence* out) {
+    if (!out) {
+        return;
+    }
+    out->input_produced = input_ring.produced_total.load(std::memory_order_acquire);
+    out->demod_idle_consumed = g_test_live_demod_idle_consumed.load(std::memory_order_acquire);
+    out->published = g_test_live_published.load(std::memory_order_acquire);
+    out->decoder_idle_published = g_test_live_decoder_idle_published.load(std::memory_order_acquire);
+    out->blocks = g_test_live_blocks.load(std::memory_order_acquire);
+    out->producer_drops = input_ring.producer_drops.load(std::memory_order_acquire);
+}
+
+extern "C" int
+rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out) {
+    if (!out || !g_stream) {
+        return -1;
+    }
+    const dsd_live_iq_step_plan* plan = &demod.live_iq_step.plan;
+    out->passes = demod.downsample_passes;
+    out->step_enabled = demod.live_iq_step.enabled;
+    out->step_l = out->step_enabled ? plan->L : 0;
+    out->step_m = out->step_enabled ? plan->M : 0;
+    out->step_target_hz = out->step_enabled ? plan->target_hz : 0;
+    out->complex_rate_hz = demod.complex_rate;
+    out->capture_rate_hz = load_dongle_rate();
+    out->forced = demod.capture_rate_device_forced;
     return 0;
 }
 
