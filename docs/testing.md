@@ -883,6 +883,23 @@ Before issue #806 a replay ran these recordings' chains unstepped at 78,125 or 9
 channels decoded no network status and no grant, P25 Phase 2 one SACCH, the DMR control the same 16 voice bursts, and
 TETRA ran only through a resampled replay (288 kHz), not the recorded chain.
 
+#### Symbols a library exports (issue #806)
+
+The terminal menu once had callbacks named like libairspy calls (`airspy_set_lna_gain()` and six more). In the CLI,
+which links the terminal UI and the Airspy adapter into one executable, the adapter's gain calls then reached the
+menu callbacks instead of the library, and opening an Airspy crashed. Two tests keep a name like that out:
+
+- `UI_AIRSPY_SYMBOL_CLASH` compiles one file that includes libairspy's `airspy.h` (the one the build uses) and the
+  terminal's `menu_actions.h`. A callback with an SDK name is a conflicting declaration there, so the build fails. It
+  runs wherever the terminal UI and libairspy build, Windows included.
+- `UI_AIRSPY_MENU_SHADOW` links the terminal UI and the adapter against the Airspy SDK double built as a shared library
+  (`dsd-neo_test_airspy_sdk_double_shared`), as dsd-neo links libairspy, opens an Airspy and checks that the double
+  saw the gain calls. A menu symbol with an SDK name would win the lookup, as it did in the CLI. It relies on ELF and
+  Mach-O symbol lookup order, so it does not run on Windows, where an import library cannot reproduce the clash.
+
+The static SDK double the other Airspy tests link cannot show this: it defines the same names, so linking it with the
+terminal UI is only a duplicate-definition error.
+
 #### stdout audio (issue #659)
 
 `DECODE_IQ_STDOUT_*` (`tests/audio_stdout_check.cmake`, radio builds on POSIX) run the `-o -` output end to end.

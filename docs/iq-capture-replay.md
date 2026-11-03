@@ -138,8 +138,9 @@ monitor's one-sample reader, in fast and realtime replay alike, so a capture wit
 every run.
 
 Samples a receiver's driver lost are recorded as a `MUTE` with reason `driver_overflow` where they would have been. An
-Airspy reports how many it dropped; a SoapySDR driver only reports that it overflowed, so its `MUTE` lasts one sample. The live stream starts its filters over at the first sample after them,
-as after a stream gap, and so does a replay at that `MUTE`. A `MUTE` a retune records (`retune_mute`,
+Airspy reports how many it dropped; a SoapySDR driver only reports that it overflowed, so its `MUTE` lasts one sample.
+The live stream starts its filters over at the first sample after them, as after a stream gap, and so does a replay at
+that `MUTE`. A `MUTE` a retune records (`retune_mute`,
 `retune_reconfigure`) is not a gap: the retune's `RESET` starts the filters over.
 
 A capture records one sample rate. When a retune changes the device's rate while a capture runs (a device that reads
@@ -617,10 +618,11 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   decodes and loops without one; the frequency check a live RTL start makes does not apply to a replay.
 - `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.
 - A replay's rate follows its rate plan (see [Rate Chain And Resampling](#rate-chain-and-resampling)). A sidecar that
-  keeps its recorded chain keeps its complex rate, and its forced flag decides `digital_resample = "auto"` as live: a
-  forced capture whose rate yields a non-integer samples-per-symbol (for example 62,500 Hz at 4800 sym/s) is resampled
-  after the demodulator to the resampler target (48,000 Hz by default), one that was not forced is not. A replay the
-  plan resamples or decimates runs as forced. Set `digital_resample = "off"` to never resample. See
+  keeps its recorded chain keeps its complex rate (the DSP bandwidth, for a chain the live I/Q rate step ran), and its
+  forced flag decides `digital_resample = "auto"` as live: a forced capture whose rate yields a non-integer
+  samples-per-symbol (for example an Airspy's at a 12 kHz DSP bandwidth, 2.5 samples per symbol at 4800 sym/s) is
+  resampled after the demodulator to the resampler target (48,000 Hz by default), one that was not forced is not. A
+  replay the plan resamples or decimates runs as forced. Set `digital_resample = "off"` to never resample. See
   `docs/soapysdr.md` for the full policy.
 
 ## Backend Notes

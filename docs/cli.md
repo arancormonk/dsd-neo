@@ -613,15 +613,18 @@ Android session whose saved extra arguments carry one refuses to start the same 
   pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, 2 to 8, so
   it decodes only at a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz. `-fT` therefore sets the DSP
   bandwidth to 72 kHz (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names
-  another, and a Qt TETRA system without its own bandwidth uses 72 kHz too. A stream that opens
-  TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz
-  from 36 to 144 kHz, not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device
-  runs 72 kHz only where it delivers 1.152 MS/s, and no Airspy sample rate halves to a multiple of 18 kHz. A switch to
-  TETRA at run time keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate 48 kHz is no multiple of
-  18 kHz; set the DSP bandwidth to 72 kHz`, or `DSP rate 162 kHz is outside 36 to 144 kHz; ...` for a multiple of
-  18 kHz out of that range). An I/Q replay is resampled to a TETRA rate instead, at start and on a switch to TETRA
-  (which reopens it where it stopped, `Decoding TETRA: replay resampled to 72 kHz`); a sidecar capture whose recorded
-  chain already runs TETRA at a multiple of 18 kHz from 36 to 144 kHz keeps it. Only a capture no plan can resample
+  another, and a Qt TETRA system without its own bandwidth uses 72 kHz too. Every radio input runs at its DSP
+  bandwidth exactly (an RTL-SDR or rtl_tcp input by halving its rate; a SoapySDR or Airspy device, which picks its own
+  rate, by halving and then resampling it), so 72 kHz decodes TETRA on each of them. A stream that opens TETRA at
+  another bandwidth warns once, with the fix in its input's own form (`TETRA needs a 72 kHz DSP bandwidth, not 48 kHz;
+  dsd-neo does not change it on its own, so set it to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`; `-i airspy:freq:72` on an
+  Airspy, `-i soapy:args:freq:gain:ppm:72` on a SoapySDR device). A switch to TETRA at run time keeps TETRA selected
+  and the bandwidth as it is, and says so in its toast (`Decoding TETRA: needs a 72 kHz DSP bandwidth; it stays 48 kHz
+  until you set it`); nothing decodes until the bandwidth is 72 kHz. An I/Q replay is re-planned to a TETRA rate
+  instead, at start and on a switch to TETRA (which reopens it where it stopped, `Decoding TETRA: replay resampled to
+  72 kHz`); a sidecar capture whose recorded chain already runs TETRA at a multiple of 18 kHz from 36 to 144 kHz keeps
+  it, and one from a device that picked its own rate (an Airspy's) keeps its halving and is resampled after it to
+  72 kHz, as live. Only a capture no plan can resample
   (below 8 kHz) is refused (`...: this replay's capture cannot be resampled to a TETRA rate`). Leaving TETRA returns
   the replay to the chain its DSP bandwidth plans.
   A TETRA downlink has a receive chain of its own. It follows the carrier with a tracking mixer that moves the signal
@@ -635,11 +638,13 @@ Android session whose saved extra arguments carry one refuses to start the same 
   or the carrier moves (25 steps of 96 symbols: one to start, 16 to fill its error window and 8 holding steady), and
   on a noisy test signal (about 10 dB SNR) it narrowed after 0.23 s. The chain runs only at the DSP rates above, with
   the channel filter on. When
-  TETRA is selected but the chain cannot run (a rate outside that range, a timing (TED) samples-per-symbol override
-  that does not match the DSP rate, or `DSD_NEO_CHANNEL_LPF=0`), the stream falls back to the generic CQPSK path,
-  which has neither the TETRA channel filter nor the matched filter, and logs the cause once per stream, for example
-  `TETRA receive chain inactive: DSP rate 162000 Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on
-  the generic CQPSK path.`
+  TETRA is selected but the chain cannot run, the stream runs the generic CQPSK path instead, which has neither the
+  TETRA channel filter nor the matched filter and decodes no TETRA at a rate outside that range. It logs the cause once
+  per stream, with what fixes it: a rate outside that range (`TETRA receive chain inactive: TETRA cannot decode at
+  48000 Hz; it needs a multiple of 18 kHz from 36 to 144 kHz (a 72 kHz DSP bandwidth).`), a timing (TED)
+  samples-per-symbol override that does not match the DSP rate (`...: a timing override of 8 samples per symbol is set,
+  but 72000 Hz needs 4; TETRA cannot decode until the override is cleared.`), or the channel filter turned off
+  (`...: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); unset DSD_NEO_CHANNEL_LPF or set it to 1.`).
   Tuning tolerance: tune to the carrier's own frequency. These cases were measured on test signals at 72 kHz, the rate
   `-fT` sets; other rates were not measured.
   - On a clear channel, decoding held with the radio up to about ±10 kHz off the carrier. 12 kHz off, it held with
@@ -921,9 +926,8 @@ RTL input, `rtl_bw_khz`), and not the audio bandwidth.
 
 - Values are whole Hz from 8000 to 25000, with no `k` suffix: `12500` for a 12.5 kHz channel plan, `11250` for
   11.25 kHz, `25000` for a wide 25 kHz channel. The default is 16000 (16 kHz), which is the WIDE profile's
-  channel filter bit for bit at DSP rates from about 19.1 to 102.7 kHz. That takes in the 24, 48 and 72 kHz RTL DSP
-  bandwidths and device-forced rates such as an Airspy's 78,125 Hz. Below that range the unset default is DSP-limited
-  (see below).
+  channel filter bit for bit at DSP rates from about 19.1 to 102.7 kHz. That takes in the 24, 48 and 72 kHz DSP
+  bandwidths every radio input runs at. Below that range the unset default is DSP-limited (see below).
 - Match the width to the channel plan in use. A width wider than the channel spacing lets the adjacent channel into
   the demodulator: on a 12.5 kHz plan, 25000 passes the neighbours 12.5 kHz either side, which can clip the audio and
   raise its level.
@@ -945,7 +949,8 @@ RTL input, `rtl_bw_khz`), and not the audio bandwidth.
   refused where the rate cannot filter it, and refused under `DSD_NEO_CHANNEL_LPF=0`.
 
 The width has to fit the DSP rate it runs at: its cutoff must stay within 0.9 x Nyquist (width/2 + 600 Hz <= 0.45 x
-rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the DSP rate is the DSP bandwidth:
+rate), and the filter within its 288 taps. For every radio input (RTL-SDR, rtl_tcp, SoapySDR and Airspy) the DSP
+rate is the DSP bandwidth, since a SoapySDR or Airspy device's own rate is resampled to it:
 
 | DSP bandwidth (`bw`, `rtl_bw_khz`) | Widest channel it filters | NFM widths that fit | AM widths that fit |
 | --- | --- | --- | --- |
@@ -959,33 +964,22 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 
 A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
 DSP bandwidths that would fit, for example `NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width
-it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 or 72 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
-from the input spec alone, before the input looks for its device. The other radio inputs are checked when the stream
-starts, against the rate actually delivered, and a width that rate cannot filter stops the stream from starting; the
-fix it names follows what sets that rate:
+it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 or 72 kHz` (`set the DSP bandwidth to ...` on a SoapySDR or
+Airspy device). For every radio input this happens at startup, from the input spec alone, before the input looks for
+its device. Whether a SoapySDR device can deliver a rate dsd-neo can resample to the bandwidth is known only when it
+opens, and one that cannot does not start. An I/Q replay is checked when the stream starts, against the rate its plan
+runs at. Its rate follows the DSP bandwidth (a bandwidth change re-plans its rate chain, resampling the capture where it
+must), so the fix names the DSP bandwidths that fit, as for a radio: `...; set the DSP bandwidth to 48 or 72 kHz`.
 
-- A SoapySDR or Airspy device delivers its own capture rate (an Airspy's 2.5 MS/s, say), which the front end halves
-  down to the first rate at or above the DSP bandwidth: 19,531 Hz at a 12 kHz DSP bandwidth, 78,125 Hz at 48 kHz. A
-  wider DSP bandwidth therefore raises the rate without choosing it, and the refusal says so: `NFM bandwidth 25 kHz
-  does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); raise the DSP bandwidth or narrow the NFM
-  width`.
-- An I/Q replay's rate follows the DSP bandwidth (a bandwidth change re-plans its rate chain, resampling the capture
-  where it must), so the fix names the DSP bandwidths that fit, as for an RTL-SDR: `...; set the DSP bandwidth to 48 or
-  72 kHz`.
-- Where the rate filters no NFM width at all (below about 10.2 kHz), narrowing cannot help, and the refusal names
-  leaving the width unset instead, since the unset default runs at any rate (DSP-limited): `NFM bandwidth 8 kHz does not
-  fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); raise the DSP bandwidth or leave the NFM width unset`.
-
-`--validate-config` applies the RTL-SDR/rtl_tcp check to a config whose `[mode] decode` is `analog` (an explicit
-`nfm_bandwidth_hz`) or `am` (`am_bandwidth_hz`, its default included) and whose `[input]` builds the input with
-`rtl_bw_khz` (it sets `rtl_freq`; an rtl_tcp source without one connects at the 48 kHz default).
+`--validate-config` applies the same check to a config whose `[mode] decode` is `analog` (an explicit
+`nfm_bandwidth_hz`) or `am` (`am_bandwidth_hz`, its default included) and whose `[input]` builds a radio input with
+`rtl_bw_khz`: an `rtl` or `rtltcp` source that sets `rtl_freq` (an rtl_tcp source without one connects at the 48 kHz
+default), or a `soapy` or `airspy` source.
 
 A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to Analog) is a short message
-that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. On an
-RTL-SDR or rtl_tcp input the fix is a DSP bandwidth: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use
-a 48 or 72 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
-stream runs at and the fix above for that input: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise
-the DSP bandwidth or narrow the NFM width` on a device, `...; use a 48 or 72 kHz DSP bandwidth` on a replay.
+that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. The fix
+is a DSP bandwidth on every input: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP
+bandwidth`. On a running I/Q replay the message names the rate the replay runs at.
 A DSP bandwidth refused for the width in use says to narrow the width first, or, at 4, 6 or 8 kHz, where no NFM width fits, to leave
 the width unset first (`DSP BW 8 kHz cannot filter NFM 8 kHz (max 6 kHz); leave the NFM width unset first`). The front
 end checks a width again where the change lands, between DSP blocks: should a retune have moved its rate in the
@@ -1013,30 +1007,30 @@ ahead, as a PCM start with the same width does; a switch from PCM to a radio inp
 The terminal shows the width in force on the input's channel row, after the squelch (the source row above it carries
 `DSP-BW:`): `Analog: NFM 12.5 kHz;` for an explicit
 width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when the rate
-bounds it; under AM, `Analog: AM 6 kHz (default);` and so on. With the stream stopped, an RTL-SDR or rtl_tcp input shows
-what the next start runs at its DSP bandwidth, and while a scan row runs a digital protocol the line shows what the
-monitor returns to at the running rate: where the stream runs no channel filter for the unset default, the default reads
-as that rate, DSP-limited. The stream decides that when it opens, from the DSP bandwidth it opens at (below 20 kHz, or
-as `DSD_NEO_CHANNEL_LPF` says), and keeps it when the device delivers another rate. While an `nfm` or `am` scan row with
-its own width (`--nfm-bandwidth-hz`, `--am-bandwidth-hz`) is on air, the row's width is the one in force and the line
-names the configured width of that kind the row overrides: `Analog: NFM 12.5 kHz (row; default 16 kHz);`, `Analog: AM
-8.333 kHz (row; default 6 kHz);`. An analog row shows the field on a digital session too. The terminal sets the width
-from Input > NFM bandwidth..., right after Squelch..., whose label shows the setting (`[12.5 kHz]`, or `[default]`),
-while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running a digital
-protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is or an `am` scan row is on
-air. The Qt and Android Radio sheet shows the same reading under the decode chips, and under any other chip while an
-`nfm` or `am` scan row is on air (a row's own width reads first, with a `row` badge naming the configured default of its
-kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz (NFM) or 5,
-6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP rate cannot filter (the
-running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth sets), and *Use the default
+bounds it; under AM, `Analog: AM 6 kHz (default);` and so on. With the stream stopped, a radio input (RTL-SDR, rtl_tcp,
+SoapySDR or Airspy) shows what the next start runs at its DSP bandwidth, and while a scan row runs a digital protocol
+the line shows what the monitor returns to at the running rate: where the stream runs no channel filter for the unset
+default, the default reads as that rate, DSP-limited. The stream decides that when it opens, from the DSP bandwidth it
+opens at (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF` says), and keeps it when the device delivers another rate. While an
+`nfm` or `am` scan row with its own width (`--nfm-bandwidth-hz`, `--am-bandwidth-hz`) is on air, the row's width is the
+one in force and the line names the configured width of that kind the row overrides: `Analog: NFM 12.5 kHz (row; default
+16 kHz);`, `Analog: AM 8.333 kHz (row; default 6 kHz);`. An analog row shows the field on a digital session too. The
+terminal sets the width from Input > NFM bandwidth..., right after Squelch..., whose label shows the setting (`[12.5
+kHz]`, or `[default]`), while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row
+running a digital protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is or an `am`
+scan row is on air. The Qt and Android Radio sheet shows the same reading under the decode chips, and under any other
+chip while an `nfm` or `am` scan row is on air (a row's own width reads first, with a `row` badge naming the configured
+default of its kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8, 11.25, 12.5, 16, 20 and 25
+kHz (NFM) or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP rate cannot
+filter (the running stream's, or with none running the rate a radio input's DSP bandwidth sets), and *Use the default
 width* to return an explicit width to the unset default. On PCM input without a rigctl peer it reads *not used on PCM
 input* and the controls are disabled. On PCM input with a rigctl peer (`-U`), which demodulates what DSD-neo hears, the
 width is the passband the peer is asked for while the monitor of its kind runs (`-B` under [Trunking &
 Scanning](#trunking--scanning) has the rule), and no DSP rate bounds it or is checked: the terminal rows read `NFM
-passband... [12.5 kHz]` and `AM passband... [default]`, an unset NFM width reading as `-B`, which stands in for it
-(`[-B 12.5 kHz]`, or `[peer's own]` without `-B`), and the input's channel row shows the passband after the squelch (`Passband:
-NFM 12.5 kHz (-B);`, `Passband: AM 6 kHz (default);`) whenever a width is offered, on a digital session with an
-explicit width the `-B` every tune asks for there. The Qt and Android monitor has a `PASSBAND` row reading the same,
+passband... [12.5 kHz]` and `AM passband... [default]`, an unset NFM width reading as `-B`, which stands in for it (`[-B
+12.5 kHz]`, or `[peer's own]` without `-B`), and the input's channel row shows the passband after the squelch
+(`Passband: NFM 12.5 kHz (-B);`, `Passband: AM 6 kHz (default);`) whenever a width is offered, on a digital session with
+an explicit width the `-B` every tune asks for there. The Qt and Android monitor has a `PASSBAND` row reading the same,
 whose Edit opens the Passband sheet: `NFM passband` and `AM passband` steppers over the same widths with no DSP bound,
 `All channels | This channel` under a scan row that takes the edit, and *Use the default width*, which returns the NFM
 width to `-B`; the Radio sheet's width controls stay disabled there, and its note points to the Monitor's Passband row.
@@ -1050,18 +1044,18 @@ control below the first under `-fA` or `-fM`): a switch to that mode is held to 
 capture cannot filter can be narrowed before the switch. The AM control is also offered, reading `default`, where the
 DSP rate cannot filter AM's 6 kHz default but can filter a narrower AM width (a replay or device at 7.5 kHz filters up
 to 5.55 kHz), since a switch to AM is refused there with word to narrow the width (on a replay, to change the DSP
-bandwidth). The setup wizard offers the NFM and
-AM chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or file source, with a
-note under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the app default) is 4
-or 6 kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths that fit; a
-system saved with that pair earlier fails to start with the same reason. Both controls always edit the configured width,
-which is also what a saved config writes: a scan row's own width is never saved. While a row that sets its own width is
-on air, an edit waits for the row to leave (or for a row without a width), and the message says so: `Default NFM
-bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`, and likewise for AM under an `am` row with its own width; an
-edit of the other kind's width is not shadowed. On any session, while the scan has an analog row or target without a
-width of its own (an `nfm` row or `nfm-conventional` target, an `am` row or `am-conventional` target), which runs the
-configured width of its kind when it comes on air, an edit of that width the DSP rate cannot filter is refused whichever
-row is on air, rather than accepted and that row skipped at every visit.
+bandwidth). The setup wizard offers the NFM and AM chips too, and picking either suggests no trunking. Its AM chip is
+greyed out for a network or file source, with a note under the chips saying why, and on a radio source (USB, Airspy or
+rtl_tcp) whose bandwidth (the system's, or the app default) is 4 or 6 kHz, where no AM width fits, the wizard waits at
+the tune step with the reason and the bandwidths that fit; a system saved with that pair earlier fails to start with the
+same reason. Both controls always edit the configured width, which is also what a saved config writes: a scan row's own
+width is never saved. While a row that sets its own width is on air, an edit waits for the row to leave (or for a row
+without a width), and the message says so: `Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`, and
+likewise for AM under an `am` row with its own width; an edit of the other kind's width is not shadowed. On any session,
+while the scan has an analog row or target without a width of its own (an `nfm` row or `nfm-conventional` target, an
+`am` row or `am-conventional` target), which runs the configured width of its kind when it comes on air, an edit of that
+width the DSP rate cannot filter is refused whichever row is on air, rather than accepted and that row skipped at every
+visit.
 
 ### When changes apply
 
@@ -1071,10 +1065,10 @@ row is on air, rather than accepted and that row skipped at every visit.
 | `-B` on PCM input with a rigctl peer (Trunking > `Rigctl setmod bandwidth...`) | While the FM monitor runs with no NFM width in force (a row's own or the configured one), `-B` is the FM passband the peer is asked for: an edit is asked of the peer at once, and one the peer refuses, or whose reply is lost, goes back to the `-B` it replaced, with the message (`Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband`). Anywhere else it is stored for the next tune that asks for it: off the monitor (a digital mode, an RTL-family input) a tune sends it as before (on audio input the peer's own passband is read first, so a later return can put it back), and on the FM monitor with an NFM width in force the tune sends that width instead. |
 | A command that moves the session onto, off or between monitors on PCM input with a rigctl peer (a decode-mode or input switch, a channel-map import, a loaded config's `[mode]` or `[input]`) | The peer is asked for the passband the session then runs at once. One brought by the command (a first rigctl connection, a switch onto PCM input) is asked only for a width, as at start; `-B` and its own passband wait for the next tune. Leaving the monitor for a digital mode puts the peer back on `-B`, or on its own passband with `-B` 0, at once when the monitor ran a passband this client set (a width, or `-B` standing in), best-effort as a tune's `-B` is; a `-B` edit on a digital session still waits for the next tune. A refusal leaves the command's change standing, with a warning in the log and the message (`Rigctl peer refused NFM 9 kHz (see log)`), and so does a refused return to `-B` after a loaded config; a loaded config refused on entering the monitor, its width unchanged, stays applied and fails (`Config applied; the rigctl peer refused NFM 12.5 kHz (see log)`). |
 | Decode mode to or from Analog or AM (`-fA`, `-fM`, the NFM and AM chips, `[mode] decode`) | Live: the front end switches receive family, or between FM and AM, between DSP blocks. A switch to Analog with an explicit NFM width, or to AM with an AM width (its default included), the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too); one the front end refuses where it lands (a retune moved the rate) puts the mode back, with the message. A switch made while a scan row runs a digital protocol reaches the front end when the scan stops; should a DSP-menu CQPSK toggle made before the front end took that return decide instead, or the scan go on (a channel map imported with the scanner on leaves the row, and the next row's tune decides, also when it lands before the front end took that return, which then never runs), the mode stays with no message (a refusal only logged), whether the front end stayed on the digital family or on the analog family (where an `-fA` session runs a typed row), and the next return to the monitor the front end refuses while it runs another family or kind, such as CQPSK toggled off or the scanner stopped on an `am` row, puts it back. A switch between FM and AM that a scan stop puts back this way asks the front end for the mode it restores, and when the rate a row's retune left cannot filter that mode's width either (NFM 16 kHz after a switch to AM under an NXDN48 row, left at 7.5 kHz), the width is settled as for any refused scan stop (the NFM or AM width row above): the width a monitor of that kind kept, else the kind's default, which the monitor then runs, and the message says so (`Refused: NFM 16 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the AM width as it was). |
-| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an I/Q replay it re-plans the replay's rate chain for the bandwidth and reopens the replay where it stopped, about a chunk later, with the decode clock kept on the capture; the bandwidth asked for is kept as asked (under TETRA the replay runs at 72 kHz and returns to it when TETRA ends), a bandwidth that plans the chain already running reopens nothing, and one no chain reaches is refused with the replay running as before (see "Run-time Re-plan" in `docs/iq-capture-replay.md`). On an RTL-SDR or rtl_tcp input (an RTL input whose device string names no SoapySDR, Airspy or replay device opens as one) a bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. The width in use is the configured one under `-fA` or `-fM`, the configured width of a kind on any session while the scan has an analog row or target of that kind without a width of its own, and the own width of an analog scan row on air (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth` from the DSP bandwidth... row). A loaded config is checked at the bandwidth its `[input]` reopens an RTL-SDR or rtl_tcp device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. A config whose `[input]` reopens a SoapySDR or Airspy device (an Airspy source over a running Airspy reopens it for a new sample rate, serial or DSP bandwidth) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. An Airspy source that changes only the volume also reopens the running Airspy, but at the rate it runs now, so the running front end checks the width first, as when nothing reopens, and checks the configured width even when the config leaves it as it was, since the reopened stream opens on it (also while a digital scan row runs, which leaves it unused): a width it cannot filter leaves the config unapplied. A bandwidth from the DSP bandwidth... row whose reopen does not start anyway (on a SoapySDR or Airspy input, a width the rate the device delivers at that bandwidth cannot filter; on any input, a device that does not open) puts the bandwidth that ran back and starts the input again, and says why: `Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...` for a width, `Failed: the RTL-SDR input did not start (see log)` otherwise; with `--iq-capture` that restart runs without the capture (see IQ Capture And Replay). |
+| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an I/Q replay it re-plans the replay's rate chain for the bandwidth and reopens the replay where it stopped, about a chunk later, with the decode clock kept on the capture; the bandwidth asked for is kept as asked (under TETRA the replay runs at 72 kHz and returns to it when TETRA ends), a bandwidth that plans the chain already running reopens nothing, and one no chain reaches is refused with the replay running as before (see "Run-time Re-plan" in `docs/iq-capture-replay.md`). On a radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy, each of which runs at its DSP bandwidth) a bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. The width in use is the configured one under `-fA` or `-fM`, the configured width of a kind on any session while the scan has an analog row or target of that kind without a width of its own, and the own width of an analog scan row on air (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth` from the DSP bandwidth... row). A loaded config is checked at the bandwidth its `[input]` reopens a radio at (its `rtl_bw_khz` as given), from whatever input runs now, a SoapySDR or Airspy device included (an Airspy source over a running Airspy reopens it for a new sample rate, serial or DSP bandwidth); one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. An Airspy source that changes only the volume also reopens the running Airspy, but at the rate it runs now, so the running front end checks the width first, as when nothing reopens, and checks the configured width even when the config leaves it as it was, since the reopened stream opens on it (also while a digital scan row runs, which leaves it unused): a width it cannot filter leaves the config unapplied. A bandwidth from the DSP bandwidth... row whose reopen does not start anyway (a device that does not open, or a SoapySDR device with no rate dsd-neo can resample to that bandwidth) puts the bandwidth that ran back and starts the input again, and says why: `Failed: the RTL-SDR input did not start (see log)`; with `--iq-capture` that restart runs without the capture (see IQ Capture And Replay). |
 | Decode mode switch, or a loaded config's `[mode]` or `[input]` `rtl_bw_khz`, during an I/Q replay | When the new settings plan another rate chain (a switch to TETRA on a 48 kHz replay, or back), the replay reopens at it where it stopped, about a chunk later, with the decode clock kept on the capture, before the new mode runs (`Decoding TETRA: replay resampled to 72 kHz`). A plan no chain reaches is refused: the mode, symbol profile and DSP bandwidth go back and the replay keeps running (`Failed: TETRA -> ...`, `Config not applied: ...`). Otherwise nothing reopens. |
-| A loaded config whose `[input]` reopens the running radio input | Reopens the device. When the reopened stream does not start (its start refuses a width the rate the device delivered cannot filter, or the device does not open), the config is not applied to the receive side: the input and its device settings, the tuning, `[mode]` (the decoders and their timing, the EDACS variant, the extra LRRP ports), `[demod]` and `[analog]` (both widths and the tone filter) go back to what ran, that input is started again, and the message says why (`Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...`, or `Config not applied: the rtl_tcp input did not start (see log)`). With `--iq-capture` that restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Under a scan row, the reopened stream opens on the configured settings, so its start checks the configured width at the rate the device delivers even while a digital row runs (the scan stops back onto that monitor), and the input put back after a rollback starts again on what its stream ran, the row's profile (a typed digital row's, whose rate need not fit the configured width); either stream is asked for the row's profile once the row is back. A reopened stream that cannot run the analog row on air (an `nfm` row's own 25 kHz at the rate an Airspy delivers) is rolled back the same way, with the message naming the width and that rate. A config that turns the scanner off (`[trunking] scanner = false`) leaves the row instead, so the reopened stream is not held to it. The config's other sections (output, trunking, logging, alerts, recording, DSP, a group list) stay applied. With no stream running before the load, the config's input is still opened; when that start fails there is nothing to put back, so the config stays applied with no input running, and the message says why (`Config applied; no input running: the SoapySDR input did not start (see log)`); an input it opens that cannot run the scan row on air is kept, with the whole config (its `[mode]` and `[analog]` widths too, even the width a row without its own runs and the new input refuses), and the message says so (`Config applied; the scan row cannot run: ...`). |
-| Input > Switch source > RTL-SDR or Airspy | RTL-SDR reopens the input as an RTL-SDR or rtl_tcp device at the DSP bandwidth. An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays. A SoapySDR input reopens at the rate its device sets, and Airspy opens the device at the rate it delivers: only `DSD_NEO_CHANNEL_LPF=0` is checked first (on Airspy, over the same widths), and the start checks the width it opens on against that rate, the one in force (the configured one under `-fA` or `-fM`, or that of an analog scan row on air). The switch leaves the scan row on air in place, so under a row that runs a digital protocol it opens on that row's digital profile and checks no analog width, and a configured width the delivered rate cannot filter is left to the scan: its return to the monitor when the scan stops is refused and settled as the NFM or AM width row above describes, and its analog rows or targets that run that width are skipped at every visit. A switch whose start fails anyway (a width the delivered rate cannot filter, a device that does not open) puts the input it replaced back, restarting it when it was a running radio stream (a PCM input was never closed; a radio stream that ran behind it stays stopped), and says why: `Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...` for a width, `Failed: the Airspy input did not start (see log)` otherwise. With `--iq-capture` the restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Once the input it replaced runs again, a device error the failed start reported (an Airspy that did not open) is dropped, so the session's exit status is what it was before the switch; a DSP bandwidth, a loaded config and an Airspy setting that roll back do the same. |
+| A loaded config whose `[input]` reopens the running radio input | Reopens the device. When the reopened stream does not start (the device does not open, or its start refuses a width), the config is not applied to the receive side: the input and its device settings, the tuning, `[mode]` (the decoders and their timing, the EDACS variant, the extra LRRP ports), `[demod]` and `[analog]` (both widths and the tone filter) go back to what ran, that input is started again, and the message says why (`Config not applied: the rtl_tcp input did not start (see log)`). With `--iq-capture` that restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Under a scan row, the reopened stream opens on the configured settings, so its start checks the configured width at its DSP rate even while a digital row runs (the scan stops back onto that monitor), and the input put back after a rollback starts again on what its stream ran, the row's profile (a typed digital row's, whose rate need not fit the configured width); either stream is asked for the row's profile once the row is back. A row's own width the reopen bandwidth cannot filter leaves the config unapplied before anything reopens (see the DSP bandwidth row above); a reopened stream that still cannot run the analog row on air is rolled back the same way, with the message naming the width and the rate. A config that turns the scanner off (`[trunking] scanner = false`) leaves the row instead, so the reopened stream is not held to it. The config's other sections (output, trunking, logging, alerts, recording, DSP, a group list) stay applied. With no stream running before the load, the config's input is still opened; when that start fails there is nothing to put back, so the config stays applied with no input running, and the message says why (`Config applied; no input running: the SoapySDR input did not start (see log)`); an input it opens that cannot run the scan row on air is kept, with the whole config (its `[mode]` and `[analog]` widths too, even the width a row without its own runs and the new input refuses), and the message says so (`Config applied; the scan row cannot run: ...`). |
+| Input > Switch source > RTL-SDR or Airspy | RTL-SDR reopens the input as an RTL-SDR, rtl_tcp or SoapySDR device at the DSP bandwidth, and Airspy opens the Airspy at it (a SoapySDR or Airspy device's own rate is resampled to the bandwidth). An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays; `DSD_NEO_CHANNEL_LPF=0` is checked first over the same widths. The start then checks the width it opens on, the one in force (the configured one under `-fA` or `-fM`, or that of an analog scan row on air). The switch leaves the scan row on air in place, so under a row that runs a digital protocol it opens on that row's digital profile and checks no analog width, and a configured width the bandwidth cannot filter that the switch did not hold is left to the scan: its return to the monitor when the scan stops is refused and settled as the NFM or AM width row above describes, and its analog rows or targets that run that width are skipped at every visit. A switch whose start fails anyway (a device that does not open) puts the input it replaced back, restarting it when it was a running radio stream (a PCM input was never closed; a radio stream that ran behind it stays stopped), and says why: `Failed: the Airspy input did not start (see log)`. With `--iq-capture` the restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Once the input it replaced runs again, a device error the failed start reported (an Airspy that did not open) is dropped, so the session's exit status is what it was before the switch; a DSP bandwidth, a loaded config and an Airspy setting that roll back do the same. |
 | A radio stream restart while a scan row is on air: Input > Switch source, a DSP bandwidth, an Airspy setting, a gain, Device index..., Restart stream, or the restart of the input one of these puts back when its start fails | The new stream opens on the row's settings, but an open picks CQPSK or the FSK discriminator the way it does at startup (as `DSD_NEO_CQPSK` says when set), while the row's own tune ran the row's modulation. So the stream is asked for the row's profile as soon as it runs, timed for the rate it runs the row at: under `DSD_NEO_CQPSK=1` a P25 C4FM row is back on the FSK discriminator, under `DSD_NEO_CQPSK=0` a CQPSK row back on CQPSK, and an `nfm` or `am` row keeps the monitor it opened on. The decoder keeps its acquisition, and a restart that puts an input back resets nothing as for a new input. A loaded config under a scan row asks the same once the row is back (its row above). |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `--am-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. |
@@ -1293,14 +1287,14 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   says that instead. An edit of it there (Input > `AM passband...`, the Passband sheet, a loaded config) reaches the
   peer at once while such a row is on air, and goes back if the peer refuses it.
 - The width has to fit the DSP rate as an NFM width does (the table above), and the unset default is held to it too,
-  since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. An RTL-SDR or rtl_tcp input's
+  since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. A radio input's
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
   dongle plugged in: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz);
   set the RTL DSP bandwidth to 24, 48 or 72 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
   20000`; `-fM` alone at a 6 kHz DSP bandwidth likewise). The interactive setup's AM entry is held to the same rule:
   after an RTL-SDR or rtl_tcp source at a 4 or 6 kHz DSP bandwidth (or one the configured AM width does not fit) it
-  prints that text and asks for the decode mode again. The other radio inputs are checked when the stream starts,
-  against the rate the device or the capture delivers. While AM is the configured mode, the DSP bandwidth, a config's
+  prints that text and asks for the decode mode again. An I/Q replay is checked when the stream starts, against the
+  rate its plan runs at. While AM is the configured mode, the DSP bandwidth, a config's
   `[input]` and Input > Switch source > RTL-SDR are held to its width as they are to an explicit NFM width, and, while a
   `-Y` list or `--trunk-scan` has an `nfm` row or target without a width of its own, to the configured NFM width that
   row runs as well. On any other session (digital, or `-fA`) the same holds the configured AM width, the 6 kHz default
@@ -2429,10 +2423,11 @@ Advanced (env)
   modules may expose `rfnotch_ctrl`, `dabnotch_ctrl`, `biasT_ctrl`, `agc_setpoint`, or `rfgain_sel`.
 - `soapy_gains = "NAME:dB[,NAME:dB...]"` uses named gain stages and takes precedence over aggregate `rtl_gain`.
 - `digital_resample = "auto|on|off"` controls resampling of the digital FSK stream to the resampler target rate.
-  `auto` engages only when the device forces a rate that yields a non-integer samples-per-symbol, which is what
-  devices with a coarse rate grid (RX-888/SDDC, Airspy, SDRplay) do. `on` resamples whenever the target rate
-  can produce an integer samples-per-symbol; `off` always keeps the raw demod rate. The key is not Soapy-specific:
-  it governs the whole rtl-family demod chain (RTL USB, RTL-TCP, SoapySDR, and IQ replay). A device that forces its
+  `auto` engages only when the device picked its own rate, which is what devices with a coarse rate grid
+  (RX-888/SDDC, Airspy, SDRplay) do, and the rate yields a non-integer samples-per-symbol. `on` resamples whenever the
+  target rate can produce an integer samples-per-symbol; `off` always keeps the raw demod rate. The key is not
+  Soapy-specific: it governs the whole rtl-family demod chain (RTL USB, RTL-TCP, SoapySDR, native Airspy, and IQ
+  replay). A device that forces its
   own rate now runs at the DSP bandwidth, as an RTL-SDR does, so `auto` looks at that bandwidth: an Airspy at 24 kHz
   gives 4800 sym/s a whole 5 samples per symbol and is no longer resampled to 48 kHz, while at 12 kHz (2.5 samples)
   it still is. A mode change that moves the symbol rate (ProVoice's 9600 sym/s at 24 kHz) makes the same decision
@@ -2447,7 +2442,8 @@ Advanced (env)
 - Some shortcuts are RTL/RTL-TCP specific and not supported in the Soapy backend path (RTL bias-tee UI/CLI shortcut,
   direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune). Use `soapy_settings` for
   driver-specific controls when the Soapy module exposes them, such as SDRplay `biasT_ctrl`.
-- Native SDRplay/Airspy APIs are intentionally out of scope for now; non-RTL radios are controlled through SoapySDR.
+- dsd-neo has no native SDRplay input; SDRplay radios run through SoapySDR. Airspy R2 and Mini have a native input
+  of their own (`-i airspy:...`, see [the native Airspy guide](airspy.md)), and can also run through SoapySDR.
 - The Soapy backend requires an RX stream format of `CF32` or `CS16` from the driver; `soapy_stream_format = "auto"`
   prefers a supported native format first.
 
@@ -2885,4 +2881,6 @@ of thousands of characters per second, so prefer level `1` unless you need the w
 
 Tip: Many options can be mixed; start simple, add only what you need.
 
-Native Airspy R2 and Mini input uses `-i airspy[:serial=<hex>][:frequency]`. See [the native Airspy guide](airspy.md) for driver installation, receiver controls, and CF32 capture.
+Native Airspy R2 and Mini input uses `-i airspy[:serial=<hex>][:frequency[:bw[:sql[:vol]]]]`. See
+[the native Airspy guide](airspy.md) for USB access (udev rules, WinUSB on Windows), the DSP bandwidths and rates,
+receiver controls, and CF32 capture.

@@ -17,6 +17,13 @@ described under [Analog Monitor Path](#analog-monitor-path).
    start configuration, and honors retune purge/mute gates before DSP state can
    train on new samples.
 3. `full_demod()` applies baseband processing.
+   - The half-band cascade halves the capture rate to the first rate at or
+     above the DSP bandwidth. On an RTL-SDR or rtl_tcp input that is the DSP
+     bandwidth itself. A SoapySDR or Airspy device picks its own rate, so the
+     cascade leaves it above the bandwidth (78,125 Hz for an Airspy at
+     2.5 MS/s), and the live I/Q rate step resamples it to the DSP bandwidth
+     exactly before anything else runs (issue #806). A replay of such a
+     capture runs the same step. Everything after it runs at `complex_rate`.
    - FSK direct output runs the channel LPF, then converts complex I/Q into
      centered PCM-like discriminator samples for `getSymbol()` sample-domain
      timing and slicing.
@@ -261,7 +268,9 @@ Enable rule and validation:
   `complex_rate`, so it runs and is published as the width asked for.
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
-  They now get a real design (219 taps at 78,125 Hz).
+  They then got a real design (219 taps at 78,125 Hz). Since issue #806 a live
+  SoapySDR or Airspy device, and a replay of one, never reach the channel
+  filter at such a rate: the I/Q rate step takes it to the DSP bandwidth.
 - After the DC block, `low_pass_real()` takes the audio from `rate_in` to
   `rate_out2`, and the rational resampler then takes `rate_out` to 48 kHz. A
   live open sets `rate_in` and `rate_out2` to the DSP bandwidth, so that stage
@@ -362,13 +371,13 @@ refuses rather than clamps, and the checks sit where the rate is known:
   `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
   an input spec other than the running one (from any RTL-family input),
   otherwise the running stream. A refusal leaves the whole config unapplied.
-  An `[input]` that reopens a SoapySDR or Airspy device instead (an Airspy
-  source over a running Airspy reopens it for a new sample rate, serial, DSP
-  bandwidth or volume, `svc_airspy_settings_reopen()`) is held to neither: the
-  reopened stream's start checks the width at the rate that device delivers.
+  An `[input]` that reopens a SoapySDR or Airspy device (an Airspy source over
+  a running Airspy reopens it for a new sample rate, serial or DSP bandwidth,
+  `svc_airspy_settings_reopen()`) is held the same way, to the DSP bandwidth it
+  reopens at, which the I/Q rate step makes its rate (issue #806).
 - `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
-  the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
-  naming both; the width is never adjusted to fit the new rate.
+  the configured analog preset cannot run at on any radio input, naming both;
+  the width is never adjusted to fit the new rate.
 
 The channel squelch measures power after the channel filter, so its noise
 floor moves with the width (about 3 dB per halving). The auto squelch
@@ -478,8 +487,8 @@ drained in the same pass of the command queue as the mode change):
   waits for that profile: when the demod thread reaches a block boundary between
   the two requests, it keeps the family request queued, so both apply at one
   boundary. The digital resampler (and so the output rate) is decided for that
-  profile, as an open of it would decide it: at a forced rate such as 78,125 Hz
-  CQPSK never resamples and a 2400 sym/s profile at 60 kHz needs no resampling,
+  profile, as an open of it would decide it: CQPSK never resamples and a
+  2400 sym/s profile at 60 kHz needs no resampling,
   where the analog monitor's 4800 sym/s placeholder would have resampled both to
   48 kHz. The integer-SPS flag (`sps_is_integer`) is derived for that profile
   too, from the demod rate as an open derives it, and the TED keeps the open's
@@ -487,8 +496,7 @@ drained in the same pass of the command queue as the mode change):
   gets two, where the symbol-profile setter alone would leave one). The TED
   timing is taken from the demod rate the switch lands on, as an open takes it,
   not from the rate the decoder read when it queued the profile: a retune can
-  settle the device on another rate first (a CQPSK profile queued at 48 kHz and
-  landing at a forced 78,125 Hz runs 16 samples per symbol, not 10);
+  settle the device on another rate first;
 - FM <-> AM: the detector and de-emphasis swap with a monitor-state reset (the
   AM carrier estimate included) and the I/Q DC estimate starts over (AM leaves
   it where FM had it); the channel and half-band filters start over from empty
@@ -573,9 +581,10 @@ times (9.9 dB) louder than live, while one opened after a live session kept the
 1/pi that session set. 1/pi is the scale at a 48 kHz demod rate: the
 discriminator's output is the phase step per sample, 2 pi f_dev / rate, so the
 applied scale is 1/pi x rate / 48000 (`monitor_output_scale()`), at the rate
-the discriminator actually runs at (rate_out x post_downsample, the rate a
-device delivers: a fixed-grid device such as an Airspy at 2.5 MS/s forces
-78,125 Hz while rate_in keeps the requested bandwidth), and a given deviation
+the discriminator actually runs at (`complex_rate`, which the I/Q rate step
+makes the DSP bandwidth on a live device since issue #806; before it, a
+fixed-grid device such as an Airspy at 2.5 MS/s ran the discriminator at
+78,125 Hz while rate_in kept the requested bandwidth), and a given deviation
 plays at one level whatever the rate (before, 6 dB louder at 24 kHz and 4.2 dB
 quieter at the Airspy's 78,125 Hz). The scale applies to monitor audio only:
 `demod_write_output_block()` skips it for FSK discriminator and CQPSK symbol
@@ -693,7 +702,7 @@ speech -23.9 dBFS each under the AGC, against -24.9 for DMR voice
   unset default and a fitting width still start at a low DSP rate;
   `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` the command's live request and
   refusals, a CQPSK toggle or switch drained with it, a config apply's width
-  and reopen rate (a SoapySDR or Airspy reopen left to its start), scan rows,
+  and reopen rate (a SoapySDR or Airspy reopen held to its DSP bandwidth), scan rows,
   and the DSP bandwidth and Input > Switch source > RTL-SDR refusals, on an
   input the stream opens as an RTL-SDR whatever its device string;
   `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
@@ -755,8 +764,8 @@ ctest --preset dev-debug --output-on-failure
   signals once representative captures are available.
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
-- The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
-  hardware listen check.
+- The Airspy chain (2.5 MS/s halved to 78,125 Hz, then stepped to the DSP
+  bandwidth) needs a hardware listen check, analog and digital.
 - AM (issue #524): the 50 ms carrier time constant and the 0.25 gain are design
   values. The replay A/B above holds the fixtures and the `am_airband_real`
   excerpt flat from 25 to 100 ms, so it cannot choose between them, and

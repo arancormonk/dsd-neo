@@ -609,10 +609,10 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   scan start, in the log and on the status line (and again if that rate changes, or, for a target without its own width,
   if the configured width does), and that target's retune is then refused at every visit without a further warning. So
   is a target's own width while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android preview of
-  an imported target file checks the width's range only. The scan-list editor's own validation (Save, Play) holds an
-  RTL-SDR or rtl_tcp list's analog targets to the rate the list's bandwidth sets, an `am` entry's 6 kHz default
-  included, and names those it would skip in a warning; a SoapySDR or Airspy list's rate is known once the scan's stream
-  runs. While the target is parked, an RTL DSP bandwidth that cannot filter its width is refused, from the DSP bandwidth
+  an imported target file checks the width's range only. The scan-list editor's own validation (Save, Play) holds a
+  list's analog targets to the rate the list's bandwidth sets (an Airspy list's too, since an Airspy runs at its DSP
+  bandwidth), an `am` entry's 6 kHz default included, and names those it would skip in a warning. While the target is
+  parked, a DSP bandwidth that cannot filter its width is refused, from the DSP bandwidth
   control, Input > Switch source and a loaded config alike. While the list has a target without a width of its own, the
   configured width of its kind is in use on any session, as under `-fA` or `-fM`: a width edit, a loaded config or a DSP
   bandwidth that would leave it unfiltered is refused, whichever target is parked. A configured-width edit made while

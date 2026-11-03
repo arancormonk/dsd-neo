@@ -11,6 +11,15 @@ service renders into its notification).
 Supported inputs: a directly attached RTL-SDR or native Airspy R2/Mini over USB-OTG,
 `rtl_tcp`, UDP PCM, TCP PCM, and local files. See [native Airspy setup](../docs/airspy.md).
 
+An Airspy decodes every mode an RTL-SDR does, TETRA included, at the same DSP
+bandwidths (4 to 72 kHz). With its sample rate on auto, the app picks the
+Airspy's lowest rate (2.5 MS/s on an R2, 3 MS/s on a Mini), and the decoder
+resamples it to the DSP bandwidth exactly. The add-system wizard shows the
+bandwidth field for an Airspy too; gain and PPM stay hidden, since the Airspy has
+receiver controls of its own. Leave the bandwidth empty for a TETRA system, which
+then runs at the 72 kHz TETRA needs. A saved Airspy bandwidth snaps to the
+nearest one offered, and one above 72 kHz runs at 48 kHz.
+
 ## Saved encryption keys
 
 Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),

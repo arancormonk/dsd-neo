@@ -103,6 +103,18 @@ If your Soapy args string itself contains `:`, prefer config (`soapy_args` + `rt
 For digital decode, SoapySDR uses the same FSK discriminator and CQPSK symbol contracts as RTL USB, RTL-TCP, and IQ
 replay.
 
+**Device rates.** DSD-neo asks the device for the DSP bandwidth times a power of two (1,536,000 Hz at the default
+48 kHz). Many devices run only at rates of their own, for example 2 MS/s on an SDRplay or an RX-888, or 2.5 or 3 MS/s
+on an Airspy. DSD-neo halves such a rate as far as it can while staying at or above the DSP bandwidth, then resamples
+what is left to the DSP bandwidth exactly: 2 MS/s halves to 62,500 Hz, which is resampled to 48,000 Hz. So the
+decoders, the symbol timing and the analog channel widths run at the DSP bandwidth, as on an RTL-SDR. The rate the
+device reports back decides this (a report within 100 ppm of the rate written counts as that rate), and a retune that
+changes it plans again. A device slower than the DSP bandwidth does not start (`the device runs at 62500 Hz, slower
+than the 72000 Hz DSP bandwidth; choose a smaller DSP bandwidth`), nor does
+one whose rate cannot be resampled to the bandwidth within 5 ppm (`dsd-neo cannot convert the device's ... Hz to the
+48000 Hz DSP bandwidth closely enough ...; choose another DSP bandwidth`); every rate grid listed here converts
+exactly.
+
 Minimal config (recommended):
 
 ```ini
@@ -118,8 +130,7 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 - `rtl_gain`
 - `rtl_ppm`
 - `rtl_bw_khz` (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's, for which DSD-neo asks the device for 1,152,000 Hz.
-  A device whose rate grid has no such rate runs at the first rate its decimation reaches at or above 72 kHz, which a
-  fixed grid rarely makes a multiple of 18 kHz from 36 to 144 kHz; TETRA then warns at stream start)
+  A device whose rate grid has no such rate is resampled to 72 kHz as above, so TETRA decodes on it too)
 - `rtl_sql`
 - `rtl_volume` (monitor/non-symbol gain)
 
@@ -139,11 +150,15 @@ Optional Soapy-specific keys:
 - `soapy_bandwidth_hz = -1|0|<Hz>` uses profile/default behavior for `-1`, driver automatic/no explicit request for
   `0`, or validates and applies an explicit hardware bandwidth in Hz.
 - `digital_resample = "auto|on|off"` controls whether the digital FSK stream is resampled to the resampler target
-  (48000 Hz by default). `auto` engages only when the device forces a sample rate that yields a non-integer
-  samples-per-symbol; `off` always keeps the raw demod rate; `on` resamples whenever it would help, that is
+  (48000 Hz by default). The stream runs at the DSP bandwidth (see Device rates above), so `auto` engages only when
+  the device picked its own rate and the DSP bandwidth yields a non-integer samples-per-symbol (12 kHz for
+  4800 sym/s); `off` always keeps the raw demod rate; `on` resamples whenever it would help, that is
   whenever the target rate differs from the demod rate and is a multiple of the symbol rate (a target that cannot
-  produce an integer samples-per-symbol is bypassed even in `on` mode). CQPSK symbol output is never resampled
-  because its timing loop already tracks a fractional SPS.
+  produce an integer samples-per-symbol is bypassed even in `on` mode). CQPSK symbol output is never resampled: its
+  symbol timing runs on the complex stream before any output resampling, and needs a whole number of samples per
+  symbol there. At a DSP bandwidth that gives none (16 or 12 kHz for P25 Phase 1) the stream warns at start:
+  `WARNING: CQPSK cannot time symbols at 16000 Hz (3.333 samples per symbol for 4800 sym/s); use a DSP bandwidth of
+  24, 48 or 72 kHz.`
 
 `soapy_settings` is a strict passthrough to the installed Soapy driver. DSD-neo checks reported setting keys and
 option lists when the driver provides metadata, then calls Soapy `writeSetting`. Startup fails for malformed items,
@@ -222,10 +237,10 @@ bandwidth, so the driver would supply 2 MSPS instead, and no power-of-two decima
 delivers exactly the requested rate. `soapy_settings` is applied when the device is opened, before the rate is
 programmed, so it takes effect for the first tune.
 
-Without that setting DSD-neo still works: it re-picks decimation for the rate the device actually delivers, and
-`digital_resample = "auto"` normalizes the resulting 62,500 Hz stream to 48,000 Hz for an integer SPS. That path
-costs extra CPU, so prefer the ADC clock when your SoapySDDC build exposes `adc_frequency` (check
-`SoapySDRUtil --probe`).
+Without that setting DSD-neo still works: it re-picks decimation for the rate the device actually delivers and
+resamples the resulting 62,500 Hz stream to 48,000 Hz (see Device rates above). Halving 2 MSPS and resampling it costs
+a little more CPU than halving 1.536 MSPS, so prefer the ADC clock when your SoapySDDC build exposes `adc_frequency`
+(check `SoapySDRUtil --probe`).
 
 **Throughput.** SDDC streams raw ADC samples over USB 3.0 and downconverts them on the host, so USB and CPU load
 follow `adc_frequency` (roughly 196 MB/s at 98.304 MHz) no matter which output rate DSD-neo requests. A USB 3.0
@@ -259,7 +274,8 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
   the Soapy module exposes them, such as SDRplay `biasT_ctrl`.
 - Driver capability support varies. Frequency correction (PPM), manual gain mode/range, and bandwidth control may be
   unavailable on some hardware.
-- Native SDRplay/Airspy APIs are intentionally out of scope for now; DSD-neo controls non-RTL radios through SoapySDR.
+- DSD-neo has no native SDRplay input; SDRplay radios run through SoapySDR. Airspy R2 and Mini can run through
+  SoapySDR too, or through DSD-neo's native Airspy input (see [Native Airspy R2 and Mini](airspy.md)).
 - Requested sample rate/gain may be quantized or clamped by the driver.
 - The current backend expects Soapy RX stream format support for `CF32` or `CS16`; `auto` chooses the native format
   first when it is supported.

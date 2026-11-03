@@ -735,16 +735,15 @@ field, and the decoder refuses the rest when it applies the command.
   I/Q radio nor a symbol capture, are refused, and `status.message` says why;
   for `decode_mode_set`, TETRA at a DSP rate that is not a multiple of 18 kHz
   from 36 to 144 kHz is kept, with a message naming the fix (`rtl_set_bw` 72 on
-  an RTL-SDR).
+  any radio input, an Airspy included).
 * **`rr_apply_import`**: the response only acknowledges the queue; the outcome
   arrives in `status.message`. Everything the decoder can check is checked
   before anything changes, and a refused import changes nothing (`Failed: RR
   import -> <reason>`): a running trunk scan, or one waiting for the next start
   beside a channel map or the scanner; AM or TETRA on demodulated audio; TETRA
-  on an RTL-SDR or rtl_tcp radio off the 72 kHz DSP bandwidth (`Failed: RR
-  import -> TETRA needs 72 kHz DSP bandwidth; set it and import again`), on an
-  Airspy, on a SoapySDR device whose rate is no TETRA rate, or in a
-  `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
+  on a radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) off the 72 kHz DSP
+  bandwidth (`Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and
+  import again`), or in a `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
   running I/Q replay that cannot run the mode; and a CSV that cannot be read.
   After that, a mode change that fails (a replay that does not reopen at the
   new rate, say) keeps its own message, which names the reason, and the import

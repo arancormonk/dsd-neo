@@ -294,8 +294,10 @@ Generated (do not edit/commit):
     SoapySDR or Airspy, `dsd_input_dsp_rate_policy()`) cannot filter (`dsd_engine_setup_check_analog_width()`, issues
     #525, #806), from the bandwidth the input spec sets and before an RTL-SDR input looks for its device, so the
     refusal depends on no dongle; an I/Q replay is held to the rate it runs at stream start. Tests:
-    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` and `_RTL` (`tests/cmake/RunCliSmoke.cmake`:
-    the message, a non-zero exit, and for `rtl` no device enumeration before it)
+    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED`, `_RTL`, `_AIRSPY` and `_SOAPY` (`tests/cmake/RunCliSmoke.cmake`: the message,
+    a non-zero exit, and for the device variants no device enumeration or open before it), and
+    `RUNTIME_AIRSPY_CONFIG_WIDTH_VALIDATE` and `_STARTUP` (`--validate-config` and the startup it vouches for refuse an
+    Airspy `[input]` width alike)
   - The decode loop's side of an input switch (issue #634, `live_scanner_main_loop()`): a frame-sync hunt read that
     left a silent input's wait for a queued command (`dsd_state::input_interrupted`) ended no reception, so the pass
     pumps the command and skips `noCarrier()`; a replaced stream (`dsd_state::input_boundary`, set by an input switch,
@@ -2439,9 +2441,9 @@ suite runs under this compiler.
     float I/Q between a radio producer and the demod. Stream positions (`produced_total`, `consumed_total`, floats since
     init; a purge moves the consumer's) place gap marks (issue #806 X12): a producer that lost samples before they
     reached the ring (`input_ring_note_gap()`) marks the place, and the consumer finds it exactly there
-    (`input_ring_gap_pending()`, one load a block; `input_ring_take_gap()`: the floats before the next mark, and whether
-    one sits at the read position) however the two split the stream. Marks a purge discarded around are dropped, a
-    second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
+    (`input_ring_gap_pending()`, two loads a block; `input_ring_take_gap()`: the floats before the next mark, and
+    whether one sits at the read position) however the two split the stream. Marks a purge discarded around are dropped,
+    a second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
     Test: `RUNTIME_INPUT_RING_GAP` (arbitrary short blocks on one thread and two, purge, duplicate, full queue).
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
@@ -2519,6 +2521,12 @@ suite runs under this compiler.
     (the sources, the anchor floor and ceiling, `dsd_decode_clock_batch_media_ns()`, the leave's continuity),
     `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and
     `APP_COMMAND_QUEUE`.
+  - Digital channel bound (`include/dsd-neo/runtime/digital_channel.h`, issue #806): `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`
+    (102,745 Hz), the highest DSP rate at which every digital channel profile designs within the channel filter's 288
+    taps (DSP, "Channel LPF"). A plain constant with no includes: the demodulator and the SNR bias read it, and the
+    radio layer hands it to the I/Q replay planner as its filter domain (`replay_max_complex_rate_hz()`, IO "Replay rate
+    plan"), so a non-TETRA digital replay is kept at or below it. Test: `DSP_CHANNEL_FILTERS` (every profile designs at
+    that rate and none 1 Hz above).
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
@@ -4796,10 +4804,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     39,062.5 Hz) and the protected and stopband edges as given. It refuses edges with no transition band, a protected
     band past 0.45 of the input rate, or a stopband edge past the input rate less the protected band, compared
     exactly, or past the output rate less the protected band by more than `DSD_IQ_RESAMPLER_MAX_APPROX_PPM` (5 ppm,
-    the planner's bound for an approximated L/M, so a convergent a few ppm under the target still designs). The design is configure()'s: with the step's edges (0.45 x D and D less that) it matches
-    `configure()` at the rates scaled by 2^shift bit for bit, and `dsd_iq_resampler_group_delay_seconds()` and
-    `dsd_iq_resampler_in_rate_hz()` report the real fractional rate. `in_hz`/`out_hz` stay whole-Hz fields and read 0
-    when the rate is not whole. `configure()` keeps its release-first contract for replay.
+    the planner's bound for an approximated L/M, so a convergent a few ppm under the target still designs). The design
+    is `configure()`'s: with the step's edges (0.45 x D and D less that) it matches `configure()` at the rates scaled by
+    2^shift bit for bit, and `dsd_iq_resampler_group_delay_seconds()` and `dsd_iq_resampler_in_rate_hz()` report the
+    real fractional rate. `in_hz`/`out_hz` stay whole-Hz fields and read 0 when the rate is not whole. `configure()`
+    keeps its release-first contract for replay.
   - Transactional use: a configure (either entry point) releases only its own target, so a caller can design a
     candidate next to the running and retained ones; `dsd_iq_resampler_swap()` exchanges two whole (no allocation, the
     history and phase travel with the design); `dsd_iq_resampler_matches()` compares a `configure_ratio()` design's
@@ -5538,13 +5547,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     loop rewind drops the old dwell's last 74 samples or so, and as nothing flushes them at EOF, a replay never decodes
     a capture's last 1.5 ms). `rtl_demod_clear_filter_histories()` and stream open (`demod_init_common_defaults()`)
     delegate to it, so a retune restarts the post-demod decimator too, as a family switch does.
-  - `channel_lpf_apply()` clears the channel state on a plan for another `complex_rate` than the last one, and on the first
-    block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
-    keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
-    `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block decision:
-    squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples. It marks the block
-    (`demod_state::front_end_empty`), and the stream's squelch hop count skips it, so a squelched block before it does
-    not count twice (`IO_RTL_ANALOG_FAMILY_SWITCH`, `rtl_stream_test_squelch_hop_empty_block()`).
+  - `channel_lpf_apply()` clears the channel state on a plan for another `complex_rate` than the last one, and on the
+    first block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same
+    rate keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel
+    LPF). `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block
+    decision: squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples. It marks the
+    block (`demod_state::front_end_empty`), and the stream's squelch hop count skips it, so a squelched block before it
+    does not count twice (`IO_RTL_ANALOG_FAMILY_SWITCH`, `rtl_stream_test_squelch_hop_empty_block()`).
   - The CQPSK Gardner (`op25_gardner_cc()`) runs every block, however short, through the state in `ted_state` (mu,
     omega, the delay line, the last symbol), so its symbols do not depend on the cut either: a block can make none, and
     a symbol the last block owed comes out of the next one. It writes them to the work buffer its input is not in
@@ -5990,10 +5999,11 @@ Key public headers:
     sidecar decimates after the demodulator. Test: `IO_RTL_COMPLEX_RATE` (FSK, CQPSK and NFM x post 1-4: configured
     and landed rates, prediction, emitted sample counts; the bandwidth x symbol rate x digital_resample matrix, Airspy
     against RTL-SDR; the TED and output chain an SPS hunt, retune profiles, a P25 voice override and a control-channel
-    restore land on, a TED-only retune, `rtl_stream_test_live_chain_profile_steps()`, `rtl_stream_test_replay_post_chain()`
-    with the metrics hooks read through `rtl_stream_test_set_post_chain_probe()`; a `-Y` NFM/DMR walk on a forced chain
-    under auto/on/off, `rtl_stream_test_retune_profile_sequence_mode()`), `ENGINE_NO_CARRIER_RESET` (trunk-scan targets on
-    a resampled chain), `RTL_SYMBOL_CACHE_GENERATION` (the decoder re-times when the FSK output rate moves).
+    restore land on, a TED-only retune, `rtl_stream_test_live_chain_profile_steps()`,
+    `rtl_stream_test_replay_post_chain()` with the metrics hooks read through `rtl_stream_test_set_post_chain_probe()`;
+    a `-Y` NFM/DMR walk on a forced chain under auto/on/off, `rtl_stream_test_retune_profile_sequence_mode()`),
+    `ENGINE_NO_CARRIER_RESET` (trunk-scan targets on a resampled chain), `RTL_SYMBOL_CACHE_GENERATION` (the decoder
+    re-times when the FSK output rate moves).
   - Symbol timing warnings (issue #806): `rtl_demod_warn_symbol_timing()` runs once the plan and the profile are final,
     at stream open (`stream_open_finalize_demod_chain()`) and after a retune's profile lands
     (`controller_finalize_dsp_chain()`); the open's defaults (`rtl_demod_select_defaults_for_mode()`) run before the
@@ -10838,7 +10848,10 @@ Key public headers:
   - Prefer an app-control service in `src/app_control/services.h` with implementation in `src/app_control/` for side
     effects (I/O, mode switches, file ops).
   - Menu action handlers live in `src/ui/terminal/menu_actions.c` and should be thin wrappers that call service helpers
-    and use `ui_prompt_open_*_async` to gather input.
+    and use `ui_prompt_open_*_async` to gather input. A global handler never takes a name an SDK the CLI links exports:
+    the Airspy rows' handlers are `ui_airspy_*`, since seven of them once carried libairspy's names and took the
+    adapter's gain calls in the CLI (issue #806). Tests: `UI_AIRSPY_SYMBOL_CLASH`, `UI_AIRSPY_MENU_SHADOW`
+    (`docs/testing.md`, "Symbols a library exports").
 - Find the row's home. The root (`src/ui/terminal/menus/menu_defs.c`) is the receiver's signal chain — Input, Decoder,
   Trunking, Encryption, Audio, Recording & logs — then Display, Config, Advanced. A setting goes where the signal it
   acts on lives, not where the module that implements it lives; every concept has exactly one home.

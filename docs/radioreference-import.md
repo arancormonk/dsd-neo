@@ -322,28 +322,26 @@ is refused with the reason:
 
 | Input | TETRA import |
 |---|---|
-| RTL-SDR or rtl_tcp at a 72 kHz DSP bandwidth | Accepted |
-| RTL-SDR or rtl_tcp at any other DSP bandwidth | Refused: set the DSP bandwidth to 72 kHz (or start with `-fT`), then import again. The import does not change it itself, because reopening the radio would restart an `--iq-capture` from the beginning |
-| SoapySDR | Accepted when the rate the device runs at is a TETRA rate (a multiple of 18 kHz from 36 to 144 kHz), refused with advice otherwise. The wizard cannot see that rate, so only the decoder decides |
-| Airspy | Refused: no Airspy rate decodes TETRA yet |
+| RTL-SDR, rtl_tcp, SoapySDR or Airspy at a 72 kHz DSP bandwidth | Accepted |
+| RTL-SDR, rtl_tcp, SoapySDR or Airspy at any other DSP bandwidth | Refused: set the DSP bandwidth to 72 kHz (or start with `-fT`), then import again. The import does not change it itself, because reopening the radio would restart an `--iq-capture` from the beginning |
 | I/Q replay | Accepted; the replay is re-planned to a TETRA rate, or the import is refused when the capture cannot be resampled to one |
 | Symbol capture (`.bin`, `.raw`, `.sym`) | Accepted |
 | PulseAudio, WAV, TCP/UDP audio, stdin | Refused: TETRA needs an I/Q radio input or a symbol capture |
 | A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
 
 In the Android and Qt app, a saved TETRA system is checked when it starts, as an AM one is. It starts on a USB
-RTL-SDR or rtl_tcp radio whose bandwidth is 72 kHz or left empty (an empty field runs TETRA at 72 kHz, whatever the
-default bandwidth in Settings). On an Airspy, or at any other bandwidth, it is refused with the reason, because it
-would start and never decode. A bandwidth the radio does not offer counts as the 48 kHz it runs at.
+RTL-SDR, rtl_tcp or Airspy radio whose bandwidth is 72 kHz or left empty (an empty field runs TETRA at 72 kHz,
+whatever the default bandwidth in Settings). At any other bandwidth it is refused with the reason, because it would
+start and never decode. A bandwidth the radio does not offer counts as the bandwidth it runs at: 48 kHz on a USB or
+rtl_tcp radio, and on an Airspy the nearest bandwidth it offers (48 kHz for one above 72).
 
-The add-system wizard checks the same thing before it saves. The TETRA chip is greyed out on an Airspy, and
-a TETRA system switched to an Airspy keeps TETRA but cannot continue until you pick a USB or rtl_tcp radio or
-another decode mode; the reason shows under the decode chips. The bandwidth field's hint shows what an empty
-field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in
-the review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo
-cannot decode. The terminal wizard says the same in three lines under the site list of a TETRA system: an
-I/Q radio at a TETRA rate (72 kHz on an RTL-SDR or rtl_tcp) or a symbol capture, no Airspy yet, and the
-Tetrapol caveat.
+The add-system wizard checks the same thing before it saves: TETRA at a bandwidth other than 72 kHz cannot continue
+until you set 72 kHz, empty the field, or pick another decode mode, and the reason shows under the decode chips. The
+wizard shows the bandwidth field on an Airspy too, so that fix is always in reach. The bandwidth field's hint shows what
+an empty field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in the
+review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo cannot decode.
+The terminal wizard says the same in three lines under the site list of a TETRA system: an I/Q radio at a TETRA rate (a
+72 kHz DSP bandwidth on an RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a symbol capture, and the Tetrapol caveat.
 
 ## What gets generated
 
@@ -439,7 +437,8 @@ on RadioReference list no talkgroups at all; such an import writes no file (see
   an uplink, or another system's stays where it is, and so does a session whose main carrier it cannot receive.
   Tune the cell's downlink yourself (in the app, edit the saved system's frequency), or pick another site. The
   TETRA entry under "Modes & Decoders" in `docs/cli.md` gives the details and the log lines.
-- **The receiver.** See [Receiver requirements](#receiver-requirements). An Airspy cannot decode TETRA yet.
+- **The receiver.** See [Receiver requirements](#receiver-requirements). Any radio input decodes TETRA at a 72 kHz
+  DSP bandwidth, an Airspy included.
 - **Tetrapol.** Some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo cannot decode.
   Nothing in RadioReference's data tells the two apart, so such a system imports like any other and then decodes
   nothing.
