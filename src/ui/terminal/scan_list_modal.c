@@ -11,7 +11,8 @@
  * carries the lists' sequence it left them at. It can come a frame or more before the snapshot that shows its switch,
  * so a row a request switched shows the state it asked for while the view's lists_seq is behind the result's; from
  * then on the snapshot is the truth, whatever else switched the list since. A refusal describes the lists the result
- * saw: its note goes once the view's lists_seq moves past the result's (and a paused refusal goes on resume).
+ * saw, or those on screen at Enter when they are later: its note goes once the view's lists_seq moves past them, and a
+ * paused refusal goes on a resume the modal saw follow the pause.
  */
 
 #include "scan_list_modal.h"
@@ -51,14 +52,16 @@ typedef enum {
 } scan_list_note_kind;
 
 typedef struct {
-    uint32_t request;  /* the request this row waits on; 0 = none */
-    uint8_t want;      /* the state that request asked for */
-    uint8_t note;      /* scan_list_note_kind */
-    uint8_t held;      /* 1 = show @c held_want while the view's lists_seq is behind held_seq */
-    uint8_t held_want; /* the state an answered switch left the list in */
-    int32_t code;      /* the answer's dsd_app_scan_list_set_code, for SCAN_LIST_NOTE_ANSWER */
-    uint32_t held_seq; /* the switch's result's lists_seq */
-    uint32_t note_seq; /* the lists the note describes: the result's lists_seq, or the view's for a submit not sent */
+    uint32_t request;    /* the request this row waits on; 0 = none */
+    uint8_t want;        /* the state that request asked for */
+    uint8_t note;        /* scan_list_note_kind */
+    uint8_t held;        /* 1 = show @c held_want while the view's lists_seq is behind held_seq */
+    uint8_t held_want;   /* the state an answered switch left the list in */
+    int32_t code;        /* the answer's dsd_app_scan_list_set_code, for SCAN_LIST_NOTE_ANSWER */
+    uint32_t held_seq;   /* the switch's result's lists_seq */
+    uint32_t note_seq;   /* the lists the note describes: the later of the result's and submit_seq */
+    uint32_t submit_seq; /* the view's lists_seq at Enter: a dropped request's result can carry older lists */
+    uint8_t seen_paused; /* 1 = a PAUSED note has been shown with the scan paused, so a resume can retire it */
 } ScanListModalRow;
 
 typedef struct {
@@ -277,7 +280,10 @@ scan_list_modal_answer(const dsd_app_scan_list_result* result) {
         row->request = 0U;
         row->note = (uint8_t)SCAN_LIST_NOTE_ANSWER;
         row->code = result->code;
-        row->note_seq = result->lists_seq;
+        /* At least the lists the row was asked on: a request dropped before a drain reached it carries the lists the
+           last drain left, which can be older than the ones on screen at Enter. */
+        row->note_seq = scan_list_seq_after(row->submit_seq, result->lists_seq) ? row->submit_seq : result->lists_seq;
+        row->seen_paused = 0U;
         if (result->code != DSD_APP_SCAN_LIST_SET_OK) {
             return;
         }
@@ -309,9 +315,26 @@ scan_list_modal_take_results(void) {
     }
 }
 
+/* Whether @p row's note no longer describes the lists: they moved past the ones it described, or a paused refusal
+   saw the scan paused and then resumed. Only a pause the modal has seen counts: the frame an answer arrives in can
+   predate the pause that refused it. */
+static int
+scan_list_note_expired(ScanListModalRow* row, uint32_t seq) {
+    if (scan_list_seq_after(seq, row->note_seq)) {
+        return 1;
+    }
+    if (row->note != (uint8_t)SCAN_LIST_NOTE_ANSWER || row->code != DSD_APP_SCAN_LIST_SET_PAUSED) {
+        return 0;
+    }
+    if (g_modal.view.paused) {
+        row->seen_paused = 1U;
+        return 0;
+    }
+    return row->seen_paused;
+}
+
 /* A held row goes back to the snapshot once the snapshot has the lists its switch left, or later ones. A note goes
-   once the lists move past the ones it described, and a paused refusal goes as the scan resumes: neither is true any
-   more. */
+   once it is no longer true (scan_list_note_expired()). */
 static void
 scan_list_modal_expire_rows(void) {
     const uint32_t seq = g_modal.view.lists_seq;
@@ -320,10 +343,7 @@ scan_list_modal_expire_rows(void) {
         if (row->held && !scan_list_seq_after(row->held_seq, seq)) {
             row->held = 0U;
         }
-        const int paused_note =
-            row->note == (uint8_t)SCAN_LIST_NOTE_ANSWER && row->code == DSD_APP_SCAN_LIST_SET_PAUSED;
-        if (row->note != (uint8_t)SCAN_LIST_NOTE_NONE
-            && (scan_list_seq_after(seq, row->note_seq) || (paused_note && !g_modal.view.paused))) {
+        if (row->note != (uint8_t)SCAN_LIST_NOTE_NONE && scan_list_note_expired(row, seq)) {
             row->note = (uint8_t)SCAN_LIST_NOTE_NONE;
         }
     }
@@ -355,6 +375,7 @@ scan_list_modal_submit(int r) {
     }
     row->request = p.request;
     row->want = p.enabled;
+    row->submit_seq = g_modal.view.lists_seq;
     row->note = (uint8_t)SCAN_LIST_NOTE_NONE;
 }
 

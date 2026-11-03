@@ -725,7 +725,8 @@ typedef enum {
  * nonzero, process-wide, and advances per result. @c lists_seq is dsd_state::trunk_scan_lists_seq once the request was
  * handled (for one that never reached the decoder, the value the decoder last published): a snapshot whose
  * trunk_scan_lists_seq is behind it does not show this answer yet, and one past it shows a later change of the lists,
- * which a refusal no longer describes. */
+ * which a refusal no longer describes. A request dropped before the decoder saw it can carry lists older than the ones
+ * the frontend showed when it asked, so a frontend keys its note on the later of the two. */
 typedef struct {
     uint64_t sequence;
     uint32_t request;

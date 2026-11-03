@@ -534,6 +534,46 @@ test_snapshot_already_past_the_answer(void) {
     scan_list_modal_close();
 }
 
+/* A request dropped before a drain reached it carries the lists the last drain left, which can be older than the
+   ones on screen at Enter: its note keys on the later of the two, so it stays until the lists really change. */
+static void
+test_dropped_answer_behind_the_view(void) {
+    fixture();
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    key('\n');
+    assert(g_sent_count == 1);
+    publish_result_at(g_sent[0].request, 1, 0, DSD_APP_SCAN_LIST_SET_DROPPED, 9U); /* the view shows 10 */
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air  Not applied; try again");
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air  Not applied; try again");
+    g_state.trunk_scan_lists_seq = 11U;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    scan_list_modal_close();
+}
+
+/* The scan paused between Enter and the answer, and the frame the answer arrives in still shows it running: the paused
+   refusal stays until the modal has seen the pause and then the resume. */
+static void
+test_paused_answer_before_the_pause_shows(void) {
+    fixture();
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    key('\n');
+    publish_result(g_sent[0].request, 1, 0, DSD_APP_SCAN_LIST_SET_PAUSED);
+    tick(); /* the frame predates the pause */
+    expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
+    g_state.trunk_scan_paused = 1;
+    g_state.trunk_scan_active_list = 0;
+    tick();
+    expect_row(0, "1  security      On   12 targets          Scan paused: resume it first");
+    g_state.trunk_scan_paused = 0;
+    g_state.trunk_scan_active_list = 1;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    scan_list_modal_close();
+}
+
 int
 main(void) {
     test_opens_only_with_lists_to_switch();
@@ -545,6 +585,8 @@ main(void) {
     test_esc_and_session_change();
     test_results_before_open_are_not_its_own();
     test_snapshot_already_past_the_answer();
+    test_dropped_answer_behind_the_view();
+    test_paused_answer_before_the_pause_shows();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

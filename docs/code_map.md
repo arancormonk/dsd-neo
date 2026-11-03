@@ -9406,8 +9406,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     the outcome and the note beside the list (the decoder's whole toast stays on the main screen's toast line). A
     switched row shows the state it asked for while the view's `lists_seq` is behind the result's `lists_seq` (the
     result can beat the snapshot), then the view's, also when the snapshot already holds a later switch at the answer.
-    A note goes once the view's `lists_seq` moves past the result's (the view's at submit for a submit not sent), and
-    a paused refusal goes on resume: neither is true any more. A waiting row ignores Enter; rows wait independently.
+    A note goes once the view's `lists_seq` moves past the later of the result's and the view's at Enter (a request
+    dropped before a drain reached it carries the last drain's lists, which can be older; a submit not sent keys on the
+    view's), and a paused refusal goes on a resume the modal saw follow the pause (the frame an answer lands in can
+    predate the pause): neither is true any more. A "try again" note has no timeout and survives Enter on another row. A
+    waiting row ignores Enter; rows wait independently.
     Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal closes on
     Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The Trunk Scan row
     (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count` (`(-/m)` while
