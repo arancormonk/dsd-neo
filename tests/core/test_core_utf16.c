@@ -180,6 +180,19 @@ test_utf8_validation(void) {
     assert(!dsd_utf8_is_valid("\xE2\x82\x41")); /* a non-continuation byte inside */
 }
 
+/* The Windows user-file opener (path_policy.c) opens a path through the wide calls when it is well-formed UTF-8, as the
+   app writes a list's file named in any script, and through the ANSI calls otherwise, as a command line in the ANSI
+   code page gives it. */
+static void
+test_utf8_validation_of_paths(void) {
+    assert(dsd_utf8_is_valid("C:\\data\\scan_lists\\u-1\\Pol\xC3\xAD"
+                             "cia.csv"));
+    assert(dsd_utf8_is_valid("scan_lists/u-1/\xD7\xA9\xD7\x9E\xD7\xA8.csv")); /* Hebrew */
+    assert(dsd_utf8_is_valid("C:\\lists\\plain.csv"));
+    assert(!dsd_utf8_is_valid("C:\\lists\\Pol\xED"
+                              "cia.csv")); /* the same name in code page 1252 */
+}
+
 int
 main(void) {
     test_bmp_units_pass_through();
@@ -193,6 +206,7 @@ main(void) {
     test_invalid_scalars_encode_as_replacement();
     test_utf8_encoding_needs_room_for_terminator();
     test_utf8_validation();
+    test_utf8_validation_of_paths();
     DSD_FPRINTF(stderr, "CORE_UTF16: PASS\n");
     return 0;
 }

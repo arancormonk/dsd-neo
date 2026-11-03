@@ -15,8 +15,11 @@
 #include <string.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
+#include <dsd-neo/core/utf16.h>
 #include <fcntl.h>
 #include <io.h>
+#include <stdlib.h>
+#include <wchar.h>
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -111,8 +114,7 @@ dsd_path_resolve_relative_to_file(const char* base_file_path, const char* reques
 
 #if DSD_PLATFORM_WIN_NATIVE
 static int
-path_reject_windows_reparse_or_directory(const char* path) {
-    DWORD attrs = GetFileAttributesA(path);
+path_reject_windows_attributes(DWORD attrs) {
     if (attrs == INVALID_FILE_ATTRIBUTES) {
         errno = ENOENT;
         return -1;
@@ -123,15 +125,58 @@ path_reject_windows_reparse_or_directory(const char* path) {
     }
     return 0;
 }
+
+/* @p path as UTF-16 for the wide file calls, or NULL when it is not well-formed UTF-8 (a path in the ANSI code page,
+   as a command line can give it) or cannot be converted. The caller frees it. */
+static wchar_t*
+path_utf8_to_wide(const char* path) {
+    if (!dsd_utf8_is_valid(path)) {
+        return NULL;
+    }
+    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (wide_len <= 0) {
+        return NULL;
+    }
+    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
+    if (!wide) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+
+/* A UTF-8 path (the app's own files, named after lists in any script) opens through the wide calls, whatever the
+   ANSI code page; one the wide calls do not find, or one that is not UTF-8, through the ANSI calls as before, so a
+   command line's path in the ANSI code page still opens. */
+static int
+path_open_read_fd_windows(const char* resolved) {
+    wchar_t* wide = path_utf8_to_wide(resolved);
+    if (wide) {
+        int fd = -1;
+        if (path_reject_windows_attributes(GetFileAttributesW(wide)) == 0) {
+            fd = _wopen(wide, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+        }
+        const int saved_errno = errno;
+        free(wide);
+        if (fd >= 0 || saved_errno != ENOENT) {
+            errno = saved_errno;
+            return fd;
+        }
+    }
+    if (path_reject_windows_attributes(GetFileAttributesA(resolved)) != 0) {
+        return -1;
+    }
+    return _open(resolved, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+}
 #endif
 
 static int
 path_open_read_fd(const char* resolved) {
 #if DSD_PLATFORM_WIN_NATIVE
-    if (path_reject_windows_reparse_or_directory(resolved) != 0) {
-        return -1;
-    }
-    return _open(resolved, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+    return path_open_read_fd_windows(resolved);
 #else
     int flags = O_RDONLY;
 #ifdef O_NOFOLLOW
