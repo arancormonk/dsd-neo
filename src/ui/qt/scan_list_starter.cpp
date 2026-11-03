@@ -18,6 +18,7 @@
 #include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
@@ -240,10 +241,8 @@ cut_utf8(const QString& text, int bytes) {
 
 QString
 scan_list_csv_stem(const QString& name, int listNumber) {
-    QString stem;
-    for (const QChar c : name) {
-        stem += unsafe_in_file_name(c) ? QChar('_') : c;
-    }
+    QString stem = name;
+    std::replace_if(stem.begin(), stem.end(), unsafe_in_file_name, QChar('_'));
     /* The name the engine shows is cut there anyway; cut here, whole characters only, so the file says the same. */
     stem = cut_utf8(stem.trimmed(), DSD_TRUNK_SCAN_LIST_NAME_SIZE - 1);
     /* No file name ends in a dot or a blank on Windows, and "." or ".." is not a file. */
