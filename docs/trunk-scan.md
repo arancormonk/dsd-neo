@@ -960,8 +960,10 @@ source files.
 
 The starter checks files and writes a private `<AppData>/scan_lists/<uid>/<name>.csv`
 using `QSaveFile` (the list's name, made safe for a file name, so the decoder names the list after it; a list over an
-imported target CSV gets a copy there with its side-file references made absolute), then validates it through the app-control facade before asking
-the host to start. Missing/unreadable files, commas, double quotes,
+imported target CSV gets a copy there, with each side file it names rewritten relative to the copy's folder, and the
+imported file is never written; when no copy can be made, the list runs from the imported file, the decoder names it
+after that file, and the log says so with a `NOTICE: Scan list "<name>" runs from its imported file` line), then
+validates it through the app-control facade before asking the host to start. Missing/unreadable files, commas, double quotes,
 CR/LF in paths, duplicate type/frequency pairs and empty enabled lists are refused.
 Relative saved paths are resolved against the working directory before generating
 the target CSV, preserving their standalone meaning. Preference extra options are token-screened against session/scan/decode overrides

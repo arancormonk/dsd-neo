@@ -24,6 +24,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/log.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <utility>
@@ -226,15 +227,18 @@ collectTargetCompanion(const dsd_app_scan_csv_reference* ref, void* context) {
 
 /* Issue #697: copy an imported target CSV to @p destination, so the decoder names the list after its own file there,
    with every companion it names (channel maps, talkgroup and key files) rewritten to the same file, relative to the
-   copy's folder. The imported original is never written. False, with nothing written, when a companion's path cannot
-   be written as a replacement token. */
-bool
+   copy's folder. The imported original is never written. Empty on success, else why no copy was written (a companion
+   path that cannot be written as a replacement token, among others). */
+QString
 copy_targets_for_list(const QString& source, const QString& destination) {
     QList<TargetCompanion> refs;
     const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetCompanion, &refs, nullptr};
-    if (dsd_app_scan_csv_inspect(source.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) != 0
-        || !QDir().mkpath(QFileInfo(destination).absolutePath())) {
-        return false;
+    char error[512] = {};
+    if (dsd_app_scan_csv_inspect(source.toUtf8().constData(), nullptr, 0, &callbacks, error, sizeof error) != 0) {
+        return QString::fromUtf8(error);
+    }
+    if (!QDir().mkpath(QFileInfo(destination).absolutePath())) {
+        return QStringLiteral("cannot create its folder");
     }
     const QDir folder(QFileInfo(destination).absolutePath());
     QList<QByteArray> paths;
@@ -246,9 +250,12 @@ copy_targets_for_list(const QString& source, const QString& destination) {
     for (qsizetype i = 0; i < mapping.size(); ++i) {
         mapping[i].relative_path = paths.at(i).constData();
     }
-    return dsd_app_scan_csv_rewrite(source.toUtf8().constData(), nullptr, 0, destination.toUtf8().constData(),
-                                    mapping.constData(), static_cast<size_t>(mapping.size()), nullptr, 0)
-           == 0;
+    if (dsd_app_scan_csv_rewrite(source.toUtf8().constData(), nullptr, 0, destination.toUtf8().constData(),
+                                 mapping.constData(), static_cast<size_t>(mapping.size()), error, sizeof error)
+        != 0) {
+        return QString::fromUtf8(error);
+    }
+    return {};
 }
 
 /* Characters a file name cannot hold on Android or Windows, or that would make it a path. */
@@ -412,10 +419,19 @@ ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int 
     const QString uid = list.value("uid").toString();
     QString copy = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
     /* A copy that cannot be written, or that does not check out as the original does, leaves the list on the
-       imported file itself: it still runs, named after that file. */
-    if (!copy_targets_for_list(source, copy)
-        || dsd_app_trunk_scan_validate_bundle(copy.toUtf8().constData(), nullptr, nullptr, nullptr, 0) != 0) {
+       imported file itself: it still runs, named after that file, and the log says so. */
+    QString why = copy_targets_for_list(source, copy);
+    char detail[512] = {};
+    if (why.isEmpty()
+        && dsd_app_trunk_scan_validate_bundle(copy.toUtf8().constData(), nullptr, nullptr, detail, sizeof detail)
+               != 0) {
+        why = QString::fromUtf8(detail);
+    }
+    if (!why.isEmpty()) {
         QFile::remove(copy);
+        LOG_INFO("NOTICE: Scan list \"%s\" runs from its imported file, named after that file: no copy under the "
+                 "list's name (%s)\n",
+                 qUtf8Printable(list.value("name").toString()), qUtf8Printable(why));
         return source;
     }
     remove_other_list_csvs(uid, copy);
