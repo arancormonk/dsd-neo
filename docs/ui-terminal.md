@@ -900,9 +900,10 @@ has the whole answer. A reason stays only while it is true: it goes once the lis
 from another frontend), and the paused one when the scan resumes. A "try again" note (`Busy; try again`,
 `Not sent; try again`, `Not applied; try again`) stays until that row is asked again or the lists change; it has no
 timeout, and Enter on another row leaves it. Several rows can wait at once, and Enter on a row that is waiting does
-nothing. Switching off the list on air moves the receiver to a target of another list at once, as `L` would. The lists
-stay open until Esc or Left, and close by themselves when the scan stops or restarts. A switch lasts for the session:
-Config save and the exit autosave keep the lists as configured.
+nothing. Switching off the list on air moves the receiver to a target of another list at once, as `L` would. On a DMR
+repeater carrier any other switch waits for the carrier to end, so its row says `Switching off…` or `Switching on…`
+until then and the call goes on undisturbed. The lists stay open until Esc or Left, and close by themselves when the
+scan stops or restarts. A switch lasts for the session: Config save and the exit autosave keep the lists as configured.
 
 The menu row is offered while a trunk scan with two or more lists runs. `#` also opens the lists while the scan is
 paused, where every switch is refused and the footer reads `Arrows  Esc/Left: close, then y resumes the scan`, and

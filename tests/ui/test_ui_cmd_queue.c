@@ -8975,7 +8975,7 @@ test_runtime_config_apply_sets_the_decoder_options(void) {
     /* Both fields are read where they are used, so a terminal Audio LPF or de-emphasis edit, which re-parses, never
        ends a DMR repeater loop (dmrBS()) and its call: the command waits for the carrier to end, as the other deferred
        commands do. */
-    rc |= expect_int("runtime config: no frame loop needed", dsd_app_commands_need_frame_loop(), 0);
+    rc |= expect_int("runtime config: no frame loop needed", dsd_app_commands_need_frame_loop(state), 0);
     rc |= expect_int("runtime config: drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("runtime config: DMR T3 fill on", opts->dmr_t3_heuristic_fill, 1);
     rc |= expect_int("runtime config: P25 AFC gate on", opts->p25_afc_status_gate_enable, 1);
@@ -9249,7 +9249,9 @@ test_talkgroup_row_record_after_mode(void) {
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks, the runtime config
    re-parse, the scan avoid put back and clear); a command that mixes both
-   is judged by its payload. Asked through the hook the session installs, over the real queue. */
+   is judged by its payload. Asked through the hook the session installs, over the real queue. A trunk-scan list switch
+   (issue #697) is judged against the asking decoder's state, here parked on list 1 of session 1: only switching that
+   list off leaves the target on air. */
 static int
 test_commands_that_need_the_frame_loop(void) {
     static dsd_opts opts;
@@ -9259,7 +9261,15 @@ test_commands_that_need_the_frame_loop(void) {
     const int value = 0;
     const dsd_app_dsp_payload cq = {.op = DSD_APP_DSP_OP_TOGGLE_CQ};
     const dsd_app_dsp_payload iqbal = {.op = DSD_APP_DSP_OP_TOGGLE_IQBAL};
+    state.trunk_scan_session = 1U;
+    state.trunk_scan_active_list = 1U;
+    state.trunk_scan_active_list_off = 0U;
     const dsd_app_scan_list_set_payload list_set = {.session = 1U, .request = 1U, .list = 2, .enabled = 0U};
+    const dsd_app_scan_list_set_payload on_air_off = {.session = 1U, .request = 2U, .list = 1, .enabled = 0U};
+    const dsd_app_scan_list_set_payload on_air_on = {.session = 1U, .request = 3U, .list = 1, .enabled = 1U};
+    const dsd_app_scan_list_set_payload all_on = {
+        .session = 1U, .request = 4U, .list = DSD_APP_SCAN_LIST_ALL, .enabled = 1U};
+    const dsd_app_scan_list_set_payload stale_off = {.session = 2U, .request = 5U, .list = 1, .enabled = 0U};
     dsd_app_airspy_setting_payload serial;
     dsd_app_airspy_setting_payload lna;
     DSD_MEMSET(&serial, 0, sizeof serial);
@@ -9280,7 +9290,12 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "scan avoid", DSD_APP_CMD_SCAN_AVOID, 1},
         {&value, sizeof value, "channel cycle", DSD_APP_CMD_CHANNEL_CYCLE, 1},
         {&value, sizeof value, "previous channel", DSD_APP_CMD_CHANNEL_CYCLE_PREV, 1},
-        {&list_set, sizeof list_set, "scan list set", DSD_APP_CMD_SCAN_LIST_SET, 1},
+        {&list_set, sizeof list_set, "another scan list off", DSD_APP_CMD_SCAN_LIST_SET, 0},
+        {&on_air_off, sizeof on_air_off, "the scan list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1},
+        {&on_air_off, sizeof on_air_off - 1U, "a short scan list switch", DSD_APP_CMD_SCAN_LIST_SET, 1},
+        {&on_air_on, sizeof on_air_on, "the scan list on air on", DSD_APP_CMD_SCAN_LIST_SET, 0},
+        {&all_on, sizeof all_on, "every scan list on", DSD_APP_CMD_SCAN_LIST_SET, 0},
+        {&stale_off, sizeof stale_off, "another scan's list on air off", DSD_APP_CMD_SCAN_LIST_SET, 0},
         {&value, sizeof value, "skip slot", DSD_APP_CMD_SKIP_SLOT, 1},
         {&value, sizeof value, "lockout slot", DSD_APP_CMD_LOCKOUT_SLOT, 1},
         {&value, sizeof value, "pulse input", DSD_APP_CMD_PULSE_IN_SET, 1},
@@ -9312,18 +9327,18 @@ test_commands_that_need_the_frame_loop(void) {
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         dsd_app_frontend_runtime_start(&opts, &state);
-        rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
+        rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(&state), 0);
         rc |= expect_true("command queued", dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0) > 0);
         rc |= expect_true("command queued", dsd_app_command_submit(cases[i].id, cases[i].payload, cases[i].size) > 0);
-        if (dsd_runtime_controls_need_frame_loop() != cases[i].needs) {
+        if (dsd_runtime_controls_need_frame_loop(&state) != cases[i].needs) {
             DSD_FPRINTF(stderr, "%s: needs the frame loop %d, want %d\n", cases[i].name,
-                        dsd_runtime_controls_need_frame_loop(), cases[i].needs);
+                        dsd_runtime_controls_need_frame_loop(&state), cases[i].needs);
             rc = 1;
         }
         /* The session's stop discards the queue unapplied. */
         dsd_app_frontend_runtime_stop();
         dsd_exitflag_store(0); // an accepted quit raises it at submit
-        rc |= expect_int("stopped session needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
+        rc |= expect_int("stopped session needs no frame loop", dsd_runtime_controls_need_frame_loop(&state), 0);
     }
     freeState(&state);
     DSD_SECURE_ZERO(&state, sizeof state);
@@ -25976,8 +25991,9 @@ guard_holder_run(void* opaque) {
 }
 
 /* The command is not apply-guarded: with a watchdog tick holding the guard the drain does not wait for it, and the
-   coordinator's own try answers BUSY, retained like any answer; the next try switches. A queued toggle returns a
-   decoder holding one carrier (dmrBS()) to the frame loop at its next burst boundary. */
+   coordinator's own try answers BUSY, retained like any answer; the next try switches. A queued toggle of a list other
+   than the one on air leaves a decoder holding one carrier (dmrBS()) in its loop; see
+   test_scan_list_set_waits_for_a_held_carrier(). */
 static int
 test_scan_list_set_busy_and_frame_loop(void) {
     static dsd_opts opts;
@@ -26006,11 +26022,108 @@ test_scan_list_set_busy_and_frame_loop(void) {
     rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
                          "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "list 2 off, guard free");
 
-    rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
+    rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(&state), 0);
     rc |= expect_int("toggle queued", submit_list_set(session, 2, 1, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("a queued toggle needs the frame loop", dsd_runtime_controls_need_frame_loop(), 1);
+    rc |= expect_int("a queued toggle of another list waits for the carrier",
+                     dsd_runtime_controls_need_frame_loop(&state), 0);
     rc |= expect_int("toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_lists_on("toggle applied", &state, 1, 1, 1);
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+
+/* The receiver's place while a decoder holds one carrier in a loop of its own: the target, its list and the carrier the
+   tuning hook last parked. */
+typedef struct {
+    char id[DSD_CHANNEL_LABEL_SIZE];
+    uint8_t list;
+    long int cc_freq;
+} held_carrier;
+
+static void
+held_carrier_note(held_carrier* held, const dsd_state* state) {
+    DSD_SNPRINTF(held->id, sizeof held->id, "%s", state->trunk_scan_active_id);
+    held->list = state->trunk_scan_active_list;
+    held->cc_freq = state->trunk_cc_freq;
+}
+
+/* The decoder holding @p held (dmrBS()) asks at three burst boundaries and none returns it to the frame loop, so its
+   call goes on: nothing is applied, nothing is answered and the receiver stays. */
+static int
+expect_carrier_kept(const char* what, const dsd_state* state, const held_carrier* held, uint64_t after) {
+    int rc = 0;
+    for (int burst = 0; burst < 3; burst++) {
+        rc |= expect_int(what, dsd_runtime_controls_need_frame_loop(state), 0);
+    }
+    dsd_app_scan_list_result out[DSD_APP_RESULT_HISTORY];
+    rc |= expect_int(what, dsd_app_scan_list_results_since(after, out, DSD_APP_RESULT_HISTORY), 0);
+    rc |= expect_str(what, state->trunk_scan_active_id, held->id);
+    rc |= expect_true(what, state->trunk_scan_active_list == held->list && state->trunk_cc_freq == held->cc_freq);
+    return rc;
+}
+
+/* A list switch that does not leave the target on air is a flag edit (#672's rule for put back and clear): a decoder
+   holding a DMR repeater carrier in a loop of its own (dmrBS()) keeps the carrier and its call, the switch stays
+   queued, and the drain after the carrier applies it with its one result. Switching off the list on air returns that
+   decoder to the frame loop at once (D4). A waiting switch the session discards is still answered, DROPPED. */
+static int
+test_scan_list_set_waits_for_a_held_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig(&opts, &state, &rig);
+    const uint32_t session = state.trunk_scan_session;
+
+    /* Park on b, a DMR target in list 2 (hospital): switching list 1 off leaves a at once. */
+    rc |= drain_list_set(&opts, &state, session, 1, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 1 (security) off: 2 of 3 lists on, 3 targets", "held carrier: list 1 off");
+    rc |= expect_str("held carrier: on b", state.trunk_scan_active_id, "b");
+    rc |= expect_int("held carrier: b is in list 2", state.trunk_scan_active_list, 2);
+    held_carrier held;
+    held_carrier_note(&held, &state);
+
+    /* Another list off, then every list on, while b's carrier is held. */
+    uint64_t after = scan_list_newest_seq();
+    uint32_t third = 0U;
+    uint32_t every = 0U;
+    rc |= expect_int("list 3 off queued", submit_list_set(session, 3, 0, &third), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("list 3 off waits for the carrier", &state, &held, after);
+    rc |= expect_int("every list on queued", submit_list_set(session, DSD_APP_SCAN_LIST_ALL, 1, &every),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("every list on waits for the carrier", &state, &held, after);
+    rc |= expect_lists_on("nothing switched while the carrier is held", &state, 0, 1, 1);
+
+    /* The carrier ends: the frame loop's drain applies both in order, one result each, and the receiver stays on b. */
+    rc |= expect_int("carrier ended: both drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_list_result("list 3 off after the carrier", after, third, session, 3, 0, DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_list_result("every list on after the carrier", after, every, session, DSD_APP_SCAN_LIST_ALL, 1,
+                             DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_lists_on("both switched after the carrier", &state, 1, 1, 1);
+    rc |= expect_str("still on b after the carrier", state.trunk_scan_active_id, "b");
+    rc |= expect_true("no retune after the carrier", state.trunk_cc_freq == held.cc_freq);
+
+    /* Switching off the list on air does not wait: the decoder returns to the frame loop at its next burst boundary, and
+       the drain leaves b at once. */
+    after = scan_list_newest_seq();
+    uint32_t on_air = 0U;
+    rc |= expect_int("list 2 off queued", submit_list_set(session, 2, 0, &on_air), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("the list on air off returns to the frame loop", dsd_runtime_controls_need_frame_loop(&state), 1);
+    rc |= expect_int("the list on air off: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_list_result("the list on air off", after, on_air, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_true("the list on air off leaves b", strcmp(state.trunk_scan_active_id, "b") != 0
+                                                          && state.trunk_scan_active_list != 2U
+                                                          && state.trunk_cc_freq != held.cc_freq);
+
+    /* A waiting switch that a session stop discards before the carrier ends: answered once, DROPPED. */
+    held_carrier_note(&held, &state);
+    after = scan_list_newest_seq();
+    uint32_t discarded = 0U;
+    rc |= expect_int("list 2 on queued", submit_list_set(session, 2, 1, &discarded), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("list 2 on waits for the carrier", &state, &held, after);
+    dsd_app_frontend_runtime_stop();
+    rc |= expect_list_result("a waiting switch discarded", after, discarded, session, 2, 1,
+                             DSD_APP_SCAN_LIST_SET_DROPPED);
+    dsd_app_frontend_runtime_start(&opts, &state);
     finish_scan_list_rig(&opts, &state, &rig);
     return rc;
 }
@@ -26456,6 +26569,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_scan_list_set_answers();
     rc |= test_scan_list_set_busy_and_frame_loop();
+    rc |= test_scan_list_set_waits_for_a_held_carrier();
     rc |= test_scan_list_set_two_requests_one_drain();
     rc |= test_config_apply_keeps_the_live_lists();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

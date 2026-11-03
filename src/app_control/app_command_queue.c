@@ -10658,14 +10658,37 @@ command_dsp_op_deferred(const struct dsd_app_command* c) {
            || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
 }
 
+/* A trunk-scan list switch (issue #697) moves the receiver only when it switches off the list that holds the target on
+   air, which leaves that target at once (D4), as avoid does. Any other switch, "all lists on" included, edits flags and
+   never retunes, so it waits for the carrier to end like put back and clear (issue #672). Judged against @p state, the
+   asking decoder's own, which the coordinator writes at every hop, switch and pause (on its thread), so the answer is
+   current and costs no walk; a paused scan names no list on air. A switch of the list on air that the coordinator then
+   refuses as the last one to scan still takes the frame loop: telling that apart walks the targets. Without a state,
+   or with a payload the drain will refuse, it takes the frame loop. */
+static int
+command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
+    if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
+        return 0;
+    }
+    dsd_app_scan_list_set_payload set;
+    DSD_MEMCPY(&set, c->data, sizeof(set));
+    const int leaves_on_air =
+        set.enabled == 0U && set.list > 0 && set.session != 0U && set.session == state->trunk_scan_session
+        && (uint32_t)set.list == (uint32_t)state->trunk_scan_active_list && state->trunk_scan_active_list_off == 0U;
+    return !leaves_on_air;
+}
+
 /* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
 static int
-command_needs_frame_loop(const struct dsd_app_command* c) {
+command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
     if (c->id == DSD_APP_CMD_AIRSPY_SET) {
         return !command_airspy_setting_deferred(c);
     }
     if (c->id == DSD_APP_CMD_DSP_OP) {
         return !command_dsp_op_deferred(c);
+    }
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return !command_scan_list_set_deferred(c, state);
     }
     for (size_t i = 0; i < sizeof(k_deferred_commands) / sizeof(k_deferred_commands[0]); i++) {
         if (k_deferred_commands[i] == c->id) {
@@ -10676,12 +10699,12 @@ command_needs_frame_loop(const struct dsd_app_command* c) {
 }
 
 int
-dsd_app_commands_need_frame_loop(void) {
+dsd_app_commands_need_frame_loop(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     int needed = 0;
     for (size_t i = g_head; i != g_tail && !needed; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
-        needed = command_needs_frame_loop(&g_q[i]);
+        needed = command_needs_frame_loop(&g_q[i], state);
     }
     dsd_mutex_unlock(&g_mu);
     return needed;

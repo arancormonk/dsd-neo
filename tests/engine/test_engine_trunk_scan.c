@@ -17573,6 +17573,55 @@ test_lists_switching_off_the_list_on_air_leaves_at_once(void) {
     return test_rc;
 }
 
+/* Issue #668 beside D4: switching off the list of an NFM target on air leaves it through the release `b` and `L` use
+ * (trunk_scan_release_active_carrier()), whose dsd_engine_release_tuned_call_state() ends the NFM call first, so its
+ * recording (pre-roll included) and its row close once, under its own name, before the next target's replace them.
+ * A switch of a list not on air releases nothing. */
+static int
+test_lists_switching_off_an_nfm_target_ends_its_call_once(void) {
+    static const char* const names[] = {"a", "b", "c"};
+    static const char* const bodies[] = {
+        "a1,nfm-conventional,154430000,,250,250,,\n",
+        "b1,nfm-conventional,155430000,,250,250,,\n",
+        "c1,nfm-conventional,156430000,,250,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, k_squelch_targets_header, names, bodies, NULL, 3, &opts, &state) != 0) {
+        return 1;
+    }
+    int test_rc = expect_published_target(&state, "nfm lists start", "a1", 1U, 3U);
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.05);
+    const int ends_before = g_explicit_call_ends;
+    g_release_seen_target[0] = '\0';
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_list_rc("nfm list c off", list_set(&opts, &state, 3, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "nfm list c off", "a1", 1U, 3U);
+    if (g_explicit_call_ends != ends_before) {
+        DSD_FPRINTF(stderr, "nfm list c off ended %d calls, want 0\n", g_explicit_call_ends - ends_before);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_list_rc("nfm list a off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "nfm list a off", "b1", 2U, 3U);
+    if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "a1") != 0) {
+        DSD_FPRINTF(stderr, "nfm list a off ended %d calls under '%s', want 1 under 'a1'\n",
+                    g_explicit_call_ends - ends_before, g_release_seen_target);
+        test_rc = 1;
+    }
+    /* The rotation on b1 and back: nothing of a1's call is ended again. */
+    tick_at(&opts, &state, 0.60);
+    tick_at(&opts, &state, 1.20);
+    test_rc |= expect_no_active_call_row(&state, "nfm after the list went off");
+    if (g_explicit_call_ends != ends_before + 1) {
+        DSD_FPRINTF(stderr, "nfm after the list went off: a1's call ended again\n");
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
 /* D5 and D7: a toggle that would leave nothing to scan is refused -- the last list on, every list at once, a list
  * whose others hold only avoided targets or targets the DSP rate cannot filter -- and so is any while the scan is
  * paused, while the tick guard is held, or that names another session or a list it does not have. None changes a
@@ -18611,6 +18660,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_build_failure_in_list_two_cleans_up);
     rc |= run_with_default_tune_hook(test_lists_start_on_the_first_reachable_target_and_all_on);
     rc |= run_with_default_tune_hook(test_lists_switching_off_the_list_on_air_leaves_at_once);
+    rc |= run_with_default_tune_hook(test_lists_switching_off_an_nfm_target_ends_its_call_once);
     rc |= run_with_default_tune_hook(test_lists_refusals);
     rc |= run_with_default_tune_hook(test_scan_avoid_refuses_when_the_only_alternate_is_width_skipped);
     rc |= run_with_default_tune_hook(test_lists_retreat_and_advance_pass_over_a_list_off);

@@ -1025,7 +1025,7 @@ dmr_bs_run(dsd_opts* opts, dsd_state* state, int bootstrap_slot_known) {
          * it decodes (a scan advance, hold or avoid among them): a carrier that keys for minutes would otherwise hold
          * them off until it drops (issue #637). Unwind at a burst boundary before either runs, so finalization cannot
          * clear the next target's decoder/audio state. Other commands wait for the carrier to end. */
-        if (dsd_frame_sync_hook_scan_visit_should_yield(opts, state) || dsd_runtime_controls_need_frame_loop()) {
+        if (dsd_frame_sync_hook_scan_visit_should_yield(opts, state) || dsd_runtime_controls_need_frame_loop(state)) {
             /* An intentional scan departure is not a CACH/EMB decode failure. */
             ctx.tact_okay = 1;
             ctx.emb_ok = 1;
