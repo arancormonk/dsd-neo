@@ -182,6 +182,9 @@ test_free(void* p) {
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #elif defined(_MSC_VER)
 #pragma warning(push, 0)
+/* Upstream's open-by-descriptor path returns early off Android and keeps the rest of the function after the return;
+ * the level-0 push above did not keep MSVC's C4702 (unreachable code) for it out of the build. */
+#pragma warning(disable : 4702)
 #endif
 // The test needs the source's private struct airspy_device and static helpers, so it compiles the file itself:
 // DSD_TEST_LIBAIRSPY_SOURCE names the vendored or the desktop airspy.c.

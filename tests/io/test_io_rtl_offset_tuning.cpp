@@ -375,10 +375,10 @@ test_rate_readback_and_recenter_edges(void) {
     const Run r820t = run_start(kTunerR820T, 0, 0U, kReadbackHz);
     failed |= expect_fs4_rotation("different R820T readback", r820t, kCenterHz);
     /* 1.44 MS/s is 6.25 % off: an RTL-SDR's chain cannot run it, so the start fails, the read-back reported. */
-    const Run far = run_start(kTunerE4000, 0, 0U, 1440000U);
-    failed |= expect_int("read-back out of tolerance fails the start", far.result.rc < 0, 1);
-    failed |= expect_u32("refused read-back reported", far.result.refused_readback_hz, 1440000U);
-    failed |= expect_int("refused read-back reported as forced", far.result.refused_forced, 1);
+    const Run out_of_tolerance = run_start(kTunerE4000, 0, 0U, 1440000U);
+    failed |= expect_int("read-back out of tolerance fails the start", out_of_tolerance.result.rc < 0, 1);
+    failed |= expect_u32("refused read-back reported", out_of_tolerance.result.refused_readback_hz, 1440000U);
+    failed |= expect_int("refused read-back reported as forced", out_of_tolerance.result.refused_forced, 1);
     const Run refused = run_start(kTunerE4000, 0, 0U, 0U, 0, 2);
     failed |= expect_int("failed re-centre aborts startup", refused.result.rc < 0, 1);
     const Run retune = run_start(kTunerE4000, 0, kRetuneCenterHz, 0U, 0, 0, 44100);
