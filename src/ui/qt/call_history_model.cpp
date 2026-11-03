@@ -1332,18 +1332,12 @@ fragment_ring(const QString& fragment) {
 /** @brief Whether @p existing already holds a fragment, other than @p row's own, of a ring @p row comes from. */
 bool
 row_holds_ring_of(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    for (const QString& own : row.fragments) {
+    return std::any_of(row.fragments.cbegin(), row.fragments.cend(), [&existing](const QString& own) {
         const QStringView ring = fragment_ring(own);
-        if (ring.isEmpty()) {
-            continue;
-        }
-        for (const QString& held : existing.fragments) {
-            if (held != own && fragment_ring(held) == ring) {
-                return true;
-            }
-        }
-    }
-    return false;
+        return !ring.isEmpty()
+               && std::any_of(existing.fragments.cbegin(), existing.fragments.cend(),
+                              [&own, ring](const QString& held) { return held != own && fragment_ring(held) == ring; });
+    });
 }
 
 /**

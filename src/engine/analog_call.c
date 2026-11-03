@@ -411,9 +411,32 @@ analog_call_tick_closes(const dsd_opts* opts, const dsd_state* state, const anal
     return analog_call_max_gap48(opts) == 0U && (!state->analog_rx.carrier_open || !dsd_analog_tone_gate_passes(gate));
 }
 
+/* The tick with no reception running: a moved epoch drops the pre-roll (issue #668), and D2's notice follows a live
+   change (a squelch set from a frontend) with no block to carry it. */
+static void
+analog_call_tick_idle(const dsd_opts* opts, dsd_state* state, analog_call* call) {
+    if (call && analog_call_epoch_moved(state, call)) {
+        analog_call_preroll_invalidate(state, call);
+    }
+    if (analog_call_follows(opts)) {
+        (void)analog_call_allowed(opts, state, analog_call_ensure(state));
+    }
+}
+
+/* What no hold survives, held or not: the receiver left the channel, the tone is rejected, or (D2) the squelch lets
+   noise through, a live change that needs no further sample. */
+static int
+analog_call_tick_invalid(const dsd_opts* opts, const dsd_state* state, analog_call* call, int gate) {
+    return !dsd_analog_monitor_tap_active(opts) || gate == DSD_ANALOG_TONE_GATE_REJECTED
+           || !dsd_analog_rx_boundaries_current(opts, state) || !analog_call_allowed(opts, state, call);
+}
+
 void
 dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
-    analog_call* call = (opts && state) ? analog_call_get(state) : NULL;
+    if (!opts || !state) {
+        return;
+    }
+    analog_call* call = analog_call_get(state);
     /* B6 between blocks: a reset with no block after it (a TCP reconnect to a silent stream, which wakes the hunt for
        this tick, or one that yields to a queued command) moves the epoch while the boundaries stay current, and the
        stream may bring no whole block to see it. The call, held or not, ends at its last reception as the next block
@@ -421,18 +444,11 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
        stays the last block's, so that next block, which may still hold audio from before the reset, is dropped too.
        It does whenever a tap read found a stream pause part-way through a block that spans several reads (live input
        at 8192 Hz, where a block lasts 117 ms): the block's first samples arrived before the pause (B7, issue #668). */
-    const int moved = call && analog_call_epoch_moved(state, call);
     if (!analog_call_running(call)) {
-        if (moved) {
-            analog_call_preroll_invalidate(state, call);
-        }
-        /* D2's notice follows a live change (a squelch set from a frontend) with no block to carry it. */
-        if (opts && state && analog_call_follows(opts)) {
-            (void)analog_call_allowed(opts, state, analog_call_ensure(state));
-        }
+        analog_call_tick_idle(opts, state, call);
         return;
     }
-    if (moved) {
+    if (analog_call_epoch_moved(state, call)) {
         analog_call_end_reception(opts, state, call);
         return;
     }
@@ -440,12 +456,9 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int gate = dsd_analog_tone_gate_in_force(opts, state);
-    /* What no hold survives, held or not: the receiver left the channel, the tone is rejected, or (D2) the squelch
-       lets noise through, a live change that needs no further sample. */
-    const int invalid = !dsd_analog_monitor_tap_active(opts) || gate == DSD_ANALOG_TONE_GATE_REJECTED
-                        || !dsd_analog_rx_boundaries_current(opts, state) || !analog_call_allowed(opts, state, call);
     /* A held call with input flowing needs no tick. */
-    if (invalid || analog_call_tick_closes(opts, state, call, gate) || dsd_engine_analog_call_due(state)) {
+    if (analog_call_tick_invalid(opts, state, call, gate) || analog_call_tick_closes(opts, state, call, gate)
+        || dsd_engine_analog_call_due(state)) {
         analog_call_end_reception(opts, state, call);
     }
 }

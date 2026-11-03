@@ -1686,7 +1686,7 @@ test_preroll_across_recording_transitions(void) {
         const long long call_frames = (long long)(DSD_ANALOG_CALL_MIN_MS / 20) * 960;
         DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the recording", what);
         rc |= expect_int(tag, take_nfm_frames(what == PREROLL_FOLDER_MOVED ? other : r.dir),
-                         kept ? 3 * 960 + call_frames : call_frames);
+                         kept ? 3LL * 960 + call_frames : call_frames);
         rig_close(&r);
         remove_folder(other);
     }
