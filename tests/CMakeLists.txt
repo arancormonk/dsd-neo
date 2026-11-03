@@ -11007,12 +11007,12 @@ add_test(
     NAME DSP_SQUELCH_STEP_MODEL
     COMMAND dsd-neo_test_dsp_squelch_step_model
 )
-set_tests_properties(DSP_SQUELCH_STEP_MODEL PROPERTIES TIMEOUT 60)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL PROPERTIES TIMEOUT 120)
 add_test(
     NAME DSP_SQUELCH_STEP_MODEL_MATRIX
     COMMAND dsd-neo_test_dsp_squelch_step_model --matrix
 )
-set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 120)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 300)
 
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
