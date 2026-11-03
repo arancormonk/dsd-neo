@@ -3600,7 +3600,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`, `... is off
     already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the other scan
     controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue took gets
-    a retained result `{sequence, request, session, list, enabled, code}` (`src/app_control/scan_list_results.c`):
+    a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
+    (`src/app_control/scan_list_results.c`): `lists_seq` is the decoder's `trunk_scan_lists_seq` once the drain handled
+    the request, and for one dropped before a drain reached it the value the last drain left
+    (`dsd_app_scan_list_note_lists_seq()`);
     the coordinator's `dsd_trunk_scan_list_set_result` passes through as `dsd_app_scan_list_set_code`, and app-control
     adds `INVALID` (envelope or payload), `SEARCH` (`apply_cmd()` records it) and `DROPPED` (evicted by a later
     command or discarded at a session stop). A full queue refuses a toggle at submit instead of evicting the oldest,
@@ -3608,8 +3611,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each other's results.
     The result is authoritative for the outcome and the toast; the snapshot's `trunk_scan_lists_seq` is for the
     lists shown, and the result can come first (its publication precedes the drain's snapshot, which a watchdog
-    tick can also put off), so a frontend clears a pending row on its result and renders the lists once
-    `trunk_scan_lists_seq` moves. The code is the coordinator's even where the command's status is not: a rigctl
+    tick can also put off), so a frontend clears a pending row on its result, shows what the switch asked for while
+    the snapshot's `trunk_scan_lists_seq` is behind the result's `lists_seq`, and drops a refusal's note once the
+    snapshot moves past it. The code is the coordinator's even where the command's status is not: a rigctl
     passband follow-up refused after a switch marks the command FAILED (and the recording view's outcome with it)
     while the code stays OK. The handler hands its code back through an out-parameter along `apply_cmd()`, never a
     shared static. Toggles are session-only: the coordinator's lists survive a config apply, running or paused, and a

@@ -301,7 +301,7 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
-        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
@@ -4504,7 +4504,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
-        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
@@ -10780,7 +10780,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
-            dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID);
+            dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
             if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
@@ -10797,7 +10797,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
-        dsd_app_scan_list_publish_result(&cmd, scan_list_code);
+        dsd_app_scan_list_publish_result(&cmd, scan_list_code, state);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
@@ -10815,6 +10815,10 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         ui_request_redraw_if_published();
         n_applied++;
+    }
+    /* A list toggle dropped before a drain reaches it is answered with the lists as they stand now (issue #697). */
+    if (n_applied > 0 && state) {
+        dsd_app_scan_list_note_lists_seq(state->trunk_scan_lists_seq);
     }
     return n_applied;
 }

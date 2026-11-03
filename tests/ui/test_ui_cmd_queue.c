@@ -25535,6 +25535,27 @@ expect_list_result(const char* what, uint64_t after, uint32_t request, uint32_t 
     return bad;
 }
 
+/* The one result after @p after for @p request carries the lists' sequence @p want (issue #697): the decoder's
+   trunk_scan_lists_seq once the request was handled, or for one dropped before a drain reached it, as the last drain
+   left it. */
+static int
+expect_list_result_seq(const char* what, uint64_t after, uint32_t request, uint32_t want) {
+    dsd_app_scan_list_result out[DSD_APP_RESULT_HISTORY];
+    const int n = dsd_app_scan_list_results_since(after, out, DSD_APP_RESULT_HISTORY);
+    for (int i = 0; i < n; i++) {
+        if (out[i].request == request) {
+            if (out[i].lists_seq != want || out[i].pad2 != 0U) {
+                DSD_FPRINTF(stderr, "%s: result lists_seq %u pad2 %u, want %u 0\n", what, (unsigned)out[i].lists_seq,
+                            (unsigned)out[i].pad2, (unsigned)want);
+                return 1;
+            }
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "%s: no result for request %u\n", what, (unsigned)request);
+    return 1;
+}
+
 /* Two callers (the terminal and the API, say) taking request ids and submitting at once, while a third polls the
    results as the drain publishes them: no id is taken twice, each request comes back exactly once, and a poll never
    sees a result out of order. */
@@ -25692,6 +25713,8 @@ test_scan_list_set_queue_full_and_dropped(void) {
     uint64_t before = scan_list_newest_seq();
     rc |= expect_int("full queue refuses a toggle", submit_list_set(1U, 2, 0, NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
     rc |= expect_true("a refused toggle leaves no result", scan_list_newest_seq() == before);
+    /* The lists as the decoder publishes them while it drains: what a toggle dropped before the next drain says. */
+    state.trunk_scan_lists_seq = 77U;
     rc |= expect_int("the refusal evicted nothing", dsd_app_drain_cmds(&opts, &state), 127);
 
     /* A toggle at the head of a full queue evicted by a later command. */
@@ -25703,6 +25726,8 @@ test_scan_list_set_queue_full_and_dropped(void) {
     before = scan_list_newest_seq();
     rc |= expect_int("an eviction", post_empty(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_list_result("evicted toggle", before, evicted, 7U, 3, 1, DSD_APP_SCAN_LIST_SET_DROPPED);
+    rc |= expect_list_result_seq("evicted toggle: the lists as the last drain left them", before, evicted, 77U);
+    state.trunk_scan_lists_seq = 78U;
     rc |= expect_int("evicted toggle drains no more", dsd_app_drain_cmds(&opts, &state), 127);
 
     /* A toggle a session stop discards. */
@@ -25712,6 +25737,7 @@ test_scan_list_set_queue_full_and_dropped(void) {
     before = scan_list_newest_seq();
     dsd_app_frontend_runtime_stop();
     rc |= expect_list_result("discarded toggle", before, discarded, 8U, 1, 0, DSD_APP_SCAN_LIST_SET_DROPPED);
+    rc |= expect_list_result_seq("discarded toggle: the lists as the last drain left them", before, discarded, 78U);
     rc |= expect_int("a stopped session refuses a toggle", submit_list_set(8U, 1, 0, NULL),
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
     dsd_app_frontend_runtime_start(&opts, &state);
@@ -25734,6 +25760,8 @@ drain_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int
     rc |= expect_str(tag, state->ui_msg, toast ? toast : "");
     DSD_SNPRINTF(tag, sizeof tag, "%s: result", what);
     rc |= expect_list_result(tag, after, request, session, list, enabled, code);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: result's lists", what);
+    rc |= expect_list_result_seq(tag, after, request, state->trunk_scan_lists_seq);
     return rc;
 }
 
@@ -25747,6 +25775,7 @@ drain_list_set_raw(dsd_opts* opts, dsd_state* state, const dsd_app_scan_list_set
     rc |= expect_int(what, dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_true(what, dsd_app_command_test_last_invalid_payload() && state->ui_msg[0] == '\0');
     rc |= expect_list_result(what, after, p->request, p->session, p->list, p->enabled, DSD_APP_SCAN_LIST_SET_INVALID);
+    rc |= expect_list_result_seq(what, after, p->request, state->trunk_scan_lists_seq);
     return rc;
 }
 
@@ -25830,13 +25859,19 @@ test_scan_list_set_answers(void) {
     int rc = init_scan_list_rig(&opts, &state, &rig);
     const uint32_t session = state.trunk_scan_session;
 
+    /* A switch moves the lists' sequence its result carries (drain_list_set() checks the result against the state);
+       an answer that changes nothing leaves it. */
+    const uint32_t seq_before = state.trunk_scan_lists_seq;
     rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK,
                          "Scan list 2 (hospital) off: 2 of 3 lists on, 2 targets", "list 2 off");
+    rc |= expect_true("list 2 off moves the lists' sequence", state.trunk_scan_lists_seq != seq_before);
+    const uint32_t seq_after_off = state.trunk_scan_lists_seq;
     rc |= expect_int("list 2 off completed", dsd_app_command_test_last_failed(), 0);
     rc |= expect_lists_on("list 2 off", &state, 1, 0, 1);
     rc |= expect_str("list 2 off keeps a on air", state.trunk_scan_active_id, "a");
     rc |= drain_list_set(&opts, &state, session, 2, 0, DSD_APP_SCAN_LIST_SET_UNCHANGED,
                          "Scan list 2 (hospital) is off already", "list 2 off again");
+    rc |= expect_true("unchanged keeps the lists' sequence", state.trunk_scan_lists_seq == seq_after_off);
     rc |= expect_int("list 2 off again completed", dsd_app_command_test_last_failed(), 0);
 
     /* The list on air: the receiver leaves for the only target left on (D4). */

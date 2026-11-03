@@ -722,7 +722,10 @@ typedef enum {
 } dsd_app_scan_list_set_code;
 
 /** The retained outcome of one DSD_APP_CMD_SCAN_LIST_SET: the request as submitted and what it did. @c sequence is
- * nonzero, process-wide, and advances per result. */
+ * nonzero, process-wide, and advances per result. @c lists_seq is dsd_state::trunk_scan_lists_seq once the request was
+ * handled (for one that never reached the decoder, the value the decoder last published): a snapshot whose
+ * trunk_scan_lists_seq is behind it does not show this answer yet, and one past it shows a later change of the lists,
+ * which a refusal no longer describes. */
 typedef struct {
     uint64_t sequence;
     uint32_t request;
@@ -730,7 +733,9 @@ typedef struct {
     int16_t list;
     uint8_t enabled;
     uint8_t pad;
-    int32_t code; /**< dsd_app_scan_list_set_code */
+    int32_t code;       /**< dsd_app_scan_list_set_code */
+    uint32_t lists_seq; /**< dsd_state::trunk_scan_lists_seq after the request */
+    uint32_t pad2;      /* explicit, so a copy carries no indeterminate padding */
 } dsd_app_scan_list_result;
 
 typedef enum {
@@ -812,9 +817,11 @@ int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
  * a refusal, an invalid payload, a Signal search refusal and a request dropped unapplied included. A result is
  * authoritative for what the request did and the toast it showed; dsd_state::trunk_scan_lists_seq in the snapshot is
  * authoritative for the lists to show. The result can arrive before the snapshot that shows its switch (a watchdog
- * tick can put that snapshot off), so a frontend clears its pending row on the result and renders the lists when
- * trunk_scan_lists_seq moves. The code is the coordinator's answer even when a later step of the same command (a
- * rigctl passband follow-up the peer refused) fails the command: the list did switch. */
+ * tick can put that snapshot off), so a frontend clears its pending row on the result and, until the snapshot's
+ * trunk_scan_lists_seq reaches the result's @c lists_seq, shows the state the switch asked for; once the snapshot
+ * moves past it, a refusal the result gave no longer describes the lists. The code is the coordinator's answer even
+ * when a later step of the same command (a rigctl passband follow-up the peer refused) fails the command: the list did
+ * switch. */
 int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);

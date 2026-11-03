@@ -5,6 +5,8 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -33,6 +35,8 @@ static dsd_app_scan_list_result newest;
 /* The last DSD_APP_RESULT_HISTORY results, at sequence % DSD_APP_RESULT_HISTORY, for dsd_app_scan_list_results_since(). */
 static dsd_app_scan_list_result history[DSD_APP_RESULT_HISTORY];
 static uint32_t last_request;
+/* The decoder's trunk_scan_lists_seq as the last drain left it, for a request dropped before the decoder saw it. */
+static uint32_t known_lists_seq;
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready: the loser of the first-call race waits, since taking a
    mutex another thread has not finished initializing is undefined behavior. */
@@ -101,7 +105,14 @@ payload_field(const struct dsd_app_command* command, size_t offset, void* out, s
 }
 
 void
-dsd_app_scan_list_publish_result(const struct dsd_app_command* command, int32_t code) {
+dsd_app_scan_list_note_lists_seq(uint32_t lists_seq) {
+    lock_results();
+    known_lists_seq = lists_seq;
+    dsd_mutex_unlock(&result_mutex);
+}
+
+void
+dsd_app_scan_list_publish_result(const struct dsd_app_command* command, int32_t code, const dsd_state* state) {
     if (!command || command->id != DSD_APP_CMD_SCAN_LIST_SET) {
         return;
     }
@@ -112,6 +123,10 @@ dsd_app_scan_list_publish_result(const struct dsd_app_command* command, int32_t 
     payload_field(command, offsetof(dsd_app_scan_list_set_payload, enabled), &result.enabled, sizeof result.enabled);
     result.code = code;
     lock_results();
+    if (state) {
+        known_lists_seq = state->trunk_scan_lists_seq;
+    }
+    result.lists_seq = known_lists_seq;
     result.sequence = newest.sequence == UINT64_MAX ? 1U : newest.sequence + 1U;
     newest = result;
     history[result.sequence % (uint64_t)DSD_APP_RESULT_HISTORY] = result;
