@@ -61,6 +61,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "commands_internal.h"
 #include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -1943,6 +1944,9 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
+    /* The stream stopped before this start may have sealed its I/Q capture at a rate change (issue #806 X9), with the
+       notice not drained yet: taken now, the capture stays off and its file is not opened again. */
+    dsd_app_take_capture_stopped(opts, state);
     if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
         return -1;
     }

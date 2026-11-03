@@ -10396,16 +10396,20 @@ dsd_app_stream_notice_clear(void) {
 
 /* The stream's I/Q capture stopped recording at a retune that changed the device's sample rate (issue #806 X9): the
    file keeps what it recorded until then. The capture stays off for the rest of the session, so no later start writes
-   over that file, and the options and the toast say so. */
-static void
-ui_show_capture_stopped(dsd_opts* opts, dsd_state* state) {
+   over that file, and the options and the toast say so. The drain takes it before every command and the stream start
+   before it opens (svc_rtl_start_locked()), so a retune a command made that sealed the capture never lets a later
+   restart in the same drain reopen the file. */
+void
+dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
     if (!opts || atomic_load(&g_capture_stopped_notice) == 0 || atomic_exchange(&g_capture_stopped_notice, 0) == 0) {
         return;
     }
     opts->iq_capture_requested = 0;
-    ui_set_toast(state, 5, "%s", "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
     dsd_telemetry_publish_opts_snapshot(opts);
-    dsd_telemetry_publish_snapshot(state);
+    if (state) {
+        ui_set_toast(state, 5, "%s", "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        dsd_telemetry_publish_snapshot(state);
+    }
 }
 
 /* Show a posted stream notice as a toast. It is news, not a failure: nothing is latched, and the session goes on. A
@@ -10422,7 +10426,7 @@ ui_show_stream_notice(dsd_opts* opts, dsd_state* state) {
             dsd_telemetry_publish_snapshot(state);
         }
     }
-    ui_show_capture_stopped(opts, state);
+    dsd_app_take_capture_stopped(opts, state);
 }
 
 /* Ask the frontends to redraw once what the drain published has landed. A publication a watchdog tick put off asks at
@@ -10479,6 +10483,9 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!have) {
             break;
         }
+        /* A command before this one may have sealed the capture (a retune changing the device rate): its stop takes
+           effect before this command can start the stream again. */
+        dsd_app_take_capture_stopped(opts, state);
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);

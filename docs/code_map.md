@@ -2642,8 +2642,10 @@ suite runs under this compiler.
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
     posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at
     session start (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; a
-    stopped capture has a slot of its own, which turns `iq_capture_requested` off for the session, publishes the options
-    and shows its toast last; NULL at session end); with no sink it is dropped, and nothing is latched in the input
+    stopped capture has a slot of its own, which `dsd_app_take_capture_stopped()` applies on the decoder thread: it
+    turns `iq_capture_requested` off for the session, publishes the options and shows its toast last. The drain takes it
+    before every command and every stream start (`svc_rtl_start_locked()`) before it opens, so a retune a command made
+    that sealed the capture never lets a later restart reopen and empty its file; NULL at session end); with no sink it is dropped, and nothing is latched in the input
     failure. A capture-stopped notice not shown before the session ended is dropped with the rest: the next session is
     a new run and keeps its own `--iq-capture`. The sink runs under the hook's lock,
     so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after

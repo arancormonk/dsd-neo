@@ -57,6 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "commands_internal.h"
 #include "services.h"
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -673,6 +674,13 @@ rtl_stream_destroy(RtlSdrContext* ctx) {
     note_rtl_lifecycle_call();
     g_rtl_destroy_calls++;
     return 0;
+}
+
+/* The app-control latch of a sealed I/Q capture (issue #806 X9), which every stream start takes; none is posted here. */
+void
+dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 int

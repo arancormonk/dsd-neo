@@ -362,6 +362,9 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 }
 #endif
 
+/* Set: the next tunes seal the I/Q capture, as one changing the device rate does. */
+static int g_io_control_tune_seals_capture;
+
 int
 __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)state;
@@ -370,6 +373,11 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
     }
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq_hz;
+    if (g_io_control_tune_seals_capture) {
+        /* The retune changed the device rate while the I/Q capture recorded: the stream's controller sealed the
+           capture and posted its notice during the tune (issue #806 X9). */
+        dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
+    }
     /* As the real one: a success caches the frequency the controller applied, which a coalesced request can make
        another than this one, and an accepted (timed-out) request caches its own target. */
     if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_OK) {
@@ -557,6 +565,7 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0U;
     g_io_control_applied_freq = 0U;
+    g_io_control_tune_seals_capture = 0;
     g_mod_state_resets = 0;
     g_manual_tune_supersedes = 0;
     g_legacy_cache_forgets = 0;
@@ -24772,6 +24781,74 @@ test_frequency_entry_reaches_a_rigctl_peer_on_every_build(void) {
     return rc;
 }
 
+#ifdef USE_RADIO
+/* Issue #806 X9: a queued tune whose retune changes the device rate seals the I/Q capture, and a command after it in
+   the same drain restarts the stream (an RTL restart, a DSP bandwidth change). The restart used to run with the capture
+   still requested and reopen its file for writing, emptying the sealed recording: the capture is now off before the
+   next command runs. A start that runs before any drain saw the notice (a reopen right after the stream stopped)
+   takes it too. */
+static int
+test_capture_seal_before_a_reopen_in_the_same_drain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int k_reopens[] = {DSD_APP_CMD_RTL_RESTART, DSD_APP_CMD_RTL_SET_BW};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_reopens / sizeof k_reopens[0]; i++) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851375000:22:0:24:0:2");
+        opts.rtl_dsp_bw_khz = 24;
+        opts.iq_capture_requested = 1;
+        DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 0;
+        state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+        g_config_rtl_creates = 0;
+        g_config_rtl_captures = 0;
+        g_config_rtl_create_capture = -1;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        g_io_control_tune_seals_capture = 1;
+        post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
+        if (k_reopens[i] == DSD_APP_CMD_RTL_RESTART) {
+            (void)post_empty(DSD_APP_CMD_RTL_RESTART);
+        } else {
+            (void)post_i32(DSD_APP_CMD_RTL_SET_BW, 48);
+        }
+        state.ui_msg[0] = '\0';
+        rc |= expect_int("seal then reopen: both drained", dsd_app_drain_cmds(&opts, &state), 2);
+        rc |= expect_int("seal then reopen: the tune ran", g_io_control_tune_calls, 1);
+        rc |=
+            expect_int("seal then reopen: the stream reopened without the capture",
+                       g_config_rtl_creates == 1 && g_config_rtl_captures == 0 && g_config_rtl_create_capture == 0, 1);
+        rc |= expect_int("seal then reopen: the capture stays off", opts.iq_capture_requested, 0);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        dsd_app_frontend_runtime_stop();
+    }
+
+    /* The notice arrived as the stream stopped, with no drain since: the start takes it before it opens. */
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851375000:22:0:24:0:2");
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_open_ok = 1;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+    g_config_rtl_creates = 0;
+    g_config_rtl_captures = 0;
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_CAPTURE_STOPPED);
+    rc |= expect_int("undrained seal: restart", svc_rtl_restart_locked(&opts, &state), 0);
+    rc |= expect_int("undrained seal: reopened without the capture",
+                     g_config_rtl_creates == 1 && g_config_rtl_captures == 0 && g_config_rtl_create_capture == 0, 1);
+    rc |= expect_int("undrained seal: the capture stays off", opts.iq_capture_requested, 0);
+    rc |= expect_str("undrained seal: the toast", state.ui_msg,
+                     "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+    dsd_app_frontend_runtime_stop();
+    state.rtl_ctx = NULL;
+    g_config_rtl_open_ok = 0;
+    return rc;
+}
+#endif
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -24810,6 +24887,9 @@ main(void) {
 #endif
     rc |= test_notice_toast_without_failure_latch();
     rc |= test_capture_stopped_notice();
+#ifdef USE_RADIO
+    rc |= test_capture_seal_before_a_reopen_in_the_same_drain();
+#endif
     rc |= test_stale_notice_post_stays_in_its_session();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
