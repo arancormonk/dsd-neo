@@ -3212,6 +3212,26 @@ test_scan_avoid_list_chooser(void) {
     return rc;
 }
 
+/* A menu action reads the frame's context it is handed, and one handed none opens nothing and reads nothing (each
+   used to dereference it, unlike the other context readers). */
+static int
+test_context_actions_without_a_context(void) {
+    int rc = 0;
+    reset_capture();
+    act_set_squelch(NULL);
+    rc |= expect_int("squelch with no context: no prompt", g_prompt.title[0] != '\0', 0);
+    rc |= expect_int("squelch with no context: no chooser", g_chooser.calls, 0);
+#ifdef USE_RADIO
+    reset_capture();
+    act_iq_dc_k_prompt(NULL);
+    rc |= expect_int("IQ DC k with no context: no prompt", g_prompt.title[0] != '\0', 0);
+    reset_capture();
+    act_ted_gain_prompt(NULL);
+    rc |= expect_int("TED gain with no context: no prompt", g_prompt.title[0] != '\0', 0);
+#endif
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3234,6 +3254,7 @@ main(void) {
     rc |= test_additional_prompt_and_toggle_actions();
     rc |= test_signal_chain_rows();
     rc |= test_config_and_pulse_failure_variants();
+    rc |= test_context_actions_without_a_context();
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
     rc |= expect_int("menu actions leave FTZ/DAZ as it was", (int)(_mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS),
                      (int)ftz_daz_before);

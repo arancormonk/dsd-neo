@@ -938,6 +938,9 @@ scope_capture(const dsd_opts* opts, const dsd_state* state) {
 static void
 scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*open_default)(void*)) {
     const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
     const dsd_opts* opts = c->opts;
     const dsd_state* state = c->state;
     dsd_app_scan_row_view view;
@@ -2392,7 +2395,7 @@ act_decode_mode(void* v) {
 static void
 cb_iq_dc_k(void* u, int ok, int k) {
     const UiCtx* c = ui_ctx_from_action(u);
-    if (!ok) {
+    if (!ok || !c) {
         return;
     }
     if (k < 6) {
@@ -2415,6 +2418,9 @@ cb_iq_dc_k(void* u, int ok, int k) {
 void
 act_iq_dc_k_prompt(void* v) {
     const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, v);
@@ -2441,6 +2447,9 @@ cb_ted_gain(void* u, int ok, int milli) {
 void
 act_ted_gain_prompt(void* v) {
     const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     const int milli = (int)(metrics.ted_gain * 1000.0f + 0.5f);
