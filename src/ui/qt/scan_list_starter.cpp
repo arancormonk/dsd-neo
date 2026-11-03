@@ -275,6 +275,22 @@ cut_utf8(const QString& text, int bytes) {
     return out;
 }
 
+/* A CSV list's own fallback talkgroup and source-alias files, where it names them, load. */
+bool
+fallbackFilesValid(const QVariantMap& prepared) {
+    const QStringList fields{QStringLiteral("groupCsvPath"), QStringLiteral("srcCsvPath")};
+    return std::all_of(fields.cbegin(), fields.cend(), [&prepared](const QString& field) {
+        const QByteArray fallback = prepared.value(field).toString().toUtf8();
+        if (fallback.isEmpty()) {
+            return true;
+        }
+        dsd_csv_validation stats{};
+        return (field == QLatin1String("groupCsvPath") ? dsd_csv_validate_group_file(fallback.constData(), &stats)
+                                                       : dsd_csv_validate_src_file(fallback.constData(), &stats))
+               == 0;
+    });
+}
+
 } // namespace
 
 QString
@@ -697,18 +713,8 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QSt
         return fail(QStringLiteral(
             "The target CSV is missing or was removed. Edit this list and select an imported target CSV."));
     }
-    for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
-        const QString fallback = prepared.value(field).toString();
-        if (fallback.isEmpty()) {
-            continue;
-        }
-        dsd_csv_validation stats{};
-        const int rc = QString(field) == "groupCsvPath"
-                           ? dsd_csv_validate_group_file(fallback.toUtf8().constData(), &stats)
-                           : dsd_csv_validate_src_file(fallback.toUtf8().constData(), &stats);
-        if (rc) {
-            return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));
-        }
+    if (!fallbackFilesValid(prepared)) {
+        return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));
     }
     char detail[512] = {};
     int count = 0;
