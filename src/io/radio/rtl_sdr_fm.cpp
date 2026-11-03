@@ -15967,7 +15967,11 @@ rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out) {
     out->step_enabled = demod.live_iq_step.enabled;
     out->step_l = out->step_enabled ? plan->L : 0;
     out->step_m = out->step_enabled ? plan->M : 0;
+    out->step_hb_out_num = out->step_enabled ? plan->hb_out_num : 0;
+    out->step_hb_out_shift = out->step_enabled ? plan->hb_out_shift : 0U;
     out->step_target_hz = out->step_enabled ? plan->target_hz : 0;
+    out->step_protect_hz = out->step_enabled ? plan->protect_hz : 0;
+    out->step_stop_hz = out->step_enabled ? plan->stop_hz : 0;
     out->complex_rate_hz = demod.complex_rate;
     out->capture_rate_hz = load_dongle_rate();
     out->forced = demod.capture_rate_device_forced;

@@ -2051,15 +2051,20 @@ typedef struct {
 
 void rtl_stream_test_get_live_sequence(rtl_stream_test_live_sequence* out);
 
-/* The chain the running stream's demod runs (issue #806): its half-band passes, its I/Q rate step, the complex rate
- * after them and the capture rate the capture-domain consumers (the wideband spectrum, the signal search, the capture
- * writer) see. Returns -1 with no stream. Read it while the demod waits for input. */
+/* The chain the running stream's demod runs (issue #806): its half-band passes, its I/Q rate step's plan key (on, L, M,
+ * the exact half-band output it takes in, its target and edges: dsd_live_iq_step_plan), the complex rate after them and
+ * the capture rate the capture-domain consumers (the wideband spectrum, the signal search, the capture writer) see.
+ * The step fields are 0 when it does not run. Returns -1 with no stream. Read it while the demod waits for input. */
 typedef struct {
+    int64_t step_hb_out_num; /* hb_out = step_hb_out_num / 2^step_hb_out_shift Hz */
+    unsigned step_hb_out_shift;
     int passes;
     int step_enabled;
     int step_l;
     int step_m;
     int step_target_hz;
+    int step_protect_hz;
+    int step_stop_hz;
     int complex_rate_hz;
     uint32_t capture_rate_hz;
     int forced;

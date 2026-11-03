@@ -26,8 +26,6 @@
 #define FORCED_RATE_NOISE_SEED  806U
 /* Headroom for the interpolation's overshoot: p25p2_cc's samples come within a few LSB of full scale. */
 #define FORCED_RATE_GAIN        0.9
-/* The longest half-band filter the live cascade runs: HB_TAPS_MAX in <dsd-neo/dsp/demod_state.h>, a C++ header. */
-#define FORCED_RATE_HB_TAPS_MAX 31
 
 static void
 set_err(char* err, size_t err_size, const char* what, const char* detail) {
@@ -84,8 +82,8 @@ fill_noise(float* dst, size_t pairs, uint64_t* s) {
 }
 
 /* The chain an Airspy at @p device_rate_hz plans for @p dsp_rate_hz, as the live stream plans it, and its tail bound in
-   device samples: the half-band cascade's history at every pass (FORCED_RATE_HB_TAPS_MAX - 1 inputs of each) and the step's tail at
-   the half-band output rate. */
+   device samples: the half-band cascade's history at every pass (DSD_TEST_FORCED_RATE_HB_TAPS_MAX - 1 inputs of each)
+   and the step's tail at the half-band output rate. */
 static int
 plan_live_chain(const dsd_test_forced_rate_spec* spec, dsd_test_forced_rate_input* out, size_t* tail_device) {
     dsd_rate_plan_input in;
@@ -108,7 +106,7 @@ plan_live_chain(const dsd_test_forced_rate_spec* spec, dsd_test_forced_rate_inpu
     out->passes = plan.passes;
     out->step_l = plan.step.enabled ? plan.step.L : 0;
     out->step_m = plan.step.enabled ? plan.step.M : 0;
-    *tail_device = (size_t)(FORCED_RATE_HB_TAPS_MAX - 1) * (((size_t)1U << plan.passes) - 1U)
+    *tail_device = (size_t)(DSD_TEST_FORCED_RATE_HB_TAPS_MAX - 1) * (((size_t)1U << plan.passes) - 1U)
                    + ((size_t)bounds.tail_inputs << plan.passes);
     return 0;
 }

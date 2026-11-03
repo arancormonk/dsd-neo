@@ -27,6 +27,10 @@
 extern "C" {
 #endif
 
+/* The longest half-band filter the live cascade runs, for the tail bound: HB_TAPS_MAX in <dsd-neo/dsp/demod_state.h>,
+   a C++ header this C file cannot include; the live decode test (C++) checks the two agree. */
+#define DSD_TEST_FORCED_RATE_HB_TAPS_MAX 31
+
 typedef struct {
     const char* fixture; /* a committed fixture, by its name without ".iq.json" */
     double start_s;      /* the excerpt, in the fixture's own time */

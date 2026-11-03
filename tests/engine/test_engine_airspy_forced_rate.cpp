@@ -23,14 +23,15 @@
  * - no producer drop, and the chain: the device's rate through the half-band passes and the step to the DSP rate, the
  *   capture-domain consumers on the device's rate;
  * - the capture (--iq-capture, cf32) records that chain.
- * Then the engine replays that capture (--iq-replay), and the replay must run the same chain (plan key), read the
- * capture in the live transfers' partition, hand the demod the same samples after the step bit for bit, and print the
- * same stable decoded fields in order (stable_lines(): the decoder's records with their HH:MM:SS stamps left out, the
- * live stamp being the wall clock and the replay's the capture's, and without the lines a decode-clock throttle gates).
- * It also meets the same thresholds.
+ * Then the engine replays that capture (--iq-replay), and the replay must run the same chain (the step's plan key
+ * included), read the capture in the live transfers' partition, hand the demod the same samples after the step bit for
+ * bit, and print the same stable decoded fields in order (stable_lines(): the decoder's records with their HH:MM:SS
+ * stamps left out, the live stamp being the wall clock and the replay's the capture's, and without the lines a
+ * decode-clock throttle gates). It also meets the same thresholds.
  *
  * The RETUNE case retunes the running stream half way: the step starts over with the half-band cascade (its clear
- * count moves), keeps its plan, and the capture-domain consumers keep the device's rate.
+ * count has moved when the retune returns), keeps its plan, decodes on, and the capture-domain consumers keep the
+ * device's rate.
  *
  *   dsd-neo_test_engine_airspy_forced_rate <case>
  */
@@ -38,9 +39,11 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -69,6 +72,9 @@
 #ifndef DSD_NEO_TEST_IQ_FIXTURE_DIR
 #error "DSD_NEO_TEST_IQ_FIXTURE_DIR must name tests/fixtures/iq"
 #endif
+
+static_assert(DSD_TEST_FORCED_RATE_HB_TAPS_MAX == HB_TAPS_MAX,
+              "forced_rate_input.c pads for the longest half-band filter the cascade runs");
 
 namespace {
 
@@ -155,10 +161,12 @@ const Case kCases[] = {
      {"[TETRA BSCH]", "crc=", "[TETRA CMCE", nullptr},
      -1,
      0},
+    /* The retune comes half way through: the capture's first 1.05 s decode 16 network status lines, so 30 says the
+       stream decodes on after it (40 in dev-debug, one or two lost to the retune's mute). */
     {"RETUNE_375K",
      {"p25p1_cqpsk_cc", 0.0, 0.0, 375000U, 48000U, kPadS},
      {"-f1", "-mq", nullptr},
-     {{"network status", "WACN: 92065; SYS: 0D5", 1}, {}, {}},
+     {{"network status", "WACN: 92065; SYS: 0D5", 30}, {}, {}},
      {nullptr, nullptr, nullptr, nullptr},
      -1,
      1},
@@ -309,16 +317,20 @@ log_lines(const std::string& log) {
     return lines;
 }
 
-/* TSBKs whose CRC passed: the decoder prints a TSBK's message on the line after its " TSBK" header only when the CRC
-   passed (tsbk_dispatch_message()). */
+/* TSBKs whose CRC passed. The decoder prints a TSBK's message, an indented line ("\n " and its text), right after the
+   " TSBK" header only when the CRC passed (tsbk_dispatch_message() returns first on a failure); a failed one's header
+   is followed by the next frame's stamped line instead. The engine's no-carrier reset clears
+   state->p25_p1_fec_ok before the stop hook, so the log is where the count survives. */
 int
 count_tsbk_crc_ok(const std::vector<std::string>& lines) {
     int n = 0;
     for (size_t i = 0; i + 1U < lines.size(); i++) {
         const std::string& l = lines[i];
+        const std::string& next = lines[i + 1U];
         const size_t end = l.find_last_not_of(' ');
         const bool header = end != std::string::npos && end >= 4U && l.compare(end - 4U, 5U, " TSBK") == 0;
-        if (header && lines[i + 1U].find_first_not_of(' ') != std::string::npos) {
+        const bool message = next.size() > 1U && next[0] == ' ' && next[1] != ' ';
+        if (header && message) {
             n++;
         }
     }
@@ -337,18 +349,15 @@ count_lines(const std::vector<std::string>& lines, const char* text) {
 }
 
 /* Decoder lines whose printing a throttle on the decode clock gates, which a live stream runs on the wall clock and a
-   replay on the capture's: the live feed runs faster than real time, so it prints fewer. A DMR CACH short LC prints at
-   most once a second a slot (dmr_cach_handle_single_fragment()). */
-const char* const kClockThrottled[] = {"(single)"};
-
+   replay on the capture's: the live feed runs faster than real time, so it prints fewer. The one such line: a DMR CACH
+   short LC from a single fragment, which prints at most once a second a slot (dmr_cach_handle_single_fragment(),
+   dmr_cach_print_single_fragment(): " SLOT n" when the slot is known, then " SLC ..." or " SLCO ...", then
+   "(single)"). */
 bool
 clock_throttled(const std::string& l) {
-    for (const char* t : kClockThrottled) {
-        if (l.find(t) != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
+    /* " SLOT n" is 7 characters. */
+    const size_t from = (l.compare(0, 6U, " SLOT ") == 0) ? 7U : 0U;
+    return l.compare(from, 4U, " SLC") == 0 && l.find("(single)", from) != std::string::npos;
 }
 
 /* The stable decoded fields: every decoder record (a line stamped HH:MM:SS, its stamp left out, and the indented lines
@@ -468,9 +477,10 @@ feeder(void* arg) {
                 dsd_exitflag_store(1);
                 DSD_THREAD_RETURN;
             }
+            /* Read as the retune completes, before any more input: its own reset cleared the step. */
+            feed->step_clears_after = dsd_live_iq_step_test_clears();
         }
     }
-    feed->step_clears_after = dsd_live_iq_step_test_clears();
     (void)rtl_stream_test_get_running_chain(&feed->chain_after_retune);
     feed->producer_drops = live_sequence().producer_drops;
     feed->ok = 1;
@@ -531,10 +541,29 @@ check_chain(const Case& c, const char* what, const rtl_stream_test_running_chain
     check_eq(prefix + "the step runs", chain.step_enabled, 1);
     check_eq(prefix + "step L", chain.step_l, in.step_l);
     check_eq(prefix + "step M", chain.step_m, in.step_m);
+    /* hb_out, kept exact: the device's rate over 2^passes, num / 2^shift in lowest terms. */
+    check_eq(prefix + "the step's hb_out x 2^passes", chain.step_hb_out_num << (unsigned)chain.passes,
+             (long long)c.spec.device_rate_hz << chain.step_hb_out_shift);
+    int protect_hz = 0;
+    int stop_hz = 0;
+    dsd_rate_plan_step_edges(c.spec.dsp_rate_hz, &protect_hz, &stop_hz);
     check_eq(prefix + "the step's target", chain.step_target_hz, (long long)c.spec.dsp_rate_hz);
+    check_eq(prefix + "the step's protected band", chain.step_protect_hz, protect_hz);
+    check_eq(prefix + "the step's stopband edge", chain.step_stop_hz, stop_hz);
     check_eq(prefix + "the complex rate after the step", chain.complex_rate_hz, (long long)c.spec.dsp_rate_hz);
     check_eq(prefix + "the capture-domain rate", chain.capture_rate_hz, (long long)c.spec.device_rate_hz);
     check_eq(prefix + "device forced", chain.forced, 1);
+}
+
+/* Whether @p a and @p b are the same chain, field by field: the passes, the step's plan key (on, L, M, hb_out, target,
+   edges), the complex and capture rates and the forced flag. */
+bool
+same_chain(const rtl_stream_test_running_chain& a, const rtl_stream_test_running_chain& b) {
+    return a.passes == b.passes && a.step_enabled == b.step_enabled && a.step_l == b.step_l && a.step_m == b.step_m
+           && a.step_hb_out_num == b.step_hb_out_num && a.step_hb_out_shift == b.step_hb_out_shift
+           && a.step_target_hz == b.step_target_hz && a.step_protect_hz == b.step_protect_hz
+           && a.step_stop_hz == b.step_stop_hz && a.complex_rate_hz == b.complex_rate_hz
+           && a.capture_rate_hz == b.capture_rate_hz && a.forced == b.forced;
 }
 
 /* The live capture's sidecar records the chain the live stream ran. */
@@ -650,9 +679,8 @@ run_replay_and_compare(const Case& c, const dsd_test_forced_rate_input& in, cons
     check_thresholds(c, "replay", lines, view);
     check(std::string(c.name) + " replay: the demod ran a block", blocks.have_chain == 1);
     check_chain(c, "replay", blocks.chain, in);
-    /* The plan key: the same chain, field by field. */
-    check(std::string(c.name) + ": live and replay run the same chain",
-          std::memcmp(&feed.chain, &blocks.chain, sizeof(feed.chain)) == 0);
+    check(std::string(c.name) + ": live and replay run the same chain (the step's plan key included)",
+          same_chain(feed.chain, blocks.chain));
     check(std::string(c.name) + ": the replay reads the live transfers' partition", blocks.pairs == feed.transfers);
     check(std::string(c.name) + ": the same samples after the step, bit for bit",
           live_post.size() == post.size() && !live_post.empty()

@@ -859,21 +859,25 @@ decoder pacing holds, so each transfer is one demod block and the decoder takes 
 starts, as in a replay.
 
 Each case asserts, live: the CRC- or FEC-checked counts above (TSBKs whose CRC passed, at least 50 of 52, and the WACN
-in the state for the P25 Phase 1 control channels; 6 of the voice capture's 8 grants), no producer drop, and the chain
-the demod runs (`rtl_stream_test_get_running_chain()`: the passes, the step to the DSP rate, and the device's rate for
-the capture-domain consumers: the wideband spectrum, the signal search, the capture writer). The live capture
+in the state for the P25 Phase 1 control channels: a TSBK counts when its " TSBK" header is followed by its indented
+message line, which the decoder prints only when the CRC passed; the engine clears `p25_p1_fec_ok` at no carrier, before
+the run ends; 6 of the voice capture's 8 grants), no producer drop, and the chain the demod runs
+(`rtl_stream_test_get_running_chain()`: the passes, the step to the DSP rate, and the device's rate for the
+capture-domain consumers: the wideband spectrum, the signal search, the capture writer). The live capture
 (`--iq-capture`, `cf32`) must record that chain. The engine then replays the capture, and the replay must run the same
-chain (the plan key, field by field), read the capture in the live transfers' partition, hand the demod the same samples
-after the step bit for bit (`dsd_demod_test_set_post_step_tap()`), meet the same thresholds, and print the same stable
-decoded fields in the same order: every decoder record (a line stamped `HH:MM:SS` and the indented lines that go on with
-it) and the TETRA and P25 Phase 2 lines that carry no stamp. Left out of the comparison: each line's stamp (the wall
-clock live, the capture's time in the replay); lines a throttle on the decode clock gates, which the live feed, faster
-than real time, prints fewer of (the DMR CACH short LC, `(single)`, at most once a second a slot); and every line that
-is not decoded content (startup notices, and the live device's and the replay's own messages). The cases cover
-`p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`, the simulcast control channel, `p25p2_cc`, `dmr_voice_synth` and
+chain (field by field, the step's plan key included: on, L, M, the exact half-band output, target and edges), read the
+capture in the live transfers' partition, hand the demod the same samples after the step bit for bit
+(`dsd_demod_test_set_post_step_tap()`), meet the same thresholds, and print the same stable decoded fields in the same
+order: every decoder record (a line stamped `HH:MM:SS` and the indented lines that go on with it) and the TETRA and P25
+Phase 2 lines that carry no stamp. Left out of the comparison: each line's stamp (the wall clock live, the capture's
+time in the replay); lines a throttle on the decode clock gates, which the live feed, faster than real time, prints
+fewer of (the DMR CACH short LC from a single fragment, ` SLOT n SLC ... (single)`, at most once a second a slot); and
+every line that is not decoded content (startup notices, and the live device's and the replay's own messages). The cases
+cover `p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`, the simulcast control channel, `p25p2_cc`, `dmr_voice_synth` and
 `tetra_call_real_air_72k` at 312,500 or 375,000 Hz, and `p25p1_cqpsk_cc` at 2,500,000 Hz (five half-band passes).
 `_RETUNE_375K` retunes the running stream half way: the step starts over with the half-band cascade
-(`dsd_live_iq_step_test_clears()` moves), keeps its plan, and the capture-domain consumers keep the device's rate.
+(`dsd_live_iq_step_test_clears()` has moved when the retune returns), keeps its plan, the stream decodes on (at least 30
+network status lines, where the first half holds 16), and the capture-domain consumers keep the device's rate.
 
 Before issue #806 a replay ran these recordings' chains unstepped at 78,125 or 93,750 Hz: the two P25 Phase 1 control
 channels decoded no network status and no grant, P25 Phase 2 one SACCH, the DMR control the same 16 voice bursts, and
