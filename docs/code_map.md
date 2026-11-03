@@ -730,10 +730,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   skipped-row count `dsd_engine_scan_skipped` / `dsd_engine_scan_note_skipped_rows()` are private to the engine,
   `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
   open squelch, which lets noise hold the row until the visit cap or the operator moves on,
-  `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A row's own width on audio
-  input without a rigctl peer (with one, the peer takes it as its passband), or a width the front end refuses,
-  `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate, and so is an `am` row on audio input
-  without a rigctl peer, which nothing demodulates as AM and which is skipped at every visit. The front
+  `dsd_engine_scan_warn_analog_squelch()`, is said once per list: the `-Y` list's `lcn_list_rev` (issue #697: a
+  channel learned over the air moves only `trunk_chan_map_seq`, so it names no row again and reposts no `Skipped at
+  every visit` toast), or the trunk-scan list. A row's own width on audio input without a rigctl peer (with one, the
+  peer takes it as its passband), or a width the front end refuses, `dsd_engine_scan_warn_analog_width()`, is said
+  once per list and DSP rate, and so is an `am` row on audio input without a rigctl peer, which nothing demodulates as
+  AM and which is skipped at every visit. The front
   end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
   `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
   is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP bandwidth or a narrower width on a SoapySDR or
@@ -1247,7 +1249,10 @@ suite runs under this compiler.
   label) sits in the uncopied heap gap beside the LCN stores; `initState()`, `freeState()` and the coordinator's detach
   release it (the LCN umbrella `dsd_state_trunk_lcn_free()` leaves it alone, so a live list only changes with a new
   `trunk_scan_avoid_rev` or `state_instance`), a failed `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from
-  `initState()`) says whether the coordinator's last rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
+  `initState()`) says whether the coordinator's last rebuild allocated. The `-Y` scan keys every row identity on
+  `lcn_list_rev` (issue #697), never on `trunk_chan_map_seq`, which also moves at every channel learned over the air:
+  a typed row staged, landed or on air (`channel_scan.c`: the staged row's landing and late refusal, the row on air,
+  the once-per-list row checks) and an untyped step's pending tune (`engine.c`). Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
   `CORE_INIT_STATE`, `P25_USER_LIST_SEED`, `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the
   reserve helpers through `dsd_state_trunk_lcn_test_alloc_fail_after()`.
 - Invariant (snapshot completeness, issue #672; `src/app_control/ui_snapshot.c`): each scan-list deep copy (LCN tail,
@@ -3300,25 +3305,26 @@ manual tune's does. A tune that landed runs the `SCAN_STEP` carrier boundary (in
 drain and any control-channel return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan
 clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`,
 moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
-resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
-loop checks before every frame for a completion the poll will act on (`dsd_engine_manual_tune_settled_ready()`, one
-atomic load while nothing is noted: a step's landing, an RR import's landing, announced drop or stream stop, or any
-noted tune's late failure) and ends the reception when it has come, so at most the frame in flight decodes under the row
-left, and a carrier that keeps sync (a control channel) never goes on decoding under an entry's frequency the receiver
-did not reach. The outer pass's poll then commits the row (boundary, then install), but only while the scan is still
-that one: `-Y` on (or a resume pending, below), no modes, the same session and map, the row still on the frequency
-tuned. Otherwise nothing commits and only the frequency stands; a landing still moved the receiver, so the `SCAN_STEP`
-boundary runs for the move (a pause in place forgot only the carrier it left). A late failure abandons the row as a
-failure inside the wait does: the cursor moves past the row the front end refused (issue #666), the scan's windows
-reopen, no toast; a drop leaves the cursor and the windows as they are. A failure after the rigctl leg moved still runs
-the outgoing boundary and resets the received tone, moves the cursor past the row and keeps the deadline.
-`dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the no-carrier
-pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
-`dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
-direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and
-late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop, a list
-replacement or a pause in place, a failure's centre, an entry's late failure on a carrier that keeps sync, an empty or
-all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
+resume) and the list (`lcn_list_rev`, issue #697: a channel learned over the air while the tune is pending moves only
+`trunk_chan_map_seq`, so it no longer discards the landing); until the completion the cursor, the keys and the deadline
+stay. The synced-frames loop checks before every frame for a completion the poll will act on
+(`dsd_engine_manual_tune_settled_ready()`, one atomic load while nothing is noted: a step's landing, an RR import's
+landing, announced drop or stream stop, or any noted tune's late failure) and ends the reception when it has come, so at
+most the frame in flight decodes under the row left, and a carrier that keeps sync (a control channel) never goes on
+decoding under an entry's frequency the receiver did not reach. The outer pass's poll then commits the row (boundary,
+then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no modes, the same
+session and list, the row still on the frequency tuned. Otherwise nothing commits and only the frequency stands; a
+landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only the
+carrier it left). A late failure abandons the row as a failure inside the wait does: the cursor moves past the row the
+front end refused (issue #666), the scan's windows reopen, no toast; a drop leaves the cursor and the windows as they
+are. A failure after the rigctl leg moved still runs the outgoing boundary and resets the received tone, moves the
+cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary
+inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves
+the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every
+tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an
+entry, a timed-out row's landing and late failure, a landing in the middle of a reception, a landing after a rigctl
+move, under a hold, after a stop, a list replacement or a pause in place, a failure's centre, an entry's late failure on
+a carrier that keeps sync, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -11183,7 +11189,7 @@ External dependencies (resolved via CMake):
   Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first;
   moving metadata unwinds both source and destination scopes before transferring the row definitions.
 - `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
-  commit consumes the change without allocation. Engine checks the map generation and key epoch before committing,
+  commit consumes the change without allocation. Engine checks the list revision and key epoch before committing,
   restaging the tune (and re-preparing against the current globals) when the keyring changed in the window. Both
   coordinators reserve every scope and key allocation before saving the outgoing snapshot, so a failed preparation
   leaves the receiver and snapshot untouched. Conventional retries keep the frame gate closed until a row commits,

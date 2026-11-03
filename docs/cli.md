@@ -2012,7 +2012,9 @@ is delayed.
   an import during the session). With none, at start or after Clear channel map, it stays on its frequency until one is
   imported: channels a DMR site announces over the air are recorded, but `-Y` never steps to them, and neither the voice
   gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan Timing row reads `No channel map`
-  meanwhile, with no countdown.
+  meanwhile, with no countdown. With a list, channels learned over the air (a DMR site's announcements, a P25 or NXDN
+  grant resolved) are not a new list: a row whose tune lands late still becomes the row on air, with its name and
+  keys, and no row's warning or `Skipped at every visit` status line is repeated for them.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see

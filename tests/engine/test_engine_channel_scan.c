@@ -836,8 +836,8 @@ test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     assert(g_squelch_warnings == 2 && g_squelch_pushes == 0);
     assert(strstr(g_squelch_warning_rows[0], "Scan channel 1 ") != NULL);
     assert(strstr(g_squelch_warning_rows[1], "Scan channel 3 ") != NULL);
-    /* A new map is a new scan as far as the warning goes. */
-    state->trunk_chan_map_seq++;
+    /* A new list is a new scan as far as the warning goes. */
+    dsd_state_trunk_lcn_replace_begin(state);
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(g_squelch_warnings == 4);
     dsd_engine_channel_scan_leave(opts, state);
@@ -2131,6 +2131,48 @@ test_nfm_row_warnings_follow_the_dsp_rate(void) {
     tunes = reset_count = 0;
 }
 
+/* Issue #697 (B-B4): the rows are checked once per list. A channel a site announces over the air
+ * (dsd_state_set_trunk_chan_freq(), which the protocols' channel learning runs) moves the learned map, not the list, so
+ * it names no row again and reposts no "Skipped at every visit" toast; a replaced list
+ * (dsd_state_trunk_lcn_replace_begin(), which every list replacement runs) is checked afresh. */
+static void
+test_nfm_row_warnings_once_per_list_not_per_learned_channel(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch and row 1's width, once each. */
+    assert(g_analog_warnings == 2);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz"));
+    assert(strncmp(state->ui_msg, "Skipped at every visit: Scan channel 1 ", 39) == 0);
+    state->ui_msg[0] = '\0';
+
+    const uint64_t map_seq = state->trunk_chan_map_seq;
+    const uint64_t list_rev = state->lcn_list_rev;
+    dsd_state_set_trunk_chan_freq(state, 0x1005U, 851062500L);
+    assert(state->trunk_chan_map_seq != map_seq && state->lcn_list_rev == list_rev);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    assert(state->ui_msg[0] == '\0');
+
+    dsd_state_trunk_lcn_replace_begin(state);
+    nfm_warning_rows_visit(opts, state, 1);
+    assert(g_analog_warnings == 4);
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    assert(strstr(g_analog_warning_rows[3], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz"));
+    assert(strncmp(state->ui_msg, "Skipped at every visit: Scan channel 1 ", 39) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 /* An nfm row that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
  * digital session: a rate that cannot filter it skips those rows at every visit, so the scan start names them with
  * that width beside the rows whose own width does not fit, and a changed configured width names again only the rows
@@ -3307,6 +3349,63 @@ test_typed_previous_refusal_keeps_the_cursor(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #697 (B-B3, typed lists): a channel a site announces while a row's tune is pending
+   (dsd_state_set_trunk_chan_freq(), which the protocols' channel learning runs) moves the learned map, not the list, so
+   the row is still the scan's: a late success lands it, and a late refusal is still that row's, the one the next
+   Previous retries. */
+static void
+test_typed_pending_row_outlives_a_learned_channel(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 1;
+    assert(typed_walk_step(opts, state, 1, 1) == 1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_walk_step(opts, state, -1, 0) == 0);
+    const uint64_t list_rev = state->lcn_list_rev;
+    dsd_state_set_trunk_chan_freq(state, 0x1005U, 851062500L);
+    assert(state->lcn_list_rev == list_rev);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 0 && strcmp(row_named(opts, state), "North") == 0);
+
+    assert(typed_walk_step(opts, state, -1, 4) == 0); /* wrapping */
+    dsd_state_set_trunk_chan_freq(state, 0x1006U, 851075000L);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0);
+    assert(dsd_state_lcn_back_retry_row(state) == 4);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+
+    /* A row that landed and is owed a restage the tuner defers is the row on air (issue #666, G4) while the row heard
+       stays the one before, and still is after a learned channel. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 3;
+    assert(typed_walk_step(opts, state, 1, 3) == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_walk_step(opts, state, -1, 1) == 0);
+    assert(dsd_scan_mode_suspend(opts, state));
+    opts->inverted_dmr = !opts->inverted_dmr;
+    (void)dsd_scan_mode_resume(opts, state);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, owed a restage */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 1 && dsd_state_lcn_heard_row(state) == 3);
+    dsd_state_set_trunk_chan_freq(state, 0x1007U, 851087500L);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 1 && strcmp(row_named(opts, state), "West") == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #666 (G4): a Previous whose row lands but is restaged (a setting it was prepared from changed while it was
    outstanding) stays that Previous's: the row on air (Avoid's) is the landed row, frames stay gated until a commit,
    and the row heard stays the one before. A restage the tuner defers leaves nothing outstanding, so the next Previous
@@ -3546,6 +3645,7 @@ main(void) {
     test_leave_supersedes_familyless_retunes();
     test_row_commits_when_nothing_its_tune_carries_changed();
     test_nfm_row_warnings_once_per_row();
+    test_nfm_row_warnings_once_per_list_not_per_learned_channel();
     test_nfm_row_warnings_follow_the_dsp_rate();
     test_nfm_row_warnings_for_the_configured_width();
     test_nfm_placeholder_rows_owe_nothing();
@@ -3563,6 +3663,7 @@ main(void) {
     test_typed_first_refusal_names_no_row();
     test_typed_previous_walks_back();
     test_typed_previous_refusal_keeps_the_cursor();
+    test_typed_pending_row_outlives_a_learned_channel();
     test_typed_previous_restaged();
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
@@ -3654,7 +3755,7 @@ main(void) {
     assert(opts->frame_dstar && state->lcn_freq_roll == 1);
     state->lcn_freq_roll = 0;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
-    state->trunk_chan_map_seq++;
+    dsd_state_trunk_lcn_replace_begin(state);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0 && opts->frame_dstar);
     /* A tune changes live output timing; it is not a configuration edit and

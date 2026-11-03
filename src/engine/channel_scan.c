@@ -58,7 +58,9 @@ typedef struct {
 
 typedef struct {
     uint64_t request;
-    uint64_t map_sequence;
+    /* The list the staged row belongs to (dsd_state::lcn_list_rev). A channel learned over the air moves the sparse map
+       (trunk_chan_map_seq), never the list: the row is still the one its tune went to (issue #697). */
+    uint64_t list_rev;
     int row;
     int retry;
     int needs_commit;
@@ -78,20 +80,21 @@ typedef struct {
     uint32_t family_requests;
     uint32_t familyless_supersedes;
     int family_attached;
-    /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
-     * analog row widths were last held to, with the configured NFM and AM widths a row without its own runs (issue
-     * #526). */
-    uint64_t rows_checked_map;
+    /* The list whose rows were last checked against the input (issues #521, #526; dsd_state::lcn_list_rev, which a
+     * channel learned over the air leaves alone, issue #697), and the DSP rate its analog row widths were last held to,
+     * with the configured NFM and AM widths a row without its own runs (issue #526). */
+    uint64_t rows_checked_list;
     int rows_checked;
     int widths_checked_rate_hz;
     int widths_checked_nfm_hz;
     int widths_checked_am_hz;
     int widths_checked;
-    /* The row whose frequency the receiver last landed on, and the map it belongs to (issue #527): a failed start moves
-     * lcn_freq_roll past a row the receiver never reached, so only a completed tune says where the receiver is. */
+    /* The row whose frequency the receiver last landed on, and the list it belongs to (issue #527): a failed start
+     * moves lcn_freq_roll past a row the receiver never reached, so only a completed tune says where the receiver
+     * is. */
     int tuned;
     int tuned_row;
-    uint64_t tuned_map;
+    uint64_t tuned_list;
     /* The receiver left the carrier, but no row has committed since and so no boundary was noted: a staged tune's
      * rigctl leg moved the radio before its RTL leg went on asynchronously (PENDING), or a completed tune landed a row
      * that was then restaged (channel_scan_commit()). A commit notes its own boundary; a row that ends unlanded notes
@@ -239,7 +242,7 @@ static int channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row);
 static int
 channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
-           && scan->map_sequence == state->trunk_chan_map_seq;
+           && scan->list_rev == state->lcn_list_rev;
 }
 
 /* End every slot's call and commit it, an NFM call first (dsd_engine_end_calls()). */
@@ -332,7 +335,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->needs_commit = 1;
     scan->tuned = 1;
     scan->tuned_row = scan->row;
-    scan->tuned_map = scan->map_sequence;
+    scan->tuned_list = scan->list_rev;
     if (channel_scan_staged_stale(opts, state, scan)) {
         /* Stage the new effective profile in a fresh request before any frame
          * can use it. The receiver has left the carrier already: the row's commit
@@ -481,7 +484,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     channel_scan_end_calls(opts, state);
-    if (scan->map_sequence == state->trunk_chan_map_seq) {
+    if (scan->list_rev == state->lcn_list_rev) {
         channel_scan_row_refused(state, scan, result);
     }
     scan->request = 0;
@@ -618,16 +621,16 @@ channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rat
     dsd_engine_scan_note_skipped_rows(state, &skipped);
 }
 
-/* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
+/* Once per list the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
  * that has published no rate yet leaves the widths to a later row start, and a changed rate (the operator changed the
  * RTL DSP bandwidth) names them again, since a row whose width the rate cannot fit is skipped quietly at every visit
  * (dsd_engine_scan_tune_to_freq()). A changed configured NFM or AM width (a width command, a config apply) names again
  * the rows that run it. */
 static void
 channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* scan) {
-    if (!scan->rows_checked || scan->rows_checked_map != state->trunk_chan_map_seq) {
+    if (!scan->rows_checked || scan->rows_checked_list != state->lcn_list_rev) {
         scan->rows_checked = 1;
-        scan->rows_checked_map = state->trunk_chan_map_seq;
+        scan->rows_checked_list = state->lcn_list_rev;
         scan->widths_checked = 0;
         channel_scan_warn_rows_squelch(opts, state);
     }
@@ -902,14 +905,13 @@ channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, in
     return refused;
 }
 
-/* The row the receiver is on: the one whose tune last landed on this map (typed lists); else, for an untyped list or
+/* The row the receiver is on: the one whose tune last landed on this list (typed lists); else, for an untyped list or
  * before the first landing, the row heard (dsd_state_lcn_heard_row(), issue #666), which a placeholder the scan parks
  * on does not move; -1 before the first step. */
 static int
 channel_scan_on_air_row(const dsd_state* state) {
     const channel_scan* scan = channel_scan_get(state);
-    if (scan && scan->tuned && scan->tuned_map == state->trunk_chan_map_seq
-        && scan->tuned_row < state->lcn_freq_count) {
+    if (scan && scan->tuned && scan->tuned_list == state->lcn_list_rev && scan->tuned_row < state->lcn_freq_count) {
         return scan->tuned_row;
     }
     return dsd_state_lcn_heard_row(state);
@@ -1096,7 +1098,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->start_failure = DSD_SCAN_RESUME_FAILED_SETUP;
     scan->row = row;
     scan->mode = dsd_channel_mode_get(state, (size_t)row);
-    scan->map_sequence = state->trunk_chan_map_seq;
+    scan->list_rev = state->lcn_list_rev;
     dsd_scan_settings before;
     dsd_scan_settings next;
     dsd_scan_settings_capture(opts, state, &before);

@@ -101,7 +101,7 @@ int dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* 
  * digital or am row, or one inheriting a decode mode other than the FM monitor) or whose tone policy passes the
  * traffic. A row on the frequency on air that runs the FM monitor under a policy that rejects the traffic too (the
  * same policy, as every row of a list without modes runs) is nowhere to go. The row on air is the one whose tune last
- * landed on this map, which a failed start does not change; for a list without modes, the row heard
+ * landed on this list, which a failed start does not change; for a list without modes, the row heard
  * (dsd_engine_channel_scan_on_air_row()).
  * Without such a row a step would only land on the row on air, or on a row that rejects the traffic alike, end the
  * reception and judge the same traffic once more, so the scanner keeps it, muted. Works on both the typed and the

@@ -7462,6 +7462,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
             "-Wl,--start-group"
+            dsd-neo_app_control
             dsd-neo_engine
             "-Wl,--end-group"
             "-Wl,--wrap=rtl_stream_clear_pending_retune_profile"
