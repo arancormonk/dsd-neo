@@ -293,9 +293,12 @@ jobs:
               "$bin" --iters 3000 --repeat 5 --format csv > "$out/${build}_r${round}.csv"
             done
           done
-          # The cases that run only by name (squelch model and plan builds) are new with the step.
+          # The cases that run only by name (squelch model and plan builds) are new with the step. One CSV: the
+          # first case keeps its header row, the rest drop theirs.
+          skip=1
           "$head_bin" --list | grep -E '^squelch_(step_model_build|floor_plan|noise_plan)_' | while read -r name; do
-            "$head_bin" --case "$name" --iters 3 --warmup 1 --repeat 3 --format csv | tail -n +2
+            "$head_bin" --case "$name" --iters 3 --warmup 1 --repeat 3 --format csv | tail -n "+$skip"
+            skip=2
           done > "$out/head_named.csv"
           python3 - "$out" > "$out/summary.tsv" << 'EOF'
           import csv, pathlib, sys
@@ -316,6 +319,7 @@ jobs:
           EOF
           {
             echo '### DSP benchmark, arm64 (head vs merge base, best of 3 medians)'
+            echo 'Shared runner: read head_over_base within ±3 % (0.97 to 1.03) as noise.'
             echo '```'
             column -t -s $'\t' "$out/summary.tsv"
             echo '```'
