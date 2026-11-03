@@ -15580,10 +15580,11 @@ test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth(void) {
 
 /*
  * What a config's [input] does to the rate is what its hot restart does: a reopen only when it builds an RTL-SDR or
- * rtl_tcp spec other than the running input's, at rtl_bw_khz as the config gives it. An unsupported value (20) is the
- * rate the reopened device runs at; an RTL spec over a running Airspy reopens an RTL-SDR even at the rtl_bw_khz the
- * session already has, where the Airspy ran at the rate it forced; and an rtl_tcp source that names the host and port
- * in use without rtl_freq reopens nothing, so its rtl_bw_khz changes no rate and refuses nothing.
+ * rtl_tcp spec other than the running input's, at the config's rtl_bw_khz. An unsupported value (20, or one above every
+ * DSP bandwidth) runs at the 48 kHz default, as at startup, so the width is held to 48 kHz; an RTL spec over a running
+ * Airspy reopens an RTL-SDR even at the rtl_bw_khz the session already has, where the Airspy ran at the rate it forced;
+ * and an rtl_tcp source that names the host and port in use without rtl_freq reopens nothing, so its rtl_bw_khz changes
+ * no rate and refuses nothing.
  */
 static int
 test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
@@ -15593,31 +15594,28 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     int rc = 0;
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
 
-    /* rtl_bw_khz = 20 reopens at 20 kHz, which cannot filter 20 kHz (the reopen would fail and leave no stream). */
-    opts.analog_nfm_bandwidth_hz = 20000;
-    opts.rtl_dsp_bw_khz = 48;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:146.52M:0:0:48");
+    /* The loader keeps any integer for rtl_bw_khz (its check only warns that 48 kHz is used). rtl_bw_khz = 20 reopens
+       at 48 kHz, which filters 20 kHz, instead of being refused for a 20 kHz rate that cannot; so does a value too large
+       for a rate in Hz, or one above every selectable bandwidth. */
+    static const int unsupported_khz[] = {20, 3000000, 200, 100};
+    for (size_t i = 0; i < sizeof unsupported_khz / sizeof unsupported_khz[0]; i++) {
+        char label[64];
+        DSD_SNPRINTF(label, sizeof label, "cfg rtl_bw_khz %d", unsupported_khz[i]);
+        opts.analog_nfm_bandwidth_hz = 20000;
+        opts.rtl_dsp_bw_khz = 48;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:146.52M:0:0:48");
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        reset_rx_family_wrap();
+        g_config_rtl_open_ok = 1;
+        rc |= submit_config_rtl_bw(&opts, &state, unsupported_khz[i], -1, label);
+        rc |= expect_int(
+            label, strstr(state.ui_msg, "does not fit") == NULL && strstr(state.ui_msg, "is not a DSP") == NULL, 1);
+        rc |= expect_int(label, g_config_rtl_creates, 1);
+        rc |= expect_int(label, g_config_rtl_create_bw_khz, 48);
+        rc |= expect_int(label, opts.rtl_dsp_bw_khz, 48);
+        rc |= expect_int(label, opts.analog_nfm_bandwidth_hz, 20000);
+    }
     reset_rx_family_wrap();
-    rc |= submit_config_rtl_bw(&opts, &state, 20, -1, "cfg rtl_bw_khz 20");
-    rc |= expect_int("cfg rtl_bw_khz 20: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast(
-        "cfg rtl_bw_khz 20 toast", &state,
-        "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24, 48 or 72 "
-        "kHz DSP bandwidth");
-    /* The loader keeps any integer for rtl_bw_khz (its range only warns). One too large for a rate in Hz is held as
-       the saturated rate, which no width fits, rather than overflowing into a negative one, and the refusal names the
-       setting rather than a DSP rate built from it. So does one above every selectable bandwidth that no width fits
-       (the channel filter would need more taps than it has). */
-    rc |= submit_config_rtl_bw(&opts, &state, 3000000, -1, "cfg rtl_bw_khz 3000000");
-    rc |= expect_int("cfg rtl_bw_khz 3000000: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast("cfg rtl_bw_khz 3000000 toast", &state,
-                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP "
-                       "bandwidth");
-    rc |= submit_config_rtl_bw(&opts, &state, 200, -1, "cfg rtl_bw_khz 200");
-    rc |= expect_int("cfg rtl_bw_khz 200: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |=
-        expect_toast("cfg rtl_bw_khz 200 toast", &state,
-                     "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP bandwidth");
 
     /* An Airspy running an explicit 25 kHz at its forced rate; a config moving to an RTL-SDR at the same 24 kHz
        rtl_bw_khz value would reopen at 24 kHz, which cannot filter it. */
@@ -15654,6 +15652,47 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= expect_int("cfg same rtl_tcp: width unchanged", opts.analog_nfm_bandwidth_hz, 25000);
 
     opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #806: a config applied to a running radio stores the DSP bandwidth startup would run the same config at. The
+ * loader keeps any integer for rtl_bw_khz and its check warns that 48 kHz is used, as startup does, but the live apply
+ * stored the raw value, which the stream builds its rate from: rtl_bw_khz = 100 ran at 100 kHz after the apply.
+ */
+static int
+test_config_apply_stores_an_unsupported_rtl_bw_as_the_default(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    reset_config_rtl_wrap();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:0:2");
+    opts.rtl_dsp_bw_khz = 24;
+    g_config_rtl_open_ok = 1;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "851375000");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 100;
+    cfg.rtl_volume = 2;
+    state.ui_msg[0] = '\0';
+    int rc = expect_true("cfg rtl_bw_khz 100 queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("cfg rtl_bw_khz 100 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("cfg rtl_bw_khz 100: applied", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+    rc |= expect_int("cfg rtl_bw_khz 100: the reopen runs at 48 kHz", g_config_rtl_create_bw_khz, 48);
+    rc |= expect_int("cfg rtl_bw_khz 100: 48 kHz stored", opts.rtl_dsp_bw_khz, 48);
+    rc |=
+        expect_int("cfg rtl_bw_khz 100: an explicit bandwidth", opts.rtl_dsp_bw_source, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_true("cfg rtl_bw_khz 100: the stream runs", state.rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx);
+
+    reset_config_rtl_wrap();
     state.rtl_ctx = NULL;
     freeState(&state);
     return rc;
@@ -24853,6 +24892,7 @@ main(void) {
     rc |= test_refused_width_under_a_row_returns_to_the_width_run();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
+    rc |= test_config_apply_stores_an_unsupported_rtl_bw_as_the_default();
     rc |= test_config_apply_holds_a_soapy_or_airspy_reopen_to_its_bandwidth();
     rc |= test_config_volume_only_reopen_holds_the_unchanged_width();
     rc |= test_config_reopen_that_fails_keeps_the_running_input();

@@ -1586,15 +1586,15 @@ svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, ch
         return -1;
     }
     /* The reopened device is an RTL-SDR or rtl_tcp one, whose rate is its DSP bandwidth: saturated, never overflowed,
-       for a loaded config's out-of-range rtl_bw_khz, which no width then fits. */
+       for an out-of-range bandwidth, which no width then fits. */
     const int rate_hz = dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, rtl_bw_khz);
     const int held_hz = svc_analog_held_width_hz(kind, width_hz);
     if (held_hz == 0 || rate_hz <= 0 || dsd_analog_width_realizable(held_hz, rate_hz)) {
         return 0;
     }
     if (rtl_bw_khz > DSD_ANALOG_RTL_DSP_BW_MAX_KHZ) {
-        /* Above every selectable DSP bandwidth (a loaded config keeps any integer), the rate it would give is no DSP
-           rate to name: the setting is what is wrong. */
+        /* Above every selectable DSP bandwidth, the rate it would give is no DSP rate to name: the setting is what is
+           wrong. */
         char fits[32];
         char text[128];
         (void)dsd_analog_width_fitting_rtl_bandwidths(held_hz, fits, sizeof fits);

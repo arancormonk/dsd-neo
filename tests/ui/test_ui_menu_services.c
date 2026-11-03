@@ -2856,6 +2856,17 @@ test_nfm_bandwidth_services(void) {
                      svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 0, 4, why, sizeof why), 0);
     rc |= expect_int("nfm svc reopen range",
                      svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 30000, 48, why, sizeof why), -1);
+    /* A bandwidth above every selectable one that no width fits is refused as the setting it is, never as a rate built
+       from it, and one too large for a rate in Hz saturates rather than overflowing into a negative rate. (A config
+       apply hands over the bandwidth it runs at, so it never reaches these.) */
+    rc |= expect_int("nfm svc rtl_bw_khz 200",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 20000, 200, why, sizeof why), -1);
+    rc |= expect_str("nfm svc rtl_bw_khz 200 reason", why,
+                     "rtl_bw_khz 200 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP bandwidth");
+    rc |= expect_int("nfm svc rtl_bw_khz 3000000",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 20000, 3000000, why, sizeof why), -1);
+    rc |= expect_str("nfm svc rtl_bw_khz 3000000 reason", why,
+                     "rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP bandwidth");
 
     /* A running stream answers for itself, and an accepted width is published to it once stored. */
     opts.audio_in_type = AUDIO_IN_RTL;

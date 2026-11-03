@@ -3880,8 +3880,11 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
             opts->rtlsdr_center_freq = hz;
         }
     }
+    /* An unsupported rtl_bw_khz runs at the 48 kHz default, as at startup and as the config check warns: the loader
+       keeps any integer, and the stream builds its rate from the stored bandwidth. */
     if (cfg->rtl_bw_khz) {
-        dsd_opts_set_rtl_dsp_bw(opts, cfg->rtl_bw_khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+        dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
+                                DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
     /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
      * same way: negative is decibels, 0 is off. Storing the raw integer put a
@@ -8357,11 +8360,11 @@ cfg_analog_width_after(const dsd_opts* opts, const dsdneoUserConfig* cfg, int ki
     return dsd_analog_width_in_range(kind, width_hz) ? width_hz : 0;
 }
 
-/* The DSP bandwidth, in kHz, an RTL-SDR or rtl_tcp reopen runs at: rtl_bw_khz as the config gives it, the session's
-   when it gives none (apply_cfg_rtl_common()). */
+/* The DSP bandwidth, in kHz, an RTL-SDR or rtl_tcp reopen runs at: the config's rtl_bw_khz, an unsupported one as the
+   48 kHz default, or the session's when it gives none (apply_cfg_rtl_common()). */
 static int
 cfg_reopen_rtl_bw_khz(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    return cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
+    return cfg->rtl_bw_khz ? dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz) : opts->rtl_dsp_bw_khz;
 }
 
 /* How a config's [input] reopens the running input's device (apply_cfg_radio_input()). */

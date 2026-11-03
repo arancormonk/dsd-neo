@@ -3640,7 +3640,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   refuses, at once or where it lands, puts the decoder back on the mode it had (`Failed: AM -> ...`), while a width
   refused after the switch landed restores the width. `DSD_APP_CMD_CONFIG_APPLY` holds the width it leaves in force (an
   explicit one, or AM's; `cfg_analog_kind_after()`, `cfg_check_held_analog_width()`) to the rate it will run at before
-  applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as given, when
+  applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores (an unsupported
+  one as the 48 kHz default, as at startup and as `--validate-config` warns; `cfg_reopen_rtl_bw_khz()`), when
   the `[input]` builds a live radio spec other than the running RTL-family input's (`cfg_radio_reopen()`), a SoapySDR
   or Airspy one included, or reopens a running Airspy for a new sample rate, serial or DSP bandwidth
   (`svc_airspy_settings_reopen()`): each runs at that bandwidth (issue #806), otherwise the check above. An Airspy
@@ -3651,8 +3652,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   under that row can leave too wide. Since the stream a reopen starts runs the scan row on air again once the
   scope resumes, an analog row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`, for
   the row's kind), and on a session the config leaves on another kind or none the configured width of a kind is held
-  while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). An
-  `rtl_bw_khz` above every selectable bandwidth that no width fits is refused as the setting, not as a
+  while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). The
+  check refuses a bandwidth above every selectable one that no width fits as the setting, not as a
   rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) takes every selectable bandwidth on every live radio, 72 kHz on an
   Airspy included (issue #806), and refuses one the configured preset's explicit width, or AM's width, cannot run at
   on any of them, naming both and saying to narrow the width first (or, at a
@@ -3715,8 +3716,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   start (Airspy, SoapySDR, rtl_tcp, I/Q replay, RTL-SDR). Every one of
   these classifies the input as the stream's `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (the bare
-  `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
-  config's out-of-range `rtl_bw_khz`. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
+  `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
+  out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
   no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
