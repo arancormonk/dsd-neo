@@ -3659,6 +3659,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
     sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
     `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then.
+    A cursor at or past the newest sequence reads nothing (it is checked before it is moved on, so `UINT64_MAX` cannot
+    wrap to the start of the history).
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
@@ -4280,7 +4282,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the view's at the switch (`dsd_app_scan_list_seq_after()`, wrap-aware), and a `PAUSED` note on a resume that follows a
   pause the frontend saw (`seen_paused`). A pause and resume that both fall between two frames are never seen, so that
   note stays until the row is switched again, the lists change or the frontend drops its rows (a decided limit). No note
-  has a timeout. Tests: `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
+  has a timeout. Both frontends read results through `dsd_app_scan_list_rows_take()`, which answers each row and moves
+  the cursor; a batch that does not follow on from the cursor (64 or more results went by unread, so a waiting row's
+  answer may be lost) ends every wait still open, the row showing the view with no note. Tests:
+  `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
   callbacks and actions do no file I/O):
@@ -12339,7 +12344,9 @@ identity from the tick's held snapshot; no extra snapshot reader is introduced.
 Several lists in one session (issue #697):
 
 - Files and names: a list's CSV is `scan_lists/<uid>/<name>.csv` (`scan_list_csv_path()`, `scan_list_csv_stem()`: the
-  list's name made safe for a file name and cut to the engine's 31 bytes, `list N` when nothing is left), so the
+  list's name made safe for a file name, with no `$` or leading `~` for the engine's `dsd_config_expand_path()` to
+  read and a `_` after a Windows device name before the first dot, cut to the engine's 31 bytes, `list N` when nothing
+  is left; a manual list's saved CSV is validated again at its final path through the engine's opener), so the
   engine's list name (the file name without folder and extension) is the list's own on every surface: toasts, logs, the
   API. A list over an imported target CSV gets a copy there at a start (`ScanListStarter::listCopyOf()`:
   `copy_targets_for_list()` rewrites every companion the targets name with `dsd_app_scan_csv_rewrite()`, relative to the

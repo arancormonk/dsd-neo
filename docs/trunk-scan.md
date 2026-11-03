@@ -1060,11 +1060,12 @@ remain global: the list's source file wins, with a warning for differing system
 source files.
 
 The starter checks files and writes a private `<AppData>/scan_lists/<uid>/<name>.csv` using `QSaveFile` (the list's
-name, made safe for a file name, so the decoder names the list after it; a list over an imported target CSV gets a copy
+name, made safe for a file name, so the decoder names the list after it: characters no file name can hold, a `$` and a
+leading `~` become `_`, and a Windows device name such as `CON` or `CON.local` gets a `_` after it; a list over an imported target CSV gets a copy
 there, with each side file it names rewritten relative to the copy's folder, and the imported file is never written;
 when no copy can be made, the list runs from the imported file, the decoder names it after that file, and the log says
 so with a `NOTICE: Scan list "<name>" runs from its imported file` line), then validates it through the app-control
-facade before asking the host to start. Missing/unreadable files, commas, double quotes, CR/LF in paths, duplicate
+facade, at the path the decoder will open and through the decoder's own opener, before asking the host to start. Missing/unreadable files, commas, double quotes, CR/LF in paths, duplicate
 type/frequency pairs and empty enabled lists are refused.
 Relative saved paths are resolved against the working directory before generating
 the target CSV, preserving their standalone meaning. Preference extra options are token-screened against session/scan/decode overrides
