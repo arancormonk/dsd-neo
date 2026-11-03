@@ -4282,9 +4282,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the view's at the switch (`dsd_app_scan_list_seq_after()`, wrap-aware), and a `PAUSED` note on a resume that follows a
   pause the frontend saw (`seen_paused`). A pause and resume that both fall between two frames are never seen, so that
   note stays until the row is switched again, the lists change or the frontend drops its rows (a decided limit). No note
-  has a timeout. Both frontends read results through `dsd_app_scan_list_rows_take()`, which answers each row and moves
-  the cursor; a batch that does not follow on from the cursor (64 or more results went by unread, so a waiting row's
-  answer may be lost) ends every wait still open, the row showing the view with no note. Tests:
+  has a timeout. Both frontends read results through `dsd_app_scan_list_rows_read()` with a reader of the
+  `dsd_app_scan_list_results_since()` shape: it reads every retained page up to the newest, each result answering its
+  row and moving the cursor, and only then, when the results did not follow on from the cursor (64 or more went by
+  unread, so a waiting row's answer may be lost), ends every wait still open, the row showing the view with no note.
+  Tests:
   `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
@@ -12344,11 +12346,12 @@ identity from the tick's held snapshot; no extra snapshot reader is introduced.
 Several lists in one session (issue #697):
 
 - Files and names: a list's CSV is `scan_lists/<uid>/<name>.csv` (`scan_list_csv_path()`, `scan_list_csv_stem()`: the
-  list's name made safe for a file name, with no `$` or leading `~` for the engine's `dsd_config_expand_path()` to
-  read and a `_` after a Windows device name before the first dot, cut to the engine's 31 bytes, `list N` when nothing
-  is left; a manual list's saved CSV is validated again at its final path through the engine's opener), so the
-  engine's list name (the file name without folder and extension) is the list's own on every surface: toasts, logs, the
-  API. A list over an imported target CSV gets a copy there at a start (`ScanListStarter::listCopyOf()`:
+  list's name made safe for a file name, with no `$` or leading `~` for the engine's `dsd_config_expand_path()` to read
+  and a `_` after a Windows device name (`COM`/`LPT` with a superscript 1 to 3 included) before the first dot, cut to
+  the engine's 31 bytes, `list N` when nothing is left; a manual list's saved CSV is validated again at its final path
+  through the engine's opener), so the engine's list name (the file name without folder and extension) is the list's own
+  on every surface: toasts, logs, the API. A list over an imported target CSV gets a copy there at a start
+  (`ScanListStarter::listCopyOf()`:
   `copy_targets_for_list()` rewrites every companion the targets name with `dsd_app_scan_csv_rewrite()`, relative to the
   copy's folder, then `dsd_app_trunk_scan_validate_bundle()` checks the copy); the imported file is never written. A
   copy that cannot be made or does not check out leaves the list on the imported file, named after it, with a

@@ -314,12 +314,13 @@ fit_stem(const QString& stem) {
     return out;
 }
 
-/* A Windows device name (CON, LPT1, ...) is one whatever follows its first dot, and blanks before that dot do not
-   count: "CON.local" is CON. Such a stem gets a '_' after the device name. */
+/* A Windows device name (CON, LPT1, and COM or LPT with a superscript 1 to 3 too) is one whatever follows its first
+   dot, and blanks before that dot do not count: "CON.local" is CON. Such a stem gets a '_' after the device name. */
 QString
 avoid_device_name(const QString& stem) {
-    static const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"),
-                                             QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression reserved(
+        QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$"),
+        QRegularExpression::CaseInsensitiveOption);
     const qsizetype dot = stem.indexOf(QLatin1Char('.'));
     QString device = dot < 0 ? stem : stem.left(dot);
     while (device.endsWith(QLatin1Char(' '))) {

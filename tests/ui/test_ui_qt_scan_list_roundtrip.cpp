@@ -378,6 +378,12 @@ checkCsvStem() {
         {"LPT1.backup", "LPT1_.backup"},
         {"aux .txt", "aux_ .txt"},
         {"Console.local", "Console.local"},
+        /* COM and LPT with a superscript 1, 2 or 3 are device names too; a superscript 4 is not. */
+        {"COM\xc2\xb9", "COM\xc2\xb9_"},
+        {"com\xc2\xb2.log", "com\xc2\xb2_.log"},
+        {"LPT\xc2\xb3", "LPT\xc2\xb3_"},
+        {"lpt\xc2\xb9 .txt", "lpt\xc2\xb9_ .txt"},
+        {"COM\xe2\x81\xb4", "COM\xe2\x81\xb4"},
         /* Nothing the engine's path expansion reads: no '$', and no '~' to start. */
         {"Fire $5", "Fire _5"},
         {"$HOME", "_HOME"},
