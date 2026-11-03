@@ -3870,6 +3870,37 @@ test_analog_replay_heard_again(void) {
     }
 }
 
+/* Issue #667 (B1): a capture replayed under another saved system is that system's reception, not the first one's heard
+   again: its rows stay apart (as rows_mergeable() keeps two systems apart), each system's history shows its own, and
+   each row holds only its own system's recordings. */
+void
+test_analog_replay_under_another_system(void) {
+    resetStorage();
+    FakeRecordings recordings;
+    CallHistoryModel model;
+    model.setRecordingProvider(&recordings);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSessionOn(QStringLiteral("Fire"), QStringLiteral("uid-fire"));
+    const QStringList fire = replay_analog_capture(*ring, DSD_ANALOG_MODE_NFM);
+    model.refresh(ring->state);
+    ring = std::make_unique<RingFixture>();
+    model.beginSessionOn(QStringLiteral("County"), QStringLiteral("uid-county"));
+    const QStringList county = replay_analog_capture(*ring, DSD_ANALOG_MODE_NFM);
+    model.refresh(ring->state);
+    expect("a replay under another system logs its own rows", model.count() == 6);
+    for (int i = 0; i < 3; i++) {
+        const int fire_row = row_recording(model, recordings, fire.at(i));
+        const int county_row = row_recording(model, recordings, county.at(i));
+        expect("each system's reception keeps a row of its own",
+               fire_row >= 0 && county_row >= 0 && fire_row != county_row);
+        expect("the other system's row is that system's",
+               county_row >= 0
+                   && model.data(model.index(county_row), CallHistoryModel::SystemNameRole).toString()
+                          == QStringLiteral("County"));
+    }
+    model.setRecordingProvider(nullptr);
+}
+
 /* Issue #667 (B1): two receptions on one frequency and tone that start in the same second (500 ms from x.00, then one
    from x.55) share their whole-second start. Replayed in a fresh ring, each is heard again one to one: both rows join
    the running session, and each row holds both replays' recordings of its own reception. */
@@ -4583,6 +4614,7 @@ main(int argc, char** argv) {
     test_destructor_marks_its_teardown_stage();
     test_analog_replay_heard_again();
     test_analog_replay_same_second();
+    test_analog_replay_under_another_system();
     test_analog_update_of_an_old_store_row();
     test_analog_roles_and_persistence();
     test_rows_have_stable_uids();

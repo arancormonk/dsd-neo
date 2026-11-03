@@ -1306,8 +1306,9 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
 /**
  * @brief Whether analog row @p row is the reception @p existing logged, read again (issue #667).
  *
- * Exactly the same: its start, its tone (or the same lack of one) and its frequency. A replay in a fresh ring pushes
- * that, and so does the ring an update of a row an older build stored (with no fragments) comes from.
+ * Exactly the same: its start, its tone (or the same lack of one), its frequency, and the system and channel it was
+ * logged under. A replay in a fresh ring pushes that, and so does the ring an update of a row an older build stored
+ * (with no fragments) comes from.
  */
 bool
 rows_same_reception(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -1319,7 +1320,11 @@ rows_same_reception(const CallHistoryModel::Row& existing, const CallHistoryMode
         existing.receiveKnown == row.receiveKnown
         && (!row.receiveKnown
             || (existing.receiveKind == row.receiveKind && existing.receiveValue == row.receiveValue));
-    return existing.when == row.when && existing.freqHz == row.freqHz && sameTone;
+    // One system's reception never stands for another's, as rows_mergeable() keeps two systems apart: the same capture
+    // replayed under another saved system (or channel) is that one's.
+    const bool sameSystem =
+        existing.systemName == row.systemName && existing.systemUid == row.systemUid && existing.channel == row.channel;
+    return existing.when == row.when && existing.freqHz == row.freqHz && sameTone && sameSystem;
 }
 
 /** @brief The ring a call_history_fragment_key() names: the instance before its first ':'. */
