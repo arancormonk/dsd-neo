@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cmath>
 #include <cstdlib>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
 
 #define CHECK(condition)                                                                                               \
@@ -15,6 +18,59 @@
             std::abort();                                                                                              \
         }                                                                                                              \
     } while (0)
+
+/* Issue #806: an Airspy's own rates on the live rate chain. The half-band output (78,125 Hz from 2.5 or 10 MS/s at
+   48 kHz, 93,750 Hz from 3 or 6 MS/s) steps to exactly the DSP bandwidth, so FSK at 4800 sym/s is a whole 10 samples a
+   symbol with no output resampler, CQPSK times a whole 10, and TETRA at 72 kHz a whole 4. */
+namespace {
+struct airspy_rate {
+    uint32_t rate;
+    int passes_48k;
+    int l_48k;
+    int m_48k;
+    int l_72k;
+    int m_72k;
+};
+
+void
+expect_live_plans() {
+    static const airspy_rate kRates[] = {{2500000U, 5, 384, 625, 576, 625},
+                                         {3000000U, 5, 64, 125, 96, 125},
+                                         {6000000U, 6, 64, 125, 96, 125},
+                                         {10000000U, 7, 384, 625, 576, 625}};
+    static dsd_opts fsk;
+    static dsd_opts cqpsk;
+    static dsd_opts tetra;
+    DSD_MEMSET(&fsk, 0, sizeof fsk);
+    fsk.frame_p25p1 = 1;
+    fsk.mod_c4fm = 1;
+    DSD_MEMSET(&cqpsk, 0, sizeof cqpsk);
+    cqpsk.frame_p25p1 = 1;
+    cqpsk.mod_qpsk = 1;
+    DSD_MEMSET(&tetra, 0, sizeof tetra);
+    tetra.frame_tetra = 1;
+    tetra.mod_qpsk = 1;
+    for (const airspy_rate& a : kRates) {
+        rtl_stream_test_live_chain_result r{};
+        CHECK(rtl_stream_test_live_rate_chain(&fsk, DSD_RATE_PLAN_BACKEND_AIRSPY, 48000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.forced == 1);
+        CHECK(r.step_enabled == 1 && r.step_l == a.l_48k && r.step_m == a.m_48k);
+        CHECK(r.rate_out_hz == 48000 && r.ted_sps == 10);
+        CHECK(r.resamp_enabled == 0 && r.output_rate_hz == 48000U);
+
+        CHECK(rtl_stream_test_live_rate_chain(&cqpsk, DSD_RATE_PLAN_BACKEND_AIRSPY, 48000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.step_enabled == 1);
+        CHECK(r.step_l == a.l_48k && r.step_m == a.m_48k);
+        CHECK(r.rate_out_hz == 48000 && r.ted_sps == 10 && r.resamp_enabled == 0 && r.output_rate_hz == 48000U);
+        CHECK(r.published_rate_out_hz == 48000 && r.published_forced == 1);
+
+        CHECK(rtl_stream_test_live_rate_chain(&tetra, DSD_RATE_PLAN_BACKEND_AIRSPY, 72000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.step_enabled == 1);
+        CHECK(r.step_l == a.l_72k && r.step_m == a.m_72k);
+        CHECK(r.rate_out_hz == 72000 && r.ted_sps == 4 && r.resamp_enabled == 0 && r.output_rate_hz == 72000U);
+    }
+}
+} // namespace
 
 int
 main() {
@@ -57,5 +113,6 @@ main() {
               == 0);
         CHECK(actual == 48000 && enabled == 1);
     }
+    expect_live_plans();
     return 0;
 }

@@ -152,6 +152,18 @@ message_names(const dsd_rate_plan* p, const char* text) {
     return strstr(p->message, text) != NULL;
 }
 
+/* A refusal a user reads names rates and the DSP bandwidth, not the filters inside the chain. */
+static int
+plain_message(const dsd_rate_plan* p) {
+    static const char* const kJargon[] = {"half-band", "step ratio", "upsample", "resample", "fractional", "L/M"};
+    for (size_t i = 0; i < sizeof(kJargon) / sizeof(kJargon[0]); i++) {
+        if (strstr(p->message, kJargon[i]) != NULL) {
+            return 0;
+        }
+    }
+    return p->message[0] != '\0';
+}
+
 /* A stepping plan at grid point @p k: everything the step and the half-band chain run with. */
 static void
 check_stepping(const char* backend, const grid_point* k, const dsd_rate_plan* p, int rc) {
@@ -251,7 +263,7 @@ test_grid_no_step(void) {
                       k->name, (int)kFixed[b], rc, (unsigned)p.step_out_hz);
             } else {
                 CHECK(rc == DSD_RATE_PLAN_ERR_FRACTIONAL && p.status == rc && p.step_out_hz == 0U
-                          && message_names(&p, "fractional"),
+                          && message_names(&p, "whole hertz") && plain_message(&p),
                       "%s backend %d: %d (%s)", k->name, (int)kFixed[b], rc, p.message);
             }
         }
@@ -332,7 +344,8 @@ test_rtl_readback_refused(void) {
                   && p.nominal_hz == 1536200U && p.device_forced && !p.step_eligible && step_off(&p)
                   && p.step_out_hz == 0U,
               "RTL 1536200: rc %d nominal %u forced %d", rc, (unsigned)p.nominal_hz, p.device_forced);
-        CHECK(message_names(&p, "1536200 Hz") && message_names(&p, "1536000 Hz") && message_names(&p, "100 ppm"),
+        CHECK(message_names(&p, "1536200 Hz") && message_names(&p, "1536000 Hz") && message_names(&p, "100 ppm")
+                  && plain_message(&p),
               "RTL 1536200 message: %s", p.message);
         /* 30 kHz asks for 960 kS/s; 960123 Hz is 128 ppm off. */
         rc = plan(be, 960000U, 960000U, 960123U, 30000U, &p);
@@ -353,7 +366,8 @@ test_ratio_limits(void) {
     CHECK(rc == DSD_RATE_PLAN_ERR_RATIO && p.status == rc && p.nominal_hz == 1536200U && p.passes == 5
               && p.device_forced && p.step_eligible && step_off(&p) && p.step_out_hz == 0U,
           "Soapy 1536200: rc %d nominal %u, %d passes", rc, (unsigned)p.nominal_hz, p.passes);
-    CHECK(message_names(&p, "1536200 Hz") && message_names(&p, "48000 Hz") && message_names(&p, "114 ppm"),
+    CHECK(message_names(&p, "1536200 Hz") && message_names(&p, "48000 Hz") && message_names(&p, "114 ppm")
+              && message_names(&p, "DSP bandwidth") && plain_message(&p),
           "Soapy 1536200 message: %s", p.message);
     /* Read back out of tolerance to the same rate: the same refusal. */
     rc = plan(DSD_RATE_PLAN_BACKEND_SOAPY, 1536000U, 1536000U, 1536200U, 48000U, &p);
@@ -375,7 +389,7 @@ test_below_target(void) {
     dsd_rate_plan p;
     int rc = plan(DSD_RATE_PLAN_BACKEND_SOAPY, 1536000U, 40000U, 40000U, 48000U, &p);
     CHECK(rc == DSD_RATE_PLAN_ERR_BELOW_TARGET && p.nominal_hz == 40000U && step_off(&p) && p.step_out_hz == 0U
-              && message_names(&p, "40000 Hz") && message_names(&p, "48000 Hz"),
+              && message_names(&p, "40000 Hz") && message_names(&p, "48000 Hz") && plain_message(&p),
           "40000 for 48000: rc %d (%s)", rc, p.message);
     /* A read-back out of tolerance that falls below it. */
     rc = plan(DSD_RATE_PLAN_BACKEND_AIRSPY, 48000U, 48000U, 47000U, 48000U, &p);

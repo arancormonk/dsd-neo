@@ -502,7 +502,26 @@ typedef struct {
     int downsample_passes;    /* half-band passes from the capture rate */
     uint32_t applied_hz;      /* centre the controller last finalized on (a session's start counts as finalized) */
     int completion;           /* RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE: the retune's completion (RTL_STREAM_TUNE_*) */
+    /* The live rate chain (issue #806). */
+    uint32_t nominal_hz; /* the rate plan's nominal rate (0: no plan) */
+    int step_enabled;    /* the I/Q rate step runs */
+    int step_l;          /* its L/M, the running design's (0 when no design ran yet) */
+    int step_m;
+    int step_retained;            /* a transaction still holds the step's earlier design (0 once it ended) */
+    int refused_status;           /* the planner's last refusal in the session (DSD_RATE_PLAN_OK: none) */
+    uint32_t refused_readback_hz; /* that refusal's read-back */
+    int refused_forced;           /* and its forced flag */
+    int published_rate_out_hz;    /* the demod rate the stream publishes for the other threads */
+    int published_forced;         /* and the forced flag */
 } rtl_stream_test_capture_result;
+
+/* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
+ * device's own (issue #806): a fake RTL-SDR dongle reading back another rate then stands in for a SoapySDR device whose
+ * driver snaps the rate. Set while no stream runs. */
+void rtl_stream_test_set_rate_plan_backend(int backend);
+/* Let the next @p ok I/Q rate step designs through, then fail the @p failing after them as when their memory is not
+ * there (0, 0: none fail). Set while no stream runs. Returns the designs asked for since the last call. */
+int rtl_stream_test_fail_step_designs(int ok, int failing);
 
 /* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
  * configured direct sampling mode and @p opts the session options; the stream's own state comes back afterwards. */
@@ -724,6 +743,33 @@ enum {
  * Set while no stream runs. */
 void rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx);
 
+/* A live open's rate chain (issue #806) for DSP bandwidth @p dsp_bw_hz: the stream's RTL-shaped request, planned for
+ * @p backend (a dsd_rate_plan_backend) on a device that delivers @p device_rate_hz (0: the request) and reads back
+ * @p readback_hz (0: what it delivers), its I/Q rate step, then the open's demodulator finalize for @p opts at the
+ * rate the chain runs (the resampler chain, symbol timing, the output rate), in a stream open's order.
+ * The stream's own state comes back afterwards. Returns -1 for bad arguments or with a stream or device open. */
+typedef struct {
+    int rc; /* 0, or the planner's refusal (a dsd_rate_plan_status); -1 when the finalize refused the options */
+    int passes;
+    int rate_out_hz; /* the exact rate after the step */
+    int forced;      /* capture_rate_device_forced */
+    int step_enabled;
+    int step_l;
+    int step_m;
+    int ted_sps;
+    int resamp_enabled; /* the output resampler (FSK digital_resample, monitor audio) */
+    int resamp_l;
+    int resamp_m;
+    unsigned int output_rate_hz;
+    int published_rate_out_hz;
+    int published_forced;
+} rtl_stream_test_live_chain_result;
+
+int rtl_stream_test_live_rate_chain(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
+                                    uint32_t readback_hz, rtl_stream_test_live_chain_result* out);
+
+/* The rate planner's passes for a device that runs @p actual_rate_hz whatever is asked, at DSP bandwidth rate
+ * @p rate_in_hz (0 when it refuses). */
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */

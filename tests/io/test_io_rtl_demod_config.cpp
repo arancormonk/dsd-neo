@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/snr_bias.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -1228,6 +1229,83 @@ expect_resampler_publishes_the_rate_it_delivers(void) {
 #endif
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
+    return rc;
+}
+
+/* Issue #806: the live rate chain never hands a consumer a truncated rate. An Airspy R2's 2.5 MS/s at a 24 kHz DSP
+   bandwidth halves to 39,062.5 Hz, which the chain ran as a truncated 39,062 Hz: FSK digital_resample and the monitor's
+   output resampler then designed 24000/19531 (A-B1, a 1.46 MB filter). The step lands on exactly 24 kHz, so 9600 sym/s
+   FSK (2.5 samples a symbol) resamples 2/1 and the monitor 2/1; 4800 sym/s at 24 kHz is a whole 5 and needs none. The
+   general ratio API keeps its 19531 Hz case above. An RTL-SDR read-back within 100 ppm (1,535,999 Hz, A-B3) plans as
+   1,536,000 Hz: not forced, so nothing is resampled; out of tolerance it is refused. */
+static int
+expect_live_chain_never_truncates(void) {
+    static constexpr int kAirspy = DSD_RATE_PLAN_BACKEND_AIRSPY;
+    int rc = 0;
+    rtl_stream_test_live_chain_result r{};
+
+    static dsd_opts provoice;
+    DSD_MEMSET(&provoice, 0, sizeof provoice);
+    provoice.frame_provoice = 1;
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s helper",
+                        rtl_stream_test_live_rate_chain(&provoice, kAirspy, 24000, 2500000U, 0U, &r), 0);
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s plans", r.rc, 0);
+    rc |= expect_int_eq("Airspy 24 kHz runs 6 passes", r.passes, 6);
+    rc |= expect_int_eq("Airspy 24 kHz steps", r.step_enabled, 1);
+    rc |= expect_int_eq("Airspy 24 kHz step L", r.step_l, 384);
+    rc |= expect_int_eq("Airspy 24 kHz step M", r.step_m, 625);
+    rc |= expect_int_eq("Airspy 24 kHz demod rate is exact", r.rate_out_hz, 24000);
+    rc |= expect_int_eq("Airspy 24 kHz stays forced", r.forced, 1);
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s resamples", r.resamp_enabled, 1);
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s ratio L (not 24000)", r.resamp_l, 2);
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s ratio M (not 19531)", r.resamp_m, 1);
+    rc |= expect_int_eq("Airspy 24 kHz 9600 sym/s output", (int)r.output_rate_hz, 48000);
+    rc |= expect_int_eq("Airspy 24 kHz publishes the exact rate", r.published_rate_out_hz, 24000);
+
+    static dsd_opts monitor;
+    DSD_MEMSET(&monitor, 0, sizeof monitor);
+    monitor.analog_only = 1;
+    monitor.monitor_input_audio = 1;
+    rc |= expect_int_eq("Airspy 24 kHz monitor helper",
+                        rtl_stream_test_live_rate_chain(&monitor, kAirspy, 24000, 2500000U, 0U, &r), 0);
+    rc |= expect_int_eq("Airspy 24 kHz monitor plans", r.rc, 0);
+    rc |= expect_int_eq("Airspy 24 kHz monitor demod rate", r.rate_out_hz, 24000);
+    rc |= expect_int_eq("Airspy 24 kHz monitor resamples", r.resamp_enabled, 1);
+    rc |= expect_int_eq("Airspy 24 kHz monitor ratio L (not 24000)", r.resamp_l, 2);
+    rc |= expect_int_eq("Airspy 24 kHz monitor ratio M (not 19531)", r.resamp_m, 1);
+    rc |= expect_int_eq("Airspy 24 kHz monitor output", (int)r.output_rate_hz, 48000);
+
+    static dsd_opts c4fm;
+    DSD_MEMSET(&c4fm, 0, sizeof c4fm);
+    c4fm.frame_p25p1 = 1;
+    c4fm.mod_c4fm = 1;
+    rc |= expect_int_eq("Airspy 24 kHz 4800 sym/s helper",
+                        rtl_stream_test_live_rate_chain(&c4fm, kAirspy, 24000, 2500000U, 0U, &r), 0);
+    rc |= expect_int_eq("Airspy 24 kHz 4800 sym/s demod rate", r.rate_out_hz, 24000);
+    rc |= expect_int_eq("Airspy 24 kHz 4800 sym/s needs no resampler", r.resamp_enabled, 0);
+    rc |= expect_int_eq("Airspy 24 kHz 4800 sym/s output", (int)r.output_rate_hz, 24000);
+    rc |= expect_int_eq("Airspy 24 kHz 4800 sym/s SPS", r.ted_sps, 5);
+
+    rc |= expect_int_eq("RTL 1535999 helper",
+                        rtl_stream_test_live_rate_chain(&c4fm, DSD_RATE_PLAN_BACKEND_RTL_USB, 48000, 0U, 1535999U, &r),
+                        0);
+    rc |= expect_int_eq("RTL 1535999 plans", r.rc, 0);
+    rc |= expect_int_eq("RTL 1535999 runs 5 passes", r.passes, 5);
+    rc |= expect_int_eq("RTL 1535999 demod rate is 48 kHz", r.rate_out_hz, 48000);
+    rc |= expect_int_eq("RTL 1535999 is not forced", r.forced, 0);
+    rc |= expect_int_eq("RTL 1535999 never steps", r.step_enabled, 0);
+    rc |= expect_int_eq("RTL 1535999 needs no resampler", r.resamp_enabled, 0);
+    rc |= expect_int_eq("RTL 1535999 output", (int)r.output_rate_hz, 48000);
+    rc |= expect_int_eq("RTL 1535999 SPS", r.ted_sps, 10);
+
+    rc |= expect_int_eq("RTL 1536200 helper",
+                        rtl_stream_test_live_rate_chain(&c4fm, DSD_RATE_PLAN_BACKEND_RTL_USB, 48000, 0U, 1536200U, &r),
+                        0);
+    rc |= expect_int_eq("RTL 1536200 refused", r.rc, DSD_RATE_PLAN_ERR_READBACK);
+    rc |= expect_int_eq("rtl_tcp 1536200 helper",
+                        rtl_stream_test_live_rate_chain(&c4fm, DSD_RATE_PLAN_BACKEND_RTL_TCP, 48000, 0U, 1536200U, &r),
+                        0);
+    rc |= expect_int_eq("rtl_tcp 1536200 refused", r.rc, DSD_RATE_PLAN_ERR_READBACK);
     return rc;
 }
 
@@ -3096,6 +3174,7 @@ main(void) {
     rc |= expect_rate_chain_sps_lines();
     rc |= expect_digital_resample_policy();
     rc |= expect_resampler_publishes_the_rate_it_delivers();
+    rc |= expect_live_chain_never_truncates();
     rc |= expect_private_policy_matrices();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");

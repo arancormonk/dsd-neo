@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_stats.h>
@@ -40,6 +41,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -816,21 +818,178 @@ log_capture_frequency_out_of_range(uint32_t center_freq_hz, uint32_t capture_rat
               center_freq_hz, capture_rate_hz, (unsigned)UINT32_MAX);
 }
 
-static int
-demod_output_rate_for_capture_rate(uint32_t capture_rate_hz) {
-    int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
-    if (base_decim < 1) {
-        base_decim = 1;
-    }
+/* Decimation is a half-band cascade, so passes are bounded by demod_state::hb_hist_i[]. */
+static const int kMaxDownsamplePasses = 10;
 
-    int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
+/*
+ * The live rate chain (issue #806). The rate planner (<dsd-neo/io/rate_plan.h>) decides the chain a live stream runs
+ * from the rate it asks for, the rate the device selects and the rate it reads back, and the I/Q rate step
+ * (<dsd-neo/dsp/live_iq_step.h>) runs the plan's step. A start, a retune and a PPM correction program the device in
+ * one transaction with the demod thread parked: optimal_settings() plans provisionally from the request and the
+ * device's nearest rate; the device is programmed; its read-back gives the final plan (rate_chain_replan()) and the
+ * step follows it (rate_chain_sync_step()). A plan refused at the read-back, or a step design that fails, refuses the
+ * retune through the rollback the capture corrections use, which plans the restored capture's own read-back again and
+ * puts the step's earlier design back, or designs a third. The finalize ends the transaction
+ * (dsd_live_iq_step_finish()).
+ */
+
+/* The plan the chain runs: status DSD_RATE_PLAN_OK with a request once a live programming planned it. An I/Q replay
+   plans its chain itself and runs none, as does a chain a test seeds. Written by the controller with the demod thread
+   parked, or before it starts. */
+static dsd_rate_plan g_live_rate_plan;
+/* Why the last programming refused its rate chain, for the logs: the planner's message, or the step design's. */
+static char g_rate_chain_refusal[256];
+/* The plan the planner last refused, with the fields it worked out (a refused read-back keeps it and the forced flag). */
+static dsd_rate_plan g_rate_plan_refused;
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The backend the plan is made for in place of the device's (-1: the device's). */
+static int g_test_rate_plan_backend = -1;
+/* Step designs to let through, then to fail as when their memory is not there, and the designs asked for since the
+   test last set them. */
+static int g_test_step_designs_ok = 0;
+static int g_test_step_designs_failing = 0;
+static int g_test_step_designs_seen = 0;
+#endif
+
+namespace {
+/* Why a programming was refused once the device took it (program_capture_frequency_and_rate()'s out_refusal). */
+enum CaptureRefusal : int {
+    kCaptureRefusalNone = 0,
+    /* The device runs a rate whose capture correction it did not take (issue #670 B16). */
+    kCaptureRefusalCorrection = 1,
+    /* The rate planner refused the rate the device read back (an RTL-SDR out of tolerance, say). */
+    kCaptureRefusalRatePlan = 2,
+    /* The I/Q rate step for the rate the device read back could not be designed. */
+    kCaptureRefusalStepDesign = 3,
+};
+} // namespace
+
+/* The return code of a programming whose rate chain was refused (g_rate_chain_refusal says why). */
+static const int kCaptureRateChainRefused = -2;
+
+static int
+rate_plan_is_set(const dsd_rate_plan* plan) {
+    return plan->status == DSD_RATE_PLAN_OK && plan->request_hz != 0U;
+}
+
+static dsd_rate_plan_backend
+rate_chain_backend(void) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_rate_plan_backend >= 0) {
+        return (dsd_rate_plan_backend)g_test_rate_plan_backend;
+    }
+#endif
+    return rtl_device_rate_plan_backend(rtl_device_handle);
+}
+
+/* Plan the chain for @p request_hz, programmed as @p programmed_hz and read back as @p readback_hz (0: not yet) at the
+ * DSP bandwidth rate @p target_hz. A refusal is kept, with its message, for the caller's log. */
+static int
+rate_chain_plan(uint32_t request_hz, uint32_t programmed_hz, uint32_t readback_hz, uint32_t target_hz,
+                dsd_rate_plan* out) {
+    dsd_rate_plan_input in{};
+    in.backend = rate_chain_backend();
+    in.request_hz = request_hz;
+    in.programmed_hz = programmed_hz;
+    in.readback_hz = readback_hz;
+    in.target_hz = target_hz;
+    in.max_passes = kMaxDownsamplePasses;
+    const int rc = dsd_rate_plan_compute(&in, out);
+    LOG_DEBUG("Rate plan: backend %d, request %u, programmed %u, read back %u Hz -> nominal %u Hz, %d passes, "
+              "half-band out %lld/2^%u Hz, step %d (L/M %d/%d, %.3f ppm) -> %u Hz, forced %d, status %d.\n",
+              (int)in.backend, request_hz, programmed_hz, readback_hz, out->nominal_hz, out->passes,
+              (long long)out->hb_out_num, out->hb_out_shift, out->step.enabled, out->step.L, out->step.M,
+              out->step.approx_ppm, out->step_out_hz, out->device_forced, out->status);
+    if (rc != DSD_RATE_PLAN_OK) {
+        g_rate_plan_refused = *out;
+        DSD_SNPRINTF(g_rate_chain_refusal, sizeof g_rate_chain_refusal, "%s", out->message);
+    }
+    return rc;
+}
+
+/* Run the rate chain on @p plan: its passes, its exact rate after the step (the analog post-decimated rate, which a
+ * live chain does not decimate further) and its forced flag. */
+static void
+rate_chain_run_plan(const dsd_rate_plan* plan) {
+    g_live_rate_plan = *plan;
+    demod.downsample_passes = plan->passes;
+    const int post = demod.post_downsample > 1 ? demod.post_downsample : 1;
+    demod.rate_out = (int)(plan->step_out_hz / (uint32_t)post);
+    demod.capture_rate_device_forced = plan->device_forced;
+}
+
+/* The step's design key for @p plan, field for field. */
+static dsd_live_iq_step_plan
+rate_plan_step_key(const dsd_rate_plan* plan) {
+    dsd_live_iq_step_plan key{};
+    key.enabled = plan->step.enabled;
+    key.passes = plan->passes;
+    key.hb_out_num = plan->hb_out_num;
+    key.hb_out_shift = plan->hb_out_shift;
+    key.L = plan->step.L;
+    key.M = plan->step.M;
+    key.target_hz = (int)plan->target_hz;
+    key.protect_hz = plan->step.protect_hz;
+    key.stop_hz = plan->step.stop_hz;
+    return key;
+}
+
+/* Prepare @p key as the step's candidate (dsd_demod_live_step_prepare()), or fail it as the test seam says. */
+static int
+rate_chain_prepare_step(const dsd_live_iq_step_plan* key) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    const int designs = key->enabled && !dsd_live_iq_step_plan_equal(key, &demod.live_iq_step.plan);
+    g_test_step_designs_seen += designs;
+    if (designs && g_test_step_designs_ok > 0) {
+        g_test_step_designs_ok--;
+    } else if (designs && g_test_step_designs_failing > 0) {
+        g_test_step_designs_failing--;
+        return DSD_LIVE_IQ_STEP_ERR_DESIGN;
+    }
+#endif
+    return dsd_demod_live_step_prepare(&demod, key);
+}
+
+/* Make the I/Q rate step run the plan the chain runs: the design the transaction began with when the plan is that one
+ * again (a rollback), else the plan's own, designed now unless it is the running one. Nothing changes for a chain with
+ * no plan. Returns 0, or the step's refusal with the running design kept (g_rate_chain_refusal says why). */
+static int
+rate_chain_sync_step(void) {
+    if (!rate_plan_is_set(&g_live_rate_plan)) {
+        return 0;
+    }
+    const dsd_live_iq_step_plan design = rate_plan_step_key(&g_live_rate_plan);
+    dsd_live_iq_step* step = &demod.live_iq_step;
+    if (step->retained_set && dsd_live_iq_step_plan_equal(&design, &step->retained_plan)) {
+        dsd_live_iq_step_rollback(step);
+        return 0;
+    }
+    const int rc = rate_chain_prepare_step(&design);
+    if (rc != DSD_LIVE_IQ_STEP_OK) {
+        LOG_DEBUG("Rate step design refused: L/M %d/%d from %lld/2^%u Hz, status %d (resampler %d).\n", design.L,
+                  design.M, (long long)design.hb_out_num, design.hb_out_shift, rc, step->design_status);
+        DSD_SNPRINTF(g_rate_chain_refusal, sizeof g_rate_chain_refusal,
+                     "dsd-neo could not set up the conversion from the device's %u Hz to the %u Hz DSP bandwidth",
+                     (unsigned)g_live_rate_plan.nominal_hz, (unsigned)g_live_rate_plan.target_hz);
+        return rc;
+    }
+    return dsd_live_iq_step_commit(step);
+}
+
+/* The legacy capture sidecar's demod rate: the capture rate over the base and post decimation, truncated, as the
+ * capture writer and the replay reader check it (the live chain itself never truncates, issue #806). */
+static uint32_t
+capture_legacy_demod_rate_hz(uint32_t capture_rate_hz) {
+    const uint32_t base = demod.downsample_passes > 0 ? (1U << demod.downsample_passes) : 1U;
+    uint32_t rate = capture_rate_hz / base;
     if (demod.post_downsample > 1) {
-        out_rate /= demod.post_downsample;
-        if (out_rate < 1) {
-            out_rate = 1;
+        rate /= (uint32_t)demod.post_downsample;
+        if (rate < 1U) {
+            rate = 1U;
         }
     }
-    return out_rate;
+    return rate;
 }
 
 /* Move the capture to where @p center_freq_hz sits at the rate the device delivers. Returns 0 when it is there (moved,
@@ -863,40 +1022,71 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
     return rc;
 }
 
-/* Run the rate chain at @p actual_capture_rate_hz, a rate the device delivers in place of the one requested. */
-static void
-run_capture_rate_chain_at(uint32_t actual_capture_rate_hz) {
-    store_dongle_rate(actual_capture_rate_hz);
-    demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
-    demod.capture_rate_device_forced = 1;
-}
-
-/* Run the rate chain at the rate the device reports instead of the one requested; returns the rate it runs at. */
-static uint32_t
-note_actual_capture_rate(uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
-    if (actual_capture_rate_hz == 0 || actual_capture_rate_hz == requested_capture_rate_hz) {
-        return requested_capture_rate_hz;
-    }
-
-    run_capture_rate_chain_at(actual_capture_rate_hz);
-    LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", requested_capture_rate_hz,
-             actual_capture_rate_hz, demod.rate_out);
-    return actual_capture_rate_hz;
-}
-
-/* Run the rate chain at the rate the device delivers (@p out_rate_hz) and move the capture for it. Returns 0, or the
- * failed correction's code (retune_capture_frequency_for_actual_rate()) with the rate chain already moved. */
+/* The final plan (issue #806): the device read back @p readback_hz (0: it gave none) for @p programmed_hz, the rate
+ * written (after a failed write, the rate the device still runs). The chain runs the plan, its passes picked again for
+ * the read-back's nominal rate, and the dongle rate is the read-back, which the Fs/4 centre and the capture-rate
+ * consumers run at. A chain with no plan follows the read-back's rate alone. Returns 0, or kCaptureRateChainRefused
+ * with the chain left as it was. */
 static int
-apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
-                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz, uint32_t* out_rate_hz) {
-    const uint32_t rate_hz = note_actual_capture_rate(requested_capture_rate_hz, actual_capture_rate_hz);
+rate_chain_replan(uint32_t programmed_hz, uint32_t readback_hz) {
+    const uint32_t rate_hz = readback_hz != 0U ? readback_hz : programmed_hz;
+    if (!rate_plan_is_set(&g_live_rate_plan)) {
+        store_dongle_rate(rate_hz);
+        return 0;
+    }
+    dsd_rate_plan plan;
+    if (rate_chain_plan(g_live_rate_plan.request_hz, programmed_hz, readback_hz, g_live_rate_plan.target_hz, &plan)
+        != DSD_RATE_PLAN_OK) {
+        return kCaptureRateChainRefused;
+    }
+    rate_chain_run_plan(&plan);
+    store_dongle_rate(rate_hz);
+    if (rate_hz != programmed_hz) {
+        LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", programmed_hz, rate_hz,
+                 demod.rate_out);
+    }
+    return 0;
+}
+
+namespace {
+/* What a device reports once it was programmed: the capture it was given, and the rate it reads back. */
+struct CaptureReadback {
+    uint32_t center_freq_hz;  /* the centre the capture is for */
+    uint32_t capture_freq_hz; /* the capture frequency the device was given */
+    uint32_t capture_rate_hz; /* the rate that capture frequency was placed for */
+    uint32_t programmed_hz;   /* the rate the plan counts as written */
+    uint32_t readback_hz;     /* the rate the device reports (0: none) */
+};
+} // namespace
+
+/* The rate chain on what the device reports (@p rb): the final plan, the I/Q rate step for it, then the capture moved
+ * for the rate the device delivers. Returns 0, with @p out_rate_hz (optional) the rate the chain runs at; otherwise the
+ * refusal in @p out_refusal and its code. A refused plan leaves the chain as it was; a failed step design leaves the
+ * step on its running design and the chain on the read-back, which the caller puts back; a failed correction
+ * (retune_capture_frequency_for_actual_rate()) leaves both on the read-back. */
+static int
+apply_actual_capture_rate(const CaptureReadback* rb, uint32_t* out_rate_hz, int* out_refusal) {
+    *out_refusal = kCaptureRefusalNone;
+    if (rate_chain_replan(rb->programmed_hz, rb->readback_hz) != 0) {
+        *out_refusal = kCaptureRefusalRatePlan;
+        return kCaptureRateChainRefused;
+    }
+    if (rate_chain_sync_step() != 0) {
+        *out_refusal = kCaptureRefusalStepDesign;
+        return kCaptureRateChainRefused;
+    }
+    const uint32_t rate_hz = load_dongle_rate();
     if (out_rate_hz) {
         *out_rate_hz = rate_hz;
     }
-    if (rate_hz == requested_capture_rate_hz) {
+    if (rate_hz == rb->capture_rate_hz) {
         return 0;
     }
-    return retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, rate_hz);
+    const int rc = retune_capture_frequency_for_actual_rate(rb->center_freq_hz, rb->capture_freq_hz, rate_hz);
+    if (rc != 0) {
+        *out_refusal = kCaptureRefusalCorrection;
+    }
+    return rc;
 }
 
 namespace {
@@ -908,6 +1098,10 @@ struct CaptureSettingsSnapshot {
     int capture_rate_device_forced;
     uint32_t dongle_frequency_hz;
     uint32_t dongle_rate_hz;
+    /* The rate plan the chain ran (issue #806): request, programmed, read-back, nominal, passes, half-band output,
+       step L/M and edges, target and forced flag, all plain values; rate_plan_step_key() of it is the step's design
+       key. The designs themselves stay in demod_state::live_iq_step. */
+    dsd_rate_plan rate_plan;
 };
 
 static CaptureSettingsSnapshot
@@ -917,6 +1111,7 @@ capture_settings_snapshot(void) {
     snapshot.output_scale = demod.output_scale;
     snapshot.rate_out = demod.rate_out;
     snapshot.capture_rate_device_forced = demod.capture_rate_device_forced;
+    snapshot.rate_plan = g_live_rate_plan;
     snapshot.dongle_frequency_hz = load_dongle_frequency();
     snapshot.dongle_rate_hz = load_dongle_rate();
     return snapshot;
@@ -941,6 +1136,7 @@ restore_capture_rate_settings(const CaptureSettingsSnapshot* snapshot) {
     demod.output_scale = snapshot->output_scale;
     demod.rate_out = snapshot->rate_out;
     demod.capture_rate_device_forced = snapshot->capture_rate_device_forced;
+    g_live_rate_plan = snapshot->rate_plan;
     store_dongle_rate(snapshot->dongle_rate_hz);
 }
 
@@ -5094,8 +5290,6 @@ rtl_floor_log2_nonzero(int value) {
 #endif
 }
 
-/* Decimation is a half-band cascade, so passes are bounded by demod_state::hb_hist_i[]. */
-static const int kMaxDownsamplePasses = 10;
 /* Capture-rate window the ingest ring and watermark defaults are sized for. */
 static const long long kMinCaptureRateHz = 225000LL;
 static const long long kMaxCaptureRateHz = 3200000LL;
@@ -5137,97 +5331,80 @@ rtl_downsample_passes_for_rate_in(int rate_in_hz) {
 }
 
 /**
- * @brief Pick half-band passes for a rate the device imposes on us.
- *
- * Devices with a coarse rate grid (RX-888/SDDC at 2/4/8 MSPS, Airspy, SDRplay) cannot
- * deliver the RTL-shaped rate that `rtl_downsample_passes_for_rate_in` asks for. Choose
- * the decimation that lands closest to the requested DSP bandwidth, preferring not to
- * decimate below it since that would alias the wanted channel.
- */
-static int
-rtl_choose_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
-    if (actual_rate_hz == 0U || rate_in_hz <= 0) {
-        return 0;
-    }
-    int best_p = 0;
-    long long best_err = LLONG_MAX;
-    for (int p = 0; p <= kMaxDownsamplePasses; p++) {
-        long long out = (long long)actual_rate_hz >> p;
-        if (out < (long long)rate_in_hz) {
-            break;
-        }
-        long long err = out - (long long)rate_in_hz;
-        if (err < best_err) {
-            best_err = err;
-            best_p = p;
-        }
-    }
-    /* When even the undecimated rate is below the requested DSP bandwidth, keep every sample. */
-    return best_p;
-}
-
-/**
  * @brief Compute and stage tuner/demodulator capture settings based on the
  * requested center frequency and current demod configuration. The actual
  * device programming occurs elsewhere after these fields are updated.
  *
+ * The provisional rate plan (issue #806): the RTL-shaped request for the DSP bandwidth, moved to the rate the device
+ * says it will deliver (a fixed-grid device's, an Airspy's own), planned before any read-back. The chain runs it until
+ * the device's read-back gives the final plan; the I/Q rate step is not designed for it.
+ *
  * @param freq Desired RF center frequency in Hz.
  * @param rate Current input sample rate (unused).
- * @return 0, or kCaptureFrequencyOutOfRange (logged) when the capture frequency for @p freq is out of the device's
- * range; the dongle frequency and rate are then left as they were, and the caller puts back the demod fields staged.
+ * @return 0; kCaptureFrequencyOutOfRange (logged) when the capture frequency for @p freq is out of the device's range;
+ * or kCaptureRateChainRefused when the planner refuses the rate (g_rate_chain_refusal says why). Nothing is staged on
+ * either refusal.
  */
 static int
 optimal_settings(uint32_t freq, int rate) {
     UNUSED(rate);
 
     struct demod_state* dm = &demod;
-    dm->downsample_passes = rtl_downsample_passes_for_rate_in(dm->rate_in);
-    int downsample_factor = 1 << dm->downsample_passes;
-    int capture_rate = downsample_factor * dm->rate_in;
-    uint32_t capture_rate_hz = (capture_rate > 0) ? (uint32_t)capture_rate : 0U;
-    /* Devices with a fixed rate grid cannot honour the RTL-shaped request. Ask what will
-       actually be delivered and re-pick decimation for that rate, so the fs/4 capture offset
-       and rate_out below are derived from the real stream rate. */
-    uint32_t deliverable_hz = capture_rate_hz;
-    dm->capture_rate_device_forced = 0;
-    if (capture_rate_hz > 0U
-        && rtl_device_nearest_supported_rate(rtl_device_handle, capture_rate_hz, &deliverable_hz) == 0
-        && deliverable_hz > 0U && deliverable_hz != capture_rate_hz) {
-        dm->downsample_passes = rtl_choose_passes_for_actual_rate(deliverable_hz, dm->rate_in);
-        capture_rate_hz = deliverable_hz;
-        dm->capture_rate_device_forced = 1;
+    const int request_passes = rtl_downsample_passes_for_rate_in(dm->rate_in);
+    const int64_t request = (int64_t)dm->rate_in << request_passes;
+    const uint32_t request_hz = (request > 0 && request <= (int64_t)UINT32_MAX) ? (uint32_t)request : 0U;
+    /* Devices with a fixed rate grid cannot honour the RTL-shaped request: the plan is made for what they will
+       actually deliver, so the fs/4 capture offset and rate_out below follow the real stream rate. */
+    uint32_t programmed_hz = request_hz;
+    uint32_t deliverable_hz = 0U;
+    if (request_hz > 0U && rtl_device_nearest_supported_rate(rtl_device_handle, request_hz, &deliverable_hz) == 0
+        && deliverable_hz > 0U) {
+        programmed_hz = deliverable_hz;
+    }
+    dsd_rate_plan plan;
+    const uint32_t target_hz = dm->rate_in > 0 ? (uint32_t)dm->rate_in : 0U;
+    if (rate_chain_plan(request_hz, programmed_hz, 0U, target_hz, &plan) != DSD_RATE_PLAN_OK) {
+        return kCaptureRateChainRefused;
     }
     uint32_t capture_freq_hz = 0U;
-    if (capture_frequency_for_rate(freq, capture_rate_hz, &capture_freq_hz) != 0) {
-        log_capture_frequency_out_of_range(freq, capture_rate_hz);
+    if (capture_frequency_for_rate(freq, programmed_hz, &capture_freq_hz) != 0) {
+        log_capture_frequency_out_of_range(freq, programmed_hz);
         return kCaptureFrequencyOutOfRange;
     }
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     dm->output_scale = kMonitorDiscriminatorOutputScale;
-    /* Update the effective discriminator output sample rate based on current settings.
-       HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
-    dm->rate_out = demod_output_rate_for_capture_rate(capture_rate_hz);
+    rate_chain_run_plan(&plan);
     store_dongle_frequency(capture_freq_hz);
-    store_dongle_rate(capture_rate_hz);
+    store_dongle_rate(programmed_hz);
     return 0;
 }
 
-/* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
- * goes back to @p previous when it cannot say. A device running another rate whose capture correction it does not take
- * sets @p out_correction_failed, as capture_rate_write_took() does for a readback after a rate write that took (issue
- * #670 B16). Returns @p rc. */
+/* The refusal @p refusal (CaptureRefusal) of a programming the device took: a rate chain the read-back refused, or a
+ * step design that failed, puts the chain back on @p previous, whose design the step still runs (a failed capture
+ * correction leaves it on the read-back, as the step follows it). The caller puts the device back. */
+static void
+capture_refusal_restore_chain(int refusal, const CaptureSettingsSnapshot* previous) {
+    if (refusal == kCaptureRefusalRatePlan || refusal == kCaptureRefusalStepDesign) {
+        restore_capture_rate_settings(previous);
+    }
+}
+
+/* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, as a
+ * rate the device chose (issue #806: programmed is the rate it reports), or goes back to @p previous when it cannot
+ * say. A device running another rate whose capture correction it does not take, or whose rate chain is refused, sets
+ * @p out_refusal, as capture_rate_write_took() does for a readback after a rate write that took (issue #670 B16).
+ * Returns @p rc. */
 static int
 capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
-                          const CaptureSettingsSnapshot* previous, int rc, int* out_correction_failed) {
+                          const CaptureSettingsSnapshot* previous, int rc, int* out_refusal) {
     capture_writes_forget_tuning();
     LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0) {
-        if ((uint32_t)actual != capture_rate_hz
-            && apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual, NULL) != 0
-            && out_correction_failed) {
-            *out_correction_failed = 1;
-        }
+        const CaptureReadback rb = {center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual,
+                                    (uint32_t)actual};
+        (void)apply_actual_capture_rate(&rb, NULL, out_refusal);
+        capture_refusal_restore_chain(*out_refusal, previous);
     } else {
         restore_capture_rate_settings(previous);
     }
@@ -5236,25 +5413,24 @@ capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uin
 }
 
 /* A rate write that took (@p capture_rate_hz, asked for as @p requested_rate_hz) after the frequency was set: the rate
- * chain syncs to the rate the device reads back, which the write record keeps for the next hop (@p cacheable and
- * @p generation from capture_writes_generation()), then the tuner bandwidth and the watermark follow it. A readback
- * whose capture correction the device does not take sets @p out_correction_failed and returns the correction's code
- * (issue #670 B16); otherwise returns 0. */
+ * chain syncs to the rate the device reads back (the final plan and its I/Q rate step, issue #806), which the write
+ * record keeps for the next hop (@p cacheable and @p generation from capture_writes_generation()), then the tuner
+ * bandwidth and the watermark follow it. A readback whose rate chain is refused, or whose capture correction the device
+ * does not take, sets @p out_refusal and returns its code (issue #670 B16), the chain put back on @p previous where the
+ * step still runs it; otherwise returns 0. */
 static int
-capture_rate_write_took(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz, int cacheable,
-                        uint32_t generation, uint32_t requested_rate_hz, int* out_correction_failed) {
-    /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
+capture_rate_write_took(const CaptureReadback* programmed, int cacheable, uint32_t generation,
+                        uint32_t requested_rate_hz, const CaptureSettingsSnapshot* previous, int* out_refusal) {
+    /* Sync to actual device rate (USB may quantize). */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     capture_writes_note_rate(cacheable, generation, requested_rate_hz, actual > 0 ? (uint32_t)actual : 0U);
-    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        const int rc = apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual,
-                                                 &capture_rate_hz);
-        if (rc != 0) {
-            if (out_correction_failed) {
-                *out_correction_failed = 1;
-            }
-            return rc;
-        }
+    CaptureReadback rb = *programmed;
+    rb.readback_hz = actual > 0 ? (uint32_t)actual : 0U;
+    uint32_t capture_rate_hz = rb.capture_rate_hz;
+    const int rc = apply_actual_capture_rate(&rb, &capture_rate_hz, out_refusal);
+    if (rc != 0) {
+        capture_refusal_restore_chain(*out_refusal, previous);
+        return rc;
     }
     /* Use driver auto hardware bandwidth by default, or override via env */
     (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
@@ -5263,21 +5439,45 @@ capture_rate_write_took(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint3
 }
 
 /* A hop that keeps the rate the device was last set to (@p kept_rate_hz, CaptureWriteRecord) in place of the
- * @p requested_rate_hz the plan chose: the rate chain and the capture frequency follow the kept rate, as the readback
- * after that write did. Returns 0, with nothing to move when the two rates match, or kCaptureFrequencyOutOfRange
- * (logged, nothing moved) when the capture for the kept rate is out of the device's range (issue #670 B4). */
+ * @p requested_rate_hz the plan chose: the rate chain (the final plan for that read-back, issue #806) and the capture
+ * frequency follow the kept rate, as the readback after that write did; the I/Q rate step follows once the frequency
+ * is written. Returns 0; kCaptureFrequencyOutOfRange (logged, nothing moved) when the capture for the kept rate is out
+ * of the device's range (issue #670 B4); or kCaptureRateChainRefused (nothing moved). */
 static int
 capture_follow_kept_rate(uint32_t center_freq_hz, uint32_t requested_rate_hz, uint32_t kept_rate_hz) {
-    if (kept_rate_hz == requested_rate_hz) {
-        return 0;
-    }
-    uint32_t kept_capture_freq_hz = 0U;
-    if (capture_frequency_for_rate(center_freq_hz, kept_rate_hz, &kept_capture_freq_hz) != 0) {
+    uint32_t kept_capture_freq_hz = load_dongle_frequency();
+    if (kept_rate_hz != requested_rate_hz
+        && capture_frequency_for_rate(center_freq_hz, kept_rate_hz, &kept_capture_freq_hz) != 0) {
         log_capture_frequency_out_of_range(center_freq_hz, kept_rate_hz);
         return kCaptureFrequencyOutOfRange;
     }
-    run_capture_rate_chain_at(kept_rate_hz);
+    if (rate_chain_replan(requested_rate_hz, kept_rate_hz) != 0) {
+        return kCaptureRateChainRefused;
+    }
     store_dongle_frequency(kept_capture_freq_hz);
+    return 0;
+}
+
+/* A retune whose rate chain was refused before anything was written: logged, the front end stays where it was. */
+static void
+log_capture_rate_chain_refused(uint32_t center_freq_hz, int rc) {
+    if (rc == kCaptureRateChainRefused) {
+        LOG_ERROR("The retune to %u Hz is refused: %s.\n", center_freq_hz, g_rate_chain_refusal);
+    }
+}
+
+/* A hop on the rate the device kept, its frequency written: the tuner bandwidth and the watermark follow, and the I/Q
+ * rate step runs the kept rate's plan. A step design that fails sets @p out_refusal (the chain put back on
+ * @p previous, where the step still runs it) and returns kCaptureRateChainRefused; otherwise 0. */
+static int
+capture_kept_rate_programmed(uint32_t capture_rate_hz, const CaptureSettingsSnapshot* previous, int* out_refusal) {
+    if (rate_chain_sync_step() != 0) {
+        *out_refusal = kCaptureRefusalStepDesign;
+        capture_refusal_restore_chain(*out_refusal, previous);
+        return kCaptureRateChainRefused;
+    }
+    apply_changed_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL);
+    stream_refresh_watermark_for_current_rate();
     return 0;
 }
 
@@ -5289,46 +5489,50 @@ capture_follow_kept_rate(uint32_t center_freq_hz, uint32_t requested_rate_hz, ui
  * asks for the rate the device was last set to runs the rate chain and the fs/4 centre for the rate it read back then,
  * as the readback after a write would, and writes the frequency alone.
  *
- * A capture frequency out of the device's range is refused before anything is written, with the settings it had put
- * back (issue #670 B4). A device that took the frequency and then reads back a rate whose capture correction it does
- * not take (a refused write, or a corrected capture out of range), after a rate write that took or one that failed,
- * sets @p out_correction_failed: it runs neither the
- * capture the stream asked for nor the one the rate chain now follows, so the caller refuses the retune and puts the
- * previous capture back (issue #670 B16).
+ * A capture frequency out of the device's range, or a rate the planner refuses, is refused before anything is written,
+ * with the settings it had put back (issue #670 B4, issue #806). A device that took the frequency and then reads back a
+ * rate whose capture correction it does not take (a refused write, or a corrected capture out of range), after a rate
+ * write that took or one that failed, sets @p out_refusal: it runs neither the capture the stream asked for nor the one
+ * the rate chain now follows, so the caller refuses the retune and puts the previous capture back (issue #670 B16). So
+ * does a read-back the planner refuses (an RTL-SDR's out of tolerance) or whose I/Q rate step cannot be designed
+ * (issue #806); the rate chain then already runs the previous capture's plan.
  *
  * @param center_freq_hz Desired RF center frequency in Hz.
+ * @param out_refusal Optional: why the programming was refused once the device took it (CaptureRefusal).
  */
 static int
 program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSettingsSnapshot* restore_on_frequency_failure,
-                                   int* out_hardware_changed, int* out_correction_failed) {
+                                   int* out_hardware_changed, int* out_refusal) {
     if (out_hardware_changed) {
         *out_hardware_changed = 0;
     }
-    if (out_correction_failed) {
-        *out_correction_failed = 0;
+    int refusal = kCaptureRefusalNone;
+    if (out_refusal) {
+        *out_refusal = refusal;
     }
     CaptureSettingsSnapshot previous =
         restore_on_frequency_failure ? *restore_on_frequency_failure : capture_settings_snapshot();
-    if (optimal_settings(center_freq_hz, demod.rate_in) != 0) {
-        restore_capture_settings(&previous);
-        return kCaptureFrequencyOutOfRange;
-    }
+    int rc = optimal_settings(center_freq_hz, demod.rate_in);
     const uint32_t requested_rate_hz = load_dongle_rate();
     uint32_t generation = 0U;
     const int cacheable = capture_writes_generation(&generation);
     uint32_t kept_rate_hz = 0U;
-    const int rate_kept = capture_writes_kept_rate(requested_rate_hz, &kept_rate_hz);
-    if (rate_kept && capture_follow_kept_rate(center_freq_hz, requested_rate_hz, kept_rate_hz) != 0) {
-        restore_capture_settings(&previous);
-        return kCaptureFrequencyOutOfRange;
+    const int rate_kept = rc == 0 && capture_writes_kept_rate(requested_rate_hz, &kept_rate_hz);
+    if (rate_kept) {
+        rc = capture_follow_kept_rate(center_freq_hz, requested_rate_hz, kept_rate_hz);
     }
-    uint32_t capture_freq_hz = load_dongle_frequency();
-    uint32_t capture_rate_hz = load_dongle_rate();
-    int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
+    if (rc != 0) {
+        restore_capture_settings(&previous);
+        log_capture_rate_chain_refused(center_freq_hz, rc);
+        return rc;
+    }
+    const CaptureReadback programmed = {center_freq_hz, load_dongle_frequency(), load_dongle_rate(), requested_rate_hz,
+                                        0U};
+    rc = rtl_device_set_frequency(rtl_device_handle, programmed.capture_freq_hz);
     if (rc != 0) {
         capture_writes_forget_tuning();
         restore_capture_settings(&previous);
-        LOG_ERROR("Failed to apply RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
+        LOG_ERROR("Failed to apply RTL-SDR center frequency %u Hz (rc=%d).\n", programmed.capture_freq_hz, rc);
         return rc;
     }
     capture_writes_note_frequency();
@@ -5336,17 +5540,18 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
         *out_hardware_changed = 1;
     }
     if (rate_kept) {
-        apply_changed_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL);
-        stream_refresh_watermark_for_current_rate();
-        return 0;
+        rc = capture_kept_rate_programmed(programmed.capture_rate_hz, &previous, &refusal);
+    } else {
+        rc = rtl_device_set_sample_rate(rtl_device_handle, programmed.capture_rate_hz);
+        rc = rc != 0
+                 ? capture_rate_write_failed(center_freq_hz, programmed.capture_freq_hz, programmed.capture_rate_hz,
+                                             &previous, rc, &refusal)
+                 : capture_rate_write_took(&programmed, cacheable, generation, requested_rate_hz, &previous, &refusal);
     }
-    rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
-    if (rc != 0) {
-        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc,
-                                         out_correction_failed);
+    if (out_refusal) {
+        *out_refusal = refusal;
     }
-    return capture_rate_write_took(center_freq_hz, capture_freq_hz, capture_rate_hz, cacheable, generation,
-                                   requested_rate_hz, out_correction_failed);
+    return rc;
 }
 
 /**
@@ -5358,14 +5563,14 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
 static int
 apply_capture_settings(uint32_t center_freq_hz, int ppm_error,
                        const CaptureSettingsSnapshot* restore_on_frequency_failure, int* out_ppm_rc,
-                       int* out_hardware_changed, int* out_correction_failed) {
+                       int* out_hardware_changed, int* out_refusal) {
     int ppm_rc = apply_ppm_setting(ppm_error);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
     controller_arm_retune_mute("program", 0);
     return program_capture_frequency_and_rate(center_freq_hz, restore_on_frequency_failure, out_hardware_changed,
-                                              out_correction_failed);
+                                              out_refusal);
 }
 
 /*
@@ -5660,12 +5865,34 @@ controller_refused_capture_device(void) {
     return rtl_device_handle ? &kRefusedCaptureDeviceOps : NULL;
 }
 
+/* The rate a refused retune's restore writes back: the one the restored plan counts as programmed (issue #806), or the
+ * capture rate a chain with no plan ran. */
+static uint32_t
+capture_snapshot_programmed_rate_hz(const CaptureSettingsSnapshot* snapshot) {
+    return rate_plan_is_set(&snapshot->rate_plan) ? snapshot->rate_plan.programmed_hz : snapshot->dongle_rate_hz;
+}
+
+/* The I/Q rate step once a refused retune's capture is back (issue #806): the design the transaction began with when
+ * the restore's read-back plans it again, else the plan the restore landed on, designed now. With no design that
+ * matches the rate the device runs, the step is turned off (never run on a rate it was not made for) and the caller
+ * stops the stream. Returns 0, or the refusal's code. */
+static int
+controller_restore_refused_step(int replan_refusal) {
+    if (replan_refusal == kCaptureRefusalNone && rate_chain_sync_step() == 0) {
+        return 0;
+    }
+    dsd_live_iq_step_disable(&demod.live_iq_step);
+    LOG_ERROR("Back from a refused retune, the device runs a rate dsd-neo cannot use: %s.\n", g_rate_chain_refusal);
+    return kCaptureRateChainRefused;
+}
+
 /* Put the device back on the capture a refused retune moved it from: the rate chain restore_capture_settings() keeps,
  * then that capture frequency and rate on the device, synced to the rate the device then reports as any programming
- * is (apply_actual_capture_rate()). With no device open there is nothing to program.
+ * is (apply_actual_capture_rate(), which plans that read-back again, issue #806), and the I/Q rate step for the plan
+ * it lands on (controller_restore_refused_step()). With no device open there is nothing to program.
  * @return 0 when the device took the capture frequency and rate back (or none is open); otherwise the return code of
- * the first of the two calls it refused, or of the capture correction for the rate it then reports, after which the
- * device can still run the capture the retune programmed. */
+ * the first of the two calls it refused, of the capture correction for the rate it then reports, or of a rate chain
+ * that rate cannot run, after which the device can still run the capture the retune programmed. */
 static int
 controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint32_t center_freq_hz) {
     restore_capture_settings(previous);
@@ -5673,7 +5900,7 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     capture_writes_forget_tuning();
     const RefusedCaptureDeviceOps* device = controller_refused_capture_device();
     if (!device) {
-        return 0;
+        return controller_restore_refused_step(kCaptureRefusalNone);
     }
     const int frequency_rc = device->set_frequency(rtl_device_handle, previous->dongle_frequency_hz);
     if (frequency_rc != 0) {
@@ -5682,20 +5909,31 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     } else {
         capture_writes_note_frequency();
     }
-    const int rate_rc = device->set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
+    const uint32_t programmed_hz = capture_snapshot_programmed_rate_hz(previous);
+    const int rate_rc = device->set_sample_rate(rtl_device_handle, programmed_hz);
     if (rate_rc != 0) {
-        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", previous->dongle_rate_hz, rate_rc);
+        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", programmed_hz, rate_rc);
     }
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
     int correction_rc = 0;
+    int refusal = kCaptureRefusalNone;
     const int actual = device->get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        correction_rc = apply_actual_capture_rate(center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz,
-                                                  (uint32_t)actual, &capture_rate_hz);
+        const CaptureReadback rb = {center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, programmed_hz,
+                                    (uint32_t)actual};
+        correction_rc = apply_actual_capture_rate(&rb, &capture_rate_hz, &refusal);
     }
+    const int step_rc =
+        controller_restore_refused_step(refusal == kCaptureRefusalCorrection ? kCaptureRefusalNone : refusal);
     (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
     stream_refresh_watermark_for_current_rate();
-    return frequency_rc != 0 ? frequency_rc : (rate_rc != 0 ? rate_rc : correction_rc);
+    if (frequency_rc != 0) {
+        return frequency_rc;
+    }
+    if (rate_rc != 0) {
+        return rate_rc;
+    }
+    return correction_rc != 0 ? correction_rc : step_rc;
 }
 
 /* A refused retune whose capture the device would not take back: the device can still run the capture the retune
@@ -5728,16 +5966,22 @@ controller_roll_back_refused_retune(const CaptureSettingsSnapshot* previous_capt
 }
 
 /* A retune whose device took the frequency but not the capture correction for the rate it read back
- * (program_capture_frequency_and_rate()'s out_correction_failed, issue #670 B16) runs a capture neither the stream nor
- * its rate chain asked for: it is refused and rolled back like one refused for its analog width. */
+ * (program_capture_frequency_and_rate()'s out_refusal, issue #670 B16), or whose read-back the rate chain cannot run
+ * (issue #806), runs a capture neither the stream nor its rate chain asked for: it is refused and rolled back like one
+ * refused for its analog width. */
 static void
-controller_refuse_retune_for_rate_correction(const CaptureSettingsSnapshot* previous_capture,
-                                             uint32_t previous_center_freq_hz, uint32_t* center_freq_hz,
-                                             const RtlRetuneProfile** profile) {
+controller_refuse_retune_for_capture(int refusal, const CaptureSettingsSnapshot* previous_capture,
+                                     uint32_t previous_center_freq_hz, uint32_t* center_freq_hz,
+                                     const RtlRetuneProfile** profile) {
     const uint32_t kept_center_hz = previous_center_freq_hz != 0U ? previous_center_freq_hz : *center_freq_hz;
-    LOG_ERROR("The retune to %u Hz is refused: the RTL-SDR did not take the capture correction for the sample rate "
-              "it reports; the front end stays on %u Hz.\n",
-              *center_freq_hz, kept_center_hz);
+    if (refusal == kCaptureRefusalCorrection) {
+        LOG_ERROR("The retune to %u Hz is refused: the RTL-SDR did not take the capture correction for the sample "
+                  "rate it reports; the front end stays on %u Hz.\n",
+                  *center_freq_hz, kept_center_hz);
+    } else {
+        LOG_ERROR("The retune to %u Hz is refused: %s; the front end stays on %u Hz.\n", *center_freq_hz,
+                  g_rate_chain_refusal, kept_center_hz);
+    }
     controller_roll_back_refused_retune(previous_capture, previous_center_freq_hz, center_freq_hz, profile);
 }
 
@@ -5777,18 +6021,18 @@ controller_refuse_retune_for_analog_width(const CaptureSettingsSnapshot* previou
 }
 
 /* The refusals of a retune the device was programmed for, before it finalizes: one whose capture correction the device
- * did not take (@p correction_failed, controller_refuse_retune_for_rate_correction(); @p rc stays the correction's),
- * else one that would run the analog monitor's width at a rate that cannot realize it
+ * did not take or whose read-back the rate chain cannot run (@p refusal, controller_refuse_retune_for_capture(); @p rc
+ * stays the programming's), else one that would run the analog monitor's width at a rate that cannot realize it
  * (controller_refuse_retune_for_analog_width(); @p rc becomes kRetuneRefusedForAnalogWidth). @p center_freq_hz and
  * @p profile are updated to what the retune then finalizes on.
  * @return 1 when the retune is refused, 0 when it lands. */
 static int
-controller_refuse_programmed_retune(int correction_failed, const CaptureSettingsSnapshot* previous_capture,
+controller_refuse_programmed_retune(int refusal, const CaptureSettingsSnapshot* previous_capture,
                                     int previous_rate_out_hz, uint32_t previous_center_freq_hz,
                                     uint32_t* center_freq_hz, const RtlRetuneProfile** profile, int* rc) {
-    if (correction_failed) {
-        controller_refuse_retune_for_rate_correction(previous_capture, previous_center_freq_hz, center_freq_hz,
-                                                     profile);
+    if (refusal != kCaptureRefusalNone) {
+        controller_refuse_retune_for_capture(refusal, previous_capture, previous_center_freq_hz, center_freq_hz,
+                                             profile);
         return 1;
     }
     if (controller_refuse_retune_for_analog_width(previous_capture, previous_rate_out_hz, previous_center_freq_hz,
@@ -5884,6 +6128,10 @@ controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, 
         controller_request_input_purge();
         controller_arm_post_retune_diagnostics(center_freq_hz, reset_plan.reason);
     }
+    /* The transaction ends (issue #806): the step's design from before it is let go, and the rate chain it settled on
+       is published now, not from the next block, so a prediction made before that block runs on it. */
+    dsd_live_iq_step_finish(&demod.live_iq_step);
+    rtl_stream_publish_demod_profile_snapshot();
     return profile_refused;
 }
 
@@ -6038,11 +6286,11 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(previous_center_freq_hz);
     controller_arm_retune_mute("program", 0);
     int hardware_changed = 0;
-    int correction_failed = 0;
-    int rc =
-        program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed, &correction_failed);
+    int refusal = kCaptureRefusalNone;
+    int rc = program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed, &refusal);
     int ppm_changed = (reset_reason == DemodRetuneResetReason::PpmCorrection);
     if (!controller_reconfigure_requires_finalize(rc, hardware_changed, ppm_changed)) {
+        dsd_live_iq_step_finish(&demod.live_iq_step);
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         return rc;
     }
@@ -6050,9 +6298,8 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
         controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, rc, hardware_changed);
     const RtlRetuneProfile* finalized_profile = NULL;
     controller_arm_retune_mute("post", 1);
-    (void)controller_refuse_programmed_retune(correction_failed, &previous_capture, previous_rate_out_hz,
-                                              previous_center_freq_hz, &finalized_center_freq_hz, &finalized_profile,
-                                              &rc);
+    (void)controller_refuse_programmed_retune(refusal, &previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                              &finalized_center_freq_hz, &finalized_profile, &rc);
     rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
                                      load_dongle_rate(), retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
@@ -6089,15 +6336,16 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     controller_begin_reconfigure(s);
     int ppm_rc = 0;
     int hardware_changed = 0;
-    int correction_failed = 0;
-    int apply_rc = apply_capture_settings(center_freq_hz, ppm_error, &previous_capture, &ppm_rc, &hardware_changed,
-                                          &correction_failed);
+    int refusal = kCaptureRefusalNone;
+    int apply_rc =
+        apply_capture_settings(center_freq_hz, ppm_error, &previous_capture, &ppm_rc, &hardware_changed, &refusal);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
     int ppm_changed = (ppm_rc == 0 && ppm_error != prev_ppm);
     if (!controller_reconfigure_requires_finalize(apply_rc, hardware_changed, ppm_changed)) {
         store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
+        dsd_live_iq_step_finish(&demod.live_iq_step);
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         controller_end_reconfigure(s);
         return apply_rc;
@@ -6108,9 +6356,9 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
     controller_arm_retune_mute("post", 1);
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
-    const int refused = controller_refuse_programmed_retune(correction_failed, &previous_capture, previous_rate_out_hz,
-                                                            previous_center_freq_hz, &finalized_center_freq_hz,
-                                                            &finalized_profile, &apply_rc);
+    const int refused =
+        controller_refuse_programmed_retune(refusal, &previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                            &finalized_center_freq_hz, &finalized_profile, &apply_rc);
     if (out_refused) {
         *out_refused = refused;
     }
@@ -6509,16 +6757,19 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
     }
 }
 
-/* The rate the device read back after the start's rate write (0 when it gave none) in @p out_actual_hz; returns the
- * rate the chain runs at. */
-static uint32_t
-controller_sync_initial_capture_rate(uint32_t capture_rate_hz, uint32_t* out_actual_hz) {
+/* The rate the device read back after the start's rate write (0 when it gave none) in @p out_actual_hz, the final plan
+ * for it and its I/Q rate step (issue #806). Returns 0 with @p io_capture_rate_hz the rate the chain runs at, or
+ * kCaptureRateChainRefused (logged): the start fails. */
+static int
+controller_sync_initial_capture_rate(uint32_t* io_capture_rate_hz, uint32_t* out_actual_hz) {
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     *out_actual_hz = actual > 0 ? (uint32_t)actual : 0U;
-    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        return note_actual_capture_rate(capture_rate_hz, (uint32_t)actual);
+    if (rate_chain_replan(*io_capture_rate_hz, *out_actual_hz) != 0 || rate_chain_sync_step() != 0) {
+        LOG_ERROR("The stream cannot start: %s.\n", g_rate_chain_refusal);
+        return kCaptureRateChainRefused;
     }
-    return capture_rate_hz;
+    *io_capture_rate_hz = load_dongle_rate();
+    return 0;
 }
 
 static int
@@ -6556,7 +6807,10 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
         return rc;
     }
     uint32_t actual_rate_hz = 0U;
-    capture_rate_hz = controller_sync_initial_capture_rate(capture_rate_hz, &actual_rate_hz);
+    rc = controller_sync_initial_capture_rate(&capture_rate_hz, &actual_rate_hz);
+    if (rc != 0) {
+        return rc;
+    }
     controller_apply_initial_offset_tuning(opts);
     uint32_t capture_freq_hz = 0U;
     if (capture_frequency_for_rate(s->freqs[0], capture_rate_hz, &capture_freq_hz) != 0) {
@@ -6585,9 +6839,13 @@ static int
 controller_program_initial_device(const struct controller_state* s, const dsd_opts* opts) {
     /* A fresh device has no offset tuning until it takes, so the planned centre carries the Fs/4 shift. */
     dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
-    /* A centre whose capture frequency is out of range fails the start before anything is written (issue #670 B4). */
+    /* A centre whose capture frequency is out of range, or a rate the planner refuses, fails the start before anything
+       is written (issue #670 B4, issue #806). */
     const int rc = optimal_settings(s->freqs[0], demod.rate_in);
     if (rc != 0) {
+        if (rc == kCaptureRateChainRefused) {
+            LOG_ERROR("The stream cannot start: %s.\n", g_rate_chain_refusal);
+        }
         return rc;
     }
     if (dongle.direct_sampling) {
@@ -6657,8 +6915,11 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
        capture at any other rate (a device-forced 78125 Hz, say) was resampled twice and played back fast. */
     demod.rate_out2 = demod.rate_in;
     demod.rate_out = (int)cfg->demod_rate_hz;
-    /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. */
+    /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. A replay plans its chain
+       itself and runs no live rate step (issue #806). */
     demod.capture_rate_device_forced = 1;
+    g_live_rate_plan = dsd_rate_plan{};
+    dsd_live_iq_step_disable(&demod.live_iq_step);
     /* The scale a live stream runs, set on every open rather than inherited: left at 0 (a process that never ran a
        live stream) replayed FM monitor audio pi times (9.9 dB) louder than the same signal live; left at whatever an
        earlier session set, it depended on what ran before. */
@@ -7780,7 +8041,9 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
     cfg->base_decimation = (uint32_t)((demod.downsample_passes > 0) ? (1U << demod.downsample_passes) : 1U);
     cfg->post_downsample = (uint32_t)((demod.post_downsample > 0) ? demod.post_downsample : 1);
-    cfg->demod_rate_hz = (uint32_t)demod.rate_out;
+    /* The legacy field, which the writer and every reader check as the capture rate over the decimations: a stepped
+       chain's exact rate is not it (issue #806). */
+    cfg->demod_rate_hz = capture_legacy_demod_rate_hz(cfg->sample_rate_hz);
     cfg->offset_tuning_enabled = dongle.offset_tuning ? 1 : 0;
     cfg->fs4_shift_enabled = capture_fs4_shift_active();
     const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
@@ -8849,14 +9112,20 @@ stream_open_log_rate_chain_summary(int frame_tetra) {
     } else {
         DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz", capture_hz);
     }
+    /* The live I/Q rate step a device-forced rate runs after the half-band chain (issue #806). */
+    char step_text[64] = "";
+    if (demod.live_iq_step.enabled) {
+        DSD_SNPRINTF(step_text, sizeof step_text, ", I/Q step L/M=%d/%d", demod.live_iq_step.plan.L,
+                     demod.live_iq_step.plan.M);
+    }
     if (demod.resamp_enabled) {
-        LOG_INFO("Rate chain: capture=%s, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> output=%u "
+        LOG_INFO("Rate chain: capture=%s, base_decim=%d%s, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> output=%u "
                  "Hz.\n",
-                 capture_text, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
+                 capture_text, base_decim, step_text, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
     } else {
-        LOG_INFO("Rate chain: capture=%s, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> output=%u "
+        LOG_INFO("Rate chain: capture=%s, base_decim=%d%s, post=%d -> demod=%u Hz; resampler bypassed -> output=%u "
                  "Hz.\n",
-                 capture_text, base_decim, post, demod_hz, out_hz);
+                 capture_text, base_decim, step_text, post, demod_hz, out_hz);
     }
     char sps_text[160];
     char sps_warn[192];
@@ -11959,6 +12228,7 @@ test_capture_program_enter(struct rtl_device* dev, uint32_t center_hz, int direc
     rtl_device_handle = dev;
     /* A fake device may sit where an earlier one was. */
     capture_writes_forget();
+    g_rate_plan_refused = dsd_rate_plan{};
     controller.freqs[0] = center_hz;
     controller.freq_len = 1;
     controller.edge = 0;
@@ -11983,11 +12253,23 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->rate_forced = demod.capture_rate_device_forced;
     out->downsample_passes = demod.downsample_passes;
     out->applied_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    out->nominal_hz = rate_plan_is_set(&g_live_rate_plan) ? g_live_rate_plan.nominal_hz : 0U;
+    out->step_enabled = demod.live_iq_step.enabled;
+    out->step_l = demod.live_iq_step.plan.L;
+    out->step_m = demod.live_iq_step.plan.M;
+    out->step_retained = demod.live_iq_step.retained_set;
+    out->refused_status = g_rate_plan_refused.status;
+    out->refused_readback_hz = g_rate_plan_refused.readback_hz;
+    out->refused_forced = g_rate_plan_refused.device_forced;
+    out->published_rate_out_hz = g_pub_rate_out.load(std::memory_order_relaxed);
+    out->published_forced = g_pub_capture_rate_forced.load(std::memory_order_relaxed);
 }
 
 static void
 test_capture_program_leave(const TestCaptureProgramState* saved) {
     capture_writes_forget();
+    /* No stream runs a step outside a session: its designs go. */
+    dsd_live_iq_step_disable(&demod.live_iq_step);
     rtl_device_handle = saved->handle;
     restore_capture_settings(&saved->capture);
     controller.freqs[0] = saved->first_freq_hz;
@@ -12011,7 +12293,9 @@ rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_opts* 
         return -1;
     }
     const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, direct_sampling);
-    test_capture_program_result(controller_program_initial_device(&controller, opts), out);
+    const int rc = controller_program_initial_device(&controller, opts);
+    dsd_live_iq_step_finish(&demod.live_iq_step);
+    test_capture_program_result(rc, out);
     test_capture_program_leave(&saved);
     return 0;
 }
@@ -12026,10 +12310,12 @@ rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* o
     const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, 0);
     int rc = controller_program_initial_device(&controller, opts);
     if (rc == 0) {
+        dsd_live_iq_step_finish(&demod.live_iq_step);
         int hardware_changed = 0;
         demod.rate_in = retune_rate_in_hz;
         rc = program_capture_frequency_and_rate(retune_center_hz, NULL, &hardware_changed, NULL);
     }
+    dsd_live_iq_step_finish(&demod.live_iq_step);
     test_capture_program_result(rc, out);
     test_capture_program_leave(&saved);
     return 0;
@@ -12067,6 +12353,9 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
     store_dongle_ppm_error(0);
     const int rc = controller_program_initial_device(&controller, opts);
+    /* The start's finalize ends its transaction and publishes the chain (controller_finalize_dsp_chain()). */
+    dsd_live_iq_step_finish(&demod.live_iq_step);
+    rtl_stream_publish_demod_profile_snapshot();
     /* The start finalizes on its centre (controller_apply_initial_settings()), which a manual retune step leaves. */
     controller.last_applied_freq_hz.store(rc == 0 ? center_hz : 0U, std::memory_order_release);
     test_capture_program_result(rc, out);
@@ -12085,6 +12374,9 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
         }
         int hardware_changed = 0;
         rc = program_capture_frequency_and_rate(center_hz, NULL, &hardware_changed, NULL);
+        /* A hop's programming alone: its transaction ends here, published as a finalize would. */
+        dsd_live_iq_step_finish(&demod.live_iq_step);
+        rtl_stream_publish_demod_profile_snapshot();
     } else if (step == RTL_STREAM_TEST_CAPTURE_GAIN_AUTO || step == RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL) {
         RtlRetuneProfile profile{};
         profile.active = 1;
@@ -12119,6 +12411,20 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
         out->completion = completion;
     }
     return 0;
+}
+
+extern "C" void
+rtl_stream_test_set_rate_plan_backend(int backend) {
+    g_test_rate_plan_backend = backend;
+}
+
+extern "C" int
+rtl_stream_test_fail_step_designs(int ok, int failing) {
+    g_test_step_designs_ok = ok > 0 ? ok : 0;
+    g_test_step_designs_failing = failing > 0 ? failing : 0;
+    const int seen = g_test_step_designs_seen;
+    g_test_step_designs_seen = 0;
+    return seen;
 }
 
 extern "C" void
@@ -14115,7 +14421,16 @@ rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_o
 
 extern "C" int
 rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
-    return rtl_choose_passes_for_actual_rate(actual_rate_hz, rate_in_hz);
+    /* The rate planner's passes for a device that runs @p actual_rate_hz whatever is asked (issue #806). */
+    dsd_rate_plan_input in{};
+    in.backend = DSD_RATE_PLAN_BACKEND_SOAPY;
+    in.request_hz = actual_rate_hz;
+    in.programmed_hz = actual_rate_hz;
+    in.target_hz = rate_in_hz > 0 ? (uint32_t)rate_in_hz : 0U;
+    in.max_passes = kMaxDownsamplePasses;
+    dsd_rate_plan plan;
+    (void)dsd_rate_plan_compute(&in, &plan);
+    return plan.passes;
 }
 
 extern "C" int
@@ -15256,8 +15571,8 @@ family_test_release_buffers(void) {
  * reproduced), controller_init(), the device open, runtime device controls, gain and PPM, and the rate-chain log
  * summary.
  */
-static int
-family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz) {
+static void
+family_test_seed_demod(const dsd_opts* opts, int rate_hz) {
     family_test_release_buffers();
     rtl_dsp_bw_hz = rate_hz;
     rtl_demod_init_for_mode(&demod, &output, opts, rate_hz);
@@ -15265,10 +15580,10 @@ family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz)
     rtl_demod_config_from_env_and_opts(&demod, opts);
     rtl_demod_select_defaults_for_mode(&demod, opts, &output);
     stream_open_apply_audio_filters_from_config();
-    if (forced_rate_out_hz > 0) {
-        demod.rate_out = forced_rate_out_hz;
-        demod.capture_rate_device_forced = 1;
-    }
+}
+
+static int
+family_test_seed_finalize(const dsd_opts* opts) {
     controller_finalize_rate_chain(&controller, opts, kFamilyTestCenterHz, /*mark_reconfigure=*/0,
                                    DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
     if (stream_open_finalize_demod_chain(opts) != 0) {
@@ -15276,6 +15591,16 @@ family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz)
     }
     rtl_stream_publish_demod_profile_snapshot();
     return 0;
+}
+
+static int
+family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz) {
+    family_test_seed_demod(opts, rate_hz);
+    if (forced_rate_out_hz > 0) {
+        demod.rate_out = forced_rate_out_hz;
+        demod.capture_rate_device_forced = 1;
+    }
+    return family_test_seed_finalize(opts);
 }
 
 /* Cleared, with the explicit tolerance float comparisons carry: the stale values seeded here are +/-1. */
@@ -15523,6 +15848,70 @@ family_test_restore(const FamilyTestSaved& saved) {
     g_fsk_modem_reset_pending.store(0, std::memory_order_release);
     ring_clear(&output);
     rtl_stream_publish_demod_profile_snapshot();
+}
+
+/* The device-programming half of a live open's rate chain for rtl_stream_test_live_rate_chain(): the provisional plan
+ * optimal_settings() makes for the request and the device's rate, then the final plan for its read-back and the I/Q
+ * rate step, as controller_program_initial_capture_settings() runs them (issue #806). */
+static int
+live_chain_test_program(int backend, uint32_t device_rate_hz, uint32_t readback_hz) {
+    g_test_rate_plan_backend = backend;
+    const int64_t request = (int64_t)demod.rate_in << rtl_downsample_passes_for_rate_in(demod.rate_in);
+    const uint32_t request_hz = (uint32_t)request;
+    const uint32_t programmed_hz = device_rate_hz != 0U ? device_rate_hz : request_hz;
+    dsd_rate_plan plan;
+    int rc = rate_chain_plan(request_hz, programmed_hz, 0U, (uint32_t)demod.rate_in, &plan);
+    if (rc == DSD_RATE_PLAN_OK) {
+        rate_chain_run_plan(&plan);
+        store_dongle_rate(programmed_hz);
+        rc = rate_chain_replan(programmed_hz, readback_hz != 0U ? readback_hz : programmed_hz);
+    }
+    if (rc == DSD_RATE_PLAN_OK) {
+        rc = rate_chain_sync_step();
+    }
+    g_test_rate_plan_backend = -1;
+    return rc != 0 ? g_rate_plan_refused.status : 0;
+}
+
+static void
+live_chain_test_capture(rtl_stream_test_live_chain_result* out) {
+    out->passes = demod.downsample_passes;
+    out->rate_out_hz = demod.rate_out;
+    out->forced = demod.capture_rate_device_forced;
+    out->step_enabled = demod.live_iq_step.enabled;
+    out->step_l = demod.live_iq_step.plan.L;
+    out->step_m = demod.live_iq_step.plan.M;
+    out->ted_sps = demod.ted_sps;
+    out->resamp_enabled = demod.resamp_enabled;
+    out->resamp_l = demod.resamp_L;
+    out->resamp_m = demod.resamp_M;
+    out->output_rate_hz = output.rate;
+    out->published_rate_out_hz = g_pub_rate_out.load(std::memory_order_relaxed);
+    out->published_forced = g_pub_capture_rate_forced.load(std::memory_order_relaxed);
+}
+
+extern "C" int
+rtl_stream_test_live_rate_chain(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
+                                uint32_t readback_hz, rtl_stream_test_live_chain_result* out) {
+    if (!opts || !out || dsp_bw_hz <= 0 || g_stream || rtl_device_handle) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    const CaptureSettingsSnapshot outer = capture_settings_snapshot();
+    test_stream_set(NULL);
+    g_rate_plan_refused = dsd_rate_plan{};
+    family_test_seed_demod(opts, dsp_bw_hz);
+    out->rc = live_chain_test_program(backend, device_rate_hz, readback_hz);
+    if (out->rc == 0 && family_test_seed_finalize(opts) != 0) {
+        out->rc = -1;
+    }
+    live_chain_test_capture(out);
+    dsd_live_iq_step_disable(&demod.live_iq_step);
+    restore_capture_settings(&outer);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
 }
 
 /* The decoder thread has applied the analog preset to its own options; the stream's snapshot is not those options and

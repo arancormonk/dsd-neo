@@ -365,11 +365,20 @@ test_late_offset_failure_uses_actual_lo(void) {
 int
 test_rate_readback_and_recenter_edges(void) {
     set_runtime_env(NULL, NULL);
-    const Run e4000 = run_start(kTunerE4000, 0, 0U, 1440000U);
+    /* A dongle that reads back another rate than 1.536 MS/s, within the 100 ppm the rate chain takes as the rate asked
+       for (issue #806): the LO offset and the capture still follow the rate it runs. */
+    constexpr uint32_t kReadbackHz = 1536100U;
+    const Run e4000 = run_start(kTunerE4000, 0, 0U, kReadbackHz);
     int failed = expect_hardware_offset("different rate readback", e4000, kCenterHz);
-    failed |= expect_u32("different actual rate", e4000.result.capture_rate_hz, 1440000U);
-    const Run r820t = run_start(kTunerR820T, 0, 0U, 1440000U);
+    failed |= expect_u32("different actual rate", e4000.result.capture_rate_hz, kReadbackHz);
+    failed |= expect_int("read-back within tolerance keeps the chain", e4000.result.rate_out_hz, 48000);
+    const Run r820t = run_start(kTunerR820T, 0, 0U, kReadbackHz);
     failed |= expect_fs4_rotation("different R820T readback", r820t, kCenterHz);
+    /* 1.44 MS/s is 6.25 % off: an RTL-SDR's chain cannot run it, so the start fails, the read-back reported. */
+    const Run far = run_start(kTunerE4000, 0, 0U, 1440000U);
+    failed |= expect_int("read-back out of tolerance fails the start", far.result.rc < 0, 1);
+    failed |= expect_u32("refused read-back reported", far.result.refused_readback_hz, 1440000U);
+    failed |= expect_int("refused read-back reported as forced", far.result.refused_forced, 1);
     const Run refused = run_start(kTunerE4000, 0, 0U, 0U, 0, 2);
     failed |= expect_int("failed re-centre aborts startup", refused.result.rc < 0, 1);
     const Run retune = run_start(kTunerE4000, 0, kRetuneCenterHz, 0U, 0, 0, 44100);

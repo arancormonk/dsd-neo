@@ -30,6 +30,18 @@
  * - a retune whose actual-rate correction cannot be written (the write fails, or the corrected capture is past
  *   UINT32_MAX), after a rate write that took or one that failed, is refused: the device goes back on the capture it had, the controller finalizes on the centre it
  *   kept and the retune completes as failed; a device that will not go back stops the stream.
+ *
+ * Issue #806, the live rate chain through the same read-back path:
+ *
+ * - a read-back within 100 ppm of the rate written runs the chain planned for that rate (1,535,999 Hz: 5 passes,
+ *   48 kHz exactly, not forced), while the capture still follows the rate the dongle runs;
+ * - an RTL-SDR read-back out of tolerance fails the start, and refuses a retune with the device put back, the
+ *   read-back and the forced flag reported in the refusal;
+ * - a device whose driver snaps the rate (a SoapySDR device, stood in for by the fake dongle planned as one) has its
+ *   passes picked again for a far read-back, and its I/Q rate step designed for it and published; a design that fails
+ *   after programming refuses the retune with the device put back; a rollback whose own read-back plans the step's
+ *   earlier design again swaps it back, a third rate is designed, and a third rate that cannot be designed stops the
+ *   stream.
  */
 
 #include <assert.h>
@@ -39,6 +51,7 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
@@ -107,11 +120,12 @@ make_rtl_opts(void) {
     return opts;
 }
 
-/* Stops the dongle reading back another rate on its at_call-th rate write: the rate a refused retune's rollback puts
- * back reads back as given. */
+/* Makes the dongle read back then_rate (0: the rate given) from its at_call-th rate write on: the rate a refused
+ * retune's rollback puts back reads back as given, or as a third rate. */
 struct readback_reset {
     rtl_device_test_usb_dongle* dongle;
     int at_call;
+    uint32_t then_rate;
 };
 
 /* A stream's device on the fake dongle, its start programmed. */
@@ -229,6 +243,22 @@ expect_capture_at(const rig& r, const rtl_stream_test_capture_result& got, uint3
     assert(r.dongle->tuner.rate == rate_hz);
 }
 
+/* The capture a hop to @p center_hz runs when the dongle delivers @p capture_rate_hz and the rate chain plans
+ * @p passes half-band passes to exactly @p rate_out_hz (issue #806: never the capture rate truncated). */
+void
+expect_chain_at(const rig& r, const rtl_stream_test_capture_result& got, uint32_t center_hz, uint32_t capture_rate_hz,
+                int passes, int rate_out_hz, int forced) {
+    assert(got.rc == 0);
+    assert(got.capture_rate_hz == capture_rate_hz);
+    assert(got.downsample_passes == passes);
+    assert(got.rate_out_hz == rate_out_hz);
+    assert(got.rate_forced == forced);
+    const uint32_t shift = got.fs4_rotation ? capture_rate_hz / 4U : 0U;
+    assert(got.capture_freq_hz == center_hz + shift);
+    assert(r.dongle->tuner.freq == got.capture_freq_hz);
+    assert(r.dongle->tuner.rate == capture_rate_hz);
+}
+
 /* ---- Cases ---- */
 
 /* Hops at the rate the device was last set to write the frequency alone: no rate, no bandwidth, no gain. */
@@ -254,16 +284,21 @@ test_same_rate_hops_write_frequency_only(void) {
 }
 
 /* A rate the device quantizes (requested != actual) is not written again on every hop, and the stream runs the rate it
- * read back: the Fs/4 centre, the output rate and the forced flag follow it as the readback after a write sets them. */
+ * read back: the Fs/4 centre follows it as the readback after a write sets it. Within 100 ppm of the rate written, the
+ * rate chain is the one planned for that rate (issue #806 A-B3): 1,535,999 Hz runs 5 passes to exactly 48 kHz, not
+ * forced, where it ran 47,999 Hz, forced, which put the FSK output resampler on a 48000/47999 ratio. */
 void
 test_quantized_rate_not_rewritten(void) {
     rig r;
     rig_open(r, kTunerR820T, 1535999U);
     assert(r.start.offset_tuning == 0 && r.start.fs4_rotation == 1);
-    assert(r.start.capture_rate_hz == 1535999U);
+    expect_chain_at(r, r.start, kCenterHz, 1535999U, 5, kRateIn, 0);
+    assert(r.start.nominal_hz == 1536000U);
+    assert(r.start.step_enabled == 0);
+    assert(r.start.published_rate_out_hz == kRateIn && r.start.published_forced == 0);
     const writes mark = writes_now(r);
     for (uint32_t center : kHopsHz) {
-        expect_capture_at(r, hop(center), center, 1535999U, 1);
+        expect_chain_at(r, hop(center), center, 1535999U, 5, kRateIn, 0);
     }
     const writes w = writes_since(r, mark);
     assert(w.freq == 3);
@@ -272,26 +307,28 @@ test_quantized_rate_not_rewritten(void) {
     rig_close(r);
 }
 
-/* A changed rate is written once and read back, with the bandwidth for it; the hops after it write it no more. */
+/* A changed rate is written once and read back, with the bandwidth for it; the hops after it write it no more. The
+ * dongle reads back 960,050 Hz for 960 kS/s, within 100 ppm: the capture runs 960,050 Hz, the chain exactly 30 kHz. */
 void
 test_changed_rate_written_once_and_read_back(void) {
     rig r;
     rig_open(r, kTunerR820T);
     const uint32_t start_rate = r.start.capture_rate_hz;
     /* The device quantizes the next rate it is given: what the stream runs is the readback. */
-    r.dongle->tuner.actual_rate = 960123U;
+    r.dongle->tuner.actual_rate = 960050U;
     writes mark = writes_now(r);
     const rtl_stream_test_capture_result changed = hop(kHopsHz[0], 30000);
     writes w = writes_since(r, mark);
     assert(w.rate == 1);
     assert(w.bandwidth == 1);
     assert(gain_writes(w) == 0);
-    assert(start_rate != 960123U);
-    expect_capture_at(r, changed, kHopsHz[0], 960123U, 1);
+    assert(start_rate != 960050U);
+    expect_chain_at(r, changed, kHopsHz[0], 960050U, 5, 30000, 0);
+    assert(changed.published_rate_out_hz == 30000);
 
     mark = writes_now(r);
-    expect_capture_at(r, hop(kHopsHz[1], 30000), kHopsHz[1], 960123U, 1);
-    expect_capture_at(r, hop(kHopsHz[2]), kHopsHz[2], 960123U, 1);
+    expect_chain_at(r, hop(kHopsHz[1], 30000), kHopsHz[1], 960050U, 5, 30000, 0);
+    expect_chain_at(r, hop(kHopsHz[2]), kHopsHz[2], 960050U, 5, 30000, 0);
     w = writes_since(r, mark);
     assert(w.freq == 2 && w.rate == 0 && w.bandwidth == 0);
     rig_close(r);
@@ -678,16 +715,18 @@ readback_reset_on_op(void* ctx, int op) {
     readback_reset* reset = static_cast<readback_reset*>(ctx);
     /* Called before the op is counted. */
     if (op == RTL_TEST_DONGLE_RATE && reset->dongle->calls[RTL_TEST_DONGLE_RATE] + 1 == reset->at_call) {
-        reset->dongle->tuner.actual_rate = 0U;
+        reset->dongle->tuner.actual_rate = reset->then_rate;
     }
 }
 
-/* A rig whose next retune's rate write reads back @p actual_rate and whose rollback's rate write reads back as given. */
+/* A rig whose next retune's rate write reads back @p actual_rate and whose rollback's rate write reads back
+ * @p rollback_rate (0: as given). */
 void
-arm_readback(rig& r, uint32_t actual_rate) {
+arm_readback(rig& r, uint32_t actual_rate, uint32_t rollback_rate = 0U) {
     readback_reset* reset = r.readback.get();
     r.dongle->tuner.actual_rate = actual_rate;
     reset->dongle = r.dongle.get();
+    reset->then_rate = rollback_rate;
     reset->at_call = r.dongle->calls[RTL_TEST_DONGLE_RATE] + 2;
     r.dongle->on_op = readback_reset_on_op;
     r.dongle->on_op_ctx = reset;
@@ -715,14 +754,14 @@ expect_rolled_back(const rig& r, const rtl_stream_test_capture_result& got) {
     assert(dsd_exitflag_load() == 0);
 }
 
-/* The device reads back 960123 Hz for 960 kS/s and refuses the frequency correction for it: the retune is refused and
- * rolled back onto the capture the stream ran. */
+/* The device reads back 960050 Hz for 960 kS/s (within 100 ppm, so the rate chain takes it) and refuses the frequency
+ * correction for it: the retune is refused and rolled back onto the capture the stream ran. */
 void
 test_failed_rate_correction_rolls_back(void) {
     rig r;
     rig_open(r, kTunerR820T);
-    arm_readback(r, 960123U);
-    const uint32_t corrected_hz = kHopsHz[0] + 960123U / 4U;
+    arm_readback(r, 960050U);
+    const uint32_t corrected_hz = kHopsHz[0] + 960050U / 4U;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
     const int from = r.dongle->tuner.freq_log_count;
@@ -783,7 +822,7 @@ void
 test_failed_rollback_stops_stream(void) {
     rig r;
     rig_open(r, kTunerR820T);
-    arm_readback(r, 960123U);
+    arm_readback(r, 960050U);
     /* The retune's own frequency write takes; the correction and the rollback's are refused. */
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_from_call = r.dongle->calls[RTL_TEST_DONGLE_FREQ] + 2;
     dsd_input_failure_clear();
@@ -800,6 +839,214 @@ test_failed_rollback_stops_stream(void) {
     dsd_exitflag_store(0);
     dsd_input_failure_clear();
     rig_close(r);
+}
+
+/* ---- Issue #806: the live rate chain ---- */
+
+/* An RTL-SDR that reads back 1,536,200 Hz for 1.536 MS/s (130 ppm) at the start: its chain would run a fractional
+ * 48,006.25 Hz it cannot step, so the start fails, the read-back and the forced flag reported. */
+void
+test_start_readback_out_of_tolerance_refused(void) {
+    rig r;
+    rig_begin(r, kTunerR820T, kCenterHz, 1536200U);
+    assert(r.start.rc != 0);
+    assert(r.start.refused_status == DSD_RATE_PLAN_ERR_READBACK);
+    assert(r.start.refused_readback_hz == 1536200U);
+    assert(r.start.refused_forced == 1);
+    rig_close(r);
+}
+
+/* The dongle reads back 960,123 Hz for 960 kS/s (128 ppm) on a retune: refused, the device put back on the capture the
+ * stream ran, the read-back and the forced flag reported. Before issue #806 it ran a forced 30,003 Hz chain. */
+void
+test_retune_readback_out_of_tolerance_refused(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    arm_readback(r, 960123U);
+    const writes mark = writes_now(r);
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    disarm_readback(r);
+    expect_rolled_back(r, got);
+    /* The retune's rate and the rollback's; no capture correction for a read-back the chain refused. */
+    const writes w = writes_since(r, mark);
+    assert(w.rate == 2 && w.freq == 2);
+    assert(got.refused_status == DSD_RATE_PLAN_ERR_READBACK);
+    assert(got.refused_readback_hz == 960123U && got.refused_forced == 1);
+    assert(got.nominal_hz == r.start.nominal_hz && got.step_retained == 0);
+    rig_close(r);
+}
+
+/* A rig on a fake dongle planned as a SoapySDR device whose driver snaps the rate, reading back @p actual_rate for any
+ * rate it is given (0: the rate given). */
+void
+rig_open_snapping(rig& r, uint32_t actual_rate) {
+    rtl_stream_test_set_rate_plan_backend(DSD_RATE_PLAN_BACKEND_SOAPY);
+    rig_open(r, kTunerR820T, actual_rate);
+}
+
+void
+rig_close_snapping(rig& r) {
+    rig_close(r);
+    rtl_stream_test_set_rate_plan_backend(-1);
+    (void)rtl_stream_test_fail_step_designs(0, 0);
+}
+
+/* A-B2: a read-back far from the rate written picks the passes again for the rate the device runs, so the chain never
+ * runs below the DSP bandwidth (1 MS/s used to run 31,250 Hz on the request's 5 passes), and the step takes the
+ * half-band output to exactly 48 kHz; hops on that rate keep it, writing no rate. */
+void
+test_far_readback_repicks_passes(void) {
+    const struct {
+        uint32_t readback;
+        int passes;
+        int L;
+        int M;
+    } cases[] = {{1000000U, 4, 96, 125}, {1200000U, 4, 16, 25}, {2000000U, 5, 96, 125}, {2500000U, 5, 384, 625}};
+
+    for (const auto& c : cases) {
+        rig r;
+        rig_open_snapping(r, c.readback);
+        expect_chain_at(r, r.start, kCenterHz, c.readback, c.passes, kRateIn, 1);
+        assert(r.start.nominal_hz == c.readback);
+        assert(r.start.step_enabled == 1 && r.start.step_l == c.L && r.start.step_m == c.M);
+        assert(r.start.step_retained == 0);
+        assert(r.start.published_rate_out_hz == kRateIn && r.start.published_forced == 1);
+        const writes mark = writes_now(r);
+        expect_chain_at(r, hop(kHopsHz[0]), kHopsHz[0], c.readback, c.passes, kRateIn, 1);
+        assert(writes_since(r, mark).rate == 0);
+        assert(rtl_stream_test_fail_step_designs(0, 0) == 1);
+        rig_close_snapping(r);
+    }
+}
+
+/* A retune whose read-back moves the plan designs the step for it and publishes the chain within the retune, before
+ * any block runs; back on the rate asked for, the step goes off. */
+void
+test_retune_readback_changes_plan(void) {
+    rig r;
+    rig_open_snapping(r, 0U);
+    expect_chain_at(r, r.start, kCenterHz, 1536000U, 5, kRateIn, 0);
+    assert(r.start.step_enabled == 0 && r.start.published_forced == 0);
+
+    const struct {
+        uint32_t readback;
+        int L;
+        int M;
+    } moves[] = {{2000000U, 96, 125}, {2500000U, 384, 625}};
+
+    for (const auto& m : moves) {
+        /* The driver moved the rate: the next hop writes it again and reads this back. */
+        r.dongle->tuner.actual_rate = m.readback;
+        r.dongle->tuner.rate = m.readback;
+        const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], 0);
+        assert(got.completion == RTL_STREAM_TUNE_OK);
+        expect_chain_at(r, got, kHopsHz[0], m.readback, 5, kRateIn, 1);
+        assert(got.step_enabled == 1 && got.step_l == m.L && got.step_m == m.M && got.step_retained == 0);
+        assert(got.published_rate_out_hz == kRateIn && got.published_forced == 1);
+    }
+    r.dongle->tuner.actual_rate = 0U;
+    r.dongle->tuner.rate = 1536000U;
+    const rtl_stream_test_capture_result back = manual_retune(kHopsHz[1], 0);
+    assert(back.completion == RTL_STREAM_TUNE_OK);
+    expect_chain_at(r, back, kHopsHz[1], 1536000U, 5, kRateIn, 0);
+    assert(back.step_enabled == 0 && back.step_retained == 0 && back.published_forced == 0);
+    assert(rtl_stream_test_fail_step_designs(0, 0) == 2);
+    rig_close_snapping(r);
+}
+
+/* A step design that fails once the device is programmed: the start fails; a retune is refused, the device goes back
+ * on the capture it had, and the step keeps running the design it ran there. */
+void
+test_step_design_failure_rolls_back(void) {
+    {
+        rig r;
+        rtl_stream_test_set_rate_plan_backend(DSD_RATE_PLAN_BACKEND_SOAPY);
+        (void)rtl_stream_test_fail_step_designs(0, 1);
+        rig_begin(r, kTunerR820T, kCenterHz, 2000000U);
+        assert(r.start.rc != 0 && r.start.step_enabled == 0);
+        rig_close_snapping(r);
+    }
+    rig r;
+    rig_open_snapping(r, 2000000U);
+    assert(r.start.step_enabled == 1 && r.start.step_l == 96 && r.start.step_m == 125);
+    r.dongle->tuner.rate = 2500000U;
+    arm_readback(r, 2500000U, 2000000U);
+    (void)rtl_stream_test_fail_step_designs(0, 1);
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], 0);
+    disarm_readback(r);
+    expect_rolled_back(r, got);
+    assert(got.step_enabled == 1 && got.step_l == 96 && got.step_m == 125 && got.step_retained == 0);
+    assert(got.published_rate_out_hz == kRateIn && got.published_forced == 1);
+    /* The failed design, and none for the rollback, whose read-back is the plan the step runs. */
+    assert(rtl_stream_test_fail_step_designs(0, 0) == 1);
+    rig_close_snapping(r);
+}
+
+/* A retune whose step design ran, then refused (the device does not take the capture correction for its read-back):
+ * the rollback programs the device back and reads back @p rollback_rate, which the step then runs. */
+rtl_stream_test_capture_result
+refused_after_design(rig& r, uint32_t rollback_rate) {
+    r.dongle->tuner.rate = 2500000U;
+    arm_readback(r, 2500000U, rollback_rate);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)(kHopsHz[0] + 2500000U / 4U);
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], 0);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
+    disarm_readback(r);
+    return got;
+}
+
+/* The rollback's own read-back plans the design the step ran before the retune: it goes back in, with nothing designed
+ * (any design after the retune's would fail). */
+void
+test_rollback_swaps_step_back(void) {
+    rig r;
+    rig_open_snapping(r, 2000000U);
+    (void)rtl_stream_test_fail_step_designs(1, 1);
+    const rtl_stream_test_capture_result got = refused_after_design(r, 2000000U);
+    expect_rolled_back(r, got);
+    assert(got.step_enabled == 1 && got.step_l == 96 && got.step_m == 125 && got.step_retained == 0);
+    assert(rtl_stream_test_fail_step_designs(0, 0) == 1);
+    rig_close_snapping(r);
+}
+
+/* The rollback's read-back is a third rate (2.4 MS/s): its plan is designed and runs, and the stream goes on. */
+void
+test_rollback_designs_third_rate(void) {
+    rig r;
+    rig_open_snapping(r, 2000000U);
+    (void)rtl_stream_test_fail_step_designs(0, 0);
+    const rtl_stream_test_capture_result got = refused_after_design(r, 2400000U);
+    assert(got.rc != 0 && got.completion == RTL_STREAM_TUNE_FAILED);
+    assert(got.applied_hz == kCenterHz);
+    assert(got.capture_rate_hz == 2400000U && got.downsample_passes == 5 && got.rate_out_hz == kRateIn);
+    assert(got.rate_forced == 1);
+    assert(got.capture_freq_hz == kCenterHz + 2400000U / 4U && r.dongle->tuner.freq == got.capture_freq_hz);
+    assert(got.step_enabled == 1 && got.step_l == 16 && got.step_m == 25 && got.step_retained == 0);
+    assert(got.published_rate_out_hz == kRateIn);
+    assert(dsd_exitflag_load() == 0);
+    assert(rtl_stream_test_fail_step_designs(0, 0) == 2);
+    rig_close_snapping(r);
+}
+
+/* A third rate the step cannot be designed for: no design matches the rate the device runs, so the step is off and the
+ * stream stops, reported as a device failure. */
+void
+test_rollback_third_rate_design_failure_stops(void) {
+    rig r;
+    rig_open_snapping(r, 2000000U);
+    (void)rtl_stream_test_fail_step_designs(1, 1);
+    dsd_input_failure_clear();
+    const rtl_stream_test_capture_result got = refused_after_design(r, 2400000U);
+    assert(got.rc != 0 && got.completion == RTL_STREAM_TUNE_FAILED);
+    assert(got.step_enabled == 0);
+    assert(dsd_exitflag_load() != 0);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.kind == DSD_INPUT_FAILURE_DEVICE);
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+    rig_close_snapping(r);
 }
 
 } // namespace
@@ -840,6 +1087,14 @@ main(int argc, char** argv) {
         {"rate_correction_past_uint32", test_rate_correction_past_uint32_rolls_back},
         {"failed_rate_write_correction", test_failed_rate_write_correction_rolls_back},
         {"failed_rollback", test_failed_rollback_stops_stream},
+        {"start_readback_refused", test_start_readback_out_of_tolerance_refused},
+        {"retune_readback_refused", test_retune_readback_out_of_tolerance_refused},
+        {"far_readback", test_far_readback_repicks_passes},
+        {"readback_changes_plan", test_retune_readback_changes_plan},
+        {"step_design_failure", test_step_design_failure_rolls_back},
+        {"rollback_swaps_back", test_rollback_swaps_step_back},
+        {"rollback_third_rate", test_rollback_designs_third_rate},
+        {"rollback_third_rate_fails", test_rollback_third_rate_design_failure_stops},
     };
 
     /* An argument runs that case alone. */

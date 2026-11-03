@@ -4805,6 +4805,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     design (`dsd_live_iq_step_test_fail_design()`, `src/dsp/live_iq_step_test_support.h`).
   - Reset: `dsd_demod_reset_filter_state()` clears the active design's history and phase with the cascade's, and a
     commit or rollback that changes the design starts it over.
+  - Wiring: the radio's live rate chain prepares, commits, rolls back and finishes it inside each programming
+    transaction (IO, "Live rate chain").
   - Tests: `DSP_LIVE_IQ_STEP` (every planned Airspy/SoapySDR grid point; zero-output, one-pair and empty blocks;
     maximum blocks at p = 0, p = 1 and the Airspy passes against the cascade's output through the same design; cuts;
     reset; the transaction and its refusals), `DSP_CQPSK_EVM` (P25p1/P2 through the real cascade and the step at
@@ -5584,9 +5586,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   (numerator over 2^shift, lowest terms), `device_forced` (programmed differs from the request, or the read-back was
   out of tolerance), `step_eligible` (Airspy, SoapySDR, or a replay that keeps a forced chain; never RTL-SDR or
   rtl_tcp), the I/Q rate step (L/M exact up to 4096, else the closest fit within 5 ppm with `approx_ppm`; edges 0.45 x
-  target and target less that) and `step_out_hz`. Refusals carry a message and keep the fields worked out before them:
-  an RTL-SDR or rtl_tcp read-back out of tolerance (with the read-back and forced flag), a nominal rate below the
-  target, no ratio within 5 ppm, and a backend that cannot step left at a fractional rate.
+  target and target less that) and `step_out_hz`. Refusals carry a plain message (the rates and the DSP bandwidth, no
+  filter terms) and keep the fields worked out before them: an RTL-SDR or rtl_tcp read-back out of tolerance (with the
+  read-back and forced flag), a nominal rate below the target, no ratio within 5 ppm, and a backend that cannot step
+  left at a fractional rate. It does not bound the step's taps per phase: a step the resampler cannot design fails
+  when the live chain designs it, after programming (radio "Live rate chain").
   `dsd_rate_plan_step_bounds()` gives the step's taps per phase, group delay and tail in input samples and seconds.
   The plan repeats the I/Q resampler's 4096 term limit, 5 ppm bound, 30 shift limit and Kaiser tap estimate, since
   io_iq cannot link dsp; `DSP_RATE_PLAN_STEP` pins each copy to the resampler and designs every grid step from the
@@ -5841,11 +5845,39 @@ Key public headers:
     retune fails before anything is written, with the settings it had put back. After the frequency write, a device that
     reads back another rate (after a rate write that took, or one that failed, `capture_rate_write_failed()`) gets a
     corrective frequency write; when that write fails or the corrected capture is out of range,
-    `program_capture_frequency_and_rate()` reports `out_correction_failed` and both reconfigure paths refuse the
-    retune through the same rollback as the analog-width refusal (`controller_roll_back_refused_retune()`: the previous
-    capture back on the device, finalized on the kept centre without the profile, completed as failed through the
-    refused flag, a device that will not go back stopping the stream). Test: `IO_RTL_CAPTURE_WRITES` (its manual retune
-    step runs `controller_apply_reconfigure()` and the completion on the fake dongle).
+    `program_capture_frequency_and_rate()` reports the refusal (`out_refusal`, `CaptureRefusal`) and both reconfigure
+    paths refuse the retune through the same rollback as the analog-width refusal
+    (`controller_roll_back_refused_retune()`: the previous capture back on the device, finalized on the kept centre
+    without the profile, completed as failed through the refused flag, a device that will not go back stopping the
+    stream). Test: `IO_RTL_CAPTURE_WRITES` (its manual retune step runs `controller_apply_reconfigure()` and the
+    completion on the fake dongle).
+  - Live rate chain (issue #806; `rtl_sdr_fm.cpp` "The live rate chain"): the rate planner decides every live chain
+    (`rate_chain_plan()` with the device's backend, `rtl_device_rate_plan_backend()`), and the I/Q rate step runs its
+    step. A start, a retune and a PPM correction are one transaction with the demod thread parked:
+    `optimal_settings()` plans provisionally from the RTL-shaped request and the device's nearest rate (nothing is
+    designed for it); the device is programmed; the read-back gives the final plan (`rate_chain_replan()`: passes
+    picked again for its nominal rate, `rate_out` the exact rate after the step, `capture_rate_device_forced` the
+    plan's `device_forced`, the dongle rate the read-back itself, which the Fs/4 centre and the capture-rate consumers
+    use) and `rate_chain_sync_step()` designs its step, before the capture correction (`apply_actual_capture_rate()`).
+    `g_live_rate_plan` is the plan the chain runs, and `CaptureSettingsSnapshot` carries it (plain values; its key is
+    `rate_plan_step_key()`, the designs stay in `demod_state::live_iq_step`). A plan the read-back refuses (an
+    RTL-SDR or rtl_tcp read-back more than 100 ppm off: "the RTL-SDR read back X Hz for a requested Y Hz; dsd-neo needs
+    its rate within 100 ppm"), or a step design that fails (any resampler refusal, the 256 taps per phase limit
+    included), fails a start and refuses a retune: the chain goes back to the previous plan, which the step still runs,
+    and the rollback above puts the device back. The rollback writes the restored plan's programmed rate and plans the
+    restore's own read-back: equal to the plan the transaction began with, its design goes back in
+    (`dsd_live_iq_step_rollback()`, nothing designed); a third rate is designed; a third rate that cannot run turns the
+    step off and stops the stream. The finalize ends every transaction (`dsd_live_iq_step_finish()`) and publishes
+    the chain (`rtl_stream_publish_demod_profile_snapshot()`) after the TED refresh and the output-resampler redesign,
+    which then work from the exact rate, so no consumer gets a truncated rate (an Airspy R2's 24 kHz FSK or monitor
+    output resamples 2/1, not 24000/19531). An I/Q replay plans its chain itself and runs no step. The capture sidecar's
+    legacy `demod_rate_hz` stays the capture rate over the decimations, truncated (`capture_legacy_demod_rate_hz()`).
+    Tests: `IO_RTL_CAPTURE_WRITES` (tolerance both sides, refusals at start and retune, a far read-back, a plan change
+    on a retune, a failed design, a rollback that swaps back, a third rate and one that cannot be designed, on the fake
+    dongle planned as a SoapySDR device through `rtl_stream_test_set_rate_plan_backend()` and
+    `rtl_stream_test_fail_step_designs()`), `IO_RTL_DEMOD_CONFIG` and `IO_AIRSPY_INGEST`
+    (`rtl_stream_test_live_rate_chain()`: the open's chain for an Airspy's rates in FSK, CQPSK and TETRA, and the
+    RTL-SDR tolerance edges), `IO_RTL_OFFSET_TUNING`.
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path

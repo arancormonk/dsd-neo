@@ -168,10 +168,11 @@ rate_plan_pick_step(dsd_rate_plan* out) {
         const int64_t err = (int64_t)L * nominal - (int64_t)M * want;
         ppm = (double)err * 1e6 / ((double)M * (double)want);
         if (!(fabs(ppm) <= DSD_RATE_PLAN_MAX_APPROX_PPM)) {
-            DSD_SNPRINTF(out->message, sizeof(out->message),
-                         "no step ratio takes %u Hz to %u Hz within %.0f ppm (the closest, %d/%d, is %.0f ppm off)",
-                         (unsigned)out->nominal_hz, (unsigned)out->target_hz, DSD_RATE_PLAN_MAX_APPROX_PPM, L, M,
-                         fabs(ppm));
+            DSD_SNPRINTF(
+                out->message, sizeof(out->message),
+                "dsd-neo cannot convert the device's %u Hz to the %u Hz DSP bandwidth closely enough (%.0f ppm "
+                "off, %.0f allowed); choose another DSP bandwidth",
+                (unsigned)out->nominal_hz, (unsigned)out->target_hz, fabs(ppm), DSD_RATE_PLAN_MAX_APPROX_PPM);
             return DSD_RATE_PLAN_ERR_RATIO;
         }
     }
@@ -195,7 +196,7 @@ rate_plan_chain(const dsd_rate_plan_input* in, dsd_rate_plan* out) {
     }
     if (out->nominal_hz < out->target_hz) {
         DSD_SNPRINTF(out->message, sizeof(out->message),
-                     "the input runs at %u Hz, below the %u Hz DSP bandwidth rate, and dsd-neo does not upsample it",
+                     "the device runs at %u Hz, slower than the %u Hz DSP bandwidth; choose a smaller DSP bandwidth",
                      (unsigned)out->nominal_hz, (unsigned)out->target_hz);
         return DSD_RATE_PLAN_ERR_BELOW_TARGET;
     }
@@ -207,8 +208,10 @@ rate_plan_chain(const dsd_rate_plan_input* in, dsd_rate_plan* out) {
     }
     if (out->hb_out_shift != 0U) {
         DSD_SNPRINTF(out->message, sizeof(out->message),
-                     "%u Hz leaves the half-band filters at a fractional %.4f Hz, and this input cannot resample it",
-                     (unsigned)out->nominal_hz, ldexp((double)out->hb_out_num, -(int)out->hb_out_shift));
+                     "the device's %u Hz does not divide down to the %u Hz DSP bandwidth in whole hertz (%.4f Hz), and "
+                     "this input cannot convert it",
+                     (unsigned)out->nominal_hz, (unsigned)out->target_hz,
+                     ldexp((double)out->hb_out_num, -(int)out->hb_out_shift));
         return DSD_RATE_PLAN_ERR_FRACTIONAL;
     }
     out->step_out_hz = (uint32_t)out->hb_out_num;

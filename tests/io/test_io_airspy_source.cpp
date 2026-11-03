@@ -366,11 +366,12 @@ main() {
     }
 
     // Issue #578: a start that refuses the analog width at the rate the device delivers records the refusal, which
-    // names that rate once the stream is gone. The Airspy decimates its capture to 19,531 Hz at a 12 kHz DSP bandwidth,
-    // which filters NFM 12.5 kHz but not 25 kHz.
+    // names that rate once the stream is gone. The Airspy's 10 MS/s steps to exactly 24,000 Hz at a 24 kHz DSP
+    // bandwidth (issue #806; it ran 19,531 Hz at 12 kHz before, a rate no DSP bandwidth names), which filters NFM
+    // 12.5 kHz but not 25 kHz.
     opts->analog_only = 1;
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
-    opts->rtl_dsp_bw_khz = 12;
+    opts->rtl_dsp_bw_khz = 24;
     for (int width_hz : {25000, 12500}) {
         opts->analog_nfm_bandwidth_hz = width_hz;
         fail_create = failure = create_calls = 0;
@@ -385,7 +386,8 @@ main() {
             CHECK(stream.start() != 0);
             CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
             CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 25000);
-            CHECK(rate_hz == 19531 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(rate_hz == 24000 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(dsd_analog_width_realizable(12500, rate_hz));
             CHECK(!rtl_stream_test_has_resources());
             CHECK(!device_open && closes == previous_closes + 1 && !streaming);
         } else {

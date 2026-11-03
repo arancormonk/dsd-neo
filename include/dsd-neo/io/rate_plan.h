@@ -128,8 +128,10 @@ typedef struct {
     dsd_rate_plan_step step;
     /** step_out in whole Hz: the target when stepping, else hb_out. 0 on a refusal. */
     uint32_t step_out_hz;
-    int status;        /**< dsd_rate_plan_status */
-    char message[192]; /**< Why it was refused, for the log and the user; empty on success. */
+    int status; /**< dsd_rate_plan_status */
+    /** Why it was refused, in plain words for the log and the user (the rates and the DSP bandwidth, no filter
+        terms); empty on success. */
+    char message[192];
 } dsd_rate_plan;
 
 /** The I/Q rate step's delay, for EOF padding and retune-boundary expectations. All 0 for a plan that does not step. */
@@ -148,6 +150,10 @@ typedef struct {
  * below the target, a step ratio with no fit within DSD_RATE_PLAN_MAX_APPROX_PPM, and a backend that cannot step left
  * at a fractional rate; each names the rates in @p out->message.
  *
+ * The plan does not bound the step's taps per phase. A step the I/Q resampler cannot design (past its 256 taps per
+ * phase, which no Airspy or SoapySDR grid rate reaches) is refused when the step is designed: a live stream then
+ * refuses the open or the retune that read the rate back, and puts the device back on the capture it ran.
+ *
  * @return DSD_RATE_PLAN_OK, or a negative dsd_rate_plan_status (also in @p out->status).
  */
 int dsd_rate_plan_compute(const dsd_rate_plan_input* in, dsd_rate_plan* out);
@@ -159,9 +165,9 @@ void dsd_rate_plan_step_edges(uint32_t target_hz, int* protect_hz, int* stop_hz)
 /**
  * @brief The delay and tail of @p plan's step.
  *
- * T comes from the Kaiser estimate dsd_iq_resampler_configure_ratio() designs with (60 dB, taps per phase rounded up to
- * a multiple of 4), duplicated here because io_iq cannot depend on the DSP module; a DSP test pins the two equal at
- * every planned grid point.
+ * T comes from the Kaiser estimate dsd_iq_resampler_configure_ratio() designs with (65 dB, for the 60 dB the resampler
+ * promises; taps per phase rounded up to a multiple of 4), duplicated here because io_iq cannot depend on the DSP
+ * module; a DSP test pins the two equal at every planned grid point.
  *
  * @return DSD_RATE_PLAN_OK (bounds of 0 for a plan that does not step), or DSD_RATE_PLAN_ERR_ARGS for a NULL argument.
  */

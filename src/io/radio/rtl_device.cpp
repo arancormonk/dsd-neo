@@ -30,6 +30,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/tcp_quality_metrics.h>
@@ -10213,6 +10214,20 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
 #else
     return -1;
 #endif
+}
+
+dsd_rate_plan_backend
+rtl_device_rate_plan_backend(const struct rtl_device* dev) {
+    if (!dev) {
+        return DSD_RATE_PLAN_BACKEND_RTL_USB;
+    }
+    switch (dev->backend) {
+        case RTL_BACKEND_TCP: return DSD_RATE_PLAN_BACKEND_RTL_TCP;
+        case RTL_BACKEND_SOAPY: return DSD_RATE_PLAN_BACKEND_SOAPY;
+        case RTL_BACKEND_AIRSPY: return DSD_RATE_PLAN_BACKEND_AIRSPY;
+        case RTL_BACKEND_IQ_REPLAY: return DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
+        default: return DSD_RATE_PLAN_BACKEND_RTL_USB;
+    }
 }
 
 /**

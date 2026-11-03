@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -284,6 +285,17 @@ int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
  * @return 0 on success, negative when the backend cannot answer.
  */
 int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual);
+
+/**
+ * @brief The rate planner's backend for @p dev (issue #806, <dsd-neo/io/rate_plan.h>).
+ *
+ * An Airspy and a SoapySDR device may force their own rate and step it to the DSP bandwidth; an RTL-SDR, rtl_tcp and
+ * no device at all (NULL) run the rate asked for. An I/Q replay plans its chain itself and answers
+ * DSD_RATE_PLAN_BACKEND_REPLAY_EXACT, which never steps.
+ *
+ * @return A dsd_rate_plan_backend value.
+ */
+dsd_rate_plan_backend rtl_device_rate_plan_backend(const struct rtl_device* dev);
 
 /**
  * @brief Query the current device sample rate.
