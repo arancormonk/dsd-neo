@@ -3524,6 +3524,17 @@ rtl_usb_test_fake_async(void) {
                || g_test_usb_reader_stream.load(std::memory_order_acquire));
 }
 
+/* Poll every millisecond while @p waiting holds, for @p limit_ms of real time at most. The limit is on the clock, not a
+ * count of sleeps, which a loaded runner (or Windows' timer tick) stretches. */
+template <typename Waiting>
+static void
+rtl_test_wait_while(Waiting waiting, uint32_t limit_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + limit_ms;
+    while (waiting() && dsd_realtime_mono_ms() < deadline_ms) {
+        dsd_sleep_ms(1);
+    }
+}
+
 /* At @p point, the reader a test holds there waits until a stop's first cancel attempt; bounded, so a stop that never
  * cancels fails the test rather than hanging it. */
 static void
@@ -3533,10 +3544,7 @@ rtl_usb_test_hold_reader(int point) {
         return;
     }
     g_test_usb_reader_held.store(1, std::memory_order_release);
-    for (int waited_ms = 0; waited_ms < 2000 && g_test_usb_reader_cancels.load(std::memory_order_acquire) == 0;
-         ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
+    rtl_test_wait_while([] { return g_test_usb_reader_cancels.load(std::memory_order_acquire) == 0; }, 2000U);
 }
 #endif
 
@@ -3576,18 +3584,13 @@ rtl_usb_read_async(struct rtl_device* s) {
             /* Stream until a cancel reaches it; 5 s at most. */
             g_test_usb_reader_streamed.store(1, std::memory_order_release);
             g_test_usb_reader_streaming.store(1, std::memory_order_release);
-            for (int waited_ms = 0; waited_ms < 5000 && !g_test_usb_reader_cancelled.load(std::memory_order_acquire);
-                 ++waited_ms) {
-                dsd_sleep_ms(1);
-            }
+            rtl_test_wait_while([] { return g_test_usb_reader_cancelled.load(std::memory_order_acquire) == 0; }, 5000U);
             g_test_usb_reader_streaming.store(0, std::memory_order_release);
             return 0;
         }
         if (g_test_usb_reader_wait_stop.load(std::memory_order_acquire)) {
             /* Bounded, so a stop that never reaches the reader fails the test rather than hanging it. */
-            for (int waited_ms = 0; waited_ms < 5000 && s->run.load(std::memory_order_acquire); ++waited_ms) {
-                dsd_sleep_ms(1);
-            }
+            rtl_test_wait_while([s] { return s->run.load(std::memory_order_acquire) != 0; }, 5000U);
         }
         return g_test_usb_reader_rc.load(std::memory_order_acquire);
     }
@@ -11970,10 +11973,7 @@ static int
 rtl_device_test_usb_reader_end(struct rtl_device** dev, const rtl_device_test_usb_reader_request* request, int hold) {
     if (hold != RTL_TEST_USB_HOLD_NONE) {
         /* Stop only once the reader is held where the test asked. */
-        for (int waited_ms = 0; waited_ms < 2000 && !g_test_usb_reader_held.load(std::memory_order_acquire);
-             ++waited_ms) {
-            dsd_sleep_ms(1);
-        }
+        rtl_test_wait_while([] { return g_test_usb_reader_held.load(std::memory_order_acquire) == 0; }, 2000U);
     }
     if (request->stop_after_ms > 0) {
         dsd_sleep_ms((unsigned int)request->stop_after_ms);

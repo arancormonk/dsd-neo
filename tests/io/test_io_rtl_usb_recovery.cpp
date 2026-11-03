@@ -1464,7 +1464,8 @@ feed_paced(const stream_rig& r, const recording_reader& reader, int callbacks, u
         std::vector<unsigned char> buf = noise_callback((uint32_t)i);
         const uint64_t before = reader.count.load();
         rtl_device_test_usb_stream_deliver(r.dev, buf.data(), (uint32_t)buf.size());
-        for (int waited = 0; waited < 2000 && reader.count.load() == before; ++waited) {
+        const uint64_t give_up_ms = dsd_realtime_mono_ms() + 2000U;
+        while (reader.count.load() == before && dsd_realtime_mono_ms() < give_up_ms) {
             dsd_sleep_ms(1U);
         }
         dsd_sleep_ms(2U);
