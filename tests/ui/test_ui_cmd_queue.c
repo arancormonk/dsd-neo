@@ -26150,6 +26150,7 @@ test_scan_flag_edits_while_a_departure_is_owed(void) {
     const dsd_app_scan_list_set_payload other_on = {.session = 1U, .request = 1U, .list = 3, .enabled = 1U};
     const dsd_app_scan_list_set_payload other_off = {.session = 1U, .request = 2U, .list = 3, .enabled = 0U};
     const dsd_app_scan_list_set_payload stale_on = {.session = 2U, .request = 3U, .list = 3, .enabled = 1U};
+    const dsd_app_scan_list_set_payload paused_off = {.session = 1U, .request = 4U, .list = 2, .enabled = 0U};
     dsd_app_scan_avoid_remove_payload put_back;
     DSD_MEMSET(&put_back, 0, sizeof put_back);
     put_back.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
@@ -26160,7 +26161,8 @@ test_scan_flag_edits_while_a_departure_is_owed(void) {
     dsd_app_scan_avoid_remove_payload row_put_back = put_back;
     row_put_back.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
 
-    /* owed: 0 none, 1 the list on air is off, 2 the target on air is the avoided fallback. */
+    /* owed: 0 none, 1 the list on air is off, 2 the target on air is the avoided fallback, 3 none and the scan paused
+       (which publishes no list on air): a paused switch is only refused, so it never takes the frame loop. */
     const struct {
         const void* payload;
         size_t size;
@@ -26174,6 +26176,8 @@ test_scan_flag_edits_while_a_departure_is_owed(void) {
         {&other_off, sizeof other_off, "another list off, list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1, 1},
         {&other_on, sizeof other_on, "another list on, avoided fallback", DSD_APP_CMD_SCAN_LIST_SET, 2, 1},
         {&stale_on, sizeof stale_on, "another scan's list on, list on air off", DSD_APP_CMD_SCAN_LIST_SET, 1, 0},
+        {&paused_off, sizeof paused_off, "the paused scan's list off", DSD_APP_CMD_SCAN_LIST_SET, 3, 0},
+        {&other_on, sizeof other_on, "another list on, scan paused", DSD_APP_CMD_SCAN_LIST_SET, 3, 0},
         {&put_back, sizeof put_back, "put back, nothing owed", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0, 0},
         {&put_back, sizeof put_back, "put back, avoided fallback", DSD_APP_CMD_SCAN_AVOID_REMOVE, 2, 1},
         {&put_back, sizeof put_back, "put back, list on air off", DSD_APP_CMD_SCAN_AVOID_REMOVE, 1, 1},
@@ -26187,7 +26191,8 @@ test_scan_flag_edits_while_a_departure_is_owed(void) {
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         state.trunk_scan_session = 1U;
-        state.trunk_scan_active_list = 2U;
+        state.trunk_scan_paused = cases[i].owed == 3 ? 1U : 0U;
+        state.trunk_scan_active_list = cases[i].owed == 3 ? 0U : 2U;
         state.trunk_scan_active_list_off = cases[i].owed == 1 ? 1U : 0U;
         state.trunk_scan_active_avoided = cases[i].owed == 2 ? 1U : 0U;
         dsd_app_frontend_runtime_start(&opts, &state);

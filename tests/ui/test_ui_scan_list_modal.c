@@ -11,7 +11,7 @@
  *  - a switched row shows the state it asked for while the snapshot's trunk_scan_lists_seq is behind the result's,
  *    and the snapshot once it is not, also when the snapshot already holds a later switch at the answer;
  *  - a note goes once the snapshot's lists move past the result's, and a paused refusal goes on resume;
- *  - the footer offers no switch while the scan is paused;
+ *  - while the scan is paused, Enter sends nothing and is refused beside its row, and the footer offers no switch;
  *  - a repeated Enter on a waiting row sends nothing; rows wait independently and resolve in any order;
  *  - a submit the queue refuses says so at once;
  *  - Esc closes it, and so does the end of the session it opened on, dropping what it waited on;
@@ -254,24 +254,32 @@ test_opens_only_with_lists_to_switch(void) {
 
     assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Enter: switch on/off  Esc/Left: close") == 0);
 
-    /* A paused scan keeps its lists open here: Enter is answered with the refusal (D7), and the footer names the way
-       out instead of a switch. */
+    /* A paused scan keeps its lists open here: Enter is refused at once, beside the row and on the notice line, with
+       nothing sent (the decoder could only refuse it, and a DMR call on air would hold that answer back), and the
+       footer names the way out instead of a switch. */
     g_state.trunk_scan_paused = 1;
     tick();
     assert(scan_list_modal_active() == 1);
     expect_title("Scan lists (3 of 3 on, scan paused)");
     assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Esc/Left: close, then y resumes the scan") == 0);
     key('\n');
-    assert(g_sent_count == 1 && g_sent[0].list == 1 && g_sent[0].enabled == 0);
-    publish_result(g_sent[0].request, 1, 0, DSD_APP_SCAN_LIST_SET_PAUSED);
-    tick();
+    assert(g_sent_count == 0);
     expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
+    assert(strcmp(g_toast, "Scan paused: resume it first") == 0);
+    select_row(3);
+    key('\n');
+    assert(g_sent_count == 0);
+    expect_row(3, "All lists on                              Scan paused: resume it first");
+    select_row(0);
+    tick();
+    expect_row(3, "All lists on                              Scan paused: resume it first");
     tick(); /* still paused: still true */
     expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
     /* Resumed (the lists unchanged): the refusal is no longer true, and the switch is offered again. */
     g_state.trunk_scan_paused = 0;
     tick();
     expect_row(0, "1  security      On   12 targets  on air");
+    expect_row(3, "All lists on");
     assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Enter: switch on/off  Esc/Left: close") == 0);
     scan_list_modal_close();
     assert(scan_list_modal_active() == 0);

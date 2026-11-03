@@ -910,8 +910,9 @@ moment. The lists stay open until Esc or Left, and close by themselves when the 
 for the session: Config save and the exit autosave keep the lists as configured.
 
 The menu row is offered while a trunk scan with two or more lists runs. `#` also opens the lists while the scan is
-paused, where every switch is refused and the footer reads `Arrows  Esc/Left: close, then y resumes the scan`, and
-says what it needs where there are none to switch.
+paused, where every switch is refused at once with `Scan paused: resume it first` beside the row, nothing is sent to
+the decoder (so a DMR call on air is never held up by it), and the footer reads
+`Arrows  Esc/Left: close, then y resumes the scan`; it says what it needs where there are none to switch.
 
 ## Channel Labels
 

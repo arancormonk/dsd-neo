@@ -57,7 +57,7 @@ typedef struct {
 static ScanListModal g_modal;
 
 static const char k_footer[] = "Arrows  Enter: switch on/off  Esc/Left: close";
-/* Paused, Enter can only be refused: the footer names the way out instead (issue #697 D7). */
+/* Paused, Enter can only be refused: the footer names the way out instead (issue #697). */
 static const char k_footer_paused[] = "Arrows  Esc/Left: close, then y resumes the scan";
 static const char k_all_lists_on[] = "All lists on";
 
@@ -253,6 +253,18 @@ scan_list_modal_take_results(void) {
     }
 }
 
+/* Paused, the decoder can only refuse a switch: refuse it here, beside the row, as its answer would. Sending it would
+   wait out a DMR repeater call on air before that answer came. The note goes on the resume, as a paused answer's
+   does. */
+static void
+scan_list_modal_refuse_paused(dsd_app_scan_list_row* row) {
+    row->note = (uint8_t)DSD_APP_SCAN_LIST_NOTE_ANSWER;
+    row->code = DSD_APP_SCAN_LIST_SET_PAUSED;
+    row->note_seq = g_modal.view.lists_seq;
+    row->seen_paused = 1U;
+    ui_statusf("%s", scan_list_answer_note(DSD_APP_SCAN_LIST_SET_PAUSED));
+}
+
 /* Enter: ask for the other state of a list (every list on, for the last row). A row already waiting ignores it. */
 static void
 scan_list_modal_submit(int r) {
@@ -261,6 +273,10 @@ scan_list_modal_submit(int r) {
     }
     dsd_app_scan_list_row* row = &g_modal.rows[r];
     if (row->request != 0U) {
+        return;
+    }
+    if (g_modal.view.paused) {
+        scan_list_modal_refuse_paused(row);
         return;
     }
     const int is_list = r < (int)g_modal.view.list_count;

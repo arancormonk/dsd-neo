@@ -9452,7 +9452,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `act_scan_lists()`) open the modal in `scan_list_modal.{h,c}`, which `menu_core.c` drives like the RadioReference
     panel (keys, `scan_list_modal_tick()` with the frame's pair, render, close with the overlay); `act_scan_lists()`
     opens one line of help where the pair has no trunk scan with 2+ lists (`#` still opens it on a paused one, where
-    every switch is refused, and the footer swaps Enter for `Esc/Left: close, then y resumes the scan`). The modal owns
+    Enter submits nothing: the modal puts the PAUSED note on the row itself and the toast through `ui_statusf()`, since
+    a submit would wait out a held DMR carrier only to be refused; the footer swaps Enter for
+    `Esc/Left: close, then y resumes the scan`). The modal owns
     all it draws: a copy of `dsd_app_scan_list_view` taken from the frame's pair each tick, never the decoder's
     structs, and per row the request it waits on. Enter submits `dsd_app_command_scan_list_set()` with the session it
     opened on and `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and
