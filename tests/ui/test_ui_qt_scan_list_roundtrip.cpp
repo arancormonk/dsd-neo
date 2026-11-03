@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QStandardPaths>
@@ -21,14 +22,17 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
+#include <stdint.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"

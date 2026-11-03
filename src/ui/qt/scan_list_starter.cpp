@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 #include <vector>
