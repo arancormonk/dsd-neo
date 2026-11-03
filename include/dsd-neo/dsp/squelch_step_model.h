@@ -23,15 +23,21 @@
  * - The step itself: a design of the plan's own (dsd_iq_resampler_configure_ratio() with the plan's key, the same taps
  *   bit for bit as the live step's), never the live one, which runs on the demod thread.
  * - The step's responses to the factor started at every input phase (one input period, M phases), for the floor
- *   model's covariance.
+ *   model's covariance, and from them the step's own output covariance averaged over its period (L outputs) with the
+ *   largest distance of any output phase's covariance from that average.
  *
  * dsd_squelch_step_model_build() makes all of it on the controller thread while the demod thread is paused (the rate
  * chain's transaction), and keeps it while the plan stays: a build for the plan it holds does nothing. The two plan
  * designs then run on the demod thread when a squelch plan key changes, allocating nothing:
  *
- * - dsd_squelch_step_model_floor_plan(): the factor's responses through the step and the channel taps give the exact
- *   covariance E{z_n z_{n+m}} of every output phase n (it repeats every L outputs), and the auto squelch's
- *   dsd_squelch_floor_plan_design_periodic() takes N_eff, beta and rho at every 40 ms window start phase from it.
+ * - dsd_squelch_step_model_floor_plan(): the auto squelch's dsd_squelch_floor_plan_design_periodic() takes N_eff, beta
+ *   and rho at every 40 ms window start phase from the covariance E{z_n z_{n+m}} of every output phase n (it repeats
+ *   every L outputs) after the channel taps. The taps are time-invariant, so the covariance averaged over the period
+ *   is exact from the step's averaged one and the taps' autocorrelation, in well under a millisecond. Per-phase results
+ *   average to the results of that averaged covariance up to the square of how far a phase's covariance strays from
+ *   it (the first-order terms cancel over a period). While a bound on that stays under 1e-2 the plan takes the
+ *   averaged covariance, and otherwise every output phase's in full (dsd_squelch_step_model_floor_plan_exact(), about
+ *   15 ms at 72 kHz). The bound reaches 1.1e-3 on the Airspy grid; the two plans differ there by under 2e-8.
  * - dsd_squelch_step_model_noise_plan(): the noise squelch's 2 s calibration runs on fixed-seed noise through the factor
  *   and this model's step (dsd_noise_squelch_plan_design_stepped()).
  *
@@ -53,8 +59,8 @@ extern "C" {
 enum {
     /** Most lags R_hb can span: a cascade's support settles near its widest stage's taps (64 at most). */
     DSD_SQUELCH_STEP_MAX_HB_LAGS = 64,
-    /** Most taps of the spectral factor. */
-    DSD_SQUELCH_STEP_MAX_FACTOR_TAPS = 255,
+    /** Most taps of the spectral factor: the noise squelch's stepped design rings that many. */
+    DSD_SQUELCH_STEP_MAX_FACTOR_TAPS = DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS,
 };
 
 /** @brief The model for one step plan: what dsd_squelch_step_model_build() makes. */
@@ -76,6 +82,11 @@ typedef struct dsd_squelch_step_model {
     int cov_lags;
     double* cov;
     double* chan;
+    /* The step's output covariance averaged over its period (resp_len lags), the largest absolute distance of any
+       output phase's covariance from it, and the channel taps' autocorrelation (the floor plan's scratch). */
+    double* ry_mean;
+    double cyclo_dev;
+    double rc[DSD_NOISE_SQUELCH_MAX_TAPS];
 } dsd_squelch_step_model;
 
 /** Initialise @p m: empty, not ready. */
@@ -104,13 +115,23 @@ int dsd_squelch_step_model_build(dsd_squelch_step_model* m, const dsd_live_iq_st
 /**
  * @brief The auto squelch's plan for the channel taps @p taps (@p taps_len; NULL or 0 when no channel filter runs)
  * behind @p m's step, at the channel rate @p rate_hz (the step's target): dsd_squelch_floor_plan_design_periodic() on
- * the exact covariance of every output phase. Allocates nothing.
+ * the covariance averaged over the step's period while the bound on how far an output phase's strays from it stays
+ * under 1e-2, else on every output phase's (see the file comment). Allocates nothing.
  *
  * @return 0, or -1 (plan not valid): @p m not ready, more than DSD_NOISE_SQUELCH_MAX_TAPS taps, or a plan the design
  * refuses.
  */
 int dsd_squelch_step_model_floor_plan(dsd_squelch_step_model* m, dsd_squelch_floor_plan* out, const float* taps,
                                       int taps_len, int rate_hz);
+
+/**
+ * @brief dsd_squelch_step_model_floor_plan() from the covariance of every output phase in full, whatever the step's
+ * per-phase distance: the reference the averaged path is held to, and its fallback. Allocates nothing.
+ *
+ * @return As dsd_squelch_step_model_floor_plan().
+ */
+int dsd_squelch_step_model_floor_plan_exact(dsd_squelch_step_model* m, dsd_squelch_floor_plan* out, const float* taps,
+                                            int taps_len, int rate_hz);
 
 /**
  * @brief The noise squelch's plan for the channel taps @p taps (@p taps_len; NULL or 0 when no channel filter runs)

@@ -31,6 +31,11 @@ static const double k_factor_residual = 1e-6;
 static const double k_factor_kaiser_beta = 3.3952;
 /* The most doubles the floor model's covariance table may take (64 MB): a ratio past any device's would need more. */
 static const size_t k_max_cov_doubles = (size_t)8 << 20;
+/* The floor plan takes the phase-averaged covariance while the bound on how far any output phase's covariance strays
+   from it after the channel taps stays under this (relative): the per-phase results then average to its results within
+   about the square of it (1e-4). The bound reaches 1.1e-3 on the Airspy grid (72 kHz, NFM 25k), where the two plans
+   differ by under 2e-8; a step past it takes every output phase in full. */
+static const double k_cyclo_negligible = 1e-2;
 
 void
 dsd_squelch_step_model_init(dsd_squelch_step_model* m) {
@@ -50,6 +55,7 @@ dsd_squelch_step_model_release(dsd_squelch_step_model* m) {
     dsd_neo_aligned_free(m->resp);
     dsd_neo_aligned_free(m->cov);
     dsd_neo_aligned_free(m->chan);
+    dsd_neo_aligned_free(m->ry_mean);
     dsd_squelch_step_model_init(m);
 }
 
@@ -274,6 +280,8 @@ ssm_record_responses(dsd_squelch_step_model* m) {
             }
             const int64_t origin = k < M ? ssm_resp_origin(m, k) : INT64_MAX;
             const float y = out[(size_t)i * 2U];
+            /* Outside every window the step saw only zeros, so its output is exactly zero: anything else, however
+               small, is a response the windows missed, and the compare is exact on purpose. */
             if (n >= origin) {
                 m->resp[((size_t)k * (size_t)m->resp_len) + (size_t)(n - origin)] = y;
             } else if (y != 0.0f) {
@@ -283,6 +291,66 @@ ssm_record_responses(dsd_squelch_step_model* m) {
     }
     dsd_iq_resampler_clear(&m->step);
     return 0;
+}
+
+/* Response @p k through the @p len channel taps into chan: its @p lags outputs (resp_len + len - 1). */
+static void
+ssm_response_through_taps(const dsd_squelch_step_model* m, int k, const float* taps, int len, int lags) {
+    const float* y = m->resp + ((size_t)k * (size_t)m->resp_len);
+    for (int t = 0; t < lags; t++) {
+        double sum = 0.0;
+        const int lo = t - (m->resp_len - 1) > 0 ? t - (m->resp_len - 1) : 0;
+        const int hi = t < len - 1 ? t : len - 1;
+        for (int i = lo; i <= hi; i++) {
+            sum += (double)taps[i] * (double)y[t - i];
+        }
+        m->chan[t] = sum;
+    }
+}
+
+/* The exact covariance of every output phase behind the @p len channel taps into cov (L rows of @p lags): every input
+   phase's response adds its products to the output phases it covers, so summed over the M starts (every noise input up
+   to a whole number of periods) each row holds E{z_n z_{n+m}} for its output phase n. */
+static void
+ssm_accumulate_cov(dsd_squelch_step_model* m, const float* taps, int len, int lags) {
+    const int L = m->plan.L;
+    DSD_MEMSET(m->cov, 0, (size_t)L * (size_t)lags * sizeof(double));
+    for (int k = 0; k < m->plan.M; k++) {
+        ssm_response_through_taps(m, k, taps, len, lags);
+        const int base = (int)(ssm_resp_origin(m, k) % L);
+        for (int t = 0; t < lags; t++) {
+            const double zt = m->chan[t];
+            double* row = m->cov + ((size_t)((base + t) % L) * (size_t)lags);
+            for (int lag = 0; lag + t < lags; lag++) {
+                row[lag] += zt * m->chan[t + lag];
+            }
+        }
+    }
+}
+
+/* The step's own output covariance (no channel taps), averaged over the period into ry_mean, and the largest distance
+   of any output phase's from it into cyclo_dev: what the floor plan's channel finish works from. */
+static void
+ssm_pre_channel_stats(dsd_squelch_step_model* m) {
+    static const float k_unit_tap[1] = {1.0f};
+    const int L = m->plan.L;
+    const int lags = m->resp_len;
+    ssm_accumulate_cov(m, k_unit_tap, 1, lags);
+    for (int lag = 0; lag < lags; lag++) {
+        double sum = 0.0;
+        for (int n = 0; n < L; n++) {
+            sum += m->cov[((size_t)n * (size_t)lags) + (size_t)lag];
+        }
+        m->ry_mean[lag] = sum / (double)L;
+    }
+    /* R(n, n - m) is R(n - m, n): the rows hold both directions. */
+    double dev = 0.0;
+    for (int n = 0; n < L; n++) {
+        for (int lag = 0; lag < lags; lag++) {
+            dev = fmax(dev, fabs(m->cov[((size_t)n * (size_t)lags) + (size_t)lag] - m->ry_mean[lag]));
+        }
+    }
+    m->cyclo_dev = dev;
 }
 
 /* The response store and the floor model's scratch. */
@@ -297,7 +365,8 @@ ssm_allocate(dsd_squelch_step_model* m) {
     m->resp = (float*)dsd_neo_aligned_malloc(resp_count * sizeof(float));
     m->cov = (double*)dsd_neo_aligned_malloc(cov_count * sizeof(double));
     m->chan = (double*)dsd_neo_aligned_malloc((size_t)m->cov_lags * sizeof(double));
-    if (!m->resp || !m->cov || !m->chan) {
+    m->ry_mean = (double*)dsd_neo_aligned_malloc((size_t)m->resp_len * sizeof(double));
+    if (!m->resp || !m->cov || !m->chan || !m->ry_mean) {
         return -1;
     }
     DSD_MEMSET(m->resp, 0, resp_count * sizeof(float));
@@ -345,60 +414,99 @@ dsd_squelch_step_model_build(dsd_squelch_step_model* m, const dsd_live_iq_step_p
         dsd_squelch_step_model_release(m);
         return -1;
     }
+    ssm_pre_channel_stats(m);
     m->ready = 1;
     return 0;
 }
 
 /* --------------------------------------------------------------------------------------------- the plans */
 
-/* Response @p k through the @p len channel taps into chan: its @p lags outputs (resp_len + len - 1). */
-static void
-ssm_response_through_taps(const dsd_squelch_step_model* m, int k, const float* taps, int len, int lags) {
-    const float* y = m->resp + ((size_t)k * (size_t)m->resp_len);
-    for (int t = 0; t < lags; t++) {
-        double sum = 0.0;
-        const int lo = t - (m->resp_len - 1) > 0 ? t - (m->resp_len - 1) : 0;
-        const int hi = t < len - 1 ? t : len - 1;
-        for (int i = lo; i <= hi; i++) {
-            sum += (double)taps[i] * (double)y[t - i];
-        }
-        m->chan[t] = sum;
+/* The arguments a floor plan takes: @p m ready for the rate, and channel taps (NULL or 0: one unit tap) it can hold. */
+static int
+ssm_floor_args(const dsd_squelch_step_model* m, const float** taps, int* taps_len, int rate_hz) {
+    static const float k_unit_tap[1] = {1.0f};
+    if (!m || !m->ready || *taps_len > DSD_NOISE_SQUELCH_MAX_TAPS || rate_hz != m->plan.target_hz) {
+        return 0;
     }
+    if (!*taps || *taps_len <= 0) {
+        *taps = k_unit_tap;
+        *taps_len = 1;
+    }
+    return 1;
+}
+
+int
+dsd_squelch_step_model_floor_plan_exact(dsd_squelch_step_model* m, dsd_squelch_floor_plan* out, const float* taps,
+                                        int taps_len, int rate_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const float* run_taps = taps;
+    int run_len = taps_len;
+    if (!ssm_floor_args(m, &run_taps, &run_len, rate_hz)) {
+        return -1;
+    }
+    const int lags = m->resp_len + run_len - 1;
+    ssm_accumulate_cov(m, run_taps, run_len, lags);
+    dsd_squelch_floor_periodic_noise noise;
+    noise.period = m->plan.L;
+    noise.lags = lags;
+    noise.cov = m->cov;
+    return dsd_squelch_floor_plan_design_periodic(out, taps, taps_len, &noise, rate_hz);
+}
+
+/* The phase-averaged covariance behind the channel taps into chan (@p lags of it), exact because the channel taps are
+   time-invariant: R(m) = sum_d R_c(d) R_y(m - d), R_c the taps' autocorrelation and R_y the step's averaged covariance.
+   Returns the bound on how far any output phase's covariance can be from it, relative to its power: the step's largest
+   per-phase distance times (sum |c|)^2, over R(0). */
+static double
+ssm_mean_cov_through_taps(dsd_squelch_step_model* m, const float* taps, int len, int lags) {
+    double abs_sum = 0.0;
+    for (int d = 0; d < len; d++) {
+        double r = 0.0;
+        for (int i = 0; i + d < len; i++) {
+            r += (double)taps[i] * (double)taps[i + d];
+        }
+        m->rc[d] = r;
+        abs_sum += fabs((double)taps[d]);
+    }
+    const int ry_lags = m->resp_len;
+    for (int lag = 0; lag < lags; lag++) {
+        double sum = 0.0;
+        const int lo = lag - (len - 1);
+        const int hi = lag + (len - 1);
+        for (int k = lo; k <= hi; k++) {
+            const int at = abs(k);
+            if (at < ry_lags) {
+                sum += m->ry_mean[at] * m->rc[abs(lag - k)];
+            }
+        }
+        m->chan[lag] = sum;
+    }
+    return m->chan[0] > 0.0 ? m->cyclo_dev * abs_sum * abs_sum / m->chan[0] : INFINITY;
 }
 
 int
 dsd_squelch_step_model_floor_plan(dsd_squelch_step_model* m, dsd_squelch_floor_plan* out, const float* taps,
                                   int taps_len, int rate_hz) {
-    static const float k_unit_tap[1] = {1.0f};
     if (!out) {
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (!m || !m->ready || taps_len > DSD_NOISE_SQUELCH_MAX_TAPS || rate_hz != m->plan.target_hz) {
+    const float* run_taps = taps;
+    int run_len = taps_len;
+    if (!ssm_floor_args(m, &run_taps, &run_len, rate_hz)) {
         return -1;
     }
-    const float* run_taps = (taps && taps_len > 0) ? taps : k_unit_tap;
-    const int run_len = (taps && taps_len > 0) ? taps_len : 1;
-    const int L = m->plan.L;
     const int lags = m->resp_len + run_len - 1;
-    DSD_MEMSET(m->cov, 0, (size_t)L * (size_t)lags * sizeof(double));
-    /* Every input phase's response adds its products to the output phases it covers: summed over the M starts (every
-       noise input up to a whole number of periods), each row holds E{z_n z_{n+m}} for its output phase n. */
-    for (int k = 0; k < m->plan.M; k++) {
-        ssm_response_through_taps(m, k, run_taps, run_len, lags);
-        const int base = (int)(ssm_resp_origin(m, k) % L);
-        for (int t = 0; t < lags; t++) {
-            const double zt = m->chan[t];
-            double* row = m->cov + ((size_t)((base + t) % L) * (size_t)lags);
-            for (int lag = 0; lag + t < lags; lag++) {
-                row[lag] += zt * m->chan[t + lag];
-            }
-        }
+    if (ssm_mean_cov_through_taps(m, run_taps, run_len, lags) > k_cyclo_negligible) {
+        return dsd_squelch_step_model_floor_plan_exact(m, out, taps, taps_len, rate_hz);
     }
     dsd_squelch_floor_periodic_noise noise;
-    noise.period = L;
+    noise.period = 1;
     noise.lags = lags;
-    noise.cov = m->cov;
+    noise.cov = m->chan;
     return dsd_squelch_floor_plan_design_periodic(out, taps, taps_len, &noise, rate_hz);
 }
 

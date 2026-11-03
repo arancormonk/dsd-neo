@@ -2033,7 +2033,8 @@ static int
 squelch_plan_key_same(const dsd_demod_squelch_plan_key* a, const dsd_demod_squelch_plan_key* b) {
     return a->set && b->set && a->rate_hz == b->rate_hz && a->taps_len == b->taps_len && a->hb_taps == b->hb_taps
            && a->passes == b->passes && a->rate_out == b->rate_out && a->profile == b->profile
-           && a->width_hz == b->width_hz && dsd_live_iq_step_plan_equal(&a->step, &b->step);
+           && a->width_hz == b->width_hz && a->step.enabled == b->step.enabled
+           && (!a->step.enabled || dsd_live_iq_step_plan_equal(&a->step, &b->step));
 }
 
 /* The half-band cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones
@@ -2063,6 +2064,13 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
     if (!d->live_iq_step.enabled) {
         return 0;
     }
+    if (dsd_squelch_step_model_matches(&d->squelch_step_model, &d->live_iq_step.plan)) {
+        return 0;
+    }
+    /* A new model, or none after a failed build: the plans designed under this key (from no model, or another one)
+       are designed again at the next block. */
+    d->squelch_plan.set = 0;
+    d->noise_plan.set = 0;
     dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
     const int count = squelch_cascade_stages(d->live_iq_step.plan.passes, stages);
     return dsd_squelch_step_model_build(&d->squelch_step_model, &d->live_iq_step.plan, stages, count);
@@ -2086,7 +2094,7 @@ squelch_floor_ensure_plan(struct demod_state* d) {
     if (k.step.enabled) {
         dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
         DSD_MEMSET(&plan, 0, sizeof plan);
-        if (model) {
+        if (model != NULL) {
             (void)dsd_squelch_step_model_floor_plan(model, &plan, taps, k.taps_len, k.rate_hz);
         }
     } else {
@@ -2109,7 +2117,7 @@ squelch_noise_ensure_plan(struct demod_state* d) {
     if (k.step.enabled) {
         dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
         DSD_MEMSET(&plan, 0, sizeof plan);
-        if (model) {
+        if (model != NULL) {
             (void)dsd_squelch_step_model_noise_plan(model, &plan, taps, k.taps_len, k.rate_hz);
         }
     } else {

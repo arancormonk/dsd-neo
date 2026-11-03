@@ -225,7 +225,7 @@ sqf_periodic_sample_at(const dsd_squelch_floor_periodic_noise* noise, int n, int
     return out;
 }
 
-/* A window's running sums. */
+/* A window's running sums; a sample adds with a weight (its count, or -1 as it leaves). */
 typedef struct {
     double power;
     double sq;
@@ -234,21 +234,27 @@ typedef struct {
 } sqf_periodic_window;
 
 static void
-sqf_periodic_window_add(sqf_periodic_window* w, const sqf_periodic_sample* s, double sign) {
-    w->power += sign * s->power;
-    w->sq += sign * s->sq;
-    w->beta += sign * s->beta;
-    w->rho += sign * s->rho;
+sqf_periodic_window_add(sqf_periodic_window* w, const sqf_periodic_sample* s, double weight) {
+    w->power += weight * s->power;
+    w->sq += weight * s->sq;
+    w->beta += weight * s->beta;
+    w->rho += weight * s->rho;
 }
 
 /* The means over every window start phase of N_eff, beta and rho for windows of @p window samples, into @p out (its
-   neff, beta and rho_lag). The window starts at phase 0, then slides one sample per phase. Returns -1 for a window with
-   no power. */
+   neff, beta and rho_lag). The window starts at phase 0, then slides one sample per phase: 2 period + window % period
+   samples evaluated. Returns -1 for a window with no power. */
 static int
 sqf_periodic_phase_means(const dsd_squelch_floor_periodic_noise* noise, int lag, int window,
                          dsd_squelch_floor_plan* out) {
+    /* The first window: its whole periods as one period's sums times their count, then the samples left over. */
     sqf_periodic_window w = {0.0, 0.0, 0.0, 0.0};
-    for (int i = 0; i < window; i++) {
+    const int periods = window / noise->period;
+    for (int i = 0; periods > 0 && i < noise->period; i++) {
+        const sqf_periodic_sample s = sqf_periodic_sample_at(noise, i, lag);
+        sqf_periodic_window_add(&w, &s, (double)periods);
+    }
+    for (int i = 0; i < window % noise->period; i++) {
         const sqf_periodic_sample s = sqf_periodic_sample_at(noise, i, lag);
         sqf_periodic_window_add(&w, &s, 1.0);
     }

@@ -1024,14 +1024,14 @@ rate_chain_prepare_step(const dsd_live_iq_step_plan* key) {
 }
 
 /* The dynamic squelches' noise model for the step that now runs (issue #806), built here in the transaction so no plan
- * design allocates while samples flow; a model for the same plan is kept. Without one the squelch stays open behind
- * the step, which the log says. */
+ * design allocates while samples flow; a model for the same plan is kept. Without one the auto and noise squelch keep
+ * their gate open behind the step, which the log says. */
 static void
 rate_chain_sync_squelch_model(void) {
     if (dsd_demod_squelch_step_model_sync(&demod) != 0) {
-        LOG_WARN("The auto and noise squelch cannot be calibrated for the %u Hz to %u Hz conversion; they stay "
-                 "open.\n",
-                 (unsigned)g_live_rate_plan.nominal_hz, (unsigned)g_live_rate_plan.target_hz);
+        LOG_WARN("Auto and noise squelch could not be set up for the %g MS/s device rate at the %u kHz DSP "
+                 "bandwidth, so they will not mute noise.\n",
+                 (double)g_live_rate_plan.nominal_hz / 1e6, (unsigned)(g_live_rate_plan.target_hz / 1000U));
     }
 }
 
