@@ -2519,7 +2519,9 @@ suite runs under this compiler.
       publishes an immutable copy) and submits the internal `DSD_APP_CMD_RUNTIME_CONFIG_APPLY` (no payload, not in the
       control API catalog, admitted during Signal search), whose handler applies `dsd_apply_runtime_config_to_opts()`
       (`dmr_t3_heuristic_fill`, `p25_afc_status_gate_enable`) on the decoder thread: the menu never writes `dsd_opts`
-      (#672 B10). Tests: `UI_MENU_ENV`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `APP_COMMAND_QUEUE`, `API_COMMANDS`.
+      (#672 B10). Both are read where used, so the command is deferred (`k_deferred_commands`) and an Audio LPF or
+      de-emphasis edit never ends a DMR repeater loop. Tests: `UI_MENU_ENV`, `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`,
+      `APP_COMMAND_QUEUE`, `API_COMMANDS`.
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
@@ -12210,12 +12212,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   `trunk_scan_switch_to()` and re-saves the rollback snapshot. `dmr_sm_abandon_carrier()` keeps the destination an
   ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
   `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
-  those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks), with
-  `DSP_OP` and `AIRSPY_SET` judged by their payload) lets `dmrBS()`, which holds the decoder for a whole repeater
-  carrier, return to the frame loop at a burst boundary; other commands wait for the carrier to end. EDACS analog voice
-  (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the call, which cannot be
-  re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored, and the runtime
-  config's snapshot comparison includes `no_signal_handlers_*`.
+  those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks, the runtime
+  config re-parse), with `DSP_OP` and `AIRSPY_SET` judged by their payload) lets `dmrBS()`, which holds the decoder for
+  a whole repeater carrier, return to the frame loop at a burst boundary; other commands wait for the carrier to end.
+  EDACS analog voice (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the
+  call, which cannot be re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored,
+  and the runtime config's snapshot comparison includes `no_signal_handlers_*`.
 - `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
   frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each as a `dsd_analog_call_block`
   descriptor with its input (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a

@@ -10464,6 +10464,8 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_BIAS_TEE,
     DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
+    /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
 };
 
 /* The Airspy settings that are front-end tweaks; a device serial or a sample rate reopens the input. */

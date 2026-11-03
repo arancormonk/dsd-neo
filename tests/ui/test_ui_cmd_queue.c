@@ -8903,6 +8903,10 @@ test_runtime_config_apply_sets_the_decoder_options(void) {
     rc |= expect_int("runtime config: queued", dsd_app_command_action(DSD_APP_CMD_RUNTIME_CONFIG_APPLY),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("runtime config: nothing before the drain", opts->dmr_t3_heuristic_fill, 0);
+    /* Both fields are read where they are used, so a terminal Audio LPF or de-emphasis edit, which re-parses, never
+       ends a DMR repeater loop (dmrBS()) and its call: the command waits for the carrier to end, as the other deferred
+       commands do. */
+    rc |= expect_int("runtime config: no frame loop needed", dsd_app_commands_need_frame_loop(), 0);
     rc |= expect_int("runtime config: drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("runtime config: DMR T3 fill on", opts->dmr_t3_heuristic_fill, 1);
     rc |= expect_int("runtime config: P25 AFC gate on", opts->p25_afc_status_gate_enable, 1);
@@ -9174,7 +9178,8 @@ test_talkgroup_row_record_after_mode(void) {
 }
 
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
-   command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
+   command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks, the runtime config
+   re-parse); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
 static int
 test_commands_that_need_the_frame_loop(void) {
@@ -9225,6 +9230,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
         {&value, sizeof value, "NFM max gap", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0},
         {&value, sizeof value, "NFM pre-roll", DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0},
+        {NULL, 0U, "runtime config re-parse", DSD_APP_CMD_RUNTIME_CONFIG_APPLY, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
