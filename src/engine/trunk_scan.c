@@ -374,6 +374,7 @@ static dsd_trunk_scan_coord* g_trunk_scan_coord;
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 static int g_trunk_scan_now_override;
 static double g_trunk_scan_now_m;
+static size_t g_trunk_scan_alternate_walk_off_list_steps;
 #endif
 static const char k_trunk_scan_csv_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes";
 
@@ -402,6 +403,11 @@ void
 trunk_scan_test_clear_now(void) {
     g_trunk_scan_now_override = 0;
     g_trunk_scan_now_m = 0.0;
+}
+
+size_t
+trunk_scan_test_alternate_walk_off_list_steps(void) {
+    return g_trunk_scan_alternate_walk_off_list_steps;
 }
 #endif
 
@@ -3332,18 +3338,27 @@ trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, 
            && !trunk_scan_target_width_skipped(opts, state, alt, rate_hz);
 }
 
-/* Somewhere else to go: the same candidate filter trunk_scan_advance_candidate() applies
- * (trunk_scan_alternate_is_candidate()), so the cap can never fire on a rotation the advance would refuse. An alternate
- * out of the rotation (its list off, or avoided for the session), still cooling down from a failed retune, or skipped
- * at every visit for a width the DSP rate cannot filter is not an alternate. */
+/* The first list at or after @p l (0-based) that is switched on, other than @p skip (0-based, -1 for none), or
+ * coord->list_count. A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a list
+ * that is off in one step, however many targets it holds. */
 static int
-trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
-                                       double now_m) {
-    if (coord->count < 2) {
-        return 0;
+trunk_scan_next_list_on(const dsd_trunk_scan_coord* coord, int l, int skip) {
+    while (l < coord->list_count && (!coord->lists[l].enabled || l == skip)) {
+        l++;
     }
-    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    for (size_t i = 0; i < coord->count; i++) {
+    return l;
+}
+
+/* Whether a target of list @p l (0-based) other than the one on air would be tried in its place
+   (trunk_scan_alternate_is_candidate()). */
+static int
+trunk_scan_list_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, int l,
+                              int rate_hz, double now_m) {
+    const size_t end = coord->lists[l].first + coord->lists[l].count;
+    for (size_t i = coord->lists[l].first; i < end && i < coord->count; i++) {
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
+        g_trunk_scan_alternate_walk_off_list_steps += coord->lists[coord->targets[i].list].enabled ? 0U : 1U;
+#endif
         if (i != coord->active
             && trunk_scan_alternate_is_candidate(opts, state, coord, &coord->targets[i], rate_hz, now_m)) {
             return 1;
@@ -3352,18 +3367,44 @@ trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
-/* The targets the rotation can reach besides @p except (coord->count for none): in the rotation and not skipped at
- * every visit for a width the published DSP rate cannot filter, cooling down or not. What avoid's and a list toggle's
- * last-usable refusals count, so neither leaves the operator on a target the scan can only pass over. */
+/* Somewhere else to go: the same candidate filter trunk_scan_advance_candidate() applies
+ * (trunk_scan_alternate_is_candidate()), so the cap can never fire on a rotation the advance would refuse. An alternate
+ * out of the rotation (its list off, or avoided for the session), still cooling down from a failed retune, or skipped
+ * at every visit for a width the DSP rate cannot filter is not an alternate. The visit cap and the receive expiry ask
+ * at every burst boundary of a held carrier, so the walk covers only the lists that are on. */
+static int
+trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                       double now_m) {
+    if (coord->count < 2) {
+        return 0;
+    }
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    for (int l = trunk_scan_next_list_on(coord, 0, -1); l < coord->list_count;
+         l = trunk_scan_next_list_on(coord, l + 1, -1)) {
+        if (trunk_scan_list_has_alternate(opts, state, coord, l, rate_hz, now_m)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The targets the rotation can reach besides @p except (coord->count for none), with list @p skip (0-based, -1 for none)
+ * taken as off: in the rotation and not skipped at every visit for a width the published DSP rate cannot filter,
+ * cooling down or not. What avoid's and a list toggle's last-usable refusals count, so neither leaves the operator on a
+ * target the scan can only pass over. */
 static size_t
-trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
-                        size_t except) {
+trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t except,
+                        int skip) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     size_t usable = 0U;
-    for (size_t i = 0; i < coord->count; i++) {
-        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-        usable += i != except && trunk_scan_target_in_rotation(coord, rt)
-                  && !trunk_scan_target_width_skipped(opts, state, rt, rate_hz);
+    for (int l = trunk_scan_next_list_on(coord, 0, skip); l < coord->list_count;
+         l = trunk_scan_next_list_on(coord, l + 1, skip)) {
+        const size_t end = coord->lists[l].first + coord->lists[l].count;
+        for (size_t i = coord->lists[l].first; i < end && i < coord->count; i++) {
+            const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+            usable += i != except && trunk_scan_target_in_rotation(coord, rt)
+                      && !trunk_scan_target_width_skipped(opts, state, rt, rate_hz);
+        }
     }
     return usable;
 }
@@ -4651,7 +4692,7 @@ trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
     }
     /* Somewhere to go: a target the rotation can reach, cooling down or not, other than this one. One that is skipped
        at every visit for its width is none, or the avoid would only leave the operator on the target avoided. */
-    if (trunk_scan_usable_count(opts, state, coord, coord->active) == 0U) {
+    if (trunk_scan_usable_count(opts, state, coord, coord->active, -1) == 0U) {
         return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
     if (!p25_sm_tick_guard_try_enter()) {
@@ -4761,20 +4802,16 @@ trunk_scan_list_set_changes(const dsd_trunk_scan_coord* coord, int list, int ena
     return 0;
 }
 
-/* Whether switching @p list off leaves the rotation a target it can reach (D5): not when the other lists that are on
-   hold only avoided targets, or targets skipped at every visit for their width, or none. Every list off leaves none. */
+/* Whether switching @p list off leaves the rotation a target it can reach: not when the other lists that are on hold
+   only avoided targets, or targets skipped at every visit for their width, or none. Every list off leaves none. A
+   read: the lists stay as they are until the switch. */
 static int
-trunk_scan_list_off_leaves_a_target(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord,
+trunk_scan_list_off_leaves_a_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                     int list) {
     if (list == DSD_TRUNK_SCAN_LIST_ALL) {
         return 0;
     }
-    dsd_trunk_scan_list_entry* entry = &coord->lists[list - 1];
-    const int was_enabled = entry->enabled;
-    entry->enabled = 0;
-    const size_t usable = trunk_scan_usable_count(opts, state, coord, coord->count);
-    entry->enabled = was_enabled;
-    return usable > 0U;
+    return trunk_scan_usable_count(opts, state, coord, coord->count, list - 1) > 0U;
 }
 
 /* dsd_state::trunk_scan_lists_seq's next value: process-wide, never 0 and never repeated, so a frontend that keyed a

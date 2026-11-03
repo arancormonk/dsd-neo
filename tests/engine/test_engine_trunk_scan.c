@@ -18609,6 +18609,69 @@ test_lists_switch_publishes_timing_under_the_guard(void) {
     return test_rc;
 }
 
+/* The alternate walk the visit cap and the receive expiry run at every burst boundary passes a list switched off in one
+ * step: with the receiver on the second list, the first list's forty targets are never looked at while it is off, and
+ * the cap still finds the alternate on the second. */
+static int
+test_lists_alternate_walk_skips_a_list_off(void) {
+    static char far_body[40 * 40];
+    size_t used = 0U;
+    for (int i = 0; i < 40; i++) {
+        used += (size_t)DSD_SNPRINTF(far_body + used, sizeof far_body - used, "f%d,p25-trunk,%d,,250,,\n", i,
+                                     851000000 + (i * 12500));
+    }
+    static const char* const names[] = {"far", "near"};
+    const char* bodies[] = {far_body, "n1,p25-trunk,860000000,,250,,\nn2,p25-trunk,861000000,,250,,\n"};
+    static const int off[] = {1, 0};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, k_header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, off, &opts);
+    opts.scan_max_visit_ms = 1000;
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "alternate walk lists init: %s\n", err);
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    int test_rc = expect_published_target(&state, "start", "n1", 41U, 42U);
+    /* n1 on air and n2 its alternate: the walk looks at the near list alone. */
+    trunk_scan_test_set_now(0.10);
+    size_t steps = trunk_scan_test_alternate_walk_off_list_steps();
+    (void)dsd_engine_trunk_scan_visit_expired(&opts, &state);
+    (void)dsd_engine_trunk_scan_receive_expired(&opts, &state);
+    steps = trunk_scan_test_alternate_walk_off_list_steps() - steps;
+    if (steps != 0U) {
+        DSD_FPRINTF(stderr, "the alternate walk looked at %zu targets of the far list while it was off\n", steps);
+        test_rc = 1;
+    }
+    /* The cap still runs out against n2. */
+    trunk_scan_test_set_now(1.20);
+    if (!dsd_engine_trunk_scan_visit_expired(&opts, &state)) {
+        DSD_FPRINTF(stderr, "the visit cap did not run out with n2 to go to\n");
+        test_rc = 1;
+    }
+    /* Back on, the far list's targets are alternates again; off again, they are passed over again. */
+    test_rc |= expect_list_rc("far on", list_set(&opts, &state, 1, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_rc("far off again", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    trunk_scan_test_set_now(1.30);
+    steps = trunk_scan_test_alternate_walk_off_list_steps();
+    (void)dsd_engine_trunk_scan_visit_expired(&opts, &state);
+    steps = trunk_scan_test_alternate_walk_off_list_steps() - steps;
+    if (steps != 0U) {
+        DSD_FPRINTF(stderr, "the alternate walk looked at %zu targets of the far list off again\n", steps);
+        test_rc = 1;
+    }
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
 /* A park that failed beside an alternate whose switch keeps failing to prepare (its keys never allocate): the retry in
  * place must not keep waiting for the rotation, whose every walk finds nothing it can try. b's retune fails and so
  * does the fallback onto a, leaving a unparked and cooling; from then on b's preparation fails at every attempt. a is
@@ -18724,6 +18787,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
     rc |= run_with_default_tune_hook(test_lists_switch_publishes_timing_under_the_guard);
+    rc |= run_with_default_tune_hook(test_lists_alternate_walk_skips_a_list_off);
     rc |= run_with_default_tune_hook(test_failed_park_beside_an_unprepared_alternate_is_retried);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
