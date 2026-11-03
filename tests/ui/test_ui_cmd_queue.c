@@ -23354,7 +23354,7 @@ expect_trunk_scan_spec(const char* what, const dsd_trunk_scan_list_spec* lists, 
 }
 
 /*
- * Issue #697 (D2, S6): under a running coordinator, running or paused, a config's trunk-scan lists wait for the next
+ * Issue #697 (D2): under a running coordinator, running or paused, a config's trunk-scan lists wait for the next
  * start as one spec, paths and start states together, built over what already waits: a config naming lists_off alone
  * keeps the paths an earlier apply left waiting, and one naming the running spec again takes it all back. The running
  * lists never change.
@@ -23434,7 +23434,7 @@ test_config_defers_the_trunk_scan_list_spec_whole(void) {
     return rc;
 }
 
-/* Issue #697 (review M4): a saved one-list config, its keys as a save writes them (targets_csv, the empty
+/* Issue #697: a saved one-list config, its keys as a save writes them (targets_csv, the empty
    targets_csv_2 that ends the lists, an empty lists_off), loaded over a session whose three lists wait for the next
    start, one of them off, leaves exactly the saved list waiting, on. */
 static int
@@ -23477,7 +23477,7 @@ test_config_load_of_a_one_list_save_replaces_waiting_lists(void) {
     return rc;
 }
 
-/* Issue #697 (review round 2): a saved config with no lists (an empty targets_csv and lists_off, the scan off) loaded
+/* Issue #697: a saved config with no lists (an empty targets_csv and lists_off, the scan off) loaded
    over a session whose three lists wait for the next start leaves no list waiting; and an empty targets_csv_3 alone
    over a running set whose list 3 starts off is accepted, list 3 going with its off state. */
 static int
@@ -26378,8 +26378,8 @@ test_scan_list_set_two_requests_one_drain(void) {
     return rc;
 }
 
-/* [R19]: a config apply over a running or paused scan keeps the live lists (a live toggle included), and a save writes
-   the configured start states, never a live toggle (D3). Lists the config changes wait for the next start. */
+/* Issue #697: a config apply over a running or paused scan keeps the live lists (a live toggle included), and a save
+   writes the configured start states, never a live toggle (D3). Lists the config changes wait for the next start. */
 static int
 test_config_apply_keeps_the_live_lists(void) {
     static dsd_opts opts;

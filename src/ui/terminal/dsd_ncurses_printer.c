@@ -1231,7 +1231,7 @@ ui_row_trunk_scan_position_field(ui_row* row, const dsd_state* state, int list_o
 
 /* Why the target on air is outside the rotation, in a room that is always there: [avoided] (a fallback the scan parked
    on), and with two or more lists [list off] (its list was just switched off) in the same room, which an 80-column row
-   needs for the list's name. When both hold, [avoided]: "(-/m)" already says the list is off (issue #697 I1). */
+   needs for the list's name. When both hold, [avoided]: "(-/m)" already says the list is off (issue #697). */
 static void
 ui_row_trunk_scan_outside_field(ui_row* row, const dsd_state* state, int several, int list_off) {
     static const char k_avoided[] = "[avoided]";

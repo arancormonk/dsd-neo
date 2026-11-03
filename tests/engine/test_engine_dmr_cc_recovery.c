@@ -1315,7 +1315,7 @@ setup_two_lists(void) {
            | expect(dsd_engine_trunk_scan_active_dmr_ctx() != NULL, "the scan parked on the DMR system");
 }
 
-/* Issue #697 [S1]: a departure the target on air owes once its list is off makes a decoder holding a continuous carrier
+/* Issue #697: a departure the target on air owes once its list is off makes a decoder holding a continuous carrier
    in a loop of its own (dmrBS()) yield at its next boundary, through the frame-sync yield hook the engine installs,
    with the real DMR and P25 state machines and the operator's hold on: not before another target can take the
    receiver, never tuning under the decoder, and the coordinator's next tick, after the loop let go of the guard,

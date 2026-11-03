@@ -3332,10 +3332,10 @@ trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, 
            && !trunk_scan_target_width_skipped(opts, state, alt, rate_hz);
 }
 
-/* Somewhere else to go (the plan's has_eligible_other()): the same candidate filter trunk_scan_advance_candidate()
- * applies (trunk_scan_alternate_is_candidate()), so the cap can never fire on a rotation the advance would refuse. An
- * alternate out of the rotation (its list off, or avoided for the session), still cooling down from a failed retune,
- * or skipped at every visit for a width the DSP rate cannot filter is not an alternate. */
+/* Somewhere else to go: the same candidate filter trunk_scan_advance_candidate() applies
+ * (trunk_scan_alternate_is_candidate()), so the cap can never fire on a rotation the advance would refuse. An alternate
+ * out of the rotation (its list off, or avoided for the session), still cooling down from a failed retune, or skipped
+ * at every visit for a width the DSP rate cannot filter is not an alternate. */
 static int
 trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                        double now_m) {
@@ -3376,7 +3376,7 @@ trunk_scan_targets_are_copies(const dsd_trunk_scan_target_runtime* a, const dsd_
 }
 
 /* trunk_scan_prepare_switch() for a switch to @p rt. One that cannot be prepared cools its target down as a failed
-   retune does (issue #697, §2.4), so the advance, the departure and a resume walk pass it over for a while rather
+   retune does (issue #697), so the advance, the departure and a resume walk pass it over for a while rather
    than trying it again at once. */
 static int
 trunk_scan_prepare_target_switch(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
@@ -3489,7 +3489,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
 }
 
 /* One advance's walk: where it starts and which way it goes, the DSP rate the widths are held to (read once per
- * advance), and whether the original's same-type same-frequency copies are passed over (a tone rejection, §2.5). */
+ * advance), and whether the original's same-type same-frequency copies are passed over (a tone rejection). */
 typedef struct {
     size_t original;
     int step;
@@ -4322,7 +4322,7 @@ trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state,
     return trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m);
 }
 
-/* The same for traffic the tone policy rejected (issue #527), with one target fewer (issue #697, §2.5): a copy of the
+/* The same for traffic the tone policy rejected (issue #527), with one target fewer (issue #697): a copy of the
  * target on air (the same type on the same frequency, from another list) is passed over whatever tone list it runs,
  * so a rejection never bounces between two copies of one channel. A target of another type on that frequency counts:
  * nfm-conventional is the one type that runs a tone check, so it runs none and takes the traffic as its own type does.
@@ -4468,7 +4468,7 @@ trunk_scan_departure_retry_later(const dsd_opts* opts, const dsd_state* state, d
 }
 
 /*
- * The departure obligation (issue #697, §2.4): the target on air is out of the rotation -- its list was switched off
+ * The departure obligation (issue #697): the target on air is out of the rotation -- its list was switched off
  * and the departure could not tune anywhere, or every alternate failed when it was avoided and the receiver fell back
  * onto it -- so it leaves as soon as another target can take the receiver, ahead of its hold, dwell and activity. It
  * leaves as an operator's `L` does (trunk_scan_control_advance_locked(): a parked visit hands its carrier back and its

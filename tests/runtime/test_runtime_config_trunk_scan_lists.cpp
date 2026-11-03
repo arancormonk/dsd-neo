@@ -150,7 +150,7 @@ test_numbered_keys_load_and_roundtrip() {
     CHECK(cfg_lists_are(*back, paths, off, 3));
 
     /* A save ends its lists with an empty key and always writes lists_off, so loading a one-list save over a
-       session with three lists, one of them off, gives exactly the saved list, on (review M4). */
+       session with three lists, one of them off, gives exactly the saved list, on. */
     auto one = std::make_unique<dsdneoUserConfig>();
     CHECK(load_ini("[trunk_scan]\nenabled = true\ntargets_csv = \"/lists/a.csv\"\n", nullptr, one.get()) == 0);
     const std::string one_text = render(*one);
@@ -181,7 +181,7 @@ test_numbered_keys_load_and_roundtrip() {
     CHECK(eight_text.find("targets_csv_8 = \"/l8.csv\"\n") != std::string::npos);
     CHECK(eight_text.find("targets_csv_9") == std::string::npos);
     /* A save with no lists says so (an empty targets_csv and lists_off), so loading it over a session with lists,
-       one of them off, leaves none (review round 2). */
+       one of them off, leaves none. */
     auto none = std::make_unique<dsdneoUserConfig>();
     none->has_trunk_scan = 1;
     const std::string none_text = render(*none);
@@ -205,7 +205,7 @@ refused_with(const dsdneoUserConfig& cfg, const char* why_part) {
 }
 
 /* An empty targets_csv_N beside a targets_csv_3 the same file sets is a contradiction the gap rule refuses, in either
-   key order; nothing is dropped without a word (review I1). */
+   key order; nothing is dropped without a word. */
 void
 test_empty_key_beside_a_later_list_is_a_gap_in_any_order() {
     auto before = std::make_unique<dsdneoUserConfig>();
@@ -315,7 +315,7 @@ test_includes_and_profiles_compose_per_key() {
 /* An empty targets_csv_N clears what an earlier file left, never what a later one names: an include's empty
    targets_csv_2 under a file that sets targets_csv_3 is a gap the start rules refuse. A profile that shrinks an
    inherited set clears the removed lists' off states with them, so an inherited lists_off naming one does not refuse
-   the start (review I1). */
+   the start. */
 void
 test_empty_key_clears_only_what_earlier_layers_left() {
     char included[DSD_TEST_PATH_MAX];
@@ -376,7 +376,7 @@ test_bad_lists_off_keeps_previous() {
     uint32_t mask = 0U;
     CHECK(dsd_trunk_scan_lists_off_parse(" 8 ,1,\t3 ", &mask) == 0 && mask == 0x85U);
     CHECK(dsd_trunk_scan_lists_off_parse("", &mask) == 0 && mask == 0U);
-    /* Blanks before a comma are no part of the number, however many (review M3). */
+    /* Blanks before a comma are no part of the number, however many. */
     CHECK(dsd_trunk_scan_lists_off_parse("2        , 3\t\t\t\t\t\t\t\t", &mask) == 0 && mask == 0x6U);
     CHECK(dsd_trunk_scan_lists_off_parse("        2", &mask) == 0 && mask == 0x2U);
     CHECK(dsd_trunk_scan_lists_off_parse("00000002", &mask) != 0); /* longer than any list number */
@@ -442,7 +442,7 @@ test_apply_composes_over_the_session() {
     CHECK(lists_are(opts->trunk_scan_lists, opts->trunk_scan_list_count, first_only, first_off, 1));
 
     /* An empty key removes the session's later lists with their off states when the config names no lists_off, so
-       shrinking a session whose removed list started off is no off state past the last list (review round 2). */
+       shrinking a session whose removed list started off is no off state past the last list. */
     DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", "/d.csv");
     DSD_SNPRINTF(opts->trunk_scan_lists[2].path, sizeof opts->trunk_scan_lists[2].path, "%s", "/e.csv");
     opts->trunk_scan_lists[0].start_off = 0U;
@@ -556,7 +556,7 @@ test_validation_reports_list_keys() {
 }
 
 /* --validate-config refuses exactly the paths the loader refuses, key by key: every PATH key in the schema, at the
-   lengths either side of a 512- and a 1024-byte field (review M2: per_call_wav_dir keeps 511 bytes). */
+   lengths either side of a 512- and a 1024-byte field (per_call_wav_dir keeps 511 bytes). */
 void
 test_validator_and_loader_agree_on_path_length() {
     static const size_t lengths[] = {511U, 512U, 1023U, 1024U};

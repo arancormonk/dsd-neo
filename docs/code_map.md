@@ -369,8 +369,8 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `list`; `coord->lists[]` holds each list's name (file name without folder and extension,
   `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
   (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
-  RETREAT, the visit cap's `trunk_scan_visit_alternate_is_eligible()`, which is the plan's has_eligible_other, the
-  rejection alternates, the resume walk), `trunk_scan_enabled_count()` (the D10 readout's m, avoided targets included),
+  RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
+  alternates, the resume walk), `trunk_scan_enabled_count()` (the D10 readout's m, avoided targets included),
   and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
   last-usable refusals). The `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's
   fallback onto the original ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once
@@ -387,7 +387,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   that comes on and gives the visit on air its first eligible alternate restarts its cap
   (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). Toggles are session-only; the
   configured start states in `dsd_opts::trunk_scan_lists` never change.
-- Departure obligation (issue #697, §2.4): while the target on air is out of the rotation (its list off and the
+- Departure obligation (issue #697): while the target on air is out of the rotation (its list off and the
   departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
   of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
   (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits

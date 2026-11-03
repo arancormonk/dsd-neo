@@ -110,8 +110,7 @@ dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
-/* How often the coordinator read the rate: a walk over the targets reads it once (issue #697, carried from #697's
-   first fixes). */
+/* How often the coordinator read the rate: a walk over the targets reads it once (issue #697). */
 static int g_scan_dsp_rate_reads;
 
 int
@@ -16584,7 +16583,7 @@ avoid_onto_the_fallback(dsd_opts* opts, dsd_state* state, int targets) {
 /* B4: avoiding the avoided fallback again is answered at once and does nothing -- no release of its call, no walk, no
    tune, no flag, revision or clock -- with the alternates cooling down and once they are eligible again, with several
    usable alternates and with one. Putting it back clears only its avoided mark: the call and the receiver stay, and,
-   back in the rotation, the fallback owes no departure (issue #697 [S4]), so the next tick keeps them too. Without the
+   back in the rotation, the fallback owes no departure (issue #697), so the next tick keeps them too. Without the
    put back (@p put_back 0), the first tick once an alternate is eligible leaves the avoided fallback, its call
    ending, ahead of the call's activity (issue #697, the departure obligation). */
 static int
@@ -17697,7 +17696,7 @@ test_lists_refusals(void) {
     return test_rc;
 }
 
-/* Carried from Task 1's review: `b` on a target whose only alternate the DSP rate cannot filter used to be accepted
+/* Issue #697: `b` on a target whose only alternate the DSP rate cannot filter used to be accepted
  * and leave the operator on a target avoided. Somewhere to go is a target the rotation can reach. */
 static int
 test_scan_avoid_refuses_when_the_only_alternate_is_width_skipped(void) {
@@ -17808,10 +17807,10 @@ expect_departure_due(const dsd_opts* opts, const dsd_state* state, const char* s
     return 0;
 }
 
-/* §2.4: a departure that cannot tune anywhere stays owed. With b's retune failing, switching a's list off falls back
- * onto a -- published as out of the rotation, (-/1) -- under the operator's hold, with traffic still holding it. The
- * frame loop is not asked to yield before b's cooldown ends, and is then; the tick leaves for b ahead of the hold and
- * the activity. */
+/* Issue #697: a departure that cannot tune anywhere stays owed. With b's retune failing, switching a's list off falls
+ * back onto a -- published as out of the rotation, (-/1) -- under the operator's hold, with traffic still holding it.
+ * The frame loop is not asked to yield before b's cooldown ends, and is then; the tick leaves for b ahead of the hold
+ * and the activity. */
 static int
 test_lists_departure_waits_out_a_failed_retune(void) {
     static const char* const names[] = {"a", "b"};
@@ -17860,7 +17859,7 @@ test_lists_departure_waits_out_a_failed_retune(void) {
     return test_rc;
 }
 
-/* §2.4 [S1]: a departure whose switch cannot be prepared (b's keys do not allocate) backs off a cooldown, as a failed
+/* Issue #697: a departure whose switch cannot be prepared (b's keys do not allocate) backs off a cooldown, as a failed
  * retune does, rather than trying again at every tick or making the frame loop yield at every frame. */
 static int
 test_lists_departure_backs_off_a_failed_preparation(void) {
@@ -17950,8 +17949,8 @@ test_lists_departure_with_an_async_failure_retries_the_landing(void) {
     return test_rc;
 }
 
-/* [S4] The obligation ends as soon as the target on air is in the rotation again -- its list switched back on, every
- * list on, the avoids cleared, the target put back (issue #672) -- and stays while either reason still holds: an
+/* Issue #697: the obligation ends as soon as the target on air is in the rotation again -- its list switched back on,
+ * every list on, the avoids cleared, the target put back (issue #672) -- and stays while either reason still holds: an
  * avoided target whose list is off owes the departure after its avoid is cleared or it is put back, and a put back
  * never switches its list on. Both reasons are published, each on its own. */
 static int
@@ -18073,8 +18072,8 @@ test_lists_departure_runs_at_once_when_a_put_back_gives_it_an_alternate(void) {
     return test_rc;
 }
 
-/* [S5] A resume from a pause taken while the target on air was out of the rotation walks the targets after it the
- * advance would try, past one the DSP rate cannot filter; one whose retune fails leaves the scan paused, with the
+/* Issue #697: a resume from a pause taken while the target on air was out of the rotation walks the targets after it
+ * the advance would try, past one the DSP rate cannot filter; one whose retune fails leaves the scan paused, with the
  * manual session put back, and the next resume tries again rather than staying pinned. The publication survives the
  * pause (the lists and their states; no list on air while paused) and is taken down when the scan detaches. */
 static int
@@ -18150,8 +18149,8 @@ test_lists_resume_walks_past_an_unreachable_target(void) {
     return test_rc;
 }
 
-/* §2.3: what the session must be ready for counts every loaded target, a list that is off included, since it can be
- * switched on: the configured NFM width an nfm target there runs, and the tone detection it would need. Peer IDEN
+/* Issue #697: what the session must be ready for counts every loaded target, a list that is off included, since it can
+ * be switched on: the configured NFM width an nfm target there runs, and the tone detection it would need. Peer IDEN
  * sharing and the band-plan export read every target's snapshot, a list that is off included. */
 static int
 test_lists_global_predicates_and_idens_count_every_list(void) {
@@ -18206,7 +18205,7 @@ test_lists_global_predicates_and_idens_count_every_list(void) {
     return test_rc;
 }
 
-/* §2.5 [S3]: two lists may hold one nfm channel under different tone lists. They rotate like any two targets, but
+/* Issue #697: two lists may hold one nfm channel under different tone lists. They rotate like any two targets, but
  * traffic one copy's tone policy rejects never moves to the other copy: with only the two it stays, muted; with a third
  * target it moves there, past the copy. */
 static int
@@ -18262,7 +18261,7 @@ test_lists_tone_rejection_passes_over_a_copy(void) {
     return test_rc;
 }
 
-/* §2.5: digital receive rejection keeps a copy as somewhere to go: two lists holding one DMR repeater with
+/* Issue #697: digital receive rejection keeps a copy as somewhere to go: two lists holding one DMR repeater with
  * complementary color-code filters hand the traffic one rejects to the other. */
 static int
 test_lists_receive_rejection_hands_over_to_a_copy(void) {
@@ -18291,7 +18290,7 @@ test_lists_receive_rejection_hands_over_to_a_copy(void) {
     return test_rc;
 }
 
-/* Carried from Task 1's review: once a failed retune's cooldown has run out while another target can take the
+/* Issue #697: once a failed retune's cooldown has run out while another target can take the
  * receiver, the retry in place waits for the rotation and asks again a cooldown later, not at every tick (each asking
  * walks the targets, which reads the DSP rate once). A call being followed keeps a past its dwell meanwhile. */
 static int
@@ -18341,7 +18340,7 @@ test_due_retry_with_an_alternate_walks_once_a_cooldown(void) {
     return test_rc;
 }
 
-/* Carried from Task 1's review: one advance reads the DSP rate once for its whole candidate walk, however many
+/* Issue #697: one advance reads the DSP rate once for its whole candidate walk, however many
  * targets it passes over (here three avoided ones), not once per candidate. */
 static int
 test_advance_reads_the_rate_once_per_walk(void) {
@@ -18384,7 +18383,7 @@ test_advance_reads_the_rate_once_per_walk(void) {
     return test_rc;
 }
 
-/* §2.4 [S1], as ruled: a failed preparation cools its target down as a failed retune does. A dwell advance whose
+/* Issue #697: a failed preparation cools its target down as a failed retune does. A dwell advance whose
  * switch to b cannot be prepared (b's keys do not allocate) moves on to c, and the rotation then passes b over until
  * its cooldown ends instead of trying it again at the next dwell. */
 static int
@@ -18433,7 +18432,7 @@ test_dwell_advance_cools_a_target_whose_switch_fails_to_prepare(void) {
     return test_rc;
 }
 
-/* §2.4 [S1], as ruled: a departure that did not move waits for the soonest cooldown among its alternates, not a flat
+/* Issue #697: a departure that did not move waits for the soonest cooldown among its alternates, not a flat
  * cooldown from its own attempt. c cooled down from a failed retune at 0.10; at 1.80 list a goes off and b's switch
  * cannot be prepared (b cools until 3.80); the departure leaves for c as c's cooldown ends at 2.10. */
 static int
