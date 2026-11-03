@@ -3406,6 +3406,50 @@ test_typed_pending_row_outlives_a_learned_channel(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* A typed resume whose tune to row 3 (154 MHz) is pending when the list under it changes (@p shrink: a shorter list
+   leaves row 3 out; else row 3 is rewritten in place to 155 MHz), then fails late: the toast names the frequency the
+   tune went to, without reading a row that is gone or holds another frequency now. */
+static void
+typed_resume_fails_after_its_row_changed(int shrink) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 1;
+    assert(typed_walk_step(opts, state, 1, 1) == 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[3]; /* past the placeholder */
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    if (shrink) {
+        dsd_state_trunk_lcn_replace_begin(state);
+        *dsd_state_trunk_lcn_slot(state, 3) = 0;
+        *dsd_state_trunk_lcn_slot(state, 4) = 0;
+        state->lcn_freq_count = 3;
+    } else {
+        assert(dsd_state_trunk_lcn_freq_write(state, 3, 155000000L) == 0);
+    }
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    if (strcmp(state->ui_msg, "Scan stays paused: tune to 154.000000 MHz failed") != 0) {
+        DSD_FPRINTF(stderr, "resume failure after %s: toast \"%s\"\n", shrink ? "a shorter list" : "a rewrite",
+                    state->ui_msg);
+    }
+    assert(strcmp(state->ui_msg, "Scan stays paused: tune to 154.000000 MHz failed") == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #697: a failed resume's toast names the frequency its tune went to, also when its row left the list or was
+   rewritten while the tune was pending (it read the row again, which a shorter list left out of range). */
+static void
+test_typed_resume_failure_names_the_frequency_tuned(void) {
+    typed_resume_fails_after_its_row_changed(1);
+    typed_resume_fails_after_its_row_changed(0);
+}
+
 /* Issue #697: an in-place write to a typed row (dsd_state_trunk_lcn_freq_write(), which keeps the list revision, as
    #672's contract says) makes the row another channel. A tune staged for its old frequency lands nothing, a late
    refusal of it is no refusal of the row now listed, and a landed row rewritten in place is no longer the row on air:
@@ -3721,6 +3765,7 @@ main(void) {
     test_typed_previous_refusal_keeps_the_cursor();
     test_typed_pending_row_outlives_a_learned_channel();
     test_typed_row_rewritten_in_place_is_another_channel();
+    test_typed_resume_failure_names_the_frequency_tuned();
     test_typed_previous_restaged();
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
