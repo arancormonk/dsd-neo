@@ -21,6 +21,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -46,6 +47,7 @@
 #include <string.h>
 #include <time.h>
 #include "../test_support/radio_policy_test.h"
+#include "analog_call_test_support.h"
 #include "commands_internal.h"
 #include "edacs_internal.h"
 #include "snapshot_internal.h"
@@ -749,10 +751,10 @@ nfm_block(dsd_opts* opts, dsd_state* state) {
     }
     if (!dsd_engine_analog_call_active(state)) {
         for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
-            dsd_engine_analog_call_block(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+            dsd_test_analog_call_feed(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
         }
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
 }
 
 /* The pending publish of @p id on @p epoch, then exactly one link of it to @p row in @p ring, slot 1. */
@@ -807,7 +809,7 @@ test_held_nfm_call_is_one_recording(void) {
     static const float closed[960] = {0};
     r.state->analog_rx.carrier_open = 0;
     for (int i = 0; i < 10; i++) {
-        dsd_engine_analog_call_block(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
+        dsd_test_analog_call_feed(r.opts, r.state, closed, 960, 48000, DSD_ANALOG_CALL_HOLDABLE);
     }
     r.state->analog_rx.carrier_open = 1;
     clock_at(k_t0 + 11);
@@ -827,13 +829,50 @@ test_held_nfm_call_is_one_recording(void) {
             rc |= expect_int("held nfm: both bursts and the pause", field_ll(pub, "duration_ms"), 40 + 200 + 40);
             rc |= expect_int("held nfm: starts at the first burst", field_ll(pub, "start"), (long long)k_t0 + 10);
             /* Heard on an audio input, whose mode is not known: the analog name (issue #667). */
-            rc |= expect_true("held nfm: the analog name with its service",
-                              strstr(field_s(pub, "file"), "_ANALOG_SVC_Dispatch.wav") != NULL);
+            rc |=
+                expect_true("held nfm: the analog name with its service",
+                            strstr(field_s(pub, "file"), "_ANALOG_FREQ_UNKNOWN_CTCSS_141.3_SVC_Dispatch.wav") != NULL);
         }
     }
     rc |= expect_int("held nfm: published once", published, 1);
     rc |= expect_pending_then_linked("held nfm", id, epoch, &r.state->event_history_s[0],
                                      r.state->event_history_s[0].push_seq);
+    rig_close(&r);
+    return rc;
+}
+
+/* An NFM call's end leaves the slot files alone (issue #668): its audio goes to its own recording, so the empty 8 kHz
+   slot file stays open and nothing is discarded per call. A digital call's end still rotates it. */
+static int
+test_nfm_call_end_keeps_the_slot_file(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_slot");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    SNDFILE* const slot_file = r.opts->wav_out_f;
+    char slot_name[sizeof r.opts->wav_out_file];
+    DSD_SNPRINTF(slot_name, sizeof slot_name, "%s", r.opts->wav_out_file);
+    rc |= expect_true("the slot file opened", slot_file != NULL);
+    for (int call = 0; call < 3; call++) {
+        nfm_block(r.opts, r.state);
+        nfm_block(r.opts, r.state);
+        dsd_engine_analog_call_end(r.opts, r.state);
+    }
+    reload(&r);
+    rc |= expect_int("three NFM recordings published", count_records(&g_j, "publish"), 3);
+    rc |= expect_int("no discard per NFM call", count_records(&g_j, "discard"), 0);
+    rc |= expect_true("the slot file stays open", r.opts->wav_out_f == slot_file);
+    rc |= expect_true("under its own name", strcmp(r.opts->wav_out_file, slot_name) == 0);
+
+    /* A digital call after them still rotates it: the empty file is discarded under the id it had. */
+    char id[64];
+    slot1_id(&r, id, sizeof id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("the digital call's end discards the empty slot file", count_for_id(&g_j, "discard", id), 1);
+    rc |= expect_true("a new slot file opened",
+                      r.opts->wav_out_f != NULL && strcmp(r.opts->wav_out_file, slot_name) != 0);
     rig_close(&r);
     return rc;
 }
@@ -862,7 +901,7 @@ test_pending_closers_are_linked_at_the_commit(void) {
                 rc |= expect_int("nfm: two 20 ms blocks", field_ll(pub, "duration_ms"), 40);
                 /* An audio input's call, whose mode is not known (issue #667). */
                 rc |= expect_true("nfm: published under the analog name",
-                                  strstr(field_s(pub, "file"), "_ANALOG.wav") != NULL);
+                                  strstr(field_s(pub, "file"), "_ANALOG_FREQ_UNKNOWN") != NULL);
             }
         }
         rc |= expect_true("nfm: the call's recording published", id[0] != '\0');
@@ -1155,6 +1194,231 @@ test_start_on_the_replay_clock(void) {
                      (long long)anchor + 60);
     rc |= expect_int("stamped on the capture's clock", pub ? field_ll(pub, "t") : -9, (long long)anchor + 65);
     rig_close(&r);
+    return rc;
+}
+
+/* An NFM block as the finalizer hands it while -P records (issue #668): its end read on the decode clock's wall time,
+   before any file work. */
+static void
+nfm_block_heard_now(dsd_opts* opts, dsd_state* state) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = (float)((i % 48) * 400 - 9600);
+    }
+    const dsd_analog_call_block call = {
+        .samples = block,
+        .count = 960,
+        .sample_rate = 48000,
+        .input = DSD_ANALOG_CALL_RECEPTION,
+        .ramp_end = 0,
+        .qualified_carrier = 1,
+        .wall_end_s = dsd_decode_now_realtime_s(),
+    };
+    dsd_engine_analog_call_block(opts, state, &call);
+}
+
+/* Clean RECEPTION blocks of the running reception until it ran DSD_ANALOG_CALL_MIN_MS and became a call (issue #667),
+   so its recording publishes; what a test checks of the recording's start is its opening block's alone. */
+static void
+nfm_qualify(dsd_opts* opts, dsd_state* state) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 3000.0f;
+    }
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20 && !dsd_engine_analog_call_active(state); i++) {
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
+    }
+}
+
+/* A recording close that takes three seconds of decode time, as a slow disk does under a live clock. */
+static int
+slow_close(SNDFILE* file) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + 3000000000ULL);
+    return sf_close(file);
+}
+
+/* The start of the @p nth published 48 kHz recording (an NFM call's), or -9. */
+static long long
+nfm_start(int nth) {
+    const char* pub = NULL;
+    for (int i = 0, seen = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(pub, "rate") == 48000 && seen++ == nth) {
+            return field_ll(pub, "start");
+        }
+    }
+    return -9;
+}
+
+/* Issue #668: an NFM recording starts where its first block began, the block's end in wall time (read before any file
+   I/O) less its span, floored once to whole seconds. A block that ends 10 ms into a second began in the one before,
+   which the row (accepted at the block's end) has not reached; a block that began exactly on a second is filed under
+   it; and a recording opened after the call before it closed on a slow disk still starts at its block, not after the
+   close. Before, the start was the later of the open time read after the open and the row's start. */
+static int
+test_nfm_start_is_its_first_block(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_start");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    clock_at_ms(k_t0 + 10, 10);
+    nfm_block_heard_now(r.opts, r.state);
+    clock_at_ms(k_t0 + 10, 30);
+    nfm_block_heard_now(r.opts, r.state);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 12);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 20, 20);
+    nfm_block_heard_now(r.opts, r.state);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 22);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 30, 520);
+    nfm_block_heard_now(r.opts, r.state);
+    nfm_qualify(r.opts, r.state);
+    /* A new tone ends that call and closes its recording, slowly, before the next one opens. */
+    clock_at_ms(k_t0 + 31, 500);
+    r.state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    r.state->analog_rx.dcs_code = 023;
+    r.state->analog_rx.dcs_inverted = 1;
+    dsd_wav_test_set_io(NULL, slow_close);
+    nfm_block_heard_now(r.opts, r.state);
+    dsd_wav_test_set_io(NULL, NULL);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 40);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("a block that began in the second before", nfm_start(0), (long long)k_t0 + 9);
+    rc |= expect_int("a block that began on a second", nfm_start(1), (long long)k_t0 + 20);
+    rc |= expect_int("the call before the slow close", nfm_start(2), (long long)k_t0 + 30);
+    rc |= expect_int("a slow close before the open does not move it", nfm_start(3), (long long)k_t0 + 31);
+    rig_close(&r);
+    return rc;
+}
+
+/* One NFM block of 960 at 48 kHz that ends now: @p input, eligible from @p eligible_from (silent before it). */
+static void
+nfm_block_ending_now(dsd_opts* opts, dsd_state* state, int input, size_t eligible_from) {
+    static float block[960];
+    for (size_t i = 0; i < 960; i++) {
+        block[i] = i < eligible_from ? 0.0f : 3000.0f;
+    }
+    const dsd_analog_call_block call = {
+        .samples = block,
+        .heard = block,
+        .count = 960,
+        .sample_rate = 48000,
+        .input = input,
+        .eligible_from = eligible_from,
+        .ramp_end = 0,
+        .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
+        .wall_end_s = dsd_decode_now_realtime_s(),
+    };
+    dsd_engine_analog_call_block(opts, state, &call);
+}
+
+/* Issue #668: a recording that opens with a pre-roll starts where its first sample was heard: 100 ms of pre-roll
+   before a block that ends 50 ms into a second began in the second before. A block whose tone turned allowed inside it
+   (its first 10 ms not) drops the pre-roll, and the recording starts at the eligible point: 5 ms into the second the
+   block ended in, where its whole span reaches back into the one before. */
+static int
+test_nfm_start_moves_back_by_its_preroll(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_nfm_preroll");
+    setup_nfm(r.opts, r.state);
+    r.opts->analog_record_preroll_ms = 200;
+    submit(&r, DSD_APP_CMD_WAV_START);
+    for (int i = 0; i < 5; i++) {
+        clock_at_ms(k_t0 + 39, 930 + (uint64_t)i * 20);
+        nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    }
+    clock_at_ms(k_t0 + 40, 50);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 0);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 41);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    clock_at_ms(k_t0 + 49, 990);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    clock_at_ms(k_t0 + 50, 15);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 480);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 51);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    /* At pre-roll 0 an unclean opening is trimmed the same way, and stamped from its eligible point too. */
+    r.opts->analog_record_preroll_ms = 0;
+    clock_at_ms(k_t0 + 59, 990);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_HOLDABLE, 0);
+    clock_at_ms(k_t0 + 60, 15);
+    nfm_block_ending_now(r.opts, r.state, DSD_ANALOG_CALL_RECEPTION, 480);
+    nfm_qualify(r.opts, r.state);
+    clock_at(k_t0 + 61);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("the pre-roll's first sample", nfm_start(0), (long long)k_t0 + 39);
+    rc |= expect_int("an unclean opening's eligible point", nfm_start(1), (long long)k_t0 + 50);
+    rc |= expect_int("an unclean opening's eligible point at pre-roll 0", nfm_start(2), (long long)k_t0 + 60);
+    rig_close(&r);
+    return rc;
+}
+
+/* The start a recorder stamped itself (the NFM call, issue #668) is the one the journal and the rdio-scanner sidecar
+   both record, over the open time and the row's start; with none, both keep the later of the two. */
+static int
+test_stamped_start_is_the_journal_and_sidecar_start(void) {
+    /* Seconds after k_t0; a started offset of 0 means the recorder stamped no start. */
+    static const struct {
+        int opened;
+        int started;
+        int want;
+    } cases[] = {
+        {52, 47, 47},
+        {52, 0, 52},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const time_t opened = (time_t)(k_t0 + (uint64_t)cases[i].opened);
+        const time_t started = cases[i].started > 0 ? (time_t)(k_t0 + (uint64_t)cases[i].started) : 0;
+        const long long want_start = (long long)k_t0 + cases[i].want;
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_stamped_start");
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_system_id = 48;
+        clock_at(k_t0 + 50);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 1201U, 77U, DSD_CALL_BOUNDARY_BEGIN);
+        char temp[DSD_TEST_PATH_MAX];
+        SNDFILE* wav = open_wav_file(r.dir, temp, sizeof temp, 48000, 0);
+        rc |= expect_true("stamped start: file opened", wav != NULL);
+        if (wav) {
+            static short pcm[960];
+            for (int k = 0; k < 960; k++) {
+                pcm[k] = (short)(k * 16);
+            }
+            (void)sf_write_short(wav, pcm, 960);
+            clock_at(k_t0 + 55);
+            (void)close_and_publish_call_wav_ex(wav, r.opts, r.state, 0, temp, r.dir, opened, started);
+        }
+        reload(&r);
+        rc |= expect_int("stamped start: the journal's", nfm_start(0), want_start);
+        const char* pub = record(&g_j, "publish", 0);
+        char sidecar[DSD_TEST_PATH_MAX * 2];
+        char body[4096];
+        DSD_MEMSET(body, 0, sizeof body);
+        if (pub && dsd_test_path_join(sidecar, sizeof sidecar, r.dir, field_s(pub, "file")) == 0
+            && strlen(sidecar) > 4) {
+            const size_t stem = strlen(sidecar) - 4; /* the ".wav" the sidecar's ".json" replaces */
+            DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
+            FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+            if (f) {
+                const size_t got = fread(body, 1, sizeof body - 1, f);
+                body[got] = '\0';
+                (void)fclose(f);
+            }
+        }
+        char want[64];
+        DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", want_start);
+        rc |= expect_true("stamped start: the sidecar's is the journal's", strstr(body, want) != NULL);
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -1456,6 +1720,116 @@ test_error_failed_and_rdio_shapes(void) {
     return rc;
 }
 
+/* The sidecar beside the published recording @p pub names, read into @p body ("" when there is none). */
+static void
+read_published_sidecar(const rig* r, const char* pub, char* body, size_t body_size) {
+    body[0] = '\0';
+    char sidecar[DSD_TEST_PATH_MAX * 2];
+    if (!pub || dsd_test_path_join(sidecar, sizeof sidecar, r->dir, field_s(pub, "file")) != 0
+        || strlen(sidecar) <= 4) {
+        return;
+    }
+    const size_t stem = strlen(sidecar) - 4; /* the ".wav" the sidecar's ".json" replaces */
+    DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
+    FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+    if (f) {
+        const size_t n = fread(body, 1, body_size - 1, f);
+        body[n] = '\0';
+        (void)fclose(f);
+    }
+}
+
+/* Issue #668 and the #708 contract for NFM: an NFM call's recording is exported through the real closer, and the
+   journal's publish record says whether its API upload was queued, which the exporter decides before the record is
+   written. A radio input's call goes up under its frequency in kHz to the analog system, its sidecar beside it, and
+   the journal's target stays empty (the row has none). An audio input's call is not exported without
+   --rdio-analog-talkgroup, and is with it. */
+static int
+test_nfm_rdio_export_is_journaled(void) {
+    static const struct {
+        const char* label;
+        int radio;
+        int mode;
+        int fallback;
+        const char* talkgroup; /* NULL: no sidecar */
+        int queued;
+    } cases[] = {
+        {"nfm on a radio input", 1, DSD_RDIO_MODE_BOTH, 0, "\"talkgroup\": 154437,", 1},
+        {"nfm on an audio input", 0, DSD_RDIO_MODE_DIRWATCH, 0, NULL, 0},
+        {"nfm on an audio input with a fallback", 0, DSD_RDIO_MODE_DIRWATCH, 4242, "\"talkgroup\": 4242,", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_nfm_rdio");
+        setup_nfm(r.opts, r.state);
+        r.state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+        if (cases[i].radio) {
+            r.opts->audio_in_type = AUDIO_IN_RTL;
+            r.opts->rtlsdr_center_freq = 154437500U;
+            /* A squelch above -110 dB: radio input keeps analog calls only with one (issue #667 D2). */
+            r.opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+            r.opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+        }
+        r.opts->rdio_mode = cases[i].mode;
+        r.opts->rdio_system_id = 7;
+        r.opts->rdio_analog_system_id = 9;
+        r.opts->rdio_analog_talkgroup = cases[i].fallback;
+        r.opts->rdio_upload_timeout_ms = 100;
+        r.opts->rdio_upload_retries = 1;
+        r.opts->rdio_api_delete_after_upload = 1;
+        DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+        DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+        submit(&r, DSD_APP_CMD_WAV_START);
+        clock_at(k_t0 + 60);
+        nfm_block(r.opts, r.state);
+        nfm_block(r.opts, r.state);
+        clock_at(k_t0 + 61);
+        dsd_engine_analog_call_end(r.opts, r.state);
+        dsd_rdio_upload_shutdown();
+        reload(&r);
+        const char* pub = NULL;
+        for (int k = 0; (pub = record(&g_j, "publish", k)) != NULL; k++) {
+            if (field_ll(pub, "rate") == 48000) {
+                break;
+            }
+        }
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: published", cases[i].label);
+        rc |= expect_true(tag, pub != NULL);
+#ifdef USE_CURL
+        const char* want_rdio = cases[i].queued ? "true" : "false";
+#else
+        const char* want_rdio = "false";
+#endif
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the journal says whether an upload was queued", cases[i].label);
+        rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", want_rdio);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: no target on the row", cases[i].label);
+        rc |= expect_str(tag, pub ? field_s(pub, "target") : "?", "");
+        char body[4096];
+        read_published_sidecar(&r, pub, body, sizeof body);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: sidecar", cases[i].label);
+        if (cases[i].talkgroup == NULL) {
+            rc |= expect_str(tag, body, "");
+        } else {
+            rc |= expect_true(tag, strstr(body, cases[i].talkgroup) != NULL && strstr(body, "\"system\": 9,") != NULL);
+        }
+        char path[DSD_TEST_PATH_MAX * 2];
+        FILE* kept = (pub && dsd_test_path_join(path, sizeof path, r.dir, field_s(pub, "file")) == 0)
+                         ? dsd_fopen_existing_regular_file(path, "rb")
+                         : NULL;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the recording is kept", cases[i].label);
+        rc |= expect_true(tag, kept != NULL);
+        if (kept) {
+            (void)fclose(kept);
+        }
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
 /* --- Issue #667: analog recordings named by their mode, and the discard of one that is never published. --- */
 
 /* An analog call on slot 0 heard in @p mode, as the tracker observes one: no identity, target 0. */
@@ -1486,8 +1860,9 @@ analog_segment(rig* r, char* path, size_t path_size) {
 
 typedef struct {
     int files;
-    int named; /* published under the analog name of @c mode */
+    int named; /* published under the analog name of @c mode, at @c freq (NULL: FREQ_UNKNOWN), with no tone */
     const char* mode;
+    const char* freq;
 } analog_names;
 
 static int
@@ -1497,29 +1872,30 @@ count_analog_names_cb(const char* name, void* user) {
         return 0;
     }
     names->files++;
-    names->named += dsd_test_analog_recording_name_is(name, names->mode, NULL);
+    names->named += dsd_test_analog_recording_name_is(name, names->mode, names->freq, NULL, NULL);
     return 0;
 }
 
 static analog_names
-list_analog_names(const rig* r, const char* mode) {
-    analog_names names = {0, 0, mode};
+list_analog_names(const rig* r, const char* mode, const char* freq) {
+    analog_names names = {0, 0, mode, freq};
     (void)dsd_dir_list(r->dir, count_analog_names_cb, &names);
     return names;
 }
 
 /* An analog recording is named by the mode its call was heard in, closed with its row (the row's mode) or without one
-   (a teardown's, by the mode it is given): _NFM, _AM, or _ANALOG on an audio input, where the mode is not known. Main
+   (a teardown's, by the mode the call kept): _NFM, _AM, or _ANALOG on an audio input, where the mode is not known. Main
    named every one _NFM. */
 static int
 test_analog_recordings_are_named_by_mode(void) {
     static const struct {
         uint8_t mode;
         const char* token;
+        const char* freq; /* begin_analog_call()'s frequency, NULL for none */
     } k_modes[] = {
-        {DSD_ANALOG_MODE_NFM, "NFM"},
-        {DSD_ANALOG_MODE_AM, "AM"},
-        {DSD_ANALOG_MODE_UNKNOWN, "ANALOG"},
+        {DSD_ANALOG_MODE_NFM, "NFM", "154430000"},
+        {DSD_ANALOG_MODE_AM, "AM", "154430000"},
+        {DSD_ANALOG_MODE_UNKNOWN, "ANALOG", NULL},
     };
 
     int rc = 0;
@@ -1534,16 +1910,22 @@ test_analog_recordings_are_named_by_mode(void) {
         reload(&r);
         const char* pub = record(&g_j, "publish", 0);
         DSD_SNPRINTF(tag, sizeof tag, "%s: the row's recording is named by its mode", k_modes[i].token);
-        rc |= expect_true(tag, pub && dsd_test_analog_recording_name_is(field_s(pub, "file"), k_modes[i].token, NULL));
+        rc |= expect_true(tag, pub
+                                   && dsd_test_analog_recording_name_is(field_s(pub, "file"), k_modes[i].token,
+                                                                        k_modes[i].freq, NULL, NULL));
         DSD_SNPRINTF(tag, sizeof tag, "%s: the journal names the file on disk", k_modes[i].token);
-        rc |= expect_int(tag, list_analog_names(&r, k_modes[i].token).named, 1);
+        rc |= expect_int(tag, list_analog_names(&r, k_modes[i].token, k_modes[i].freq).named, 1);
         end_call(&r, DSD_CALL_END_EXPLICIT);
 
-        /* No row left: the mode the closer is given. */
+        /* No row left: the mode and frequency the call kept. */
         wav = analog_segment(&r, path, sizeof path);
-        (void)close_and_rename_analog_wav_file(wav, path, r.opts->wav_out_dir, k_modes[i].mode);
-        const analog_names names = list_analog_names(&r, k_modes[i].token);
-        DSD_SNPRINTF(tag, sizeof tag, "%s: a rowless recording is named by the mode given", k_modes[i].token);
+        const dsd_analog_wav_name kept = {
+            .mode = k_modes[i].mode,
+            .freq_hz = k_modes[i].freq ? 154430000 : 0,
+        };
+        (void)close_and_rename_analog_wav_file(wav, path, r.opts->wav_out_dir, &kept);
+        const analog_names names = list_analog_names(&r, k_modes[i].token, k_modes[i].freq);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: a rowless recording is named by the mode the call kept", k_modes[i].token);
         rc |= expect_true(tag, names.files == 2 && names.named == 2);
         rig_close(&r);
     }
@@ -1632,7 +2014,7 @@ test_unpublished_analog_recording_is_discarded(void) {
 
     reload(&r);
     rc |= expect_int("discard: nothing journaled", g_j.count, 0);
-    rc |= expect_int("discard: no recording left", list_analog_names(&r, "NFM").files, 0);
+    rc |= expect_int("discard: no recording left", list_analog_names(&r, "NFM", "154430000").files, 0);
     end_call(&r, DSD_CALL_END_EXPLICIT);
     dsd_neo_log_set_tap(NULL, NULL);
     rig_close(&r);
@@ -1657,7 +2039,7 @@ test_failed_analog_open_keeps_its_error_through_a_discard(void) {
     const char* err = record(&g_j, "error", 0);
     rc |= expect_str("open failure: its open error", err ? field_s(err, "kind") : "", "open");
     rc |= expect_int("open failure: counted", recording_status().failures[DSD_WAV_RECORDING_ERROR_OPEN], 1);
-    rc |= expect_int("open failure: no file", list_analog_names(&r, "NFM").files, 0);
+    rc |= expect_int("open failure: no file", list_analog_names(&r, "NFM", "154430000").files, 0);
     end_call(&r, DSD_CALL_END_EXPLICIT);
     rig_close(&r);
     return rc;
@@ -1799,6 +2181,7 @@ main(void) {
     rc |= test_merge_links_pending_to_the_retained_row();
     rc |= test_drop_unlinks_the_epoch_recordings();
     rc |= test_empty_segment_is_discarded();
+    rc |= test_nfm_call_end_keeps_the_slot_file();
     rc |= test_rename_failure_is_an_error_record();
     rc |= test_b3_name_and_raw_identity();
     rc |= test_non_utf8_identity_names_the_file_published();
@@ -1810,12 +2193,16 @@ main(void) {
     rc |= test_start_after_mid_call_enable();
     rc |= test_start_across_midnight();
     rc |= test_start_on_the_replay_clock();
+    rc |= test_nfm_start_is_its_first_block();
+    rc |= test_nfm_start_moves_back_by_its_preroll();
+    rc |= test_stamped_start_is_the_journal_and_sidecar_start();
     rc |= test_torn_tail_gets_a_newline();
     rc |= test_write_failure_latches_the_journal_off();
     rc |= test_no_journal_no_file();
     rc |= test_strings_are_escaped();
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_nfm_rdio_export_is_journaled();
     rc |= test_wav_stop_follows_a_fresh_stream_verdict();
     rc |= test_analog_recordings_are_named_by_mode();
     rc |= test_unpublished_analog_recording_is_discarded();

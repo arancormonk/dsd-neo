@@ -270,6 +270,15 @@ test_scalars(void) {
     assert(i32 == 0);
     refused("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":10001}}");
     refused("{\"cmd\":\"analog_record_max_gap_set\",\"params\":{\"value\":-1}}");
+    /* The NFM pre-roll (issue #668) takes 0..1000 ms; a value outside is refused, never clamped. */
+    assert(ok("{\"cmd\":\"analog_record_preroll_set\",\"params\":{\"value\":1000}}"));
+    DSD_MEMCPY(&i32, g_last, sizeof i32);
+    assert(g_last_id == DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET && g_last_n == sizeof(int32_t) && i32 == 1000);
+    assert(ok("{\"cmd\":\"analog_record_preroll_set\",\"params\":{\"value\":0}}"));
+    DSD_MEMCPY(&i32, g_last, sizeof i32);
+    assert(i32 == 0);
+    refused("{\"cmd\":\"analog_record_preroll_set\",\"params\":{\"value\":1001}}");
+    refused("{\"cmd\":\"analog_record_preroll_set\",\"params\":{\"value\":-1}}");
 
     assert(ok("{\"cmd\":\"key_rc4des_set\",\"params\":{\"value\":\"0xFFEEDDCCBBAA9988\"}}"));
     uint64_t u64 = 0U;

@@ -516,6 +516,12 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         return;
     }
 
+    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
+       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
+    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
+        return;
+    }
+
     /* A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and a failed
        open marks the slot for the next one (issue #708). */
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
@@ -2298,10 +2304,13 @@ watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* eve
     }
 }
 
-// Whether a part of a DMR site text (one between its " · " separators, trimmed) is its network or its site.
+// Whether a part of a DMR site text (one between its " · " separators, trimmed) is its network, its site, or the
+// Capacity Max part that says the numbers are raw.
 static int
 watchdog_event_dmr_site_part_wanted(const char* part, size_t len) {
-    return (len > 4U && strncmp(part, "Net ", 4U) == 0) || (len > 5U && strncmp(part, "Site ", 5U) == 0);
+    static const char capmax[] = DSD_RXID_T3_CAPMAX_TOKEN;
+    return (len > 4U && strncmp(part, "Net ", 4U) == 0) || (len > 5U && strncmp(part, "Site ", 5U) == 0)
+           || (len == sizeof capmax - 1U && memcmp(part, capmax, len) == 0);
 }
 
 // Appends text[from, to) to out (holding *used bytes), printable ASCII only, after a space when out is not empty.
@@ -2319,8 +2328,9 @@ watchdog_event_append_ascii(char* out, size_t out_size, size_t* used, const char
 }
 
 // The network and site parts of a DMR site text (dsd_received_identity::dmr_site_text, its parts joined by " · "),
-// joined by a space, e.g. "Net 13 Site 28" from "TIII Small · Net 13 · Site 28 · SYS 0A3F": what the text shows,
-// Tier III's one-based numbers and -D split included. ASCII only, so the separator never reaches the line.
+// joined by a space, e.g. "Net 13 Site 28" from "TIII Small · Net 13 · Site 28 · SYS 119B": the numbers as the text
+// shows them (Tier III raw on a recognised Capacity Max network, else one-based with any -D split), with the
+// "Capacity Max" part kept in its place so the line says which. ASCII only, so the separator never reaches the line.
 static void
 watchdog_event_dmr_site_parts(const char* text, size_t text_size, char* out, size_t out_size) {
     const size_t len = strnlen(text, text_size);

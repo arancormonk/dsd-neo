@@ -98,6 +98,10 @@ class AppPrefs : public QObject {
      * Settings like the switches above. */
     Q_PROPERTY(int analogMaxGapMs READ analogMaxGapMs WRITE setAnalogMaxGapMs NOTIFY analogMaxGapMsChanged)
     Q_PROPERTY(QVariantList analogMaxGapChoices READ analogMaxGapChoices CONSTANT)
+    /* Issue #668: how much of what was heard just before an NFM call each recording starts with, in ms; sent with -P
+     * and live by Settings like the pause hold. */
+    Q_PROPERTY(int analogPrerollMs READ analogPrerollMs WRITE setAnalogPrerollMs NOTIFY analogPrerollMsChanged)
+    Q_PROPERTY(QVariantList analogPrerollChoices READ analogPrerollChoices CONSTANT)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -280,6 +284,15 @@ class AppPrefs : public QObject {
     /** @brief The pause holds offered, in ms: 200 (off), 500, 1000, 2000, 3000, 5000 and 10000. */
     QVariantList analogMaxGapChoices() const;
 
+    /** @brief How much in ms of what was heard just before an NFM call each recording starts with
+     *         (--analog-record-preroll-ms): any value the decoder takes, 0..1000, 0 meaning off; else the decoder's
+     *         default. A value in range that Settings does not offer is kept as it is. */
+    int analogPrerollMs() const;
+    void setAnalogPrerollMs(int ms);
+
+    /** @brief The pre-rolls offered, in ms: 0 (off), 100, 200, 300, 500 and 1000. */
+    static QVariantList analogPrerollChoices();
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -312,6 +325,7 @@ class AppPrefs : public QObject {
     void recordUnknownOnlyChanged();
     void recordingLimitMbChanged();
     void analogMaxGapMsChanged();
+    void analogPrerollMsChanged();
 
   private:
     void expireLocation() const;

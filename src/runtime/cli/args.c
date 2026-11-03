@@ -711,19 +711,26 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
     return 0;
 }
 
+/* A whole number in @p min_value..@p max_value: refused, never clamped, with a message naming the range. */
 static int
-cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out, int* out_exit_rc) {
+cli_parse_int_range_option(const char* option_name, const char* in, int min_value, int max_value, int* out,
+                           int* out_exit_rc) {
     long parsed = 0;
     if (!cli_parse_long_option(option_name, in, 10, &parsed, out_exit_rc)) {
         return 0;
     }
-    if (parsed < min_ms || parsed > max_ms) {
-        LOG_ERROR("Invalid %s value \"%s\" (expected %d..%d)\n", option_name, in ? in : "", min_ms, max_ms);
+    if (parsed < min_value || parsed > max_value) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected %d..%d)\n", option_name, in ? in : "", min_value, max_value);
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
     *out = (int)parsed;
     return 1;
+}
+
+static int
+cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out, int* out_exit_rc) {
+    return cli_parse_int_range_option(option_name, in, min_ms, max_ms, out, out_exit_rc);
 }
 
 /* Same window check as cli_parse_ms_range_option(), except an explicit 0 is always accepted.
@@ -1912,6 +1919,22 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             rdio_api_delete_after_upload_cli = 1;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-analog-system-id") == 0) {                                                         \
+            if (!cli_has_value("--rdio-analog-system-id", i, argc, out_exit_rc)                                        \
+                || !cli_parse_int_range_option("--rdio-analog-system-id", DSD_PARSE_ARGS_NEXT_ARG(), 0, 65535,         \
+                                               &opts->rdio_analog_system_id, out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-analog-talkgroup") == 0) {                                                         \
+            if (!cli_has_value("--rdio-analog-talkgroup", i, argc, out_exit_rc)                                        \
+                || !cli_parse_int_range_option("--rdio-analog-talkgroup", DSD_PARSE_ARGS_NEXT_ARG(), 0, 2147483647,    \
+                                               &opts->rdio_analog_talkgroup, out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
             recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
@@ -1932,6 +1955,27 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strncmp(argv[i], "--analog-record-max-gap-ms=", 27) == 0) {                                                \
             if (!cli_parse_ms_range_option("--analog-record-max-gap-ms", argv[i] + 27, 0,                              \
                                            DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, &opts->analog_record_max_gap_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--analog-record-preroll-ms") == 0) {                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--analog-record-preroll-ms requires a millisecond value\n");                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--analog-record-preroll-ms", DSD_PARSE_ARGS_NEXT_ARG(), 0,                 \
+                                           DSD_ANALOG_RECORD_PREROLL_MAX_MS, &opts->analog_record_preroll_ms,          \
+                                           out_exit_rc)) {                                                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--analog-record-preroll-ms=", 27) == 0) {                                                \
+            if (!cli_parse_ms_range_option("--analog-record-preroll-ms", argv[i] + 27, 0,                              \
+                                           DSD_ANALOG_RECORD_PREROLL_MAX_MS, &opts->analog_record_preroll_ms,          \
                                            out_exit_rc)) {                                                             \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \

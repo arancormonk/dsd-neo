@@ -16,9 +16,12 @@
  *
  * Protocol code calls a `dsd_rxid_note_*()` function where a message passed its own check (CRC, FEC, a confirmed
  * transmission), with that message's own values: never decoder state, a voice link control word, a fill-in, a cache,
- * a hand-set seed or a preset. Content accepted only because `-F` or RAS relaxed a check is never noted. Each part
- * has its own valid bit, so a carrier that sent some parts shows those alone, and a fresh bit, which the no-carrier
- * pass clears, so a retained value never reads as live.
+ * a hand-set seed or a preset. Content accepted only because `-F` or RAS relaxed a check is never noted, with one
+ * narrow exception: the Capacity Max marker (DSD_RXID_DMR_T3_CAPMAX) may come from a type-0 C_ALOHA that `-F` accepted
+ * as RAS (its BPTC codeword within the unique-decoding radius, only the keyed CRC unverifiable, RAS confirmed on the
+ * carrier). It publishes no number or site; it only selects how the numbers checked messages sent are written. Each
+ * part has its own valid bit, so a carrier that sent some parts shows those alone, and a fresh bit, which the
+ * no-carrier pass clears, so a retained value never reads as live.
  *
  * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, DMR site, NXDN
  * location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one: the parts that bind
@@ -135,7 +138,17 @@ enum {
     /** dmr_site: the Tier III, Capacity Plus or Connect Plus site number as the message sends it, with dmr_t3_model for
      * Tier III. */
     DSD_RXID_DMR_SITE = 1U << 24,
+    /** dmr_t3_capmax_model/dmr_t3_capmax_net: the Tier III network (model and raw network) a C_ALOHA recognised as
+     * Motorola Capacity Max. A decoder-side marker, never a site part: no site snapshot, compare, merge, store or feed
+     * carries it. It is set valid and never fresh, so it alone never makes a record read as live, and noting or
+     * dropping it alone never moves the epoch. */
+    DSD_RXID_DMR_T3_CAPMAX = 1U << 25,
 };
+
+/** The part a Tier III site text (dsd_received_identity::dmr_site_text) carries, right after the model, for a network
+ * recognised as Motorola Capacity Max (DSD_RXID_DMR_T3_CAPMAX): "TIII Large · Capacity Max · Net 1 · Site 1 · SYS
+ * 2101". Such a text shows the raw numbers; a text without it shows them one-based. */
+#define DSD_RXID_T3_CAPMAX_TOKEN "Capacity Max"
 
 /** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
 typedef struct dsd_received_identity {
@@ -165,6 +178,10 @@ typedef struct dsd_received_identity {
     /** The raw site number (Tier III: the whole Site field before any -D sub-site split; Capacity Plus and Connect
      * Plus: the site ID). Network and site, never the text, tell one DMR site from another. */
     uint16_t dmr_site;
+    /** The Tier III model (0..3) of the network DSD_RXID_DMR_T3_CAPMAX names; 16 bits so the record keeps no padding. */
+    uint16_t dmr_t3_capmax_model;
+    /** The raw network number (at most 9 bits, by the model's NET width) of the network DSD_RXID_DMR_T3_CAPMAX names. */
+    uint16_t dmr_t3_capmax_net;
     uint16_t edacs_site;
     uint16_t edacs_area;
     uint16_t edacs_system;
@@ -201,9 +218,10 @@ typedef struct dsd_received_identity {
 
     /* Text: */
     /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 13 · Site 4 · SYS 1183" (Tier III
-     * one-based, "Site 1.4" with a -D split), "Cap+ · Site 2", "Con+ · Net 1234 · Site 5"; NUL-terminated, zero past
-     * the NUL (equal notes leave equal bytes). The view shows each part as a token, the "Net n" and "Site n" parts on
-     * the compact line. Presentation only, always noted with the raw numbers, which every compare reads instead. */
+     * one-based, "Site 1.4" with a -D split; raw after a DSD_RXID_T3_CAPMAX_TOKEN part), "Cap+ · Site 2",
+     * "Con+ · Net 1234 · Site 5"; NUL-terminated, zero past the NUL (equal notes leave equal bytes). The view shows
+     * each part as a token, the "Net n" and "Site n" parts on the compact line. Presentation only, always noted with
+     * the raw numbers, which every compare reads instead. */
     char dmr_site_text[64];
     char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated, zero past the NUL. */
 } dsd_received_identity;
@@ -264,7 +282,18 @@ void dsd_rxid_note_dmr_site(dsd_state* state, uint8_t trunk, int has_net, uint16
 void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
 /** The manufacturer's feature set ID @p mfid of a checked full LC or CSBK (0, the standard set, names none). */
 void dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid);
+/** A checked Tier III system code (14 bits: MODEL, NET, SITE). Another code than the record's drops the old one's
+ * site and control channel; a Capacity Max marker of another network (MODEL and NET) than the code's is dropped, one of
+ * the same network (another site of it) stays. */
 void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
+/** The Tier III network of model @p model (0..3) and raw network @p net was recognised as Motorola Capacity Max
+ * (DSD_RXID_DMR_T3_CAPMAX). A Tier III note: another trunking system's parts are dropped first. A model or network out
+ * of range (NET width Tiny 9, Small 7, Large 4, Huge 2 bits) is ignored. Sets the part valid, never fresh, and moves
+ * no epoch. */
+void dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net);
+/** 1 when @p state's record is DMR and holds the Capacity Max marker for exactly @p model and @p net; else 0 (NULL
+ * too). */
+int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */
 void dsd_rxid_note_dmr_ras(dsd_state* state);

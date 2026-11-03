@@ -56,6 +56,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -709,7 +710,7 @@ feed_reception(dsd_opts* opts, dsd_state* state, int blocks) {
     for (int b = 0; b < blocks; b++) {
         g_media_ns += 20000000ULL;
         dsd_decode_clock_set_media_ns(g_media_ns);
-        dsd_engine_analog_call_block(opts, state, block, kAnalogBlock, 48000, DSD_ANALOG_CALL_RECEPTION);
+        dsd_test_analog_call_feed(opts, state, block, kAnalogBlock, 48000, DSD_ANALOG_CALL_RECEPTION);
     }
 }
 

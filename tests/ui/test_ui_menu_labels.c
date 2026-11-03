@@ -946,6 +946,18 @@ test_recording_labels(void) {
                      "Analog pause hold... [10000 ms]");
     opts.analog_record_max_gap_ms = 200;
 
+    /* The NFM pre-roll (issue #668): Off at 0 only, any other value as stored. */
+    rc |= expect_str("nfm pre-roll null ctx", lbl_analog_record_preroll(NULL, b, sizeof(b)), "NFM pre-roll... [Off]");
+    opts.analog_record_preroll_ms = 0;
+    rc |= expect_str("nfm pre-roll off", lbl_analog_record_preroll(&ctx, b, sizeof(b)), "NFM pre-roll... [Off]");
+    opts.analog_record_preroll_ms = 1;
+    rc |= expect_str("nfm pre-roll just on", lbl_analog_record_preroll(&ctx, b, sizeof(b)), "NFM pre-roll... [1 ms]");
+    opts.analog_record_preroll_ms = 200;
+    rc |= expect_str("nfm pre-roll 200", lbl_analog_record_preroll(&ctx, b, sizeof(b)), "NFM pre-roll... [200 ms]");
+    opts.analog_record_preroll_ms = 1000;
+    rc |= expect_str("nfm pre-roll max", lbl_analog_record_preroll(&ctx, b, sizeof(b)), "NFM pre-roll... [1000 ms]");
+    opts.analog_record_preroll_ms = 0;
+
     rc |= expect_str("stop replay off", lbl_stop_symbol_playback(&ctx, b, sizeof(b)), "Stop replay [Off]");
     opts.symbolfile = (FILE*)0x2;
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;

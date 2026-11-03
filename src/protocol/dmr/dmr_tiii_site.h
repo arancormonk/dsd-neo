@@ -17,12 +17,21 @@
  * Tier III site numbers (TS 102 361-4 §6.3.2.2.1.1, Table 6.5 and Figure 6.15): the system code's MODEL sets the widths
  * of NET and SITE. The DMR location area (DMRLA, §6.3.2.2.3 and Figure 6.19) is the number of most significant SITE
  * bits that form the area; the radio is programmed with it and no message sends it, so dsd-neo takes it from -D n
- * (dsd_opts::dmr_dmrla_n while dmr_dmrla_is_set). No -D, or -D 0, shows the site whole; a DMRLA past the SITE width is
- * clamped to it, so it too leaves nothing to split off.
+ * (dsd_opts::dmr_dmrla_n while dmr_dmrla_is_set).
  *
- * dsd-neo shows every Tier III number one-based (issue #799 D1): the network, the site, and with a split the area and
- * the site in it, each as the raw value + 1, on every Tier III path (Capacity Max included). The received identity
- * keeps the raw values.
+ * The standard defines only the raw fields; how they are numbered for people is the vendor's:
+ * - Motorola's Radio Management numbers a Capacity Max network and site as sent, and Capacity Max has no location area.
+ *   A network dsd-neo recognised as Capacity Max (dsd_rxid_dmr_t3_is_capmax()) shows NET and SITE raw, the site always
+ *   whole, whatever -D says.
+ * - Hytera's CPS shows the network, the area and the site in it each one more than sent, the area taken from the top
+ *   SITE bits. Every other Tier III network reads this way: the raw value + 1. No -D, or -D 0, shows the site whole;
+ *   -D n splits off the top n bits as the area, and an n of the SITE width or more makes the whole SITE the area, with
+ *   site 0 in it ("<SITE + 1>.1").
+ *
+ * Recognition comes only from a type-0 C_ALOHA (the TSCC's own system code) of Motorola's feature set (FID 0x10) that
+ * passed its CRC, or that -F accepted as RAS on a carrier whose RAS is confirmed (dmr_csbk.c). Limits: a RAS Capacity
+ * Max network decoded without -F is never recognised, the first messages before recognition read as standard, and
+ * another vendor's own numbering reads as standard too. The received identity keeps the raw values.
  */
 
 /* The SITE width of Tier III model @p model (Tiny 3, Small 5, Large 8, Huge 10 bits). */
@@ -36,6 +45,29 @@ dmr_tiii_site_bits(uint8_t model) {
     }
 }
 
+/* A Tier III system code's fields: MODEL in its top two bits, then NET and SITE, whose widths the model sets. */
+typedef struct {
+    uint8_t model;
+    uint16_t net;
+    uint16_t site;
+    uint16_t site_bits;
+    const char* model_name;
+} dmr_tiii_code;
+
+/* The fields of the 14-bit system code @p syscode. Every path reads them here, so a CSBK and a short LC naming one code
+ * agree. */
+static inline dmr_tiii_code
+dmr_tiii_decode_syscode(uint16_t syscode) {
+    static const char* const names[4] = {"Tiny", "Small", "Large", "Huge"};
+    dmr_tiii_code code;
+    code.model = (uint8_t)((syscode >> 12) & 0x03U);
+    code.site_bits = dmr_tiii_site_bits(code.model);
+    code.site = (uint16_t)(syscode & ((1U << code.site_bits) - 1U));
+    code.net = (uint16_t)((syscode & 0x0FFFU) >> code.site_bits);
+    code.model_name = names[code.model];
+    return code;
+}
+
 /* The DMRLA the user set (-D n), 0 when none was. */
 static inline uint16_t
 dmr_tiii_dmrla(uint8_t is_set, uint8_t n) {
@@ -47,10 +79,11 @@ dmr_tiii_clamp_dmrla(uint16_t site_bits, uint16_t dmrla_n) {
     return dmrla_n > site_bits ? site_bits : dmrla_n;
 }
 
-/* Whether DMRLA @p dmrla_n splits a SITE of @p site_bits bits into an area and a site in it. */
+/* Whether DMRLA @p dmrla_n splits a SITE into an area and a site in it: any DMRLA does, one of the SITE width or more
+ * leaving the whole SITE as the area and site 0 in it. */
 static inline int
-dmr_tiii_is_split(uint16_t site_bits, uint16_t dmrla_n) {
-    return dmrla_n != 0U && dmrla_n < site_bits;
+dmr_tiii_is_split(uint16_t dmrla_n) {
+    return dmrla_n != 0U;
 }
 
 /* The location area (SYS_AREA): the top @p dmrla_n bits of @p site. */
@@ -67,15 +100,19 @@ dmr_tiii_site_in_area(uint16_t site, uint16_t site_bits, uint16_t dmrla_n) {
     return (uint16_t)(site & ((1U << low) - 1U));
 }
 
+/* The network as dsd-neo shows it: raw on a recognised Capacity Max network (@p capmax), else raw + 1. */
 static inline uint16_t
-dmr_tiii_display_net(uint16_t net) {
-    return (uint16_t)(net + 1U);
+dmr_tiii_display_net(uint16_t net, int capmax) {
+    return capmax ? net : (uint16_t)(net + 1U);
 }
 
-/* The site as dsd-neo shows it: "<site + 1>", or "<area + 1>.<site in area + 1>" when DMRLA @p dmrla_n splits it. */
+/* The site as dsd-neo shows it: raw and whole on a recognised Capacity Max network (@p capmax); else "<site + 1>", or
+ * "<area + 1>.<site in area + 1>" when DMRLA @p dmrla_n splits it. */
 static inline void
-dmr_tiii_site_label(char* out, size_t out_size, uint16_t site, uint16_t site_bits, uint16_t dmrla_n) {
-    if (dmr_tiii_is_split(site_bits, dmrla_n)) {
+dmr_tiii_site_label(char* out, size_t out_size, uint16_t site, uint16_t site_bits, uint16_t dmrla_n, int capmax) {
+    if (capmax) {
+        DSD_SNPRINTF(out, out_size, "%u", (unsigned)site);
+    } else if (dmr_tiii_is_split(dmrla_n)) {
         DSD_SNPRINTF(out, out_size, "%u.%u", (unsigned)dmr_tiii_area(site, site_bits, dmrla_n) + 1U,
                      (unsigned)dmr_tiii_site_in_area(site, site_bits, dmrla_n) + 1U);
     } else {
@@ -83,27 +120,37 @@ dmr_tiii_site_label(char* out, size_t out_size, uint16_t site, uint16_t site_bit
     }
 }
 
+/* The site text of system code @p syscode as the site parameters read, e.g. "TIII Small · Net 3 · Site 28 · SYS 105B"
+ * (or "... · Site 4.4 · ..." with -D 2), and on a recognised Capacity Max network (@p capmax) its raw numbers after the
+ * shared token: "TIII Large · Capacity Max · Net 1 · Site 1 · SYS 2101". */
+static inline void
+dmr_tiii_site_text(char* out, size_t out_size, uint16_t syscode, uint16_t dmrla_n, int capmax) {
+    static const char dot[] = " \xC2\xB7 ";
+    const dmr_tiii_code code = dmr_tiii_decode_syscode(syscode);
+    char site_label[16];
+    dmr_tiii_site_label(site_label, sizeof(site_label), code.site, code.site_bits, dmrla_n, capmax);
+    DSD_SNPRINTF(out, out_size, "TIII %s%s%sNet %u%sSite %s%sSYS %04X", code.model_name, dot,
+                 capmax ? DSD_RXID_T3_CAPMAX_TOKEN " \xC2\xB7 " : "", (unsigned)dmr_tiii_display_net(code.net, capmax),
+                 dot, site_label, dot, (unsigned)syscode);
+}
+
 /* Site note for a Tier III system identity, to the received identity record (dsd_state::rx_id) and, while one runs, the
  * signal search: call it only from a CSBK that passed its CRC (C_ALOHA, not one -F accepted by RAS) or a short LC that
- * passed Hamming(17,12,3) and its CRC-8 (C/P_SYS_PARMS), with that message's own fields, after it was handled.
- * @p syscode is the 14-bit system code (MODEL, NET, SITE) whose model the record keeps with the raw @p net and @p site;
- * @p model names it, and @p dmrla_n is the user's DMRLA. The text reads as the site parameters do, one-based, e.g.
- * "TIII Small · Net 3 · Site 28 · SYS 105B", or "... · Site 4.4 · ..." with -D 2. */
+ * passed Hamming(17,12,3) and its CRC-8 (C/P_SYS_PARMS), after it was handled. @p syscode is the message's 14-bit system
+ * code (MODEL, NET, SITE), whose raw fields the record keeps, and @p dmrla_n the user's DMRLA. The text names the
+ * numbering the network uses (dmr_tiii_site_text()). */
 static inline void
-dmr_tiii_note_search_site(dsd_state* state, const char* model, uint16_t net, uint16_t site, uint16_t dmrla_n,
-                          uint16_t syscode) {
-    static const char dot[] = " \xC2\xB7 ";
-    const uint8_t model_id = (uint8_t)((syscode >> 12) & 0x03U);
-    char site_label[16];
+dmr_tiii_note_search_site(dsd_state* state, uint16_t syscode, uint16_t dmrla_n) {
+    const dmr_tiii_code code = dmr_tiii_decode_syscode(syscode);
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_DMR_TIII;
-    dmr_tiii_site_label(site_label, sizeof(site_label), site, dmr_tiii_site_bits(model_id), dmrla_n);
-    DSD_SNPRINTF(note.text, sizeof(note.text), "TIII %s%sNet %u%sSite %s%sSYS %04X", model, dot,
-                 (unsigned)dmr_tiii_display_net(net), dot, site_label, dot, (unsigned)syscode);
-    /* The system code first: another one drops the site the old system left. */
+    /* The system code first: another one drops the site the old system left, and a Capacity Max mark of another
+       network. */
     dsd_rxid_note_dmr_t3_syscode(state, syscode);
-    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, net, site, model_id, note.text);
+    dmr_tiii_site_text(note.text, sizeof(note.text), syscode, dmrla_n,
+                       dsd_rxid_dmr_t3_is_capmax(state, code.model, code.net));
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, code.net, code.site, code.model, note.text);
     if (dsd_signal_search_is_running(state)) {
         dsd_signal_search_note_site(state, &note);
     }

@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -369,7 +370,7 @@ analog_stall_step(dsd_opts* opts, dsd_state* state) {
         }
         /* A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS (issue #667). */
         for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
-            dsd_engine_analog_call_block(opts, state, samples, 960, 48000, 1);
+            dsd_test_analog_call_feed(opts, state, samples, 960, 48000, 1);
         }
         expect("NFM reception starts a call", dsd_engine_analog_call_active(state));
         state->analog_rx.stale_after_ms = 1U;

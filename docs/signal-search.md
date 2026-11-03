@@ -154,7 +154,9 @@ during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SY
 RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
 **WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2**; a DMR Tier III identity from a C_ALOHA or a
 C_SYS_PARMS/P_SYS_PARMS short LC that passed its checks, read as
-**TIII Small · Net 13 · Site 4 · SYS 1183**; or the NXDN location of a CRC-checked site,
+**TIII Small · Net 13 · Site 4 · SYS 1183** (or, with the numbers as sent, as
+**TIII Large · Capacity Max · Net 1 · Site 1 · SYS 2101** on a network recognised as
+Motorola Capacity Max); or the NXDN location of a CRC-checked site,
 service or control channel message once the transmission is confirmed, read as
 **Site 12 · Sys 3**. A P25 RFSS status joins only the system its SYSID names, and a
 network status of another system replaces what was shown. Voice link control (whose

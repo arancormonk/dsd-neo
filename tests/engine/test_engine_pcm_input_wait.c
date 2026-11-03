@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../src/engine/engine_hooks_install.h"
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_env.h"
@@ -268,7 +269,7 @@ receive_blocks(session* s, int blocks) {
     }
     dsd_analog_rx_tap(s->opts, s->state, block, k_block);
     for (int b = 0; b < blocks; b++) {
-        dsd_engine_analog_call_block(s->opts, s->state, block, k_block, 48000, DSD_ANALOG_CALL_RECEPTION);
+        dsd_test_analog_call_feed(s->opts, s->state, block, k_block, 48000, DSD_ANALOG_CALL_RECEPTION);
     }
 }
 

@@ -58,6 +58,7 @@ target_sources(
     PRIVATE
         engine.c
         analog_call.c
+        analog_preroll.c
         channel_scan.c
         end_calls.c
         manual_tune_pending.c

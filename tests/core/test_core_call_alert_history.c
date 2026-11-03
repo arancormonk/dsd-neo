@@ -4571,7 +4571,7 @@ test_system_identity_takes_dependent_invalidations(void) {
 
 // Issue #799: each row keeps the site identity its call was heard on -- the site parts of the record its sys ids come
 // from, under the same rule -- and the DMR call's channel with the numbering it was named in.
-static const char k_t3_site_text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 28 \xC2\xB7 SYS 0A3F";
+static const char k_t3_site_text[] = "TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 28 \xC2\xB7 SYS 119B";
 
 // One active group call with its channel, the channel's kind and frequency, rendered into the staged row.
 static const Event_History*
@@ -4613,8 +4613,19 @@ expect_row_site_empty(const char* label, const Event_History* row) {
 
 static void
 note_t3_site(dsd_state* state) {
-    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
-    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 0U, k_t3_site_text);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x119BU); /* Small, NET 12, SITE 27 */
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 12U, 27U, 1U, k_t3_site_text);
+}
+
+// A Tier III site of a network recognised as Capacity Max: its text names it and shows the raw numbers.
+static void
+note_t3_capmax_site(dsd_state* state) {
+    dsd_rxid_note_dmr_t3_syscode(state, 0x2101U); /* Large, NET 1, SITE 1 */
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, 1U, 1U, 2U,
+                           "TIII Large \xC2\xB7 " DSD_RXID_T3_CAPMAX_TOKEN
+                           " \xC2\xB7 Net 1 \xC2\xB7 Site 1 \xC2\xB7 SYS "
+                           "2101");
 }
 
 // The row takes the site of the record its call began under while that record is the call's, and keeps it once the
@@ -4988,7 +4999,7 @@ test_event_line_dmr_site_tokens(void) {
     const Event_History* item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U,
                                                    DSD_CALL_CHANNEL_LPCN, DSD_CALL_BOUNDARY_BEGIN);
     int rc = expect_str_eq("Tier III", item->event_string,
-                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 0A3F; "
+                           "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 119B; "
                            "SITE: Net 13 Site 28; LPCN: 12; Group; ");
     rc |= expect_int("the row's channel kind", item->call_channel_kind, DSD_CALL_CHANNEL_LPCN);
 
@@ -5010,6 +5021,32 @@ test_event_line_dmr_site_tokens(void) {
                         "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SITE: Net 1234 Site 5; "
                         "LCN: 3; Group; ");
     rc |= expect_no_substr("never the separator", item->event_string, "\xC2\xB7");
+
+    /* A recognised Capacity Max network keeps the word, so the line says which numbering its raw numbers are in. */
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 1U;
+    note_t3_capmax_site(&state);
+    item = render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 38U, DSD_CALL_CHANNEL_LPCN,
+                              DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_str_eq("Capacity Max", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00000100; SRC: 00000201; CC: 01; SYS: 2101; "
+                        "SITE: Capacity Max Net 1 Site 1; LPCN: 38; Group; ");
+
+    /* A completed row keeps the line of the text it was heard under after the record names another site. */
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("one committed row", committed_history_rows(&event_history[0]), 1);
+    const Event_History* done = &event_history[0].Event_History_Items[1];
+    dsd_rxid_reset(&state);
+    note_t3_site(&state);
+    advance_test_clock(60.0);
+    (void)render_channel_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 12U, DSD_CALL_CHANNEL_LPCN,
+                             DSD_CALL_BOUNDARY_BEGIN);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_has_substr("the completed row keeps its text", done->event_string,
+                            "SYS: 2101; SITE: Capacity Max Net 1 Site 1; LPCN: 38; ");
+    rc |= expect_has_substr("the live row has the new site", event_history[0].Event_History_Items[0].event_string,
+                            "SYS: 119B; SITE: Net 13 Site 28; LPCN: 12; ");
 
     /* A channel of no DMR numbering prints nothing, as before. */
     reset_fixture(&opts, &state, event_history);
@@ -8997,9 +9034,9 @@ test_hold_does_not_override_stream_off(void) {
 }
 
 // Recordings the talkgroup policy never gates are never judged for the export either: a conventional analog call (no
-// talkgroup) under the allow list, which would miss on every call, keeps the event layer's stream verdict on. This
-// pins only that verdict, on a stubbed close. The WAV close then exports no analog recording, which has no talkgroup to
-// name an upload by: CORE_RECEIVE's test_analog_recordings_stay_local pins that, NFM and AM, through real publication.
+// talkgroup) under the allow list, which would miss on every call, is not blocked, and its staged row is exported by
+// the real exporter under the frequency's kHz (issue #668), with the row's own target still 0. Its recording belongs
+// to the analog call (engine/analog_call.c), so the call's end rotates no slot file.
 static int
 test_unjudged_recordings_export(void) {
     static dsd_opts opts;
@@ -9008,8 +9045,36 @@ test_unjudged_recordings_export(void) {
     static max_align_t wav_sentinel;
     stream_fixture(&opts, &state, event_history, &wav_sentinel);
     opts.trunk_use_allow_list = 1;
-    const int closes = run_stream_call(&opts, &state, 0U, DSD_SYNC_ANALOG, DSD_CALL_KIND_VOICE, 0U, 0U, 0U);
-    const int rc = expect_stream_close("NFM call under the allow list", closes, 1, 0U);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 154437500U;
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_nfm")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the NFM export test\n");
+        return 1;
+    }
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_ANALOG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    int rc = expect_int("NFM call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    /* The NFM recording closes against the call's staged row, before the call's end commits it. */
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("NFM call under the allow list: not blocked from the export", (int)staged->stream_blocked, 0);
+    close_wav_capture capture;
+    DSD_MEMSET(&capture, 0, sizeof capture);
+    close_wav_export_sidecar(&opts, &event_history[0], 0, 0, &capture);
+    rc |= expect_has_substr("NFM call exported under its frequency in kHz", capture.sidecar, "\"talkgroup\": 154437,");
+    rc |= expect_u64("the export id is not stored on the row", staged->target_id, 0U);
+    const int closes = g_close_wav_capture_count;
+    rc |= expect_int("NFM call end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("NFM call end: no slot recording closes", g_close_wav_capture_count - closes, 0);
+    (void)dsd_test_rmdir(g_close_wav_export_dir);
+    g_close_wav_export_dir[0] = '\0';
     dsd_state_ext_free_all(&state);
     return rc;
 }

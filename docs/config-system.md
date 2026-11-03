@@ -454,7 +454,8 @@ audio input) sound no alert.
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
-| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence; 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
+| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
+| `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
@@ -462,6 +463,8 @@ audio input) sound no alert.
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
+| `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
+| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -474,6 +477,15 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 running session changes it from the next block of audio: a lower value, or off, ends an analog call already paused
 longer than that. The hold works only while `per_call_wav` is on; with it off, analog calls end as before. How pauses
 are counted, and the limits, are in `docs/cli.md`, "Pauses in an analog recording".
+`analog_preroll_ms` outside 0 to 1000, or not a whole number, is refused with a warning, and the value already loaded
+stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a running
+session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
+change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
+`per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
+`rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
+warning, and the value already loaded stays; `--validate-config` reports them as errors. An analog call with a frequency
+is exported under it in kHz; how analog calls are exported, and the limits, are in `docs/cli.md`, "Analog calls in
+rdio-scanner".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
@@ -1041,6 +1053,7 @@ The following can be changed without restarting:
   of that kind without a reopen (see "When `[analog]` changes apply" above)
 - The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
 - The analog recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
+- The NFM recording pre-roll (`[recording] analog_preroll_ms`), at once
 - TCP/UDP connection parameters
 - File input path
 

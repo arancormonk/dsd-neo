@@ -54,6 +54,23 @@ dsd_cli_usage_section_intro(void) {
     printf("\n");
 }
 
+/* The rdio-scanner export options, part of the per-call recording group. */
+static void
+dsd_cli_usage_rdio_options(void) {
+    printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
+    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
+    printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for analog calls\n");
+    printf("                 (0 to 65535; 0 = use --rdio-system-id, the default)\n");
+    printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for analog calls with no known frequency\n");
+    printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
+    printf("                 is exported under it in kHz.)\n");
+    printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
+    printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
+    printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
+    printf("      --rdio-upload-retries <n>  API upload retry attempts per call (default 1)\n");
+    printf("      --rdio-api-delete-after-upload  Delete per-call WAV after successful API-only upload\n");
+}
+
 static void
 dsd_cli_usage_section_io(void) {
     printf("Device Options:\n");
@@ -121,13 +138,11 @@ dsd_cli_usage_section_io(void) {
     printf("      --analog-record-max-gap-ms <ms>  Keep an analog call in one recording through pauses up to <ms>\n");
     printf("                 (0 to 10000; the pause is saved as silence; 200 or less is off, the default)\n");
     printf("                 (Works only while -P per-call recording is on)\n");
-    printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
-    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
-    printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
-    printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
-    printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
-    printf("      --rdio-upload-retries <n>  API upload retry attempts per call (default 1)\n");
-    printf("      --rdio-api-delete-after-upload  Delete per-call WAV after successful API-only upload\n");
+    printf(
+        "      --analog-record-preroll-ms <ms>  Start each NFM recording with the audio heard just before the call\n");
+    printf("                 (0 to 1000; 200 is the default, 0 is off; only audio the tone filter allows is kept)\n");
+    printf("                 (Works only while -P per-call recording is on)\n");
+    dsd_cli_usage_rdio_options();
     printf("  -a            Enable Call Alert Beep for start, end, and data events\n");
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");
@@ -366,6 +381,7 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -D <dec>      DMR Tier III location area (DMRLA) bits, 0-10: the top n Site ID bits\n");
     printf("                 are the area, shown as Site area.site (both counted from 1)\n");
     printf("                 (Default and 0: no split, the whole Site ID is shown)\n");
+    printf("                 Ignored on Motorola Capacity Max, which shows numbers as sent\n");
     printf("\n");
     printf("  -ma           Auto-select modulation optimizations\n");
     printf("  -mc           Only C4FM optimizations (locks demod; no auto override)\n");

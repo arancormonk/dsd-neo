@@ -426,6 +426,15 @@ cb_analog_record_max_gap(void* v, int ok, int ms) {
     }
 }
 
+/* The NFM pre-roll (issue #668) goes to the command as typed too, which refuses a value out of range with the reason. */
+void
+cb_analog_record_preroll(void* v, int ok, int ms) {
+    (void)v;
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, (int32_t)ms);
+    }
+}
+
 void
 cb_tg_hold(void* v, int ok, int tg) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);

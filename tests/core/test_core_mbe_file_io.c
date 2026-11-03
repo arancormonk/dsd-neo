@@ -7,6 +7,7 @@
  */
 
 #include <dsd-neo/core/ambe_interleave.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
@@ -3721,6 +3722,159 @@ test_close_and_rename_wav_stream_off_skips_export(void) {
     return rc;
 }
 
+// Issue #668: a conventional NFM recording is named by its mode, frequency and received tone, then its service:
+// `<date>_<time>_<nnnnn>_NFM_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>][_SVC_<service>].wav`.
+typedef struct {
+    const char* label;
+    int64_t freq_hz;
+    uint8_t kind;  /* DSD_RECEIVE_*; DSD_RECEIVE_NONE with known = 1 is a confirmed untoned call. */
+    uint8_t known; /* receive_identity.known */
+    uint16_t value;
+    const char* service;
+    const char* want_freq;
+    const char* want_tone;
+    const char* want_service;
+    const char* mode; /* the row's mode word (sysid_string); NULL for NFM */
+} nfm_name_case;
+
+static int
+nfm_name_case_run(const nfm_name_case* c) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_name")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 48000, 0);
+    rc |= expect_true(c->label, wav != NULL && write_wav_test_samples(wav));
+    if (wav) {
+        static Event_History_I history;
+        DSD_MEMSET(&history, 0, sizeof history);
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_time = (time_t)1700000000;
+        item->systype = DSD_SYNC_ANALOG;
+        item->analog_mode = DSD_ANALOG_MODE_NFM; /* an empty mode word falls back to it (issue #667) */
+        item->freq_hz = c->freq_hz;
+        item->receive_identity.kind = c->kind;
+        item->receive_identity.known = c->known;
+        item->receive_identity.value = c->value;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", c->mode ? c->mode : "NFM");
+        if (c->service) {
+            DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", c->service);
+        }
+        rc |= expect_true(c->label, close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 0, NULL) == NULL);
+        dir_count_ctx found;
+        DSD_MEMSET(&found, 0, sizeof found);
+        (void)dsd_dir_list(dir, count_dir_entry, &found);
+        rc |= expect_true(c->label, found.count == 1);
+        const char* want_mode = c->mode && c->mode[0] ? c->mode : "NFM";
+        if (!dsd_test_analog_recording_name_is(found.last, want_mode, c->want_freq, c->want_tone, c->want_service)) {
+            DSD_FPRINTF(stderr, "%s: unexpected name %s\n", c->label, found.last);
+            rc = 1;
+        }
+    }
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* A mode word of 160 characters, which the name's system part holds: the analog part keeps it whole (issue #668). On
+   Windows a path stays under MAX_PATH (260), which the runner's temp directory and a 160-character word pass, so the
+   rename would fail there; the word is 80 characters, still well past the 48 the analog part once had. */
+#if DSD_PLATFORM_WIN_NATIVE
+static const char k_long_mode[] = "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE";
+#else
+static const char k_long_mode[] = "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE"
+                                  "LONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODELONGMODE";
+#endif
+
+static int
+test_close_and_rename_wav_names_an_nfm_recording(void) {
+    const nfm_name_case cases[] = {
+        {
+            "frequency, CTCSS and service",
+            154430000,
+            DSD_RECEIVE_CTCSS,
+            1,
+            1000,
+            "Fire North",
+            "154430000",
+            "CTCSS_100.0",
+            "Fire_North",
+            NULL,
+        },
+        {
+            "CTCSS keeps its decimal",
+            462562500,
+            DSD_RECEIVE_CTCSS,
+            1,
+            1413,
+            NULL,
+            "462562500",
+            "CTCSS_141.3",
+            NULL,
+            NULL,
+        },
+        {"DCS normal", 154430000, DSD_RECEIVE_DCS, 1, 047 * 2, NULL, "154430000", "DCS_D047N", NULL, NULL},
+        {"DCS inverted", 154430000, DSD_RECEIVE_DCS, 1, 023 * 2 + 1, NULL, "154430000", "DCS_D023I", NULL, NULL},
+        {"known no tone", 154430000, DSD_RECEIVE_NONE, 1, 0, NULL, "154430000", NULL, NULL, NULL},
+        {"tone not known", 154430000, DSD_RECEIVE_CTCSS, 0, 1000, NULL, "154430000", NULL, NULL, NULL},
+        {"no frequency", 0, DSD_RECEIVE_CTCSS, 1, 1000, "Traveler", NULL, "CTCSS_100.0", "Traveler", NULL},
+        {"no frequency, no tone", 0, DSD_RECEIVE_NONE, 0, 0, NULL, NULL, NULL, NULL, NULL},
+        {"an empty mode word is the row's mode", 154430000, DSD_RECEIVE_NONE, 0, 0, NULL, "154430000", NULL, NULL, ""},
+        {"a mode word of its own", 118100000, DSD_RECEIVE_NONE, 0, 0, NULL, "118100000", NULL, NULL, "AM"},
+        {
+            "a long mode word kept whole",
+            154430000,
+            DSD_RECEIVE_CTCSS,
+            1,
+            1000,
+            NULL,
+            "154430000",
+            "CTCSS_100.0",
+            NULL,
+            k_long_mode,
+        },
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= nfm_name_case_run(&cases[i]);
+    }
+    // The teardown close has no row: it is named from the parts the call kept, or ANALOG_FREQ_UNKNOWN with none.
+    static const dsd_analog_wav_name k_kept = {
+        154437500, {1413, DSD_RECEIVE_CTCSS, 1, 0, 0}, "Traveler /West?", DSD_ANALOG_MODE_NFM};
+    const dsd_analog_wav_name* const names[] = {NULL, &k_kept};
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_name")) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        DSD_MEMSET(path, 0, sizeof path);
+        SNDFILE* wav = open_wav_file(dir, path, sizeof path, 48000, 0);
+        rc |= expect_true("teardown", wav != NULL && write_wav_test_samples(wav));
+        if (!wav) {
+            continue;
+        }
+        rc |= expect_true("teardown", close_and_rename_analog_wav_file(wav, path, dir, names[i]) == NULL);
+        dir_count_ctx found;
+        DSD_MEMSET(&found, 0, sizeof found);
+        (void)dsd_dir_list(dir, count_dir_entry, &found);
+        const int named =
+            names[i] ? dsd_test_nfm_recording_name_is(found.last, "154437500", "CTCSS_141.3", "Traveler__West_")
+                     : dsd_test_analog_recording_name_is(found.last, "ANALOG", NULL, NULL, NULL);
+        rc |= expect_true(names[i] ? "teardown names the kept parts" : "teardown names ANALOG_FREQ_UNKNOWN",
+                          found.count == 1 && named);
+        char done[DSD_TEST_PATH_MAX * 2];
+        if (found.count == 1 && dsd_test_path_join(done, sizeof done, dir, found.last) == 0) {
+            (void)remove(done);
+        }
+    }
+    remove_dir_tree(dir);
+    return rc;
+}
+
 // Baofeng DM-32 captures from tylerwatt12/known-key-mbe-samples, revision
 // 2e15b86e305b7a3c71d52873518e2908747f6e09. Expected AMBE bits independently
 // checked with OpenSSL-backed AES/OFB and an RFC 6229-checked RC4 reference.
@@ -3937,6 +4091,7 @@ main(void) {
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
     rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
     rc |= test_close_and_rename_wav_stream_off_skips_export();
+    rc |= test_close_and_rename_wav_names_an_nfm_recording();
 
     if (rc == 0) {
         printf("CORE_MBE_FILE_IO: OK\n");

@@ -822,6 +822,42 @@ test_stop_just_before_reset(void) {
     rig_close(r);
 }
 
+/* A reader that gives up after a stop latched, but before the stop holds the lifecycle lock and clears run (a recovery
+ * the stop cancels can still hold it), belongs to the stop: nothing is reported and the receiver's ending is not
+ * committed. The progress monitor's verdicts take the same check. The silence limit is lifted for the case, so a slow
+ * stopping thread cannot let the monitor post a stall recovery, whose request would drop the verdict on its own. */
+void
+reader_returns_inside_stop(struct rtl_device* dev, void* ctx) {
+    (void)dev;
+    (void)ctx;
+    const unsigned int before = rtl_device_test_usb_reader_returns();
+    rtl_device_test_usb_stream_return(-1);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_usb_reader_returns() == before; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_usb_reader_returns() != before);
+}
+
+void
+test_reader_return_after_stop_latch_is_silent(void) {
+    seams_reset();
+    (void)log_take();
+    rtl_device_test_set_progress_limit_ms(600000U);
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    rtl_device_test_set_stop_latched_hook(reader_returns_inside_stop, nullptr);
+    (void)rtl_device_stop_async(r.dev);
+    rtl_device_test_set_stop_latched_hook(nullptr, nullptr);
+    assert(dsd_input_failure_receiver_ended() == 0);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.kind == DSD_INPUT_FAILURE_NONE);
+    assert(log_take().find("the stream stops") == std::string::npos);
+    rig_close(r);
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+}
+
 /* Re-review N4: the reader delivers its last block and returns by itself after the monitor read it as streaming, before
  * the monitor clears the obligation the descriptor came with. The return's ending set the obligation for itself, so the
  * clear must not take it: Reconnect still resets the dongle. The hook makes the return land in that window. */
@@ -1110,6 +1146,7 @@ main(void) {
     test_swap_identity_mismatch();
     test_restart_after_reset_fails();
     test_stop_just_before_reset();
+    test_reader_return_after_stop_latch_is_silent();
     test_dead_reset_after_replacement_keeps_its_obligation();
     test_old_descriptor_never_rearms_after_replacement();
 

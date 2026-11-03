@@ -355,6 +355,38 @@ uint8_t dsd_analog_rx_pcm_squelch_sample(const dsd_opts* opts, dsd_state* state,
 void dsd_analog_rx_block_restart(const dsd_state* state);
 
 /**
+ * @brief Note that the symbol path starts filling a new monitor block (issue #668).
+ *
+ * The block starts under the tone gate in force now (dsd_analog_tone_gate_in_force()): eligible from its first
+ * sample when that passes (OFF or ALLOWED), else from nowhere until a read publishes a verdict that passes. Every read
+ * of the block after that moves it on (dsd_analog_rx_block_eligible_from()). Only the detector's own state, which the
+ * state holds by pointer, changes.
+ */
+void dsd_analog_rx_block_begin(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The first sample of the monitor block of @p count samples from which the tone gate has stayed OFF or
+ * ALLOWED to the block's end (issue #668), for the block being finalized after its last read.
+ *
+ * Tracked from the gate in force when the block began (dsd_analog_rx_block_begin()) and every verdict a read of the
+ * block published: a verdict published after a read of samples [start, filled) describes them, so it takes effect at
+ * the read's start. Tone eligibility is therefore at read precision (DSD_ANALOG_RX_TAP_READ_MS); with one read per
+ * block, as at 48 kHz, a block is either wholly eligible or not at all. @p count when the gate in force now does not
+ * pass, or when no verdict since the block began passed. 0 before the tap has run, while the gate in force passes.
+ * Read-only.
+ */
+unsigned int dsd_analog_rx_block_eligible_from(const dsd_opts* opts, const dsd_state* state, unsigned int count);
+
+/**
+ * @brief Whether a read of the monitor block starting at or after its eligible point
+ * (dsd_analog_rx_block_eligible_from()) found the carrier itself (issue #668): the receiver's own per-read decision, a
+ * read the auto or noise squelch's flags open at its last sample or open inside it, or one the level squelch passes
+ * above the level floor, never only the carrier's hangover, the whole block's level or the playback gate. 0 when
+ * nothing of the block is eligible. Read-only.
+ */
+int dsd_analog_rx_block_qualified_carrier(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief The published carrier, held to the channel the receiver is on now (issue #526).
  *
  * dsd_state::analog_rx.carrier_open says what the tap heard at its last read, at every input rate: one the tap's front

@@ -110,6 +110,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/protocol/tetra/tetra_confirm.h"
 #include "../../src/protocol/tetra/tetra_state.h"
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -9210,6 +9211,7 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "per-call WAV start", DSD_APP_CMD_WAV_START, 0},
         {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
         {&value, sizeof value, "NFM max gap", DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET, 0},
+        {&value, sizeof value, "NFM pre-roll", DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -11538,7 +11540,8 @@ count_nfm_recording(const char* name, void* user) {
     nfm_recording_names* names = (nfm_recording_names*)user;
     names->files++;
     /* An audio input's call: its mode is not known, so it is named _ANALOG (issue #667). */
-    names->named += strstr(name, "_ANALOG_SVC_Traveler") != NULL && !strstr(name, "TEMP");
+    names->named +=
+        strstr(name, "_ANALOG_FREQ_UNKNOWN") != NULL && strstr(name, "_SVC_Traveler") != NULL && !strstr(name, "TEMP");
     return 0;
 }
 
@@ -11575,9 +11578,9 @@ start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
     /* The tone check before it (PENDING, recorded nowhere) brings the reception to the minimum a call needs (issue
        #667) at its first block. */
     for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
-        dsd_engine_analog_call_block(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+        dsd_test_analog_call_feed(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
     }
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
     rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
     return rc;
 }

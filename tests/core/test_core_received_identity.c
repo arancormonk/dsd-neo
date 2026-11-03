@@ -26,7 +26,7 @@ _Static_assert(DSD_RXID_FAMILY_NONE == 0, "family NONE is pinned");
 _Static_assert(DSD_RXID_FAMILY_EDACS == 7, "family EDACS is pinned");
 /* No padding: a whole-record compare (a history row's frozen copy, memcmp) sees only values, and a struct copy leaves no
    indeterminate bytes. A field added to the record keeps it so, or moves this pin with a reason. */
-_Static_assert(sizeof(dsd_received_identity) == 168U, "dsd_received_identity carries no padding");
+_Static_assert(sizeof(dsd_received_identity) == 172U, "dsd_received_identity carries no padding");
 
 static int g_fail;
 
@@ -960,6 +960,160 @@ test_text_notes_leave_identical_bytes(void) {
     free(b);
 }
 
+/* A checked Tier III site, as the DMR decoder notes it: the system code first, then the raw numbers and the text. */
+static void
+note_t3_site(dsd_state* state, uint16_t syscode, uint16_t net, uint16_t site, uint8_t model) {
+    dsd_rxid_note_dmr_t3_syscode(state, syscode);
+    dsd_rxid_note_dmr_site(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3, 1, net, site, model, "TIII");
+}
+
+static void
+expect_capmax(const char* label, const dsd_state* state, uint8_t model, uint16_t net, unsigned long want) {
+    expect_u(label, (unsigned long)dsd_rxid_dmr_t3_is_capmax(state, model, net), want);
+}
+
+/* The Capacity Max marker names one Tier III network by its model and raw network (never syscode >> SITE width:
+   Large NET 1 and Tiny NET 33 share 0x21), and only that pair reads as recognised. */
+static void
+test_dmr_t3_capmax_marker_pair(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    expect_u("marker valid", id->valid, DSD_RXID_DMR_T3_CAPMAX);
+    expect_u("marker never fresh", id->fresh, 0U);
+    expect_u("marker family", id->family, DSD_RXID_FAMILY_DMR);
+    expect_u("marker trunk", id->dmr_trunk, DSD_RXID_DMR_TRUNK_TIER3);
+    expect_u("marker epoch", id->epoch, 0U);
+    expect_capmax("exact pair", state, 2U, 1U, 1U);
+    expect_capmax("tiny net 33 shares syscode >> width", state, 0U, 33U, 0U);
+    expect_capmax("other net", state, 2U, 2U, 0U);
+    expect_capmax("other model", state, 1U, 1U, 0U);
+    expect_capmax("null state", NULL, 2U, 1U, 0U);
+    dsd_rxid_note_dmr_t3_capmax(NULL, 2U, 1U);
+
+    /* A model or network out of range names no network and changes nothing. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_t3_capmax(state, 4U, 1U);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 16U);
+    dsd_rxid_note_dmr_t3_capmax(state, 3U, 4U);
+    dsd_rxid_note_dmr_t3_capmax(state, 1U, 128U);
+    dsd_rxid_note_dmr_t3_capmax(state, 0U, 512U);
+    expect_u("invalid ignored", id->valid, 0U);
+    expect_u("invalid starts no record", id->family, DSD_RXID_FAMILY_NONE);
+    dsd_rxid_note_dmr_t3_capmax(state, 0U, 511U);
+    expect_capmax("tiny max net", state, 0U, 511U, 1U);
+    dsd_rxid_note_dmr_t3_capmax(state, 3U, 3U);
+    expect_capmax("replaced pair", state, 3U, 3U, 1U);
+    expect_capmax("old pair gone", state, 0U, 511U, 0U);
+
+    /* Only a DMR record holds it. */
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_P25;
+    expect_capmax("other family", state, 3U, 3U, 0U);
+    free(state);
+}
+
+/* What drops a system drops the marker; what keeps it (a trunk follow, the no-carrier pass, the RAS reset, another
+   site of the same network) keeps the marker. */
+static void
+test_dmr_t3_capmax_marker_lifecycle(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_capmax("access change drops", state, 2U, 1U, 0U);
+
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+    expect_capmax("forget drops", state, 2U, 1U, 0U);
+
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    expect_capmax("another trunking system drops", state, 2U, 1U, 0U);
+
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_reset(state);
+    expect_capmax("reset drops", state, 2U, 1U, 0U);
+
+    note_t3_site(state, 0x2101U, 1U, 1U, 2U);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_trunk_tune(state);
+    expect_capmax("trunk tune keeps", state, 2U, 1U, 1U);
+    dsd_rxid_mark_stale(state);
+    expect_capmax("stale keeps", state, 2U, 1U, 1U);
+    /* The RAS reset (a new carrier, a colour code change) drops the RAS part alone; the network stays recognised. */
+    dsd_rxid_note_dmr_ras(state);
+    dsd_rxid_forget_dmr_ras(state);
+    expect_u("ras reset drops ras", id->valid & DSD_RXID_DMR_RAS, 0U);
+    expect_capmax("ras reset keeps", state, 2U, 1U, 1U);
+    note_t3_site(state, 0x2102U, 1U, 2U, 2U);
+    expect_capmax("same network's other site keeps", state, 2U, 1U, 1U);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x2201U);
+    expect_capmax("another network drops", state, 2U, 1U, 0U);
+
+    /* With no system code before it as well; Tiny 0x0109 is NET 33, another network than Large NET 1. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0109U);
+    expect_capmax("cross-model code drops", state, 2U, 1U, 0U);
+    expect_u("cross-model code noted", id->valid, DSD_RXID_DMR_T3_SYSCODE);
+
+    /* Old site A, then B's marker, then B's checked code: the code drops A's site and keeps B's marker. */
+    dsd_rxid_reset(state);
+    note_t3_site(state, 0x2201U, 2U, 1U, 2U);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    note_t3_site(state, 0x2101U, 1U, 1U, 2U);
+    expect_capmax("marker of the network noted next kept", state, 2U, 1U, 1U);
+    expect_u("network B's numbers", id->dmr_net, 1U);
+    free(state);
+}
+
+/* The marker is no part of the identity: noting or dropping it alone never moves the epoch, and it never reads as
+   fresh. */
+static void
+test_dmr_t3_capmax_marker_epoch(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    const uint32_t site_parts =
+        DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_CC_FREQ;
+
+    note_t3_site(state, 0x2201U, 2U, 1U, 2U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    const uint32_t epoch = id->epoch;
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    expect_u("marker install keeps epoch", id->epoch, epoch);
+    expect_u("marker not fresh", id->fresh & DSD_RXID_DMR_T3_CAPMAX, 0U);
+    note_t3_site(state, 0x2201U, 2U, 1U, 2U);
+    expect_capmax("checked A drops marker B", state, 2U, 1U, 0U);
+    expect_u("marker drop keeps epoch", id->epoch, epoch);
+    expect_u("A's parts intact", id->valid, site_parts);
+    expect_u("A's net", id->dmr_net, 2U);
+    expect_u("A's site", id->dmr_site, 1U);
+    expect_u("A's cc", id->cc_freq_hz, 451000000U);
+
+    /* A record with only the marker: stale stays stale when it is noted again; dropping it alone moves nothing. */
+    dsd_rxid_reset(state);
+    const uint32_t epoch_marker = id->epoch;
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_mark_stale(state);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    expect_u("re-noted marker stays stale", id->fresh, 0U);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+    expect_u("forget of marker only", id->valid, 0U);
+    expect_u("forget of marker only keeps epoch", id->epoch, epoch_marker);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    expect_u("trunk switch of marker only keeps epoch", id->epoch, epoch_marker);
+    /* A drop that takes real parts too moves it, as before. */
+    note_t3_site(state, 0x2101U, 1U, 1U, 2U);
+    dsd_rxid_note_dmr_t3_capmax(state, 2U, 1U);
+    const uint32_t epoch_site = id->epoch;
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+    expect_u("forget with parts moves epoch", id->epoch, epoch_site + 1U);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -984,6 +1138,9 @@ main(void) {
     test_dmr_raw_parts_drop_on_access_change_forget_and_subtype();
     test_capplus_site_has_no_net();
     test_text_notes_leave_identical_bytes();
+    test_dmr_t3_capmax_marker_pair();
+    test_dmr_t3_capmax_marker_lifecycle();
+    test_dmr_t3_capmax_marker_epoch();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

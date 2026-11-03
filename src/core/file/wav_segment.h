@@ -22,6 +22,10 @@ int wav_segment_test_refuses_open(void);
    with the run's failure counts). */
 int wav_recording_table_full_first_this_run(void);
 
+/* 1 the first time this decoder run that an NFM recording is not exported to rdio-scanner for want of a talkgroup (no
+   frequency, no --rdio-analog-talkgroup; issue #668), the one that is logged; reset with the run's failure counts. */
+int wav_recording_analog_rdio_skip_first_this_run(void);
+
 /* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
    @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */
 int wav_segment_close(SNDFILE* file, int* failed);

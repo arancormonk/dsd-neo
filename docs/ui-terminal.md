@@ -273,6 +273,7 @@ Main Menu
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
 │   │   ├── Analog pause hold... [Off]           (one analog recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
+│   │   ├── NFM pre-roll... [200 ms]             (each new NFM recording starts with up to N ms heard just before the call; 0 is off; works only while per-call recording is on)
 │   │   ├── Static WAV file...
 │   │   └── Raw input WAV file...
 │   ├── Event log
@@ -638,7 +639,8 @@ such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching acces
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed
 history and named per-call WAVs; an analog call is named by the CTCSS tone or DCS code it
-was received with. Its history row also prints that tone, named or not (see "Event History Rows").
+was received with, and its recording's file name carries its mode, frequency and that tone. Its history row also prints
+that tone, named or not (see "Event History Rows").
 The single-slot DMR decoder (`-fr`, `-nm`) shows every call in its `SLOT 1` block, its one
 lane; a `--slot-name` there names the over-the-air slot the call was proven on, as the `-J`
 slot field does.
@@ -1117,7 +1119,7 @@ no old identity. A part not received yet prints dashes in its column:
   parameter warnings still read the seed, as the descrambler does.
 - DMR: the trunking brand, Tier III/Connect Plus/XPT site, the Hytera XPT site's free channel (`Free LCN: 4;`) and
   Capacity Plus rest LSN as received (the rest LSN's frequency is the channel map's); a Tier III system code alone shows
-  as `SYS: 0A3F;`. A carrier that uses Motorola RAS (Restricted Access to System) shows `RAS;` after the colour code
+  as `SYS: 119B;`. A carrier that uses Motorola RAS (Restricted Access to System) shows `RAS;` after the colour code
   once two of its bursts carried the RAS signature, `RAS (-F decodes);` while Relaxed CRC is off, as it is by default:
   its control and data fail the standard CRC, so only `-F` (or the `F` toggle) decodes them. With `-F` on, a scan
   row's own `--strict-crc` shows `RAS (channel sets strict CRC);` instead: that channel keeps strict CRC, and pressing
@@ -1187,7 +1189,7 @@ so a row keeps them after a retune, a trunk-scan step or a later carrier. They f
 
 | Protocol | Tokens |
 |---|---|
-| DMR | `SYS: 0A3F;` (Tier III system code, four hex digits), `SITE: Net 13 Site 28;` (the network and site the Monitor shows, with Tier III's one-based numbers and its `-D` split; `SITE: Site 2;` on Capacity Plus, `SITE: Net 1234 Site 5;` on Connect Plus), then the call's channel by its numbering: `LSN: 5;` (Capacity Plus, Hytera XPT), `LPCN: 12;` (Tier III), `LCN: 3;` (Connect Plus) |
+| DMR | `SYS: 119B;` (Tier III system code, four hex digits), `SITE: Net 13 Site 28;` (the network and site the Monitor shows: standard Tier III numbers, one more than sent, with any `-D` split; `SITE: Capacity Max Net 1 Site 1;` on a network recognised as Motorola Capacity Max, which shows them as sent; `SITE: Site 2;` on Capacity Plus, `SITE: Net 1234 Site 5;` on Connect Plus), then the call's channel by its numbering: `LSN: 5;` (Capacity Plus, Hytera XPT), `LPCN: 12;` (Tier III), `LCN: 3;` (Connect Plus) |
 | P25 | `NET_STS: BEE00:1A3:3.21;` (WACN:SYS:RFSS.SITE), `NET_STS: BEE00:1A3;` before an RFSS status names the site, `SYS: 1A3; SITE: 3.21;` without a WACN |
 | NXDN | Type-C `SYS: 40.9;` (system.site); IDAS `SITE: 5;`, and `SYS: 12345;` once a Type-D system ID is received |
 | TETRA | `MCC: 901; MNC: 9999; LA: 12;` after `CARRIER:`/`FREQ:` (the carrier number now prints without a known frequency too) |

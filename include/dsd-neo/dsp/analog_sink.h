@@ -19,8 +19,12 @@
  * every announced reception boundary (dsd_analog_sink_note_reception()); the -6 raw WAV, a capture of the input as it
  * arrives, runs on across one, so it keeps every sample of an acquisition reset in a digital session.
  *
+ * Each sink also keeps a continuity generation (dsd_analog_sink_generation(), issue #668), which moves at every break in
+ * what it writes, so a caller holding audio converted earlier knows whether the sink's next write follows on from it.
+ *
  * Decoder-thread only: the state lives in the DSD_STATE_EXT_DSP_ANALOG_SINK slot, allocated the first time a block
- * needs converting, so a session that only ever runs at the sink rate never allocates it.
+ * needs converting or a sink's generation is asked for, so a session that only ever runs at the sink rate and asks for
+ * none never allocates it.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_ANALOG_SINK_H
@@ -30,6 +34,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +83,23 @@ void dsd_analog_sink_note_reception(const dsd_state* state);
 
 /** @brief End a per-transmission recording. Its converter starts from silence for the next service. */
 void dsd_analog_sink_end_call(const dsd_state* state);
+
+/**
+ * @brief @p sink's continuity generation, in @p out (issue #668).
+ *
+ * It moves at every break in what the sink writes, as soon as the break is known: dsd_analog_sink_break(),
+ * dsd_analog_sink_note_reception() and dsd_analog_sink_end_call() for the sinks they restart, a block that began after
+ * one the sink did not write (dsd_analog_sink_block_begin()), and, inside a write, a converter that starts over without
+ * one of those (a new block rate, a reception that moved since the sink's last write, its first conversion, or history
+ * the per-call WAV's writes at the sink rate passed by). A write at the sink rate to the per-call WAV counts as written
+ * and moves nothing. So audio a caller converted through the sink under one generation is continuous with the sink's
+ * next write while the generation still reads the same; a write that moves it starts from silence.
+ *
+ * The first call allocates the sinks' state (dsd_analog_sink_write() otherwise does that only for a block to convert),
+ * so breaks are counted from then on at every rate. Returns 1 with the generation, 0 without @p state or memory for it:
+ * then no continuity is kept.
+ */
+int dsd_analog_sink_generation(dsd_state* state, dsd_analog_sink sink, uint32_t* out);
 
 /**
  * @brief Write @p n samples of @p sink's block, collected at @p block_hz, to a sink at @p sink_hz.

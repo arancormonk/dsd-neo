@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 
+#include <stdint.h>
 #include <time.h>
 
 #ifdef __cplusplus
@@ -67,20 +68,36 @@ int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_stru
                          time_t opened);
 
 /**
- * As dsd_rdio_export_call(); @p api_queued (may be NULL) gets 1 when an API upload of @p wav_path was queued, whose
+ * As dsd_rdio_export_call(), with @p started, the recording's own start when its recorder stamped it (0 when not; see
+ * dsd_rdio_recording_start()). @p api_queued (may be NULL) gets 1 when an API upload of @p wav_path was queued, whose
  * worker may delete the file once it is uploaded.
  */
 int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
-                            time_t opened, int* api_queued);
+                            time_t opened, time_t started, int* api_queued);
 
 /**
  * When a per-call recording began, the one rule the rdio-scanner sidecar's start_time and the recording journal
- * (issue #708) share: the row's event_start_time, or @p opened (the decode time the WAV was opened, 0 when unknown)
- * when that is later, as when per-call WAV is switched on mid-call. A row with no start falls back to its
- * event_time, unadjusted (a --playfiles row, stamped on the file's clock), then, as does a NULL @p event, to the
- * decode clock.
+ * (issue #708) share: @p started when it is above 0, the decode time of the recording's first sample as its recorder
+ * stamped it (the NFM call, issue #668); else the row's event_start_time, or @p opened (the decode time the WAV was
+ * opened, 0 when unknown) when that is later, as when per-call WAV is switched on mid-call. A row with no start falls
+ * back to its event_time, unadjusted (a --playfiles row, stamped on the file's clock), then, as does a NULL @p event,
+ * to the decode clock.
  */
-time_t dsd_rdio_recording_start(const Event_History* event, time_t opened);
+time_t dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t started);
+
+/**
+ * The rdio-scanner talkgroup a conventional analog call (a DSD_SYNC_ANALOG row, issue #668) is exported under: the
+ * frequency it was heard on in kHz, rounded down (rdio-scanner's convention for conventional channels), else, for a
+ * call with no frequency (audio input), @p opts->rdio_analog_talkgroup. 0 when it has neither, and for any other row.
+ * Worked out at export time only, never stored on the row: Event_History::target_id stays 0 for analog calls.
+ */
+uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event);
+
+/**
+ * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p
+ * opts->rdio_analog_system_id for an analog row when it is set, else @p opts->rdio_system_id. 0 for a NULL @p opts.
+ */
+int dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event);
 
 /**
  * Whether the rdio API upload queue still owns the per-call WAV at @p path: a job naming it is queued or in flight (from

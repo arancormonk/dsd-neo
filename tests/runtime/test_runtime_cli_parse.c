@@ -7660,6 +7660,167 @@ test_analog_record_max_gap_option(void) {
     return test_rc;
 }
 
+/* Issue #668: --analog-record-preroll-ms takes 0 to 1000 ms in both spellings and refuses anything else, never
+ * clamping; the last one given wins. Left out, or refused, the pre-roll stays at its default. */
+static int
+test_analog_record_preroll_option(void) {
+    enum { D = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS };
+
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        int want_rc;
+        int want_ms;
+        const char* want_text;
+    } cases[] = {
+        {"-P", NULL, NULL, DSD_PARSE_CONTINUE, D, NULL},
+        {"--analog-record-preroll-ms", "300", NULL, DSD_PARSE_CONTINUE, 300, NULL},
+        {"--analog-record-preroll-ms=150", NULL, NULL, DSD_PARSE_CONTINUE, 150, NULL},
+        {"--analog-record-preroll-ms=200", "--analog-record-preroll-ms", "0", DSD_PARSE_CONTINUE, 0, NULL},
+        {"--analog-record-preroll-ms=1000", NULL, NULL, DSD_PARSE_CONTINUE, 1000, NULL},
+        {"--analog-record-preroll-ms", "300", "--analog-record-preroll-ms=900", DSD_PARSE_CONTINUE, 900, NULL},
+        {
+            "--analog-record-preroll-ms",
+            "-1",
+            NULL,
+            DSD_PARSE_ERROR,
+            D,
+            "Invalid --analog-record-preroll-ms value \"-1\" (expected 0..1000)",
+        },
+        {
+            "--analog-record-preroll-ms=1001",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            D,
+            "Invalid --analog-record-preroll-ms value \"1001\" (expected 0..1000)",
+        },
+        {
+            "--analog-record-preroll-ms",
+            "2s",
+            NULL,
+            DSD_PARSE_ERROR,
+            D,
+            "Invalid --analog-record-preroll-ms value \"2s\"",
+        },
+        {"--analog-record-preroll-ms=", NULL, NULL, DSD_PARSE_ERROR, D, "Invalid --analog-record-preroll-ms value"},
+        {
+            "--analog-record-preroll-ms",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            D,
+            "--analog-record-preroll-ms requires a millisecond value",
+        },
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->analog_record_preroll_ms != cases[i].want_ms || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s: rc=%d pre-roll=%d exit_rc=%d\n%s\n", cases[i].a,
+                        cases[i].b ? cases[i].b : "", cases[i].c ? cases[i].c : "", run.rc,
+                        run.opts->analog_record_preroll_ms, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* Issue #668: --rdio-analog-system-id (0..65535) and --rdio-analog-talkgroup (0..2147483647) take a whole number in
+ * range, 0 included to reset; anything else, past the range or past int's, is refused, never clamped. Left out, both
+ * are 0. */
+static int
+test_rdio_analog_options(void) {
+    static const struct {
+        const char* option;
+        const char* value;
+        int want_rc;
+        int want_system;
+        int want_talkgroup;
+        const char* want_text;
+    } cases[] = {
+        {"-P", NULL, DSD_PARSE_CONTINUE, 0, 0, NULL},
+        {"--rdio-analog-system-id", "9", DSD_PARSE_CONTINUE, 9, 0, NULL},
+        {"--rdio-analog-system-id", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
+        {"--rdio-analog-system-id", "65535", DSD_PARSE_CONTINUE, 65535, 0, NULL},
+        {
+            "--rdio-analog-system-id",
+            "65536",
+            DSD_PARSE_ERROR,
+            0,
+            0,
+            "Invalid --rdio-analog-system-id value \"65536\" (expected 0..65535)",
+        },
+        {
+            "--rdio-analog-system-id",
+            "-1",
+            DSD_PARSE_ERROR,
+            0,
+            0,
+            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..65535)",
+        },
+        {
+            "--rdio-analog-system-id",
+            "4294967305",
+            DSD_PARSE_ERROR,
+            0,
+            0,
+            "Invalid --rdio-analog-system-id value \"4294967305\"",
+        },
+        {"--rdio-analog-system-id", "9x", DSD_PARSE_ERROR, 0, 0, "Invalid --rdio-analog-system-id value \"9x\""},
+        {"--rdio-analog-talkgroup", "4242", DSD_PARSE_CONTINUE, 0, 4242, NULL},
+        {"--rdio-analog-talkgroup", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
+        {"--rdio-analog-talkgroup", "2147483647", DSD_PARSE_CONTINUE, 0, 2147483647, NULL},
+        {
+            "--rdio-analog-talkgroup",
+            "2147483648",
+            DSD_PARSE_ERROR,
+            0,
+            0,
+            "Invalid --rdio-analog-talkgroup value \"2147483648\"",
+        },
+        {
+            "--rdio-analog-talkgroup",
+            "4294971538",
+            DSD_PARSE_ERROR,
+            0,
+            0,
+            "Invalid --rdio-analog-talkgroup value \"4294971538\"",
+        },
+        {"--rdio-analog-talkgroup", "-1", DSD_PARSE_ERROR, 0, 0, "Invalid --rdio-analog-talkgroup value \"-1\""},
+        {"--rdio-analog-talkgroup", "", DSD_PARSE_ERROR, 0, 0, "Invalid --rdio-analog-talkgroup value \"\""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].option, cases[i].value, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->rdio_analog_system_id != cases[i].want_system
+            || run.opts->rdio_analog_talkgroup != cases[i].want_talkgroup || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s: rc=%d system=%d talkgroup=%d exit_rc=%d\n%s\n", cases[i].option,
+                        cases[i].value ? cases[i].value : "", run.rc, run.opts->rdio_analog_system_id,
+                        run.opts->rdio_analog_talkgroup, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* What -h prints, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it. */
 static int
 help_text(char* out, size_t out_size) {
@@ -7694,7 +7855,7 @@ help_text(char* out, size_t out_size) {
 }
 
 /* Issue #756 (B3): -h, which is also the man page, says -7 works before or after -P (true since issue #708), never the
- * old "Use Before the -P option!", and lists the NFM max gap in the -P group. */
+ * old "Use Before the -P option!", and lists the NFM max gap and pre-roll (issue #668) in the -P group. */
 static int
 test_help_describes_recording_options(void) {
     static char text[65536];
@@ -7703,9 +7864,11 @@ test_help_describes_recording_options(void) {
         return 1;
     }
     const char* const max_gap = strstr(text, "--analog-record-max-gap-ms <ms>");
+    const char* const preroll = strstr(text, "--analog-record-preroll-ms <ms>");
     const char* const per_call = strstr(text, "  -P ");
     if (strstr(text, "Use Before the -P option") || !strstr(text, "(Works before or after -P.)") || !max_gap
-        || !per_call || max_gap < per_call || !strstr(max_gap, "200 or less is off")) {
+        || !per_call || max_gap < per_call || !strstr(max_gap, "200 or less is off") || !preroll || preroll < per_call
+        || !strstr(preroll, "(0 to 1000; 200 is the default, 0 is off;")) {
         DSD_FPRINTF(stderr, "-h recording text is wrong:\n%s\n", text);
         return 1;
     }
@@ -7724,6 +7887,8 @@ test_value_options_refuse_a_missing_value(void) {
         "--rdio-api-key",
         "--rdio-upload-timeout-ms",
         "--rdio-upload-retries",
+        "--rdio-analog-system-id",
+        "--rdio-analog-talkgroup",
         "--frame-log",
         "--p25-sm-log",
         "--input-volume",
@@ -11557,6 +11722,8 @@ main(void) {
     rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();
     rc |= test_analog_record_max_gap_option();
+    rc |= test_analog_record_preroll_option();
+    rc |= test_rdio_analog_options();
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();

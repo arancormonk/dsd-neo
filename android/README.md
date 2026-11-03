@@ -260,38 +260,67 @@ its own (radio names learned over the air, radio ID list rows and talkgroup rows
 you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
-Both switches, and **Analog pause hold** below, also change a running session: Settings reads **Applying…** until the
-decoder confirms. A change the session cannot take (while Signal search runs, while the session is still starting, with
-no storage for recordings, or when the session's Extra decoder arguments record to one file with `-w`) is saved and
-applies at the next start, and Settings says so. A call that could not be recorded (the phone's storage is full, or the
-file could not be written) is reported under the switches.
+Both switches, and **Analog pause hold** and **NFM pre-roll** below, also change a running session: Settings reads
+**Applying…** until the decoder confirms. A change the session cannot take (while Signal search runs, while the session
+is still starting, with no storage for recordings, or when the session's Extra decoder arguments record to one file with
+`-w`) is saved and applies at the next start, and Settings says so. A call that could not be recorded (the phone's
+storage is full, or the file could not be written) is reported under the switches.
 
 ### Pauses in analog calls
 
-An analog call ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording
-and a new History row. **Analog pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10
-seconds: one exchange is then one recording and one History row. When the signal comes back in time, the pause is saved
-as silence, so the recording keeps time; a longer pause ends the call at its last audio. It is **Off** until you choose
-a time. It works only while Record calls is on, so it is disabled while Record calls is off, and turning Record calls
-off ends a paused call at its last audio. Digital calls are not affected.
+An analog call ends 0.2 seconds after the signal drops, so each pause in an exchange starts a new recording and a new
+History row. **Analog pause hold** keeps the call going through a pause of up to 0.5, 1, 2, 3, 5 or 10 seconds: one
+exchange is then one recording and one History row. When the signal comes back in time, the pause is saved as silence,
+so the recording keeps time (with **NFM pre-roll** on, its last moments are saved as heard, below); a longer pause ends
+the call at its last audio. It is **Off** until you choose a time. It works only while Record calls is on, so it is
+disabled while Record calls is off, and turning Record calls off ends a paused call at its last audio. Digital calls are
+not affected.
 
 - While a call is paused it still shows as active, and its timer keeps running, until the pause is decided.
 - Under a tone filter, the tone is checked again each time the signal comes back. That takes about 0.4 to 0.8 seconds
   and counts as part of the pause, so allow for it: 0.5 seconds rarely joins anything there.
 - A feed that stops sending between transmissions (a UDP or TCP audio stream with nothing in the pauses) is not a pause
-  in the signal, and still ends the call. Keep the stream running while the channel is quiet.
+  in the signal, and still ends the call. Its recordings also miss the first moment of each transmission (a fraction of
+  a second), even with **NFM pre-roll**. Keep the stream running while the channel is quiet.
 - `--analog-record-max-gap-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows
   the row disabled, with a line that says so, and turning Record calls on leaves the session's own hold alone. A saved
   system's own Extra decoder arguments win the same way, but Settings cannot see them. The details are in
   [Pauses in an analog recording](../docs/cli.md#pauses-in-an-analog-recording---analog-record-max-gap-ms).
+
+### The start of an NFM call
+
+An NFM call is picked up a moment after the signal starts, so a recording can miss the first word. **NFM pre-roll**
+starts each new recording with up to 0.1, 0.2, 0.3, 0.5 or 1 second of what was heard just before the call. It is 0.2
+seconds unless you choose another time; **Off** starts recordings when the call is picked up, as before. Like the pause
+hold, it works only while Record calls is on, so it is disabled while Record calls is off. Digital calls are not
+affected.
+
+- With a radio that keeps its squelch open, or a dongle, the time before a call is mostly noise, so a long pre-roll
+  puts a short hiss at the start of each recording. From a radio that squelches itself, it is silence.
+- Under a tone filter, only audio the filter has allowed is kept. Audio it is still checking, or has rejected, is
+  never saved, so a recording under a tone filter usually still starts once the tone is confirmed.
+- When a paused call resumes (see **Analog pause hold**), the end of the pause is saved as heard rather than as silence.
+  Under a tone filter the tone check when the signal comes back makes the whole pause silence, as before.
+- A very short burst whose signal is gone before it is picked up (or before its tone is confirmed) leaves no
+  recording and no History row.
+- Someone who keys up again within 0.2 seconds of letting go is part of the same call, not a new one, so their first
+  word can still be cut short.
+- A recording's own start time, which the app keeps with it, is the time of its first sample, pre-roll included, in
+  whole seconds, so it can be a second or two earlier than its History row's.
+- Choosing a time in a running session, even the one already set, drops the audio held so far, so the next call may
+  start without it. So do turning Record calls off and on, and changing the decoder's input or channel.
+- `--analog-record-preroll-ms` in Extra decoder arguments wins over this setting at every start. Settings then shows
+  the row disabled, with a line that says so, and turning Record calls on leaves the session's own pre-roll alone. A
+  saved system's own Extra decoder arguments win the same way, but Settings cannot see them.
 
 ### Where the files are
 
 Recordings go to DSD-neo's own folder on the phone's storage (reachable over USB):
 `Android/data/io.github.arancormonk.dsdneo/files/Call recordings/`. Each saved system and scan list has a folder named
 after it with a short ID, for example `County P25 (1a2b3c4d)`; Explore and Signal search sessions share `Explore`.
-Renaming a system keeps its folder, and the folder keeps its first name. A file is named like any per-call WAV (date,
-time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digital voice, 48 kHz for analog FM.
+Renaming a system keeps its folder, and the folder keeps its first name. A digital call's file is named with the date,
+time, system, talkgroup and radio, and an analog FM call's with the date, time, `NFM`, frequency and received tone
+(see [`-P`](../docs/cli.md)): 8 kHz mono for digital voice, 48 kHz for analog FM.
 
 - **From a computer:** connect the phone over USB, choose **File transfer** on the phone, and open
   `Android/data/io.github.arancormonk.dsdneo/files/Call recordings` on the computer. On Android 11 and later, file
@@ -379,9 +408,9 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- A backup carries the Record calls, Only unknown talkgroups, Analog pause hold and Storage limit settings, never the
-  recordings. A restored Storage limit lower than what the recordings on the phone take removes the oldest of them when
-  DSD-neo next opens.
+- - A backup carries the Record calls, Only unknown talkgroups, Analog pause hold, NFM pre-roll and Storage limit
+  settings, never the recordings. A restored Storage limit lower than what the recordings on the phone take removes the
+  oldest of them when DSD-neo next opens.
 
 ## Backup and restore
 

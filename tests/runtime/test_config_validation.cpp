@@ -1591,10 +1591,11 @@ test_scan_max_visit_ms_validation(void) {
 /* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
  * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
  * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
-static int
-run_analog_max_gap_case(const char* value, int level, const char* text) {
+namespace {
+int
+run_recording_key_case(const char* key, const char* value, int level, const char* text) {
     char ini[128];
-    DSD_SNPRINTF(ini, sizeof ini, "[recording]\nanalog_max_gap_ms = %s\n", value);
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = %s\n", key, value);
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
@@ -1605,7 +1606,7 @@ run_analog_max_gap_case(const char* value, int level, const char* text) {
 
     int found = 0;
     for (int i = 0; i < diags.count; i++) {
-        if (strcmp(diags.items[i].key, "analog_max_gap_ms") == 0) {
+        if (strcmp(diags.items[i].key, key) == 0) {
             found++;
             if ((int)diags.items[i].level != level || (text && !strstr(diags.items[i].message, text))) {
                 found += 100;
@@ -1615,8 +1616,8 @@ run_analog_max_gap_case(const char* value, int level, const char* text) {
     const int want = level < 0 ? 0 : 1;
     int result = 0;
     if (found != want || diags.count != want) {
-        DSD_FPRINTF(stderr, "FAIL: analog_max_gap_ms = %s: %d diagnostic(s) on the key, %d in all, want %d\n", value,
-                    found, diags.count, want);
+        DSD_FPRINTF(stderr, "FAIL: %s = %s: %d diagnostic(s) on the key, %d in all, want %d\n", key, value, found,
+                    diags.count, want);
         for (int i = 0; i < diags.count; i++) {
             DSD_FPRINTF(stderr, "  %s.%s: %s\n", diags.items[i].section, diags.items[i].key, diags.items[i].message);
         }
@@ -1627,7 +1628,12 @@ run_analog_max_gap_case(const char* value, int level, const char* text) {
     return result;
 }
 
-static int
+int
+run_analog_max_gap_case(const char* value, int level, const char* text) {
+    return run_recording_key_case("analog_max_gap_ms", value, level, text);
+}
+
+int
 test_analog_max_gap_validation(void) {
     int rc = 0;
     rc |= run_analog_max_gap_case("0", -1, NULL);
@@ -1639,6 +1645,43 @@ test_analog_max_gap_validation(void) {
     rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
     return rc;
 }
+
+/* Issue #668: [recording] analog_preroll_ms (0..1000) is refused outside its range, as the NFM max gap is. */
+int
+test_analog_preroll_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("analog_preroll_ms", "0", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "200", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "1000", -1, NULL);
+    rc |= run_recording_key_case("analog_preroll_ms", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 1000] and is refused");
+    rc |= run_recording_key_case("analog_preroll_ms", "1001", DSDCFG_DIAG_ERROR,
+                                 "Value 1001 is out of range [0, 1000] and is refused");
+    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    return rc;
+}
+
+/* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
+ * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
+int
+test_rdio_analog_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("rdio_analog_system_id", "0", -1, NULL);
+    rc |= run_recording_key_case("rdio_analog_system_id", "65535", -1, NULL);
+    rc |= run_recording_key_case("rdio_analog_system_id", "65536", DSDCFG_DIAG_ERROR,
+                                 "Value 65536 is out of range [0, 65535] and is refused");
+    rc |= run_recording_key_case("rdio_analog_system_id", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 65535] and is refused");
+    rc |= run_recording_key_case("rdio_analog_system_id", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "0", -1, NULL);
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483647", -1, NULL);
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 2147483647] and is refused");
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
+                                 "Invalid integer value '2147483648'");
+    return rc;
+}
+} // namespace
 
 /* Issue #525: [analog] nfm_bandwidth_hz. A width outside 8000..25000 Hz, or anything but whole Hz, is an ERROR
  * (never a warning the loader would clamp); so is an explicit width the configured RTL DSP bandwidth cannot filter,
@@ -2370,6 +2413,8 @@ main(void) {
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
     rc |= test_analog_max_gap_validation();
+    rc |= test_analog_preroll_validation();
+    rc |= test_rdio_analog_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();

@@ -437,7 +437,9 @@ typedef struct {
     dsd_analog_subaudible_fe fe;
     dsd_analog_ctcss ctcss;
     dsd_analog_dcs dcs;
-    int carrier_open;       /**< 1 from the first open block until the hangover expires */
+    int carrier_open; /**< 1 from the first open block until the hangover expires */
+    /** 1 when the last block the core was handed read the carrier itself, not only its hangover (issue #668). */
+    int carrier_now;
     int64_t closed_samples; /**< input samples since the carrier last read open */
     uint32_t resets;        /**< bumped by every reset, published as the generation */
     /** The resets value the last end of a reception by its carrier left: the carrier's hangover running out here, or
@@ -538,6 +540,16 @@ int dsd_analog_ctcss_snap_index(double hz);
  * has no such symbol.
  */
 void dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void));
+
+/**
+ * @brief Test hook: replace the tone policy's verdict each time the tap publishes it.
+ *
+ * After every publication the tap makes (a read, a read dropped at a boundary or skipped as backlog), @p gate is handed
+ * the verdict the policy published (DSD_ANALOG_TONE_GATE_*) and its return is published in its place, so a test can
+ * script the verdicts inside one monitor block (issue #668). The policy's own state is left as it is. NULL restores
+ * the policy's verdicts. Defined only in the test-hook build of the DSP module, as dsd_analog_rx_test_set_clock().
+ */
+void dsd_analog_rx_test_set_gate(int (*gate)(int published));
 
 #ifdef __cplusplus
 }

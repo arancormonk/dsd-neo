@@ -23,6 +23,7 @@
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
+#include <stddef.h>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -258,6 +259,46 @@ call_history_seen_absorb_site(uint32_t* stored_mask, uint32_t* stored_channel, u
     *stored_channel = channel;
     *stored_kind = kind;
     return true;
+}
+
+/**
+ * @brief A digest of a site's DMR site text: FNV-1a (32 bits) over its bytes up to the NUL, bounded by the field;
+ *        0 when the text is not valid.
+ *
+ * The seen store keeps this rather than the text: the core can change a committed row's text in place and nothing else
+ * (a reacquisition merge's union taking the text that names Capacity Max), and only the change matters.
+ */
+inline uint32_t
+call_history_site_text_digest(const dsd_received_identity* site) {
+    if ((site->valid & DSD_RXID_DMR_SITE_TEXT) == 0U) {
+        return 0U;
+    }
+    uint32_t hash = 2166136261U;
+    for (size_t i = 0U; i < sizeof(site->dmr_site_text) && site->dmr_site_text[i] != '\0'; i++) {
+        hash ^= static_cast<uint8_t>(site->dmr_site_text[i]);
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+/**
+ * @brief Fold a fresh read of a seen ring row's site text digest into what was last recorded.
+ *
+ * Any change from the digest last read is an advance. A digest not known on either side (a seen entry an older build
+ * stored, which kept none) is no advance: an unknown stored digest takes the one read, and an unknown read leaves the
+ * stored one as it is.
+ *
+ * @return true when the row advanced and the stored digest was updated.
+ */
+inline bool
+call_history_seen_absorb_site_text(uint32_t* stored_digest, bool* stored_known, uint32_t digest, bool known) {
+    if (!known) {
+        return false;
+    }
+    const bool advanced = *stored_known && digest != *stored_digest;
+    *stored_digest = digest;
+    *stored_known = true;
+    return advanced;
 }
 
 /* Sanity bound on a row's start/end stamps: a span longer than this is a corrupt

@@ -164,7 +164,8 @@ def main():
         real_rows, real_calls, output = analog_calls("real-ctcss-rows", "nfm_ctcss_real", "-fA", ANALOG_SQUELCH)
         assert len(real_rows) == 2, real_rows
         assert all(" ANALOG NFM; " in line and "CTCSS 151.4 Hz;" in line for line in real_rows), real_rows
-        assert len(real_calls) == 2 and all(call.name.endswith("_NFM.wav") for call in real_calls), real_calls
+        real_name = "_NFM_851375000_CTCSS_151.4.wav"
+        assert len(real_calls) == 2 and all(call.name.endswith(real_name) for call in real_calls), real_calls
         assert PAUSED not in output, output
         print("real-ctcss-rows OK")
 
@@ -172,7 +173,7 @@ def main():
         # detects none on AM), and its recording named _AM.
         am_rows, am_calls, output = analog_calls("am-rows", "am_airband_real", "-fM", ANALOG_SQUELCH)
         assert len(am_rows) == 1 and re.search(r" ANALOG AM; FREQ: \d+\.\d{6} MHz; *$", am_rows[0]), am_rows
-        assert len(am_calls) == 1 and am_calls[0].name.endswith("_AM.wav"), am_calls
+        assert len(am_calls) == 1 and am_calls[0].name.endswith("_AM_851375000.wav"), am_calls
         print("am-rows OK")
 
         # D2: at the startup squelch the receiver's noise would hold one reception open all session, so a radio input

@@ -58,6 +58,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -1067,37 +1068,26 @@ close_wav_file(SNDFILE* wav_file) {
     return wav_file;
 }
 
+/* The name's system part: as long as the row's sysid_string. */
+#define WAV_RENAME_SYS_STR_SIZE 200
+
 typedef struct {
     char datestr[9];
     char timestr[7];
     uint16_t random_number;
     uint32_t source_id;
     uint32_t target_id;
-    char sys_str[200];
+    char sys_str[WAV_RENAME_SYS_STR_SIZE];
     char src_str[200];
     char tgt_str[200];
     char gi_str[10];
     char service[DSD_SERVICE_LABEL_SIZE + 5];
+    /* An analog call's `<MODE>_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>]` (issue #668): room for the
+       longest mode word sys_str holds, then at most 44 characters of frequency and tone part. */
+    char analog_part[WAV_RENAME_SYS_STR_SIZE + 48];
     uint8_t is_string;
-    uint8_t is_analog;   /* A conventional analog call: no talkgroup, source or call type to name it by (issue #637). */
-    uint8_t analog_mode; /* dsd_analog_mode it was heard in, which its name gives (issue #667) */
+    uint8_t is_analog; /* A conventional analog call: no talkgroup, source or call type to name it by (issue #637). */
 } wav_rename_metadata;
-
-/* What a closer names a recording by: its row (every closer but one), or, for an analog recording that no longer has
-   its row (close_and_rename_analog_wav_file()), the dsd_analog_mode it was heard in. */
-enum { WAV_NAME_FROM_ROW = -1 };
-
-/* An analog row's recording, or a rowless analog one's, is named as analog, by its mode. */
-static void
-wav_rename_analog(const Event_History* event_item, int analog_mode, wav_rename_metadata* metadata) {
-    if (event_item && event_item->systype == DSD_SYNC_ANALOG) {
-        metadata->is_analog = 1U;
-        metadata->analog_mode = event_item->analog_mode;
-    } else if (analog_mode != WAV_NAME_FROM_ROW) {
-        metadata->is_analog = 1U;
-        metadata->analog_mode = (uint8_t)analog_mode;
-    }
-}
 
 static const Event_History*
 wav_rename_get_event_item(const Event_History_I* event_struct) {
@@ -1134,20 +1124,78 @@ wav_rename_sanitize_component(char* text) {
 }
 
 static void
-wav_rename_service(const Event_History* event_item, wav_rename_metadata* metadata) {
+wav_rename_service(const char* label, wav_rename_metadata* metadata) {
     metadata->service[0] = '\0';
-    if (event_item && event_item->service_label[0]) {
-        DSD_SNPRINTF(metadata->service, sizeof(metadata->service), "_SVC_%s", event_item->service_label);
+    if (label && label[0]) {
+        DSD_SNPRINTF(metadata->service, sizeof(metadata->service), "_SVC_%s", label);
         wav_rename_sanitize_component(metadata->service + 5);
     }
 }
 
+/* The analog name's tone part, `_CTCSS_100.0` or `_DCS_D023N`, for a tone the call's row confirmed; nothing for a
+   confirmed untoned call or one never judged. Built from the stored value directly: the name sanitizer would turn the
+   '.' of a CTCSS tone into '_'. */
 static void
-wav_rename_build_metadata(const Event_History* event_item, int analog_mode, wav_rename_metadata* metadata) {
+wav_rename_analog_tone(const dsd_receive_identity* identity, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!identity || !identity->known) {
+        return;
+    }
+    const int kind = identity->kind;
+    char value[16];
+    if ((kind != DSD_RECEIVE_CTCSS && kind != DSD_RECEIVE_DCS)
+        || dsd_receive_value_format(kind, identity->value, value, sizeof value) <= 0) {
+        return;
+    }
+    DSD_SNPRINTF(out, out_size, "_%s_%s", kind == DSD_RECEIVE_CTCSS ? "CTCSS" : "DCS", value);
+}
+
+/* An analog call's mode word @p mode (its row's, or the mode the call kept: NFM, AM, or ANALOG on audio input, where
+   another receiver demodulated; issue #667), then its frequency (@p freq_hz, 0 unknown) and received tone. */
+static void
+wav_rename_analog(const char* mode, int64_t freq_hz, const dsd_receive_identity* identity,
+                  wav_rename_metadata* metadata) {
+    char tone[24];
+    wav_rename_analog_tone(identity, tone, sizeof tone);
+    if (freq_hz > 0) {
+        DSD_SNPRINTF(metadata->analog_part, sizeof(metadata->analog_part), "%s_%lld%s", mode, (long long)freq_hz, tone);
+    } else {
+        DSD_SNPRINTF(metadata->analog_part, sizeof(metadata->analog_part), "%s_FREQ_UNKNOWN%s", mode, tone);
+    }
+}
+
+/* The service label that names the file: the row's, or without a row the analog call's kept one (issue #668). */
+static const char*
+wav_rename_service_label(const Event_History* event_item, const dsd_analog_wav_name* analog_name) {
+    if (event_item) {
+        return event_item->service_label;
+    }
+    return analog_name ? analog_name->service : NULL;
+}
+
+/* An analog file's mode, frequency and tone part, from its row, or without a row from the analog call's kept parts. */
+static void
+wav_rename_analog_from(const Event_History* event_item, const dsd_analog_wav_name* analog_name,
+                       wav_rename_metadata* metadata) {
+    if (event_item) {
+        const char* mode =
+            metadata->sys_str[0] != '\0' ? metadata->sys_str : dsd_analog_mode_name(event_item->analog_mode);
+        wav_rename_analog(mode, event_item->freq_hz, &event_item->receive_identity, metadata);
+    } else if (analog_name) {
+        wav_rename_analog(dsd_analog_mode_name(analog_name->mode), analog_name->freq_hz, &analog_name->identity,
+                          metadata);
+    }
+}
+
+/* Names the file from @p event_item, its row; without a row from @p analog_name, the analog call's own parts (its
+   teardown, issue #668), or else as no row's. */
+static void
+wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_name* analog_name,
+                          wav_rename_metadata* metadata) {
     if (!metadata) {
         return;
     }
-    wav_rename_analog(event_item, analog_mode, metadata);
+    metadata->is_analog = (uint8_t)(event_item ? event_item->systype == DSD_SYNC_ANALOG : analog_name != NULL);
 
     time_t event_time = dsd_decode_time();
     if (event_item && event_item->event_time > 0) {
@@ -1165,7 +1213,7 @@ wav_rename_build_metadata(const Event_History* event_item, int analog_mode, wav_
     DSD_MEMSET(metadata->tgt_str, 0, sizeof(metadata->tgt_str));
     DSD_MEMSET(metadata->gi_str, 0, sizeof(metadata->gi_str));
 
-    wav_rename_service(event_item, metadata);
+    wav_rename_service(wav_rename_service_label(event_item, analog_name), metadata);
     int8_t gi = event_item ? event_item->gi : 0;
     if (event_item) {
         DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
@@ -1183,6 +1231,9 @@ wav_rename_build_metadata(const Event_History* event_item, int analog_mode, wav_
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
     }
     metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
+    if (metadata->is_analog) {
+        wav_rename_analog_from(event_item, analog_name, metadata);
+    }
 }
 
 static void
@@ -1191,9 +1242,8 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
         return;
     }
     if (metadata->is_analog) {
-        /* _NFM, _AM, or _ANALOG on audio input, where the mode is not known (issue #667). */
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s.wav", dir, metadata->datestr, metadata->timestr,
-                     metadata->random_number, dsd_analog_mode_name(metadata->analog_mode), metadata->service);
+                     metadata->random_number, metadata->analog_part, metadata->service);
     } else if (metadata->is_string == 1) {
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
@@ -1278,7 +1328,7 @@ wav_segment_length(SNDFILE* wav_file, int64_t* duration_ms, int* rate) {
 /* The published recording, in the journal (issue #708). */
 static void
 wav_journal_published(const char* id, const char* path, const char* dir, const Event_History_I* event_struct,
-                      time_t opened, int64_t duration_ms, int rate, const dsd_wav_owner* owner, int rdio_queued,
+                      time_t start, int64_t duration_ms, int rate, const dsd_wav_owner* owner, int rdio_queued,
                       int failed) {
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     char target[256];
@@ -1292,7 +1342,7 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     rec.id = id[0] ? id : NULL;
     rec.path = path;
     rec.dir = dir;
-    rec.start = dsd_rdio_recording_start(event_item, opened);
+    rec.start = start;
     rec.duration_ms = duration_ms;
     rec.rate = rate;
     rec.has_instance = event_struct != NULL;
@@ -1360,28 +1410,36 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
 
 /* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
    (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
-   upload. A row the event layer never judged allows it. A conventional analog row has no talkgroup to name an upload by,
-   so it is simply not exported: no warning, and no failure line. A digital row without one still warns. */
+   upload. A row the event layer never judged allows it. A conventional NFM row is exported under its frequency in kHz,
+   or the user's --rdio-analog-talkgroup when it has none, or one under 1 kHz that names no channel (issue #668,
+   dsd_rdio_analog_talkgroup()); with neither it is not exported, said once a run while rdio export is on, with no
+   failure line. A digital row without a talkgroup still warns. */
 static int
 wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
-                      const char* path, time_t opened) {
+                      const char* path, time_t opened, time_t started) {
     int rdio_queued = 0;
     if (event_item != NULL && event_item->stream_blocked != 0U) {
         return 0;
     }
-    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG && event_item->target_id == 0U) {
+    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG
+        && dsd_rdio_analog_talkgroup(opts, event_item) == 0U) {
+        if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_analog_rdio_skip_first_this_run()) {
+            LOG_WARN("Rdio export: analog calls with no channel frequency (an audio input has none) are not exported; "
+                     "set --rdio-analog-talkgroup to export them under one talkgroup\n");
+        }
         return 0;
     }
-    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, &rdio_queued) != 0) {
+    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, started, &rdio_queued) != 0) {
         LOG_WARN("Rdio export failed for %s\n", path);
     }
     return rdio_queued;
 }
 
+/* @p analog_name names an NFM recording that has no row (its teardown, issue #668); NULL for every other close. */
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                      const Event_History_I* event_struct, time_t opened, int export_call, int analog_mode,
-                      const dsd_wav_owner* owner) {
+                      const Event_History_I* event_struct, time_t opened, time_t started, int export_call,
+                      const dsd_analog_wav_name* analog_name, const dsd_wav_owner* owner) {
     /* Only a close with options is journaled: the analog teardown's (no options, no row) writes nothing. */
     wav_close_journal journal;
     DSD_MEMSET(&journal, 0, sizeof journal);
@@ -1397,7 +1455,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     wav_rename_metadata metadata;
     DSD_MEMSET(&metadata, 0, sizeof(metadata));
-    wav_rename_build_metadata(event_item, analog_mode, &metadata);
+    wav_rename_build_metadata(event_item, analog_name, &metadata);
 
     char new_filename[2000];
     DSD_MEMSET(new_filename, 0, sizeof(new_filename));
@@ -1430,10 +1488,11 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     }
 
     const int rdio_queued = (export_call && opts && final_size > 44)
-                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened)
+                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started)
                                 : 0;
     if (journal.on) {
-        wav_journal_published(journal.id, new_filename, dir, event_struct, opened, journal.duration_ms, journal.rate,
+        wav_journal_published(journal.id, new_filename, dir, event_struct,
+                              dsd_rdio_recording_start(event_item, opened, started), journal.duration_ms, journal.rate,
                               owner, rdio_queued, journal.failed);
     }
 
@@ -1445,14 +1504,16 @@ SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                              const Event_History_I* event_struct, time_t opened, int export_call,
                              const dsd_wav_owner* owner) {
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call,
-                                 WAV_NAME_FROM_ROW, owner);
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_call, NULL,
+                                 owner);
 }
 
 SNDFILE*
 close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir,
-                                 uint8_t analog_mode) {
-    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, (int)analog_mode, NULL);
+                                 const dsd_analog_wav_name* name) {
+    /* With no parts kept, the name has none: ANALOG_FREQ_UNKNOWN. The date and time are the close's, as with no row. */
+    static const dsd_analog_wav_name k_no_name = {0};
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 0, name ? name : &k_no_name, NULL);
 }
 
 SNDFILE*
@@ -1468,8 +1529,8 @@ discard_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
 }
 
 SNDFILE*
-close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
-                           const char* wav_out_filename, const char* dir, time_t opened) {
+close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                              const char* wav_out_filename, const char* dir, time_t opened, time_t started) {
     /* The policy as it is at the close: an import or edit applied since the row's last render counts. */
     dsd_event_refresh_stream_verdict(opts, state, slot);
     const Event_History_I* event_struct =
@@ -1481,8 +1542,13 @@ close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* s
         owner.epoch = dsd_call_state_pending_row_epoch(state, slot);
         owner.kind = owner.epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE;
     }
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1, WAV_NAME_FROM_ROW,
-                                 &owner);
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started, 1, NULL, &owner);
+}
+
+SNDFILE*
+close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                           const char* wav_out_filename, const char* dir, time_t opened) {
+    return close_and_publish_call_wav_ex(wav_file, opts, state, slot, wav_out_filename, dir, opened, 0);
 }
 
 SNDFILE*

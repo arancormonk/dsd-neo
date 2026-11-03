@@ -97,6 +97,12 @@ typedef struct {
 #define DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS 200
 #define DSD_ANALOG_RECORD_MAX_GAP_MAX_MS     10000
 
+/* The NFM recording pre-roll in ms (dsd_opts.analog_record_preroll_ms, issue #668): how much of the allowed audio just
+   before a reception a new per-call recording opens with. The default, and the largest value the CLI, the INI, the app
+   command and the API take; 0 is off. A value outside 0 to the largest is refused, never clamped. */
+#define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 200
+#define DSD_ANALOG_RECORD_PREROLL_MAX_MS     1000
+
 struct dsd_opts {
 #ifdef __cplusplus
     dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -202,11 +208,20 @@ struct dsd_opts {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
+    /* The rdio-scanner system a conventional analog (NFM) call is exported to, 0..65535 (issue #668); 0 uses
+       rdio_system_id. */
+    int rdio_analog_system_id;
+    /* The rdio-scanner talkgroup of an analog call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
+       leaves such calls unexported. A call with a frequency is exported under it in kHz. */
+    int rdio_analog_talkgroup;
     int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
-    /* The longest pause, in ms, one conventional NFM call (its history row and per-call WAV) survives (issue #756);
+    /* The longest pause, in ms, one conventional analog call (its history row and per-call WAV) survives (issue #756);
        the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the
        call ends when the carrier's hangover does. */
     int analog_record_max_gap_ms;
+    /* The NFM per-call recording's pre-roll in ms (issue #668); 0 is off. While it and -P are on, the monitor hands the
+       engine each block before its sink gate too (dsd_analog_call_block::heard). */
+    int analog_record_preroll_ms;
     int serial_baud;
     int serial_fd;
     int resume;

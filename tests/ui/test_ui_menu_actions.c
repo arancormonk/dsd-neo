@@ -754,6 +754,13 @@ cb_analog_record_max_gap(void* v, int ok, int ms) {
 }
 
 void
+cb_analog_record_preroll(void* v, int ok, int ms) {
+    (void)v;
+    (void)ok;
+    (void)ms;
+}
+
+void
 cb_import_chan(void* v, const char* p) {
     (void)v;
     (void)p;
@@ -1135,6 +1142,14 @@ test_simple_commands_and_prompts(void) {
     rc |= expect_str("analog pause hold prompt", g_prompt.title, "Analog pause hold (ms, 0 = off)");
     rc |= expect_int("analog pause hold initial", g_prompt.initial_int, 2000);
     rc |= expect_int("analog pause hold callback", g_prompt.int_cb == cb_analog_record_max_gap, 1);
+
+    /* The NFM pre-roll (issue #668): the prompt opens on the value in force. */
+    reset_capture();
+    opts.analog_record_preroll_ms = 350;
+    act_analog_record_preroll(&ctx);
+    rc |= expect_str("nfm pre-roll prompt", g_prompt.title, "NFM pre-roll (ms, 0 = off)");
+    rc |= expect_int("nfm pre-roll initial", g_prompt.initial_int, 350);
+    rc |= expect_int("nfm pre-roll callback", g_prompt.int_cb == cb_analog_record_preroll, 1);
 
     return rc;
 }

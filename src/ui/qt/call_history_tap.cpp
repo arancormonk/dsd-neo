@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QIODevice>
 #include <QList>
+#include <QString>
 #include <chrono>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/state.h>
@@ -309,13 +310,20 @@ CallHistoryTap::poll() {
         const qulonglong pushSeq = static_cast<qulonglong>(ring->push_seq);
         const quint64 instance = static_cast<quint64>(ring->instance);
         settleClear(slot, pushSeq, instance);
-        const CallHistoryModel::RingWalk walk = slotWalk(slot, meta);
+        CallHistoryModel::RingWalk walk = slotWalk(slot, meta);
+        QList<QString> settled;
+        walk.settledKeys = &settled;
         QList<CallHistoryModel::FreshRow> fresh;
         CallHistoryModel::walkRing(*ring, slot, walk, fresh);
         // The walk goes newest first; each slot's rows are held oldest first, so a backlog the spill cannot take
         // loses its oldest rows (a poll's slot 0 rows before its slot 1 rows).
         for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
             m_pending.append(CallHistoryModel::spillLine(*it));
+        }
+        // A seen entry that changed with no row to spill (an older build's entry taking its site text digest): this
+        // copy of the seen map goes at stop, so the change goes to the model through the spill.
+        for (const QString& key : std::as_const(settled)) {
+            m_pending.append(CallHistoryModel::settledSeenLine(key, m_context.seen.value(key)));
         }
         noteRead(slot, pushSeq, instance);
     }

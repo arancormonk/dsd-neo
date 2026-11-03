@@ -117,6 +117,14 @@ act_analog_record_max_gap(void* v) {
                              cb_analog_record_max_gap, c);
 }
 
+/* The NFM pre-roll (issue #668), opened on the value in force: 0 turns it off. */
+void
+act_analog_record_preroll(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("NFM pre-roll (ms, 0 = off)", c->opts->analog_record_preroll_ms, cb_analog_record_preroll,
+                             c);
+}
+
 void
 act_raw_wav(void* v) {
     UiCtx* c = (UiCtx*)v;

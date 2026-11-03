@@ -132,6 +132,7 @@ const char* lbl_replay_last(const void* vctx, char* b, size_t n);
 const char* lbl_stop_symbol_playback(const void* vctx, char* b, size_t n);
 const char* lbl_per_call_wav(const void* vctx, char* b, size_t n);
 const char* lbl_analog_record_max_gap(const void* vctx, char* b, size_t n);
+const char* lbl_analog_record_preroll(const void* vctx, char* b, size_t n);
 const char* lbl_event_log(const void* v, char* b, size_t n);
 const char* lbl_toggle_payload(const void* v, char* b, size_t n);
 const char* lbl_lrrp_current(const void* vctx, char* b, size_t n);

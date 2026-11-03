@@ -69,6 +69,7 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -5600,14 +5601,14 @@ test_replay_leave_closes_the_nfm_recording(void) {
        0.1 s in, so the call starts in the capture's first second. */
     for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
         dsd_decode_clock_set_media_ns(100000000ULL + (uint64_t)(i + 1) * 20000000ULL);
-        dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
     }
     rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
 
     /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */
     dsd_engine_decode_clock_leave_replay(opts, state);
     rc |= expect_true("replay leave nfm: the call ended with the replay", !dsd_engine_analog_call_active(state));
-    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 0);
     const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
     rc |= expect_true("replay leave nfm: the row is committed on the capture's clock and named",
                       row->event_start_time == capture_s && strcmp(row->service_label, "Traveler") == 0);
@@ -5620,7 +5621,7 @@ test_replay_leave_closes_the_nfm_recording(void) {
     rc |= expect_true("replay leave nfm: one recording is published", found.published == 1 && found.temp == 0);
     rc |= expect_true("replay leave nfm: under the capture's date", strncmp(found.name, date, strlen(date)) == 0);
     rc |= expect_true("replay leave nfm: as NFM, named by its tone",
-                      dsd_test_analog_recording_name_is(found.name, "NFM", "Traveler"));
+                      dsd_test_nfm_recording_name_is(found.name, "850000000", "CTCSS_141.3", "Traveler"));
 
     (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
     (void)dsd_test_rmdir(dir);

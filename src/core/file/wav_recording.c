@@ -15,6 +15,7 @@ static atomic_int s_failures[DSD_WAV_RECORDING_ERROR_KINDS];
 static atomic_int s_reported[DSD_WAV_RECORDING_ERROR_KINDS];
 static atomic_int s_last_error;
 static atomic_int s_table_full_reported;
+static atomic_int s_analog_rdio_skip_reported;
 
 void
 dsd_wav_recording_status_get(dsd_wav_recording_status* out) {
@@ -43,9 +44,15 @@ wav_recording_table_full_first_this_run(void) {
     return atomic_exchange(&s_table_full_reported, 1) == 0;
 }
 
+int
+wav_recording_analog_rdio_skip_first_this_run(void) {
+    return atomic_exchange(&s_analog_rdio_skip_reported, 1) == 0;
+}
+
 void
 dsd_wav_recording_session_reset(void) {
     atomic_store(&s_table_full_reported, 0);
+    atomic_store(&s_analog_rdio_skip_reported, 0);
     for (int kind = 0; kind < DSD_WAV_RECORDING_ERROR_KINDS; kind++) {
         atomic_store(&s_failures[kind], 0);
         atomic_store(&s_reported[kind], 0);

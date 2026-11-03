@@ -49,6 +49,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "analog_call_test_support.h"
 #include "commands_internal.h"
 #include "scan_landing.h"
 #include "services.h"
@@ -232,7 +233,7 @@ feed(dsd_opts* opts, dsd_state* state, int blocks) {
     }
     state->analog_rx.carrier_open = 1;
     for (int b = 0; b < blocks; b++) {
-        dsd_engine_analog_call_block(opts, state, block, kBlock, 48000, DSD_ANALOG_CALL_RECEPTION);
+        dsd_test_analog_call_feed(opts, state, block, kBlock, 48000, DSD_ANALOG_CALL_RECEPTION);
     }
 }
 

@@ -942,10 +942,12 @@ Mall,dmr-conventional,464125000,,500,,,auto,,,,,--dcc-name 7=Hospital --dcc-name
 ```
 
 Here colour code 2 traffic shows as **Mall**, colour code 7 as **Hospital** and 14 as **Municipality**, and 20R Local
-hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The name appears in the call display,
-the event history and the per-call recording's file name (`-P`, as an `_SVC_` component). Rdio-scanner exports carry
-it as the talkgroup label; conventional NFM has no talkgroup ID, so its calls are recorded as named WAVs but are not
-exported to Rdio. The CSV file itself is never changed. Quote a name with spaces in single or double quotes.
+hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The name appears in the call display, the
+event history and the per-call recording's file name (`-P`, as an `_SVC_` component; an NFM call's name also carries its
+frequency and tone, [CLI reference](cli.md)). Rdio-scanner exports of digital calls carry it as the talkgroup label. An
+NFM call is exported under its frequency in kHz and labelled by the row's `id` instead, since the services on one
+channel share its talkgroup (see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)). The CSV file
+itself is never changed. Quote a name with spaces in single or double quotes.
 
 Naming adds no separate wait and takes no time from a visit: the name is looked up from the identifier the call is
 received with. A matching identifier must be validated during the reception (a verified colour code, RAN or NAC, a slot
