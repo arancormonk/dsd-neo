@@ -21,15 +21,15 @@
         }                                                                                                              \
     } while (0)
 
-/* The FTZ/DAZ bits in force inside the callback's own work, or ~0U before it ran. */
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+/* The FTZ/DAZ bits in force inside the callback's own work, or ~0U before it ran. Only an MXCSR target has them. */
 static unsigned int g_work_ftz_daz = ~0U;
 
 static void
 note_work_mode(void) {
-#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
     g_work_ftz_daz = _mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS;
-#endif
 }
+#endif
 
 /* libairspy calls back on its own thread, in its own mode (issue #672 B12): the callback runs dsd-neo's work in the
    run's mode and hands the library its MXCSR back exactly. Here the "library thread" holds FTZ/DAZ off (or on), the
