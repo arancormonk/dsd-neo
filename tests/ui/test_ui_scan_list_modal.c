@@ -8,7 +8,10 @@
  * published snapshot pair, as menu_core.c drives it:
  *  - a row's Enter submits DSD_APP_CMD_SCAN_LIST_SET for its list with a fresh request id, and the row waits;
  *  - the retained result for that request ends the wait: the new state, or the refusal beside the list;
- *  - a switched row keeps the state it asked for until the snapshot's trunk_scan_lists_seq moves;
+ *  - a switched row shows the state it asked for while the snapshot's trunk_scan_lists_seq is behind the result's,
+ *    and the snapshot once it is not, also when the snapshot already holds a later switch at the answer;
+ *  - a note goes once the snapshot's lists move past the result's, and a paused refusal goes on resume;
+ *  - the footer offers no switch while the scan is paused;
  *  - a repeated Enter on a waiting row sends nothing; rows wait independently and resolve in any order;
  *  - a submit the queue refuses says so at once;
  *  - Esc closes it, and so does the end of the session it opened on, dropping what it waited on;
@@ -87,8 +90,13 @@ dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_resul
     return n;
 }
 
+/* The published pair the modal reads (fixture() fills it). */
+static dsd_opts g_opts;
+static dsd_state g_state;
+
+/* A result as the decoder publishes it, leaving the lists at @p lists_seq. */
 static void
-publish_result(uint32_t request, int16_t list, uint8_t enabled, int32_t code) {
+publish_result_at(uint32_t request, int16_t list, uint8_t enabled, int32_t code, uint32_t lists_seq) {
     assert(g_result_count < (int)(sizeof g_results / sizeof g_results[0]));
     dsd_app_scan_list_result* r = &g_results[g_result_count++];
     DSD_MEMSET(r, 0, sizeof *r);
@@ -98,6 +106,14 @@ publish_result(uint32_t request, int16_t list, uint8_t enabled, int32_t code) {
     r->list = list;
     r->enabled = enabled;
     r->code = code;
+    r->lists_seq = lists_seq;
+}
+
+/* A switch moves the lists to the next sequence (the snapshot showing it may come later); anything else leaves them. */
+static void
+publish_result(uint32_t request, int16_t list, uint8_t enabled, int32_t code) {
+    const uint32_t now = g_state.trunk_scan_lists_seq;
+    publish_result_at(request, list, enabled, code, code == DSD_APP_SCAN_LIST_SET_OK ? now + 1U : now);
 }
 
 void
@@ -132,9 +148,6 @@ ui_status_clear_if_expired(time_t now) {
 }
 
 /* ---- Fixture: a running trunk scan with three lists ---- */
-
-static dsd_opts g_opts;
-static dsd_state g_state;
 
 static void
 fixture(void) {
@@ -239,16 +252,27 @@ test_opens_only_with_lists_to_switch(void) {
     assert(scan_list_modal_selected_for_test() == 0);
     assert(g_sent_count == 0);
 
-    /* A paused scan keeps its lists open here: Enter is answered with the refusal (D7). */
+    assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Enter: switch on/off  Esc/Left: close") == 0);
+
+    /* A paused scan keeps its lists open here: Enter is answered with the refusal (D7), and the footer names the way
+       out instead of a switch. */
     g_state.trunk_scan_paused = 1;
     tick();
     assert(scan_list_modal_active() == 1);
     expect_title("Scan lists (3 of 3 on, scan paused)");
+    assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Esc/Left: close, then y resumes the scan") == 0);
     key('\n');
     assert(g_sent_count == 1 && g_sent[0].list == 1 && g_sent[0].enabled == 0);
     publish_result(g_sent[0].request, 1, 0, DSD_APP_SCAN_LIST_SET_PAUSED);
     tick();
     expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
+    tick(); /* still paused: still true */
+    expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
+    /* Resumed (the lists unchanged): the refusal is no longer true, and the switch is offered again. */
+    g_state.trunk_scan_paused = 0;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    assert(strcmp(scan_list_modal_footer_for_test(), "Arrows  Enter: switch on/off  Esc/Left: close") == 0);
     scan_list_modal_close();
     assert(scan_list_modal_active() == 0);
 }
@@ -310,10 +334,15 @@ test_refusal_shown_beside_the_list(void) {
     tick();
     expect_row(0, "1  security      On   12 targets  on air  Nothing else to scan");
     expect_title("Scan lists (1 of 3 on, 12 targets)");
-    /* The answer stays beside the row until the row is asked again. */
-    g_state.trunk_scan_lists_seq = 11U;
+    /* The refusal describes the lists the result saw: true while they stand, gone once another frontend switches
+       hospital on and there is something else to scan. */
     tick();
     expect_row(0, "1  security      On   12 targets  on air  Nothing else to scan");
+    g_state.trunk_scan_lists[1].enabled = 1;
+    g_state.trunk_scan_lists_seq = 11U;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    expect_title("Scan lists (2 of 3 on, 13 targets)");
 
     static const struct {
         int32_t code;
@@ -418,6 +447,12 @@ test_queue_full(void) {
     assert(g_sent_count == 0);
     expect_row(0, "1  security      On   12 targets  on air  Not sent; try again");
     assert(strcmp(g_toast, "Scan list switch not sent: too many commands waiting; try again") == 0);
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air  Not sent; try again");
+    /* The lists it was not sent against moved on: the note goes with them. */
+    g_state.trunk_scan_lists_seq = 11U;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
     /* Not waiting on anything: the next Enter sends. */
     key('\n');
     assert(g_sent_count == 1);
@@ -477,26 +512,26 @@ test_results_before_open_are_not_its_own(void) {
     scan_list_modal_close();
 }
 
-/* The decoder's toast (its answer to a switch) as the frame's snapshot carries it, for the modal's toast row. */
+/* The snapshot can already hold a later switch of the same list when the answer comes (another frontend switched it
+   back within the frame): the result's lists are behind the snapshot's, so the row shows the snapshot at once and
+   keeps showing it, rather than the state this request asked for. */
 static void
-test_decoder_toast_from_the_frame(void) {
+test_snapshot_already_past_the_answer(void) {
     fixture();
-    char toast[160];
-    const time_t now = 1000;
     assert(scan_list_modal_open(&g_opts, &g_state) == 1);
-    assert(scan_list_modal_decoder_toast_for_test(now, toast, sizeof toast) == 0 && toast[0] == '\0');
-    DSD_SNPRINTF(g_state.ui_msg, sizeof g_state.ui_msg, "%s",
-                 "Scan list 2 (hospital) off: 2 of 3 lists on, 15 targets");
-    g_state.ui_msg_expire = now + 3;
+    select_row(1);
+    key('\n');
+    assert(g_sent_count == 1 && g_sent[0].list == 2 && g_sent[0].enabled == 0);
+    /* This switch left the lists at 11 (hospital off), another switched it on again at 12; the frame shows 12. */
+    publish_result_at(g_sent[0].request, 2, 0, DSD_APP_SCAN_LIST_SET_OK, 11U);
+    g_state.trunk_scan_lists_seq = 12U;
     tick();
-    assert(scan_list_modal_decoder_toast_for_test(now, toast, sizeof toast) == 1);
-    assert(strcmp(toast, "Scan list 2 (hospital) off: 2 of 3 lists on, 15 targets") == 0);
-    assert(scan_list_modal_decoder_toast_for_test(now + 3, toast, sizeof toast) == 0);
-    g_state.ui_msg[0] = '\0';
+    expect_row(1, "2  hospital      On    1 target");
+    expect_title("Scan lists (3 of 3 on, 16 targets)");
     tick();
-    assert(scan_list_modal_decoder_toast_for_test(now, toast, sizeof toast) == 0);
+    tick();
+    expect_row(1, "2  hospital      On    1 target");
     scan_list_modal_close();
-    assert(scan_list_modal_decoder_toast_for_test(now, toast, sizeof toast) == 0);
 }
 
 int
@@ -509,7 +544,7 @@ main(void) {
     test_queue_full();
     test_esc_and_session_change();
     test_results_before_open_are_not_its_own();
-    test_decoder_toast_from_the_frame();
+    test_snapshot_already_past_the_answer();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

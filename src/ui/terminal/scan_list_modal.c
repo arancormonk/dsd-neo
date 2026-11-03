@@ -8,9 +8,10 @@
  *
  * What a row shows comes from two places, as the result API asks (commands.h): the retained result of a row's own
  * request says what that request did, and the frame's view (trunk_scan_lists_seq) says what the lists are. The result
- * can come a frame or more before the snapshot that shows its switch, so a row a request switched keeps showing the
- * state it asked for until lists_seq moves past the value it had when the answer came; from then on the snapshot is
- * the truth again, whatever else switched the list since.
+ * carries the lists' sequence it left them at. It can come a frame or more before the snapshot that shows its switch,
+ * so a row a request switched shows the state it asked for while the view's lists_seq is behind the result's; from
+ * then on the snapshot is the truth, whatever else switched the list since. A refusal describes the lists the result
+ * saw: its note goes once the view's lists_seq moves past the result's (and a paused refusal goes on resume).
  */
 
 #include "scan_list_modal.h"
@@ -20,7 +21,6 @@
 #include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/curses_compat.h>
@@ -30,20 +30,17 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 #include "ui_keys.h"
 #include "ui_text.h"
+#include "ui_text_draw.h"
 
 enum {
     SCAN_LIST_MODAL_ROWS_MAX = DSD_TRUNK_SCAN_MAX_LISTS + 1, /* every list, then All lists on */
     SCAN_LIST_MODAL_TEXT_MAX = 256,
     SCAN_LIST_MODAL_RESULTS_BATCH = 16,
-    /* Wide enough that a list toggle's toast ("Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets") fits the one
-       row the modal gives it, where the terminal is that wide. */
-    SCAN_LIST_MODAL_MIN_WIDTH = 66,
 };
 
 /* What a row says beside the list once its request is answered, or why it was never sent. */
@@ -57,10 +54,11 @@ typedef struct {
     uint32_t request;  /* the request this row waits on; 0 = none */
     uint8_t want;      /* the state that request asked for */
     uint8_t note;      /* scan_list_note_kind */
-    uint8_t held;      /* 1 = show @c held_want until the view's lists_seq leaves held_seq */
+    uint8_t held;      /* 1 = show @c held_want while the view's lists_seq is behind held_seq */
     uint8_t held_want; /* the state an answered switch left the list in */
     int32_t code;      /* the answer's dsd_app_scan_list_set_code, for SCAN_LIST_NOTE_ANSWER */
-    uint32_t held_seq;
+    uint32_t held_seq; /* the switch's result's lists_seq */
+    uint32_t note_seq; /* the lists the note describes: the result's lists_seq, or the view's for a submit not sent */
 } ScanListModalRow;
 
 typedef struct {
@@ -73,14 +71,13 @@ typedef struct {
     WINDOW* win;                 /* NULL until drawn, and after a resize */
     dsd_app_scan_list_view view; /* the last frame's, owned */
     ScanListModalRow rows[SCAN_LIST_MODAL_ROWS_MAX];
-    /* The decoder's toast as the last frame carried it: a switch's answer, drawn in the toast row (issue #697). */
-    char toast[sizeof(((dsd_state*)0)->ui_msg)];
-    time_t toast_expire;
 } ScanListModal;
 
 static ScanListModal g_modal;
 
 static const char k_footer[] = "Arrows  Enter: switch on/off  Esc/Left: close";
+/* Paused, Enter can only be refused: the footer names the way out instead (issue #697 D7). */
+static const char k_footer_paused[] = "Arrows  Esc/Left: close, then y resumes the scan";
 static const char k_all_lists_on[] = "All lists on";
 
 static int
@@ -88,7 +85,7 @@ scan_list_modal_row_count(void) {
     return (int)g_modal.view.list_count + 1;
 }
 
-/* Short forms of the decoder's toasts, beside the row they answer; the toast row above the lists has the whole one. */
+/* Short forms of the decoder's toasts, beside the row they answer; the main screen's toast line has the whole one. */
 static const char*
 scan_list_answer_note(int32_t code) {
     switch (code) {
@@ -122,10 +119,16 @@ scan_list_row_note(const ScanListModalRow* row, char* buf, size_t buf_size) {
 }
 
 /* Whether list row @p i reads On: what its answered request asked for until the snapshot moves, then the snapshot. */
+/* @p a is a later lists_seq than @p b: the sequence only moves forward, and wraps past UINT32_MAX. */
+static int
+scan_list_seq_after(uint32_t a, uint32_t b) {
+    return a != b && (uint32_t)(a - b) < 0x80000000U;
+}
+
 static int
 scan_list_row_enabled(int i) {
     const ScanListModalRow* row = &g_modal.rows[i];
-    if (row->held && g_modal.view.lists_seq == row->held_seq) {
+    if (row->held && scan_list_seq_after(row->held_seq, g_modal.view.lists_seq)) {
         return row->held_want ? 1 : 0;
     }
     return g_modal.view.lists[i].enabled ? 1 : 0;
@@ -274,15 +277,17 @@ scan_list_modal_answer(const dsd_app_scan_list_result* result) {
         row->request = 0U;
         row->note = (uint8_t)SCAN_LIST_NOTE_ANSWER;
         row->code = result->code;
+        row->note_seq = result->lists_seq;
         if (result->code != DSD_APP_SCAN_LIST_SET_OK) {
             return;
         }
-        /* Switched: hold what it asked for until the snapshot shows the switch. All lists on switches every row. */
+        /* Switched: hold what it asked for until the snapshot reaches the lists it left. All lists on switches every
+           row. */
         const int first = r < (int)g_modal.view.list_count ? r : 0;
         const int last = r < (int)g_modal.view.list_count ? r : (int)g_modal.view.list_count - 1;
         for (int i = first; i <= last; i++) {
             g_modal.rows[i].held = 1U;
-            g_modal.rows[i].held_seq = g_modal.view.lists_seq;
+            g_modal.rows[i].held_seq = result->lists_seq;
             g_modal.rows[i].held_want = r < (int)g_modal.view.list_count ? row->want : 1U;
         }
         return;
@@ -304,12 +309,22 @@ scan_list_modal_take_results(void) {
     }
 }
 
-/* A held row whose switch the snapshot now shows, or that something else switched since, goes back to the snapshot. */
+/* A held row goes back to the snapshot once the snapshot has the lists its switch left, or later ones. A note goes
+   once the lists move past the ones it described, and a paused refusal goes as the scan resumes: neither is true any
+   more. */
 static void
-scan_list_modal_release_held(void) {
-    for (int i = 0; i < (int)g_modal.view.list_count; i++) {
-        if (g_modal.rows[i].held && g_modal.view.lists_seq != g_modal.rows[i].held_seq) {
-            g_modal.rows[i].held = 0U;
+scan_list_modal_expire_rows(void) {
+    const uint32_t seq = g_modal.view.lists_seq;
+    for (int r = 0; r < scan_list_modal_row_count(); r++) {
+        ScanListModalRow* row = &g_modal.rows[r];
+        if (row->held && !scan_list_seq_after(row->held_seq, seq)) {
+            row->held = 0U;
+        }
+        const int paused_note =
+            row->note == (uint8_t)SCAN_LIST_NOTE_ANSWER && row->code == DSD_APP_SCAN_LIST_SET_PAUSED;
+        if (row->note != (uint8_t)SCAN_LIST_NOTE_NONE
+            && (scan_list_seq_after(seq, row->note_seq) || (paused_note && !g_modal.view.paused))) {
+            row->note = (uint8_t)SCAN_LIST_NOTE_NONE;
         }
     }
 }
@@ -334,6 +349,7 @@ scan_list_modal_submit(int r) {
     if (dsd_app_command_scan_list_set(&p) == DSD_APP_COMMAND_SUBMIT_REJECTED) {
         /* Never queued, so no result will come: say so now. */
         row->note = (uint8_t)SCAN_LIST_NOTE_NOT_SENT;
+        row->note_seq = g_modal.view.lists_seq;
         ui_statusf("Scan list switch not sent: too many commands waiting; try again");
         return;
     }
@@ -361,8 +377,6 @@ scan_list_modal_open(const dsd_opts* opts, const dsd_state* state) {
     g_modal.session = view.session;
     g_modal.view = view;
     g_modal.unicode = ui_text_unicode_output();
-    DSD_SNPRINTF(g_modal.toast, sizeof g_modal.toast, "%s", state->ui_msg);
-    g_modal.toast_expire = state->ui_msg_expire;
     /* Only answers to requests made from here on are this modal's. */
     dsd_app_scan_list_result latest;
     g_modal.after = dsd_app_scan_list_result_get(&latest) ? latest.sequence : 0U;
@@ -394,10 +408,8 @@ scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     g_modal.view = view;
-    DSD_SNPRINTF(g_modal.toast, sizeof g_modal.toast, "%s", state->ui_msg);
-    g_modal.toast_expire = state->ui_msg_expire;
     scan_list_modal_take_results();
-    scan_list_modal_release_held();
+    scan_list_modal_expire_rows();
 }
 
 /* ---- Keys ---- */
@@ -457,8 +469,8 @@ scan_list_modal_cells(const char* text) {
     return ui_text_cells(g_modal.unicode, text, strlen(text));
 }
 
-/* The window: as wide as the widest row with the longest note (the toast's minimum where the terminal allows), as tall
-   as every row with a blank line before the footer, as the menu has, and centred. */
+/* The window: as wide as the widest row with the longest note, the title or either footer, as tall as every row with a
+   blank line before the footer, as the menu has, and centred. */
 static int
 scan_list_modal_rect(int* h, int* w, int* y, int* x) {
     int scr_h = 0, scr_w = 0;
@@ -468,13 +480,12 @@ scan_list_modal_rect(int* h, int* w, int* y, int* x) {
     scan_list_format_title(title, sizeof title);
     int content = cols.prefix_cells + scan_list_modal_cells(k_longest_note);
     const int title_cells = scan_list_modal_cells(title) + 8; /* room for the title to grow by a digit or a word */
-    const int footer_cells = (int)strlen(k_footer);
+    const int footer = scan_list_modal_cells(k_footer);
+    const int footer_paused = scan_list_modal_cells(k_footer_paused);
+    const int footer_cells = footer > footer_paused ? footer : footer_paused;
     content = content > title_cells ? content : title_cells;
     content = content > footer_cells ? content : footer_cells;
     int local_w = content + 4;
-    if (local_w < SCAN_LIST_MODAL_MIN_WIDTH) {
-        local_w = SCAN_LIST_MODAL_MIN_WIDTH;
-    }
     if (local_w > scr_w - 2) {
         local_w = scr_w - 2;
     }
@@ -495,17 +506,12 @@ scan_list_modal_rect(int* h, int* w, int* y, int* x) {
 /* Text in at most @p budget cells, cut between code points with the marker, as the chooser draws its rows. */
 static void
 scan_list_modal_draw_text(WINDOW* win, int y, int x, const char* text, int budget) {
-    char shown[SCAN_LIST_MODAL_TEXT_MAX];
-    const size_t len = ui_text_sanitize(g_modal.unicode, text, strnlen(text, sizeof shown), shown, sizeof shown);
-    const char* marker = NULL;
-    const size_t cut = ui_text_fit(g_modal.unicode, shown, len, budget, &marker);
-    wmove(win, y, x);
-    if (cut > 0U) {
-        waddnstr(win, shown, (int)cut);
-    }
-    if (marker) {
-        waddstr(win, marker);
-    }
+    ui_text_draw_fit(win, y, x, g_modal.unicode, text, budget);
+}
+
+static const char*
+scan_list_modal_footer(void) {
+    return g_modal.view.paused ? k_footer_paused : k_footer;
 }
 
 static void
@@ -562,17 +568,11 @@ scan_list_modal_render(void) {
     char title[SCAN_LIST_MODAL_TEXT_MAX];
     scan_list_format_title(title, sizeof title);
     scan_list_modal_draw_text(win, 1, 2, title, body_w);
-    /* Row 2 is the toast's, as in the chooser, and with no notice of the terminal's own the decoder's: its answer to a
-       switch is read on the list it changed, also where the modal covers the main screen's toast line. */
-    const time_t now = dsd_realtime_time();
-    if (ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, now) == 0 && g_modal.toast[0] != '\0'
-        && g_modal.toast_expire > now) {
-        wattron(win, A_BOLD);
-        scan_list_modal_draw_text(win, 2, 2, g_modal.toast, body_w);
-        wattroff(win, A_BOLD);
-    }
+    /* Row 2 is the terminal's own notices, as in the chooser (a submit not sent); the decoder's answer is beside its row,
+       and whole on the main screen's toast line. */
+    (void)ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, dsd_realtime_time());
     scan_list_modal_draw_rows(win, w, body_w, h - 6);
-    scan_list_modal_draw_text(win, h - 2, 2, k_footer, body_w);
+    scan_list_modal_draw_text(win, h - 2, 2, scan_list_modal_footer(), body_w);
     wnoutrefresh(win);
 }
 
@@ -598,10 +598,8 @@ scan_list_modal_selected_for_test(void) {
     return g_modal.sel;
 }
 
-int
-scan_list_modal_decoder_toast_for_test(time_t now, char* out, size_t out_size) {
-    const int live = g_modal.active && g_modal.toast[0] != '\0' && g_modal.toast_expire > now;
-    DSD_SNPRINTF(out, out_size, "%s", live ? g_modal.toast : "");
-    return live;
+const char*
+scan_list_modal_footer_for_test(void) {
+    return scan_list_modal_footer();
 }
 #endif

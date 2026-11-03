@@ -25,7 +25,6 @@
 #include <dsd-neo/core/state_fwd.h>
 #ifdef DSD_NEO_TEST_HOOKS
 #include <stddef.h>
-#include <time.h>
 #endif
 
 /**
@@ -52,8 +51,8 @@ void scan_list_modal_title_for_test(char* out, size_t out_size);
 int scan_list_modal_row_for_test(int row, char* out, size_t out_size);
 /** @brief Test hook: the highlighted row. */
 int scan_list_modal_selected_for_test(void);
-/** @brief Test hook: the decoder's toast the toast row shows at @p now when the terminal has no notice; 1 if live. */
-int scan_list_modal_decoder_toast_for_test(time_t now, char* out, size_t out_size);
+/** @brief Test hook: the footer as drawn. */
+const char* scan_list_modal_footer_for_test(void);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_SCAN_LIST_MODAL_H_ */

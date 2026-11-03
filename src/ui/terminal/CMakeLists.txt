@@ -17,6 +17,7 @@ target_sources(
         ui_prims.c
         ui_row.c
         ui_text.c
+        ui_text_draw.c
         ui_mouse.c
         ui_async.c
         ui_read_key.c

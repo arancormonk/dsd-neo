@@ -886,7 +886,7 @@ then **All lists on**:
 
 ```
 Scan lists (2 of 3 on, 13 targets)
-Scan list 2 (hospital) off: 2 of 3 lists on, 13 targets
+
 1  security      On   12 targets  on air
 2  hospital      Off   1 target
 3  municipality  On    1 target
@@ -894,15 +894,17 @@ All lists on
 ```
 
 Enter switches the highlighted list the other way, or every list on. The row says `Switching off…` until the decoder
-answers, then shows the new state, or why it did not switch beside the list (`Nothing else to scan` when it is the
-last list with a target left to scan, `Scan paused: resume it first` while the scan is paused); the toast above the
-lists has the whole answer. Several rows can wait at once, and Enter on a row that is waiting does nothing. Switching
-off the list on air moves the receiver to a target of another list at once, as `L` would. The lists stay open until
-Esc or Left, and close by themselves when the scan stops or restarts. A switch lasts for the session: Config save and
-the exit autosave keep the lists as configured.
+answers, then shows the new state, or why it did not switch beside the list (`Nothing else to scan` when it is the last
+list with a target left to scan, `Scan paused: resume it first` while the scan is paused); the main screen's toast line
+has the whole answer. A reason stays only while it is true: it goes once the lists change (another list switched here or
+from another frontend), and the paused one when the scan resumes. Several rows can wait at once, and Enter on a row that
+is waiting does nothing. Switching off the list on air moves the receiver to a target of another list at once, as `L`
+would. The lists stay open until Esc or Left, and close by themselves when the scan stops or restarts. A switch lasts
+for the session: Config save and the exit autosave keep the lists as configured.
 
 The menu row is offered while a trunk scan with two or more lists runs. `#` also opens the lists while the scan is
-paused (every switch is then refused until `y` resumes it), and says what it needs where there are none to switch.
+paused, where every switch is refused and the footer reads `Arrows  Esc/Left: close, then y resumes the scan`, and
+says what it needs where there are none to switch.
 
 ## Channel Labels
 

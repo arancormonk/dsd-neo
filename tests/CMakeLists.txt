@@ -3013,6 +3013,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
         ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
     )
@@ -3045,6 +3046,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_scan_list_modal.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/scan_list_modal.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
     )
@@ -3100,6 +3102,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
         ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4243,6 +4246,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_chooser_navigation
         ui/test_ui_chooser_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4269,6 +4273,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_cursor
         ui/test_ui_prompt_cursor.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4292,6 +4297,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_validation
         ui/test_ui_prompt_validation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4328,6 +4334,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_secret
         ui/test_ui_prompt_secret.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(

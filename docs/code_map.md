@@ -9366,8 +9366,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     then value prompt), `CsvPickerCtx` (chooser, then the "Enter a path..." prompt), and the Imported Systems browser's
     `RrBrowseCtx` through its system, action and delete-confirmation levels, the avoided channel chooser's
     `ScanAvoidPickCtx`; RadioReference's wizard context (`g_rr_panel`) stays borrowed. Items and the title are drawn
-    through `ui_text`: sanitized, measured in cells and cut between code points with the row model's marker, the window
-    sized from widths measured once per start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls
+    through `ui_text` (`ui_text_draw_fit()` in `ui_text_draw.{h,c}`, shared with the Scan lists modal): sanitized,
+    measured in cells and cut between code points with the row model's marker, the window sized from widths measured
+    once per start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls
     `rr_panel_shutdown()` (it closes a chooser borrowing the wizard's strings before freeing them), then
     `ui_overlays_shutdown()` (`menu_core.c`: help, prompt and chooser - a few passes, since a cancel can open another -
     then every menu frame, and the overlay's bookkeeping reset), then closes curses. Tests: `UI_CHOOSER_NAVIGATION`
@@ -9397,21 +9398,26 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `act_scan_lists()`) open the modal in `scan_list_modal.{h,c}`, which `menu_core.c` drives like the RadioReference
     panel (keys, `scan_list_modal_tick()` with the frame's pair, render, close with the overlay); `act_scan_lists()`
     opens one line of help where the pair has no trunk scan with 2+ lists (`#` still opens it on a paused one, where
-    every switch is refused). The modal owns all it draws: a copy of `dsd_app_scan_list_view` (and the decoder's
-    toast) taken from the frame's pair each tick, never the decoder's structs, and per row the request it waits on.
-    Enter submits `dsd_app_command_scan_list_set()` with the session it opened on and
-    `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and a toast at
-    once. The row reads `Switching off…` until `dsd_app_scan_list_results_since()` (read from the latest sequence at
-    open) returns its request; the result decides the outcome and the note beside the list, and a switched row shows
-    the state it asked for until the view's `lists_seq` leaves the value it had when the answer came (the result can
-    beat the snapshot), then the view's. A waiting row ignores Enter; rows wait independently. The modal closes on
+    every switch is refused, and the footer swaps Enter for `Esc/Left: close, then y resumes the scan`). The modal owns
+    all it draws: a copy of `dsd_app_scan_list_view` taken from the frame's pair each tick, never the decoder's
+    structs, and per row the request it waits on. Enter submits `dsd_app_command_scan_list_set()` with the session it
+    opened on and `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and
+    the terminal's own toast in the modal's toast row at once. The row reads `Switching off…` until
+    `dsd_app_scan_list_results_since()` (read from the latest sequence at open) returns its request; the result decides
+    the outcome and the note beside the list (the decoder's whole toast stays on the main screen's toast line). A
+    switched row shows the state it asked for while the view's `lists_seq` is behind the result's `lists_seq` (the
+    result can beat the snapshot), then the view's, also when the snapshot already holds a later switch at the answer.
+    A note goes once the view's `lists_seq` moves past the result's (the view's at submit for a submit not sent), and
+    a paused refusal goes on resume: neither is true any more. A waiting row ignores Enter; rows wait independently.
+    Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal closes on
     Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The Trunk Scan row
     (`ui_render_trunk_scan_status()`) reads the D10 position from `trunk_scan_rotation_ordinal/_count` (`(-/m)` while
     the list on air is off) and, with 2+ lists, keeps a `[list off]` room beside `[avoided]` and adds `List: <name>`
     after the target (cut at a whole field); the paused trunk row adds `Lists: n/m on`. The rigctl rows moved to
     Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests: `UI_SCAN_LIST_MODAL`
-    (pending, answers, refusals, repeat Enter, out-of-order answers, All lists on, full queue, Esc, session change,
-    results from before it opened, the decoder's toast), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
+    (pending, answers, refusals and when their notes go, the paused footer, repeat Enter, out-of-order answers, All
+    lists on, full queue, Esc, session change, results from before it opened, a snapshot already past the answer),
+    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
     (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
     key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
