@@ -1138,6 +1138,10 @@ test_prefs_key_table(void) {
         {"analogPrerollMs", 500, "recording/analogPrerollMs"},
         {"acceptedStartKind", QStringLiteral("scan"), "listen/acceptedStartKind"},
         {"acceptedStartUid", QStringLiteral("uid-2"), "listen/acceptedStartUid"},
+        // Issue #697: a scan session's other lists, as accepted and as last started.
+        {"acceptedStartCompanions", QStringList{QStringLiteral("uid-3"), QStringLiteral("uid-4")},
+         "listen/acceptedStartCompanions"},
+        {"lastStartedCompanions", QStringList{QStringLiteral("uid-3")}, "listen/lastStartedCompanions"},
     };
     QStringList covered;
     int writable = 0;
@@ -1216,10 +1220,16 @@ test_prefs_key_table(void) {
     }
     local.sort();
     const QStringList wantLocal = {
-        QStringLiteral("listen/acceptedStartKind"), QStringLiteral("listen/acceptedStartUid"),
-        QStringLiteral("location/lastAccuracyM"),   QStringLiteral("location/lastFixAt"),
-        QStringLiteral("location/lastLat"),         QStringLiteral("location/lastLon"),
-        QStringLiteral("monitor/detailsExpanded"),  QStringLiteral("ui/notificationExplained"),
+        QStringLiteral("listen/acceptedStartCompanions"),
+        QStringLiteral("listen/acceptedStartKind"),
+        QStringLiteral("listen/acceptedStartUid"),
+        QStringLiteral("listen/lastStartedCompanions"),
+        QStringLiteral("location/lastAccuracyM"),
+        QStringLiteral("location/lastFixAt"),
+        QStringLiteral("location/lastLat"),
+        QStringLiteral("location/lastLon"),
+        QStringLiteral("monitor/detailsExpanded"),
+        QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
     };
     expect("device-local set is exactly the pinned one", local == wantLocal);
