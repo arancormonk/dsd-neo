@@ -25,7 +25,9 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
+#include <mutex>
 #include <stdint.h>
+#include <string>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1361,7 +1363,8 @@ expect_digital_resample_policy(void) {
     rc |= expect_int_eq("device-forced integer SPS bypasses", resamp_enabled, 0);
     rc |= expect_int_eq("device-forced integer SPS keeps demod rate", (int)output_rate_hz, 96000);
 
-    /* CQPSK output is symbol-rate already; the Gardner loop absorbs fractional SPS. */
+    /* CQPSK output is one value per symbol already, so it is never resampled; a fractional SPS it cannot time is
+       warned about instead (rtl_demod_warn_symbol_timing()). */
     rc |= expect_int_eq("cqpsk helper rc",
                         rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 62500, 48000, 4800,
                                                                kModeAuto, kForced, &output_rate_hz, &resamp_enabled),
@@ -2439,11 +2442,22 @@ set_iq_balance_env(const char* value) {
     }
 }
 
-/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM, and the stream
-   start's warnings that TETRA cannot run at its DSP rate. The tap is installed once, by main()'s first test. */
+/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM, the stream
+   start's warnings that TETRA cannot run at its DSP rate, and every warning's text since the last take_warnings().
+   The tap is installed once, by main()'s first test. */
 static std::atomic<int> g_iq_dc_bypass_notes{0};
 static std::atomic<int> g_iq_balance_bypass_notes{0};
 static std::atomic<int> g_tetra_rate_warnings{0};
+static std::mutex g_warning_lock;
+static std::string g_warning_text;
+
+static std::string
+take_warnings(void) {
+    std::lock_guard<std::mutex> hold(g_warning_lock);
+    std::string out;
+    out.swap(g_warning_text);
+    return out;
+}
 
 static void
 count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -2456,6 +2470,10 @@ count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx)
     }
     if (level == LOG_LEVEL_WARN && text && std::strstr(text, "TETRA needs a DSP rate that is a multiple of 18 kHz")) {
         g_tetra_rate_warnings.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (level == LOG_LEVEL_WARN && text) {
+        std::lock_guard<std::mutex> hold(g_warning_lock);
+        g_warning_text += text;
     }
 }
 
@@ -2471,15 +2489,15 @@ expect_tetra_rate_warning(void) {
     tetra.mod_qpsk = 1;
     tetra.rtl_dsp_bw_khz = 48;
     DSD_SNPRINTF(tetra.audio_in_dev, sizeof tetra.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
-    rc |= expect_int_eq("TETRA at 48 kHz warns", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000), 1);
-    rc |= expect_int_eq("TETRA at 48 kHz warns once", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000), 0);
+    rc |= expect_int_eq("TETRA at 48 kHz warns", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000, 1), 1);
+    rc |= expect_int_eq("TETRA at 48 kHz warns once", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000, 1), 0);
     rc |= expect_int_eq("TETRA warning logged once", g_tetra_rate_warnings.load(std::memory_order_relaxed), 1);
     tetra.rtl_dsp_bw_khz = 72;
-    rc |= expect_int_eq("TETRA at 72 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 72000), 0);
-    rc |= expect_int_eq("TETRA at 54 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 54000), 0);
+    rc |= expect_int_eq("TETRA at 72 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 72000, 1), 0);
+    rc |= expect_int_eq("TETRA at 54 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 54000, 1), 0);
     /* An Airspy forces 78.125 kHz whatever the request. */
     DSD_SNPRINTF(tetra.audio_in_dev, sizeof tetra.audio_in_dev, "%s", "airspy");
-    rc |= expect_int_eq("TETRA at another rate warns again", rtl_stream_test_warn_low_dsp_bw(&tetra, 78125), 1);
+    rc |= expect_int_eq("TETRA at another rate warns again", rtl_stream_test_warn_low_dsp_bw(&tetra, 78125, 1), 1);
     rc |= expect_int_eq("TETRA warnings logged", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
 
     static dsd_opts dmr;
@@ -2487,13 +2505,14 @@ expect_tetra_rate_warning(void) {
     dmr.frame_dmr = 1;
     dmr.rtl_dsp_bw_khz = 48;
     rtl_stream_test_reset_tetra_rate_warning();
-    rc |= expect_int_eq("DMR at 50 kHz has no TETRA warning", rtl_stream_test_warn_low_dsp_bw(&dmr, 50000), 0);
+    rc |= expect_int_eq("DMR at 50 kHz has no TETRA warning", rtl_stream_test_warn_low_dsp_bw(&dmr, 50000, 0), 0);
     rc |= expect_int_eq("no TETRA warning for DMR", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
     return rc;
 }
 
 /* The rate-chain log's derived-SPS lines: a TETRA stream at 72 kHz reports TETRA's 4 samples per symbol and no advice
-   to enable a 48 kHz resampler (it would not help the CQPSK path); a P25 stream at 72 kHz still gets that warning. */
+   to enable a 48 kHz resampler, nor does any CQPSK stream (its symbols bypass the resampler, so it would not help, and
+   the symbol timing warning says what CQPSK runs at); a P25 FSK stream at 72 kHz still gets that warning. */
 static int
 expect_rate_chain_true(const char* label, bool cond) {
     return expect_int_eq(label, cond ? 1 : 0, 1);
@@ -2504,19 +2523,200 @@ expect_rate_chain_sps_lines(void) {
     int rc = 0;
     char info[256];
     char warn[256];
-    rtl_stream_test_compose_sps_lines(72000U, 1, info, sizeof info, warn, sizeof warn);
+    rtl_stream_test_compose_sps_lines(72000U, 1, 1, info, sizeof info, warn, sizeof warn);
     rc |= expect_rate_chain_true("TETRA at 72 kHz reports its sps",
                                  strstr(info, "Derived SPS (@72000 Hz): TETRA") != NULL && strstr(info, "4.") != NULL
                                      && strstr(info, "P25") == NULL);
     rc |= expect_rate_chain_true("TETRA at 72 kHz gets no resampler advice",
                                  warn[0] == '\0' && strstr(info, "Consider enabling resampler") == NULL);
-    rtl_stream_test_compose_sps_lines(72000U, 0, info, sizeof info, warn, sizeof warn);
+    rtl_stream_test_compose_sps_lines(72000U, 0, 0, info, sizeof info, warn, sizeof warn);
     rc |= expect_rate_chain_true("P25 at 72 kHz keeps the derived-SPS line",
                                  strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
     rc |= expect_rate_chain_true("P25 at 72 kHz keeps the resampler warning",
                                  strstr(warn, "Consider enabling resampler") != NULL);
-    rtl_stream_test_compose_sps_lines(0U, 1, info, sizeof info, warn, sizeof warn);
+    rtl_stream_test_compose_sps_lines(0U, 1, 1, info, sizeof info, warn, sizeof warn);
     rc |= expect_rate_chain_true("no output rate, no lines", info[0] == '\0' && warn[0] == '\0');
+    /* P25 on CQPSK at 72 kHz, where it runs, and at a forced 78.125 kHz, where it cannot time symbols: neither gets the
+       resampler advice. */
+    rtl_stream_test_compose_sps_lines(72000U, 0, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("P25 CQPSK at 72 kHz keeps the derived-SPS line",
+                                 strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
+    rc |= expect_rate_chain_true("P25 CQPSK at 72 kHz gets no resampler advice", warn[0] == '\0');
+    rtl_stream_test_compose_sps_lines(78125U, 0, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("P25 CQPSK at 78.125 kHz gets no resampler advice", warn[0] == '\0');
+    return rc;
+}
+
+static int
+expect_warning_text(const char* label, const std::string& got, const char* want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
+        return 1;
+    }
+    return 0;
+}
+
+/* One symbol timing case: the stream's output kind (CQPSK when cqpsk), symbol rate and landed complex rate, and the
+   digital_resample inputs an FSK stream is judged with. */
+namespace {
+struct TimingWarningCase {
+    const char* label;
+    int cqpsk;
+    int output_kind;
+    int symbol_rate_hz;
+    int complex_rate_hz;
+    int digital_resample_mode;
+    int device_forced;
+    const char* want; /* the whole warning text, "" for none */
+};
+} // namespace
+
+/* The timing refresh a rate change runs and the warning once the plan and the profile are final, as stream open and a
+   retune run them; returns the warnings logged. */
+static std::string
+timing_warnings_after_plan(const TimingWarningCase& c) {
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        return "allocation failed";
+    }
+    demod->cqpsk_enable = c.cqpsk;
+    demod->output_kind = c.output_kind;
+    demod->symbol_rate_hz = c.symbol_rate_hz;
+    demod->symbol_levels = 4;
+    demod->complex_rate = c.complex_rate_hz;
+    demod->rate_out = c.complex_rate_hz;
+    demod->resamp_target_hz = 48000;
+    demod->digital_resample_mode = c.digital_resample_mode;
+    demod->capture_rate_device_forced = c.device_forced;
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = static_cast<unsigned int>(c.complex_rate_hz);
+    (void)take_warnings();
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, NULL, &output, /*preserve_active_profile=*/1);
+    rtl_demod_warn_symbol_timing(demod);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    return take_warnings();
+}
+
+/* CQPSK cannot time a fractional number of samples per symbol, or fewer than 2: it slips symbols and decodes nothing
+   (P25 Phase 1 at 78.125, 93.75, 16 and 12 kHz). The warning says so and names the DSP bandwidths that give the active
+   profile's symbol rate a whole number (P25 Phase 2 at 12 kHz has 2 and runs). TETRA's rate has its own warnings. The
+   FSK decoder is judged at the rate digital_resample hands it: a device-forced 78.125 kHz resampled to 48 kHz is
+   10 samples per symbol and says nothing. An analog monitor has no symbols to time. */
+static int
+expect_symbol_timing_warnings(void) {
+    const int cq = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    const int fsk = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    const int am = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    const int automode = DSD_DIGITAL_RESAMPLE_AUTO;
+    const int off = DSD_DIGITAL_RESAMPLE_OFF;
+    const int on = DSD_DIGITAL_RESAMPLE_ON;
+    static const TimingWarningCase kCases[] = {
+        {"P1 CQPSK at 48 kHz", 1, cq, 4800, 48000, automode, 0, ""},
+        {"P1 CQPSK at 72 kHz", 1, cq, 4800, 72000, automode, 0, ""},
+        {"P1 CQPSK at 24 kHz", 1, cq, 4800, 24000, automode, 0, ""},
+        {"P1 CQPSK at 78.125 kHz", 1, cq, 4800, 78125, automode, 1,
+         "WARNING: CQPSK cannot time symbols at 78125 Hz (16.276 samples per symbol for 4800 sym/s); use a DSP "
+         "bandwidth of 24, 48 or 72 kHz.\n"},
+        {"P1 CQPSK at 93.75 kHz", 1, cq, 4800, 93750, automode, 1,
+         "WARNING: CQPSK cannot time symbols at 93750 Hz (19.531 samples per symbol for 4800 sym/s); use a DSP "
+         "bandwidth of 24, 48 or 72 kHz.\n"},
+        {"P1 CQPSK at 16 kHz", 1, cq, 4800, 16000, automode, 0,
+         "WARNING: CQPSK cannot time symbols at 16000 Hz (3.333 samples per symbol for 4800 sym/s); use a DSP "
+         "bandwidth of 24, 48 or 72 kHz.\n"},
+        {"P1 CQPSK at 12 kHz", 1, cq, 4800, 12000, automode, 0,
+         "WARNING: CQPSK cannot time symbols at 12000 Hz (2.500 samples per symbol for 4800 sym/s); use a DSP "
+         "bandwidth of 24, 48 or 72 kHz.\n"},
+        {"P2 CQPSK at 12 kHz", 1, cq, 6000, 12000, automode, 0, ""},
+        {"P2 CQPSK at 16 kHz", 1, cq, 6000, 16000, automode, 0,
+         "WARNING: CQPSK cannot time symbols at 16000 Hz (2.667 samples per symbol for 6000 sym/s); use a DSP "
+         "bandwidth of 12, 24, 48 or 72 kHz.\n"},
+        {"P2 CQPSK at 6 kHz", 1, cq, 6000, 6000, automode, 0,
+         "WARNING: CQPSK cannot time symbols at 6000 Hz (1.000 samples per symbol for 6000 sym/s); use a DSP "
+         "bandwidth of 12, 24, 48 or 72 kHz.\n"},
+        {"TETRA CQPSK at 48 kHz", 1, cq, 18000, 48000, automode, 0, ""},
+        {"FSK forced 78.125 kHz resampled", 0, fsk, 4800, 78125, automode, 1, ""},
+        {"FSK forced 62.5 kHz resampled on", 0, fsk, 4800, 62500, on, 1, ""},
+        {"FSK forced 78.125 kHz, resampler off", 0, fsk, 4800, 78125, off, 1,
+         "WARNING: The decoder gets 78125 Hz, 16.276 samples per symbol for 4800 sym/s; symbol timing works best with "
+         "a whole number; use a DSP bandwidth of 24, 48 or 72 kHz.\n"},
+        {"FSK at a chosen 62.5 kHz", 0, fsk, 4800, 62500, automode, 0,
+         "WARNING: The decoder gets 62500 Hz, 13.021 samples per symbol for 4800 sym/s; symbol timing works best with "
+         "a whole number; use a DSP bandwidth of 24, 48 or 72 kHz.\n"},
+        {"FSK at 48 kHz", 0, fsk, 4800, 48000, automode, 0, ""},
+        {"analog monitor at 16 kHz", 0, am, 4800, 16000, automode, 0, ""},
+    };
+    int rc = 0;
+    for (const TimingWarningCase& c : kCases) {
+        rc |= expect_warning_text(c.label, timing_warnings_after_plan(c), c.want);
+    }
+    return rc;
+}
+
+/* The defaults a stream opens with run before the rate plan, where a device can still force another rate: they warn
+   about nothing. The warning comes after the plan and names the planned rate (an Airspy's 48 kHz request that
+   delivered 78.125 kHz), never the request. */
+static int
+expect_timing_warning_names_planned_rate(void) {
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        return 1;
+    }
+    static dsd_opts p25;
+    DSD_MEMSET(&p25, 0, sizeof(p25));
+    p25.frame_p25p1 = 1;
+    p25.mod_qpsk = 1;
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = 16000;
+    (void)take_warnings();
+    rtl_demod_init_for_mode(demod, &output, &p25, 16000);
+    rtl_demod_config_from_env_and_opts(demod, &p25);
+    rtl_demod_select_defaults_for_mode(demod, &p25, &output);
+    int rc = expect_warning_text("defaults before the plan", take_warnings(), "");
+    demod->complex_rate = 78125;
+    demod->rate_out = 78125;
+    output.rate = 78125;
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, &p25, &output, /*preserve_active_profile=*/0);
+    rtl_demod_warn_symbol_timing(demod);
+    rc |= expect_warning_text("after the plan", take_warnings(),
+                              "WARNING: CQPSK cannot time symbols at 78125 Hz (16.276 samples per symbol for 4800 "
+                              "sym/s); use a DSP bandwidth of 24, 48 or 72 kHz.\n");
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    return rc;
+}
+
+/* The low-bandwidth warnings speak for the FSK modes only, and call no bandwidth under 24 kHz usable: on CQPSK the
+   symbol timing warning says what runs (P25 Phase 2 at 12 kHz does, Phase 1 at 16 kHz does not). Each is logged once
+   per process. */
+static int
+expect_low_dsp_bw_warnings(void) {
+    static dsd_opts p25;
+    DSD_MEMSET(&p25, 0, sizeof(p25));
+    p25.frame_p25p1 = 1;
+    p25.frame_p25p2 = 1;
+    p25.mod_qpsk = 1;
+    p25.rtl_dsp_bw_khz = 12;
+    (void)take_warnings();
+    int rc = expect_int_eq("P25 CQPSK at 12 kHz", rtl_stream_test_warn_low_dsp_bw(&p25, 12000, 1), 0);
+    p25.rtl_dsp_bw_khz = 16;
+    rc |= expect_int_eq("P25 CQPSK at 16 kHz", rtl_stream_test_warn_low_dsp_bw(&p25, 16000, 1), 0);
+    rc |= expect_warning_text("CQPSK: no low-bandwidth warning", take_warnings(), "");
+    static dsd_opts dmr;
+    DSD_MEMSET(&dmr, 0, sizeof(dmr));
+    dmr.frame_dmr = 1;
+    dmr.rtl_dsp_bw_khz = 12;
+    rc |= expect_int_eq("DMR at 12 kHz", rtl_stream_test_warn_low_dsp_bw(&dmr, 12000, 0), 0);
+    rc |= expect_warning_text("DMR at 12 kHz: text", take_warnings(),
+                              "WARNING: A 12 kHz DSP bandwidth is too narrow for 12.5 kHz digital channels; use 24 or "
+                              "48 kHz.\n");
+    dmr.rtl_dsp_bw_khz = 16;
+    rc |= expect_int_eq("DMR at 16 kHz", rtl_stream_test_warn_low_dsp_bw(&dmr, 16000, 0), 0);
+    rc |= expect_warning_text("DMR at 16 kHz: text", take_warnings(),
+                              "WARNING: A 16 kHz DSP bandwidth is marginal for DMR and P25 Phase 2; use 24 or 48 kHz "
+                              "for more reliable decoding.\n");
     return rc;
 }
 
@@ -3203,6 +3403,9 @@ main(void) {
     rc |= expect_capture_plan_for_every_dsp_bandwidth();
     rc |= expect_tetra_rate_warning();
     rc |= expect_rate_chain_sps_lines();
+    rc |= expect_symbol_timing_warnings();
+    rc |= expect_timing_warning_names_planned_rate();
+    rc |= expect_low_dsp_bw_warnings();
     rc |= expect_digital_resample_policy();
     rc |= expect_resampler_publishes_the_rate_it_delivers();
     rc |= expect_live_chain_never_truncates();

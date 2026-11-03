@@ -299,6 +299,23 @@ dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size
     return 0;
 }
 
+int
+dsd_analog_rtl_bandwidths_with_whole_sps(int symbol_rate_hz, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    int whole[kRtlDspBandwidthCount] = {0};
+    int count = 0;
+    for (int i = 0; symbol_rate_hz > 0 && i < kRtlDspBandwidthCount; i++) {
+        const int rate_hz = kRtlDspBandwidthsKhz[i] * 1000;
+        if (rate_hz % symbol_rate_hz == 0 && rate_hz / symbol_rate_hz >= 2) {
+            whole[count++] = kRtlDspBandwidthsKhz[i];
+        }
+    }
+    analog_join_khz_list(whole, count, out, out_size);
+    return 0;
+}
+
 /* The fix for a width the device's rate cannot filter. Its rate is the capture rate halved down to the first rate at or
    above the DSP bandwidth, so a wider DSP bandwidth raises it and a narrower one lowers it. */
 static void

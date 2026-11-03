@@ -1579,10 +1579,12 @@ tetra_warn_once(struct demod_state* d, int cause) {
     return 1;
 }
 
-/* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
-   chain of its own; say why, once per cause and stream. An uplink session never runs the chain, but its TETRA channel
-   filter falls back the same way on a rate outside the domain or the channel filter off; the TED override does not
-   reach it. Nothing is said for a chain the mode does not ask for. */
+/* A TETRA profile on CQPSK whose chain cannot run falls back to the generic CQPSK path, which decodes no TETRA at a rate
+   outside the domain (no whole number of samples per symbol) or with timing set for another rate; say why and what
+   fixes it, once per cause and stream. An unsupported rate is the whole story: the override and the channel filter
+   are judged only at a rate TETRA runs at (the channel filter is on by default there, from 20 kHz). An uplink session
+   never runs the chain, but its TETRA channel filter falls back the same way on a rate outside the domain or the
+   channel filter off; the TED override does not reach it. Nothing is said for a chain the mode does not ask for. */
 static void
 tetra_chain_warn_inactive(struct demod_state* d) {
     if (!tetra_chain_requested(d)) {
@@ -1590,20 +1592,26 @@ tetra_chain_warn_inactive(struct demod_state* d) {
     }
     const char* what = tetra_inactive_what(d);
     const int rate = d->complex_rate;
-    if (rate > 0 && !dsd_tetra_dsp_rate_runs(rate) && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_RATE)) {
-        LOG_WARN("%s: DSP rate %d Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on the generic "
-                 "CQPSK path.\n",
-                 what, rate);
+    if (rate <= 0) {
+        return;
+    }
+    if (!dsd_tetra_dsp_rate_runs(rate)) {
+        if (tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_RATE)) {
+            LOG_WARN("%s: TETRA cannot decode at %d Hz; it needs a multiple of 18 kHz from 36 to 144 kHz (a 72 kHz "
+                     "DSP bandwidth).\n",
+                     what, rate);
+        }
+        return;
     }
     const int ted = d->ted_sps_override;
-    if (!d->tetra_uplink && ted > 0 && (rate % DSD_TETRA_SYMBOL_RATE_HZ != 0 || ted != rate / DSD_TETRA_SYMBOL_RATE_HZ)
-        && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_TED)) {
-        LOG_WARN("%s: the TED override of %d samples per symbol does not match the %d Hz DSP rate; TETRA decodes on "
-                 "the generic CQPSK path.\n",
-                 what, ted, rate);
+    const int sps = rate / DSD_TETRA_SYMBOL_RATE_HZ;
+    if (!d->tetra_uplink && ted > 0 && ted != sps && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_TED)) {
+        LOG_WARN("%s: a timing override of %d samples per symbol is set, but %d Hz needs %d; TETRA cannot decode until "
+                 "the override is cleared.\n",
+                 what, ted, rate, sps);
     }
     if (!d->channel_lpf_enable && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_LPF)) {
-        LOG_WARN("%s: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); TETRA decodes on the generic CQPSK path.\n",
+        LOG_WARN("%s: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); unset DSD_NEO_CHANNEL_LPF or set it to 1.\n",
                  what);
     }
 }

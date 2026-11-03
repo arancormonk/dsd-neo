@@ -698,37 +698,15 @@ rtl_demod_clamp_sps(int sps) {
 }
 
 static void
-rtl_demod_log_non_integer_defaults(const struct demod_state* demod, int fs_cx, int sym_rate, int sps) {
-    if (demod->cqpsk_enable) {
-        LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                 "CQPSK timing will continue at the rounded SPS. Use a DSP bandwidth that results in "
-                 "integer SPS for optimal performance.\n",
-                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
-        return;
-    }
-    LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-             "Symbol timing will use the rounded SPS. "
-             "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
-             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
-}
-
-static void
 rtl_demod_apply_digital_default_tracking(struct demod_state* demod, const dsd_opts* opts,
                                          const struct output_state* output, int ted_gain_is_set) {
+    /* Before the rate plan: the device may still force another rate, so nothing is warned about this one. The timing
+       warning comes once the plan is final (rtl_demod_warn_symbol_timing()). */
     int fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate = opts_symbol_rate_hz(opts);
-    if (fs_cx < (sym_rate * 2)) {
-        LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx,
-                 sym_rate);
-    }
     int sps = rtl_demod_clamp_sps((fs_cx + (sym_rate / 2)) / sym_rate);
     demod->ted_sps = sps;
-    if ((fs_cx % sym_rate) == 0) {
-        demod->sps_is_integer = 1;
-    } else {
-        demod->sps_is_integer = 0;
-        rtl_demod_log_non_integer_defaults(demod, fs_cx, sym_rate, sps);
-    }
+    demod->sps_is_integer = (fs_cx % sym_rate) == 0 ? 1 : 0;
     if (!ted_gain_is_set) {
         demod->ted_gain = 0.025f;
         demod->ted_effective_gain = demod->ted_gain;
@@ -763,8 +741,9 @@ rtl_demod_disable_resampler(struct demod_state* demod, int reset_ratio) {
 int
 rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode, int resamp_target_hz,
                                       int symbol_rate_hz, int complex_rate_hz, int capture_rate_device_forced) {
-    /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value
-       per symbol from the Gardner loop, which absorbs a fractional SPS on its own. */
+    /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value per symbol from the
+       Gardner loop, so there is nothing to resample after it. The loop cannot time a fractional SPS (it slips
+       symbols), which rtl_demod_warn_symbol_timing() says. */
     if (output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
@@ -856,19 +835,6 @@ static int
 rtl_demod_resampler_needs_reconfigure(const struct demod_state* demod, int L, int M) {
     return (!demod->resamp_enabled || demod->resamp_L != L || demod->resamp_M != M || demod->resamp_taps == NULL
             || demod->resamp_hist == NULL);
-}
-
-static void
-rtl_demod_log_non_integer_after_rate_change(const struct demod_state* demod, int fs_cx, int sym_rate) {
-    if (demod->cqpsk_enable) {
-        LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                 "CQPSK timing continues at the rounded SPS.\n",
-                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
-        return;
-    }
-    LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-             "Symbol timing will use the rounded SPS.\n",
-             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
 }
 
 /**
@@ -1016,17 +982,8 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int sym_rate;
     int sym_levels;
     rtl_demod_ted_symbol_profile(demod, opts, preserve_active_profile, &sym_rate, &sym_levels);
-    if (Fs_cx < (sym_rate * 2)) {
-        LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
-                 sym_rate);
-    }
     int sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
-    if ((Fs_cx % sym_rate) == 0) {
-        demod->sps_is_integer = 1;
-    } else {
-        demod->sps_is_integer = 0;
-        rtl_demod_log_non_integer_after_rate_change(demod, Fs_cx, sym_rate);
-    }
+    demod->sps_is_integer = (Fs_cx % sym_rate) == 0 ? 1 : 0;
     demod->symbol_rate_hz = sym_rate;
     demod->symbol_levels = sym_levels;
     sps = rtl_demod_clamp_sps(sps);
@@ -1043,6 +1000,62 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);
+}
+
+/* Symbol timing runs at @p rate_hz for @p sym_rate: a whole number of samples per symbol, at least 2. */
+static int
+rtl_demod_sps_is_whole(int rate_hz, int sym_rate) {
+    return rate_hz > 0 && sym_rate > 0 && rate_hz % sym_rate == 0 && rate_hz / sym_rate >= 2;
+}
+
+/* "; use a DSP bandwidth of 24, 48 or 72 kHz" for @p sym_rate into @p out, empty when no bandwidth gives it a whole
+   number of samples per symbol. */
+static void
+rtl_demod_whole_sps_advice(int sym_rate, char* out, size_t out_size) {
+    char list[64];
+    out[0] = '\0';
+    if (dsd_analog_rtl_bandwidths_with_whole_sps(sym_rate, list, sizeof list) == 0 && list[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "; use a DSP bandwidth of %s kHz", list);
+    }
+}
+
+void
+rtl_demod_warn_symbol_timing(const struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    const int rate = demod->complex_rate;
+    const int sym_rate = demod->symbol_rate_hz;
+    if (rate <= 0 || sym_rate <= 0) {
+        return;
+    }
+    char advice[96];
+    if (demod->cqpsk_enable) {
+        /* TETRA's own warnings name its rate and cause (dsd_tetra_dsp_rate_advice(), the chain's inactive warning). */
+        if (sym_rate == DSD_TETRA_SYMBOL_RATE_HZ || rtl_demod_sps_is_whole(rate, sym_rate)) {
+            return;
+        }
+        rtl_demod_whole_sps_advice(sym_rate, advice, sizeof advice);
+        LOG_WARN("WARNING: CQPSK cannot time symbols at %d Hz (%.3f samples per symbol for %d sym/s)%s.\n", rate,
+                 (double)rate / (double)sym_rate, sym_rate, advice);
+        return;
+    }
+    if (demod->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return;
+    }
+    /* The FSK decoder slices the stream digital_resample hands it: a device-forced rate it resamples to a whole number
+       of samples per symbol is no reason to warn. */
+    const int resampled_hz =
+        rtl_demod_digital_resample_target_for(demod->output_kind, demod->digital_resample_mode, demod->resamp_target_hz,
+                                              sym_rate, rate, demod->capture_rate_device_forced);
+    const int decoder_hz = resampled_hz > 0 ? resampled_hz : rate;
+    if (rtl_demod_sps_is_whole(decoder_hz, sym_rate)) {
+        return;
+    }
+    rtl_demod_whole_sps_advice(sym_rate, advice, sizeof advice);
+    LOG_WARN("WARNING: The decoder gets %d Hz, %.3f samples per symbol for %d sym/s; symbol timing works best with a "
+             "whole number%s.\n",
+             decoder_hz, (double)decoder_hz / (double)sym_rate, sym_rate, advice);
 }
 
 /**

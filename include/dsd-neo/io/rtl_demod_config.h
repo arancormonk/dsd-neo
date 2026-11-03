@@ -299,6 +299,18 @@ void rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod
                                                        const struct output_state* output, int preserve_active_profile);
 
 /**
+ * Warn when symbol timing cannot run well at the final rate chain, for the active symbol profile.
+ *
+ * Called once the rate plan and the symbol profile are final (stream open, retune): CQPSK at a complex rate with no
+ * whole number of samples per symbol (at least 2) cannot time symbols; the FSK decoder is judged at the rate
+ * digital_resample hands it. Each warning names the DSP bandwidths that give the symbol rate a whole number. TETRA's
+ * rate is warned about by its own checks.
+ *
+ * @param demod Demodulator state (complex_rate, symbol_rate_hz, output kind, digital_resample decision inputs).
+ */
+void rtl_demod_warn_symbol_timing(const struct demod_state* demod);
+
+/**
  * Release resources owned by the demodulator state.
  *
  * @param demod Demodulator state to clean up.

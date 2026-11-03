@@ -6323,6 +6323,8 @@ controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, 
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/1);
     const int profile_refused = rtl_stream_apply_retune_profile(retune_profile, center_freq_hz);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+    /* After the retune's profile lands: a P25 voice grant's 6000 sym/s is judged, not the control channel's 4800. */
+    rtl_demod_warn_symbol_timing(&demod);
     /* De-emphasis and audio-LPF coefficients depend on the output rate, which a device may only fix here. */
     rtl_demod_refresh_audio_coefficients(&demod);
     controller_refresh_analog_channel_for_rate(reset_reason, previous_complex_rate_hz);
@@ -8686,34 +8688,35 @@ stream_open_warn_tetra_dsp_rate(const dsd_opts* opts, int dsp_rate_hz) {
 
 /* Called once the rate chain is final: the low-bandwidth warnings read the requested DSP bandwidth, and TETRA's the
    rate the chain delivers (@p dsp_rate_hz), which a SoapySDR or Airspy device can force away from the request and an
-   I/Q replay takes from its capture. Returns 1 when it warned about TETRA's rate. */
+   I/Q replay takes from its capture. A stream on CQPSK (@p cqpsk) gets neither low-bandwidth warning: whether CQPSK
+   can time symbols depends on the samples per symbol, not on a floor, so rtl_demod_warn_symbol_timing() speaks for it
+   (P25 Phase 2 runs at 12 kHz, Phase 1 does not at 16 kHz). Returns 1 when it warned about TETRA's rate. */
 static int
-stream_open_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz) {
+stream_open_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk) {
     if (!opts) {
         return 0;
     }
     if (stream_open_warn_tetra_dsp_rate(opts, dsp_rate_hz)) {
         return 1;
     }
+    if (cqpsk) {
+        return 0;
+    }
     if (opts_has_12k5_or_cqpsk_bw_mode(opts) && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 16) {
         static int warned_16 = 0;
         if (!warned_16) {
             warned_16 = 1;
-            LOG_WARN(
-                "WARNING: RTL DSP-BW %dkHz is too low for active 12.5kHz/CQPSK modes; use at least 16kHz, preferably "
-                "24/48kHz, "
-                "to keep the modulation off the filter skirt.\n",
-                opts->rtl_dsp_bw_khz);
+            LOG_WARN("WARNING: A %d kHz DSP bandwidth is too narrow for 12.5 kHz digital channels; use 24 or 48 kHz.\n",
+                     opts->rtl_dsp_bw_khz);
         }
         return 0;
     }
-    if ((opts->frame_dmr == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) && opts->rtl_dsp_bw_khz > 0
-        && opts->rtl_dsp_bw_khz < 24) {
+    if ((opts->frame_dmr == 1 || opts->frame_p25p2 == 1) && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
         static int warned_24 = 0;
         if (!warned_24) {
             warned_24 = 1;
-            LOG_WARN("WARNING: RTL DSP-BW %dkHz is marginal for DMR/P25P2/CQPSK; try 48kHz or at least 24kHz for more "
-                     "reliable timing and data decode.\n",
+            LOG_WARN("WARNING: A %d kHz DSP bandwidth is marginal for DMR and P25 Phase 2; use 24 or 48 kHz for more "
+                     "reliable decoding.\n",
                      opts->rtl_dsp_bw_khz);
         }
     }
@@ -9283,12 +9286,13 @@ stream_open_update_output_rates(void) {
 }
 
 /* The derived-SPS lines of the rate-chain log for an output rate of @p out_hz: the info line in @p info and the
-   atypical-rate warning in @p warn, each empty when there is none. A TETRA stream reports TETRA's samples per symbol
-   (18 ksym/s) and no 48 kHz advice: the CQPSK path times symbols on its own and a resampler to 48 kHz would not help
-   it (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against the
-   ~48 kHz rate the digital decoders assume. */
+   atypical-rate warning in @p warn, each empty when there is none. A CQPSK stream (@p cqpsk) gets no 48 kHz advice:
+   its symbols bypass the resampler, so it could not help, and rtl_demod_warn_symbol_timing() already said whether
+   CQPSK can time symbols at this rate. A TETRA stream reports TETRA's samples per symbol (18 ksym/s) and no advice
+   either (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against
+   the ~48 kHz rate the digital decoders assume. */
 static void
-stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size, char* warn,
                               size_t warn_size) {
     info[0] = '\0';
     warn[0] = '\0';
@@ -9306,6 +9310,9 @@ stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, 
     int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
     DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx,
                  sps_p25p1, approx, sps_p25p2, approx, sps_nxdn48);
+    if (cqpsk) {
+        return;
+    }
     if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
         || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
         DSD_SNPRINTF(warn, warn_size,
@@ -9317,9 +9324,9 @@ stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, 
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" void
-rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
-                                  size_t warn_size) {
-    stream_open_compose_sps_lines(out_hz, frame_tetra, info, info_size, warn, warn_size);
+rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size,
+                                  char* warn, size_t warn_size) {
+    stream_open_compose_sps_lines(out_hz, frame_tetra, cqpsk, info, info_size, warn, warn_size);
 }
 #endif
 
@@ -9362,7 +9369,8 @@ stream_open_log_rate_chain_summary(int frame_tetra) {
     }
     char sps_text[160];
     char sps_warn[192];
-    stream_open_compose_sps_lines(out_hz, frame_tetra, sps_text, sizeof sps_text, sps_warn, sizeof sps_warn);
+    stream_open_compose_sps_lines(out_hz, frame_tetra, demod.cqpsk_enable, sps_text, sizeof sps_text, sps_warn,
+                                  sizeof sps_warn);
     if (sps_text[0] != '\0') {
         LOG_INFO("%s", sps_text);
     }
@@ -9553,6 +9561,9 @@ stream_open_finalize_demod_chain(const dsd_opts* opts) {
     /* Stream open is the one place the profile legitimately comes from the option flags: nothing
      * has hunted yet, and demod_apply_output_kind() just seeded the same defaults. */
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/0);
+    /* The planned rate and the profile the stream opens on: the warning names the rate the chain runs at, not the
+       request the device may have forced away from (rtl_demod_select_defaults_for_mode() runs before the plan). */
+    rtl_demod_warn_symbol_timing(&demod);
     stream_open_update_output_rates();
     return 0;
 }
@@ -9654,7 +9665,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
-    (void)stream_open_warn_low_dsp_bw(opts, demod.complex_rate);
+    (void)stream_open_warn_low_dsp_bw(opts, demod.complex_rate, demod.cqpsk_enable);
     return 0;
 }
 
@@ -14756,8 +14767,8 @@ rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* 
 }
 
 extern "C" int
-rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz) {
-    return stream_open_warn_low_dsp_bw(opts, dsp_rate_hz);
+rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk) {
+    return stream_open_warn_low_dsp_bw(opts, dsp_rate_hz, cqpsk);
 }
 
 extern "C" void

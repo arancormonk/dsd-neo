@@ -191,6 +191,17 @@ int dsd_analog_rtl_dsp_bw_list(int max_khz, char* out, size_t out_size);
 int dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size);
 
 /**
+ * @brief List the selectable RTL DSP bandwidths that give @p symbol_rate_hz a whole number of samples per symbol, at
+ * least 2, in kHz: "24, 48 or 72" for 4800 sym/s, "12, 24, 48 or 72" for 6000 sym/s.
+ *
+ * The bandwidths symbol timing runs at for that symbol rate, which the timing warnings name as the fix. @p out is empty
+ * when none does.
+ *
+ * @return 0 on success, -1 on a NULL or empty buffer.
+ */
+int dsd_analog_rtl_bandwidths_with_whole_sps(int symbol_rate_hz, char* out, size_t out_size);
+
+/**
  * @brief Validate an explicit width for @p kind at a DSP rate.
  *
  * A width is accepted only when it is in the kind's range and realizable at @p rate_hz. The message on failure names

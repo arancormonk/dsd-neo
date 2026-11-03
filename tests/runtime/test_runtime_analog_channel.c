@@ -474,6 +474,27 @@ test_rtl_bandwidth_helpers(void) {
     DSD_SNPRINTF(fits, sizeof fits, "%s", "stale");
     expect_int("0 fits none", dsd_analog_width_fitting_rtl_bandwidths(0, fits, sizeof fits), 0);
     expect_str("0 list empty", fits, "");
+    /* The bandwidths that give a symbol rate a whole number of samples per symbol, at least 2. */
+    char whole[64];
+    expect_int("4800 whole", dsd_analog_rtl_bandwidths_with_whole_sps(4800, whole, sizeof whole), 0);
+    expect_str("4800 whole list", whole, "24, 48 or 72");
+    expect_int("6000 whole", dsd_analog_rtl_bandwidths_with_whole_sps(6000, whole, sizeof whole), 0);
+    expect_str("6000 whole list (6 kHz is 1)", whole, "12, 24, 48 or 72");
+    expect_int("2400 whole", dsd_analog_rtl_bandwidths_with_whole_sps(2400, whole, sizeof whole), 0);
+    expect_str("2400 whole list", whole, "12, 24, 48 or 72");
+    expect_int("9600 whole", dsd_analog_rtl_bandwidths_with_whole_sps(9600, whole, sizeof whole), 0);
+    expect_str("9600 whole list", whole, "48");
+    expect_int("18000 whole", dsd_analog_rtl_bandwidths_with_whole_sps(18000, whole, sizeof whole), 0);
+    expect_str("18000 whole list", whole, "72");
+    DSD_SNPRINTF(whole, sizeof whole, "%s", "stale");
+    expect_int("7000 whole", dsd_analog_rtl_bandwidths_with_whole_sps(7000, whole, sizeof whole), 0);
+    expect_str("7000 whole list empty", whole, "");
+    DSD_SNPRINTF(whole, sizeof whole, "%s", "stale");
+    expect_int("0 sym/s whole", dsd_analog_rtl_bandwidths_with_whole_sps(0, whole, sizeof whole), 0);
+    expect_str("0 sym/s list empty", whole, "");
+    expect_int("whole NULL buffer", dsd_analog_rtl_bandwidths_with_whole_sps(4800, NULL, sizeof whole), -1);
+    expect_int("whole empty buffer", dsd_analog_rtl_bandwidths_with_whole_sps(4800, whole, 0U), -1);
+
     /* A short buffer truncates and stays terminated. */
     char tiny[5];
     expect_int("tiny buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, tiny, sizeof tiny), 0);

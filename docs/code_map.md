@@ -2529,7 +2529,9 @@ suite runs under this compiler.
     refusals reuse). It holds the one list of selectable DSP bandwidths (4, 6, 8, 12, 16, 24, 48 and 72 kHz; 72 is
     TETRA's): `dsd_analog_rtl_dsp_bw_is_selectable()`, `_or_default()` (the 48 kHz default,
     `DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ`), `_nearest()` and `_list()`, which the input specs, the config schema, apply and
-    validation, the services, the terminal menu, the interactive setup and the Qt session read rather than a copy;
+    validation, the services, the terminal menu, the interactive setup and the Qt session read rather than a copy, and
+    `dsd_analog_rtl_bandwidths_with_whole_sps()`, the ones that give a symbol rate a whole number of samples per symbol
+    (at least 2), which the symbol timing warnings name;
     `dsd_analog_airspy_dsp_bw_is_selectable()` caps it at `DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` (48), since no Airspy
     sample rate halves to 72 kHz. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
     (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
@@ -5400,8 +5402,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `DSP_COSTAS` (`test_tetra_chain_gardner_gain()`, `test_tetra_chain_costas_steps_off_rail()`),
     `DECODE_IQ_TETRA_REAL_AIR_SCBS_COUNT`.
   - Fallback. A TETRA profile on CQPSK whose chain cannot run warns once per stream per cause (`TETRA receive chain
-    inactive: ...`: the rate out of the domain, a TED override that does not match the rate,
-    `DSD_NEO_CHANNEL_LPF=0`) and runs the generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1).
+    inactive: ...`: the rate out of the domain, `TETRA cannot decode at %d Hz` with the 72 kHz fix, which alone is
+    said there; at a rate of the domain a TED override that does not match it, or `DSD_NEO_CHANNEL_LPF=0`) and runs the
+    generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1). That path decodes no TETRA off the domain (no
+    whole samples per symbol), so the warning never promises it does.
   - Uplink. A trunked mode uplink session (`--tetra-uplink`, `demod_state::tetra_uplink`, which
     `rtl_demod_init_for_mode()` writes on every open) never runs the chain: on `tetra_uplink_bursts_72k` the chain lost
     bursts the generic path decoded. Its predicate is false, and the stream keeps the generic path with the TETRA
@@ -5962,6 +5966,16 @@ Key public headers:
     with the metrics hooks read through `rtl_stream_test_set_post_chain_probe()`; a `-Y` NFM/DMR walk on a forced chain
     under auto/on/off, `rtl_stream_test_retune_profile_sequence_mode()`), `ENGINE_NO_CARRIER_RESET` (trunk-scan targets on
     a resampled chain), `RTL_SYMBOL_CACHE_GENERATION` (the decoder re-times when the FSK output rate moves).
+  - Symbol timing warnings (issue #806): `rtl_demod_warn_symbol_timing()` runs once the plan and the profile are final,
+    at stream open (`stream_open_finalize_demod_chain()`) and after a retune's profile lands
+    (`controller_finalize_dsp_chain()`); the open's defaults (`rtl_demod_select_defaults_for_mode()`) run before the
+    plan and warn about nothing. CQPSK cannot time a complex rate with no whole number of samples per symbol (at least
+    2) for the active profile: the Gardner period is clamped around the rounded SPS and slips symbols, so the warning
+    says it cannot, with the DSP bandwidths that give that symbol rate a whole number (P25 Phase 2 at 12 kHz has 2 and
+    is not warned; TETRA's rate has its own warnings). The FSK decoder is judged at the rate digital_resample hands it
+    (`rtl_demod_digital_resample_target_for()`). The CQPSK stream gets neither the low-DSP-bandwidth warnings nor the
+    rate-chain log's 48 kHz resampler advice, which its symbols bypass. Test: `IO_RTL_DEMOD_CONFIG`
+    (`expect_symbol_timing_warnings()`, `expect_timing_warning_names_planned_rate()`, `expect_low_dsp_bw_warnings()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
