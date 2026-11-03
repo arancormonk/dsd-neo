@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <memory>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -166,8 +167,10 @@ run_post_chain_at(const char* name, void (*configure)(dsd_opts*), int mode, uint
     DSD_MEMSET(&opts, 0, sizeof opts);
     configure(&opts);
     opts.digital_resample_mode = mode;
-    hook_reads reads = {};
-    rtl_stream_test_set_post_chain_probe(read_metrics_hooks, &reads);
+    /* Heap-held: the stream keeps the probe's context in a global while it is installed. */
+    auto held_reads = std::make_unique<hook_reads>();
+    hook_reads& reads = *held_reads;
+    rtl_stream_test_set_post_chain_probe(read_metrics_hooks, held_reads.get());
     char label[160];
     DSD_SNPRINTF(label, sizeof label, "%s post %u mode %d: hook", name, post, mode);
     int rc =

@@ -24781,7 +24781,7 @@ test_frequency_entry_reaches_a_rigctl_peer_on_every_build(void) {
     return rc;
 }
 
-#ifdef USE_RADIO
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* Issue #806 X9: a queued tune whose retune changes the device rate seals the I/Q capture, and a command after it in
    the same drain restarts the stream (an RTL restart, a DSP bandwidth change). The restart used to run with the capture
    still requested and reopen its file for writing, emptying the sealed recording: the capture is now off before the
@@ -24823,6 +24823,8 @@ test_capture_seal_before_a_reopen_in_the_same_drain(void) {
         rc |= expect_int("seal then reopen: the capture stays off", opts.iq_capture_requested, 0);
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         dsd_app_frontend_runtime_stop();
+        state.rtl_ctx = NULL;
+        freeState(&state);
     }
 
     /* The notice arrived as the stream stopped, with no drain since: the start takes it before it opens. */
@@ -24845,6 +24847,7 @@ test_capture_seal_before_a_reopen_in_the_same_drain(void) {
     dsd_app_frontend_runtime_stop();
     state.rtl_ctx = NULL;
     g_config_rtl_open_ok = 0;
+    freeState(&state);
     return rc;
 }
 #endif
@@ -24887,7 +24890,7 @@ main(void) {
 #endif
     rc |= test_notice_toast_without_failure_latch();
     rc |= test_capture_stopped_notice();
-#ifdef USE_RADIO
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_capture_seal_before_a_reopen_in_the_same_drain();
 #endif
     rc |= test_stale_notice_post_stays_in_its_session();

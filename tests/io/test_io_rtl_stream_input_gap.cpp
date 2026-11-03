@@ -28,6 +28,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -124,9 +125,11 @@ replay(const char* path, size_t bytes_per_float, Run* out) {
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
     DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", path);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", path);
-    out->log.bytes_per_float = bytes_per_float;
-    rtl_stream_test_set_replay_block_hook(block_hook, &out->log);
-    rtl_stream_test_set_replay_stage_hook(stage_hook, &out->log);
+    /* Heap-held while the hooks are installed (the stream keeps their context in a global), moved out after. */
+    std::unique_ptr<BlockLog> log(new BlockLog());
+    log->bytes_per_float = bytes_per_float;
+    rtl_stream_test_set_replay_block_hook(block_hook, log.get());
+    rtl_stream_test_set_replay_stage_hook(stage_hook, log.get());
     RtlSdrContext* ctx = NULL;
     int rc = 0;
     if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
@@ -157,6 +160,7 @@ replay(const char* path, size_t bytes_per_float, Run* out) {
     }
     rtl_stream_test_set_replay_stage_hook(NULL, NULL);
     rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    out->log = std::move(*log);
     return rc;
 }
 

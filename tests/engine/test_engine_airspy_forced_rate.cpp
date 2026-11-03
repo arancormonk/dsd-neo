@@ -55,6 +55,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -662,9 +663,11 @@ void
 run_replay_and_compare(const Case& c, const dsd_test_forced_rate_input& in, const char* meta_path, const LiveFeed& feed,
                        const std::vector<float>& live_post, const std::vector<std::string>& live_lines) {
     std::vector<float> post;
-    ReplayBlocks blocks;
+    /* Heap-held: the stream keeps the hook's context in a global while it is installed. */
+    auto held_blocks = std::make_unique<ReplayBlocks>();
+    ReplayBlocks& blocks = *held_blocks;
     dsd_demod_test_set_post_step_tap(collect_post_step, &post);
-    rtl_stream_test_set_replay_block_hook(collect_replay_block, &blocks);
+    rtl_stream_test_set_replay_block_hook(collect_replay_block, held_blocks.get());
     std::vector<std::string> args = base_args(c);
     args.emplace_back("--iq-replay");
     args.emplace_back(meta_path);
