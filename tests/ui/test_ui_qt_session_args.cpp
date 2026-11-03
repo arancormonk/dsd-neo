@@ -1846,6 +1846,17 @@ test_scan_join_conflict(void) {
            conflict(airspy({{"lna_agc", true}}), airspy({{"lna_agc", "1"}})).isEmpty());
     expect("a gain mode is one setting in any case",
            conflict(airspy({{"gain_mode", "Linearity"}}), airspy({{"gain_mode", "linearity"}})).isEmpty());
+    expect("a sample rate of auto is the default rate",
+           conflict(airspy({{"sample_rate", "auto"}}), airspy({})).isEmpty()
+               && conflict(airspy({{"sample_rate", "Auto"}}), airspy({{"sample_rate", 0}})).isEmpty());
+    expect("an auto rate is not a set rate",
+           conflict(airspy({{"sample_rate", "auto"}}), airspy({{"sample_rate", 3000000}}))
+               == QStringLiteral("Different Airspy settings"));
+    expect("a switch in the engine's words",
+           conflict(airspy({{"bias_tee", "off"}}), airspy({})).isEmpty()
+               && conflict(airspy({{"bias_tee", "No"}}), airspy({{"bias_tee", false}})).isEmpty()
+               && conflict(airspy({{"lna_agc", "on"}}), airspy({{"lna_agc", 1}})).isEmpty()
+               && conflict(airspy({{"mixer_agc", "YES"}}), airspy({{"mixer_agc", true}})).isEmpty());
     expect("a value other than the default differs",
            conflict(airspy({}), airspy({{"vga_gain", 6}})) == QStringLiteral("Different Airspy settings"));
     expect("a switch away from its default differs",

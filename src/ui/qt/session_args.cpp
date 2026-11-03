@@ -918,18 +918,28 @@ scan_join_radio(const QVariantMap& list) {
                : source;
 }
 
-/* An Airspy setting as the engine takes it: the gain mode by name, a switch as 0 or 1, a number as a number (anything
-   else as written, for the engine to refuse). */
+/* An Airspy setting as the engine takes it (dsd_airspy_config_set()): the gain mode by name in any case, a sample
+   rate of "auto" as 0, a switch written true/on/yes or false/off/no (any case) or as a number as 0 or 1, a number as a
+   number; anything else as written, for the engine to refuse. */
 QString
 scan_join_airspy_value(const QString& key, const QVariant& value) {
+    const QString text = value.toString().trimmed().toLower();
     if (key == QLatin1String("gain_mode")) {
-        return value.toString().trimmed().toLower();
+        return text;
     }
-    if (key == QLatin1String("lna_agc") || key == QLatin1String("mixer_agc") || key == QLatin1String("bias_tee")) {
-        return value.toBool() ? QStringLiteral("1") : QStringLiteral("0");
+    if (key == QLatin1String("sample_rate") && text == QLatin1String("auto")) {
+        return QStringLiteral("0");
+    }
+    const bool isSwitch =
+        key == QLatin1String("lna_agc") || key == QLatin1String("mixer_agc") || key == QLatin1String("bias_tee");
+    if (isSwitch && (text == QLatin1String("true") || text == QLatin1String("on") || text == QLatin1String("yes"))) {
+        return QStringLiteral("1");
+    }
+    if (isSwitch && (text == QLatin1String("false") || text == QLatin1String("off") || text == QLatin1String("no"))) {
+        return QStringLiteral("0");
     }
     bool ok = false;
-    const qlonglong number = value.toString().trimmed().toLongLong(&ok);
+    const qlonglong number = text.toLongLong(&ok);
     return ok ? QString::number(number) : value.toString();
 }
 
