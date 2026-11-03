@@ -441,7 +441,10 @@ jobs:
               cmake --install build/appimage --prefix AppDir/usr
 
               docdir="AppDir/usr/share/doc/dsd-neo"
-              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md)
+              # The bundled librtlsdr is GPL-2.0-or-later and built here with the dsd-neo patches.
+              cp -f android/third_party/librtlsdr/COPYING "$docdir/licenses/librtlsdr-GPL-2.0-or-later.txt"
+              cp -f packaging/librtlsdr-PATCHES.txt "$docdir/licenses/librtlsdr-PATCHES.txt"
+              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt licenses/librtlsdr-GPL-2.0-or-later.txt licenses/librtlsdr-PATCHES.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md)
               for f in "${required[@]}"; do
                 if [ ! -f "$docdir/$f" ]; then
                   echo "ERROR: missing required license file: $docdir/$f" >&2
@@ -540,9 +543,9 @@ jobs:
                 --output appimage
               # The libairspy and librtlsdr the AppImage bundles are the patched builds.
               bundled_lib() {
-                found=$(find /work/AppDir/usr/lib -maxdepth 1 -type f -name "$1.so*" -print -quit)
-                if [ -z "$found" ]; then
-                  echo "ERROR: the AppDir bundles no $1" >&2
+                found=$(find /work/AppDir/usr/lib -maxdepth 1 -type f -name "$1.so*")
+                if [ -z "$found" ] || [ "$(printf "%s\n" "$found" | wc -l)" -ne 1 ]; then
+                  echo "ERROR: the AppDir must bundle exactly one $1, not: $found" >&2
                   return 1
                 fi
                 echo "$found"

@@ -166,7 +166,9 @@ not a finding that every component is cleared for redistribution.
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
-librtlsdr/libusb notices for the Android package.
+librtlsdr/libusb notices for the Android package. The Windows, AppImage and macOS release packages, which bundle a
+librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt` and
+`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`.
 
 Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
 and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.

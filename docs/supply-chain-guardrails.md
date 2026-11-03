@@ -74,14 +74,20 @@ Run the affected vcpkg build or packaging workflow. Use the same process for `ar
 The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
 `android/third_party/patches/`, the files the Android app's vendored copies carry. `tools/usb_dependency_patches.sh`
 names each library's series (`series`), hashes it (`digest`) and applies it to a pinned checkout (`apply`, `fetch`).
-vcpkg keys its binary cache on a port's own files only, so each portfile records the series and its SHA-256 and fails
-its build when the patch files no longer match. After changing a patch, run `tools/check_vcpkg_overlay_pins.sh --fix`
-to record the new digest; the check also fails when a portfile stops listing the series.
+vcpkg keys its binary cache on a port's own files only, so each portfile records the series and its SHA-256: a patch
+change then means a new cache key. The portfile's own digest check fails a build only when the cache misses, since a
+hit reuses the old package; `tools/check_vcpkg_overlay_pins.sh`, in the guardrails workflow and pre-push, is what
+catches a stale digest. After changing a patch, run `tools/check_vcpkg_overlay_pins.sh --fix` to record the new digest.
+The check also fails when a portfile stops listing the series or stops passing it to `vcpkg_from_github(... PATCHES)`.
 
 The AppImage and macOS release jobs apply the same series between fetch and configure, record each digest in their
 dependency manifest and cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
 libairspy that never imports `usleep()` or a librtlsdr without the reader's "no transfer left" message was built
-without the patches). The patch files are checked out with LF line endings everywhere (`.gitattributes`), so the
+without the patches). The Windows ZIP job checks its `rtlsdr.dll` for the same message; a Windows libairspy build has
+no such mark. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when
+`AIRSPY_SHA` moves (`TOOLS_AIRSPY_PACKAGING` builds the pinned upstream source and expects the probe to reject it).
+All three release packages ship librtlsdr's GPL text and `packaging/librtlsdr-PATCHES.txt`, which names the patches;
+update that note when the series or `RTL_SDR_SHA` changes. The patch files are checked out with LF line endings everywhere (`.gitattributes`), so the
 digests agree on Windows.
 
 ## Vulnerability Scanning

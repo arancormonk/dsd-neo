@@ -6,7 +6,9 @@
 # (tools/usb_dependency_patches.sh). Neither patch exports a symbol, so each
 # probe is something only the patched source puts in the binary:
 # - libairspy: the stop's wait for cancelled transfers backs off with usleep(),
-#   which upstream libairspy never calls, so the library imports it.
+#   which upstream libairspy never calls at AIRSPY_SHA, so the library imports
+#   it. Recheck that when the pin moves (TOOLS_AIRSPY_PACKAGING expects the
+#   pinned upstream source to fail this probe).
 # - librtlsdr: the reader reports "no transfer left" when it has run out of
 #   transfers.
 set -euo pipefail

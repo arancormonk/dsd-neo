@@ -216,6 +216,28 @@ rewrite_port_patch_digest() {
   mv "$tmp" "$portfile"
 }
 
+# Whether the portfile's vcpkg_from_github() call passes the series: ${dsd_neo_patches}
+# after its PATCHES keyword. The series and digest checks alone would not notice a
+# call that stopped applying it.
+port_applies_patches() {
+  local portfile="$1"
+
+  awk '
+    $1 == "vcpkg_from_github(" { in_call = 1; next }
+    in_call && $1 == ")" { exit }
+    in_call {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "PATCHES") {
+          in_patches = 1
+        } else if (in_patches && $i == "${dsd_neo_patches}") {
+          found = 1
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$portfile"
+}
+
 check_port_patches() {
   local port="$1"
   local lib="$2"
@@ -231,6 +253,10 @@ check_port_patches() {
     echo "${portfile}: missing set(DSD_NEO_PATCH_SERIES ...); it must apply ${lib}'s series." >&2
     failed=1
     return
+  fi
+  if ! port_applies_patches "$portfile"; then
+    echo "${portfile}: vcpkg_from_github() does not pass \${dsd_neo_patches} under PATCHES." >&2
+    failed=1
   fi
   if [[ "$port_series" != "$want_series" ]]; then
     echo "${portfile}: DSD_NEO_PATCH_SERIES does not list tools/usb_dependency_patches.sh series ${lib}:" >&2

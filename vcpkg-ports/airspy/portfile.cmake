@@ -3,10 +3,10 @@ vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 
 # dsd-neo's libairspy patch, the file the Android app's vendored copy carries
 # (tools/usb_dependency_patches.sh). vcpkg keys its binary cache on this port's
-# own files, so the series digest is recorded here and checked before the patch
-# applies: a changed patch fails this build until
-# tools/check_vcpkg_overlay_pins.sh --fix records its digest, and with it the
-# new cache key.
+# own files, so the series digest is recorded here, which makes a patch change a
+# new cache key. tools/check_vcpkg_overlay_pins.sh (guardrails CI and pre-push)
+# fails while the digest is stale and --fix records the new one; the check below
+# only runs when the cache misses, since a hit reuses the old build.
 set(DSD_NEO_PATCH_SERIES 0001-libairspy-wait-for-cancelled-transfers.patch)
 set(DSD_NEO_PATCH_SERIES_SHA256
     c9077bc980b1e2ad07131c9203bea3ea43096bc4605610225dd256a135b57573

@@ -656,9 +656,10 @@ jobs:
           cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
           cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
           cp -f build/dev-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt "$DOCDIR/licenses/"
-          # The bundled libairspy is built here from the pinned source; BSD-3 and MIT ask for its notice.
-          cp -f android/third_party/libairspy/LICENSE "$DOCDIR/licenses/libairspy-LICENSE.txt"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
+          # The bundled librtlsdr is GPL-2.0-or-later and built here with the dsd-neo patches.
+          cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/licenses/librtlsdr-GPL-2.0-or-later.txt"
+          cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/licenses/librtlsdr-PATCHES.txt"
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt licenses/librtlsdr-GPL-2.0-or-later.txt licenses/librtlsdr-PATCHES.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
             if [ ! -f "$DOCDIR/$f" ]; then
               echo "ERROR: missing required license file $f in $DOCDIR" >&2
               exit 1
@@ -838,9 +839,9 @@ jobs:
           set -euo pipefail
           staged() {
             local found
-            found=$(find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name "$1*.dylib" -print -quit)
-            if [ -z "$found" ]; then
-              echo "ERROR: the portable tree bundles no $1" >&2
+            found=$(find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name "$1*.dylib")
+            if [ -z "$found" ] || [ "$(printf '%s\n' "$found" | wc -l)" -ne 1 ]; then
+              echo "ERROR: the portable tree must bundle exactly one $1, not: $found" >&2
               return 1
             fi
             echo "$found"

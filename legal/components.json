@@ -403,6 +403,41 @@
       }
     },
     {
+      "id": "desktop-rtl",
+      "name": "librtlsdr desktop release builds",
+      "paths": [
+        "android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch",
+        "android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch",
+        "packaging/librtlsdr-PATCHES.txt",
+        "tools/usb_dependency_patches.sh",
+        "vcpkg-ports/rtlsdr/"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "license_declared": "GPL-2.0-or-later",
+      "license_concluded": "GPL-2.0-or-later",
+      "notices": [
+        "android/third_party/librtlsdr/COPYING",
+        "packaging/librtlsdr-PATCHES.txt"
+      ],
+      "assessment": "Pinned 2.0.3 built for the Windows, AppImage and macOS releases with project patches 0002 and 0003; each ships the GPL text and a note naming the patches. Complete runtime notices and corresponding source remain open (RUNTIME-NOTICES, CORRESPONDING-SOURCE).",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-03",
+      "notice_sha256": {
+        "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
+        "packaging/librtlsdr-PATCHES.txt": "ac421aea8ffd8e777ce8e1d1132906b75db5404d19c0da61abb8da450942dbfb"
+      },
+      "pin": "RTL_SDR_SHA"
+    },
+    {
       "id": "airspy",
       "name": "libairspy",
       "paths": [

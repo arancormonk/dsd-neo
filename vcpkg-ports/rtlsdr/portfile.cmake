@@ -10,9 +10,10 @@
 # dsd-neo's librtlsdr patches, the files the Android app's vendored copy
 # carries (tools/usb_dependency_patches.sh), applied after vcpkg's own. vcpkg
 # keys its binary cache on this port's own files, so the series digest is
-# recorded here and checked before the patches apply: a changed patch fails this
-# build until tools/check_vcpkg_overlay_pins.sh --fix records its digest, and
-# with it the new cache key.
+# recorded here, which makes a patch change a new cache key.
+# tools/check_vcpkg_overlay_pins.sh (guardrails CI and pre-push) fails while the
+# digest is stale and --fix records the new one; the check below only runs when
+# the cache misses, since a hit reuses the old build.
 set(DSD_NEO_PATCH_SERIES
     0002-librtlsdr-check-async-buffer-allocation.patch
     0003-librtlsdr-account-for-every-transfer.patch
