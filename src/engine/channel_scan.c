@@ -58,9 +58,12 @@ typedef struct {
 
 typedef struct {
     uint64_t request;
-    /* The list the staged row belongs to (dsd_state::lcn_list_rev). A channel learned over the air moves the sparse map
-       (trunk_chan_map_seq), never the list: the row is still the one its tune went to (issue #697). */
+    /* The list the staged row belongs to (dsd_state::lcn_list_rev) and the frequency the row held when its tune was
+       staged. A channel learned over the air moves the sparse map (trunk_chan_map_seq), never the list: the row is
+       still the one its tune went to (issue #697). An in-place write to the row keeps the list, so the frequency says
+       the row is another channel now. */
     uint64_t list_rev;
+    long row_freq;
     int row;
     int retry;
     int needs_commit;
@@ -95,6 +98,7 @@ typedef struct {
     int tuned;
     int tuned_row;
     uint64_t tuned_list;
+    long tuned_freq;
     /* The receiver left the carrier, but no row has committed since and so no boundary was noted: a staged tune's
      * rigctl leg moved the radio before its RTL leg went on asynchronously (PENDING), or a completed tune landed a row
      * that was then restaged (channel_scan_commit()). A commit notes its own boundary; a row that ends unlanded notes
@@ -238,11 +242,19 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
 
 static int channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row);
 
+/* Whether @p row of the list @p list_rev still holds @p freq: the same list (no replacement since), the row still in it
+   and not rewritten in place. */
+static int
+channel_scan_row_still_listed(const dsd_state* state, uint64_t list_rev, int row, long freq) {
+    return list_rev == state->lcn_list_rev && row >= 0 && row < state->lcn_freq_count
+           && *dsd_state_trunk_lcn_slot_const(state, row) == freq;
+}
+
 /* A resume still pending (issue #671) owns its row as a running scan does: only its landing publishes the scan. */
 static int
 channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
-           && scan->list_rev == state->lcn_list_rev;
+           && channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq);
 }
 
 /* End every slot's call and commit it, an NFM call first (dsd_engine_end_calls()). */
@@ -336,6 +348,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->tuned = 1;
     scan->tuned_row = scan->row;
     scan->tuned_list = scan->list_rev;
+    scan->tuned_freq = scan->row_freq;
     if (channel_scan_staged_stale(opts, state, scan)) {
         /* Stage the new effective profile in a fresh request before any frame
          * can use it. The receiver has left the carrier already: the row's commit
@@ -437,12 +450,12 @@ channel_scan_row_refused(dsd_state* state, const channel_scan* scan, dsd_trunk_t
 }
 
 /* A resume's row never landed (issue #671): its tune failed late, or a retry was refused. The scan the resume began
-   stays paused, its cursor back where the resume found its row. */
+   stays paused, its cursor back where the resume found its row, and the toast names the frequency its tune went to
+   (the row may hold another since, or be gone). */
 static void
 channel_scan_resume_row_failed(dsd_opts* opts, dsd_state* state, const channel_scan* scan, int why) {
-    const long freq = *dsd_state_trunk_lcn_slot_const(state, scan->row);
     state->lcn_freq_roll = scan->resume_roll;
-    dsd_engine_channel_scan_resume_failed(opts, state, freq, why);
+    dsd_engine_channel_scan_resume_failed(opts, state, scan->row_freq, why);
 }
 
 int
@@ -484,7 +497,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     channel_scan_end_calls(opts, state);
-    if (scan->list_rev == state->lcn_list_rev) {
+    if (channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq)) {
         channel_scan_row_refused(state, scan, result);
     }
     scan->request = 0;
@@ -905,13 +918,15 @@ channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, in
     return refused;
 }
 
-/* The row the receiver is on: the one whose tune last landed on this list (typed lists); else, for an untyped list or
- * before the first landing, the row heard (dsd_state_lcn_heard_row(), issue #666), which a placeholder the scan parks
- * on does not move; -1 before the first step. */
+/* The row the receiver is on: the one whose tune last landed on this list, while the row still holds the frequency
+ * landed (typed lists); else, for an untyped list or before the first landing, the row heard
+ * (dsd_state_lcn_heard_row(), issue #666), which a placeholder the scan parks on does not move; -1 before the first
+ * step. */
 static int
 channel_scan_on_air_row(const dsd_state* state) {
     const channel_scan* scan = channel_scan_get(state);
-    if (scan && scan->tuned && scan->tuned_list == state->lcn_list_rev && scan->tuned_row < state->lcn_freq_count) {
+    if (scan && scan->tuned
+        && channel_scan_row_still_listed(state, scan->tuned_list, scan->tuned_row, scan->tuned_freq)) {
         return scan->tuned_row;
     }
     return dsd_state_lcn_heard_row(state);
@@ -1099,6 +1114,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->row = row;
     scan->mode = dsd_channel_mode_get(state, (size_t)row);
     scan->list_rev = state->lcn_list_rev;
+    scan->row_freq = freq;
     dsd_scan_settings before;
     dsd_scan_settings next;
     dsd_scan_settings_capture(opts, state, &before);

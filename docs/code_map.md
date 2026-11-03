@@ -1252,7 +1252,9 @@ suite runs under this compiler.
   `initState()`) says whether the coordinator's last rebuild allocated. The `-Y` scan keys every row identity on
   `lcn_list_rev` (issue #697), never on `trunk_chan_map_seq`, which also moves at every channel learned over the air:
   a typed row staged, landed or on air (`channel_scan.c`: the staged row's landing and late refusal, the row on air,
-  the once-per-list row checks) and an untyped step's pending tune (`engine.c`). Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
+  the once-per-list row checks) and an untyped step's pending tune (`engine.c`). Each row identity also carries the
+  row's frequency (`channel_scan_row_still_listed()`, the untyped settle's `requested_hz`), so an in-place write, which
+  keeps the list revision, makes the row another channel. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
   `CORE_INIT_STATE`, `P25_USER_LIST_SEED`, `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the
   reserve helpers through `dsd_state_trunk_lcn_test_alloc_fail_after()`.
 - Invariant (snapshot completeness, issue #672; `src/app_control/ui_snapshot.c`): each scan-list deep copy (LCN tail,

@@ -2136,6 +2136,7 @@ change_the_untyped_scan(dsd_opts* opts, dsd_state* state, int variant, const cha
                                && state->lcn_freq_count == 2 && state->trunk_lcn_freq[1] == 989012500);
     }
     if (variant == 3) {
+        /* Synthetic: no real path replaces the list while a -Y scan runs on (each leaves first); this pins the key. */
         const uint64_t list_rev = state->lcn_list_rev;
         dsd_state_trunk_lcn_replace_begin(state);
         return expect_case(what, "the list is another list", state->lcn_list_rev != list_rev);

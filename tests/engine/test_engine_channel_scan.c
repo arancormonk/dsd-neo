@@ -3406,6 +3406,62 @@ test_typed_pending_row_outlives_a_learned_channel(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #697: an in-place write to a typed row (dsd_state_trunk_lcn_freq_write(), which keeps the list revision, as
+   #672's contract says) makes the row another channel. A tune staged for its old frequency lands nothing, a late
+   refusal of it is no refusal of the row now listed, and a landed row rewritten in place is no longer the row on air:
+   the row heard stands in, as the untyped step's frequency check has it. */
+static void
+test_typed_row_rewritten_in_place_is_another_channel(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 1;
+    assert(typed_walk_step(opts, state, 1, 1) == 1);
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_walk_step(opts, state, -1, 0) == 0);
+    const uint64_t list_rev = state->lcn_list_rev;
+    assert(dsd_state_trunk_lcn_freq_write(state, 0, 151500000L) == 0 && state->lcn_list_rev == list_rev);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0 && !dsd_engine_channel_scan_waiting(state));
+    assert(state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1 && state->scan_row_index == 1);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 1 && strcmp(row_named(opts, state), "East") == 0);
+
+    assert(dsd_state_trunk_lcn_freq_write(state, 0, k_walk_hz[0]) == 0);
+    assert(typed_walk_step(opts, state, -1, 0) == 0);
+    assert(dsd_state_trunk_lcn_freq_write(state, 0, 151500000L) == 0);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(dsd_state_lcn_back_retry_row(state) == -1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+
+    /* A landed row owed a deferred restage is the row on air while the row heard is the one before, until it is
+       rewritten in place. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    state->lcn_freq_roll = 3;
+    assert(typed_walk_step(opts, state, 1, 3) == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_walk_step(opts, state, -1, 1) == 0);
+    assert(dsd_scan_mode_suspend(opts, state));
+    opts->inverted_dmr = !opts->inverted_dmr;
+    (void)dsd_scan_mode_resume(opts, state);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, owed a restage */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 1 && dsd_state_lcn_heard_row(state) == 3);
+    assert(dsd_state_trunk_lcn_freq_write(state, 1, 152500000L) == 0);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 3);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #666 (G4): a Previous whose row lands but is restaged (a setting it was prepared from changed while it was
    outstanding) stays that Previous's: the row on air (Avoid's) is the landed row, frames stay gated until a commit,
    and the row heard stays the one before. A restage the tuner defers leaves nothing outstanding, so the next Previous
@@ -3664,6 +3720,7 @@ main(void) {
     test_typed_previous_walks_back();
     test_typed_previous_refusal_keeps_the_cursor();
     test_typed_pending_row_outlives_a_learned_channel();
+    test_typed_row_rewritten_in_place_is_another_channel();
     test_typed_previous_restaged();
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
