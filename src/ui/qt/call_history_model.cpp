@@ -1652,7 +1652,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // lands on the row the newest rows hold for it. A first sighting still searches the newest rows only,
     // so a call the first replay logged as two rows, its fragments landing apart under newer rows, stays
     // two, and the repeat folds into the newer of them.
-    const bool wholeLog = again || isUpdate;
+    // An analog row's first sighting searches as far (issue #667): a replay whose receptions took other push stamps (a
+    // tone filter that leaves an earlier one out) is read as new, yet it is a reception already logged, matched exactly
+    // and one to one (same_reception_row()), so never one a live reception or a same-ring neighbour could be.
+    const bool wholeLog = again || isUpdate || row.analog;
     // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
     // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
     // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.

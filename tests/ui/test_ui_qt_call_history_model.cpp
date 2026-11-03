@@ -3870,6 +3870,35 @@ test_analog_replay_heard_again(void) {
     }
 }
 
+/* Issue #667 (B1): a replay whose receptions take other push stamps (a tone filter changed to leave an earlier one out)
+   is still heard again: a first sighting of an analog row matches the reception it is, exactly, across the log, so the
+   repeat joins its row (and its recording too) and no duplicate is logged. */
+void
+test_analog_replay_with_other_push_stamps(void) {
+    resetStorage();
+    FakeRecordings recordings;
+    CallHistoryModel model;
+    model.setRecordingProvider(&recordings);
+    const dsd_receive_identity ctcss = {1000, DSD_RECEIVE_CTCSS, 1, 0, 0};
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    commit_analog(*ring, kCaptureStart + 300, kCaptureStart + 304, 154430000, DSD_ANALOG_MODE_NFM, ctcss);
+    commit_analog(*ring, kCaptureStart + 306, kCaptureStart + 309, 154430000, DSD_ANALOG_MODE_NFM, ctcss);
+    const QString first = newest_fragment(*ring, 0);
+    model.refresh(ring->state);
+    expect("two receptions log two rows", model.count() == 2);
+    model.beginSession();
+    ring = std::make_unique<RingFixture>(); // the replay leaves the first reception out: the second takes stamp 1
+    commit_analog(*ring, kCaptureStart + 306, kCaptureStart + 309, 154430000, DSD_ANALOG_MODE_NFM, ctcss);
+    const QString again = newest_fragment(*ring, 0);
+    model.refresh(ring->state);
+    expect("the repeat under another stamp adds no row", model.count() == 2);
+    const int row = row_recording(model, recordings, first);
+    expect("the repeat joins its own reception's row", row >= 0 && row_recording(model, recordings, again) == row);
+    expect("that row joins the session that heard it again", rows_in_session(model, model.session()) == 1);
+    model.setRecordingProvider(nullptr);
+}
+
 /* Issue #667 (B1): a capture replayed under another saved system is that system's reception, not the first one's heard
    again: its rows stay apart (as rows_mergeable() keeps two systems apart), each system's history shows its own, and
    each row holds only its own system's recordings. */
@@ -4615,6 +4644,7 @@ main(int argc, char** argv) {
     test_analog_replay_heard_again();
     test_analog_replay_same_second();
     test_analog_replay_under_another_system();
+    test_analog_replay_with_other_push_stamps();
     test_analog_update_of_an_old_store_row();
     test_analog_roles_and_persistence();
     test_rows_have_stable_uids();
