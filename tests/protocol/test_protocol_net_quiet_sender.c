@@ -467,11 +467,17 @@ test_edacs_udp_quiet_sender(void) {
     rc |= expect(after, "EDACS UDP: the samples after the quiet spell are read");
     rc |= expect(dsd_exitflag_load() == 0, "EDACS UDP: a quiet sender keeps the input");
 
-    /* A stopped input still ends the call and asks for shutdown, as before. */
+    /* A stopped input still ends the call and asks for shutdown, as before, once the silence already owed for a quiet
+       spell (as long as the sender was really quiet, read with no wait) has played: how much is owed when the input
+       stops depends on the host's timer, so the triplets it fills are allowed, and nothing past them. */
     dsd_net_audio_input_hook_udp_stop(&g_opts);
-    double pwr = -1.0;
-    rc |= expect(edacs_collect_analog_triplet(&g_opts, &g_state, NULL, a1, a2, a3, &pwr) == 0,
-                 "EDACS UDP stop: the triplet is refused");
+    const uint64_t owed_triplets = g_state.edacs_no_stream_owed / (UINT64_C(3) * 960U);
+    int refused = 0;
+    for (uint64_t k = 0; k <= owed_triplets + 1U && !refused; k++) {
+        double pwr = -1.0;
+        refused = edacs_collect_analog_triplet(&g_opts, &g_state, NULL, a1, a2, a3, &pwr) == 0;
+    }
+    rc |= expect(refused, "EDACS UDP stop: the triplet is refused once the owed silence has played");
     rc |= expect(dsd_exitflag_load() == 1, "EDACS UDP stop: shut down");
     udp_session_close(&sender);
     return rc;
