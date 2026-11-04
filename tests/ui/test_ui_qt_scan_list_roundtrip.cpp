@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <functional>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <stdint.h>
