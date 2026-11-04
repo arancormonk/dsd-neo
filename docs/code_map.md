@@ -3512,26 +3512,25 @@ manual frequency while its row was outstanding stays one call. A resume while on
 running, changes nothing; one of a scan neither paused nor running, or under a trunk scan, is refused with a toast.
 Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the guarded scanner commands. The
 pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
-pause and a pending resume, and leaves `operator_tuned` set. A running untyped list has no extension or
-scope for the leave to find, yet its calls are named after its rows and keyed with their keys: the leave recognises it
+pause and a pending resume, and leaves `operator_tuned` set. A running untyped list has no extension or scope for the
+leave to find, yet its calls are named after its rows and keyed with their keys: the leave recognises it
 (`channel_scan_untyped_runs()`: `scanner_mode` over a list of the user's own) and ends its calls, before the caller
 clears `scanner_mode` and the row keys leave, so they commit under the row heard (issue #644 B-3); it restores nothing
 else, since untyped rows run the configured decoder and front end. Learned channels are no list, and an untyped resume
-still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. Two
-leaves that would otherwise come too late end those calls first (issue #644 fix rounds): a config apply that turns
-`-Y` off (the scanner off, or trunking on) ends a running list's calls, typed or untyped, once
-`cfg_prepare_runtime_apply()` has found it a config that applies (a refused one changes nothing; a group file it names
-is loaded there, not installed) and before it installs that group list, stages its own keys and policy and takes the
-flag down (`cfg_end_calls_of_the_scan_it_stops()`, through `dsd_engine_channel_scan_end_running_calls()`, then
-the group install, in `cfg_begin_apply()`; its scope leave runs after the command), so they commit under the row heard, its keys and
-the groups they were heard with (a typed row's groups, which the command parked, are put back for the end and parked
-again). A config whose radio input then rolls back, or whose replay re-plan is refused, is reported not applied but
-puts back only the input: its `[trunking]` stays and `cfg_settle_scan_owner()` stops the scan all the same, so no call
-is split. And a channel-map clear leaves before it empties the map (`svc_clear_channel_map()`). A paused
-list (no resume pending) was already left by its
-pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not
-reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service clears the flags
-after the engine's leave, which reads them; the engine's shutdown leave clears neither flag, so the
+still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. Two leaves
+that would otherwise come too late end those calls first (issue #644): a config apply that turns `-Y` off (the scanner
+off, or trunking on) ends a running list's calls, typed or untyped, once `cfg_prepare_runtime_apply()` has found it a
+config that applies (a refused one changes nothing; a group file it names is loaded there, not installed) and before it
+installs that group list, stages its own keys and policy and takes the flag down
+(`cfg_end_calls_of_the_scan_it_stops()`, through `dsd_engine_channel_scan_end_running_calls()`, then the group install,
+in `cfg_begin_apply()`; its scope leave runs after the command), so they commit under the row heard, its keys and the
+groups they were heard with (a typed row's groups, which the command parked, are put back for the end and parked again).
+A config whose radio input then rolls back, or whose replay re-plan is refused, is reported not applied but puts back
+only the input: its `[trunking]` stays and `cfg_settle_scan_owner()` stops the scan all the same, so no call is split.
+And a channel-map clear leaves before it empties the map (`svc_clear_channel_map()`). A paused list (no resume pending)
+was already left by its pause, so its stop drops only the list state the pause kept: no call of the manual session ends,
+the acquisition is not reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service
+clears the flags after the engine's leave, which reads them; the engine's shutdown leave clears neither flag, so the
 exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_config()`: `scanner_mode ||
 lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last (`cfg_settle_scan_owner()`
 in app_control): without `[trunking]` the pause stays, trunking on or the scanner off stop it, the scanner on resumes
@@ -3771,7 +3770,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
     scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). A `-Y`
     scan, held or not, typed or untyped, left on its avoided row that way (the step `b` asked for refused at once or
-    failing late) departs ahead of the row's carrier, its dwell and the hold (issue #644 B-5 and its fix round), as a
+    failing late) departs ahead of the row's carrier, its dwell and the hold (issue #644 B-5), as a
     trunk scan's departure goes: `dsd_engine_channel_scan_departure_due()` (in `engine.c`; the row on air avoided,
     somewhere to go by `dsd_engine_channel_scan_reachable_rows()`, no tune of the scan's in flight, and not before
     `dsd_state::lcn_avoid_depart_m`) makes the frame loop yield while a carrier holds sync

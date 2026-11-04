@@ -66,8 +66,8 @@ void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind 
  *
  * The row, its keys and the call boundary wait for the landing. The record carries the scan session and the list
  * (dsd_state::lcn_scan_session, dsd_state::lcn_list_rev) the row belongs to now, so a landing after either moved names
- * no row. Its drop changes nothing (what dropped it decides the receiver), so a newer tune noted over it keeps no report
- * of it.
+ * no row. Its drop changes nothing (what dropped it decides the receiver), so a newer tune noted over it keeps no
+ * report of it.
  *
  * @param state            Decoder state.
  * @param id               The ID the RTL leg handed back; 0 notes nothing and leaves any older tune noted.

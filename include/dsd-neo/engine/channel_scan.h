@@ -51,9 +51,9 @@ int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
 /** End the calls of a running -Y list of the user's own, typed or untyped, now, as its leave would (issue #644): for a
  * caller about to change what names, keys or judges them (a config apply that turns the scan off suspends a typed row's
  * scope, writes its own keys and policy and takes the scanner flag down before the leave runs). The calls commit under
- * the row heard and whatever row settings are in force. 1 when it ended them; 0 with no such list running (a paused one,
- * a resume still pending, learned channels only, a trunk scan), when it does nothing. Decoder thread, under the P25 SM
- * tick guard a guarded command holds. */
+ * the row heard and whatever row settings are in force. 1 when it ended them; 0 with no such list running (a paused
+ * one, a resume still pending, learned channels only, a trunk scan), when it does nothing. Decoder thread, under the
+ * P25 SM tick guard a guarded command holds. */
 int dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state);
 /** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
@@ -189,12 +189,12 @@ void dsd_engine_channel_walk_note_outcome(dsd_state* state, int row, int dir, in
  * - LANDED: the SCAN_STEP carrier boundary ends the calls of the row left, under its label and keys, then the row is
  *   installed as a step's is: the cursor past it, the row heard, its keys, the analog reset, the landing the scan
  *   confirmed, fresh scan clocks.
- * - PENDING: the rigctl leg (if any) moved, the RTL tune timed out. Noted (dsd_engine_manual_tune_note_lcn_cycle()); the
- *   cursor, the row heard, the keys and the clocks stay. The engine loop's poll (dsd_engine_scan_untyped_poll()) then
- *   commits the row as above when it lands while the scan is still that one (same session and list, the row on the
- *   frequency tuned), applies the refusal rules when it fails late (dsd_engine_channel_walk_note_outcome()), and changes
- *   nothing when it is dropped; a landing after the scan changed only runs the boundary of the move. Meanwhile the
- *   timed step waits, and the next walk goes on from this row (dsd_engine_manual_tune_pending_row()).
+ * - PENDING: the rigctl leg (if any) moved, the RTL tune timed out. Noted (dsd_engine_manual_tune_note_lcn_cycle());
+ *   the cursor, the row heard, the keys and the clocks stay. The engine loop's poll (dsd_engine_scan_untyped_poll())
+ *   then commits the row as above when it lands while the scan is still that one (same session and list, the row on the
+ *   frequency tuned), applies the refusal rules when it fails late (dsd_engine_channel_walk_note_outcome()), and
+ *   changes nothing when it is dropped; a landing after the scan changed only runs the boundary of the move. Meanwhile
+ *   the timed step waits, and the next walk goes on from this row (dsd_engine_manual_tune_pending_row()).
  * - REFUSED: the refusal rules for @p dir. A rigctl leg that moved before the RTL leg failed already ran the outgoing
  *   boundary and the analog reset: the receiver left the row on air.
  * - DEFERRED: nothing but a rigctl move's boundary, as above; the next press tries the same row.

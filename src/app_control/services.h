@@ -296,8 +296,8 @@ int svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brie
 /** @brief Import a group list CSV into runtime state; a failure keeps the live list and its path. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
 /** svc_import_group_list() in two steps, for a caller that must know the file loads before it changes anything: the
- * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the live
- * list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()). */
+ * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the
+ * live list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()). */
 int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out);
 void svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded);
 /** Adopt a nonempty source alias CSV; failure preserves the live list and path. */

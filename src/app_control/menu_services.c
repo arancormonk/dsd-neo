@@ -826,8 +826,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // Import into throwaway heap state (dsd_state is multi-megabyte) so a
     // failed import leaves the live map untouched. The allocation is large and
     // this runs on the decoder thread, but it happens once per user import
-    // rather than per frame, and it is the same validate-then-swap shape
-    // dsd_tg_policy_reload_group_file() uses for the same reason.
+    // rather than per frame.
     dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
     if (!imported) {
         DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));

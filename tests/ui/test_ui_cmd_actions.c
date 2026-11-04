@@ -885,7 +885,8 @@ test_scanner_toggle_pauses_and_resumes(void) {
     rc |= expect_true("started; the tuner is the scan's", opts.scanner_mode == 1 && state.operator_tuned == 0U);
     rc |= expect_int("resume of a running list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("running list toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
-    /* The stop leaves the scan while it still runs under its row keys (issue #644 B-3), then the keys and the flag go. */
+    /* The stop leaves the scan while it still runs under its row keys (issue #644 B-3), then the keys and the flag
+       go. */
     state.scan_keys_active_set = 1;
     rc |= expect_int("y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
     int leave_saw_scanner = -1;

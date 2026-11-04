@@ -1413,7 +1413,7 @@ channel_scan_untyped_runs(const dsd_opts* opts, const dsd_state* state) {
 
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
-   has no scope, F3); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
+   has no scope); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
    the caller still has its row named and keyed: they end under that row, before the configured keys come back. The
    untyped list's leave stops there: its rows ran the configured decoder and front end, so nothing else goes back. A
    paused list (no resume pending) was already left by its pause, which kept only its list state: its leave drops that

@@ -7749,10 +7749,9 @@ test_scan_owned_walk_tunes_both_front_ends(void) {
     return rc;
 }
 
-/* Fix round 1 (Minor 4a): a second press while the first walk's tune is still pending goes on from the row that tune
-   went to, in the second press's direction, so quick presses and key auto-repeat keep advancing. The first tune's
-   record, superseded by the second, settles nothing: its own late completion is not taken, and the second landing
-   commits its row. */
+/* A second press while the first walk's tune is still pending goes on from the row that tune went to, in the second
+   press's direction, so quick presses and key auto-repeat keep advancing. The first tune's record, superseded by the
+   second, settles nothing: its own late completion is not taken, and the second landing commits its row. */
 static int
 walk_press_while_pending_case(int dir, int scan_owned) {
     dsd_opts* opts = NULL;
@@ -7804,9 +7803,9 @@ test_walk_press_while_pending_steps_on(void) {
     return rc;
 }
 
-/* Fix round 2: a press while the -Y timed step's own tune is still pending goes on from the row that step went to, in
-   the press's direction, as after a pending walk: the cursor waits for the step's landing, so the press would
-   otherwise pick the step's row again. The press's tune supersedes the step's, and its landing commits its own row. */
+/* A press while the -Y timed step's own tune is still pending goes on from the row that step went to, in the press's
+   direction, as after a pending walk: the cursor waits for the step's landing, so the press would otherwise pick the
+   step's row again. The press's tune supersedes the step's, and its landing commits its own row. */
 static int
 walk_press_while_a_step_is_pending_case(int dir) {
     dsd_opts* opts = NULL;
@@ -7858,9 +7857,9 @@ test_walk_press_while_a_step_is_pending_steps_on(void) {
     return walk_press_while_a_step_is_pending_case(1) | walk_press_while_a_step_is_pending_case(-1);
 }
 
-/* Fix round 1 (Minor 4b): while a walk the -Y scan owns waits on its tune, the timed step does not fire, even when it is
-   due, so it never supersedes the walk (a Previous would turn into a forward step). Once the walk settles (a landing,
-   or a late failure) the rotation goes on at its own time. */
+/* While a walk the -Y scan owns waits on its tune, the timed step does not fire, even when it is due, so it never
+   supersedes the walk (a Previous would turn into a forward step). Once the walk settles (a landing, or a late failure)
+   the rotation goes on at its own time. */
 static int
 walk_holds_the_timed_step_case(int dir) {
     dsd_opts* opts = NULL;
@@ -7904,9 +7903,9 @@ test_walk_holds_the_timed_step(void) {
     return walk_holds_the_timed_step_case(1) | walk_holds_the_timed_step_case(-1);
 }
 
-/* Fix round 1 (Minor 5): a walk's landing after its list stopped being the one walked. One the -Y scan owned, after a
-   stop of that scan (restarted before the landing): only the TUNE boundary runs for the move, and no row commits. One
-   off any scan, after the list was reloaded: the calls end, and no row of the new list is named. */
+/* A walk's landing after its list stopped being the one walked. One the -Y scan owned, after a stop of that scan
+   (restarted before the landing): only the TUNE boundary runs for the move, and no row commits. One off any scan, after
+   the list was reloaded: the calls end, and no row of the new list is named. */
 static int
 test_walk_landing_after_the_list_changed(void) {
     int rc = 0;
@@ -7982,7 +7981,7 @@ test_walk_landing_ends_a_synced_reception(void) {
     return rc;
 }
 
-/* --- Issue #644 (Task 2): the -Y scan's stop, start and held avoid, driven through the command queue. --- */
+/* --- Issue #644: the -Y scan's stop, start and held avoid, driven through the command queue. --- */
 
 /* The history row of talkgroup @p tg's call, NULL with none. */
 static const Event_History*
@@ -8156,10 +8155,10 @@ test_y_start_gives_the_tuner_to_the_scan(void) {
     return rc;
 }
 
-/* Fix round 1: a running untyped list left by something other than `y`, its call heard on keyed row BRAVO. A config
-   that turns the scanner off (@p map_clear 0) took the scanner flag down while staging its own keys and policy, before
-   its scope leave, so the call went on, named after no row; a channel-map clear (1) emptied the map before its leave,
-   so the leave found no list and ended nothing. Both end the call under BRAVO now, as a scan member. */
+/* A running untyped list left by something other than `y`, its call heard on keyed row BRAVO. A config that turns the
+   scanner off (@p map_clear 0) took the scanner flag down while staging its own keys and policy, before its scope
+   leave, so the call went on, named after no row; a channel-map clear (1) emptied the map before its leave, so the
+   leave found no list and ended nothing. Both end the call under BRAVO now, as a scan member. */
 static int
 running_list_left_case(int map_clear) {
     const char* what = map_clear ? "channel-map clear of a running untyped list" : "config turning the scanner off";
@@ -8196,9 +8195,9 @@ running_list_left_case(int map_clear) {
     return rc;
 }
 
-/* Fix round 2: a config that turns a running typed list off ends its call under the row (ALPHA, its scope and keys)
-   before the command suspends the scope and stages the config. The scope leave after the command ended it, with the
-   scanner flag already down, so it was named after no row. */
+/* A config that turns a running typed list off ends its call under the row (ALPHA, its scope and keys) before the
+   command suspends the scope and stages the config. The scope leave after the command ended it, with the scanner flag
+   already down, so it was named after no row. */
 static int
 typed_list_left_by_a_config_case(void) {
     const char* what = "config turning a typed list off";
@@ -8242,10 +8241,10 @@ typed_list_left_by_a_config_case(void) {
     return rc;
 }
 
-/* Fix round 2: a `y` start with no channel map of the user's own leaves the tuner the operator's (the scan cannot
-   move). Once a map arrives (here an import) and the scan first lands a row, the tuner is the scan's: the operator's
-   call ended at that step as the operator's, and the scan's calls are scan members, not the operator's. The flag stayed
-   1 until a resume or a new session, so every call the scan heard was filed as "Exploring". */
+/* A `y` start with no channel map of the user's own leaves the tuner the operator's (the scan cannot move). Once a map
+   arrives (here an import) and the scan first lands a row, the tuner is the scan's: the operator's call ended at that
+   step as the operator's, and the scan's calls are scan members, not the operator's. The flag stayed 1 until a resume
+   or a new session, so every call the scan heard was filed as "Exploring". */
 static int
 test_first_row_landing_takes_the_tuner(void) {
     const char* what = "first row landing after a start with no map";
@@ -8283,10 +8282,9 @@ test_first_row_landing_takes_the_tuner(void) {
     return rc;
 }
 
-/* Fix round 3: a config that would turn -Y off but is refused (an invalid Airspy serial, cfg_prepare_runtime_apply())
-   changes nothing: the running list's call goes on and the scan runs. Round 2 ended the calls before the config was
-   validated, so a refused config split the call. @p typed: a typed list (NXDN48 rows) rather than the untyped walk
-   list. */
+/* A config that would turn -Y off but is refused (an invalid Airspy serial, cfg_prepare_runtime_apply()) changes
+   nothing: the running list's call goes on and the scan runs. Ending the calls before the config is validated would
+   split the call on a refused config. @p typed: a typed list (NXDN48 rows) rather than the untyped walk list. */
 static int
 refused_config_case(int typed) {
     const char* what = typed ? "refused config over a typed list" : "refused config over an untyped list";
@@ -8355,9 +8353,9 @@ history_group_name_of(const dsd_state* state, uint32_t tg) {
     return row != NULL ? row->t_name : "?";
 }
 
-/* Fix round 4: a config that turns -Y off and names a different group file ends the running untyped list's call under
-   the group list it was heard with (OLD), then installs the config's (NEW). Round 3 ended the call after the prepare
-   had imported the new list, so the call was filed under NEW. */
+/* A config that turns -Y off and names a different group file ends the running untyped list's call under the group
+   list it was heard with (OLD), then installs the config's (NEW). Ending the call after the new list is installed would
+   file it under NEW. */
 static int
 test_config_stopping_the_scan_ends_its_calls_under_the_old_groups(void) {
     const char* what = "config stopping -Y with a new group file";
@@ -8507,9 +8505,9 @@ test_held_scan_steps_off_an_avoided_row(void) {
            | held_avoid_case(HELD_AVOID_PUT_BACK);
 }
 
-/* --- Task 2 fix round 1: avoidance outranks the carrier. A -Y scan, held or not, sitting on a row the operator
-   avoided leaves it while a carrier still holds sync: the frame loop yields at once, and the no-carrier step takes the
-   departure, at the step cadence. It used to stay for as long as the carrier lasted (and, held, for good). --- */
+/* --- Issue #644: avoidance outranks the carrier. A -Y scan, held or not, sitting on a row the operator avoided leaves
+   it while a carrier still holds sync: the frame loop yields at once, and the no-carrier step takes the departure, at
+   the step cadence. It used to stay for as long as the carrier lasted (and, held, for good). --- */
 
 /* A carrier on the row on air: the hangtime anchor is fresh, so no rule but the departure would step, and the hunt
    finds @p syncs more frames after the first. Returns the frames decoded before the loop yielded. */

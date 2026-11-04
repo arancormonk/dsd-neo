@@ -3812,7 +3812,8 @@ lcn_cycle_back_start(const dsd_state* state) {
 /* Where a walk in direction @p dir starts looking (issue #666): forward at the cursor, back at lcn_cycle_back_start().
    While an earlier walk's tune, or the -Y timed step's, is still pending, from the row it went to instead, in this
    press's direction (issue #644): the cursor waits for that landing, so quick presses and key auto-repeat would
-   otherwise pick the same row again. This press's tune supersedes the earlier one, whose record then settles nothing. */
+   otherwise pick the same row again. This press's tune supersedes the earlier one, whose record then settles
+   nothing. */
 static int
 lcn_cycle_start(const dsd_state* state, int dir) {
     const int count = state->lcn_freq_count;

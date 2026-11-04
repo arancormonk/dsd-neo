@@ -3053,8 +3053,8 @@ untyped_fixture_free(dsd_opts* opts, dsd_state* state) {
 /* Issue #644 (B-3): the leave of a running untyped list ends its calls, where the scan still names the row heard and
    its keys are in force (the stop leaves before it clears the flag and the keys); it found no scan object and no scope
    and ended none, so the call went on past the stop. Nothing else of the configured session changes. A stop over a
-   paused untyped list still ends no manual call, nor does a stop over an untyped resume still waiting on its row, nor the
-   leave of a -Y session with no list of the user's own (channels learned over the air), which the scan never moved
+   paused untyped list still ends no manual call, nor does a stop over an untyped resume still waiting on its row, nor
+   the leave of a -Y session with no list of the user's own (channels learned over the air), which the scan never moved
    for. */
 static void
 test_untyped_leave_ends_the_running_lists_calls(void) {
@@ -3130,8 +3130,8 @@ test_start_gives_the_tuner_to_the_scan(void) {
     assert(opts->scanner_mode == 1 && state->operator_tuned == 0U);
     untyped_fixture_free(opts, state);
 
-    /* Fix round 1: with no list of the user's own the scan never moves the receiver, so the start ends no call and
-       the tuner stays the operator's; only the scanner flag goes on, as a stop over such a session ends nothing. */
+    /* With no list of the user's own the scan never moves the receiver, so the start ends no call and the tuner stays
+       the operator's; only the scanner flag goes on, as a stop over such a session ends nothing. */
     opts = (dsd_opts*)calloc(1, sizeof(*opts));
     state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
@@ -3145,7 +3145,7 @@ test_start_gives_the_tuner_to_the_scan(void) {
     assert(opts->scanner_mode == 1 && state->operator_tuned == 1U);
     untyped_fixture_free(opts, state);
 
-    /* A paused scan, and one whose resume is pending, resume instead: a start changes nothing (fix round 1, M3). */
+    /* A paused scan, and one whose resume is pending, resume instead: a start changes nothing. */
     for (int pending = 0; pending <= 1; pending++) {
         opts = (dsd_opts*)calloc(1, sizeof(*opts));
         state = (dsd_state*)calloc(1, sizeof(*state));

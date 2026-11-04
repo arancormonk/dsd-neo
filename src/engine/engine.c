@@ -1449,9 +1449,9 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
 #endif
 }
 
-/* The RTL leg of a Next or Previous walk the -Y scan owns (issue #644): the operator's own tune, so it reaches the front
- * end whatever the legacy leg last sent. Any answer but a deferral leaves the legacy caches vouching for nothing, as
- * the step's leg treats them, and decides where the receiver goes, so it supersedes a noted manual tune; one that
+/* The RTL leg of a Next or Previous walk the -Y scan owns (issue #644): the operator's own tune, so it reaches the
+ * front end whatever the legacy leg last sent. Any answer but a deferral leaves the legacy caches vouching for nothing,
+ * as the step's leg treats them, and decides where the receiver goes, so it supersedes a noted manual tune; one that
  * timed out is noted as the walk's (DSD_MANUAL_TUNE_LCN_CYCLE), with its row and direction @p dir. Results as
  * untyped_tune_row_rtl()'s. Without RTL support io_control refuses every tune. */
 static int
@@ -1730,9 +1730,10 @@ untyped_settle_stale_row(dsd_opts* opts, dsd_state* state, const dsd_manual_tune
 }
 
 /* A walk's tune that timed out has settled (issue #644): a drop changes nothing, since what dropped it decides the
-   receiver. A walk off any scan is app-control's to settle (the hook it installs, <dsd-neo/runtime/channel_scan_hooks.h>).
-   One the -Y scan owns commits its row as the scan's step does, or passes it by the walk's refusal rules, while the
-   scan is still that one; otherwise a landing only moved the receiver, so the boundary runs for the move. */
+   receiver. A walk off any scan is app-control's to settle (the hook it installs,
+   <dsd-neo/runtime/channel_scan_hooks.h>). One the -Y scan owns commits its row as the scan's step does, or passes it
+   by the walk's refusal rules, while the scan is still that one; otherwise a landing only moved the receiver, so the
+   boundary runs for the move. */
 static void
 untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_settled* settled, int polled) {
     if (polled == DSD_MANUAL_TUNE_DROPPED) {

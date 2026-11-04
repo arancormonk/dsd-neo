@@ -5438,7 +5438,7 @@ test_channel_cycle_retries_a_deferred_candidate(void) {
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
-/* Issue #644 (fix round 2): a walk off any scan tunes past the engine's legacy legs, so whatever its tune comes to but a
+/* Issue #644: a walk off any scan tunes past the engine's legacy legs, so whatever its tune comes to but a
    deferral, what those legs last sent no longer vouches for the receiver: a refused tune forgets the caches too, as the
    legacy RTL leg forgets its own on a failure. A deferral reached nothing and keeps them. */
 static int

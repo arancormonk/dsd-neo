@@ -486,15 +486,16 @@ int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state)
  * Decoder-thread owned, reference-counted policy context. References preserve row-local
  * aliases and lockouts across scan visits. Frontend snapshots still deep-copy their
  * effective context. Ownership protocol: every dsd_tg_policy_retain()/dsd_tg_policy_load()/
- * dsd_tg_policy_load_group_file() result is one reference the caller must eventually dsd_tg_policy_release(); the state's
- * own extension slot holds its own reference, so installing a store never transfers the
- * caller's.
+ * dsd_tg_policy_load_group_file() result is one reference the caller must eventually
+ * dsd_tg_policy_release(); the state's own extension slot holds its own reference, so
+ * installing a store never transfers the caller's.
  * Stores observable by a running P25 watchdog may only be replaced or edited (every
- * replacement or edit: reload_group_file, adopt_group_file, clear, install, restore, the table editors,
- * the session-avoid and call-skip ledgers) with the P25 SM tick guard held by the
- * caller: release-time audio flushes read
+ * replacement or edit: reload_group_file, adopt_group_file, clear, install, restore, the
+ * table editors, the session-avoid and call-skip ledgers) with the P25 SM tick guard held
+ * by the caller: release-time audio flushes read
  * policy under that guard. These functions are non-acquiring. Detached construction
- * (dsd_tg_policy_load, dsd_tg_policy_load_group_file, snapshot copies) and pre-start/post-stop lifecycle work are exceptions.
+ * (dsd_tg_policy_load, dsd_tg_policy_load_group_file, snapshot copies) and
+ * pre-start/post-stop lifecycle work are exceptions.
  */
 typedef struct dsd_tg_policy_store dsd_tg_policy_store;
 /** Take one reference on the state's effective context. NULL (no context) represents an

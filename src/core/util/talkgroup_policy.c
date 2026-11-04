@@ -4,7 +4,6 @@
  */
 
 #include <ctype.h>
-#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
@@ -2947,17 +2946,10 @@ tg_policy_is_terminated_cstr(const char* s, size_t cap) {
     return (s != NULL) && (memchr(s, '\0', cap) != NULL);
 }
 
-static int DSD_ATTR_USED
-tg_policy_reload_validate_candidate(const dsd_state* imported) {
-    const dsd_tg_policy_context* ctx = NULL;
-
-    if (!imported) {
-        return -1;
-    }
-
-    ctx = tg_policy_ctx_get_const(imported);
+static int
+tg_policy_reload_validate_candidate(const dsd_tg_policy_context* ctx) {
     if (!ctx) {
-        return 0;
+        return -1;
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
@@ -2986,38 +2978,19 @@ tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* 
 
 int
 dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
-    dsd_state* imported = NULL;
-    dsd_tg_policy_context* imported_ctx = NULL;
+    dsd_tg_policy_store* loaded = NULL;
 
     if (!path || !out) {
         return -1;
     }
-
-    imported = (dsd_state*)calloc(1, sizeof(*imported));
-    if (!imported) {
+    if (dsd_tg_policy_load(path, &loaded) != 0) {
         return -1;
     }
-
-    if (csvGroupImportPath(path, imported) != 0 || tg_policy_reload_validate_candidate(imported) != 0) {
-        dsd_state_ext_free_all(imported);
-        free(imported);
+    if (tg_policy_reload_validate_candidate(loaded) != 0) {
+        dsd_tg_policy_release(loaded);
         return -1;
     }
-
-    imported_ctx = (dsd_tg_policy_context*)imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY];
-    imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
-    imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
-    dsd_state_ext_free_all(imported);
-    free(imported);
-
-    if (!imported_ctx) {
-        imported_ctx = tg_policy_context_alloc();
-        if (!imported_ctx) {
-            return -1;
-        }
-    }
-    imported_ctx->lazy = 0;
-    *out = imported_ctx;
+    *out = loaded;
     return 0;
 }
 
