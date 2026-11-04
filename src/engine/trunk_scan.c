@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -66,6 +67,7 @@
 #include <time.h>
 
 #include "scan_analog_internal.h"
+#include "scan_entry_internal.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
 #include "scan_step_untyped.h"
@@ -3155,13 +3157,13 @@ trunk_scan_arm_visit(dsd_trunk_scan_target_runtime* rt, double parked_m) {
     rt->retry_released_park = 0;
 }
 
-/* The retune to @p rt completed: a conventional target is on its own frequency, which an analog call on audio input is
-   heard on (issue #667 D9). A trunked target's park is its control channel, never a call's frequency. */
+/* The retune to @p rt completed: the target is confirmed on air (issue #644), and a conventional one is on its own
+   frequency, which an analog call on audio input is heard on (issue #667 D9). A trunked target's park is its control
+   channel, never a call's frequency, so it names none. */
 static void
-trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_target_runtime* rt) {
-    if (trunk_scan_type_is_conventional(rt->target.type)) {
-        dsd_engine_scan_landing_note_target(state, (long)rt->target.frequency_hz);
-    }
+trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt) {
+    const uint32_t hz = trunk_scan_type_is_conventional(rt->target.type) ? rt->target.frequency_hz : 0U;
+    dsd_engine_scan_landing_note_target(state, (int)(rt - coord->targets), coord->session, hz);
 }
 
 /*
@@ -3207,8 +3209,9 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
  * acquisition the SM waits on is the one the coordinator asked for.
  */
 static void
-trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
-                               dsd_trunk_tune_result tune_result, uint64_t tune_request_id) {
+trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord,
+                               dsd_trunk_scan_target_runtime* rt, dsd_trunk_tune_result tune_result,
+                               uint64_t tune_request_id) {
     const int p25 = rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
     if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
         if (p25) {
@@ -3223,7 +3226,7 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
     if (dsd_trunk_tune_result_is_complete(tune_result)) {
-        trunk_scan_note_landing(state, rt);
+        trunk_scan_note_landing(state, coord, rt);
     }
     double completed_m = 0.0;
     (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
@@ -3551,7 +3554,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
                                     tune_request_id);
     }
 
-    trunk_scan_arm_tune_completion(opts, state, rt, tune_result, tune_request_id);
+    trunk_scan_arm_tune_completion(opts, state, coord, rt, tune_result, tune_request_id);
     rt->retry_until_m = 0.0;
     LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;
@@ -4059,8 +4062,8 @@ trunk_scan_reapply_analog_width(const dsd_opts* opts, const dsd_trunk_scan_targe
 }
 
 static int
-trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
-                                  double now_m) {
+trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                  dsd_trunk_scan_target_runtime* rt, double now_m) {
     if (!rt || !rt->tune_pending) {
         return 1;
     }
@@ -4075,7 +4078,7 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
-        trunk_scan_note_landing(state, rt);
+        trunk_scan_note_landing(state, coord, rt);
         trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed. */
         trunk_scan_arm_visit(rt, completed_m);
@@ -4088,6 +4091,7 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
             /* A replacement tune the P25 SM owned completed while the coordinator was not
              * looking; its completion stamp belongs to a request this target no longer tracks,
              * so the visit starts from the tick that found the receiver parked again. */
+            trunk_scan_note_landing(state, coord, rt);
             trunk_scan_arm_visit(rt, now_m);
         }
         return p25_recovery;
@@ -4572,7 +4576,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
          * the coordinator waiting for its request. */
         trunk_scan_tick_active_target_sm(opts, state, rt);
     }
-    int pending_status = trunk_scan_resolve_pending_retune(opts, state, rt, now_m);
+    int pending_status = trunk_scan_resolve_pending_retune(opts, state, coord, rt, now_m);
     if (pending_status == 0) {
         return;
     }
@@ -5826,6 +5830,54 @@ dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_tru
 int
 dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state) {
     return dsd_engine_trunk_scan_resume_ex_locked(opts, state, NULL);
+}
+
+/* Why target @p rt is no pick for a typed frequency (issue #644 D5), or DSD_SCAN_ENTRY_OK: the rotation's own rules
+   (trunk_scan_target_in_rotation(), the width skip at @p rate_hz), but not its cooldown: the pick is explicit. */
+static dsd_scan_entry_reason
+trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                        const dsd_trunk_scan_target_runtime* rt, int rate_hz) {
+    if (rt->avoided) {
+        return DSD_SCAN_ENTRY_AVOIDED;
+    }
+    if (!coord->lists[rt->list].enabled) {
+        return DSD_SCAN_ENTRY_LIST_OFF;
+    }
+    return trunk_scan_target_width_skipped(opts, state, rt, rate_hz) ? DSD_SCAN_ENTRY_WIDTH : DSD_SCAN_ENTRY_OK;
+}
+
+int
+dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
+                                 dsd_scan_entry_tally* tally) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (!coord) {
+        return 0;
+    }
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    /* The targets sit in list order already: list number, then each list's file order (trunk_scan_merge_lists()). */
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (rt->target.frequency_hz != hz) {
+            continue;
+        }
+        const char* label = rt->target.label[0] != '\0' ? rt->target.label : rt->target.id;
+        dsd_scan_entry_tally_row(tally, DSD_SCAN_ENTRY_TRUNK, (int)i,
+                                 trunk_scan_entry_reason(opts, state, coord, rt, rate_hz),
+                                 dsd_engine_trunk_scan_target_confirmed(state, (int)i),
+                                 trunk_scan_target_is_trunked(rt->target.type), label);
+    }
+    return 1;
+}
+
+int
+dsd_engine_trunk_scan_target_confirmed(const dsd_state* state, int index) {
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    if (!coord || coord->paused || index < 0 || (size_t)index >= coord->count || coord->active != (size_t)index) {
+        return 0;
+    }
+    /* A park in flight is movement outstanding: the landing it replaces was forgotten when it began, and its own is
+       noted only once it completes. */
+    return !coord->targets[index].tune_pending && dsd_engine_scan_landing_is_target(state, index, coord->session);
 }
 
 int

@@ -2540,6 +2540,10 @@ struct dsd_state {
      * status line and is maintained by dsd_state_trunk_lcn_avoid_set()/_clear(). The
      * trunk_scan_* trio is written by the trunk-scan coordinator, which owns the truth. */
     uint8_t lcn_scan_hold; /**< 1 = -Y rotation held on the row on air */
+    /* The -Y hold is an entry hold (issue #644): a frequency typed by hand picked the row on air, and `y` continues the
+       scan rather than stopping it. Set only with lcn_scan_hold, on the confirmed landing of the row picked; never
+       saved. */
+    uint8_t lcn_scan_entry_hold;
     /* A -Y scan the operator paused (issue #671): its list, cursor, avoids and session edits are kept while
      * scanner_mode is 0, so the receiver stays where the operator put it until a resume
      * (dsd_engine_channel_scan_pause(), _resume()). lcn_scan_resume_pending: a resume's row tune timed out; until it
@@ -2551,6 +2555,9 @@ struct dsd_state {
     uint8_t operator_tuned;
     uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
     uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
+    /* The --trunk-scan hold is an entry hold (issue #644), as lcn_scan_entry_hold is for -Y: set with trunk_scan_hold
+       on the confirmed park of the target a typed frequency picked; never saved. */
+    uint8_t trunk_scan_entry_hold;
     /* A --trunk-scan the operator paused (issue #671): the coordinator keeps its targets, snapshots, avoids, session
      * edits and hold, but no target is on air and nothing it owns tunes or decodes, until a resume re-parks the target
      * it left (dsd_engine_trunk_scan_pause_locked(), _resume_locked()). dsd_opts::trunk_scan_enabled stays 1 (the

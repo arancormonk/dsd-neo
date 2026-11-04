@@ -228,6 +228,13 @@ _Static_assert(
         && offsetof(dsd_state, operator_tuned) >= offsetof(dsd_state, trunk_scan_active_id)
         && UI_SNAPSHOT_FIELD_END(operator_tuned) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
     "lcn_scan_paused, lcn_scan_resume_pending and operator_tuned must ride the vertex_ks_count..ui_msg range");
+/* The entry holds (issue #644) sit beside the holds they mark, inside that range: every frontend's scan state and the
+ * terminal's hold field read them. */
+_Static_assert(offsetof(dsd_state, lcn_scan_entry_hold) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(lcn_scan_entry_hold) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+                   && offsetof(dsd_state, trunk_scan_entry_hold) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_entry_hold) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+               "lcn_scan_entry_hold and trunk_scan_entry_hold must ride the vertex_ks_count..ui_msg range");
 _Static_assert(offsetof(dsd_state, trunk_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_paused) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
                "trunk_scan_paused must ride the vertex_ks_count..ui_msg range");

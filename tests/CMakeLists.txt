@@ -8188,6 +8188,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # The typed-frequency match, which reads a row's effective width (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_label.c
     # A refused resume leaves a manual rigctl request the session's (issue #671).
@@ -8259,6 +8261,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     # A target restore unlinks the call recordings waiting for their rows (issue #708).
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -8346,6 +8350,19 @@ add_test(
     NAME ENGINE_TRUNK_SCAN_PAUSE
     COMMAND dsd-neo_test_engine_trunk_scan_pause
 )
+
+# The row a frequency typed by hand picks (issue #644): the match over a -Y list and a real trunk-scan coordinator,
+# every reason a row on the frequency is no pick, and rows that share a frequency.
+add_executable(dsd-neo_test_engine_scan_entry engine/test_engine_scan_entry.c)
+target_include_directories(
+    dsd-neo_test_engine_scan_entry
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_link_libraries(
+    dsd-neo_test_engine_scan_entry
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(NAME ENGINE_SCAN_ENTRY COMMAND dsd-neo_test_engine_scan_entry)
 
 # A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
 # UDP wait leaves for it once the tick has left the guard, and the control pump publishes it (issue #671).

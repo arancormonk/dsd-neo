@@ -1521,7 +1521,7 @@ untyped_install_row(dsd_state* state, int row, time_t now) {
         dsd_state_lcn_on_air_note(state, row);
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
-        dsd_engine_scan_landing_note_row(state, freq);
+        dsd_engine_scan_landing_note_row(state, row, freq);
         /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended at the boundary, so a
            start that found no list, or turned the scanner on over a manual tune, stops filing its calls as the
            operator's here, whichever way the list arrived. */
@@ -3412,6 +3412,9 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
         && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
     }
+    /* A stream started, on the same source or not, opens wherever it is told: no landing a scan confirmed before it
+       says the receiver is on that row (issue #644). */
+    dsd_engine_scan_landing_forget(state);
     state->carrier_source_key = key;
 }
 

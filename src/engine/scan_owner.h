@@ -11,12 +11,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/** The frequency a scan last landed on (issue #667 D9; scan_landing.h): 0 Hz for none. */
+/** The row or target a scan last confirmed it landed on, and its frequency (issue #667 D9, #644; scan_landing.h). */
 typedef struct {
-    uint32_t hz;
-    uint8_t by;       /**< the scan that landed it (DSD_ENGINE_SCAN_LANDING_*) */
-    uint32_t session; /**< -Y: dsd_state::lcn_scan_session at the landing */
-    uint64_t map_seq; /**< -Y: dsd_state::trunk_chan_map_seq at the landing */
+    uint32_t hz;       /**< 0 for none, and for a trunked target, whose park is its control channel */
+    uint8_t by;        /**< the scan that landed it (DSD_ENGINE_SCAN_LANDING_*); NONE for no landing */
+    uint32_t session;  /**< -Y: dsd_state::lcn_scan_session; trunk scan: the coordinator's session */
+    uint64_t map_seq;  /**< -Y: dsd_state::trunk_chan_map_seq at the landing */
+    uint64_t list_rev; /**< -Y: dsd_state::lcn_list_rev at the landing */
+    int index;         /**< the -Y row or trunk-scan target landed */
 } dsd_engine_scan_landing;
 
 typedef struct {

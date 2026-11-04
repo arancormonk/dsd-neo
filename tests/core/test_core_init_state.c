@@ -244,6 +244,30 @@ test_init_state_stamps_a_new_instance(void) {
     return rc;
 }
 
+/* Issue #644: the entry holds (a typed frequency's hold on its scan row) start off with every initState(), whatever a
+   previous run left, as the holds beside them do. */
+static int
+test_init_state_clears_the_entry_holds(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 60;
+    }
+    state->lcn_scan_hold = 1U;
+    state->lcn_scan_entry_hold = 1U;
+    state->trunk_scan_hold = 1U;
+    state->trunk_scan_entry_hold = 1U;
+    initState(state);
+    int rc = 0;
+    if (state->lcn_scan_hold != 0U || state->lcn_scan_entry_hold != 0U || state->trunk_scan_hold != 0U
+        || state->trunk_scan_entry_hold != 0U) {
+        DSD_FPRINTF(stderr, "initState kept a scan hold or entry hold a previous run left\n");
+        rc = 61;
+    }
+    freeState(state);
+    free(state);
+    return rc;
+}
+
 /* initState()'s checked allocations in the order it makes them, with what a failure of each must leave behind. */
 typedef struct {
     const char* name;
@@ -357,6 +381,10 @@ main(void) {
     int instance_rc = test_init_state_stamps_a_new_instance();
     if (instance_rc != 0) {
         return instance_rc;
+    }
+    int entry_hold_rc = test_init_state_clears_the_entry_holds();
+    if (entry_hold_rc != 0) {
+        return entry_hold_rc;
     }
     int alloc_rc = test_init_state_survives_each_allocation_failure();
     if (alloc_rc != 0) {

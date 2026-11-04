@@ -2721,7 +2721,7 @@ test_manual_scan_steps_note_landing(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         init_manual_scan_step_case(&opts, &state, cases[i].leg, cases[i].tune_result);
         dsd_state_lcn_on_air_note(&state, 0); /* landed by the scan */
-        dsd_engine_scan_landing_note_row(&state, 461012500L);
+        dsd_engine_scan_landing_note_row(&state, 0, 461012500L);
         rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
         rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);

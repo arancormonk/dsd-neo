@@ -34,7 +34,9 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -66,6 +68,7 @@
 #include <string.h>
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -5726,6 +5729,10 @@ test_p25_pending_retune_adopts_sm_retry(void) {
                     (unsigned long long)ctx->cc_tune_request_id, (unsigned long long)retry_request_id);
         test_rc = 1;
     }
+    if (dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "an adopted P25 retry still in flight confirmed its target on air\n");
+        test_rc = 1;
+    }
 
     dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.1, "test-sm-recovery");
@@ -5734,6 +5741,10 @@ test_p25_pending_retune_adopts_sm_retry(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || ctx->cc_tune_pending) {
         DSD_FPRINTF(stderr, "adopted P25 retry completion advanced scan active=%zu calls=%d pending=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls, ctx->cc_tune_pending);
+        test_rc = 1;
+    }
+    if (!dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "an adopted P25 retry's completion did not confirm its target on air\n");
         test_rc = 1;
     }
 
@@ -5813,6 +5824,11 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
                     ctx->cc_tune_pending);
         test_rc = 1;
     }
+    /* Issue #644: the recovered park is the target's landing. */
+    if (!dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "completed P25 recovery did not confirm its target on air\n");
+        test_rc = 1;
+    }
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
@@ -5881,6 +5897,93 @@ test_generic_pending_retune_holds_and_recovers(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+expect_landing(const char* stage, int ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "confirmed targets: %s failed\n", stage);
+        return 1;
+    }
+    return 0;
+}
+
+/* Which of three targets read as confirmed on air, as "010" (only target 1). */
+static int
+confirmed_targets_are(const char* tag, const dsd_state* state, int t0, int t1, int t2) {
+    const int got0 = dsd_engine_trunk_scan_target_confirmed(state, 0);
+    const int got1 = dsd_engine_trunk_scan_target_confirmed(state, 1);
+    const int got2 = dsd_engine_trunk_scan_target_confirmed(state, 2);
+    if (got0 != t0 || got1 != t1 || got2 != t2) {
+        DSD_FPRINTF(stderr, "%s: confirmed targets %d%d%d (want %d%d%d)\n", tag, got0, got1, got2, t0, t1, t2);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644 [F1]: a target is confirmed on air only by its park's completed retune, a trunked target's control-channel
+   park included; a park in flight, a pause, a switch and a rollback onto it each take that away. */
+static int
+test_target_confirmed_only_by_its_park(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,451000000,,250,,\n"
+                             "b,dmr-conventional,452000000,,250,,\n"
+                             "c,dmr-trunk,453000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    char err[256] = {0};
+    trunk_scan_test_set_now(1.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "confirmed targets: init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t park = dsd_trunk_tuning_pending_request();
+    test_rc |= confirmed_targets_are("a park in flight", &state, 0, 0, 0);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(1.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= confirmed_targets_are("the trunked park completed", &state, 1, 0, 0);
+    /* A trunked target's park names no frequency for an analog call: its control channel is never a call's. */
+    test_rc |= expect_landing("the trunked park names no frequency", dsd_engine_scan_landing_hz(&opts, &state) == 0U);
+
+    test_rc |=
+        expect_landing("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    test_rc |= confirmed_targets_are("the conventional park completed", &state, 0, 1, 0);
+    test_rc |= expect_landing("the conventional park names its frequency",
+                              dsd_engine_scan_landing_hz(&opts, &state) == 452000000U);
+
+    test_rc |=
+        expect_landing("pauses", dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) == 0);
+    test_rc |= confirmed_targets_are("paused", &state, 0, 0, 0);
+    test_rc |= expect_landing("resumes", dsd_engine_trunk_scan_resume_locked(&opts, &state) == 0);
+    test_rc |= confirmed_targets_are("resumed", &state, 0, 1, 0);
+
+    /* Every retune fails, the fallback onto the target left included: the rollback lands nothing. */
+    g_counting_tune_to_cc_failures_remaining = 8;
+    g_scan_tune_to_freq_failures_remaining = 8;
+    test_rc |= expect_landing("advance refused",
+                              dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    test_rc |= expect_landing("the rollback stays on b", dsd_engine_trunk_scan_active_index(&state) == 1U);
+    test_rc |= confirmed_targets_are("the rollback", &state, 0, 0, 0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= confirmed_targets_are("no coordinator", &state, 0, 0, 0);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -14254,6 +14357,71 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     return 0;
 }
 
+/* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here. */
+int
+dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    (void)state;
+    if (out_scan_walk) {
+        *out_scan_walk = 0;
+    }
+    return -1;
+}
+
+/* A frequency typed by hand picks an nfm target only when the width it runs fits the published DSP rate (issue #644
+ * D5), the rule by which the rotation skips it at every visit: its effective width, which a session edit sets over the
+ * list's. */
+static int
+test_entry_match_reads_the_targets_effective_width(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+    dsd_scan_entry_match_t match;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 0
+              || match.reason != DSD_SCAN_ENTRY_WIDTH || match.row != 0 || strcmp(match.label, "fire") != 0;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.width_hz = 12500;
+    dsd_scan_row_edit_result result;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_SET, &value, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 1
+              || match.scanner != DSD_SCAN_ENTRY_TRUNK || match.row != 0 || match.count != 1U || match.trunked != 0;
+    /* At a rate the list's width fits, the edit dropped, it is a pick as listed. */
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_RESET, NULL, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 0;
+    g_scan_dsp_rate_hz = 48000;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 1;
+    if (failed) {
+        DSD_FPRINTF(stderr, "entry match on the target's width (%s): scanner=%d reason=%d row=%d count=%u\n", err,
+                    (int)match.scanner, (int)match.reason, match.row, match.count);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return failed;
+}
+
 /* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
  * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
  * status line. The scan start passes it over for the next target (issue #697), and the rotation passes it over at
@@ -18805,6 +18973,7 @@ int
 main(void) {
     int rc = 0;
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
+    rc |= run_with_default_tune_hook(test_target_confirmed_only_by_its_park);
     rc |= run_with_default_tune_hook(test_parser_skips_a_utf8_bom_before_the_header);
     rc |= run_with_default_tune_hook(test_parser_refuses_an_over_long_header);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
@@ -19022,6 +19191,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_symbol_timing_explicit_follows_the_scope);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
+    rc |= run_with_default_tune_hook(test_entry_match_reads_the_targets_effective_width);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);

@@ -48,6 +48,7 @@
 
 #include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
+#include "scan_entry_internal.h"
 #include "scan_landing.h"
 #include "scan_step_untyped.h"
 
@@ -396,7 +397,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->needs_commit = 0;
     dsd_engine_channel_scan_resume_landed(opts, state);
     /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9). */
-    dsd_engine_scan_landing_note_row(state, *dsd_state_trunk_lcn_slot(state, scan->row));
+    dsd_engine_scan_landing_note_row(state, scan->row, *dsd_state_trunk_lcn_slot(state, scan->row));
     return 1;
 }
 
@@ -959,14 +960,8 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
     return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
 }
 
-/* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
- * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
- * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */
-static int
-channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
-    if (*dsd_state_trunk_lcn_slot_const(state, row) == 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
-        return 0;
-    }
+int
+dsd_engine_channel_scan_row_width_fits(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
     if (!channel_scan_row_visited_analog(state, row)) {
         return 1;
     }
@@ -974,6 +969,15 @@ channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row
     const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
     return !dsd_engine_scan_analog_width_skipped(opts, state, channel_scan_row_values(state, row, &scratch), kind,
                                                  dsp_rate_hz, NULL, 0U);
+}
+
+/* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
+ * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
+ * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_channel_scan_row_width_fits()). */
+static int
+channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
+    return *dsd_state_trunk_lcn_slot_const(state, row) != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
+           && dsd_engine_channel_scan_row_width_fits(opts, state, row, dsp_rate_hz);
 }
 
 /* A tone policy as it judges (dsd_analog_tone_policy_configure()): a list policy with a list, else none (OFF and an

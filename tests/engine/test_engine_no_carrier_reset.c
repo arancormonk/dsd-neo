@@ -31,6 +31,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -1675,6 +1676,9 @@ test_typed_scan_tune_boundaries(void) {
                       dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_NXDN48 && state->lcn_freq_roll == 1
                           && g_rtl_symbol_rate_hz == 2400 && g_rtl_symbol_levels == 4
                           && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    /* Issue #644 [F1]: the row landed is confirmed on air; the other row on its frequency is not. */
+    rc |= expect_true("typed landing confirms its row", dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                            && !dsd_engine_channel_scan_row_confirmed(state, 1));
     state->lcn_scan_hold = 1;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
@@ -1693,6 +1697,8 @@ test_typed_scan_tune_boundaries(void) {
                                                                 && dsd_engine_channel_scan_pending(opts, state));
     /* Issue #667 D9: a tune still pending lands nothing, and its landing names the row. */
     rc |= expect_true("typed pending hop names no landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
+    rc |= expect_true("typed pending hop confirms no row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                               && !dsd_engine_channel_scan_row_confirmed(state, 1));
     dsd_call_snapshot pending_call;
     rc |= expect_true("typed pending hop keeps outgoing call", dsd_call_state_get(state, 0, &pending_call) == 1);
     rc |= expect_true("typed pending hop avoids premature sync loss", pending_call.phase == DSD_CALL_PHASE_ACTIVE);
@@ -1703,6 +1709,9 @@ test_typed_scan_tune_boundaries(void) {
                           && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
     rc |=
         expect_true("typed async completion names its landing", dsd_engine_scan_landing_hz(opts, state) == 941012500U);
+    rc |=
+        expect_true("typed async completion confirms its row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                                   && dsd_engine_channel_scan_row_confirmed(state, 1));
     dsd_call_snapshot ended;
     rc |= expect_true("typed pending hop retains call", dsd_call_state_get(state, 0, &ended) == 1);
     rc |= expect_true("typed pending hop ends explicitly", ended.end_reason == DSD_CALL_END_EXPLICIT);
@@ -1713,6 +1722,8 @@ test_typed_scan_tune_boundaries(void) {
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     rc |= expect_true("typed dual-backend partial failure leaves row", state->lcn_freq_roll == 1 && opts->frame_p25p1);
+    rc |= expect_true("typed partial failure confirms no row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                                   && !dsd_engine_channel_scan_row_confirmed(state, 1));
     rc |= expect_true("typed partial failure closes frame gate",
                       !dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -2366,6 +2377,123 @@ test_untyped_find_and_enter_row(void) {
     rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                                      && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
     rc |= expect_true("enter-row-pending-landing-names-its-row", dsd_engine_scan_landing_hz(opts, state) == 994012500U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Land untyped @p row of the running -Y list, as a step does, with every front end taking it at once. */
+static int
+land_untyped_row(dsd_opts* opts, dsd_state* state, int row) {
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return dsd_engine_scan_untyped_enter_row(opts, state, row, (double)time(NULL)) == DSD_UNTYPED_STEP_OK;
+}
+
+/* Which rows of a two-row list read as confirmed on air, as "01" (row 0 no, row 1 yes). */
+static int
+confirmed_rows_are(const char* tag, const dsd_state* state, int row0, int row1) {
+    const int got0 = dsd_engine_channel_scan_row_confirmed(state, 0);
+    const int got1 = dsd_engine_channel_scan_row_confirmed(state, 1);
+    if (got0 != row0 || got1 != row1) {
+        DSD_FPRINTF(stderr, "%s: confirmed rows %d%d (want %d%d)\n", tag, got0, got1, row0, row1);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644 [F1]: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
+   attempt or displacement takes that away, whatever frequency the receiver may still be on. */
+static int
+test_untyped_row_confirmed_only_by_its_landing(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 995012500, 996012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    /* The stream started on its source before the scan landed anything: a later start on it is a reopen. */
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= confirmed_rows_are("never landed", state, 0, 0);
+    rc |= expect_true("lands row 0", land_untyped_row(opts, state, 0));
+    rc |= confirmed_rows_are("row 0 landed", state, 1, 0);
+    /* A stream gap stays on the carrier. */
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= confirmed_rows_are("a stream gap keeps it", state, 1, 0);
+
+    /* A step still pending: neither the row left nor the row tuned, until it lands. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("steps into a timeout", dsd_engine_scan_untyped_enter_row(opts, state, 1, (double)time(NULL))
+                                                  == DSD_UNTYPED_STEP_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a pending step", state, 0, 0);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the pending step lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= confirmed_rows_are("the pending step landed", state, 0, 1);
+
+    /* A failed step, and one a front end moved for before another refused it. */
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_true("a refused step",
+                      dsd_engine_scan_untyped_enter_row(opts, state, 0, (double)time(NULL)) == DSD_UNTYPED_STEP_FAILED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a refused step", state, 0, 0);
+    rc |= expect_true("lands row 1 again", land_untyped_row(opts, state, 1));
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_true("a partial step", dsd_engine_scan_untyped_enter_row(opts, state, 0, (double)time(NULL))
+                                            == DSD_UNTYPED_STEP_FAILED_MOVED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a partial step", state, 0, 0);
+    opts->use_rigctl = 0;
+    g_rigctl_setfreq_ok = 0;
+
+    /* The operator's tune, a stream reopen, a rewrite of the row, another list and the pause each displace it. */
+    rc |= expect_true("lands row 0 again", land_untyped_row(opts, state, 0));
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= confirmed_rows_are("a manual tune", state, 0, 0);
+    rc |= expect_true("lands row 0 after the tune", land_untyped_row(opts, state, 0));
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= confirmed_rows_are("a stream reopen on the same source", state, 0, 0);
+    rc |= expect_true("lands row 0 after the reopen", land_untyped_row(opts, state, 0));
+    state->trunk_lcn_freq[0] = 997012500;
+    rc |= confirmed_rows_are("the row rewritten in place", state, 0, 0);
+    state->trunk_lcn_freq[0] = 995012500;
+    rc |= confirmed_rows_are("the row's frequency put back", state, 1, 0);
+    const uint64_t list_rev = state->lcn_list_rev;
+    state->lcn_list_rev = list_rev + 1U;
+    rc |= confirmed_rows_are("another list", state, 0, 0);
+    state->lcn_list_rev = list_rev;
+    state->lcn_scan_paused = 1U;
+    state->lcn_scan_resume_pending = 1U;
+    rc |= confirmed_rows_are("a resume pending", state, 0, 0);
+    state->lcn_scan_paused = 0U;
+    state->lcn_scan_resume_pending = 0U;
+    rc |= confirmed_rows_are("the resume flags cleared", state, 1, 0);
+    /* A walk's tune still pending: the movement is outstanding, whatever landing is still recorded. */
+    dsd_engine_manual_tune_note_lcn_cycle(state, 4242U, 996012500U, 995012500U, 1, 1, 1);
+    rc |= confirmed_rows_are("a walk pending", state, 0, 0);
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    rc |= confirmed_rows_are("the walk dropped", state, 1, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a walk tuned", state, 0, 0);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= confirmed_rows_are("the walk landed", state, 0, 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    rc |= confirmed_rows_are("a pause", state, 0, 0);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -10413,6 +10541,7 @@ main(void) {
     rc |= test_legacy_step_landing_after_a_learned_channel_commits_the_row();
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
+    rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();

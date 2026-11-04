@@ -27,6 +27,8 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -47,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "scan_analog_internal.h"
+#include "scan_entry_internal.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
 
@@ -2690,6 +2693,79 @@ test_row_session_edits(void) {
     tunes = reset_count = 0;
 }
 
+/* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here, and no trunk scan
+   runs. */
+int
+dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    (void)state;
+    if (out_scan_walk) {
+        *out_scan_walk = 0;
+    }
+    return -1;
+}
+
+int
+dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
+                                 dsd_scan_entry_tally* tally) {
+    (void)opts;
+    (void)state;
+    (void)hz;
+    (void)tally;
+    return 0;
+}
+
+/* A frequency typed by hand picks an nfm row only when the width the row runs fits the DSP rate (issue #644 D5): its
+ * effective width, which a session edit sets over the list's, as the scan's own skip reads it. */
+static void
+test_entry_match_reads_the_rows_effective_width(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = 461000000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 154430000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 20000, 0);
+    g_scan_dsp_rate_hz = 16000;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    expected_tune_hz = 461000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    expected_tune_hz = 150000000;
+    const uint32_t session = state->scan_row_session;
+
+    dsd_scan_entry_match_t match;
+    assert(dsd_engine_scan_entry_match(opts, state, 154430000U, &match) == 0);
+    assert(match.scanner == DSD_SCAN_ENTRY_NONE && match.reason == DSD_SCAN_ENTRY_WIDTH && match.row == 1);
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    dsd_scan_row_edit_result result;
+    value.width_hz = 12500;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    assert(dsd_engine_scan_entry_match(opts, state, 154430000U, &match) == 1);
+    assert(match.scanner == DSD_SCAN_ENTRY_CHANNEL && match.row == 1 && match.count == 1U);
+    /* The edit dropped: the list's width is back, and so is the reason. */
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_RESET,
+                                            NULL, &result)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    assert(dsd_engine_scan_entry_match(opts, state, 154430000U, &match) == 0 && match.reason == DSD_SCAN_ENTRY_WIDTH);
+    g_scan_dsp_rate_hz = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_receive_row_session_edits(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -3899,6 +3975,7 @@ main(void) {
     test_am_row_warnings_for_its_widths();
     test_row_widths_on_audio_input();
     test_row_session_edits();
+    test_entry_match_reads_the_rows_effective_width();
     test_receive_row_session_edits();
     test_pause_keeps_the_scan_and_drops_its_row();
     test_pause_in_place_forgets_the_carrier();

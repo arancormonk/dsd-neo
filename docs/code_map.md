@@ -154,6 +154,33 @@ Generated (do not edit/commit):
     `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
     `include/dsd-neo/engine/manual_tune.h`, and the untyped step's shared pieces in `src/engine/scan_step_untyped.h`
     (see "A manual tune stays out of that ledger" under the trunk-tuning hooks below)
+  - A frequency typed by hand that is a row of the scan in force (issue #644): `src/engine/scan_entry.c` behind
+    `include/dsd-neo/engine/scan_entry.h`, read from the command handler only (no per-frame cost, no `USE_RADIO`
+    guard). `dsd_engine_scan_entry_match()` walks the rows on the frequency in list order into one tally
+    (`scan_entry_internal.h`, inline so a test that builds one scan's source alone needs nothing more): the trunk scan's
+    targets when `trunk_scan_enabled` has a coordinator, running or paused (`dsd_engine_trunk_scan_entry_rows()` in
+    `trunk_scan.c`, the merged target order being list number then file order), else a -Y list of the user's own that
+    runs, is paused or has a resume pending (a map the stopped scan left, a `-T` map and learned channels match
+    nothing). A row is on the frequency only when its frequency equals the `uint32_t` Hz exactly, the row's `long`
+    widened to compare; a placeholder never is. Eligible: not avoided, its trunk-scan list on, and its width fitting
+    by the rule the scan skips a row at every visit, without that rule's avoid check
+    (`dsd_engine_channel_scan_row_width_fits()`, split out of `channel_scan_row_reachable()`: the effective width, a
+    session edit's included, and AM feasibility on audio input; the trunk width skip at the published DSP rate). A
+    trunk target's retry cooldown does not exclude it. An untyped -Y list's run of adjacent rows on one frequency is
+    one channel, its first row, as the walk's `lcn_cycle_pick()` treats it; every typed row counts. Of several eligible
+    rows the one confirmed on air wins, else the first; `ordinal`/`count` place it ("1 of 2"), `label` names it (label,
+    else id, else `row N`). With none eligible, `reason` (`AVOIDED`, `LIST_OFF`, `WIDTH`, else `NO_ROW`) and `row`/
+    `label` describe the first row on the frequency. "Confirmed on air" ([F1]) is the landing record below:
+    `dsd_engine_channel_scan_row_confirmed()` (here) takes that row's landing in this session and list, the row still
+    on its frequency, no pause or resume pending, and no movement outstanding (no typed request or retry,
+    `dsd_engine_channel_scan_waiting()`; no untyped step's or walk's tune noted,
+    `dsd_engine_manual_tune_pending_row()`); `dsd_engine_trunk_scan_target_confirmed()` (`trunk_scan.c`) the target
+    parked on, not paused, no park in flight, and its landing in this coordinator's session. Equal frequency alone, or
+    the row last committed, proves nothing. The entry holds `lcn_scan_entry_hold` and `trunk_scan_entry_hold` sit
+    beside `lcn_scan_hold`/`trunk_scan_hold` in the UI snapshot range (`ui_snapshot.c` static assert) and are cleared
+    by `initState()`; never saved. Tests: `ENGINE_SCAN_ENTRY` (the real engine and coordinator), `ENGINE_CHANNEL_SCAN`
+    and `ENGINE_TRUNK_SCAN` (effective width at a stubbed DSP rate, session edits), `CORE_INIT_STATE`,
+    `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
   - The -Y list's cursor and its position (issue #666): `dsd_state::lcn_freq_roll` is only the cursor, the row the next
     step starts from. A step may move it before its row lands (the timed untyped step's pre-tune `roll = row`, a skip
     past avoided rows, a wrap), past a row whose tune failed, or past a 0 Hz placeholder it parks on, so `roll - 1` is
@@ -13085,28 +13112,35 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (`dsd_opts_input_is_radio()`: NFM, or AM for `DSD_ANALOG_DEMOD_AM`), unknown on audio input, taken with the
   frequency at the reception's first block (`analog_call_frequency_hz()`: the tuned one, else a scan's confirmed
   landing, below), and never rewritten.
-  - Confirmed landing (issue #667 D9, `engine/scan_landing.h`, kept in `dsd_engine_scan_owner::landing`). On audio
+  - Confirmed landing (issue #667 D9, issue #644 [F1]; `engine/scan_landing.h`, kept in
+    `dsd_engine_scan_owner::landing`): the -Y row or trunk-scan target a scan last confirmed it landed on, with the scan
+    session (the -Y `lcn_scan_session`, or the coordinator's), the list (`lcn_list_rev`) and the frequency. On audio
     input `dsd_opts_tuned_freq_hz()` is 0, so an analog call heard through a rigctl peer takes the frequency a scan
     confirmed it landed the peer on: a -Y row's (`dsd_engine_scan_landing_note_row()`, at the typed commit's end in
     `channel_scan_commit()` and in `untyped_install_row()` for an untyped step, pending ones once they land, and for a
     manual step of a running untyped list -- Next, Previous, an avoid's step -- likewise, since
     `dsd_engine_channel_scan_walk_row()` installs its row as the step does, after its carrier boundary, once the front
     end confirmed the tune: `RTL_STREAM_TUNE_OK` at once, or a timed-out tune's late landing) or a trunk-scan
-    conventional target's
-    (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's control channel). A manual step
-    to the list's own row is the scan's step: the scan still owns the tuner. The operator's own tune (`=`, issue #671)
-    is the takeover: its carrier boundary forgets the landing and its pause leaves the scan. It is forgotten before
-    every row start (`channel_scan_start_row()`, the untyped steps, a manual untyped step), every target switch after
-    its preparation, at every carrier boundary but a stream gap (a manual tune among
-    them) and at the -Y release (a leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
+    conventional target's (`trunk_scan_note_landing()`, once its retune completed, or the P25 state machine's
+    replacement tune did). A trunked target's completed park is noted too, as its landing with no frequency: its
+    control channel is never a call's. A manual step to the list's own row is the scan's step: the scan still owns the
+    tuner. The operator's own tune (`=`, issue #671) is the takeover: its carrier boundary forgets the landing and its
+    pause leaves the scan. It is forgotten before every row start (`channel_scan_start_row()`, the untyped steps, a
+    manual untyped step, the avoided-row departure, a resume), every target switch after its preparation, at every
+    carrier boundary but a stream gap (a manual tune among them), at every radio stream start
+    (`dsd_engine_note_stream_source()`: a reopen on the same source starts wherever it is told), at the -Y release (a
+    leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
     (`dsd_engine_rigctl_landing_forget()`, which `svc_rigctl_connect()` calls on a reconnect, a new peer and a connect
     that leaves rigctl off); a placeholder row, a failed, pending or unconfirmed tune and a rollback note none.
     `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing once the scan
     session or channel map (`trunk_chan_map_seq`, a map replacement) moved. As with `dsd_opts_tuned_freq_hz()`, a
-    frequency changed on the peer itself is not seen. Analog rows only: digital rows on a rigctl -Y channel keep the
-    `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
+    frequency changed on the peer itself is not seen. Analog rows only take the frequency: digital rows on a rigctl -Y
+    channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the "confirmed on air" proof a typed
+    frequency reads (`dsd_engine_channel_scan_row_confirmed()`, `dsd_engine_trunk_scan_target_confirmed()`, below under
+    the typed-frequency match). Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
     real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
-    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps), `APP_COMMAND_QUEUE` (a manual step's confirmed,
+    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps, `test_untyped_row_confirmed_only_by_its_landing`),
+    `ENGINE_TRUNK_SCAN` (`test_target_confirmed_only_by_its_park`), `APP_COMMAND_QUEUE` (a manual step's confirmed,
     timed-out, refused and deferred tunes), `UI_RIGCTL_CONNECT`.
   - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
     discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
