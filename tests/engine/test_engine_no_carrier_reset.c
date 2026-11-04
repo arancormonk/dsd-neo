@@ -8330,6 +8330,86 @@ test_refused_config_leaves_the_scan_alone(void) {
     return refused_config_case(0) | refused_config_case(1);
 }
 
+/* Writes a group file naming talkgroup @p tg @p name into @p path (DSD_TEST_PATH_MAX). Returns 0 once written. */
+static int
+write_group_file(char* path, uint32_t tg, const char* name) {
+    const int fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "scan-config-groups-");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (fp == NULL) {
+        (void)remove(path);
+        return -1;
+    }
+    DSD_FPRINTF(fp, "id,mode,name\n%u,A,%s\n", (unsigned)tg, name);
+    (void)fclose(fp);
+    return 0;
+}
+
+/* The group name talkgroup @p tg's call was filed under ("?" with no row). */
+static const char*
+history_group_name_of(const dsd_state* state, uint32_t tg) {
+    const Event_History* row = history_row_of(state, tg);
+    return row != NULL ? row->t_name : "?";
+}
+
+/* Fix round 4: a config that turns -Y off and names a different group file ends the running untyped list's call under
+   the group list it was heard with (OLD), then installs the config's (NEW). Round 3 ended the call after the prepare
+   had imported the new list, so the call was filed under NEW. */
+static int
+test_config_stopping_the_scan_ends_its_calls_under_the_old_groups(void) {
+    const char* what = "config stopping -Y with a new group file";
+    const uint32_t tg = 5901U;
+    char old_groups[DSD_TEST_PATH_MAX];
+    char new_groups[DSD_TEST_PATH_MAX];
+    if (write_group_file(old_groups, tg, "OLD") != 0) {
+        return 1;
+    }
+    if (write_group_file(new_groups, tg, "NEW") != 0) {
+        (void)remove(old_groups);
+        return 1;
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)remove(old_groups);
+        (void)remove(new_groups);
+        return 1;
+    }
+    int rc = 0;
+    if (setup_named_walk_list(opts, state, 1, 1350012500L) != 0) {
+        teardown_walk_list(opts, state);
+        (void)remove(old_groups);
+        (void)remove(new_groups);
+        return 1;
+    }
+    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups) == 0);
+    rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", new_groups);
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, tg), "BRAVO");
+    rc |= expect_label(what, history_group_name_of(state, tg), "OLD");
+    char mode[8];
+    char name[32];
+    rc |= expect_case(what, "the new groups are in force",
+                      strcmp(opts->group_in_file, new_groups) == 0
+                          && dsd_tg_policy_lookup_group_label(state, tg, mode, sizeof mode, name, sizeof name)
+                          && strcmp(name, "NEW") == 0);
+    teardown_walk_list(opts, state);
+    (void)remove(old_groups);
+    (void)remove(new_groups);
+    return rc;
+}
+
 static int
 test_running_list_left_by_a_config_or_a_map_clear(void) {
     return running_list_left_case(0) | running_list_left_case(1) | typed_list_left_by_a_config_case();
@@ -10360,6 +10440,7 @@ main(void) {
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_first_row_landing_takes_the_tuner();
     rc |= test_refused_config_leaves_the_scan_alone();
+    rc |= test_config_stopping_the_scan_ends_its_calls_under_the_old_groups();
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_avoided_row_departs_under_a_carrier();
     rc |= test_walk_press_while_pending_steps_on();

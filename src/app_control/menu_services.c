@@ -994,20 +994,32 @@ svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
-    if (!opts || !state || !path || !*path || strlen(path) >= sizeof opts->group_in_file) {
+svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out) {
+    if (!opts || !path || !*path || !out || strlen(path) >= sizeof opts->group_in_file) {
         return -1;
     }
-    char previous[sizeof opts->group_in_file];
-    DSD_MEMCPY(previous, opts->group_in_file, sizeof previous);
-    DSD_STRNCPY(opts->group_in_file, path, sizeof opts->group_in_file - 1);
-    opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    const int rc = dsd_tg_policy_reload_group_file(opts, state);
-    if (rc != 0) {
-        // Keep the retained table paired with its original save destination after a failed import.
-        DSD_MEMCPY(opts->group_in_file, previous, sizeof opts->group_in_file);
+    return dsd_tg_policy_load_group_file(path, out);
+}
+
+void
+svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded) {
+    if (!opts || !state || !path || !loaded) {
+        return;
     }
-    return rc;
+    // The retained table and its save destination change together.
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    dsd_tg_policy_adopt_group_file(state, loaded);
+}
+
+int
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+    dsd_tg_policy_store* loaded = NULL;
+    if (!state || svc_load_group_list(opts, path, &loaded) != 0) {
+        return -1;
+    }
+    svc_install_group_list(opts, state, path, loaded);
+    dsd_tg_policy_release(loaded);
+    return 0;
 }
 
 int

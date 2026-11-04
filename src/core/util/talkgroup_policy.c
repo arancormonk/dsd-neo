@@ -2985,16 +2985,11 @@ tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* 
 }
 
 int
-dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
     dsd_state* imported = NULL;
     dsd_tg_policy_context* imported_ctx = NULL;
-    const dsd_tg_policy_context* current_ctx = NULL;
-    void* imported_policy = NULL;
-    dsd_state_ext_cleanup_fn imported_cleanup = NULL;
-    unsigned int next_table_generation = 1u;
-    unsigned int next_active_generation = 1u;
 
-    if (!opts || !state) {
+    if (!path || !out) {
         return -1;
     }
 
@@ -3003,55 +2998,58 @@ dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    if (csvGroupImportPath(opts->group_in_file, imported) != 0) {
-        dsd_state_ext_free_all(imported);
-        free(imported);
-        return -1;
-    }
-    if (tg_policy_reload_validate_candidate(imported) != 0) {
+    if (csvGroupImportPath(path, imported) != 0 || tg_policy_reload_validate_candidate(imported) != 0) {
         dsd_state_ext_free_all(imported);
         free(imported);
         return -1;
     }
 
+    imported_ctx = (dsd_tg_policy_context*)imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY];
+    imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+    imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+    dsd_state_ext_free_all(imported);
+    free(imported);
+
+    if (!imported_ctx) {
+        imported_ctx = tg_policy_context_alloc();
+        if (!imported_ctx) {
+            return -1;
+        }
+    }
+    imported_ctx->lazy = 0;
+    *out = imported_ctx;
+    return 0;
+}
+
+void
+dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
+    const dsd_tg_policy_context* current_ctx = NULL;
+    unsigned int next_table_generation = 1u;
+    unsigned int next_active_generation = 1u;
+
+    if (!state || !loaded) {
+        return;
+    }
     current_ctx = tg_policy_ctx_get_const(state);
     if (current_ctx) {
         next_table_generation = current_ctx->table.generation + 1u;
         next_active_generation = current_ctx->active.generation + 1u;
     }
+    loaded->table.generation = next_table_generation;
+    loaded->table.structural_generation = next_table_generation;
+    tg_policy_carry_active(loaded, current_ctx, next_active_generation);
+    dsd_tg_policy_restore(state, loaded);
+}
 
-    imported_policy = imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY];
-    imported_cleanup = imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY];
-    imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
-    imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+int
+dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
+    dsd_tg_policy_store* loaded = NULL;
 
-    if (!imported_policy) {
-        imported_ctx = tg_policy_context_alloc();
-        if (!imported_ctx) {
-            dsd_state_ext_free_all(imported);
-            free(imported);
-            return -1;
-        }
-        imported_policy = imported_ctx;
-        imported_cleanup = tg_policy_context_free;
-    }
-
-    imported_ctx = (dsd_tg_policy_context*)imported_policy;
-    imported_ctx->table.generation = next_table_generation;
-    imported_ctx->table.structural_generation = next_table_generation;
-    imported_ctx->lazy = 0;
-    tg_policy_carry_active(imported_ctx, current_ctx, next_active_generation);
-
-    if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, imported_policy, imported_cleanup) != 0) {
-        if (imported_cleanup) {
-            imported_cleanup(imported_policy);
-        }
-        dsd_state_ext_free_all(imported);
-        free(imported);
+    if (!opts || !state || dsd_tg_policy_load_group_file(opts->group_in_file, &loaded) != 0) {
         return -1;
     }
-    dsd_state_ext_free_all(imported);
-    free(imported);
+    dsd_tg_policy_adopt_group_file(state, loaded);
+    dsd_tg_policy_release(loaded);
     return 0;
 }
 

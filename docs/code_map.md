@@ -3520,13 +3520,14 @@ else, since untyped rows run the configured decoder and front end. Learned chann
 still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. Two
 leaves that would otherwise come too late end those calls first (issue #644 fix rounds): a config apply that turns
 `-Y` off (the scanner off, or trunking on) ends a running list's calls, typed or untyped, once
-`cfg_prepare_runtime_apply()` has found it a config that applies (a refused one changes nothing) and before it stages
-its own keys and policy and takes the flag down (`cfg_end_calls_of_the_scan_it_stops()`, through
-`dsd_engine_channel_scan_end_running_calls()`; its scope leave runs after the command), so they commit under the row
-heard, its keys and its own groups (a typed row's groups, which the command parked, are put back for the end and parked
-again); one case still splits a call: a config whose radio input then fails to start and rolls back is not applied,
-yet the calls have ended while the scan goes on. And a channel-map clear leaves before it empties the map
-(`svc_clear_channel_map()`). A paused
+`cfg_prepare_runtime_apply()` has found it a config that applies (a refused one changes nothing; a group file it names
+is loaded there, not installed) and before it installs that group list, stages its own keys and policy and takes the
+flag down (`cfg_end_calls_of_the_scan_it_stops()`, through `dsd_engine_channel_scan_end_running_calls()`, then
+the group install, in `cfg_begin_apply()`; its scope leave runs after the command), so they commit under the row heard, its keys and
+the groups they were heard with (a typed row's groups, which the command parked, are put back for the end and parked
+again). A config whose radio input then rolls back, or whose replay re-plan is refused, is reported not applied but
+puts back only the input: its `[trunking]` stays and `cfg_settle_scan_owner()` stops the scan all the same, so no call
+is split. And a channel-map clear leaves before it empties the map (`svc_clear_channel_map()`). A paused
 list (no resume pending) was already left by its
 pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not
 reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service clears the flags

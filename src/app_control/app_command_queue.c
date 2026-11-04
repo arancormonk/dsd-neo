@@ -9075,8 +9075,13 @@ cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserCon
     return UI_CMD_APPLY_FAILED;
 }
 
+/* Check that the config @p cfg applies, before anything changes. A group file it names in place of the session's is
+   loaded here, not installed: @p groups receives it (one reference), for cfg_begin_apply() to install once the calls of
+   a scan the config stops have ended under the list they were heard with. @p groups stays NULL otherwise, and on any
+   refusal. */
 static int
-cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                          dsd_tg_policy_store** groups) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
@@ -9103,8 +9108,7 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     if (strcmp(opts->group_in_file, cfg->trunk_group_csv) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    // Config loads already suspend scan-row groups, so this replaces only the global list.
-    if (svc_import_group_list(opts, state, cfg->trunk_group_csv) != 0) {
+    if (svc_load_group_list(opts, cfg->trunk_group_csv, groups) != 0) {
         ui_set_toast(state, 4, "Config not applied: group list could not be loaded");
         return UI_CMD_APPLY_FAILED;
     }
@@ -9598,14 +9602,18 @@ cfg_apply_kept_result(dsd_state* state, int restart_causes, const char* restart_
 
 /* A config that turns a running -Y list off, typed or untyped (the scanner off, or trunking on:
    dsd_user_config_scanner_after()), ends the list's calls here (issue #644): once cfg_prepare_runtime_apply() has found
-   the config one that applies, so a refused config changes nothing, and before the staging writes the config's keys
-   and policy and takes the scanner flag down, after which the scope leave (apply_cmd_leave_scanner_scope()) would end
-   them under the new config, named after no row. They end under the row heard and its keys, and under its own groups:
-   the command parked a typed row's groups for the configured list (apply_cmd_scoped()), so they are put back for the
-   end and parked again. The row's decoder settings and receive options stay parked, which the end does not read.
-   One case still splits a call: a config whose radio input then fails to start and rolls back
-   (apply_cfg_radio_input()) is not applied, yet the calls it found have ended, while the scan goes on; that rollback
-   restores the input and nothing more. */
+   the config one that applies, so a refused config changes nothing, and before anything of the config is written: the
+   group list it names (cfg_begin_apply() installs it next), then the staging's keys and policy and the scanner flag,
+   after which the scope leave (apply_cmd_leave_scanner_scope()) would end them under the new config, named after no
+   row. They end under the row heard and its keys, and under the groups they were heard with: an untyped list's (or a
+   typed row's with none of its own) are the session's, still in force; a typed row's own were parked by the command
+   for the configured list (apply_cmd_scoped()), so they are put back for the end and parked again. The row's decoder
+   settings and receive options stay parked, which the end does not read.
+   A config whose radio input then fails to start and rolls back (apply_cfg_radio_input()), or whose replay re-plan is
+   refused (apply_cfg_replay_replan()), is reported not applied, but that puts back the input alone: the rest of the
+   config stays, its [trunking] with it, so cfg_settle_scan_owner() still takes the scanner flag down and the scan
+   stops (a paused list, whose calls this never ends, keeps its pause). The calls ending here match that outcome; no
+   call is split. */
 static void
 cfg_end_calls_of_the_scan_it_stops(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (opts->scanner_mode != 1 || dsd_user_config_scanner_after(cfg, opts)) {
@@ -9618,6 +9626,24 @@ cfg_end_calls_of_the_scan_it_stops(dsd_opts* opts, dsd_state* state, const dsdne
     if (groups_put_back) {
         (void)dsd_scan_groups_suspend(state);
     }
+}
+
+/* The first steps of a config apply, in this order: check that the config applies (a refused one changes nothing), end
+   the calls of a -Y scan it stops under what they were heard with, then install the group list it names. Config loads
+   already suspend scan-row groups, so that install replaces only the global list. */
+static int
+cfg_begin_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    dsd_tg_policy_store* groups = NULL;
+    const int prepare_rc = cfg_prepare_runtime_apply(opts, state, cfg, &groups);
+    if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
+        return prepare_rc;
+    }
+    cfg_end_calls_of_the_scan_it_stops(opts, state, cfg);
+    if (groups != NULL) {
+        svc_install_group_list(opts, state, cfg->trunk_group_csv, groups);
+        dsd_tg_policy_release(groups);
+    }
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 /* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
@@ -9646,11 +9672,10 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
 
     DSD_MEMCPY(&cfg, c->data, sizeof cfg);
-    const int prepare_rc = cfg_prepare_runtime_apply(opts, state, &cfg);
+    const int prepare_rc = cfg_begin_apply(opts, state, &cfg);
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
-    cfg_end_calls_of_the_scan_it_stops(opts, state, &cfg);
     cfg_lifecycle_owned lifecycle_before;
     cfg_capture_lifecycle_owned(opts, &lifecycle_before);
     const cfg_scan_owner owner_before = {opts->trunk_enable, opts->scanner_mode};

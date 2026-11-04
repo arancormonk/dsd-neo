@@ -20,6 +20,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -292,8 +293,13 @@ int svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, c
  * @return 1 when advice was written to @p out, 0 when there is none, -1 on a NULL or empty buffer.
  */
 int svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, char* out, size_t out_size);
-/** @brief Import a group list CSV into runtime state. */
+/** @brief Import a group list CSV into runtime state; a failure keeps the live list and its path. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+/** svc_import_group_list() in two steps, for a caller that must know the file loads before it changes anything: the
+ * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the live
+ * list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()). */
+int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out);
+void svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded);
 /** Adopt a nonempty source alias CSV; failure preserves the live list and path. */
 int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
 /**

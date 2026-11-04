@@ -464,10 +464,16 @@ dsd_source_alias_clear(dsd_state* state) {
 }
 
 int
-dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
+    (void)path;
+    (void)out;
     return -1;
+}
+
+void
+dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
+    (void)state;
+    (void)loaded;
 }
 
 /* Counts calls rather than returning a canned value: what svc_clear_group_list()
