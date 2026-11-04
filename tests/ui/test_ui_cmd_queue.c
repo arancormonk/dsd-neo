@@ -2476,6 +2476,7 @@ test_manual_scan_steps_note_landing(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         init_test_context(&opts, &state);
         opts.scanner_mode = 1;
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
         opts.use_rigctl = 1;
         opts.audio_in_type = AUDIO_IN_PULSE;
         state.lcn_freq_count = 3;

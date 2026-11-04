@@ -38,6 +38,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -273,6 +274,8 @@ scan_step(dsd_opts* opts, dsd_state* state) {
 static void
 scan_list(dsd_opts* opts, dsd_state* state, long row0_hz, long row1_hz, int typed) {
     opts->scanner_mode = 1;
+    /* A -Y list is one the user imported (issue #697): learned channels are no list to rotate through. */
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv");
     state->trunk_lcn_freq[0] = row0_hz;
     state->trunk_lcn_freq[1] = row1_hz;
     state->lcn_freq_count = 2;
@@ -396,6 +399,7 @@ test_manual_cycle_landing(void) {
         return;
     }
     opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
     state->trunk_lcn_freq[0] = 966012500L;
     state->trunk_lcn_freq[1] = 966037500L;
     state->trunk_lcn_freq[2] = 966062500L;
@@ -528,7 +532,8 @@ trunk_scan_start(dsd_opts* opts, dsd_state* state) {
     (void)fclose(fp);
     dsd_trunk_tuning_requests_reset();
     opts->trunk_scan_enabled = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", g_targets);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", g_targets);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "trunk scan init: %s\n", err);
@@ -609,22 +614,29 @@ trunk_scan_revisit_and_rollback(dsd_opts* opts, dsd_state* state, int call) {
 /* A candidate (@p call 0) or a call (1) on the first target when the operator advances. */
 static void
 test_trunk_scan_departure(int call) {
+    static const uint64_t kT0Ns = 5000ULL * 1000000000ULL;
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
+    dsd_decode_clock_use_test(kT0Ns);
     if (session_new(&opts, &state) != 0 || trunk_scan_start(opts, state) != 0) {
         expect("trunk scan: a session", 0);
         if (opts) {
             session_free(opts, state);
         }
+        dsd_decode_clock_use_system();
         return;
     }
     expect("trunk scan: the first target is landed",
            g_setfreq_freq == 154430000L && dsd_engine_scan_landing_hz(opts, state) == 154430000U);
     trunk_scan_preparation_fails(opts, state, call);
+    /* A target whose switch could not be prepared cools down as a failed retune does (issue #697): the departure
+       below waits it out. */
+    dsd_decode_clock_test_set_ns(kT0Ns + 3ULL * 1000000000ULL);
     trunk_scan_departs(opts, state, call);
     trunk_scan_revisit_and_rollback(opts, state, call);
     trunk_scan_stop(opts, state);
     session_free(opts, state);
+    dsd_decode_clock_use_system();
 }
 
 int
