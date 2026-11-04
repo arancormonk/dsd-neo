@@ -3516,7 +3516,12 @@ scope for the leave to find, yet its calls are named after its rows and keyed wi
 (`channel_scan_untyped_runs()`: `scanner_mode` over a list of the user's own) and ends its calls, before the caller
 clears `scanner_mode` and the row keys leave, so they commit under the row heard (issue #644 B-3); it restores nothing
 else, since untyped rows run the configured decoder and front end. Learned channels are no list, and an untyped resume
-still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. A paused
+still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. Two
+leaves that would otherwise come too late end those calls first (issue #644 fix round): a config apply that turns `-Y`
+off (the scanner off, or trunking on) ends them before it stages its own keys and policy and takes the flag down
+(`cfg_end_calls_of_the_scan_it_stops()` in `app_command_queue.c`, through `dsd_engine_channel_scan_end_untyped_calls()`;
+its scope leave runs after the command), and a channel-map clear leaves before it empties the map
+(`svc_clear_channel_map()`). A paused
 list (no resume pending) was already left by its
 pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not
 reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service clears the flags
@@ -3716,7 +3721,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a paused scan, pauses a running trunk scan in place (a pending trunk-scan resume counts as running), and stops or
     starts `-Y`. The stop leaves with `scanner_mode` still 1, then the row keys leave, then the flag clears, so a
     running untyped list's calls end under its row and keys (issue #644 B-3); the start goes through
-    `dsd_engine_channel_scan_start()`, which ends the calls heard so far under what they began with and then gives the
+    `dsd_engine_channel_scan_start()` (refused over a pause or a pending resume, which resume instead; with no list of
+    the user's own it only sets `scanner_mode`, ending no call and leaving `operator_tuned` as it is, since the scan
+    never moves the receiver), which ends the calls heard so far under what they began with and then gives the
     tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; B-4), before trunking goes off; `SCAN_RESUME` resumes only
     a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one while
     a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator (`Trunk
@@ -3728,10 +3735,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference
     adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`,
     `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
-    `operator_tuned` is cleared by a resume, by `y` starting `-Y` (issue #644 B-4: the scan's calls were filed as
-    "Exploring") and at session start, never by turning trunking on (an Explore followed by "Follow this system" stays
-    the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`, `APP_CONTROL_ACTIONS`,
-    `ENGINE_CHANNEL_SCAN` and `ENGINE_NO_CARRIER_RESET` (the stop and start, issue #644).
+    `operator_tuned` is cleared by a resume, by `y` starting `-Y` over a list of the user's own (issue #644 B-4: the
+    scan's calls were filed as "Exploring") and at session start, never by turning trunking on (an Explore followed by
+    "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`,
+    `APP_CONTROL_ACTIONS`, `ENGINE_CHANNEL_SCAN` and `ENGINE_NO_CARRIER_RESET` (the stop and start, issue #644).
   - Scan avoid commands (issue #672): `SCAN_AVOID_REMOVE` (221, `dsd_app_scan_avoid_remove_payload`, typed submit
     `dsd_app_command_scan_avoid_remove()`, which refuses an unterminated `target_id`; min-size rule; not coalescible;
     API `scan_avoid_remove`) puts one avoided entry back by the identity the scan avoid view lists, never a list

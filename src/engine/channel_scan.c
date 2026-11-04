@@ -1466,16 +1466,33 @@ dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
     return monitor_request;
 }
 
+int
+dsd_engine_channel_scan_end_untyped_calls(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !channel_scan_untyped_runs(opts, state)) {
+        return 0;
+    }
+    channel_scan_end_calls(opts, state);
+    return 1;
+}
+
 void
 dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
+    /* A paused scan resumes instead (dsd_engine_channel_scan_resume()): a start would publish it running beside its
+       pause. */
+    if (!opts || !state || state->lcn_scan_paused || state->lcn_scan_resume_pending) {
         return;
     }
-    /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune): only
-       then does the tuner become the scan's, so what is heard next is the scan's, as a resume's landing does. */
-    channel_scan_end_calls(opts, state);
+    /* With no list of the user's own the scan never moves (channels learned over the air are no list): the receiver
+       stays the operator's, so its calls go on and it stays the operator's tuner, as a stop over such a session ends
+       nothing (channel_scan_untyped_runs()). */
+    if (dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune):
+           only then does the tuner become the scan's, so what is heard next is the scan's, as a resume's landing
+           does. */
+        channel_scan_end_calls(opts, state);
+        state->operator_tuned = 0U;
+    }
     opts->scanner_mode = 1;
-    state->operator_tuned = 0U;
 }
 
 void

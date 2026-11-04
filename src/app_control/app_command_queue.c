@@ -9596,6 +9596,18 @@ cfg_apply_kept_result(dsd_state* state, int restart_causes, const char* restart_
     return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
 }
 
+/* A config that turns a running untyped -Y list off (the scanner off, or trunking on: dsd_user_config_scanner_after())
+   ends its calls now, under the row heard, its keys and its policy (issue #644): the staging below writes the config's
+   keys and policy and takes the scanner flag down before the scope leave runs (apply_cmd_leave_scanner_scope()), which
+   would end them under the new config and named after no row. A typed list's calls are left to that leave, which
+   recognises it by its scope. */
+static void
+cfg_end_calls_of_the_scan_it_stops(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (opts->scanner_mode == 1 && !dsd_user_config_scanner_after(cfg, opts)) {
+        (void)dsd_engine_channel_scan_end_untyped_calls(opts, state);
+    }
+}
+
 /* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
    none) reports: a "Config not applied: ..." refusal or rollback leaves it 0. */
 static int
@@ -9626,6 +9638,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
+    cfg_end_calls_of_the_scan_it_stops(opts, state, &cfg);
     cfg_lifecycle_owned lifecycle_before;
     cfg_capture_lifecycle_owned(opts, &lifecycle_before);
     const cfg_scan_owner owner_before = {opts->trunk_enable, opts->scanner_mode};

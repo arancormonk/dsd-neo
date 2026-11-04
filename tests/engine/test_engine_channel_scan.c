@@ -3129,6 +3129,36 @@ test_start_gives_the_tuner_to_the_scan(void) {
     assert(!slot0_call_open(state));
     assert(opts->scanner_mode == 1 && state->operator_tuned == 0U);
     untyped_fixture_free(opts, state);
+
+    /* Fix round 1: with no list of the user's own the scan never moves the receiver, so the start ends no call and
+       the tuner stays the operator's; only the scanner flag goes on, as a stop over such a session ends nothing. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    opts->chan_in_file[0] = '\0';
+    opts->scanner_mode = 0;
+    state->operator_tuned = 1U;
+    open_manual_call(state);
+    dsd_engine_channel_scan_start(opts, state);
+    assert(slot0_call_open(state));
+    assert(opts->scanner_mode == 1 && state->operator_tuned == 1U);
+    untyped_fixture_free(opts, state);
+
+    /* A paused scan, and one whose resume is pending, resume instead: a start changes nothing (fix round 1, M3). */
+    for (int pending = 0; pending <= 1; pending++) {
+        opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        untyped_running_fixture(opts, state);
+        (void)dsd_engine_channel_scan_pause(opts, state, 1);
+        state->lcn_scan_resume_pending = (uint8_t)pending;
+        open_manual_call(state);
+        dsd_engine_channel_scan_start(opts, state);
+        assert(slot0_call_open(state));
+        assert(opts->scanner_mode == 0 && state->operator_tuned == 1U && state->lcn_scan_paused == 1U);
+        untyped_fixture_free(opts, state);
+    }
 }
 
 /* N2, N9: a resume first finds a row to land on. With none it never starts: the manual session and its call go on,

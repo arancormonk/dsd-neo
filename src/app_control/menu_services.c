@@ -913,6 +913,10 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_scan_enabled == 1) {
         return -1;
     }
+    // Clearing the map leaves -Y: first, while the map is still the scan's, so a running list's calls end under the
+    // row heard and its keys (issue #644), then the foreground keyring goes back to the globals.
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_scan_keys_leave(state);
     opts->chan_in_file[0] = '\0';
     opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof state->trunk_chan_map);
@@ -920,9 +924,6 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
     // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
-    // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
-    (void)svc_leave_channel_scan(opts, state);
-    dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_replace_begin(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;

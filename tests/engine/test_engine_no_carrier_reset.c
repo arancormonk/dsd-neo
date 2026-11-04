@@ -8156,6 +8156,51 @@ test_y_start_gives_the_tuner_to_the_scan(void) {
     return rc;
 }
 
+/* Fix round 1: a running untyped list left by something other than `y`, its call heard on keyed row BRAVO. A config
+   that turns the scanner off (@p map_clear 0) took the scanner flag down while staging its own keys and policy, before
+   its scope leave, so the call went on, named after no row; a channel-map clear (1) emptied the map before its leave,
+   so the leave found no list and ended nothing. Both end the call under BRAVO now, as a scan member. */
+static int
+running_list_left_case(int map_clear) {
+    const char* what = map_clear ? "channel-map clear of a running untyped list" : "config turning the scanner off";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1300012500L + (long int)map_clear * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const uint32_t tg = 5601U + (uint32_t)map_clear;
+    int rc = expect_case(what, "Next lands on BRAVO, keyed",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && state->rkey_array[9] == 999ULL);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
+    if (map_clear) {
+        rc |= expect_case(what, "the clear is applied",
+                          press_action(opts, state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR) == 1
+                              && state->lcn_freq_count == 0);
+    } else {
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+        rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    }
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, tg), "BRAVO");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, tg, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_running_list_left_by_a_config_or_a_map_clear(void) {
+    return running_list_left_case(0) | running_list_left_case(1);
+}
+
 enum { HELD_AVOID_REFUSED = 0, HELD_AVOID_FAILS_LATE = 1, HELD_AVOID_PUT_BACK = 2 };
 
 /* Put avoided @p row back, as the avoided channel list does (DSD_APP_CMD_SCAN_AVOID_REMOVE). */
@@ -10029,6 +10074,7 @@ main(void) {
     rc |= test_walk_landing_ends_a_synced_reception();
     rc |= test_y_stop_ends_the_untyped_scans_calls();
     rc |= test_y_start_gives_the_tuner_to_the_scan();
+    rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
