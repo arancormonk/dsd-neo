@@ -3442,17 +3442,23 @@ The Next and Previous walk over a list without modes (`L`/`J` and an avoid's ste
 has not confirmed either; before, an RTL timeout counted as a landing, so the row, its keys and the call boundary were
 published while the receiver might never get there. `apply_manual_lcn_cycle_untyped_dir_locked()` picks the row and
 hands the tune to its owner. The running untyped `-Y` scan owns the walk: `dsd_engine_channel_scan_walk_row()` (public
-in `channel_scan.h`, so a go-to of a chosen row can use it too) tunes as the timed step does, rigctl first (the legacy
-leg), then RTL (`io_control_set_rtl_freq_tagged()`: the operator's tune always reaches the front end, and the legacy
-caches are forgotten after it), and on a landing runs the `SCAN_STEP` boundary and `untyped_install_row()` (the row's
-keys included). Off any scan (`-T` included) the walk keeps its one leg, the backend io_control selects
+in `channel_scan.h`, so a go-to of a chosen row can use it too) tunes through the timed step's own pieces
+(`untyped_tune_row()` and `untyped_enter_tuned_row()` with the walk's direction): rigctl first (the legacy leg), then RTL
+(`walk_tune_row_rtl()`, `io_control_set_rtl_freq_tagged()`: the operator's tune always reaches the front end, and any
+answer but a deferral forgets the legacy caches, as the step's leg does), and on a landing runs the `SCAN_STEP` boundary
+and `untyped_install_row()` (the row's keys included). Off any scan (`-T` included) the walk keeps its one leg, the backend io_control selects
 (`request_manual_tune()` with an `out_pending_id`), and its landing is app-control's `lcn_cycle_finish()`: the calls
 end, the `TUNE` boundary (trunking off) or the identity forget (trunking on), the TETRA, cold-start and P25 handoffs,
 and the row named; no row keys apply off `-Y` (B-1, docs/csv-formats.md). A refusal applies the walk's row rules by its
 direction (`dsd_engine_channel_walk_note_outcome()`: forward passes the row, back keeps it for a retry), a deferral
 changes nothing, and a rigctl leg that moved before the RTL leg failed or timed out runs the outgoing boundary and the
 analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record and nothing else: the cursor, the row
-heard, the keys, the clocks and the calls stay. The synced-frames loop ends a reception on its landing as on a step's,
+heard, the keys, the clocks and the calls stay. While it is pending (`dsd_engine_manual_tune_walk_row()`: its row on the
+current list and session) another press goes on from its row in the press's own direction (`lcn_cycle_start()`), so
+quick presses and key auto-repeat keep advancing; that tune supersedes the first, whose record then settles nothing.
+And the timed `-Y` step waits for a pending walk the scan owns (`no_carrier_scan_walk_pending()`), so it never
+supersedes it and turns a Previous into a forward step; the rotation goes on at its own time once the walk settles.
+The synced-frames loop ends a reception on its landing as on a step's,
 and the engine loop's poll settles it: a drop changes nothing; a scan-owned walk commits its row as the step does while
 the scan is still the same one (session, list, the row on the frequency tuned), applies the refusal rules on a late
 failure, and otherwise runs only the `TUNE` boundary for a landing's move; a walk off any scan goes to the hook
@@ -3460,9 +3466,10 @@ app-control installs with its session (`dsd_channel_walk_settle_hook_set()`, `<d
 `dsd_app_channel_walk_settled()`), which runs the landing (the row named only while the list and the row are the ones
 walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25
 machine owns the trunk. Tests: `ENGINE_NO_CARRIER_RESET` (both directions, both owners, a late landing, a late failure,
-a drop, a rigctl move with the RTL leg refused or failing late, a landing in the middle of a reception),
-`ENGINE_MANUAL_TUNE_PENDING` (the record), `APP_COMMAND_QUEUE` (the off-scan walk on every toolchain, the scan-owned
-walk's cases under the io_control wrap, row keys only under `-Y`).
+a drop, a rigctl move with the RTL leg refused or failing late, a landing in the middle of a reception, a second press
+while pending, the timed step held by a pending walk, a landing after a stop or a reload), `ENGINE_MANUAL_TUNE_PENDING`
+(the record), `APP_COMMAND_QUEUE` (the owner-independent walk cases off any scan on every toolchain and under `-Y`
+where the io_control wrap links; the `-Y`-only cases there; row keys only under `-Y`).
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of

@@ -83,6 +83,19 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
                                            uint32_t prior_applied_hz, int row, int dir, int scan_owned);
 
 /**
+ * @brief The row a Next or Previous walk's tune still awaits (DSD_MANUAL_TUNE_LCN_CYCLE noted and not yet settled) on
+ * @p state's current list and scan session (dsd_state::lcn_list_rev, dsd_state::lcn_scan_session), or -1 with none.
+ *
+ * A press while it is pending goes on from that row in its own direction, so quick presses and key auto-repeat keep
+ * advancing (issue #644), and the -Y timed step waits while the walk it would supersede is the scan's own.
+ *
+ * @param state          Decoder state; NULL reads as none.
+ * @param out_scan_owned Optional; set to 1 when the running -Y scan owns that walk, else 0.
+ * @return The row, or -1. A flag read and one atomic load while nothing is noted. Decoder thread.
+ */
+int dsd_engine_manual_tune_walk_row(const dsd_state* state, int* out_scan_owned);
+
+/**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
  * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
  *

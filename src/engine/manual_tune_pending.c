@@ -384,6 +384,21 @@ dsd_engine_manual_tune_noted(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
 }
 
+int
+dsd_engine_manual_tune_walk_row(const dsd_state* state, int* out_scan_owned) {
+    if (out_scan_owned) {
+        *out_scan_owned = 0;
+    }
+    if (!state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE
+        || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
+        return -1;
+    }
+    if (out_scan_owned) {
+        *out_scan_owned = g_record.scan_owned;
+    }
+    return g_record.row;
+}
+
 /* A RadioReference import's record that the next poll reports at once, before its completion: dropped by a tune that
    is announced (or after it landed), or its stream's session ended. Ending the reception then costs nothing (the
    receiver moved, or its stream went), and the outcome is posted while the import's toast is still up. */

@@ -7748,6 +7748,154 @@ test_scan_owned_walk_tunes_both_front_ends(void) {
     return rc;
 }
 
+/* Fix round 1 (Minor 4a): a second press while the first walk's tune is still pending goes on from the row that tune
+   went to, in the second press's direction, so quick presses and key auto-repeat keep advancing. The first tune's
+   record, superseded by the second, settles nothing: its own late completion is not taken, and the second landing
+   commits its row. */
+static int
+walk_press_while_pending_case(int dir, int scan_owned) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s %s twice while pending", dir > 0 ? "next" : "prev",
+                 scan_owned ? "-Y" : "no-scan");
+    const long int base_hz = 1140012500L + (long int)((dir > 0 ? 0 : 1) * 2 + scan_owned) * 3000000L;
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    /* From row 0: Next goes to row 1, then row 2; Previous to row 2, then row 1. */
+    const int first = dir > 0 ? 1 : 2;
+    const int second = dir > 0 ? 2 : 1;
+    int rc = expect_case(what, "the first press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    rc |= expect_case(what, "the first press tunes its row",
+                      g_rtl_tune_freq == (uint32_t)(base_hz + (long int)first * 1000000L));
+    rc |= expect_case(what, "the second press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    if (g_rtl_tune_freq != (uint32_t)(base_hz + (long int)second * 1000000L)) {
+        DSD_FPRINTF(stderr, "%s: the second press tuned %u Hz (want row %d)\n", what, g_rtl_tune_freq, second);
+    }
+    rc |= expect_case(what, "the second press goes on from the pending row",
+                      g_rtl_tune_calls == 2 && g_rtl_tune_freq == (uint32_t)(base_hz + (long int)second * 1000000L));
+    rc |= expect_walk_left_alone(what, "both pending", state, state->carrier_seq);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the second landing is taken",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "the second row commits",
+                      state->lcn_freq_roll == second + 1 && dsd_state_lcn_heard_row(state) == second);
+    rc |= expect_case(what, "the first record settles nothing",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE
+                          && state->lcn_freq_roll == second + 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_press_while_pending_steps_on(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+            rc |= walk_press_while_pending_case(dir, scan_owned);
+        }
+    }
+    return rc;
+}
+
+/* Fix round 1 (Minor 4b): while a walk the -Y scan owns waits on its tune, the timed step does not fire, even when it is
+   due, so it never supersedes the walk (a Previous would turn into a forward step). Once the walk settles (a landing,
+   or a late failure) the rotation goes on at its own time. */
+static int
+walk_holds_the_timed_step_case(int dir) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = dir > 0 ? "walk next -Y holds the timed step" : "walk prev -Y holds the timed step";
+    const long int base_hz = 1160012500L + (dir > 0 ? 0L : 3000000L);
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const int row = dir > 0 ? 1 : 2;
+    int rc = expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    const int calls = g_rtl_tune_calls;
+    state->last_cc_sync_time = time(NULL) - 11; /* the timed step is due */
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the due step waits for the walk", g_rtl_tune_calls == calls && state->lcn_freq_roll == 1);
+    if (dir > 0) {
+        /* The front end refuses the row late: Next passes it, and the rotation is free again. */
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the late failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED
+                              && state->lcn_freq_roll == row + 1);
+    } else {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "Previous lands its own row",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
+                              && state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the rotation goes on once the walk settled", g_rtl_tune_calls == calls + 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_holds_the_timed_step(void) {
+    return walk_holds_the_timed_step_case(1) | walk_holds_the_timed_step_case(-1);
+}
+
+/* Fix round 1 (Minor 5): a walk's landing after its list stopped being the one walked. One the -Y scan owned, after a
+   stop of that scan (restarted before the landing): only the TUNE boundary runs for the move, and no row commits. One
+   off any scan, after the list was reloaded: the calls end, and no row of the new list is named. */
+static int
+test_walk_landing_after_the_list_changed(void) {
+    int rc = 0;
+    for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        const char* what = scan_owned ? "walk -Y landing after a stop" : "walk no-scan landing after a reload";
+        const long int base_hz = 1180012500L + (long int)scan_owned * 3000000L;
+        if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+            teardown_walk_list(opts, state);
+            return 1;
+        }
+        rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, 1) == 1);
+        if (scan_owned) {
+            (void)dsd_engine_channel_scan_leave(opts,
+                                                state); /* `y` stops the scan; it starts again before the landing */
+        } else {
+            rc |= expect_case(what, "the list is reloaded",
+                              import_scan_list(opts, state, "1,1190012500\n2,1191012500\n3,1192012500\n") == 0
+                                  && state->lcn_freq_count == 3);
+        }
+        const dsd_call_observation heard = {.protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+        rc |= expect_case(what, "a call is heard", dsd_call_state_observe(state, &heard, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        const int roll = state->lcn_freq_roll;
+        const int heard_row = dsd_state_lcn_heard_row(state);
+        const uint32_t carrier_seq = state->carrier_seq;
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+        rc |= expect_case(what, "one boundary runs for the move", state->carrier_seq == carrier_seq + 1U);
+        dsd_call_snapshot call;
+        rc |= expect_case(what, "the call ended",
+                          dsd_call_state_get(state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+        rc |= expect_case(what, "no row is named",
+                          state->lcn_freq_roll == roll && dsd_state_lcn_heard_row(state) == heard_row
+                              && state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+        teardown_walk_list(opts, state);
+    }
+    return rc;
+}
+
 /* A walk's landing in the middle of a reception ends it, so at most the frame in flight decodes under the row left;
    the outer pass then commits the row (here a walk off any scan, whose row has a name). */
 static int
@@ -9558,6 +9706,9 @@ main(void) {
     rc |= test_walk_waits_for_its_tune();
     rc |= test_scan_owned_walk_tunes_both_front_ends();
     rc |= test_walk_landing_ends_a_synced_reception();
+    rc |= test_walk_press_while_pending_steps_on();
+    rc |= test_walk_holds_the_timed_step();
+    rc |= test_walk_landing_after_the_list_changed();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_targets_on_a_resampled_chain();

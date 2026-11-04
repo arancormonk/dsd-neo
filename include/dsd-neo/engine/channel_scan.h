@@ -152,7 +152,8 @@ void dsd_engine_channel_walk_note_outcome(dsd_state* state, int row, int dir, in
  *   cursor, the row heard, the keys and the clocks stay. The engine loop's poll (dsd_engine_scan_untyped_poll()) then
  *   commits the row as above when it lands while the scan is still that one (same session and list, the row on the
  *   frequency tuned), applies the refusal rules when it fails late (dsd_engine_channel_walk_note_outcome()), and changes
- *   nothing when it is dropped; a landing after the scan changed only runs the boundary of the move.
+ *   nothing when it is dropped; a landing after the scan changed only runs the boundary of the move. Meanwhile the
+ *   timed step waits, and the next walk goes on from this row (dsd_engine_manual_tune_walk_row()).
  * - REFUSED: the refusal rules for @p dir. A rigctl leg that moved before the RTL leg failed already ran the outgoing
  *   boundary and the analog reset: the receiver left the row on air.
  * - DEFERRED: nothing but a rigctl move's boundary, as above; the next press tries the same row.

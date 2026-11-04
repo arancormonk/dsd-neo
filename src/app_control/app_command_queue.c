@@ -3807,6 +3807,23 @@ lcn_cycle_back_start(const dsd_state* state) {
     return anchor < 0 ? count - 1 : (anchor - 1 + count) % count;
 }
 
+/* Where a walk in direction @p dir starts looking (issue #666): forward at the cursor, back at lcn_cycle_back_start().
+   While an earlier walk's tune is still pending, from the row it went to instead, in this press's direction (issue
+   #644): the cursor waits for that landing, so quick presses and key auto-repeat would otherwise pick the same row
+   again. This press's tune supersedes the earlier one, whose record then settles nothing. */
+static int
+lcn_cycle_start(const dsd_state* state, int dir) {
+    const int count = state->lcn_freq_count;
+    const int pending_row = dsd_engine_manual_tune_walk_row(state, NULL);
+    if (pending_row >= 0 && pending_row < count) {
+        return (pending_row + dir + count) % count;
+    }
+    if (dir < 0) {
+        return lcn_cycle_back_start(state);
+    }
+    return (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= count) ? 0 : state->lcn_freq_roll;
+}
+
 /* The walk to @p row in direction @p dir off any scan (no -Y running; issue #644 B-2): one leg, the backend io_control
    selects. A tune that timed out is noted (DSD_MANUAL_TUNE_LCN_CYCLE) and settled by the engine's poll through
    dsd_app_channel_walk_settled(): the row, the call boundary and the handoffs wait for its landing. */
@@ -3839,13 +3856,10 @@ apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int 
     if (count <= 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    int start = 0;
     if (dir > 0) {
         dsd_state_lcn_back_retry_clear(state);
-        start = (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= count) ? 0 : state->lcn_freq_roll;
-    } else {
-        start = lcn_cycle_back_start(state);
     }
+    const int start = lcn_cycle_start(state, dir);
     const int row = lcn_cycle_pick(state, start, dir);
     if (row < 0) {
         /* Nowhere to land: the row heard, the keys and the calls stay. Forward, the cursor steps on, as it always has;
