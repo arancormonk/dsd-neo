@@ -1803,6 +1803,19 @@ no_carrier_scan_walk_pending(const dsd_state* state) {
     return dsd_engine_manual_tune_pending_row(state, &scan_walk) >= 0 && scan_walk;
 }
 
+/* Whether an operator hold keeps the -Y scan on the row it is on. Not a row the operator avoided (issue #644 B-5): the
+   `b` that avoided it steps on at once, and a step refused, or failing late, would otherwise leave the held scan there
+   for good, a second `b` finding it already avoided. The rotation steps on at its next due pass, as an unheld scan's
+   does; the hold stays, and keeps the row that step lands on. A row put back meanwhile is the scan's to hold again. */
+static int
+no_carrier_hold_keeps_row(const dsd_state* state) {
+    if (!state->lcn_scan_hold) {
+        return 0;
+    }
+    const int row = dsd_engine_channel_scan_on_air_row(state);
+    return row < 0 || !dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
+}
+
 /* The timed -Y step. Returns non-zero when the receiver moved to another frequency, so the caller runs the carrier
    boundary (ending any call still open as an explicit release rather than a sync loss) before it commits the row the
    step landed on, which @p install_row names (-1: none). */
@@ -1817,7 +1830,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
     // the command that releases the hold restarts it, so the row gets a full hangtime.
-    if (state->lcn_scan_hold || no_carrier_scan_walk_pending(state)) {
+    if (no_carrier_hold_keeps_row(state) || no_carrier_scan_walk_pending(state)) {
         return 0;
     }
 

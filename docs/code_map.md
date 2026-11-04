@@ -3752,14 +3752,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
-    scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). The `-Y`
-    avoid, clear and put-back toasts count through the view (`size_t`, B6: `lcn_avoid_count` saturates at 65,535);
-    the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its list
-    failed to allocate. Toasts name an entry as the avoided channel list does: a `-Y` row as `row N (<MHz>, ...)`
+    scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). A held
+    `-Y` scan left on its avoided row that way (the step `b` asked for refused at once or failing late) is not kept
+    there by the hold: `no_carrier_hold_keeps_row()` lets the timed step go on at its next due pass, as an unheld scan's
+    would, and the hold stays, keeping the row it lands on; a row put back first is held where it is (issue #644 B-5).
+    The `-Y` avoid, clear and put-back toasts count through the view (`size_t`, B6: `lcn_avoid_count` saturates at
+    65,535); the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its
+    list failed to allocate. Toasts name an entry as the avoided channel list does: a `-Y` row as `row N (<MHz>, ...)`
     (`frequency unknown` for a placeholder), since two rows can share a frequency, and a target as `#<ordinal> <label>`
     (`trunk_scan_toast_name()`; the id when it has no label, since Android's ids are entry UIDs), from the published
-    `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put
-    back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
+    `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put back
+    (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
     `API_COMMAND_PAYLOADS`.
   - Scan list toggle (issue #697): `SCAN_LIST_SET` (222, `dsd_app_scan_list_set_payload {session, request, list,
     enabled}`, typed submit `dsd_app_command_scan_list_set()`; min-size rule; not coalescible) switches one trunk-scan

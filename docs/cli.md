@@ -2095,9 +2095,10 @@ is delayed.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
   the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and
-  clear all avoids; see `docs/ui-terminal.md`. The avoids outlive `-Y`: with it stopped the DMR and NXDN
-  control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists them, puts them back and
-  clears them.
+  clear all avoids; see `docs/ui-terminal.md`. A hold never keeps the scan on an avoided channel: when the step `b` asks
+  for fails, a held scan moves on at its next step and holds the channel it lands on. The avoids outlive `-Y`: with it
+  stopped the DMR and NXDN control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists
+  them, puts them back and clears them.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted

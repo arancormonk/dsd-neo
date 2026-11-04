@@ -85,6 +85,7 @@
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
 #include "../../src/app_control/commands_internal.h"
@@ -8154,6 +8155,98 @@ test_y_start_gives_the_tuner_to_the_scan(void) {
     teardown_walk_list(opts, state);
     return rc;
 }
+
+enum { HELD_AVOID_REFUSED = 0, HELD_AVOID_FAILS_LATE = 1, HELD_AVOID_PUT_BACK = 2 };
+
+/* Put avoided @p row back, as the avoided channel list does (DSD_APP_CMD_SCAN_AVOID_REMOVE). */
+static int
+put_back_row(dsd_opts* opts, dsd_state* state, int row) {
+    dsd_app_scan_avoid_remove_payload id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    dsd_app_scan_avoid_list list;
+    if (dsd_app_scan_avoid_list_build(opts, state, &list) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < list.count; i++) {
+        if (list.entries[i].identity.kind == DSD_APP_SCAN_AVOID_KIND_LCN && list.entries[i].identity.row == row) {
+            id = list.entries[i].identity;
+        }
+    }
+    dsd_app_scan_avoid_list_free(&list);
+    if (id.kind != DSD_APP_SCAN_AVOID_KIND_LCN
+        || dsd_app_command_scan_avoid_remove(&id) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return -1;
+    }
+    return dsd_app_drain_cmds(opts, state) == 1 ? 0 : -1;
+}
+
+/* B-5: `b` on a held -Y scan avoids row 0 and steps; the step to row 1 is refused at once (@p how REFUSED), or times
+   out and fails late (FAILS_LATE). The hold stopped the timed step, so the scan sat on the avoided row for good, a
+   second `b` finding it already avoided. At the next due pass it steps on (to row 2, the refused row 1 passed) and the
+   hold stays, keeping row 2. A row put back before that pass (PUT_BACK) is held where it is. */
+static int
+held_avoid_case(int how) {
+    static const char* const names[] = {"refused", "fails late", "put back"};
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "held avoid, step %s", names[how]);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1250012500L + (long int)how * 3000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the hold is on",
+                         press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    if (how == HELD_AVOID_FAILS_LATE) {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+        g_rtl_timeout_outstanding = 0;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the step fails late",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    } else {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+        rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    }
+    rc |= expect_case(what, "held on avoided row 0, row 1 passed",
+                      dsd_state_trunk_lcn_avoid_get(state, 0U) && dsd_engine_channel_scan_on_air_row(state) == 0
+                          && state->lcn_freq_roll == 2 && state->lcn_scan_hold == 1U);
+    if (how == HELD_AVOID_PUT_BACK) {
+        rc |= expect_case(what, "row 0 is put back",
+                          put_back_row(opts, state, 0) == 0 && !dsd_state_trunk_lcn_avoid_get(state, 0U));
+    }
+    g_rtl_tune_calls = 0;
+    untyped_step_now(opts, state);
+    if (how == HELD_AVOID_PUT_BACK) {
+        rc |= expect_case(what, "the hold keeps row 0",
+                          g_rtl_tune_calls == 0 && dsd_state_lcn_heard_row(state) == 0 && state->lcn_scan_hold == 1U);
+    } else {
+        const uint32_t row2_hz = (uint32_t)(base_hz + 2000000L);
+        rc |= expect_case(what, "the next pass steps to row 2", g_rtl_tune_calls == 1 && g_rtl_tune_freq == row2_hz);
+        rc |= expect_case(what, "row 2 lands, keyed",
+                          dsd_state_lcn_heard_row(state) == 2 && state->lcn_freq_roll == 3
+                              && state->rkey_array[9] == 777ULL);
+        rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+        g_rtl_tune_calls = 0;
+        untyped_step_now(opts, state);
+        rc |= expect_case(what, "and keeps row 2", g_rtl_tune_calls == 0 && dsd_state_lcn_heard_row(state) == 2);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_held_scan_steps_off_an_avoided_row(void) {
+    return held_avoid_case(HELD_AVOID_REFUSED) | held_avoid_case(HELD_AVOID_FAILS_LATE)
+           | held_avoid_case(HELD_AVOID_PUT_BACK);
+}
 #endif
 
 int
@@ -9936,6 +10029,7 @@ main(void) {
     rc |= test_walk_landing_ends_a_synced_reception();
     rc |= test_y_stop_ends_the_untyped_scans_calls();
     rc |= test_y_start_gives_the_tuner_to_the_scan();
+    rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();
