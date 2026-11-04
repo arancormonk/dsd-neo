@@ -7803,6 +7803,60 @@ test_walk_press_while_pending_steps_on(void) {
     return rc;
 }
 
+/* Fix round 2: a press while the -Y timed step's own tune is still pending goes on from the row that step went to, in
+   the press's direction, as after a pending walk: the cursor waits for the step's landing, so the press would
+   otherwise pick the step's row again. The press's tune supersedes the step's, and its landing commits its own row. */
+static int
+walk_press_while_a_step_is_pending_case(int dir) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = dir > 0 ? "walk next while a step is pending" : "walk prev while a step is pending";
+    const long int base_hz = 1200012500L + (dir > 0 ? 0L : 3000000L);
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    /* The timed step goes on from the cursor (row 1) and its tune times out. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    int rc = expect_case(what, "the step's row 1 is pending",
+                         g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
+                             && g_retune_in_flight.active && state->lcn_freq_roll == 1);
+    /* From row 1: Next goes to row 2, Previous to row 0. */
+    const int row = dir > 0 ? 2 : 0;
+    rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    if (g_rtl_tune_freq != (uint32_t)(base_hz + (long int)row * 1000000L)) {
+        DSD_FPRINTF(stderr, "%s: the press tuned %u Hz (want row %d)\n", what, g_rtl_tune_freq, row);
+    }
+    rc |= expect_case(what, "the press goes on from the step's row",
+                      g_rtl_tune_calls == 2 && g_rtl_tune_freq == (uint32_t)(base_hz + (long int)row * 1000000L));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    int polled = DSD_MANUAL_TUNE_NONE;
+    for (int i = 0; i < 4; i++) {
+        const int p = dsd_engine_scan_untyped_poll(opts, state);
+        if (p == DSD_MANUAL_TUNE_LANDED) {
+            polled = p;
+        }
+    }
+    rc |= expect_case(what, "the press's row commits",
+                      polled == DSD_MANUAL_TUNE_LANDED && state->lcn_freq_roll == row + 1
+                          && dsd_state_lcn_heard_row(state) == row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_press_while_a_step_is_pending_steps_on(void) {
+    return walk_press_while_a_step_is_pending_case(1) | walk_press_while_a_step_is_pending_case(-1);
+}
+
 /* Fix round 1 (Minor 4b): while a walk the -Y scan owns waits on its tune, the timed step does not fire, even when it is
    due, so it never supersedes the walk (a Previous would turn into a forward step). Once the walk settles (a landing,
    or a late failure) the rotation goes on at its own time. */
@@ -9707,6 +9761,7 @@ main(void) {
     rc |= test_scan_owned_walk_tunes_both_front_ends();
     rc |= test_walk_landing_ends_a_synced_reception();
     rc |= test_walk_press_while_pending_steps_on();
+    rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();
     rc |= test_walk_landing_after_the_list_changed();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();

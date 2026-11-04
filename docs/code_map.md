@@ -163,13 +163,12 @@ Generated (do not edit/commit):
     timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
     the outgoing carrier boundary, so calls ending there still take the outgoing row's label), a manual untyped step
     (`L` or `J`) whose tune landed (at once or late, issue #644), where `dsd_engine_channel_walk_note_outcome()` writes
-    `roll = row + 1` (a walk the running `-Y` scan owns installs the row through `untyped_install_row()`), and a P25 hunt
-    probe on a `-T`
-    channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it picked past a
-    duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a placeholder park, a
-    deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted step
-    `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads
-    as none once its row leaves the list or holds another frequency (no map generation: protocols move
+    `roll = row + 1` (a walk the running `-Y` scan owns installs the row through `untyped_install_row()`), and a P25
+    hunt probe on a `-T` channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it
+    picked past a duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a
+    placeholder park, a deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every
+    accepted step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A
+    record reads as none once its row leaves the list or holds another frequency (no map generation: protocols move
     `trunk_chan_map_seq` whenever they learn a channel), and with none the heard row falls back to `roll - 1` when that
     row exists and is not 0 Hz. A hard-failed step (either direction, manual or timed, typed or untyped, late failures
     included, and a refused P25 hunt probe of a `-T` channel-map row) that finds no valid record calls
@@ -3375,11 +3374,11 @@ the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `s
 tap-to-tune and the Airspy live apply; `dsd_engine_manual_tune_note_rr_import()` for a RadioReference import's tune,
 kind `DSD_MANUAL_TUNE_RR_IMPORT`, issue #803; `dsd_engine_manual_tune_note_lcn_cycle()` for a Next or Previous walk's
 tune over a list without modes, kind `DSD_MANUAL_TUNE_LCN_CYCLE`, issue #644, with the row, the direction, whether the
-`-Y` scan owns the walk, the scan session and the list). A deferred tune has no ID and is never noted: the plain note supersedes
-the older record before it rejects ID 0, and a tune that queued nothing must not drop one. The engine's one RTL
-completion callback (`trunk_tuning_hooks_install.c`) sends manual IDs into a small ring of atomic slots (eight; the poll
-looks for its record's ID, so an older tune finishing late never hides the completion awaited) and every other ID to the
-ledger, so `dsd_trunk_tuning_frame_is_current()` never waits on a manual tune. The decoder loop polls
+`-Y` scan owns the walk, the scan session and the list). A deferred tune has no ID and is never noted: the plain note
+supersedes the older record before it rejects ID 0, and a tune that queued nothing must not drop one. The engine's one
+RTL completion callback (`trunk_tuning_hooks_install.c`) sends manual IDs into a small ring of atomic slots (eight; the
+poll looks for its record's ID, so an older tune finishing late never hides the completion awaited) and every other ID
+to the ledger, so `dsd_trunk_tuning_frame_is_current()` never waits on a manual tune. The decoder loop polls
 (`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`, one atomic load while nothing is pending). A
 late failure puts `opts->rtlsdr_center_freq` back on the stream's applied centre and, for an entry, toasts `Failed:
 frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. An RR import's record reports every outcome:
@@ -3396,10 +3395,10 @@ where the receiver went). The cached centre follows a tune that fails inside its
 target an earlier timeout cached, which the failed request may have coalesced over, was never reached. Every other tune
 of the receiver that reached the controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual
 tune, an owner tune (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg and a walk's (unless it timed out, when
-it notes its own record), the direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the
-RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the
-queued request under its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A
-dropped record is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in
+it notes its own record), the direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg
+and the RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop
+fails the queued request under its tag; the poll reads the completion before the session, so a stop's failure is never
+toasted. A dropped record is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in
 `dsd_engine_manual_tune_last_settled()`), so its owner settles what it was waiting on (an untyped resume, below); a
 newer tune noted in its place owns the receiver, and the older drop goes unreported. The record is process-wide, as the
 controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late
@@ -3433,43 +3432,45 @@ are. A failure after the rigctl leg moved still runs the outgoing boundary and r
 cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary
 inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves
 the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every
-tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an
-entry, a timed-out row's landing and late failure, a landing in the middle of a reception, a landing after a rigctl
-move, under a hold, after a stop, a list replacement or a pause in place, a failure's centre, an entry's late failure on
-a carrier that keeps sync, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
+answer of `request_manual_tune()`'s direct leg but a deferral (a refusal included: the legacy RTL leg forgets its own on
+a failure too). Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and
+late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop, a list
+replacement or a pause in place, a failure's centre, an entry's late failure on a carrier that keeps sync, an empty or
+all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 The Next and Previous walk over a list without modes (`L`/`J` and an avoid's step, issue #644 B-2) commits nothing it
 has not confirmed either; before, an RTL timeout counted as a landing, so the row, its keys and the call boundary were
 published while the receiver might never get there. `apply_manual_lcn_cycle_untyped_dir_locked()` picks the row and
 hands the tune to its owner. The running untyped `-Y` scan owns the walk: `dsd_engine_channel_scan_walk_row()` (public
 in `channel_scan.h`, so a go-to of a chosen row can use it too) tunes through the timed step's own pieces
-(`untyped_tune_row()` and `untyped_enter_tuned_row()` with the walk's direction): rigctl first (the legacy leg), then RTL
-(`walk_tune_row_rtl()`, `io_control_set_rtl_freq_tagged()`: the operator's tune always reaches the front end, and any
-answer but a deferral forgets the legacy caches, as the step's leg does), and on a landing runs the `SCAN_STEP` boundary
-and `untyped_install_row()` (the row's keys included). Off any scan (`-T` included) the walk keeps its one leg, the backend io_control selects
-(`request_manual_tune()` with an `out_pending_id`), and its landing is app-control's `lcn_cycle_finish()`: the calls
-end, the `TUNE` boundary (trunking off) or the identity forget (trunking on), the TETRA, cold-start and P25 handoffs,
-and the row named; no row keys apply off `-Y` (B-1, docs/csv-formats.md). A refusal applies the walk's row rules by its
-direction (`dsd_engine_channel_walk_note_outcome()`: forward passes the row, back keeps it for a retry), a deferral
-changes nothing, and a rigctl leg that moved before the RTL leg failed or timed out runs the outgoing boundary and the
-analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record and nothing else: the cursor, the row
-heard, the keys, the clocks and the calls stay. While it is pending (`dsd_engine_manual_tune_walk_row()`: its row on the
-current list and session) another press goes on from its row in the press's own direction (`lcn_cycle_start()`), so
-quick presses and key auto-repeat keep advancing; that tune supersedes the first, whose record then settles nothing.
-And the timed `-Y` step waits for a pending walk the scan owns (`no_carrier_scan_walk_pending()`), so it never
-supersedes it and turns a Previous into a forward step; the rotation goes on at its own time once the walk settles.
-The synced-frames loop ends a reception on its landing as on a step's,
+(`untyped_tune_row()` and `untyped_enter_tuned_row()` with the walk's direction): rigctl first (the legacy leg), then
+RTL (`walk_tune_row_rtl()`, `io_control_set_rtl_freq_tagged()`: the operator's tune always reaches the front end, and
+any answer but a deferral forgets the legacy caches, as the step's leg does), and on a landing runs the `SCAN_STEP`
+boundary and `untyped_install_row()` (the row's keys included). Off any scan (`-T` included) the walk keeps its one leg,
+the backend io_control selects (`request_manual_tune()` with an `out_pending_id`), and its landing is app-control's
+`lcn_cycle_finish()`: the calls end, the `TUNE` boundary (trunking off) or the identity forget (trunking on), the TETRA,
+cold-start and P25 handoffs, and the row named; no row keys apply off `-Y` (B-1, docs/csv-formats.md). A refusal applies
+the walk's row rules by its direction (`dsd_engine_channel_walk_note_outcome()`: forward passes the row, back keeps it
+for a retry), a deferral changes nothing, and a rigctl leg that moved before the RTL leg failed or timed out runs the
+outgoing boundary and the analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record and nothing
+else: the cursor, the row heard, the keys, the clocks and the calls stay. While it is pending
+(`dsd_engine_manual_tune_pending_row()`: its row on the current list and session) another press goes on from its row in
+the press's own direction (`lcn_cycle_start()`), so quick presses and key auto-repeat keep advancing; that tune
+supersedes the first, whose record then settles nothing. A press while the timed step's own tune is pending goes on from
+that step's row the same way. And the timed `-Y` step waits for a pending walk the scan owns
+(`no_carrier_scan_walk_pending()`), so it never supersedes it and turns a Previous into a forward step; the rotation
+goes on at its own time once the walk settles. The synced-frames loop ends a reception on its landing as on a step's,
 and the engine loop's poll settles it: a drop changes nothing; a scan-owned walk commits its row as the step does while
 the scan is still the same one (session, list, the row on the frequency tuned), applies the refusal rules on a late
 failure, and otherwise runs only the `TUNE` boundary for a landing's move; a walk off any scan goes to the hook
 app-control installs with its session (`dsd_channel_walk_settle_hook_set()`, `<dsd-neo/runtime/channel_scan_hooks.h>`,
 `dsd_app_channel_walk_settled()`), which runs the landing (the row named only while the list and the row are the ones
-walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25
-machine owns the trunk. Tests: `ENGINE_NO_CARRIER_RESET` (both directions, both owners, a late landing, a late failure,
-a drop, a rigctl move with the RTL leg refused or failing late, a landing in the middle of a reception, a second press
-while pending, the timed step held by a pending walk, a landing after a stop or a reload), `ENGINE_MANUAL_TUNE_PENDING`
-(the record), `APP_COMMAND_QUEUE` (the owner-independent walk cases off any scan on every toolchain and under `-Y`
-where the io_control wrap links; the `-Y`-only cases there; row keys only under `-Y`).
+walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25 machine
+owns the trunk. Tests: `ENGINE_NO_CARRIER_RESET` (both directions, both owners, a late landing, a late failure, a drop,
+a rigctl move with the RTL leg refused or failing late, a landing in the middle of a reception, a second press while
+pending, the timed step held by a pending walk, a landing after a stop or a reload), `ENGINE_MANUAL_TUNE_PENDING` (the
+record), `APP_COMMAND_QUEUE` (the owner-independent walk cases off any scan on every toolchain and under `-Y` where the
+io_control wrap links; the `-Y`-only cases there; row keys only under `-Y`).
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -5148,21 +5149,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     on accepted `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel
     cycle and scan avoid on an untyped list off any scan, once a timed-out tune lands; candidate cycle, return-to-CC,
     lockout and skip: `io_control_set_freq_tagged()` moves a rigctl radio without advancing the trunk-tuning
-    generation), at a walk the running untyped `-Y` scan owns as at its timed step (issue #644), on every input switch that ran
-    (`ui_input_switched()`, a stop of playback included, a UDP restart through `ui_input_left()`, and the config apply's
-    input comparison in `app_command_queue.c`), on
-    a config apply that changes the decode mode (the same comparison: out of the analog monitor no monitor block need
-    arrive to forget the tone before the row comes back), when the engine falls back to Pulse at the end of a WAV or
-    symbol file or after a lost TCP connection (`dsd_engine_input_fallback()` in `engine.c`), whenever
-    `symbol_read_sample_tcp()` finds its connection interrupted, before it reconnects (the reconnect's 300 ms default
-    backoff is shorter than `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and the new connection may carry another source), after
-    the carrier hangover, and on the first read after an input that may pause (stdin, UDP, TCP, a live radio stream)
-    paused past its deadline (the read is discarded). Every reset bumps `analog_rx.generation`. Every
-    `dsd_analog_rx_reset()` also sets aside what the monitor block `dsd_symbol.c` is part-way through assembling
-    (`analog_out_f`) already holds: the tap reads on from the next sample, so none of those samples, which arrived
-    before the boundary, opens the new reception, where at a low PCM rate one block (960 samples, 384 ms at 2500 Hz) is
-    enough to lock the old channel's tone again. The block itself is left alone, so the raw WAV and the monitor output
-    keep every sample across the boundary; resets run in digital sessions too (every
+    generation), at a walk the running untyped `-Y` scan owns as at its timed step (issue #644), on every input switch
+    that ran (`ui_input_switched()`, a stop of playback included, a UDP restart through `ui_input_left()`, and the
+    config apply's input comparison in `app_command_queue.c`), on a config apply that changes the decode mode (the same
+    comparison: out of the analog monitor no monitor block need arrive to forget the tone before the row comes back),
+    when the engine falls back to Pulse at the end of a WAV or symbol file or after a lost TCP connection
+    (`dsd_engine_input_fallback()` in `engine.c`), whenever `symbol_read_sample_tcp()` finds its connection interrupted,
+    before it reconnects (the reconnect's 300 ms default backoff is shorter than `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and
+    the new connection may carry another source), after the carrier hangover, and on the first read after an input that
+    may pause (stdin, UDP, TCP, a live radio stream) paused past its deadline (the read is discarded). Every reset bumps
+    `analog_rx.generation`. Every `dsd_analog_rx_reset()` also sets aside what the monitor block `dsd_symbol.c` is
+    part-way through assembling (`analog_out_f`) already holds: the tap reads on from the next sample, so none of those
+    samples, which arrived before the boundary, opens the new reception, where at a low PCM rate one block (960 samples,
+    384 ms at 2500 Hz) is enough to lock the old channel's tone again. The block itself is left alone, so the raw WAV
+    and the monitor output keep every sample across the boundary; resets run in digital sessions too (every
     `dsd_frame_sync_reset_acquisition()`, a lost TCP connection). Detection that starts part-way through a block, with
     no session yet, likewise reads from the sample it started on, also when that sample completes the block: the symbol
     path offers every sample to `dsd_analog_rx_tap_partial()` before it finalizes the block. Whenever the symbol path
@@ -5172,16 +5172,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     switch (`DSD_APP_CMD_DECODE_MODE_SET`, a config apply's `[mode]`, the channel-scan leave) forgets the tone through
     the boundary resets above, and on RTL input the switch that lands later on the demod thread also clears the output
     ring and moves the stream generation the tap watches. An analog profile the demod thread applies to a running
-    monitor without a family switch (a width-only change, the channel filter turning on or off) keeps the generation
-    and the output ring, so the tap watches the published profile too. On Pulse, stdin, UDP and TCP input the input's
-    own queue holds more of the old channel, which kept arriving while a rigctl retune held the
-    decoder, so every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so
-    does detection that starts with no session after a reset (the publication's generation is no longer 0: a retune in a
-    digital mode, then the switch to the analog monitor). The tap skips its reads until one shows the input ran dry,
-    that read included, or until `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster
-    than real time is heard again. A read shows it with a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that
-    passes two tests, since a backlog drains at the decoder's own speed. First, the span took at least half as long to
-    arrive on the real-time monotonic clock, not counting the time the symbol path spends playing monitor audio
+    monitor without a family switch (a width-only change, the channel filter turning on or off) keeps the generation and
+    the output ring, so the tap watches the published profile too. On Pulse, stdin, UDP and TCP input the input's own
+    queue holds more of the old channel, which kept arriving while a rigctl retune held the decoder, so every
+    `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so does detection that
+    starts with no session after a reset (the publication's generation is no longer 0: a retune in a digital mode, then
+    the switch to the analog monitor). The tap skips its reads until one shows the input ran dry, that read included, or
+    until `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster than real time is
+    heard again. A read shows it with a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that passes two tests,
+    since a backlog drains at the decoder's own speed. First, the span took at least half as long to arrive on the
+    real-time monotonic clock, not counting the time the symbol path spends playing monitor audio
     (`dsd_analog_rx_playback_begin()` / `_end()` around the output write): synchronous playback of stdin input holds the
     decoder for each block's playing time once its buffer is full, and it then reads a backlog at real-time pace.
     Second, the decoder waited inside the input read for at least an eighth of the span: `symbol_take_sample()` brackets

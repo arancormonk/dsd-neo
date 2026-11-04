@@ -1799,8 +1799,8 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
    the rotation goes on at its own time. */
 static int
 no_carrier_scan_walk_pending(const dsd_state* state) {
-    int scan_owned = 0;
-    return dsd_engine_manual_tune_walk_row(state, &scan_owned) >= 0 && scan_owned;
+    int scan_walk = 0;
+    return dsd_engine_manual_tune_pending_row(state, &scan_walk) >= 0 && scan_walk;
 }
 
 /* The timed -Y step. Returns non-zero when the receiver moved to another frequency, so the caller runs the carrier

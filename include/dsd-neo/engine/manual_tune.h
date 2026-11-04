@@ -83,17 +83,19 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
                                            uint32_t prior_applied_hz, int row, int dir, int scan_owned);
 
 /**
- * @brief The row a Next or Previous walk's tune still awaits (DSD_MANUAL_TUNE_LCN_CYCLE noted and not yet settled) on
- * @p state's current list and scan session (dsd_state::lcn_list_rev, dsd_state::lcn_scan_session), or -1 with none.
+ * @brief The row a list tune still awaits on @p state's current list and scan session (dsd_state::lcn_list_rev,
+ * dsd_state::lcn_scan_session), or -1 with none: a Next or Previous walk's (DSD_MANUAL_TUNE_LCN_CYCLE) or the untyped
+ * -Y step's (DSD_MANUAL_TUNE_UNTYPED_STEP), noted and not yet settled.
  *
  * A press while it is pending goes on from that row in its own direction, so quick presses and key auto-repeat keep
- * advancing (issue #644), and the -Y timed step waits while the walk it would supersede is the scan's own.
+ * advancing (issue #644), and the -Y timed step waits while a walk the scan owns is pending (it would supersede it).
  *
  * @param state          Decoder state; NULL reads as none.
- * @param out_scan_owned Optional; set to 1 when the running -Y scan owns that walk, else 0.
+ * @param out_scan_walk  Optional; set to 1 when the tune is a walk the running -Y scan owns, else 0 (a walk off any
+ *                       scan, or the step's own tune).
  * @return The row, or -1. A flag read and one atomic load while nothing is noted. Decoder thread.
  */
-int dsd_engine_manual_tune_walk_row(const dsd_state* state, int* out_scan_owned);
+int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk);
 
 /**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what

@@ -5422,6 +5422,35 @@ test_channel_cycle_retries_a_deferred_candidate(void) {
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Issue #644 (fix round 2): a walk off any scan tunes past the engine's legacy legs, so whatever its tune comes to but a
+   deferral, what those legs last sent no longer vouches for the receiver: a refused tune forgets the caches too, as the
+   legacy RTL leg forgets its own on a failure. A deferral reached nothing and keeps them. */
+static int
+test_off_scan_walk_refusal_forgets_the_legacy_caches(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.lcn_freq_count = 2;
+    state.trunk_lcn_freq[0] = 864500000L;
+    state.trunk_lcn_freq[1] = 865500000L;
+    state.lcn_freq_roll = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan deferred walk");
+    rc |= expect_true("off-scan deferred walk keeps the legacy caches",
+                      g_io_control_tune_calls == 1 && g_legacy_cache_forgets == 0 && state.lcn_freq_roll == 0);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan refused walk");
+    rc |= expect_true("off-scan refused walk tried A",
+                      g_io_control_tune_calls == 1 && g_io_control_tune_freq == 864500000U);
+    rc |= expect_int("off-scan refused walk forgets the legacy caches", g_legacy_cache_forgets, 1);
+    rc |= expect_int("off-scan refused walk passes A", state.lcn_freq_roll, 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    freeState(&state);
+    return rc;
+}
+
 /* Issue #666 (B5): the same through the control-channel tune a live P25 session uses, whose deferral the tuning hook
    reports itself. */
 static int
@@ -27501,6 +27530,7 @@ main(void) {
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_channel_cycle_retries_a_cc_deferred_candidate();
+    rc |= test_off_scan_walk_refusal_forgets_the_legacy_caches();
     rc |= test_lockout_hands_p25_sm_back_to_cc(1);
     rc |= test_lockout_hands_p25_sm_back_to_cc(0);
     rc |= test_skip_hands_p25_sm_back_to_cc();

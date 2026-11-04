@@ -3378,8 +3378,11 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
 #endif
     const int result = carried ? manual_tune_io_leg(opts, state, (uint32_t)freq, pending_id) : -1;
     if (result != RTL_STREAM_TUNE_DEFERRED) {
-        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). It went past the
+           engine's legacy legs, and runs no carrier boundary to tell them: whatever it came to, what they last sent no
+           longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. */
         dsd_engine_manual_tune_supersede(state);
+        dsd_engine_legacy_tune_caches_forget();
     } else {
         *tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
@@ -3387,9 +3390,6 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
         /* This leg has no correlated tune request to await, so an accepted
          * timeout (issued, not yet confirmed) is reported as complete. */
         *tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-        /* It moves the receiver without the engine's legacy legs, and runs no carrier boundary to tell them (issue
-           #671). */
-        dsd_engine_legacy_tune_caches_forget();
     }
     if (pending_id && result != RTL_STREAM_TUNE_TIMEOUT) {
         *pending_id = 0U;
@@ -3808,13 +3808,13 @@ lcn_cycle_back_start(const dsd_state* state) {
 }
 
 /* Where a walk in direction @p dir starts looking (issue #666): forward at the cursor, back at lcn_cycle_back_start().
-   While an earlier walk's tune is still pending, from the row it went to instead, in this press's direction (issue
-   #644): the cursor waits for that landing, so quick presses and key auto-repeat would otherwise pick the same row
-   again. This press's tune supersedes the earlier one, whose record then settles nothing. */
+   While an earlier walk's tune, or the -Y timed step's, is still pending, from the row it went to instead, in this
+   press's direction (issue #644): the cursor waits for that landing, so quick presses and key auto-repeat would
+   otherwise pick the same row again. This press's tune supersedes the earlier one, whose record then settles nothing. */
 static int
 lcn_cycle_start(const dsd_state* state, int dir) {
     const int count = state->lcn_freq_count;
-    const int pending_row = dsd_engine_manual_tune_walk_row(state, NULL);
+    const int pending_row = dsd_engine_manual_tune_pending_row(state, NULL);
     if (pending_row >= 0 && pending_row < count) {
         return (pending_row + dir + count) % count;
     }
@@ -3847,9 +3847,10 @@ lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row,
 }
 
 /* One untyped (or -T) list step in direction @p dir (1 Next, -1 Previous; issue #666). Forward starts at the cursor,
-   whatever a refused Previous left to retry; back, at lcn_cycle_back_start(). The running untyped -Y scan owns its
-   walk (dsd_engine_channel_scan_walk_row(): both front ends, the row and its keys on the confirmed landing); any other
-   walk is lcn_cycle_walk_off_scan()'s. */
+   whatever a refused Previous left to retry; back, at lcn_cycle_back_start(); and while an earlier walk's tune or the
+   -Y timed step's is still pending, from that tune's row in this press's direction (lcn_cycle_start(), issue #644).
+   The running untyped -Y scan owns its walk (dsd_engine_channel_scan_walk_row(): both front ends, the row and its keys
+   on the confirmed landing); any other walk is lcn_cycle_walk_off_scan()'s. */
 static int
 apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
     const int count = state->lcn_freq_count;
