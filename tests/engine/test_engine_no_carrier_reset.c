@@ -8196,6 +8196,52 @@ running_list_left_case(int map_clear) {
     return rc;
 }
 
+/* Fix round 2: a config that turns a running typed list off ends its call under the row (ALPHA, its scope and keys)
+   before the command suspends the scope and stages the config. The scope leave after the command ended it, with the
+   scanner flag already down, so it was named after no row. */
+static int
+typed_list_left_by_a_config_case(void) {
+    const char* what = "config turning a typed list off";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    int rc = 0;
+    static const char* const k_names[] = {"ALPHA", "BRAVO"};
+    for (int row = 0; row < 2; row++) {
+        state->trunk_lcn_freq[row] = 1320012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed named row",
+                          dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0
+                              && dsd_state_trunk_lcn_name_set(state, (size_t)row, k_names[row]) == 0);
+    }
+    dsd_app_frontend_runtime_start(opts, state);
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row ALPHA lands", dsd_engine_channel_scan_on_air_row(state) == 0);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5603U) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, 5603U), "ALPHA");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, 5603U, 1, 0));
+    dsd_app_frontend_runtime_stop();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Fix round 2: a `y` start with no channel map of the user's own leaves the tuner the operator's (the scan cannot
    move). Once a map arrives (here an import) and the scan first lands a row, the tuner is the scan's: the operator's
    call ended at that step as the operator's, and the scan's calls are scan members, not the operator's. The flag stayed
@@ -8239,7 +8285,7 @@ test_first_row_landing_takes_the_tuner(void) {
 
 static int
 test_running_list_left_by_a_config_or_a_map_clear(void) {
-    return running_list_left_case(0) | running_list_left_case(1);
+    return running_list_left_case(0) | running_list_left_case(1) | typed_list_left_by_a_config_case();
 }
 
 enum { HELD_AVOID_REFUSED = 0, HELD_AVOID_FAILS_LATE = 1, HELD_AVOID_PUT_BACK = 2 };

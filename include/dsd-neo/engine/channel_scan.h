@@ -48,11 +48,13 @@ int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
  * interactive leaves go through svc_leave_channel_scan(), which records the result for the decoder (issue #578) and
  * then clears the pause. */
 int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
-/** End the calls of a running untyped -Y list of the user's own now, as its leave would (issue #644): for a caller about
- * to change what names or keys them (a config apply that turns the scan off writes its keys and policy before the
- * leave runs). 1 when it ended them; 0 with no such list running (a typed list, a paused one, a resume still pending,
- * learned channels only), when it does nothing. Decoder thread, under the P25 SM tick guard a guarded command holds. */
-int dsd_engine_channel_scan_end_untyped_calls(dsd_opts* opts, dsd_state* state);
+/** End the calls of a running -Y list of the user's own, typed or untyped, now, as its leave would (issue #644): for a
+ * caller about to change what names, keys or judges them (a config apply that turns the scan off suspends a typed row's
+ * scope, writes its own keys and policy and takes the scanner flag down before the leave runs). The calls commit under
+ * the row heard and whatever row settings are in force. 1 when it ended them; 0 with no such list running (a paused one,
+ * a resume still pending, learned channels only, a trunk scan), when it does nothing. Decoder thread, under the P25 SM
+ * tick guard a guarded command holds. */
+int dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state);
 /** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
  * untyped one has no scope); with @p in_place (no tune follows: a tuner release) the carrier's decoding is forgotten

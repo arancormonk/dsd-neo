@@ -9596,18 +9596,6 @@ cfg_apply_kept_result(dsd_state* state, int restart_causes, const char* restart_
     return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
 }
 
-/* A config that turns a running untyped -Y list off (the scanner off, or trunking on: dsd_user_config_scanner_after())
-   ends its calls now, under the row heard, its keys and its policy (issue #644): the staging below writes the config's
-   keys and policy and takes the scanner flag down before the scope leave runs (apply_cmd_leave_scanner_scope()), which
-   would end them under the new config and named after no row. A typed list's calls are left to that leave, which
-   recognises it by its scope. */
-static void
-cfg_end_calls_of_the_scan_it_stops(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
-    if (opts->scanner_mode == 1 && !dsd_user_config_scanner_after(cfg, opts)) {
-        (void)dsd_engine_channel_scan_end_untyped_calls(opts, state);
-    }
-}
-
 /* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
    none) reports: a "Config not applied: ..." refusal or rollback leaves it 0. */
 static int
@@ -9638,7 +9626,6 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
-    cfg_end_calls_of_the_scan_it_stops(opts, state, &cfg);
     cfg_lifecycle_owned lifecycle_before;
     cfg_capture_lifecycle_owned(opts, &lifecycle_before);
     const cfg_scan_owner owner_before = {opts->trunk_enable, opts->scanner_mode};
@@ -10350,9 +10337,33 @@ apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rig
     return -1;
 }
 
+/* A config (CONFIG_APPLY, @p c; a load's payload starts with one) that turns a running -Y list off, typed or untyped
+   (the scanner off, or trunking on: dsd_user_config_scanner_after()), ends the list's calls first (issue #644), under the
+   row heard and the row's keys, receive policy, groups and options: before the command suspends a typed row's scope and
+   groups for the configured settings, the staging writes the config's own and takes the scanner flag down, and the scope
+   leave after the command (apply_cmd_leave_scanner_scope()) would end them under the new config, named after no row.
+   Without memory for the copy the leave ends them, as before. */
+static void
+apply_cmd_end_calls_of_the_scan_a_config_stops(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || !c || c->id != DSD_APP_CMD_CONFIG_APPLY || c->n < sizeof(dsdneoUserConfig)
+        || opts->scanner_mode != 1) {
+        return;
+    }
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)malloc(sizeof *cfg);
+    if (!cfg) {
+        return;
+    }
+    DSD_MEMCPY(cfg, c->data, sizeof *cfg);
+    if (!dsd_user_config_scanner_after(cfg, opts)) {
+        (void)dsd_engine_channel_scan_end_running_calls(opts, state);
+    }
+    free(cfg);
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
                  int32_t* scan_list_code) {
+    apply_cmd_end_calls_of_the_scan_a_config_stops(opts, state, c);
     /* Before the suspend, so it is the request the row in force made. */
     const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);

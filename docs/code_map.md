@@ -3518,10 +3518,12 @@ scope for the leave to find, yet its calls are named after its rows and keyed wi
 clears `scanner_mode` and the row keys leave, so they commit under the row heard (issue #644 B-3); it restores nothing
 else, since untyped rows run the configured decoder and front end. Learned channels are no list, and an untyped resume
 still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. Two
-leaves that would otherwise come too late end those calls first (issue #644 fix round): a config apply that turns `-Y`
-off (the scanner off, or trunking on) ends them before it stages its own keys and policy and takes the flag down
-(`cfg_end_calls_of_the_scan_it_stops()` in `app_command_queue.c`, through `dsd_engine_channel_scan_end_untyped_calls()`;
-its scope leave runs after the command), and a channel-map clear leaves before it empties the map
+leaves that would otherwise come too late end those calls first (issue #644 fix rounds): a config apply that turns
+`-Y` off (the scanner off, or trunking on) ends a running list's calls, typed or untyped, before the command suspends a
+typed row's scope and groups and before it stages its own keys and policy and takes the flag down
+(`apply_cmd_end_calls_of_the_scan_a_config_stops()` at the top of `apply_cmd_scoped()`, through
+`dsd_engine_channel_scan_end_running_calls()`; its scope leave runs after the command), so they commit under the row
+heard and the row's keys, policy and groups; and a channel-map clear leaves before it empties the map
 (`svc_clear_channel_map()`). A paused
 list (no resume pending) was already left by its
 pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not

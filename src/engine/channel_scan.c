@@ -1485,8 +1485,9 @@ dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
 }
 
 int
-dsd_engine_channel_scan_end_untyped_calls(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || !channel_scan_untyped_runs(opts, state)) {
+dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
+        || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
     channel_scan_end_calls(opts, state);
