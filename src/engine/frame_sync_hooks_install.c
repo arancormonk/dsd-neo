@@ -46,7 +46,8 @@ scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_scan_visit_tick(opts, state, now_m);
     dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_decode_now_realtime_s());
     return dsd_engine_scan_visit_expired(opts, state, now_m)
-           || (opts->scanner_mode == 1 && !state->lcn_scan_hold
+           || dsd_engine_channel_scan_departure_due(opts, state, now_m)
+           || (opts->scanner_mode == 1 && !dsd_engine_channel_scan_hold_keeps_row(state)
                && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, now_m)
                && dsd_engine_channel_scan_has_other_row(opts, state));
 }

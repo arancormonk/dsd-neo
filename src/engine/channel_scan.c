@@ -941,6 +941,21 @@ dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
     return state ? channel_scan_on_air_row(state) : -1;
 }
 
+int
+dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
+    /* The avoid count first: with nothing avoided, the frame loop's question costs one read. */
+    if (!state || state->lcn_avoid_count == 0U) {
+        return 0;
+    }
+    const int row = channel_scan_on_air_row(state);
+    return row >= 0 && row < state->lcn_freq_count && dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
+}
+
+int
+dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
+    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
+}
+
 /* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
  * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
  * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */

@@ -267,9 +267,10 @@ Generated (do not edit/commit):
     air is the typed scanner's last landed tune, which a failed start does not move, else the row heard,
     `dsd_state_lcn_heard_row()`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so
     the same traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
-    `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
-    (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
-    another target is there to take it (`trunk_scan_tone_rejection_has_alternate()`: in the rotation, not cooling down,
+    the operator hold keep it (muted; not a row the operator avoided, `dsd_engine_channel_scan_hold_keeps_row()`); the
+    trunk-scan tick advances a REJECTED analog target (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`)
+    unless the operator holds it, and only when another target is there to take it
+    (`trunk_scan_tone_rejection_has_alternate()`: in the rotation, not cooling down,
     and not an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the
     published DSP rate, `trunk_scan_target_width_skipped()`; a target of another type on the frequency on air counts,
     since it runs no tone check, but a copy of the same type from another list (issue #697) does not, here or in the
@@ -3759,10 +3760,23 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
-    scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). A held
-    `-Y` scan left on its avoided row that way (the step `b` asked for refused at once or failing late) is not kept
-    there by the hold: `no_carrier_hold_keeps_row()` lets the timed step go on at its next due pass, as an unheld scan's
-    would, and the hold stays, keeping the row it lands on; a row put back first is held where it is (issue #644 B-5).
+    scan's `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED`, and a `-Y` row a failed tune left on air, with no step). A `-Y`
+    scan, held or not, typed or untyped, left on its avoided row that way (the step `b` asked for refused at once or
+    failing late) departs ahead of the row's carrier, its dwell and the hold (issue #644 B-5 and its fix round), as a
+    trunk scan's departure goes: `dsd_engine_channel_scan_departure_due()` (in `engine.c`; the row on air avoided,
+    somewhere to go by `dsd_engine_channel_scan_reachable_rows()`, no tune of the scan's in flight, and not before
+    `dsd_state::lcn_avoid_depart_m`) makes the frame loop yield while a carrier holds sync
+    (`live_scanner_receive_should_yield()`, `scan_visit_should_yield_from_frame()`) and the no-carrier step's timing
+    rule answer due. Every step taken off an avoided row moves `lcn_avoid_depart_m` on by the step cadence (`-t`, at
+    least 1 s; `dsd_engine_channel_scan_departure_note()`), so a refused or pending step is retried at that cadence,
+    never on every frame, and with nowhere to go (every other row avoided or width-skipped) the carrier is never cut.
+    The hold stays, and keeps the row the step lands on; a row put back first is held where it is. One predicate says
+    what the hold keeps, `dsd_engine_channel_scan_hold_keeps_row()` (held and the row on air not avoided), read by
+    every rule the hold suspends: the timed step (with the tone-rejection step it gates), the receive-policy leave and
+    its two frame-loop yields, the voice gate's step, the per-visit cap (`scan_visit_suspended()`) and the timing
+    view's `MANUAL_HOLD`. On a row not avoided the hold suspends all of them, as before; on an avoided row it suspends
+    none, and the timing view reports the window the row is on, as an unheld one does. The checks cost one read of
+    `lcn_avoid_count` while nothing is avoided.
     The `-Y` avoid, clear and put-back toasts count through the view (`size_t`, B6: `lcn_avoid_count` saturates at
     65,535); the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its
     list failed to allocate. Toasts name an entry as the avoided channel list does: a `-Y` row as `row N (<MHz>, ...)`

@@ -139,6 +139,27 @@ int dsd_engine_channel_scan_reachable_rows(const dsd_opts* opts, const dsd_state
  * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
  * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */
 int dsd_engine_channel_scan_on_air_row(const dsd_state* state);
+/** Whether the -Y row on air (dsd_engine_channel_scan_on_air_row()) is one the operator avoided (issue #644): the `b`
+ * step off it was refused or failed late, or it was avoided while a tune elsewhere had not landed. One read while
+ * nothing is avoided. 0 for a NULL state. */
+int dsd_engine_channel_scan_on_avoided_row(const dsd_state* state);
+/** Whether the operator hold (dsd_state::lcn_scan_hold, `Y`) keeps the -Y scan on the row on air: held, and the row is
+ * not one the operator avoided (issue #644). Every rule an operator hold suspends reads this: the timed step, the
+ * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
+ * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
+int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
+/** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
+ * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
+ * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a
+ * typed row's request or retry, an untyped step's or walk's), and at the step cadence: not before
+ * dsd_state::lcn_avoid_depart_m, which every step taken off an avoided row moves on
+ * (dsd_engine_channel_scan_departure_note()). The frame loop yields for it while a carrier holds sync, so the
+ * no-carrier step takes it; that step's timing rule answers due for it too. 0 for NULL arguments, without -Y running,
+ * under a trunk scan, and without a list of the user's own. Decoder thread; one read while nothing is avoided. */
+int dsd_engine_channel_scan_departure_due(const dsd_opts* opts, const dsd_state* state, double now_m);
+/** A step off an avoided row is being taken at @p now_m (decode monotonic clock): the next departure waits the step
+ * cadence (-t, at least 1 s), whatever this one comes to (issue #644). */
+void dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, double now_m);
 
 /** dsd_engine_channel_scan_walk_row() results. */
 typedef enum {

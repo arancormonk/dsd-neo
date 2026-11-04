@@ -2645,6 +2645,11 @@ struct dsd_state {
     double scan_visit_since_m;
     int scan_visit_roll_seen;
     uint8_t scan_visit_rearm_pending; /**< resume a suspended visit at the next eligible tick */
+    /* The earliest monotonic instant a -Y scan sitting on a row the operator avoided tries to step off it again (issue
+     * #644): the departure goes ahead of the row's carrier and an operator hold, but at the step cadence (-t, at least
+     * 1 s), so a step refused, or one still in flight, is not retried on every frame
+     * (dsd_engine_channel_scan_departure_due()). 0.0 until the first departure. */
+    double lcn_avoid_depart_m;
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */

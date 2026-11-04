@@ -8292,6 +8292,155 @@ test_held_scan_steps_off_an_avoided_row(void) {
     return held_avoid_case(HELD_AVOID_REFUSED) | held_avoid_case(HELD_AVOID_FAILS_LATE)
            | held_avoid_case(HELD_AVOID_PUT_BACK);
 }
+
+/* --- Task 2 fix round 1: avoidance outranks the carrier. A -Y scan, held or not, sitting on a row the operator
+   avoided leaves it while a carrier still holds sync: the frame loop yields at once, and the no-carrier step takes the
+   departure, at the step cadence. It used to stay for as long as the carrier lasted (and, held, for good). --- */
+
+/* A carrier on the row on air: the hangtime anchor is fresh, so no rule but the departure would step, and the hunt
+   finds @p syncs more frames after the first. Returns the frames decoded before the loop yielded. */
+static int
+carrier_frames(dsd_opts* opts, dsd_state* state, int syncs) {
+    state->last_cc_sync_time = time(NULL);
+    run_synced_frames(opts, state, syncs, -1);
+    return g_frame_count;
+}
+
+/* `b` on the untyped walk list (row 0 on air), its step to row 1 refused at once: the scan sits on avoided row 0,
+   the cursor past row 1; @p held with the operator hold on. */
+static int
+sit_on_an_avoided_row(dsd_opts* opts, dsd_state* state, int held, const char* what) {
+    int rc = 0;
+    if (held) {
+        rc |= expect_case(what, "the hold is on",
+                          press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "on avoided row 0",
+                      dsd_engine_channel_scan_on_avoided_row(state) && dsd_engine_channel_scan_on_air_row(state) == 0
+                          && state->lcn_freq_roll == 2);
+    return rc;
+}
+
+/* Held (@p held 1) or not, an untyped scan on an avoided row with a carrier: the first frame yields, the no-carrier
+   step lands row 2 (row 1 passed), a hold stays and keeps it, and the carrier there decodes through. */
+static int
+untyped_departure_case(int held) {
+    const char* what = held ? "held untyped departure under a carrier" : "unheld untyped departure under a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1270012500L + (long int)held * 3000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, held, what);
+    rc |= expect_case(what, "the carrier yields at its first frame", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 2",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L)
+                          && dsd_state_lcn_heard_row(state) == 2 && state->rkey_array[9] == 777ULL);
+    rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
+    rc |= expect_case(what, "the carrier on row 2 decodes through", carrier_frames(opts, state, 20) == 21);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Nowhere to go: every step refused (the row tried is passed, so the next try is another row), and then every other
+   row avoided. The departure retries at the step cadence, never on every frame, and with nothing to land on the
+   carrier is not cut at all. */
+static int
+departure_nowhere_to_go_case(void) {
+    const char* what = "departure with nowhere to go";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1280012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, 1, what);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "one refused try", g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 0);
+    for (int pass = 0; pass < 3; pass++) {
+        rc |=
+            expect_case(what, "within the cadence the carrier decodes through", carrier_frames(opts, state, 20) == 21);
+        noCarrier(opts, state);
+    }
+    rc |= expect_case(what, "and no step retries", g_rtl_tune_calls == 1);
+    /* The cadence ran out: one more try. */
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the next departure yields", carrier_frames(opts, state, 20) == 1);
+    noCarrier(opts, state);
+    rc |= expect_case(what, "one more try", g_rtl_tune_calls == 2);
+    /* Every other row avoided: nowhere to go, so the carrier is never cut, cadence or not. */
+    rc |= expect_case(what, "rows 1 and 2 avoided",
+                      dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0
+                          && dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    state->lcn_avoid_depart_m = 0.0;
+    rc |= expect_case(what, "nothing to land on: no yield", carrier_frames(opts, state, 20) == 21);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* A held typed list (three NXDN48 rows) on a row the operator avoided, with a carrier: the frame loop yields, the
+   typed step lands the next row, and the hold stays. */
+static int
+typed_departure_case(void) {
+    const char* what = "held typed departure under a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 3;
+    int rc = 0;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = 1290012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row 0 lands", dsd_engine_channel_scan_on_air_row(state) == 0 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 1U;
+    /* `b` whose step was refused: the row on air is avoided and the hold stands. */
+    rc |= expect_case(what, "row 0 avoided", dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the typed step lands row 1",
+                      g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 1
+                          && state->lcn_freq_roll == 2);
+    rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "and keeps row 1", carrier_frames(opts, state, 20) == 21);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_avoided_row_departs_under_a_carrier(void) {
+    return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
+           | typed_departure_case();
+}
 #endif
 
 int
@@ -10076,6 +10225,7 @@ main(void) {
     rc |= test_y_start_gives_the_tuner_to_the_scan();
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_held_scan_steps_off_an_avoided_row();
+    rc |= test_avoided_row_departs_under_a_carrier();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();

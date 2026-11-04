@@ -143,6 +143,15 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return g_scan_waiting;
 }
 
+/* From engine/channel_scan.c, which this fixture does not link: the operator hold keeps the row on air unless a case
+   puts the scan on a row the operator avoided (issue #644). */
+static int g_on_avoided_row = 0;
+
+int
+dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
+    return state && state->lcn_scan_hold && !g_on_avoided_row;
+}
+
 /* From engine/channel_scan.c, which this fixture does not link: with no RTL front end no row's width is refused, so the
    rows a step can land on are the usable ones of a list of the user's. */
 int
@@ -165,6 +174,7 @@ fixture_init(gate_fixture* fix) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     g_scan_waiting = 0;
+    g_on_avoided_row = 0;
     if (dsd_call_state_ensure(&g_state) <= 0) {
         return -1;
     }
@@ -1268,6 +1278,37 @@ test_visit_cap_ignores_continuous_voice(void) {
     fixture_free(&fix);
 }
 
+/* Issue #644: an operator hold over a row the operator avoided keeps nothing, so the scan leaves it at its next step.
+   The voice gate steps at its qualify window as unheld, the per-visit cap counts down and expires, and the timing view
+   reports the window it leaves by, not a paused "manual hold". */
+static void
+test_hold_over_an_avoided_row_keeps_nothing(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_max_visit_ms = 30000;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    fix.state->lcn_scan_hold = 1;
+    g_on_avoided_row = 1;
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.5);
+    CHECK("avoided: the gate steps at qualify", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 101.0) != 0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 120.0);
+    CHECK("avoided: the cap's anchor stays", fabs(fix.state->scan_visit_since_m - 100.0) < 1e-9);
+    CHECK("avoided: the cap expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 130.0) != 0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 100.5);
+    CHECK("avoided: no manual hold reason", fix.state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD);
+    /* Off the avoided row the hold keeps its row again. */
+    g_on_avoided_row = 0;
+    CHECK("held: the gate holds", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 101.0) == 0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 100.5);
+    CHECK("held: manual hold reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD);
+    fixture_free(&fix);
+}
+
 /* The operator hold suspends the limit rather than pausing it: the anchor slides while held, so
  * the release starts a fresh full limit instead of expiring the moment the hold comes off. */
 static void
@@ -1823,6 +1864,7 @@ main(void) {
     test_wide_ids_read_as_unknown();
     test_source_only_blocked_radio_not_held();
     test_operator_hold_and_visit_reset();
+    test_hold_over_an_avoided_row_keeps_nothing();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();
     test_tg_hold_call_active();

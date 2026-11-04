@@ -1537,7 +1537,12 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
         return 1;
     }
-    if (!state->lcn_scan_hold
+    /* So does a row the operator avoided, when the scan has somewhere to go and its paced departure is due (issue
+       #644): the frame loop yielded for it while the carrier held sync. */
+    if (dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+        return 1;
+    }
+    if (!dsd_engine_channel_scan_hold_keeps_row(state)
         && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())) {
         return dsd_engine_channel_scan_has_other_row(opts, state);
     }
@@ -1803,17 +1808,41 @@ no_carrier_scan_walk_pending(const dsd_state* state) {
     return dsd_engine_manual_tune_pending_row(state, &scan_walk) >= 0 && scan_walk;
 }
 
-/* Whether an operator hold keeps the -Y scan on the row it is on. Not a row the operator avoided (issue #644 B-5): the
-   `b` that avoided it steps on at once, and a step refused, or failing late, would otherwise leave the held scan there
-   for good, a second `b` finding it already avoided. The rotation steps on at its next due pass, as an unheld scan's
-   does; the hold stays, and keeps the row that step lands on. A row put back meanwhile is the scan's to hold again. */
-static int
-no_carrier_hold_keeps_row(const dsd_state* state) {
-    if (!state->lcn_scan_hold) {
+int
+dsd_engine_channel_scan_departure_due(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || now_m < state->lcn_avoid_depart_m
+        || !dsd_engine_channel_scan_on_avoided_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
-    const int row = dsd_engine_channel_scan_on_air_row(state);
-    return row < 0 || !dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
+    /* A tune of the scan's still in flight decides first: its landing leaves the row, its failure paces the retry. */
+    if (dsd_engine_channel_scan_waiting(state) || dsd_engine_manual_tune_pending_row(state, NULL) >= 0) {
+        return 0;
+    }
+    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go. */
+    return dsd_engine_channel_scan_reachable_rows(opts, state) > 0;
+}
+
+void
+dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!opts || !state) {
+        return;
+    }
+    const double span_s = opts->trunk_hangtime >= 1.0f ? (double)opts->trunk_hangtime : 1.0;
+    state->lcn_avoid_depart_m = now_m + span_s;
+}
+
+/* Whether the timed -Y step stays where it is this pass, though due: the operator hold keeps the row on air, unless the
+   operator avoided it (dsd_engine_channel_scan_hold_keeps_row(), issue #644: the hold then keeps the row the step lands
+   on), or a walk the scan owns still waits on its tune. A step off an avoided row paces the next departure. */
+static int
+no_carrier_step_stays(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_walk_pending(state)) {
+        return 1;
+    }
+    if (dsd_engine_channel_scan_on_avoided_row(state)) {
+        dsd_engine_channel_scan_departure_note(opts, state, dsd_decode_now_mono_s());
+    }
+    return 0;
 }
 
 /* The timed -Y step. Returns non-zero when the receiver moved to another frequency, so the caller runs the carrier
@@ -1830,7 +1859,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
     // the command that releases the hold restarts it, so the row gets a full hangtime.
-    if (no_carrier_hold_keeps_row(state) || no_carrier_scan_walk_pending(state)) {
+    if (no_carrier_step_stays(opts, state)) {
         return 0;
     }
 
@@ -3749,7 +3778,15 @@ live_scanner_receive_should_yield(const dsd_opts* opts, const dsd_state* state) 
     if (dsd_engine_trunk_receive_release_due(opts, state)) {
         return 1;
     }
-    return opts->scanner_mode == 1 && !state->lcn_scan_hold
+    if (opts->scanner_mode != 1) {
+        return 0;
+    }
+    /* A row the operator avoided is left at its paced departure, whatever holds the carrier (issue #644). The clock is
+       read only while something is avoided. */
+    if (state->lcn_avoid_count != 0U && dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+        return 1;
+    }
+    return !dsd_engine_channel_scan_hold_keeps_row(state)
            && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }

@@ -1236,6 +1236,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_visit_since_m = -1.0;
     state->scan_visit_roll_seen = 0;
     state->scan_visit_rearm_pending = 0U;
+    state->lcn_avoid_depart_m = 0.0;
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
