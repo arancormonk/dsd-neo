@@ -223,6 +223,7 @@ lazy_fll_demod(int sps, int tetra_chain) {
     d->tetra_chain = tetra_chain;
     d->ted_sps = sps;
     d->rate_out = 24000;
+    d->complex_rate = 24000;
     d->lowpassed = d->input_cb_buf;
     d->lp_len = 2;
     op25_fll_band_edge_cc(d);
@@ -794,6 +795,7 @@ run_fll_loop(int with_mixer, double offset_hz, int blocks, double* out_pre_hz, d
     d->cqpsk_enable = 1;
     d->ted_sps = sps;
     d->rate_out = rate;
+    d->complex_rate = rate;
     d->tetra_chain = 1;
     qpsk_source src = {1U, 0.0};
     const double w = 2.0 * 3.14159265358979323846 * offset_hz / (double)rate;

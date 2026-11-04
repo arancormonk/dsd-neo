@@ -683,8 +683,8 @@ another row. See [Receive filters and service names](cli.md#receive-filters-and-
 for limits and identifier syntax.
 
 `DSP bandwidth...` prompts with the selectable bandwidths (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's) and snaps
-another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy
-sample rate halves to it.
+another value to the nearest of them, the narrower of two as near. Every radio input takes all of them, an Airspy
+included: its own sample rate is halved and then resampled to the bandwidth exactly.
 
 `DSP-BW:` on the RTL source row is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
 `-fA` (or `-fM`, reading `Analog: AM ...;`) the channel row below it shows the analog channel width in force, `Analog:
@@ -704,16 +704,16 @@ any width from 8000 to 25000 Hz, or `0` for the default, and applies it live (wh
 waits for the row to leave, and the message says the channel overrides it); a width the DSP rate cannot filter is
 refused with a message naming both and the fix (on a digital session too, while the scan has an `nfm` row or target
 without a width of its own, which runs the configured width), and a `DSP bandwidth...` value the explicit NFM width
-cannot run at is refused with one saying to narrow the width first. Input > Switch source > RTL-SDR refuses the switch,
-keeping the running input, when its DSP bandwidth cannot filter the explicit NFM width, and Switch source > Airspy
-refuses it while `DSD_NEO_CHANNEL_LPF=0` turns off the filter the width needs; a switch whose start fails anyway (a
-width the Airspy's rate cannot filter, a device that does not open) puts the running input back with the reason. The
-Airspy's start checks only the width it opens on, the one in force, and a scan row that runs a digital protocol has
-none: a configured width the Airspy's rate cannot filter then waits for the scan to stop, whose refused return to the
-monitor settles it (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading, spelled
-the same way, on any session while an `nfm` or `am` row is on air; a row's own width reads first there, with a `row`
-badge and the configured default of its kind the stepper edits beside it (`12.5 kHz` over a `row` badge and
-`default 16 kHz`; `default 6 kHz` under an `am` row while the AM width is unset).
+cannot run at is refused with one saying to narrow the width first. Input > Switch source > RTL-SDR and Switch source >
+Airspy refuse the switch, keeping the running input, when the DSP bandwidth of the radio they open cannot filter the
+explicit NFM width (an Airspy runs at its DSP bandwidth, as an RTL-SDR does), and while `DSD_NEO_CHANNEL_LPF=0` turns
+off the filter the width needs; a switch whose start fails anyway (a device that does not open) puts the running input
+back with the reason. The Airspy's start checks only the width it opens on, the one in force, and a scan row that runs
+a digital protocol has none: a configured width the Airspy's bandwidth cannot filter then waits for the scan to stop,
+whose refused return to the monitor settles it (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet
+shows the same reading, spelled the same way, on any session while an `nfm` or `am` row is on air; a row's own width
+reads first there, with a `row` badge and the configured default of its kind the stepper edits beside it (`12.5 kHz`
+over a `row` badge and `default 16 kHz`; `default 6 kHz` under an `am` row while the AM width is unset).
 
 On audio input with a rigctl peer (`-U`), which demodulates what DSD-neo hears, the two rows set the passband the peer
 is asked for (`-B` in `docs/cli.md`, Trunking & Scanning, has the rule): `NFM passband...` while `-fA` is the configured

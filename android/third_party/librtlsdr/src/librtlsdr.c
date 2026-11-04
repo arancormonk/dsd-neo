@@ -39,6 +39,51 @@
 #define LIBUSB_CALL
 #endif
 
+/*
+ * The async reader's transfer count and submission flag are shared with
+ * libusb callbacks on whichever thread handles events, so every access goes
+ * through these. MSVC's C compiler has no <stdatomic.h> without
+ * /experimental:c11atomics, so it uses the Interlocked functions (windows.h
+ * comes in through libusb.h). Every access is sequentially consistent
+ * either way.
+ */
+#if defined(_MSC_VER)
+typedef volatile LONG shared_int;
+
+static int shared_load(shared_int *value)
+{
+	return (int)InterlockedCompareExchange(value, 0, 0);
+}
+
+static void shared_store(shared_int *value, int new_value)
+{
+	InterlockedExchange(value, new_value);
+}
+
+static void shared_add(shared_int *value, int delta)
+{
+	InterlockedExchangeAdd(value, delta);
+}
+#else
+#include <stdatomic.h>
+typedef atomic_int shared_int;
+
+static int shared_load(shared_int *value)
+{
+	return atomic_load(value);
+}
+
+static void shared_store(shared_int *value, int new_value)
+{
+	atomic_store(value, new_value);
+}
+
+static void shared_add(shared_int *value, int delta)
+{
+	atomic_fetch_add(value, delta);
+}
+#endif
+
 /* two raised to the power of n */
 #define TWO_POW(n)		((double)(1ULL<<(n)))
 
@@ -124,8 +169,8 @@ struct rtlsdr_dev {
 	 * zero then is not conclusive; only the reader checks today, after
 	 * the batch, so the flag guards any later check from elsewhere);
 	 * a callback may run on any thread that handles events */
-	int xfer_outstanding;
-	int xfer_submitting;
+	shared_int xfer_outstanding;
+	shared_int xfer_submitting;
 	char manufact[256];
 	char product[256];
 };
@@ -1841,7 +1886,7 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
 	 * good, and this must be the last touch: at zero the reader may
 	 * free it. */
 	if (!resubmitted)
-		__atomic_sub_fetch(&dev->xfer_outstanding, 1, __ATOMIC_ACQ_REL);
+		shared_add(&dev->xfer_outstanding, -1);
 }
 
 int rtlsdr_wait_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx)
@@ -2025,9 +2070,8 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	/* Every transfer takes its slot before it is submitted, so the count
 	 * cannot reach zero while the rest are still going out, even when
 	 * one fails meanwhile in a callback on another thread. */
-	__atomic_store_n(&dev->xfer_outstanding, (int)dev->xfer_buf_num,
-			 __ATOMIC_RELEASE);
-	__atomic_store_n(&dev->xfer_submitting, 1, __ATOMIC_RELEASE);
+	shared_store(&dev->xfer_outstanding, (int)dev->xfer_buf_num);
+	shared_store(&dev->xfer_submitting, 1);
 
 	for(i = 0; i < dev->xfer_buf_num; ++i) {
 		libusb_fill_bulk_transfer(dev->xfer[i],
@@ -2049,16 +2093,15 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 					"/parameters/usbfs_memory_mb\n", i);
 			/* this transfer and the ones never submitted give
 			 * their slots back */
-			__atomic_sub_fetch(&dev->xfer_outstanding,
-					   (int)(dev->xfer_buf_num - i),
-					   __ATOMIC_ACQ_REL);
+			shared_add(&dev->xfer_outstanding,
+				   -(int)(dev->xfer_buf_num - i));
 			ret = r;
 			dev->async_status = RTLSDR_CANCELING;
 			break;
 		}
 	}
 
-	__atomic_store_n(&dev->xfer_submitting, 0, __ATOMIC_RELEASE);
+	shared_store(&dev->xfer_submitting, 0);
 
 	while (RTLSDR_RUNNING == dev->async_status) {
 		r = libusb_handle_events_timeout_completed(dev->ctx, &tv,
@@ -2075,8 +2118,8 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 		 * nothing would ever complete again. The count is read
 		 * before the state, so a zero that a cancel caused (no
 		 * resubmit once CANCELING) is seen with that cancel. */
-		if (!__atomic_load_n(&dev->xfer_submitting, __ATOMIC_ACQUIRE) &&
-		    !__atomic_load_n(&dev->xfer_outstanding, __ATOMIC_ACQUIRE) &&
+		if (!shared_load(&dev->xfer_submitting) &&
+		    !shared_load(&dev->xfer_outstanding) &&
 		    RTLSDR_RUNNING == dev->async_status) {
 			fprintf(stderr, "no transfer left, canceling...\n");
 			dev->dev_lost = 1;
@@ -2098,7 +2141,7 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	 * just before it saw CANCELING; a transfer that is not in flight
 	 * only returns LIBUSB_ERROR_NOT_FOUND. Event errors here are not
 	 * the stream's: the first error is kept. */
-	while (__atomic_load_n(&dev->xfer_outstanding, __ATOMIC_ACQUIRE) > 0) {
+	while (shared_load(&dev->xfer_outstanding) > 0) {
 		for(i = 0; i < dev->xfer_buf_num; ++i)
 			libusb_cancel_transfer(dev->xfer[i]);
 #ifdef _WIN32

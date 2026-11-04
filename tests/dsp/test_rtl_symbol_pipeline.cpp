@@ -25,6 +25,7 @@ reset_demod(demod_state* s) {
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = 48000;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
     s->rate_out2 = 12000;
     s->post_downsample = 4;
     s->deemph = 1;

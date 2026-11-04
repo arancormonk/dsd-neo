@@ -58,7 +58,11 @@ enum {
     DSD_NOISE_SQUELCH_MAX_STAGES = 10,
     /** Taps of the FIR that stands for the stages ahead of the last one. */
     DSD_NOISE_SQUELCH_CASCADE_TAPS = 63,
+    /** Most taps of the spectral factor that makes the noise ahead of a live rate step. */
+    DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS = 255,
 };
+
+struct dsd_iq_resampler;
 
 /** @brief One half-band decimation stage ahead of the channel filter: its taps, run at twice the rate it puts out. */
 typedef struct {
@@ -160,6 +164,22 @@ double dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int r
  */
 int dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
                                   const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz);
+
+/**
+ * @brief Design the plan for the channel taps (@p taps, @p taps_len; NULL or 0 when no channel filter runs) behind the
+ * live I/Q rate step (issue #806) at the channel rate @p rate_hz (the step's target): the band and band-passes as
+ * dsd_noise_squelch_plan_design() takes them behind a cascade, and the noise references from 2 s of the same
+ * fixed-seed complex Gaussian noise, made at the step's input rate by the FIR @p factor (@p factor_len taps, whose
+ * autocorrelation is the cascade's output noise: dsd_squelch_step_model_build()), then run through the step @p step
+ * (a design of the plan's own, cleared before and after), the channel taps, the discriminator and each band-pass. No
+ * cascade FIR (cascade_len 0). Allocates nothing.
+ *
+ * @return 0, or -1 (plan not valid): bad arguments (a step that is not configured or upsamples a pass), less than
+ * 1200 Hz of band, no channel filter at a rate whose Nyquist is 8 kHz or less, or a step that refuses a pass.
+ */
+int dsd_noise_squelch_plan_design_stepped(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                          const double* factor, int factor_len, struct dsd_iq_resampler* step,
+                                          int rate_hz);
 
 /** @brief Whether @p a and @p b are the same plan (rate, band and references equal within a relative 1e-12). */
 int dsd_noise_squelch_plan_equal(const dsd_noise_squelch_plan* a, const dsd_noise_squelch_plan* b);

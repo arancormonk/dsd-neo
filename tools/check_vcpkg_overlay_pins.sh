@@ -8,8 +8,11 @@ usage() {
   cat << 'USAGE'
 Usage: tools/check_vcpkg_overlay_pins.sh [--fix]
 
-Checks that vcpkg overlay GitHub source pins match tools/ci-dependency-pins.env.
-With --fix, rewrites mirrored REF and SHA512 lines in the overlay portfiles.
+Checks that vcpkg overlay GitHub source pins match tools/ci-dependency-pins.env,
+and that the airspy and rtlsdr overlays apply dsd-neo's patch series
+(tools/usb_dependency_patches.sh) with its current digest.
+With --fix, rewrites mirrored REF and SHA512 lines and the recorded patch digests
+in the overlay portfiles.
 USAGE
 }
 
@@ -171,11 +174,120 @@ check_port() {
   fi
 }
 
+# The words of a portfile's set(<name> ...) call, up to its closing parenthesis.
+extract_port_set() {
+  local name="$1"
+  local portfile="$2"
+
+  awk -v name="$name" '
+    !in_set && $1 == "set(" name {
+      in_set = 1
+      found = 1
+      $1 = ""
+    }
+    in_set {
+      for (i = 1; i <= NF; i++) {
+        word = $i
+        done = sub(/\)$/, "", word)
+        if (word != "") {
+          print word
+        }
+        if (done) {
+          exit
+        }
+      }
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$portfile"
+}
+
+rewrite_port_patch_digest() {
+  local portfile="$1"
+  local old_digest="$2"
+  local new_digest="$3"
+  local tmp=""
+
+  tmp=$(mktemp)
+  sed "s/${old_digest}/${new_digest}/" "$portfile" > "$tmp"
+  mv "$tmp" "$portfile"
+}
+
+# Whether the portfile's vcpkg_from_github() call passes the series: ${dsd_neo_patches}
+# after its PATCHES keyword. The series and digest checks alone would not notice a
+# call that stopped applying it.
+port_applies_patches() {
+  local portfile="$1"
+
+  awk '
+    $1 == "vcpkg_from_github(" { in_call = 1; next }
+    in_call && $1 == ")" { exit }
+    in_call {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "PATCHES") {
+          in_patches = 1
+        } else if (in_patches && $i == "${dsd_neo_patches}") {
+          found = 1
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$portfile"
+}
+
+check_port_patches() {
+  local port="$1"
+  local lib="$2"
+  local portfile="vcpkg-ports/${port}/portfile.cmake"
+  local want_series=""
+  local want_digest=""
+  local port_series=""
+  local port_digest=""
+
+  want_series=$(tools/usb_dependency_patches.sh series "$lib")
+  want_digest=$(tools/usb_dependency_patches.sh digest "$lib")
+  if ! port_series=$(extract_port_set DSD_NEO_PATCH_SERIES "$portfile"); then
+    echo "${portfile}: missing set(DSD_NEO_PATCH_SERIES ...); it must apply ${lib}'s series." >&2
+    failed=1
+    return
+  fi
+  if ! port_applies_patches "$portfile"; then
+    echo "${portfile}: vcpkg_from_github() does not pass \${dsd_neo_patches} under PATCHES." >&2
+    failed=1
+  fi
+  if [[ "$port_series" != "$want_series" ]]; then
+    echo "${portfile}: DSD_NEO_PATCH_SERIES does not list tools/usb_dependency_patches.sh series ${lib}:" >&2
+    printf '%s\n' "$want_series" >&2
+    failed=1
+    return
+  fi
+  if ! port_digest=$(extract_port_set DSD_NEO_PATCH_SERIES_SHA256 "$portfile"); then
+    echo "${portfile}: missing set(DSD_NEO_PATCH_SERIES_SHA256 ...)." >&2
+    failed=1
+    return
+  fi
+  if [[ "$port_digest" != "$want_digest" ]]; then
+    echo "${portfile}: DSD_NEO_PATCH_SERIES_SHA256 ${port_digest} does not match the ${lib} series (${want_digest})." >&2
+    if [[ $fix -eq 1 && "$port_digest" =~ ^[0-9a-f]{64}$ ]]; then
+      rewrite_port_patch_digest "$portfile" "$port_digest" "$want_digest"
+      echo "Updated ${portfile} patch digest."
+      fixed=1
+    else
+      failed=1
+    fi
+  fi
+}
+
 check_port "mbe-neo" "arancormonk/mbelib-neo" "MBELIB_NEO_SHA" "MBELIB_NEO_TARBALL_SHA512"
 check_port "mbe-neo" "arancormonk/pffft" "MBELIB_PFFFT_SHA" "MBELIB_PFFFT_TARBALL_SHA512" "vcpkg-ports/mbe-neo/pffft.cmake"
 check_port "codec2" "arancormonk/codec2" "CODEC2_SHA" "CODEC2_TARBALL_SHA512"
 check_port "rtlsdr" "arancormonk/rtl-sdr" "RTL_SDR_SHA" "RTL_SDR_TARBALL_SHA512"
 check_port "airspy" "airspy/airspyone_host" "AIRSPY_SHA" "AIRSPY_TARBALL_SHA512"
+check_port_patches "rtlsdr" "librtlsdr"
+check_port_patches "airspy" "libairspy"
 
 if [[ $fix -eq 1 && $fixed -eq 1 && $failed -eq 0 ]]; then
   exit 0

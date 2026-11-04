@@ -106,8 +106,8 @@ int rtl_stream_start(RtlSdrContext* ctx);
  *
  * A start checks the analog channel of the options it opens with once the rate chain is final, at the DSP rate the
  * device actually delivers (a SoapySDR or Airspy device can force one, an I/Q replay runs at its capture's), and fails
- * when it cannot run the width there: a width that rate cannot filter, any explicit width or the AM default while
- * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, or a replay whose sidecar decimates after the demodulator. The
+ * when it cannot run the width there: a width that rate cannot filter, or any explicit width or the AM default while
+ * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
  * refusal is logged with the validator's text and recorded here. Every stream create and every start forgets the
  * last record, so after a start that failed for any other reason (a missing device, a failed open) this returns 0.
  * The rate is otherwise lost once the start fails: rtl_stream_get_request_rate_hz() reads 0 with no stream, and
@@ -365,11 +365,14 @@ typedef enum rtl_stream_replan_verdict {
 int rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
                                    size_t why_size);
 
-/** What a replay's rate chain follows (issue #701): the DSP bandwidth request and whether the TETRA decoder runs. */
+/** What a replay's rate chain follows (issues #701, #806): the DSP bandwidth request, whether the TETRA decoder runs,
+    and whether the analog monitor does, whose channel filter (unlike every digital mode's) has no rate it is designed
+    up to. */
 typedef struct rtl_stream_replay_request {
     int dsp_bw_khz;    /**< dsd_opts::rtl_dsp_bw_khz */
     int dsp_bw_source; /**< dsd_opts::rtl_dsp_bw_source (a DSD_RTL_DSP_BW_SOURCE_* value) */
     int frame_tetra;   /**< 1 when the TETRA decoder runs */
+    int analog_family; /**< 1 when the analog monitor runs (dsd_opts_is_analog_family()) */
 } rtl_stream_replay_request;
 
 /**
@@ -464,7 +467,14 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
  * @param ted_sps_is_override When ted_sps>0: nonzero applies it as a sticky
  *                            override (rtl_stream_set_ted_sps), zero applies
  *                            it without override so later rate changes may
- *                            recalculate SPS.
+ *                            recalculate SPS. Without an override and with a
+ *                            symbol rate, the stream derives the value from
+ *                            the complex rate the profile lands at
+ *                            (rtl_stream_get_complex_rate_hz()), whatever
+ *                            output rate the caller timed it for (issue #806).
+ *                            An FSK profile whose symbol rate moves the
+ *                            digital_resample decision redesigns the output
+ *                            chain where it applies.
  * @return 0 on success, negative on invalid input.
  */
 int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
@@ -655,8 +665,9 @@ void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 /**
  * @brief Check a receive-family / analog profile request without queuing it.
  *
- * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published demod
- * rate and a replay's post-demod decimation, and logs a refusal the way rtl_stream_request_analog_profile() does. For
+ * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published complex
+ * rate (rtl_stream_get_request_rate_hz(), the rate the channel filter runs at, ahead of a replay's post-demod
+ * decimator), and logs a refusal the way rtl_stream_request_analog_profile() does. For
  * a caller that must change nothing else when the front end refuses, such as a decode-mode change: asked before the
  * caller commits its decoder, it keeps the decoder and the front end on the same family whenever the rate holds until
  * the request that follows lands (a retune that moves the rate in between gets that request refused, logged, with
@@ -669,7 +680,8 @@ int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 /**
  * @brief Report the demod (DSP) rate an analog profile request is held to on the caller's thread.
  *
- * The rate the running stream published, from its start on, which rtl_stream_check_analog_profile(),
+ * The complex rate the channel filter runs at (rtl_stream_get_complex_rate_hz()), as the running stream published it,
+ * from its start on, which rtl_stream_check_analog_profile(),
  * rtl_stream_request_analog_profile() and rtl_stream_prepare_retune_analog_profile_for_target() check a width against.
  * Unlike rtl_stream_get_demod_rate_hz(), a metrics value the demod thread publishes with its first processed block,
  * it needs no block to have run.
@@ -679,17 +691,29 @@ int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int rtl_stream_get_request_rate_hz(void);
 
 /**
+ * @brief Report the complex I/Q rate the front end runs at (issue #806).
+ *
+ * The rate after the half-band chain and the live rate step, which the channel filter, the FSK discriminator, the
+ * CQPSK chain and the TED's samples per symbol run at: the DSP bandwidth on every live source, and an I/Q replay's
+ * post-half-band rate, above the analog demod rate when its sidecar decimates after the demodulator. The last value a
+ * stream published (48000 before any), so it is safe from any thread.
+ *
+ * @return The rate in Hz.
+ */
+int rtl_stream_get_complex_rate_hz(void);
+
+/**
  * @brief Report the published analog receive profile.
  *
  * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.
  * @param out_width_hz Effective channel width in Hz: the configured width while the width-driven channel filter runs,
  *                     otherwise the width the DSP rate leaves: the passband of the legacy WIDE plan an unset default
  *                     runs where the rate cannot fit it (dsd_channel_lpf_legacy_wide_width_hz()), or the DSP rate
- *                     with no channel filter (0 outside the analog family). An I/Q replay that
- *                     decimates after the demodulator runs the filter at post_downsample times its design rate, and
- *                     reports that many times the designed width. May be NULL.
- * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it (including
- *                     a replay's post-demod decimation). May be NULL.
+ *                     with no channel filter (0 outside the analog family). The channel filter is designed for the
+ *                     complex rate it runs at, ahead of an I/Q replay's post-demod decimator too (issue #806), so
+ *                     the configured width is the width it passes. May be NULL.
+ * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it. May be
+ *                     NULL.
  * @return 1 while the analog family is active, 0 otherwise (digital output, or the M17 encoder's monitor path).
  */
 int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);

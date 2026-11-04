@@ -751,7 +751,8 @@ dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, int 
     }
     /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
     return dsp_rate_hz > 0
-           && dsd_analog_width_check_at(kind, held_hz, dsp_rate_hz, dsd_opts_analog_rate_source(opts), why, why_size)
+           && dsd_analog_width_check_at(kind, held_hz, dsp_rate_hz, dsd_input_dsp_rate_policy(opts).source, why,
+                                        why_size)
                   != 0;
 }
 

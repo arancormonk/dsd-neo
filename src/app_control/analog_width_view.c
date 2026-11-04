@@ -15,22 +15,13 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
-#include <limits.h>
 #include <stddef.h>
 
 int
 dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int rtl_bw_khz) {
-    /* detect_radio_source(): the stream opens every device string outside the SoapySDR, Airspy and I/Q replay specs
-       as an RTL-SDR (rtl_tcp by its own spec), and runs it at the DSP bandwidth. */
-    const int rtl = dsd_opts_audio_in_dev_is_rtl_spec(audio_in_dev)
-                    || dsd_opts_audio_in_dev_is_rtltcp_spec(audio_in_dev)
-                    || (audio_in_type == AUDIO_IN_RTL && !dsd_opts_audio_in_dev_is_soapy_spec(audio_in_dev)
-                        && !dsd_opts_audio_in_dev_is_airspy_spec(audio_in_dev)
-                        && !dsd_opts_audio_in_dev_is_iqreplay_spec(audio_in_dev));
-    if (!rtl || rtl_bw_khz <= 0) {
-        return 0;
-    }
-    return rtl_bw_khz > INT_MAX / 1000 ? INT_MAX : rtl_bw_khz * 1000;
+    /* Every live radio runs at its DSP bandwidth (an RTL-SDR's cascade lands on it, a SoapySDR or Airspy device is
+       stepped to it, issue #806); an I/Q replay's rate is known only once it starts, and PCM has none. */
+    return dsd_input_dsp_rate_for(audio_in_dev, audio_in_type, 0, rtl_bw_khz).rate_hz;
 }
 
 /* The rate from which the unset NFM default runs a channel filter when DSD_NEO_CHANNEL_LPF does not say

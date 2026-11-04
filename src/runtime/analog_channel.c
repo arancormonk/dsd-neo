@@ -10,6 +10,8 @@
  * Pure arithmetic mirroring the DSP channel-filter design; see <dsd-neo/runtime/analog_channel.h>.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -230,16 +232,6 @@ dsd_analog_rtl_dsp_bw_or_default(int khz) {
 }
 
 int
-dsd_analog_airspy_dsp_bw_is_selectable(int khz) {
-    return (dsd_analog_rtl_dsp_bw_is_selectable(khz) && khz <= DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ) ? 1 : 0;
-}
-
-int
-dsd_analog_airspy_dsp_bw_or_default(int khz) {
-    return dsd_analog_airspy_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
-}
-
-int
 dsd_analog_rtl_dsp_bw_nearest(int khz, int max_khz) {
     int best = 0;
     int64_t best_distance = INT64_MAX;
@@ -299,41 +291,35 @@ dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size
     return 0;
 }
 
-/* The fix for a width the device's rate cannot filter. Its rate is the capture rate halved down to the first rate at or
-   above the DSP bandwidth, so a wider DSP bandwidth raises it and a narrower one lowers it. */
-static void
-analog_format_device_fix(int kind, int too_fast, int none_fits, char* out, size_t out_size) {
-    const char* label = dsd_analog_demod_label(kind);
-    const char* unset = (kind == DSD_ANALOG_DEMOD_FM) ? " or leave the NFM width unset" : "";
-    if (too_fast) {
-        DSD_SNPRINTF(out, out_size, "lower the DSP bandwidth%s", unset);
-    } else if (none_fits) {
-        DSD_SNPRINTF(out, out_size, "raise the DSP bandwidth%s", unset);
-    } else {
-        DSD_SNPRINTF(out, out_size, "raise the DSP bandwidth or narrow the %s width", label);
-    }
-}
-
 int
-dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char* out, size_t out_size) {
+dsd_analog_rtl_bandwidths_with_whole_sps(int symbol_rate_hz, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
-    const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
-    const int too_fast = max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS;
-    /* Narrowing cannot help where the rate filters no width of the kind; the unset NFM default runs at any rate
-       (DSP-limited where it cannot filter), so it is the fix left for NFM. */
-    const int none_fits = max_hz < dsd_analog_width_min_hz(kind);
-    if (source == DSD_ANALOG_RATE_RTL_BW || source == DSD_ANALOG_RATE_CAPTURE) {
-        /* An I/Q replay's rate follows the DSP bandwidth as an RTL-SDR's does (issue #701): a bandwidth change re-plans
-           its rate chain to it, resampling the capture where it must. */
-        char fits_text[64];
-        (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
-        DSD_SNPRINTF(out, out_size, "set the %sDSP bandwidth to %s kHz", source == DSD_ANALOG_RATE_RTL_BW ? "RTL " : "",
-                     fits_text);
-    } else {
-        analog_format_device_fix(kind, too_fast, none_fits, out, out_size);
+    int whole[kRtlDspBandwidthCount] = {0};
+    int count = 0;
+    for (int i = 0; symbol_rate_hz > 0 && i < kRtlDspBandwidthCount; i++) {
+        const int rate_hz = kRtlDspBandwidthsKhz[i] * 1000;
+        if (rate_hz % symbol_rate_hz == 0 && rate_hz / symbol_rate_hz >= 2) {
+            whole[count++] = kRtlDspBandwidthsKhz[i];
+        }
     }
+    analog_join_khz_list(whole, count, out, out_size);
+    return 0;
+}
+
+int
+dsd_analog_width_rate_fix(int width_hz, int source, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    /* Every source's rate follows the DSP bandwidth: an RTL-SDR's is it, a SoapySDR or Airspy device's capture rate is
+       stepped to it exactly (issue #806), and an I/Q replay re-plans its rate chain to it, resampling the capture where
+       it must (issue #701). Only the RTL wording names the setting by its RTL name. */
+    char fits_text[64];
+    (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
+    DSD_SNPRINTF(out, out_size, "set the %sDSP bandwidth to %s kHz", source == DSD_ANALOG_RATE_RTL_BW ? "RTL " : "",
+                 fits_text);
     return 0;
 }
 
@@ -344,7 +330,7 @@ analog_format_rate_error(int kind, int width_hz, int rate_hz, int source, char* 
     char fix_text[96];
     (void)dsd_analog_width_format(width_hz, width_text, sizeof width_text);
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix_text, sizeof fix_text);
+    (void)dsd_analog_width_rate_fix(width_hz, source, fix_text, sizeof fix_text);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS) {
         DSD_SNPRINTF(err, err_size,
@@ -436,4 +422,33 @@ dsd_analog_channel_lpf_off_check(int kind, int explicit_width_hz, int channel_lp
                      dsd_analog_demod_label(kind));
     }
     return -1;
+}
+
+dsd_input_dsp_rate
+dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active, int rtl_bw_khz) {
+    dsd_input_dsp_rate policy = {DSD_ANALOG_RATE_RTL_BW, 0};
+    if (iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(audio_in_dev)) {
+        policy.source = DSD_ANALOG_RATE_CAPTURE;
+        return policy;
+    }
+    const int device =
+        dsd_opts_audio_in_dev_is_soapy_spec(audio_in_dev) || dsd_opts_audio_in_dev_is_airspy_spec(audio_in_dev);
+    const int live_radio = device || audio_in_type == AUDIO_IN_RTL || dsd_opts_audio_in_dev_is_rtl_spec(audio_in_dev)
+                           || dsd_opts_audio_in_dev_is_rtltcp_spec(audio_in_dev);
+    if (device) {
+        policy.source = DSD_ANALOG_RATE_DEVICE;
+    }
+    if (live_radio && rtl_bw_khz > 0) {
+        policy.rate_hz = rtl_bw_khz > INT_MAX / 1000 ? INT_MAX : rtl_bw_khz * 1000;
+    }
+    return policy;
+}
+
+dsd_input_dsp_rate
+dsd_input_dsp_rate_policy(const dsd_opts* opts) {
+    if (!opts) {
+        return dsd_input_dsp_rate_for(NULL, AUDIO_IN_RTL, 0, 0);
+    }
+    return dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active,
+                                  opts->rtl_dsp_bw_khz);
 }

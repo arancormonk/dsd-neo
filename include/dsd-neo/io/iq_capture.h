@@ -35,7 +35,12 @@ typedef struct {
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;
+    /** The legacy demod rate: sample_rate_hz / base_decimation / post_downsample, truncated, which every reader
+        checks; a chain the device forced runs another rate, which rate_chain records. */
     uint32_t demod_rate_hz;
+    /** The live rate chain (issue #806), written as metadata v2's optional rate scalars: only the fields it has, each
+        checked first (dsd_iq_rate_chain_check()). All unset writes none, as captures before them did. */
+    dsd_iq_rate_chain rate_chain;
     int offset_tuning_enabled;
     int fs4_shift_enabled;
     int combine_rotate_enabled;
@@ -70,6 +75,10 @@ typedef struct {
 
 typedef struct dsd_iq_capture_writer dsd_iq_capture_writer;
 
+/** The sidecar's capture_end_reason of a capture that ended at a retune changing the device's sample rate (issue
+ *  #806 X9). A capture that ran to its stream's end has no capture_end_reason. */
+#define DSD_IQ_CAPTURE_END_RATE_CHANGED "rate_changed"
+
 /**
  * @brief Resolve data and metadata paths from a user path.
  *
@@ -103,8 +112,35 @@ int dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer*
  */
 int dsd_iq_capture_open_ex(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, int* out_data_opened,
                            char* err_buf, size_t err_buf_size);
+/**
+ * @brief Submit captured bytes.
+ *
+ * @return DSD_IQ_OK, DSD_IQ_ERR_SEALED once the writer is sealed (nothing is taken), or another error.
+ */
 int dsd_iq_capture_submit(dsd_iq_capture_writer* writer, const void* data, size_t bytes);
+/**
+ * @brief Record an event at the current end of the capture.
+ *
+ * A RETUNE or RESET at another sample rate than the capture's cannot be replayed from this file (issue #806 X9): the
+ * writer refuses it with DSD_IQ_ERR_RATE_CHAIN and is sealed. The file then ends with the samples before that event:
+ * queued and partly packed blocks are still written, and every later submission and event is a no-op returning
+ * DSD_IQ_ERR_SEALED. The writer stays open, and safe for producers still holding it, until dsd_iq_capture_close() at
+ * the stream's end, which writes capture_end_reason DSD_IQ_CAPTURE_END_RATE_CHANGED in the sidecar.
+ *
+ * @return DSD_IQ_OK; DSD_IQ_ERR_RATE_CHAIN when this event sealed the writer; DSD_IQ_ERR_SEALED when it was sealed
+ *         before; another error for an event refused on its own (the writer goes on).
+ */
 int dsd_iq_capture_record_event(dsd_iq_capture_writer* writer, const dsd_iq_event* event);
+/**
+ * @brief Fix the stream counts a sealed writer's sidecar reports.
+ *
+ * Called once the writer is sealed, with the caller's counts at the seal: dsd_iq_capture_close() reports them in
+ * place of the final_stats it is given, which count retunes and drops after the file ended. Only the first call
+ * counts.
+ *
+ * @return DSD_IQ_OK when the counts were taken, DSD_IQ_ERR_INVALID_ARG otherwise (not sealed, or taken before).
+ */
+int dsd_iq_capture_freeze_final_stats(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* stats);
 void dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* final_stats);
 void dsd_iq_capture_abort(dsd_iq_capture_writer* writer);
 

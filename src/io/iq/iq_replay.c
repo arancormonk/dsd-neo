@@ -5,13 +5,16 @@
 
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_wav.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -727,6 +730,27 @@ token_to_i32(const json_token* tok, int* out, char* err_buf, size_t err_buf_size
     return DSD_IQ_OK;
 }
 
+/* A JSON number, integer or not, parsed strictly. */
+static int
+token_to_double(const json_token* tok, double* out, char* err_buf, size_t err_buf_size, const char* field_name) {
+    if (!tok || !out) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    char buf[64];
+    if ((tok->type != JTOK_NUMBER_INT && tok->type != JTOK_NUMBER_FLOAT) || tok->num_len == 0
+        || tok->num_len >= sizeof(buf)) {
+        set_error(err_buf, err_buf_size, "field '%s' expects a number", field_name);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    DSD_MEMCPY(buf, tok->num, tok->num_len);
+    buf[tok->num_len] = '\0';
+    if (dsd_parse_double_strict(buf, -1e9, 1e9, out) != 0) {
+        set_error(err_buf, err_buf_size, "number for '%s' is invalid", field_name);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    return DSD_IQ_OK;
+}
+
 static int
 token_to_bool(const json_token* tok, int* out, char* err_buf, size_t err_buf_size, const char* field_name) {
     if (!tok || !out) {
@@ -777,6 +801,13 @@ typedef struct {
     unsigned input_ring_drops            : 1;
     unsigned notes                       : 1;
     unsigned events                      : 1;
+    /* The live rate chain's optional scalars (issue #806). */
+    unsigned nominal_rate_hz             : 1;
+    unsigned capture_rate_device_forced  : 1;
+    unsigned dsp_rate_hz                 : 1;
+    unsigned iq_step_l                   : 1;
+    unsigned iq_step_m                   : 1;
+    unsigned iq_step_approx_ppm          : 1;
 } replay_seen_fields;
 
 static int
@@ -1721,6 +1752,77 @@ metadata_parse_field_group_c(metadata_parse_state* st, json_tokenizer* tk, const
     return metadata_parse_field_group_c3(st, tk, key, val_tok, handled, err_buf, err_buf_size);
 }
 
+/* An optional unsigned rate-chain scalar (issue #806). */
+static int
+metadata_parse_chain_u32(const char* key, const json_token* val_tok, uint32_t* out, char* err_buf,
+                         size_t err_buf_size) {
+    int rc = metadata_expect_integer(val_tok, key, err_buf, err_buf_size);
+    if (rc == DSD_IQ_OK) {
+        rc = token_to_u32(val_tok, out, err_buf, err_buf_size, key);
+    }
+    return rc;
+}
+
+/* The live rate chain's optional scalars (issue #806). Metadata written before them is valid without them. */
+static int
+metadata_parse_field_group_d1(metadata_parse_state* st, const char* key, const json_token* val_tok, int* handled,
+                              char* err_buf, size_t err_buf_size) {
+    dsd_iq_rate_chain* chain = &st->cfg.rate_chain;
+    int rc = DSD_IQ_OK;
+    if (strcmp(key, "nominal_rate_hz") == 0) {
+        rc = metadata_parse_chain_u32(key, val_tok, &chain->nominal_rate_hz, err_buf, err_buf_size);
+        st->seen.nominal_rate_hz = 1;
+        *handled = 1;
+    } else if (strcmp(key, "capture_rate_device_forced") == 0) {
+        rc = token_to_bool(val_tok, &chain->device_forced, err_buf, err_buf_size, key);
+        st->seen.capture_rate_device_forced = 1;
+        *handled = 1;
+    } else if (strcmp(key, "dsp_rate_hz") == 0) {
+        rc = metadata_parse_chain_u32(key, val_tok, &chain->dsp_rate_hz, err_buf, err_buf_size);
+        st->seen.dsp_rate_hz = 1;
+        *handled = 1;
+    } else if (strcmp(key, "iq_step_l") == 0) {
+        rc = metadata_parse_chain_u32(key, val_tok, &chain->step_l, err_buf, err_buf_size);
+        st->seen.iq_step_l = 1;
+        *handled = 1;
+    }
+    return rc;
+}
+
+static int
+metadata_parse_field_group_d2(metadata_parse_state* st, const char* key, const json_token* val_tok, int* handled,
+                              char* err_buf, size_t err_buf_size) {
+    dsd_iq_rate_chain* chain = &st->cfg.rate_chain;
+    int rc = DSD_IQ_OK;
+    if (strcmp(key, "iq_step_m") == 0) {
+        rc = metadata_parse_chain_u32(key, val_tok, &chain->step_m, err_buf, err_buf_size);
+        st->seen.iq_step_m = 1;
+        *handled = 1;
+    } else if (strcmp(key, "iq_step_approx_ppm") == 0) {
+        rc = token_to_double(val_tok, &chain->step_approx_ppm, err_buf, err_buf_size, key);
+        st->seen.iq_step_approx_ppm = 1;
+        *handled = 1;
+    } else if (strcmp(key, "capture_end_reason") == 0) {
+        rc = metadata_expect_string(val_tok, key, err_buf, err_buf_size);
+        if (rc == DSD_IQ_OK) {
+            rc = copy_token_to_buffer(val_tok, st->cfg.capture_end_reason, sizeof(st->cfg.capture_end_reason), err_buf,
+                                      err_buf_size, key, 1);
+        }
+        *handled = 1;
+    }
+    return rc;
+}
+
+static int
+metadata_parse_field_group_d(metadata_parse_state* st, const char* key, const json_token* val_tok, int* handled,
+                             char* err_buf, size_t err_buf_size) {
+    int rc = metadata_parse_field_group_d1(st, key, val_tok, handled, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK || *handled) {
+        return rc;
+    }
+    return metadata_parse_field_group_d2(st, key, val_tok, handled, err_buf, err_buf_size);
+}
+
 static int
 metadata_parse_key_value(json_tokenizer* tk, char* key_buf, size_t key_buf_size, json_token* out_val_tok, int* out_done,
                          char* err_buf, size_t err_buf_size) {
@@ -1772,6 +1874,10 @@ metadata_parse_field_value(metadata_parse_state* st, json_tokenizer* tk, const c
         return rc;
     }
     rc = metadata_parse_field_group_c(st, tk, key, val_tok, &handled, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK || handled) {
+        return rc;
+    }
+    rc = metadata_parse_field_group_d(st, key, val_tok, &handled, err_buf, err_buf_size);
     if (rc != DSD_IQ_OK || handled) {
         return rc;
     }
@@ -1906,6 +2012,41 @@ metadata_apply_sample_format(metadata_parse_state* st, char* err_buf, size_t err
     return DSD_IQ_ERR_UNSUPPORTED_FMT;
 }
 
+/* The first of the step's four fields @p seen lacks. */
+static const char*
+metadata_missing_step_field(const replay_seen_fields* seen) {
+    if (!seen->dsp_rate_hz) {
+        return "dsp_rate_hz";
+    }
+    if (!seen->iq_step_l) {
+        return "iq_step_l";
+    }
+    if (!seen->iq_step_m) {
+        return "iq_step_m";
+    }
+    return "iq_step_approx_ppm";
+}
+
+/* The rate chain's has_ flags from the fields read (issue #806). The step's four fields come together: a writer that
+ * knows one wrote them all. */
+static int
+metadata_apply_rate_chain_fields(metadata_parse_state* st, char* err_buf, size_t err_buf_size) {
+    dsd_iq_rate_chain* chain = &st->cfg.rate_chain;
+    chain->has_nominal = st->seen.nominal_rate_hz;
+    chain->has_forced = st->seen.capture_rate_device_forced;
+    const unsigned step_fields =
+        st->seen.dsp_rate_hz + st->seen.iq_step_l + st->seen.iq_step_m + st->seen.iq_step_approx_ppm;
+    if (step_fields != 0U && step_fields != 4U) {
+        set_error(err_buf, err_buf_size,
+                  "metadata fields dsp_rate_hz, iq_step_l, iq_step_m and iq_step_approx_ppm come together; '%s' is "
+                  "missing",
+                  metadata_missing_step_field(&st->seen));
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    chain->has_step = step_fields == 4U;
+    return DSD_IQ_OK;
+}
+
 static int
 metadata_finalize(metadata_parse_state* st, const char* metadata_path, int reject_retunes, char* err_buf,
                   size_t err_buf_size) {
@@ -1942,6 +2083,15 @@ metadata_finalize(metadata_parse_state* st, const char* metadata_path, int rejec
         return rc;
     }
     rc = validate_replay_semantics(&st->cfg, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    /* The recorded chain, checked here as read: before a replay's rate plan or a requested bandwidth looks at it. */
+    rc = metadata_apply_rate_chain_fields(st, err_buf, err_buf_size);
+    if (rc == DSD_IQ_OK) {
+        rc = dsd_iq_rate_chain_check(&st->cfg.rate_chain, st->cfg.sample_rate_hz, st->cfg.base_decimation, err_buf,
+                                     err_buf_size);
+    }
     if (rc != DSD_IQ_OK) {
         return rc;
     }
@@ -2114,6 +2264,18 @@ dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, 
 }
 
 uint32_t
+dsd_iq_replay_nominal_rate_hz(const dsd_iq_replay_config* cfg) {
+    if (!cfg) {
+        return 0U;
+    }
+    if (cfg->rate_chain.has_nominal) {
+        return cfg->rate_chain.nominal_rate_hz;
+    }
+    return dsd_iq_rate_chain_derived_nominal(cfg->sample_rate_hz, cfg->recorded_dsp_bw_khz, cfg->base_decimation,
+                                             cfg->post_downsample);
+}
+
+uint32_t
 dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg) {
     if (!cfg) {
         return 0U;
@@ -2124,6 +2286,17 @@ dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg) {
 static int
 is_power_of_two_u32(uint32_t v) {
     return v != 0U && (v & (v - 1U)) == 0U;
+}
+
+/* The passes behind the power-of-two decimation @p v. */
+static int
+passes_of_u32(uint32_t v) {
+    int p = 0;
+    while (v > 1U) {
+        v >>= 1U;
+        p++;
+    }
+    return p;
 }
 
 static void
@@ -2150,10 +2323,178 @@ rate_meets_required(uint32_t rate_hz, uint32_t required_hz) {
     return (rate_hz % required_hz) == 0U;
 }
 
-/* KEEP (dsd_iq_replay_plan_rate()): 1 when the sidecar's recorded chain runs as captured, with @p plan filled. A TETRA
- * chain that misses the requirement only through a power-of-two post_downsample is folded into the half-band chain. */
+/* What a replay's rate plan is asked for (dsd_iq_replay_plan_rate()). */
+typedef struct {
+    uint32_t target_hz;           /* D */
+    uint32_t required_hz;         /* the mode's requirement on the CQPSK path, 0 for none */
+    uint32_t max_complex_rate_hz; /* the filter domain, 0 for none */
+} replay_plan_request;
+
+/* Whether a chain whose complex rate is @p complex_hz, post-decimated by @p post, runs the mode @p req asks for: the
+ * requirement on the CQPSK path, which skips the post-demod decimator (so only a chain with none meets one), and the
+ * filter domain. */
 static int
-rate_plan_keep(const dsd_iq_replay_config* cfg, uint32_t required_hz, dsd_iq_replay_rate_plan* plan) {
+rate_fits_mode(uint32_t complex_hz, uint32_t post, const replay_plan_request* req) {
+    if (req->required_hz != 0U && (post != 1U || !rate_meets_required(complex_hz, req->required_hz))) {
+        return 0;
+    }
+    return req->max_complex_rate_hz == 0U || complex_hz <= req->max_complex_rate_hz;
+}
+
+/* The chain a sidecar recorded, as KEEP plans from it (issue #806). */
+typedef struct {
+    uint32_t fs;
+    uint32_t nominal_hz; /* dsd_iq_replay_nominal_rate_hz() */
+    uint32_t base;
+    uint32_t post;
+    int passes;
+    int forced;
+    dsd_iq_replay_forced_provenance provenance;
+    /* The chain the capture ran stepped: a recorded step, or for a sidecar from before the step fields, a forced rate the
+       half-band passes did not take to the recorded bandwidth. */
+    int needs_step;
+} replay_recorded_chain;
+
+static void
+replay_recorded_chain_of(const dsd_iq_replay_config* cfg, replay_recorded_chain* rec) {
+    const dsd_iq_rate_chain* chain = &cfg->rate_chain;
+    rec->fs = cfg->sample_rate_hz;
+    rec->nominal_hz = dsd_iq_replay_nominal_rate_hz(cfg);
+    rec->base = cfg->base_decimation;
+    rec->post = cfg->post_downsample;
+    rec->passes = passes_of_u32(cfg->base_decimation);
+    if (chain->has_forced) {
+        rec->forced = chain->device_forced ? 1 : 0;
+        rec->provenance = DSD_IQ_REPLAY_FORCED_SIDECAR;
+    } else {
+        rec->forced =
+            dsd_iq_rate_chain_derived_forced(cfg->sample_rate_hz, cfg->recorded_dsp_bw_khz, rec->base, rec->post);
+        rec->provenance = DSD_IQ_REPLAY_FORCED_DERIVED;
+    }
+    if (chain->has_step) {
+        rec->needs_step = chain->step_l != 0U;
+    } else {
+        rec->needs_step = rec->forced && cfg->recorded_dsp_bw_khz > 0
+                          && (uint64_t)rec->nominal_hz != (uint64_t)cfg->recorded_dsp_bw_khz * 1000U * rec->base;
+    }
+}
+
+/* The rate planner's chain from @p nominal_hz over exactly @p passes to @p target_hz for @p backend, asked as
+ * @p request_hz: a request other than the nominal rate plans as forced, which a REPLAY_KEEP plan steps. 1 when it plans
+ * those passes. */
+static int
+replay_chain_plan(dsd_rate_plan_backend backend, uint32_t request_hz, uint32_t nominal_hz, uint32_t readback_hz,
+                  uint32_t target_hz, int passes, dsd_rate_plan* out) {
+    dsd_rate_plan_input in;
+    DSD_MEMSET(&in, 0, sizeof(in));
+    in.backend = backend;
+    in.request_hz = request_hz;
+    in.programmed_hz = nominal_hz;
+    in.readback_hz = readback_hz;
+    in.target_hz = target_hz;
+    in.max_passes = passes;
+    return dsd_rate_plan_compute(&in, out) == DSD_RATE_PLAN_OK && out->passes == passes;
+}
+
+/* A KEEP plan of @p rec's capture over @p base and @p post, running @p chain. */
+static void
+rate_plan_fill_keep(dsd_iq_replay_rate_plan* plan, const replay_recorded_chain* rec, uint32_t base, uint32_t post,
+                    const dsd_rate_plan* chain, int kept) {
+    rate_plan_fill(plan, rec->fs, rec->fs, base, post, chain->step_out_hz, kept);
+    plan->origin = DSD_IQ_REPLAY_ORIGIN_KEEP;
+    plan->complex_rate_hz = chain->step_out_hz;
+    plan->chain = *chain;
+    plan->forced = rec->forced;
+    plan->forced_provenance = rec->provenance;
+}
+
+/* KEEP (i): a chain that does not step runs unchanged where its own complex rate runs the mode. */
+static int
+rate_plan_keep_unchanged(const replay_recorded_chain* rec, const replay_plan_request* req,
+                         dsd_iq_replay_rate_plan* plan) {
+    if (rec->needs_step || rec->nominal_hz % rec->base != 0U) {
+        return 0;
+    }
+    const uint32_t complex_hz = rec->nominal_hz / rec->base;
+    if (complex_hz % rec->post != 0U || !rate_fits_mode(complex_hz, rec->post, req)) {
+        return 0;
+    }
+    dsd_rate_plan chain;
+    if (!replay_chain_plan(DSD_RATE_PLAN_BACKEND_REPLAY_KEEP, rec->nominal_hz, rec->nominal_hz, rec->fs, complex_hz,
+                           rec->passes, &chain)) {
+        return 0;
+    }
+    rate_plan_fill_keep(plan, rec, rec->base, rec->post, &chain, 1);
+    return 1;
+}
+
+/* KEEP (ii) and (iii): the recorded passes and the live step to @p target_hz on a chain the device forced (a
+ * request other than the nominal rate), where the passes still reach the target and the target runs the mode. */
+static int
+rate_plan_keep_stepped(const replay_recorded_chain* rec, uint32_t target_hz, const replay_plan_request* req, int kept,
+                       dsd_iq_replay_rate_plan* plan) {
+    if (target_hz == 0U || target_hz % rec->post != 0U || !rate_fits_mode(target_hz, rec->post, req)) {
+        return 0;
+    }
+    const uint64_t request_hz = (uint64_t)target_hz << rec->passes;
+    if (request_hz > (uint64_t)INT32_MAX) {
+        return 0;
+    }
+    dsd_rate_plan chain;
+    if (!replay_chain_plan(DSD_RATE_PLAN_BACKEND_REPLAY_KEEP, (uint32_t)request_hz, rec->nominal_hz, rec->fs, target_hz,
+                           rec->passes, &chain)) {
+        return 0;
+    }
+    rate_plan_fill_keep(plan, rec, rec->base, rec->post, &chain, kept);
+    return 1;
+}
+
+/* The base decimation (iv) folds @p rec's chain to, its post decimation in @p post: a power-of-two post that misses the
+ * requirement into the base, then a half-band pass at a time while the complex rate is above the filter domain. */
+static uint64_t
+rate_plan_fold_base(const replay_recorded_chain* rec, const replay_plan_request* req, uint32_t* post) {
+    uint64_t base = rec->base;
+    if (req->required_hz != 0U && *post > 1U && is_power_of_two_u32(*post)) {
+        base *= *post;
+        *post = 1U;
+    }
+    while (req->max_complex_rate_hz != 0U && base * 2U <= DSD_IQ_REPLAY_MAX_BASE_DECIMATION
+           && rec->nominal_hz % base == 0U && rec->nominal_hz / base > req->max_complex_rate_hz) {
+        base *= 2U;
+    }
+    return base;
+}
+
+/* KEEP (iv): a chain that does not step, folded. A power-of-two post_downsample that misses the requirement goes into
+ * the half-band chain (TETRA's CQPSK path skips it), then half-band passes are added while the complex rate is above
+ * the filter domain (a 144 kHz capture in a mode whose filter is designed up to about 100 kHz runs at 72 kHz). */
+static int
+rate_plan_keep_folded(const replay_recorded_chain* rec, const replay_plan_request* req, dsd_iq_replay_rate_plan* plan) {
+    if (rec->needs_step) {
+        return 0;
+    }
+    uint32_t post = rec->post;
+    const uint64_t base = rate_plan_fold_base(rec, req, &post);
+    if ((base == rec->base && post == rec->post) || base > DSD_IQ_REPLAY_MAX_BASE_DECIMATION
+        || rec->nominal_hz % base != 0U) {
+        return 0;
+    }
+    const uint32_t complex_hz = (uint32_t)(rec->nominal_hz / base);
+    if (complex_hz % post != 0U || !rate_fits_mode(complex_hz, post, req)) {
+        return 0;
+    }
+    dsd_rate_plan chain;
+    if (!replay_chain_plan(DSD_RATE_PLAN_BACKEND_REPLAY_KEEP, rec->nominal_hz, rec->nominal_hz, rec->fs, complex_hz,
+                           passes_of_u32((uint32_t)base), &chain)) {
+        return 0;
+    }
+    rate_plan_fill_keep(plan, rec, (uint32_t)base, post, &chain, 0);
+    return 1;
+}
+
+/* KEEP (dsd_iq_replay_plan_rate()): 1 when the sidecar's recorded chain runs, its step included, with @p plan filled. */
+static int
+rate_plan_keep(const dsd_iq_replay_config* cfg, const replay_plan_request* req, dsd_iq_replay_rate_plan* plan) {
     const uint32_t fs = cfg->sample_rate_hz;
     const uint32_t base = cfg->base_decimation;
     const uint32_t post = cfg->post_downsample;
@@ -2161,34 +2502,61 @@ rate_plan_keep(const dsd_iq_replay_config* cfg, uint32_t required_hz, dsd_iq_rep
         || fs / base / post != cfg->demod_rate_hz) {
         return 0;
     }
-    /* The CQPSK path runs at fs / base: it skips post_downsample. */
-    if (required_hz == 0U || (post == 1U && rate_meets_required(fs / base, required_hz))) {
-        rate_plan_fill(plan, fs, fs, base, post, 0U, 1);
+    replay_recorded_chain rec;
+    replay_recorded_chain_of(cfg, &rec);
+    if (rate_plan_keep_unchanged(&rec, req, plan)) {
         return 1;
     }
-    const uint64_t folded = (uint64_t)base * post;
-    if (post > 1U && is_power_of_two_u32(post) && folded <= DSD_IQ_REPLAY_MAX_BASE_DECIMATION
-        && rate_meets_required(fs / (uint32_t)folded, required_hz)) {
-        rate_plan_fill(plan, fs, fs, (uint32_t)folded, 1U, (uint32_t)(fs / folded), 0);
+    const dsd_iq_rate_chain* recorded = &cfg->rate_chain;
+    if (recorded->has_step && recorded->step_l != 0U
+        && rate_plan_keep_stepped(&rec, recorded->dsp_rate_hz, req, 1, plan)) {
         return 1;
     }
-    return 0;
+    /* Live writes only post 1: a forced chain the mode cannot run as recorded steps to the mode's target. */
+    if (rec.forced && rec.post == 1U && rate_plan_keep_stepped(&rec, req->target_hz, req, 0, plan)) {
+        return 1;
+    }
+    return rate_plan_keep_folded(&rec, req, plan);
 }
 
-int
-dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz, uint32_t cqpsk_required_multiple_hz,
-                        int explicit_target, dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size) {
-    if (!cfg || !out_plan) {
-        return DSD_IQ_ERR_INVALID_ARG;
+static dsd_rate_plan_backend
+rate_plan_general_backend(dsd_iq_replay_origin origin) {
+    switch (origin) {
+        case DSD_IQ_REPLAY_ORIGIN_WAV: return DSD_RATE_PLAN_BACKEND_WAV;
+        case DSD_IQ_REPLAY_ORIGIN_RESAMPLED: return DSD_RATE_PLAN_BACKEND_REPLAY_RESAMPLED;
+        default: break;
     }
+    return DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
+}
+
+/* The general rule's plan: the capture at @p fs resampled (or not) to @p r = D x 2^k and decimated by 2^k to D. It runs
+ * no step, as forced, as every replay did before issue #806. */
+static int
+rate_plan_fill_general(const dsd_iq_replay_config* cfg, uint32_t r, uint32_t k, uint32_t d,
+                       dsd_iq_replay_rate_plan* plan, char* err_buf, size_t err_buf_size) {
     const uint32_t fs = cfg->sample_rate_hz;
-    dsd_iq_replay_rate_plan plan;
-    if (!explicit_target && cfg->container == DSD_IQ_REPLAY_CONTAINER_SIDECAR
-        && rate_plan_keep(cfg, cqpsk_required_multiple_hz, &plan)) {
-        *out_plan = plan;
-        return DSD_IQ_OK;
+    rate_plan_fill(plan, fs, r, 1U << k, 1U, d, 0);
+    if (cfg->container == DSD_IQ_REPLAY_CONTAINER_WAV) {
+        plan->origin = DSD_IQ_REPLAY_ORIGIN_WAV;
+    } else {
+        plan->origin = plan->resample ? DSD_IQ_REPLAY_ORIGIN_RESAMPLED : DSD_IQ_REPLAY_ORIGIN_EXACT;
     }
-    const uint32_t d = target_dsp_hz;
+    if (!replay_chain_plan(rate_plan_general_backend(plan->origin), r, r, 0U, d, (int)k, &plan->chain)) {
+        set_error(err_buf, err_buf_size, "the %u Hz replay chain cannot be planned%s%s", (unsigned)r,
+                  plan->chain.message[0] ? ": " : "", plan->chain.message);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    plan->complex_rate_hz = plan->chain.step_out_hz;
+    plan->forced = 1;
+    plan->forced_provenance = DSD_IQ_REPLAY_FORCED_PLAN;
+    return DSD_IQ_OK;
+}
+
+/* The general rule (dsd_iq_replay_plan_rate()) for the capture at @p fs and the target @p d. */
+static int
+rate_plan_general(const dsd_iq_replay_config* cfg, uint32_t d, dsd_iq_replay_rate_plan* plan, char* err_buf,
+                  size_t err_buf_size) {
+    const uint32_t fs = cfg->sample_rate_hz;
     if (d == 0U) {
         set_error(err_buf, err_buf_size, "no DSP target rate to plan the replay for");
         return DSD_IQ_ERR_RATE_CHAIN;
@@ -2200,9 +2568,7 @@ dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz,
     }
     for (uint32_t k = 0U; k <= DSD_IQ_REPLAY_MAX_PLAN_PASSES; k++) {
         if ((uint64_t)d << k == (uint64_t)fs) {
-            rate_plan_fill(&plan, fs, fs, 1U << k, 1U, d, 0);
-            *out_plan = plan;
-            return DSD_IQ_OK;
+            return rate_plan_fill_general(cfg, fs, k, d, plan, err_buf, err_buf_size);
         }
     }
     uint64_t r = d;
@@ -2227,9 +2593,79 @@ dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz,
             return DSD_IQ_ERR_RATE_CHAIN;
         }
     }
-    rate_plan_fill(&plan, fs, (uint32_t)r, 1U << k, 1U, d, 0);
-    *out_plan = plan;
-    return DSD_IQ_OK;
+    return rate_plan_fill_general(cfg, (uint32_t)r, k, d, plan, err_buf, err_buf_size);
+}
+
+int
+dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz, uint32_t cqpsk_required_multiple_hz,
+                        int explicit_target, uint32_t max_complex_rate_hz, dsd_iq_replay_rate_plan* out_plan,
+                        char* err_buf, size_t err_buf_size) {
+    if (!cfg || !out_plan) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    const replay_plan_request req = {target_dsp_hz, cqpsk_required_multiple_hz, max_complex_rate_hz};
+    dsd_iq_replay_rate_plan plan;
+    if (!explicit_target && cfg->container == DSD_IQ_REPLAY_CONTAINER_SIDECAR && rate_plan_keep(cfg, &req, &plan)) {
+        *out_plan = plan;
+        return DSD_IQ_OK;
+    }
+    const int rc = rate_plan_general(cfg, target_dsp_hz, &plan, err_buf, err_buf_size);
+    if (rc == DSD_IQ_OK) {
+        *out_plan = plan;
+    }
+    return rc;
+}
+
+static int
+rate_plan_step_equal(const dsd_rate_plan_step* a, const dsd_rate_plan_step* b) {
+    return a->enabled == b->enabled && a->L == b->L && a->M == b->M && fabs(a->approx_ppm - b->approx_ppm) <= 1e-9
+           && a->protect_hz == b->protect_hz && a->stop_hz == b->stop_hz;
+}
+
+/* The planner's chains, field for field but the message. */
+static int
+rate_plan_chain_equal(const dsd_rate_plan* a, const dsd_rate_plan* b) {
+    return a->backend == b->backend && a->request_hz == b->request_hz && a->programmed_hz == b->programmed_hz
+           && a->readback_hz == b->readback_hz && a->target_hz == b->target_hz && a->nominal_hz == b->nominal_hz
+           && a->passes == b->passes && a->hb_out_num == b->hb_out_num && a->hb_out_shift == b->hb_out_shift
+           && a->device_forced == b->device_forced && a->step_eligible == b->step_eligible
+           && rate_plan_step_equal(&a->step, &b->step) && a->step_out_hz == b->step_out_hz && a->status == b->status;
+}
+
+int
+dsd_iq_replay_rate_plan_equal(const dsd_iq_replay_rate_plan* a, const dsd_iq_replay_rate_plan* b) {
+    if (!a || !b) {
+        return 0;
+    }
+    return a->capture_rate_hz == b->capture_rate_hz && a->dsp_input_rate_hz == b->dsp_input_rate_hz
+           && a->base_decimation == b->base_decimation && a->post_downsample == b->post_downsample
+           && a->demod_rate_hz == b->demod_rate_hz && a->target_dsp_hz == b->target_dsp_hz
+           && a->kept_recorded == b->kept_recorded && a->resample == b->resample && a->origin == b->origin
+           && a->complex_rate_hz == b->complex_rate_hz && rate_plan_chain_equal(&a->chain, &b->chain)
+           && a->forced == b->forced && a->forced_provenance == b->forced_provenance;
+}
+
+const char*
+dsd_iq_replay_origin_name(dsd_iq_replay_origin origin) {
+    switch (origin) {
+        case DSD_IQ_REPLAY_ORIGIN_KEEP: return "kept";
+        case DSD_IQ_REPLAY_ORIGIN_RESAMPLED: return "resampled";
+        case DSD_IQ_REPLAY_ORIGIN_EXACT: return "decimated";
+        case DSD_IQ_REPLAY_ORIGIN_WAV: return "WAV";
+        default: break;
+    }
+    return "unknown";
+}
+
+const char*
+dsd_iq_replay_forced_provenance_name(dsd_iq_replay_forced_provenance provenance) {
+    switch (provenance) {
+        case DSD_IQ_REPLAY_FORCED_SIDECAR: return "recorded";
+        case DSD_IQ_REPLAY_FORCED_DERIVED: return "derived";
+        case DSD_IQ_REPLAY_FORCED_PLAN: return "replay";
+        default: break;
+    }
+    return "unknown";
 }
 
 int
@@ -2243,6 +2679,8 @@ dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay_rat
     cfg->base_decimation = plan->base_decimation;
     cfg->post_downsample = plan->post_downsample;
     cfg->demod_rate_hz = plan->demod_rate_hz;
+    cfg->plan = *plan;
+    cfg->plan_applied = 1;
     return DSD_IQ_OK;
 }
 
@@ -2955,6 +3393,55 @@ dsd_iq_info_raw_bytes(const dsd_iq_replay_config* cfg, uint64_t actual_file_size
     return (cfg->data_bytes < actual_file_size) ? cfg->data_bytes : actual_file_size;
 }
 
+/* The rate chain a replay of the capture runs at its recorded bandwidth in a mode with no rate requirement (issue
+ * #806): the nominal rate, the half-band passes and their output (an exact fraction), the I/Q rate step and the DSP
+ * rate after it, the forced flag and where each came from, and why the capture ended early when it did. */
+static void
+dsd_iq_info_print_rate_chain(const dsd_iq_replay_config* cfg, FILE* out) {
+    const dsd_iq_rate_chain* recorded = &cfg->rate_chain;
+    const uint32_t nominal_hz = dsd_iq_replay_nominal_rate_hz(cfg);
+    DSD_FPRINTF(out, "  Nominal rate:        %u Hz (%s)\n", nominal_hz,
+                recorded->has_nominal ? "recorded" : "derived from the sample rate and the DSP bandwidth");
+    const uint32_t bw_hz = cfg->recorded_dsp_bw_khz > 0 ? (uint32_t)cfg->recorded_dsp_bw_khz * 1000U : 48000U;
+    dsd_iq_replay_rate_plan plan;
+    char err[192] = {0};
+    if (dsd_iq_replay_plan_rate(cfg, bw_hz, 0U, 0, 0U, &plan, err, sizeof(err)) != DSD_IQ_OK) {
+        DSD_FPRINTF(out, "  Replay rate chain:   refused (%s)\n", err);
+        return;
+    }
+    const dsd_rate_plan* chain = &plan.chain;
+    char hb_out[64];
+    if (chain->hb_out_shift == 0U) {
+        DSD_SNPRINTF(hb_out, sizeof(hb_out), "%lld Hz", (long long)chain->hb_out_num);
+    } else {
+        DSD_SNPRINTF(hb_out, sizeof(hb_out), "%.10g Hz (%lld/2^%u)",
+                     ldexp((double)chain->hb_out_num, -(int)chain->hb_out_shift), (long long)chain->hb_out_num,
+                     chain->hb_out_shift);
+    }
+    char step[96];
+    if (chain->step.enabled) {
+        DSD_SNPRINTF(step, sizeof(step), "then the I/Q rate step %d/%d to %u Hz", chain->step.L, chain->step.M,
+                     (unsigned)plan.complex_rate_hz);
+    } else {
+        DSD_SNPRINTF(step, sizeof(step), "%s", "no I/Q rate step");
+    }
+    DSD_FPRINTF(out, "  Replay rate chain:   %s: %d half-band passes to %s, %s\n",
+                dsd_iq_replay_origin_name(plan.origin), chain->passes, hb_out, step);
+    if (chain->step.enabled && fabs(chain->step.approx_ppm) > 1e-9) {
+        DSD_FPRINTF(out, "  Rate step ratio:     approximated, %.6f ppm from %u Hz\n", chain->step.approx_ppm,
+                    (unsigned)plan.complex_rate_hz);
+    }
+    DSD_FPRINTF(out, "  DSP rate:            %u Hz%s\n", (unsigned)plan.complex_rate_hz,
+                recorded->has_step ? " (dsp_rate_hz recorded)" : "");
+    DSD_FPRINTF(out, "  Device-forced rate:  %s (%s)\n", plan.forced ? "yes" : "no",
+                dsd_iq_replay_forced_provenance_name(plan.forced_provenance));
+    if (cfg->capture_end_reason[0] != '\0') {
+        const int rate_changed = strcmp(cfg->capture_end_reason, DSD_IQ_CAPTURE_END_RATE_CHANGED) == 0;
+        DSD_FPRINTF(out, "  Capture end:         %s%s\n", cfg->capture_end_reason,
+                    rate_changed ? " (the device rate changed on a retune; the file ends before it)" : "");
+    }
+}
+
 static void
 dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_path, uint64_t actual_file_size,
                           uint64_t effective, int replay_compatible, FILE* out) {
@@ -2970,6 +3457,7 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
     DSD_FPRINTF(out, "  Capture center:      %.6f MHz\n", (double)cfg->capture_center_frequency_hz / 1000000.0);
     DSD_FPRINTF(out, "  Demod rate:          %u Hz (base_decimation=%u, post_downsample=%u)\n", cfg->demod_rate_hz,
                 cfg->base_decimation, cfg->post_downsample);
+    dsd_iq_info_print_rate_chain(cfg, out);
     DSD_FPRINTF(out, "  Source backend:      %s (%s)\n", cfg->source_backend,
                 cfg->source_args[0] ? cfg->source_args : "none");
     DSD_FPRINTF(out, "  Capture stage:       %s\n", cfg->capture_stage);
@@ -3032,7 +3520,7 @@ info_describe_wav_plan(const dsd_iq_replay_config* cfg, uint32_t target_hz, uint
                        size_t out_size) {
     dsd_iq_replay_rate_plan plan;
     char err[160] = {0};
-    if (dsd_iq_replay_plan_rate(cfg, target_hz, required_hz, 0, &plan, err, sizeof(err)) != DSD_IQ_OK) {
+    if (dsd_iq_replay_plan_rate(cfg, target_hz, required_hz, 0, 0U, &plan, err, sizeof(err)) != DSD_IQ_OK) {
         DSD_SNPRINTF(out, out_size, "refused (%s)", err);
         return 0;
     }

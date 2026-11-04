@@ -21,9 +21,36 @@ cmake --build --preset dev-debug -j
 Airspy works with both `DSD_ENABLE_RTLSDR=OFF` and `DSD_ENABLE_SOAPYSDR=OFF`.
 
 Linux users need permission to access the USB device. Install the Airspy udev
-rules supplied by the driver package. On Windows the device must be accessible
-through WinUSB. Android obtains USB permission through its normal system dialog;
-the application's native code uses the descriptor owned by the USB manager.
+rules supplied by the driver package. Android obtains USB permission through its
+normal system dialog; the application's native code uses the descriptor owned by
+the USB manager.
+
+On Windows dsd-neo talks to the Airspy through the WinUSB driver. You normally
+install nothing: the Airspy's firmware reports it as a WinUSB device, and Windows
+sets up the driver itself when you plug it in (Airspy's Quick Start guide says
+the same for Windows 8, 8.1, 10 and 11). Some PCs are set up to block that,
+the guide says. Then install Airspy's WinUSB Compatibility Driver from the Quick
+Start guide on airspy.com: in Device Manager pick the Airspy, choose Update
+Driver, then Browse my computer, and point it at the `.inf` file from that
+download. Zadig can bind WinUSB to it too.
+
+Only one program can open an Airspy at a time, so close SDR# or any other SDR
+program first. `dsd-neo --airspy-list` prints the serial of every Airspy it can
+open. `No Airspy devices found.` there, or `Airspy open: AIRSPY_ERROR_NOT_FOUND
+(-5)` at start, means the Airspy is not plugged in, has no driver, or another
+program has it open.
+
+The release packages (the Windows ZIP, the Linux AppImage, the macOS DMG and the
+Android app) build libairspy from the pinned source with one dsd-neo patch:
+stopping, closing or restarting a stream waits until the USB stack has handed
+back every transfer before the library frees or reuses it. Upstream libairspy
+can free a transfer that is still in flight, which can crash the decoder or stop
+the stream from coming back after a retune or a settings change. A build from
+source against a distribution's or Homebrew's libairspy uses that library as it
+is packaged, without the patch. To use the patched library there, build it from
+the pinned source with `tools/usb_dependency_patches.sh fetch libairspy <dir>`
+and point CMake at its install prefix. The same applies to librtlsdr; see
+[Dependencies](dependencies.md).
 
 ## Select and tune
 
@@ -38,13 +65,10 @@ The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables
 `auto[+N]` for the [auto squelch](cli.md#auto-squelch---squelch-auto), or `noise[+N]` for the
 [noise squelch](cli.md#noise-squelch---squelch-noise)),
 and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
-be one of 4, 6, 8, 12, 16, 24, or 48 kHz; other values warn and fall back to 48.
-72 kHz, the RTL DSP bandwidth TETRA needs, is refused the same way: an Airspy's
-sample rate halves to 78.125 or 93.75 kHz at both 48 and 72 kHz, never to 72 kHz
-or any other rate TETRA runs at (a multiple of 18 kHz from 36 to 144 kHz), so
-TETRA (`-fT`) does not run on an Airspy. The same holds for a bandwidth an Airspy
-input inherits (from `rtl_bw_khz` or another input) and for the terminal's DSP
-bandwidth row, which refuses 72 on an Airspy.
+be one of 4, 6, 8, 12, 16, 24, 48 or 72 kHz, the same list as an RTL-SDR; other
+values warn (`Airspy bandwidth 96 kHz is unsupported; using 48 kHz.`) and fall
+back to 48. See [DSP bandwidth and rates](#dsp-bandwidth-and-rates) for how an
+Airspy reaches it.
 Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns
 and keeps the previous/default value; invalid frequencies still prevent startup.
 An explicit serial must match exactly. Without one, the first enumerated device
@@ -55,6 +79,52 @@ Terminal users can also select Airspy under **Input → Switch source** and adju
 it under **Input → Airspy receiver controls**. Qt and Android expose an Airspy
 source in saved systems, exploration, and scan lists, with native receiver
 controls in setup and the live radio panel.
+
+## DSP bandwidth and rates
+
+An Airspy runs at its own sample rates: 10 or 2.5 MS/s on an R2, 6 or 3 MS/s on
+a Mini. Halving those never lands on a DSP bandwidth. dsd-neo halves the rate as
+far as it can while staying at or above the DSP bandwidth, then resamples what
+is left to the bandwidth exactly. So every decoder and the analog monitor run at
+the same rate as on an RTL-SDR at that bandwidth.
+
+| DSP bandwidth | R2 (2.5 or 10 MS/s) halves to | Mini (3 or 6 MS/s) halves to |
+| --- | --- | --- |
+| 72 and 48 kHz | 78,125 Hz | 93,750 Hz |
+| 24 kHz | 39,062.5 Hz | 46,875 Hz |
+| 16 and 12 kHz | 19,531.25 Hz | 23,437.5 Hz |
+| 8 and 6 kHz | 9,765.625 Hz | 11,718.75 Hz |
+| 4 kHz | 4,882.8125 Hz (9,765.625 Hz at 10 MS/s) | 5,859.375 Hz |
+
+The resampler then takes that rate to the bandwidth with an exact ratio, for
+example 384/625 from 78,125 Hz to 48 kHz. It costs well under 1 % of one CPU
+core. What this means in practice:
+
+- **Every mode runs**, TETRA included. `-fT` sets the 72 kHz bandwidth TETRA
+  needs, on an Airspy as on an RTL-SDR (`-fT -i airspy:851.375M`). Switching to
+  TETRA while running at another bandwidth keeps TETRA selected but decodes
+  nothing until you set 72 kHz; dsd-neo does not change the bandwidth on its
+  own, and the toast says so (`Decoding TETRA: needs a 72 kHz DSP bandwidth; it
+  stays 48 kHz until you set it`). TETRA is not part of Auto and is not a
+  `--trunk-scan` target, as on any other input.
+- **Analog widths** follow the RTL-SDR table in [the CLI guide](cli.md) (Analog
+  reception): an NFM width of 25 kHz needs a 48 or 72 kHz DSP bandwidth, and AM
+  does not run at 4 or 6 kHz. A width the bandwidth cannot filter is refused at
+  startup, before the Airspy opens, with the fix (`NFM bandwidth 25 kHz does not
+  fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); set the DSP
+  bandwidth to 48 or 72 kHz`). The terminal, a loaded config and
+  `--validate-config` hold an Airspy to the same rule.
+- **FSK modes** (P25 Phase 1 C4FM, DMR, NXDN, dPMR, YSF, M17, EDACS and the
+  like) still count an Airspy's rate as one the device chose. So
+  `digital_resample = "auto"` resamples the decoder's input to 48 kHz where the
+  bandwidth gives no whole number of samples per symbol (12 kHz for 4,800 symbols
+  per second), where an RTL-SDR at 12 kHz is not resampled. At 48 kHz every FSK
+  symbol rate is whole, so nothing is resampled.
+- **Qt and Android** offer the TETRA chip on an Airspy, and the add-system wizard
+  shows the bandwidth field for an Airspy (gain and PPM stay hidden, since the
+  Airspy has its own receiver controls). Leave it empty for TETRA, which then
+  runs at 72 kHz. A saved Airspy bandwidth snaps to the nearest one in the list
+  above, and one above 72 kHz runs at 48 kHz.
 
 ## Receiver settings
 
@@ -100,8 +170,9 @@ continues to report invalid values.
   RTL bias preference does not enable antenna power on an Airspy.
 - **Shared controls:** frequency, DSP bandwidth, squelch, and monitor volume
   retain the existing radio configuration fields. Hardware sample rate is
-  separate from DSP bandwidth. The decoder adapts its rate chain to the actual
-  hardware rate and normalizes fractional FSK samples-per-symbol when needed.
+  separate from DSP bandwidth: the decoder halves and resamples whatever rate the
+  Airspy runs at to the DSP bandwidth (see
+  [DSP bandwidth and rates](#dsp-bandwidth-and-rates)).
   Applying a config during a live Airspy session retunes frequency and updates
   squelch immediately. Bandwidth or monitor-volume changes restart the stream,
   combined with any serial or sample-rate change in the same restart. A failed
@@ -129,10 +200,14 @@ dsd-neo --iq-replay capture.iq.json
 ```
 
 Metadata records the native backend, selected serial, actual rate, tuning,
-and stream discontinuities. Replay uses the shared IQ pipeline and does not
+and stream discontinuities, and the rate chain the stream ran: the halved rate,
+the resampling ratio and the DSP rate after it. Replay runs the same chain the
+stream ran live. Replay uses the shared IQ pipeline and does not
 require Airspy hardware or libairspy. CU8 capture is not supported for Airspy.
+See [IQ capture and replay](iq-capture-replay.md) (Rate Chain And Resampling).
 
 Higher rates increase USB, CPU, memory, and capture-storage usage. Check decode
 results and drop metrics on the target host, particularly Android. Hardware
 reception and trunk-follow timing still require validation on an R2 and Mini;
-the automated tests cover the adapter with a fake SDK and the shared IQ pipeline.
+the automated tests cover the adapter with a fake SDK, live decoding at the
+Airspy's rates through it, and the shared IQ pipeline.

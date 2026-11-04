@@ -24,8 +24,10 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/platform/threading.h>
@@ -38,9 +40,10 @@
 /* Maximum half-band tap count used to dimension complex-decimator histories. */
 #define HB_TAPS_MAX              31
 
-/* Channel LPF plan/history capacity. Digital profiles design at most 144 taps
- * (and keep their 63-tap fallback); the analog family uses the full capacity so
- * device-forced rates up to ~102 kHz get a real design. Static-asserted against
+/* Channel LPF plan/history capacity. The digital profiles and the analog family
+ * both design within it, so every rate up to ~102.7 kHz
+ * (DSD_DIGITAL_CHANNEL_MAX_RATE_HZ) gets a real design; above it the digital
+ * profiles keep their 63-tap fallback. Static-asserted against
  * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
 #define DSD_CHANNEL_LPF_MAX_TAPS 288
 
@@ -107,8 +110,8 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 /* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan, the
-   half-band stage ahead of it (0 none, else its tap count) and how many stages the cascade runs. set is 0 until a plan
-   was designed. */
+   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs, and the live I/Q rate
+   step between them (issue #806; zeroed with no step). set is 0 until a plan was designed. */
 typedef struct {
     int rate_hz;
     int rate_out;
@@ -118,6 +121,7 @@ typedef struct {
     int hb_taps;
     int passes; /* half-band stages ahead of the channel filter */
     int set;
+    dsd_live_iq_step_plan step;
 } dsd_demod_squelch_plan_key;
 
 struct demod_state {
@@ -148,6 +152,10 @@ struct demod_state {
        Valid only while result_flags_active; otherwise every sample is open. */
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t result_flags[MAXIMUM_BUF_LENGTH];
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t resamp_outflags[MAXIMUM_BUF_LENGTH * 4];
+    /* The half-band decimator's work buffer. It sits here, not with the half-band state among the scalars below, so
+       their sizes cannot decide where its SIMD loads fall (one more int there moved it off a 64-byte boundary and
+       slowed the CQPSK chain by about 5 %). */
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -166,7 +174,12 @@ struct demod_state {
     int lp_len;
     int result_len;
     int rate_in;
+    /* The analog audio rate after the post-demod decimator: complex_rate / post_downsample. */
     int rate_out;
+    /* The complex I/Q rate after the half-band chain and the live rate step (issue #806): what the channel filter,
+       the CQPSK and FSK chains, the squelch and the discriminator run at. It equals rate_out except on an I/Q replay
+       whose sidecar decimates after the demodulator (post_downsample above 1). Every rate chain sets both. */
+    int complex_rate;
     int rate_out2;
     float pre_r, pre_j;
     /* 1 once pre_r/pre_j hold a valid sample from a prior block; 0 before the
@@ -203,7 +216,6 @@ struct demod_state {
     int dc_block;
     float dc_avg;
     /* Half-band decimator */
-    float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
     /* Per stage: input samples taken but not yet decimated past (simd_hb_decim2_complex()), the look-ahead and the
@@ -213,11 +225,16 @@ struct demod_state {
     /* The downsample_passes the half-band state above belongs to: the cascade starts over when the count changes,
        since writers of the count (rate setup, restore_capture_rate_settings()) do not reset it. */
     int hb_state_passes;
+    /* The live I/Q rate step after the cascade (issue #806): hb_out to the DSP bandwidth rate when the device forced
+       its own rate. full_demod() runs the active design while live_iq_step.enabled; the controller thread designs and
+       swaps them (dsd_demod_live_step_prepare(), dsd_live_iq_step_commit()) while the demod thread is paused, and
+       dsd_demod_reset_filter_state() clears it with the cascade. */
+    dsd_live_iq_step live_iq_step;
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
      * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.
-     * Digital profiles cap the design at 144 taps; the analog family may use
-     * the full DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
+     * Digital profiles and the analog family design within
+     * DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
      * samples whatever the taps. */
     int channel_lpf_enable; /* gate */
     /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was
@@ -229,7 +246,7 @@ struct demod_state {
        the filter took samples since. */
     int channel_lpf_pending;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
-    int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
+    int channel_lpf_plan_rate_out; /* cached rate (complex_rate) for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
     int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
     int channel_lpf_plan_tetra;    /* cached: 1 when channel_lpf_plan_taps is the TETRA chain's design */
@@ -307,6 +324,10 @@ struct demod_state {
     dsd_squelch_floor_key noise_context;
     dsd_demod_squelch_plan_key noise_plan;
     dsd_noise_squelch noise_squelch;
+    /* The noise both squelches see through the live I/Q rate step (issue #806): built for the step's active plan in
+       the rate chain's transaction (dsd_demod_squelch_step_model_sync()), and the source of both plans while the
+       step runs. Released by rtl_demod_cleanup(). */
+    dsd_squelch_step_model squelch_step_model;
     /* The flags of the post-decimator's and the resampler's last inputs: each output takes the flag of the input at or
        just before its filter's centre, half the filter's length back. */
     uint8_t post_flag_hist[32];
@@ -345,7 +366,7 @@ struct demod_state {
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
     int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
     float ted_effective_gain; /* loop gain actually used by mode-specific TED */
-    int ted_sps;              /* nominal samples per symbol */
+    int ted_sps;              /* nominal samples per symbol at complex_rate */
     int ted_sps_override;     /* >0 = manual override (used during P25P2 VC tunes) */
     int costas_reset_pending; /* 1 = reset Costas loop on next retune (set when SPS override changes) */
     float ted_mu;             /* fractional phase [0.0, 1.0) */
@@ -385,7 +406,7 @@ struct demod_state {
        profile whose chain cannot run. The stream open clears them. */
     int tetra_chain_warned;
     /* Whether the TETRA channel design (dsd_tetra_channel_design()) is realizable at tetra_design_rate_out, the rate
-       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose rate_out differs, and
+       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose complex_rate differs, and
        dsd_demod_tetra_chain_wanted() reads it for that rate, so no block designs the filter just to ask. */
     int tetra_design_rate_out;
     int tetra_design_ok;
@@ -471,6 +492,8 @@ static_assert(sizeof(demod_state::result_flags) % DSD_DEMOD_BUF_ALIGN == 0,
               "result_flags must fill whole alignment blocks");
 static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,
               "resamp_outflags must fill whole alignment blocks");
+static_assert(sizeof(demod_state::hb_workbuf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "hb_workbuf must fill whole alignment blocks");
 
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven

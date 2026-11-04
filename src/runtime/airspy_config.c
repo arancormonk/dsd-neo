@@ -159,20 +159,14 @@ typedef struct {
     int bw_set; /* the spec carries a bandwidth field */
 } airspy_tuning;
 
-/* The DSP bandwidth an Airspy runs @p bw at: @p bw when it is a selectable one an Airspy takes, otherwise the default,
-   with a warning. 72 kHz is selectable for the other radio inputs, but no Airspy sample rate halves to it
-   (DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ). */
+/* The DSP bandwidth an Airspy runs @p bw at: @p bw when it is a selectable one, which an Airspy runs as an RTL-SDR does
+   (the live rate step lands its capture rate on it exactly, issue #806), otherwise the default, with a warning. */
 static int
 airspy_dsp_bandwidth(int bw) {
-    if (dsd_analog_airspy_dsp_bw_is_selectable(bw)) {
+    if (dsd_analog_rtl_dsp_bw_is_selectable(bw)) {
         return bw;
     }
-    if (dsd_analog_rtl_dsp_bw_is_selectable(bw)) {
-        LOG_WARN("Airspy bandwidth %d kHz is unsupported: no Airspy sample rate halves to it; using %d kHz.\n", bw,
-                 DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
-    } else {
-        LOG_WARN("Airspy bandwidth %d kHz is unsupported; using %d kHz.\n", bw, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
-    }
+    LOG_WARN("Airspy bandwidth %d kHz is unsupported; using %d kHz.\n", bw, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
     return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
 }
 
@@ -296,7 +290,7 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     opts->airspy_config_error = 0;
     opts->airspy = cfg;
     opts->rtlsdr_center_freq = tuning.hz;
-    /* A spec without a bandwidth field runs the one in force, which another input may have taken (72 kHz). */
+    /* A spec without a bandwidth field runs the one in force: another input's, or a decode preset's (-fT's 72 kHz). */
     opts->rtl_dsp_bw_khz = airspy_dsp_bandwidth(tuning.bw);
     if (tuning.bw_set) {
         opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;

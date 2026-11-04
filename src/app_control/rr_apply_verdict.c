@@ -15,7 +15,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/tetra_rate.h>
-#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,7 +28,6 @@ static const char k_rr_why_trunk_scan[] = "stop the trunk scan first; it keeps i
 static const char k_rr_why_am_audio[] = "AM needs an I/Q radio input";
 static const char k_rr_why_tetra_audio[] = "TETRA needs an I/Q radio input or a symbol capture";
 static const char k_rr_why_tetra_uplink[] = "TETRA uplink session; restart without --tetra-uplink";
-static const char k_rr_why_tetra_airspy[] = "an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp";
 static const char k_rr_why_tetra_rtl_bw[] = "TETRA needs 72 kHz DSP bandwidth; set it and import again";
 
 static int
@@ -47,22 +45,6 @@ rr_input_is_iq(int input_kind) {
            || input_kind == DSD_APP_RR_INPUT_AIRSPY || input_kind == DSD_APP_RR_INPUT_IQ_REPLAY;
 }
 
-/* A SoapySDR device settles its own rate: one known to run TETRA passes, one known not to is refused with the advice a
-   switch to TETRA gives (dsd_tetra_dsp_rate_advice(); its brief SoapySDR text matches the RTL-SDR one, so no options
-   are needed to pick it), and an unknown one passes for the decoder thread to decide. */
-static int
-rr_tetra_soapy_verdict(uint32_t actual_rate_hz, char* why, size_t why_size) {
-    if (actual_rate_hz == 0U) {
-        return 0;
-    }
-    const int rate_hz = actual_rate_hz > (uint32_t)INT_MAX ? INT_MAX : (int)actual_rate_hz;
-    char advice[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
-    if (dsd_tetra_dsp_rate_advice(NULL, rate_hz, 1, advice, sizeof advice) != 1) {
-        return 0;
-    }
-    return rr_refuse(why, why_size, advice);
-}
-
 /* TETRA by input (the verdict table of issue #803). */
 static int
 rr_tetra_verdict(const dsd_app_rr_receiver_facts* f, char* why, size_t why_size) {
@@ -74,11 +56,12 @@ rr_tetra_verdict(const dsd_app_rr_receiver_facts* f, char* why, size_t why_size)
     }
     switch (f->input_kind) {
         case DSD_APP_RR_INPUT_RTL:
-            /* The DSP bandwidth is the rate, and 72 kHz the one TETRA is set up for (-fT). Changing it here would
-               reopen the radio, which restarts an --iq-capture from its start, so the operator sets it. */
+        case DSD_APP_RR_INPUT_SOAPY:
+        case DSD_APP_RR_INPUT_AIRSPY:
+            /* The DSP bandwidth is the rate on every live radio (a SoapySDR or Airspy device's capture rate is stepped
+               to it, issue #806), and 72 kHz the one TETRA is set up for (-fT). Changing it here would reopen the
+               radio, which restarts an --iq-capture from its start, so the operator sets it. */
             return f->rtl_dsp_bw_khz == DSD_TETRA_DSP_BW_KHZ ? 0 : rr_refuse(why, why_size, k_rr_why_tetra_rtl_bw);
-        case DSD_APP_RR_INPUT_AIRSPY: return rr_refuse(why, why_size, k_rr_why_tetra_airspy);
-        case DSD_APP_RR_INPUT_SOAPY: return rr_tetra_soapy_verdict(f->actual_rate_hz, why, why_size);
         default: return 0; /* an I/Q replay re-plans to a TETRA rate or refuses; a symbol capture has no rate */
     }
 }
@@ -128,7 +111,7 @@ rr_input_kind(const dsd_opts* opts) {
 
 void
 rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payload* p, int has_group, int has_chan,
-                             uint32_t actual_rate_hz, dsd_app_rr_receiver_facts* out) {
+                             dsd_app_rr_receiver_facts* out) {
     if (!out) {
         return;
     }
@@ -139,7 +122,6 @@ rr_apply_receiver_facts_fill(const dsd_opts* opts, const dsd_app_rr_apply_payloa
     out->decode_mode = p->decode_mode;
     out->input_kind = rr_input_kind(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
-    out->actual_rate_hz = actual_rate_hz;
     out->tetra_uplink = opts->tetra_uplink ? 1 : 0;
     out->trunk_scan_running = opts->trunk_scan_enabled == 1 ? 1 : 0;
     out->has_group = has_group ? 1 : 0;

@@ -108,22 +108,13 @@ sqf_noise_autocorr(const float* taps, int taps_len, const float* hb, int hb_len,
     return sum;
 }
 
-int
-dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps, int taps_len, const float* hb_taps,
-                              int hb_len, int rate_hz) {
-    if (!out) {
-        return -1;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    /* At least two samples in every 20 ms sub-window. */
-    if (rate_hz < 2 * SQF_SUBS_PER_S) {
-        return -1;
-    }
-    static const float k_unit_tap[1] = {1.0f};
-    if (!taps || taps_len <= 0) {
-        taps = k_unit_tap;
-        taps_len = 1;
-    }
+static const float k_unit_tap[1] = {1.0f};
+
+/* The coherence lag for the channel taps: the smallest lag >= 1 at which their autocorrelation falls under
+   k_lag_rho_limit of its peak (1 for a single tap); -1 for taps with no power or a lag past the longest a plan may
+   use. */
+static int
+sqf_plan_lag(const float* taps, int taps_len) {
     const double r0 = sqf_autocorr(taps, taps_len, 0);
     if (!(r0 > 0.0)) {
         return -1;
@@ -139,6 +130,28 @@ dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps, in
         lag = 1;
     }
     if (lag < 1 || lag > DSD_SQUELCH_FLOOR_MAX_LAG) {
+        return -1;
+    }
+    return lag;
+}
+
+int
+dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps, int taps_len, const float* hb_taps,
+                              int hb_len, int rate_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    /* At least two samples in every 20 ms sub-window. */
+    if (rate_hz < 2 * SQF_SUBS_PER_S) {
+        return -1;
+    }
+    if (!taps || taps_len <= 0) {
+        taps = k_unit_tap;
+        taps_len = 1;
+    }
+    const int lag = sqf_plan_lag(taps, taps_len);
+    if (lag < 0) {
         return -1;
     }
     const int span = (taps_len - 1) + ((hb_taps && hb_len > 0) ? (hb_len - 1) / 2 : 0);
@@ -160,6 +173,143 @@ dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps, in
     out->neff = window / sum_rho2;
     out->sqrt_neff = sqrt(out->neff);
     out->noise_gain = rn0;
+    out->valid = 1;
+    return 0;
+}
+
+/* ---------------------------------------------------------------- periodic noise (the live I/Q rate step, #806) */
+
+/* E{z_n conj(z_{n+m})} of @p noise for any n and m: the covariance is real (real taps on circular noise), so
+   R(n, n - m) is R(n - m, n); 0 at lag lags and beyond. */
+static double
+sqf_periodic_cov(const dsd_squelch_floor_periodic_noise* noise, int n, int m) {
+    if (m < 0) {
+        n += m;
+        m = -m;
+    }
+    if (m >= noise->lags) {
+        return 0.0;
+    }
+    int phase = n % noise->period;
+    if (phase < 0) {
+        phase += noise->period;
+    }
+    return noise->cov[((size_t)phase * (size_t)noise->lags) + (size_t)m];
+}
+
+/* What one sample adds to a window's sums: its power R(n, n), its squared covariances over every lag, and beta_n and
+   rho_n for the coherence at @p lag. */
+typedef struct {
+    double power;
+    double sq;
+    double beta;
+    double rho;
+} sqf_periodic_sample;
+
+static sqf_periodic_sample
+sqf_periodic_sample_at(const dsd_squelch_floor_periodic_noise* noise, int n, int lag) {
+    sqf_periodic_sample out;
+    const double r0 = sqf_periodic_cov(noise, n, 0);
+    double sq = r0 * r0;
+    for (int m = 1; m < noise->lags; m++) {
+        const double ahead = sqf_periodic_cov(noise, n, m);
+        const double back = sqf_periodic_cov(noise, n, -m);
+        sq += (ahead * ahead) + (back * back);
+    }
+    const double r_prev = sqf_periodic_cov(noise, n - lag, 0);
+    const double rho = (r0 > 0.0 && r_prev > 0.0) ? sqf_periodic_cov(noise, n, -lag) / sqrt(r0 * r_prev) : 0.0;
+    out.power = r0;
+    out.sq = sq;
+    out.rho = rho;
+    out.beta = (M_PI / 4.0) * rho * sqf_hyp2f1_half_half_2(rho * rho);
+    return out;
+}
+
+/* A window's running sums; a sample adds with a weight (its count, or -1 as it leaves). */
+typedef struct {
+    double power;
+    double sq;
+    double beta;
+    double rho;
+} sqf_periodic_window;
+
+static void
+sqf_periodic_window_add(sqf_periodic_window* w, const sqf_periodic_sample* s, double weight) {
+    w->power += weight * s->power;
+    w->sq += weight * s->sq;
+    w->beta += weight * s->beta;
+    w->rho += weight * s->rho;
+}
+
+/* The means over every window start phase of N_eff, beta and rho for windows of @p window samples, into @p out (its
+   neff, beta and rho_lag). The window starts at phase 0, then slides one sample per phase: 2 period + window % period
+   samples evaluated. Returns -1 for a window with no power. */
+static int
+sqf_periodic_phase_means(const dsd_squelch_floor_periodic_noise* noise, int lag, int window,
+                         dsd_squelch_floor_plan* out) {
+    /* The first window: its whole periods as one period's sums times their count, then the samples left over. */
+    sqf_periodic_window w = {0.0, 0.0, 0.0, 0.0};
+    const int periods = window / noise->period;
+    for (int i = 0; periods > 0 && i < noise->period; i++) {
+        const sqf_periodic_sample s = sqf_periodic_sample_at(noise, i, lag);
+        sqf_periodic_window_add(&w, &s, (double)periods);
+    }
+    for (int i = 0; i < window % noise->period; i++) {
+        const sqf_periodic_sample s = sqf_periodic_sample_at(noise, i, lag);
+        sqf_periodic_window_add(&w, &s, 1.0);
+    }
+    double neff = 0.0;
+    double beta = 0.0;
+    double rho = 0.0;
+    for (int start = 0; start < noise->period; start++) {
+        if (!(w.power > 0.0) || !(w.sq > 0.0)) {
+            return -1;
+        }
+        neff += (w.power * w.power) / w.sq;
+        beta += w.beta / (double)window;
+        rho += w.rho / (double)window;
+        const sqf_periodic_sample leaving = sqf_periodic_sample_at(noise, start, lag);
+        const sqf_periodic_sample entering = sqf_periodic_sample_at(noise, start + window, lag);
+        sqf_periodic_window_add(&w, &leaving, -1.0);
+        sqf_periodic_window_add(&w, &entering, 1.0);
+    }
+    const double phases = (double)noise->period;
+    out->neff = neff / phases;
+    out->beta = beta / phases;
+    out->rho_lag = rho / phases;
+    return 0;
+}
+
+int
+dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                       const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (rate_hz < 2 * SQF_SUBS_PER_S || !noise || !noise->cov || noise->period < 1 || noise->lags < 1) {
+        return -1;
+    }
+    if (!taps || taps_len <= 0) {
+        taps = k_unit_tap;
+        taps_len = 1;
+    }
+    const int lag = sqf_plan_lag(taps, taps_len);
+    if (lag < 0) {
+        return -1;
+    }
+    double gain = 0.0;
+    for (int n = 0; n < noise->period; n++) {
+        gain += sqf_periodic_cov(noise, n, 0);
+    }
+    if (!(gain > 0.0) || sqf_periodic_phase_means(noise, lag, rate_hz / SQF_WINDOWS_PER_S, out) != 0) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return -1;
+    }
+    out->rate_hz = rate_hz;
+    out->lag = lag;
+    out->sqrt_neff = sqrt(out->neff);
+    out->noise_gain = gain / (double)noise->period;
     out->valid = 1;
     return 0;
 }
@@ -489,14 +639,15 @@ dsd_squelch_floor_get_status(const dsd_squelch_floor* t, dsd_squelch_floor_statu
 int
 dsd_squelch_floor_key_equal(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
     return a && b && a->freq_hz == b->freq_hz && a->gain == b->gain && a->tuner_agc == b->tuner_agc
-           && a->bias == b->bias && a->device == b->device && a->rate_hz == b->rate_hz && a->chain == b->chain;
+           && a->bias == b->bias && a->device == b->device && a->rate_hz == b->rate_hz && a->chain == b->chain
+           && a->step_l == b->step_l && a->step_m == b->step_m;
 }
 
 /* Everything but the frequency matches. */
 static int
 sqf_key_neighbour(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
     return a->gain == b->gain && a->tuner_agc == b->tuner_agc && a->bias == b->bias && a->device == b->device
-           && a->rate_hz == b->rate_hz && a->chain == b->chain;
+           && a->rate_hz == b->rate_hz && a->chain == b->chain && a->step_l == b->step_l && a->step_m == b->step_m;
 }
 
 void

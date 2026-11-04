@@ -174,11 +174,28 @@ jobs:
           Copy-Item -Force 'build/win-msvc-release/pffft-licenses/pffft-LICENSE.txt','build/win-msvc-release/pffft-licenses/pffft-NOTICES.txt' $licenseDir -ErrorAction Stop
           Copy-Item -Force 'build/win-msvc-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt' $licenseDir -ErrorAction Stop
           Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md')
+          # The bundled librtlsdr is GPL-2.0-or-later and built by the vcpkg overlay with the dsd-neo patches.
+          Copy-Item -Force 'android/third_party/librtlsdr/COPYING' (Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop
+          Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' (Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
           }
+
+      # The overlay applies the patches; this checks the DLL the ZIP ships came out of
+      # that build. Only librtlsdr has a probe here: the libairspy patch adds no mark
+      # to a Windows build (tools/check_patched_usb_libs.sh probes it on Linux and macOS).
+      - name: Verify the bundled librtlsdr is the patched build (MSVC)
+        shell: pwsh
+        run: |
+          $dlls = @(Get-ChildItem -Path 'dist/dsd-neo-msvc/bin' -File -Filter '*rtlsdr*.dll')
+          if ($dlls.Count -ne 1) { throw "Expected exactly one staged librtlsdr DLL, found $($dlls.Count)" }
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dlls[0].FullName))
+          if (-not $text.Contains('no transfer left, canceling')) {
+            throw "$($dlls[0].Name) lacks the reader's 'no transfer left' message: it was not built with 0003-librtlsdr-account-for-every-transfer.patch"
+          }
+          Write-Host "$($dlls[0].Name): built with the librtlsdr transfer patches"
 
       - name: Verify staged release hardening (MSVC)
         shell: pwsh

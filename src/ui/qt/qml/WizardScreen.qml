@@ -350,13 +350,14 @@ Item {
 
     /**
      * Whether the source can run a decode flag: AM needs a radio (issue #524),
-     * TETRA a USB or rtl_tcp radio or a symbol capture file (an Airspy has no
-     * DSP rate TETRA decodes at, issue #803); network and other file audio
-     * arrives already demodulated.
+     * TETRA a radio or a symbol capture file; network and other file audio
+     * arrives already demodulated. Every radio runs every flag, an Airspy
+     * TETRA too (issue #806); the bandwidth gates are tetraRateError() and
+     * amBandwidthError().
      */
     function decodeFlagRunsHere(flag) {
         if (radioSource)
-            return sourceType !== "airspy" || !Util.decodeFlagNeedsIqOrSymbols(flag);
+            return true;
         if (Util.decodeFlagNeedsRadio(flag))
             return false;
         return !Util.decodeFlagNeedsIqOrSymbols(flag) || symbolSource;
@@ -366,13 +367,9 @@ Item {
      * A source change away from the radio drops a chip the new source cannot
      * run back to Auto, rather than saving a system the engine would refuse to
      * start. Its chip is greyed out for the new source.
-     *
-     * TETRA on an Airspy is the exception: the step waits with the reason
-     * (tetraRateError()) and keeps the flag, so an imported TETRA system is
-     * still TETRA when the user switches back to a USB or rtl_tcp radio.
      */
     function dropRadioOnlyDecodeFlag() {
-        if (!decodeFlagRunsHere(decodeFlag) && tetraRateError().length === 0)
+        if (!decodeFlagRunsHere(decodeFlag))
             pickDecodeFlag("");
     }
 
@@ -394,10 +391,10 @@ Item {
     }
 
     /**
-     * Why TETRA cannot run on this radio (issue #803), or empty: an Airspy
-     * cannot decode it, and a USB or rtl_tcp radio only at 72 kHz, which an
-     * empty bandwidth field gives it. The same check refuses the session at
-     * start, so the wizard says so before saving the system.
+     * Why TETRA cannot run on this radio (issue #803), or empty: a radio
+     * decodes it only at 72 kHz, which an empty bandwidth field gives it. The
+     * same check refuses the session at start, so the wizard says so before
+     * saving the system.
      */
     function tetraRateError() {
         if (!radioSource)
@@ -628,10 +625,7 @@ Item {
             freqField.text = result.freqMhz;
         wizard.decodeFlag = result.decodeFlag;
         // A bandwidth kept from an edited system that cannot decode TETRA:
-        // an empty field runs it at the 72 kHz it needs. On an Airspy, where
-        // the field is hidden, any stored bandwidth is cleared: TETRA is held
-        // there anyway, and the 72 kHz is then ready for a switch to USB or
-        // rtl_tcp.
+        // an empty field runs it at the 72 kHz it needs.
         if (bwText.length > 0 && tetraRateError().length > 0)
             bwText = "";
         // The database's answer, and an answer: a chip tap after the import
@@ -1065,13 +1059,11 @@ Item {
 
                 // Why the AM and TETRA chips are greyed out on a network or file
                 // source, rather than leaving a dead control (issue #524).
-                // An Airspy greys out TETRA alone; with TETRA picked there, the
-                // TETRA note below gives the reason instead.
                 ReadableText {
                     objectName: "wizardDecodeIqNote"
-                    visible: !wizard.radioSource || (wizard.sourceType === "airspy" && wizard.tetraRateError().length === 0)
+                    visible: !wizard.radioSource
                     width: parent.width
-                    text: wizard.radioSource ? qsTr("TETRA needs a USB or rtl_tcp radio: an Airspy can't decode it.") : qsTr("AM needs a radio source, and TETRA a USB or rtl_tcp radio or a symbol capture (.bin): network and file audio arrives already demodulated.")
+                    text: qsTr("AM needs a radio source, and TETRA a radio source or a symbol capture (.bin): network and file audio arrives already demodulated.")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textSecondary
@@ -1101,8 +1093,8 @@ Item {
                     wrapMode: Text.Wrap
                 }
 
-                // TETRA on an Airspy, or on a radio whose bandwidth is not
-                // 72 kHz (issue #803): the step waits, as it does for AM.
+                // TETRA on a radio whose bandwidth is not 72 kHz (issue #803):
+                // the step waits, as it does for AM.
                 ReadableText {
                     objectName: "wizardDecodeTetraRateNote"
                     visible: text.length > 0
@@ -1348,8 +1340,11 @@ Item {
 
                             Text {
                                 id: advSubtitle
+                                objectName: "wizardAdvancedSubtitle"
                                 width: parent.width
-                                text: wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
+                                // Only what the pane shows: an Airspy has its own
+                                // gain controls and bias tee, and takes no PPM.
+                                text: wizard.sourceType === "airspy" ? qsTr("Gain, bandwidth, bias tee — defaults work") : wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
                                 color: Theme.textSubdued
@@ -1400,13 +1395,17 @@ Item {
                                 wizard.airspySettings = copy;
                             }
                         }
+                        // Gain and PPM are an RTL tuner's (an Airspy's gains are
+                        // its own controls above, and it takes no PPM); the DSP
+                        // bandwidth is every radio's (issue #806).
                         Row {
                             width: parent.width
-                            visible: wizard.radioSource && wizard.sourceType !== "airspy"
+                            visible: wizard.radioSource
                             spacing: 10
 
                             Column {
                                 width: (parent.width - 20) / 3
+                                visible: wizard.sourceType !== "airspy"
                                 spacing: 6
 
                                 // Read in the field below, which carries the same words (issue #782).
@@ -1440,6 +1439,7 @@ Item {
 
                             Column {
                                 width: (parent.width - 20) / 3
+                                visible: wizard.sourceType !== "airspy"
                                 spacing: 6
 
                                 // Read in the field below, which carries the same words (issue #782).
@@ -1470,11 +1470,16 @@ Item {
                                 }
                             }
 
+                            // Alone on an Airspy, the field takes the row and
+                            // its own label, without the caption the three
+                            // narrow columns share.
                             Column {
-                                width: (parent.width - 20) / 3
+                                width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 20) / 3
                                 spacing: 6
 
                                 ReadableText {
+                                    objectName: "wizardBandwidthCaption"
+                                    visible: wizard.sourceType !== "airspy"
                                     text: qsTr("BW kHz")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)

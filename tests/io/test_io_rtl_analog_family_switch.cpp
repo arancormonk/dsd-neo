@@ -1572,8 +1572,9 @@ expect_live_acceptance(const live_request_case& c) {
                         rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
                                                                    DSD_ANALOG_DEMOD_FM, c.accepted_width_hz, &r),
                         0);
-    DSD_SNPRINTF(label, sizeof label, "%s: request rate is the published DSP rate", c.name);
-    rc |= expect_int(label, r.request_rate_hz, c.rate_hz);
+    /* The channel filter's rate: the complex rate, ahead of a replay's post-demod decimator (issue #806). */
+    DSD_SNPRINTF(label, sizeof label, "%s: request rate is the published complex rate", c.name);
+    rc |= expect_int(label, r.request_rate_hz, c.rate_hz * c.post_downsample);
     DSD_SNPRINTF(label, sizeof label, "%s: check accepts it", c.name);
     rc |= expect_int(label, r.check_rc, 0);
     DSD_SNPRINTF(label, sizeof label, "%s: realizable request accepted", c.name);
@@ -1591,8 +1592,9 @@ expect_live_acceptance(const live_request_case& c) {
     return rc;
 }
 
-/* While a stream runs, each request is checked against the demod rate the stream publishes, and against the
- * post-demod decimation an I/Q replay sidecar can set: a width in NFM's range that the running stream cannot realize is
+/* While a stream runs, each request is checked against the complex rate the stream publishes, the rate its channel
+ * filter runs at, ahead of the post-demod decimation an I/Q replay sidecar can set: a width in NFM's range that the
+ * running stream cannot realize is
  * refused before anything is queued, by the check, as a live request and as a retune profile alike, and the running
  * receive profile stays as it was. Were such a width queued, the demodulator would have no filter design for it and
  * run the channel unfiltered. That holds for a width change on the running monitor and for a DMR session's switch onto
@@ -1610,11 +1612,10 @@ test_requests_against_running_stream(void) {
         /* 16 kHz fits up to 13.2 kHz, so even the 16 kHz default width is out of reach when asked for explicitly. */
         {"16 kHz analog stream", 16000, 1, 1, 16000, 13000, 13000,
          "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz)"},
-        /* A replay decimating by 2 after demod runs the channel filter at twice the published rate: every requested
-         * width is refused there, while the unset default keeps its legacy design (16 kHz at 48 kHz). */
-        {"48 kHz replay with post_downsample 2", 48000, 1, 2, 12500, 0, 16000,
-         "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: post_downsample 2 runs the channel filter at "
-         "96000 Hz"},
+        /* A replay decimating by 2 after demod runs the channel filter at twice its 12 kHz demod rate, and the
+         * filter is designed and checked there (issue #806): 24 kHz fits 20 kHz, not 25 kHz. */
+        {"12 kHz replay with post_downsample 2", 12000, 1, 2, 25000, 20000, 20000,
+         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz)"},
     };
     int rc = 0;
     for (const live_request_case& c : cases) {

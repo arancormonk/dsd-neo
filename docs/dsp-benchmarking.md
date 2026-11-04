@@ -140,11 +140,34 @@ than the filter, whose windows span the saved history. Unsuffixed cases retain
 
 The analog channel filter cases (`channel_lpf_48k_analog_16k`,
 `channel_lpf_78k_analog_16k`, `channel_lpf_96k_analog_25k`) report profile
-`analog` and use the width-driven design. `channel_lpf_78k_wide_fallback`
+`analog` and use the width-driven design. `channel_lpf_128k_wide_fallback`
 (variant `fallback`) runs the 63-tap prototype the WIDE profile falls back to
-at 78,125 Hz, which is what the analog monitor ran at that forced rate before
-the width-driven design. Paired with `channel_lpf_78k_analog_16k`, it is the
-before/after comparison for that rate under `--filter channel_lpf`.
+above 102,745 Hz (`DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`). Its cost per sample does
+not depend on the rate. It is what the analog monitor ran at 78,125 Hz before
+the width-driven design, and what every digital profile ran above about 51.4 kHz
+before issue #806. Paired with `channel_lpf_78k_analog_16k`, or with
+`channel_lpf_72k_p25_c4fm` and `channel_lpf_72k_p25_cqpsk` (201 taps), it is the
+before/after comparison for those rates under `--filter channel_lpf`. The
+`full_demod_*_72k*` cases run the whole 72 kHz chain those designs sit in.
+
+The live I/Q rate step cases (issue #806) time what an Airspy or SoapySDR
+device adds. `hb_cascade_2500k` and `hb_cascade_10000k` run the half-band
+cascade from 2.5 and 10 MS/s down to 78,125 Hz (one item per input sample).
+`iq_step_78k125_48k`, `iq_step_78k125_72k`, `iq_step_93k75_48k` and
+`iq_step_93k75_72k` run the step alone at the R2 and Mini ratios (384/625,
+576/625, 64/125, 96/125; one item per output pair).
+`full_demod_cqpsk_p25p1_airspy_78k` runs P25 Phase 1 CQPSK from 2.5 MS/s through
+the cascade, the step and the chain, and `_nostep` the same chain left at
+78,125 Hz, as it ran before the step.
+
+The squelch model and plan cases time what a rate chain change builds for the
+auto and noise squelch: `squelch_step_model_build_*` the step's noise model,
+`squelch_floor_plan_*` and `squelch_noise_plan_*` the plans behind the step
+(`_step`), behind the cascade alone at the same rate (`_cascade`, the RTL-SDR
+chain), and from every output phase in full (`_step_exact`, the floor plan's
+fallback). `soapy_m4093` is a large exact ratio (3000/4093) a SoapySDR device
+can need. Each takes up to tens of milliseconds a call, so they run only when
+named: `--case squelch_noise_plan_step_72k_nfm25k --iters 3 --repeat 3`.
 
 The analog receive core cases (`analog_rx_core_ctcss_on_value`, `_off_value`,
 `_noise`, `_voice`; issue #643) run `dsd_analog_rx_core_process()` over 200 ms

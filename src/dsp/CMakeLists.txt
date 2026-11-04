@@ -21,6 +21,7 @@ target_sources(
         pcm_input_staging.c
         rate_converter.c
         iq_resampler.c
+        live_iq_step.c
         analog_sink.c
         symbol_levels.c
         dsd_symbol.c
@@ -44,6 +45,7 @@ target_sources(
         squelch_floor.c
         noise_squelch_bank.c
         nfm_noise_squelch.c
+        squelch_step_model.c
         pcm_noise_squelch.c
 )
 
@@ -206,6 +208,7 @@ set(_dsd_neo_dsp_ieee_c_sources
     squelch_floor.c
     noise_squelch_bank.c
     nfm_noise_squelch.c
+    squelch_step_model.c
     pcm_noise_squelch.c
 )
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")

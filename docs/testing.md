@@ -453,6 +453,24 @@ a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faN
 decodes 29 with the two-bit gate and 30 with the matcher before these rules, the same over eight sample shifts, and 10
 with the gate held to one bit.
 
+`p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` (`DERIVED_ADJACENT`, 288 kB each) are the two P25 control
+channels at the 72 kHz RTL-SDR DSP bandwidth, next to an equal-level copy of themselves, reversed in time, 12.5 kHz up
+(issue #806). Above about 51.4 kHz every non-TETRA digital channel profile used to run a 63-tap fallback filter cut at
+a third of the rate, which passes that neighbour whole, and neither replay decoded anything. With each profile's own
+design they decode what the clean captures do: 27 `NAC/CC: 140` lines and 41 `WACN: 92065; SYS: 0D5` lines
+(`DECODE_IQ_P25P1_C4FM_ADJACENT_72K` at least 24, `DECODE_IQ_P25P1_CQPSK_ADJACENT_72K` at least 36).
+`DSP_ADJACENT_CHANNEL` checks the same rejection on the live chain for every digital profile, at 72 kHz and stepped to
+48 kHz from Airspy rates.
+
+`p25p1_{c4fm,cqpsk}_adjacent_{78k,94k}` (`DERIVED_FORCED_ADJACENT`, 312.5 and 375 kB) are the same mix at the rates an
+Airspy forces after its half-band passes, 78,125 Hz (2.5 MS/s) and 93,750 Hz (3 MS/s), recorded at the 48 kHz DSP
+bandwidth with `source_backend` `airspy` (issue #806). Their replays keep the chain and run the live I/Q rate step to
+48 kHz: the 78k C4FM and 94k CQPSK sidecars record the step (`nominal_rate_hz`, `capture_rate_device_forced`,
+`dsp_rate_hz`, `iq_step_l`/`iq_step_m`) as a capture since #806 does; the other two do not, so the replay derives
+the forced flag from the rates. Each decodes what the 48 kHz capture does, 27 and 41 (`DECODE_IQ_P25P1_*_ADJACENT_78K`
+and `_94K`, at least 24 and 36); unstepped, with the channel filter falling back and CQPSK timing a fractional SPS,
+they decoded nothing.
+
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
 its decode margin (the original set still passed with ±45 counts of added
@@ -798,6 +816,90 @@ The unit tests:
 | `APP_COMMAND_QUEUE` (`test_replay_*`) | Over a fake replay stream: `RTL_SET_BW` on a replay re-plans and resumes from the checkpoint with the request kept, a switch to TETRA and back re-plans each way, a config apply's `[mode] decode = tetra` and RTL-family `rtl_bw_khz` re-plan, and a re-plan that cannot go ahead leaves the session as it was: a refused plan stops nothing and puts the whole receive profile back, a failed start resumes the previous chain from the same checkpoint on the capture's clock, and when that fails too the replay restarts as any failed start's input does (from its start, on the system clock). |
 | `RUNTIME_CONFIG_APPLY` | A startup RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an explicit request that outlives the input `--iq-replay` replaces; one that names no bandwidth requests none. |
 | `FUZZ_IO_IQ_WAV` (fuzz presets) | `dsd_iq_wav_read_info()` and the replay reader over a WAV (open, read, seek) on arbitrary input; seeds in `tests/fuzz/corpus/io_iq_wav/`. |
+
+#### Device-forced rates, live and replayed (issue #806)
+
+An Airspy delivers its own rate. The half-band passes leave 78,125 or 93,750 Hz, and the live I/Q rate step takes that
+to the DSP bandwidth rate. No capture at a raw Airspy rate is committed. `tests/io/forced_rate_input.c` makes one at
+test time from a committed 48 or 72 kHz `cu8` fixture: an excerpt (2 s at most), upsampled to the device rate with
+`dsd_iq_resampler` (625/96 and 125/24 up, never a ratio the step uses, since the step only decimates), with 50 ms of
+seeded complex Gaussian noise at `noise_floor`'s level (16 LSB) before and after it, then quantized to `cu8` at 0.9 of
+the source's scale (headroom for the interpolation's overshoot). The noise covers the chain's tail bound (the
+upsampler's, the half-band cascade's and the step's, about 2 ms) many times over. It is noise, not silence: no receiver
+delivers exact zeros, and an exact-zero lead-in made the DMR decoder's audio error count swing with the rate.
+
+Any lead-in costs `dmr_voice_synth` its first superframe, since the call starts at the fixture's first sample: at the
+native rate the same samples decode 16 voice bursts in their first 2 s, against 52 in the fixture's 4.4 s whole and more
+audio errors at the start. So every threshold below compares with the same samples at the native rate (48 kHz, 72 kHz
+for TETRA, no half-band pass, no step), less an allowance for frames at the excerpt's edges.
+
+`dsd-neo_test_iq_forced_rate_fixture_tool` (`tests/io/iq_forced_rate_fixture_tool.c`) writes the recordings into the
+build tree (`<build>/tests/iq_forced_rate_fixtures/<name>/`, one directory per test), with the sidecar a live Airspy
+capture of that chain writes: the device's rate as `nominal_rate_hz`, `capture_rate_device_forced`, `dsp_rate_hz` and
+the step's `iq_step_l`/`iq_step_m`. It reads each sidecar back through the replay reader, which checks the chain. The
+`IQ_FORCED_RATE_FIXTURES` test, a CTest fixture setup in the `iq-decode` label, runs it once.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_P25P1_CQPSK_CC_AIRSPY_312K` | `p25p1_cqpsk_cc` at 312,500 Hz under `-f1 -mq`: the replay keeps the chain (`base_decim=4`, `I/Q step L/M=384/625`, no resampling) and decodes at least 39 network status lines and 16 grants (41 and 18 at the native rate). |
+| `DECODE_IQ_P25P1_CQPSK_SIMULCAST_AIRSPY_375K` | `p25p1_cqpsk_cc_simulcast` at 375,000 Hz (`L/M=64/125`): at least 39 network status lines and 16 implicit grant updates (41 and 18). |
+| `DECODE_IQ_P25P2_CC_AIRSPY_375K` | `p25p2_cc` at 375,000 Hz under `-f2`: at least 8 SACCH (10). The capture is remodulated audio with no RS-checkable payload, so this is DUID-FEC-level evidence only, and weak. |
+| `DECODE_IQ_DMR_VOICE_AIRSPY_312K` | `dmr_voice_synth`'s first 2 s at 312,500 Hz under `-fs`: at least 10 voice bursts (16, less one superframe) and the voice header. FSK modes ran right at these rates before the step too; this is the control. |
+| `DECODE_IQ_TETRA_CALL_AIRSPY_375K` | `tetra_call_real_air_72k`'s first 2 s at 375,000 Hz under `-fT -Z` at a 72 kHz DSP bandwidth (`L/M=96/125`): at least 66 identities and 23 TCH/FS bursts whose CRC passed (70 and 25), with no rate warning. |
+| `DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM` | `p25p1_cqpsk_vc` at 375,000 Hz: fast, realtime, short-read and jitter legs of the replay determinism harness decode line for line the same (below). `_STALLED_SINK` (where the harness can wrap the audio device) adds a sink that stalls. |
+
+`ENGINE_AIRSPY_FORCED_RATE_*` (`tests/engine/test_engine_airspy_forced_rate.cpp`, Airspy builds with GNU or Clang
+outside macOS) run the same samples live. They link the private test-hook archives in a linker group
+(`--start-group`), which Apple's linker and MSVC do not take, so macOS and Windows have no live forced-rate test. The real engine runs `-i airspy:F:BW` in-process, its stream workers and the
+native adapter on the SDK double (`tests/io/airspy_sdk_double.h`) at the forced rate, with the stream and DSP test hooks
+from the private test-hook archives. The test feeds the SDK's receive callback in transfers of the size a replay of the
+capture reads (`dsd_iq_replay_chunk_bytes_for()`), paced by acknowledgement, never by time. A transfer goes in once the
+demod came back for input with the one before it released, and the decoder found the output ring empty after reading
+everything that block published (`rtl_stream_test_get_live_sequence()`). These are the three boundaries the replay's
+decoder pacing holds, so each transfer is one demod block and the decoder takes its output before the next block
+starts, as in a replay.
+
+Each case asserts, live: the CRC- or FEC-checked counts above (TSBKs whose CRC passed, at least 50 of 52, and the WACN
+in the state for the P25 Phase 1 control channels: a TSBK counts when its " TSBK" header is followed by its indented
+message line, which the decoder prints only when the CRC passed; the engine clears `p25_p1_fec_ok` at no carrier, before
+the run ends; 6 of the voice capture's 8 grants), no producer drop, and the chain the demod runs
+(`rtl_stream_test_get_running_chain()`: the passes, the step to the DSP rate, and the device's rate for the
+capture-domain consumers: the wideband spectrum, the signal search, the capture writer). The live capture
+(`--iq-capture`, `cf32`) must record that chain. The engine then replays the capture, and the replay must run the same
+chain (field by field, the step's plan key included: on, L, M, the exact half-band output, target and edges), read the
+capture in the live transfers' partition, hand the demod the same samples after the step bit for bit
+(`dsd_demod_test_set_post_step_tap()`), meet the same thresholds, and print the same stable decoded fields in the same
+order: every decoder record (a line stamped `HH:MM:SS` and the indented lines that go on with it) and the TETRA and P25
+Phase 2 lines that carry no stamp. Left out of the comparison: each line's stamp (the wall clock live, the capture's
+time in the replay); lines a throttle on the decode clock gates, which the live feed, faster than real time, prints
+fewer of (the DMR CACH short LC from a single fragment, ` SLOT n SLC ... (single)`, at most once a second a slot); and
+every line that is not decoded content (startup notices, and the live device's and the replay's own messages). The cases
+cover `p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`, the simulcast control channel, `p25p2_cc`, `dmr_voice_synth` and
+`tetra_call_real_air_72k` at 312,500 or 375,000 Hz, and `p25p1_cqpsk_cc` at 2,500,000 Hz (five half-band passes).
+`_RETUNE_375K` retunes the running stream half way: the step starts over with the half-band cascade
+(`dsd_live_iq_step_test_clears()` has moved when the retune returns), keeps its plan, the stream decodes on (at least 30
+network status lines, where the first half holds 16), and the capture-domain consumers keep the device's rate.
+
+Before issue #806 a replay ran these recordings' chains unstepped at 78,125 or 93,750 Hz: the two P25 Phase 1 control
+channels decoded no network status and no grant, P25 Phase 2 one SACCH, the DMR control the same 16 voice bursts, and
+TETRA ran only through a resampled replay (288 kHz), not the recorded chain.
+
+#### Symbols a library exports (issue #806)
+
+The terminal menu once had callbacks named like libairspy calls (`airspy_set_lna_gain()` and six more). In the CLI,
+which links the terminal UI and the Airspy adapter into one executable, the adapter's gain calls then reached the
+menu callbacks instead of the library, and opening an Airspy crashed. Two tests keep a name like that out:
+
+- `UI_AIRSPY_SYMBOL_CLASH` compiles one file that includes libairspy's `airspy.h` (the one the build uses) and the
+  terminal's `menu_actions.h`. A callback with an SDK name is a conflicting declaration there, so the build fails. It
+  runs wherever the terminal UI and libairspy build, Windows included.
+- `UI_AIRSPY_MENU_SHADOW` links the terminal UI and the adapter against the Airspy SDK double built as a shared library
+  (`dsd-neo_test_airspy_sdk_double_shared`), as dsd-neo links libairspy, opens an Airspy and checks that the double
+  saw the gain calls. A menu symbol with an SDK name would win the lookup, as it did in the CLI. It relies on ELF and
+  Mach-O symbol lookup order, so it does not run on Windows, where an import library cannot reproduce the clash.
+
+The static SDK double the other Airspy tests link cannot show this: it defines the same names, so linking it with the
+terminal UI is only a duplicate-definition error.
 
 #### stdout audio (issue #659)
 
@@ -2087,7 +2189,7 @@ with the same 40 ms windows, thresholds and 3 dB halves rule.
 The plans and signals:
 - **EDACS:** every plan its FSK path runs at post-decimation 1 and a channel rate of 12 kHz or more (under it a symbol
   gets fewer than 1.25 samples and EDACS never decodes its control channel):
-  - PROVOICE, designed within the 144-tap cap, or on the 63-tap fallback at the device-forced rates;
+  - PROVOICE, designed within the 288-tap cap, or on the 63-tap fallback above about 102.7 kHz (an SDDC's 125 kHz);
   - no channel filter (`rate_in` under 20 kHz, or `DSD_NEO_CHANNEL_LPF=0`);
   - WIDE, where a live switch leaves that label in force.
 - **EDACS signals:**
@@ -2111,8 +2213,12 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
 
 | Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| EDACS | 51 of 51 pass | 8e-5 at worst | 0.02 % | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
-| M17 encoder | 60 of 60, one accepted | 8e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+| EDACS | 57 of 57 pass | 9e-5 at worst | 0.02 % | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+| M17 encoder | 64 of 64, one accepted | 9e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+
+Rerun after issue #806, when the digital profiles started designing within 288 taps (201 taps at 72 kHz, 219 at
+78,125 Hz, 263 at 93,750 Hz, where the 63-tap fallback ran before). The harness also gained the complex rate the
+channel filter designs at; without it every plan it printed was the fallback.
 
 - **Accepted plan:** the encoder's legacy WIDE filter forced on by `DSD_NEO_CHANNEL_LPF=1` at an SDDC's 7.8 kHz channel
   misses 1.26 % of 6 dB carriers. The run above accepted the analog monitor's forced 8 kHz plan at 1.1 %, and this
@@ -2124,9 +2230,11 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
   EDACS's 80 ms minimum hold (`EDACS_ANALOG_GATE_MIN_HOLD_MS`, two windows) stays clear of. At 48 kHz, which EDACS runs
   at whatever rate it reads, four triplets less the bound (155 ms) stay above it.
 - **The noise squelch:** NOISE on the encoder's monitor runs the noise squelch where its plan has a band.
-  `tools/noise_squelch_model.py --encoder-only` runs the three encoder plans no NFM plan shares, the 63-tap fallbacks
-  at 62.5, 78.1 and 93.75 kHz. All three pass the chosen design: worst wanted-modulation 1st percentile 62.4 dB against
-  the gate's 36, and no false open on noise. EDACS runs NOISE as auto, so its plans need no noise-model run.
+  `tools/noise_squelch_model.py --encoder-only` runs the encoder plans no NFM plan shares. Before issue #806 those were
+  the 63-tap fallbacks at 62.5, 78.1 and 93.75 kHz, and all three passed the chosen design (worst wanted-modulation 1st
+  percentile 62.4 dB against the gate's 36, no false open on noise). Now WIDE designs there, bit for bit the 16 kHz NFM
+  plan, so the NFM run covers them and `--encoder-only` finds no plan of its own. EDACS runs NOISE as auto, so its
+  plans need no noise-model run.
 - **Reproducing:** `python3 tools/squelch_paths_model.py` writes `build/squelch_paths_model/report.md` in about 20
   minutes on 14 workers; `--quick` takes under a minute.
 
@@ -3386,6 +3494,14 @@ Tests that need GNU ld `--wrap` seams register only on Linux, and the `TOOLS_*`
 script tests only where bash is (not Windows), so the macOS and Windows suites
 are smaller than the Linux one; each job prints its registered test count before
 running.
+
+The libairspy and librtlsdr transfer tests (`VENDORED_LIBAIRSPY_TRANSFERS`,
+`VENDORED_LIBRTLSDR_TRANSFERS`, `VENDORED_LIBRTLSDR_ASYNC_ALLOC`) build the
+Android app's patched copies on all three. The `backend-matrix (both, …)` legs
+and the macOS job also build their `DESKTOP_*` twins against the pinned upstream
+sources with the patches the AppImage and the DMG ship: they run
+`tools/usb_dependency_patches.sh fetch-all <dir>` and configure with
+`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally.
 
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,

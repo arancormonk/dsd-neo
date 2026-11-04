@@ -27,6 +27,10 @@ int dsd_app_commands_need_frame_loop(const dsd_state* state);
    shows it as a toast. Cleared at the end of a session, so a notice is never the next session's. */
 void dsd_app_stream_notice_post(int kind);
 void dsd_app_stream_notice_clear(void);
+/* Decoder thread: apply a posted DSD_STREAM_NOTICE_CAPTURE_STOPPED, if any (issue #806 X9): the I/Q capture is turned
+   off for the session (iq_capture_requested cleared and published) and a toast says so (@p state may be NULL). Every
+   stream start of the session runs it before it opens, so it never reopens a sealed capture's file. */
+void dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state);
 #ifdef DSD_NEO_TEST_HOOKS
 #include <stdint.h>
 

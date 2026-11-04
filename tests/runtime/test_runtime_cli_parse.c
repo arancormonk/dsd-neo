@@ -7518,8 +7518,9 @@ test_f_am_refused_on_pcm_input(void) {
  * does. A loaded config's decode = tetra on a PCM input keeps the mode and says that nothing will decode. */
 static int
 test_f_tetra_needs_iq_or_symbols(void) {
-    static const char* const runs[] = {"rtl:0:420.1M:22:0:72", "rtltcp:127.0.0.1:1234", "soapy:driver=rtlsdr", "airspy",
-                                       "capture.bin",          "capture.raw",           "capture.sym"};
+    static const char* const runs[] = {
+        "rtl:0:420.1M:22:0:72", "rtltcp:127.0.0.1:1234", "soapy:driver=rtlsdr", "airspy",     "airspy:851M",
+        "airspy:851M:72",       "capture.bin",           "capture.raw",         "capture.sym"};
     static const char* const refused[] = {NULL,          "pulse", "tcp:127.0.0.1:7355", "udp:127.0.0.1:7355",
                                           "capture.wav", "-"};
     int test_rc = 0;
@@ -7530,10 +7531,12 @@ test_f_tetra_needs_iq_or_symbols(void) {
             return 1;
         }
         /* -fT takes the 72 kHz DSP bandwidth TETRA runs at, as -fe takes 24; a spec's bandwidth field applies later,
-           when the input opens. An Airspy runs no 72 kHz and keeps 48 (its spec is read here). */
-        const int want_bw = strcmp(runs[i], "airspy") == 0 ? 48 : 72;
+           when the input opens. An Airspy's spec is read here, and runs 72 kHz too (issue #806: the live rate step
+           lands its capture rate on it), with no word about the bandwidth (BUG-3: it fell back to 48 kHz, warning
+           that a 72 kHz the user never set was unsupported). */
         if (run.rc != DSD_PARSE_CONTINUE || run.opts->frame_tetra != 1
-            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_TETRA || run.opts->rtl_dsp_bw_khz != want_bw) {
+            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_TETRA || run.opts->rtl_dsp_bw_khz != 72
+            || strstr(run.err, "unsupported") != NULL) {
             DSD_FPRINTF(stderr, "-fT -i %s: rc=%d frame_tetra=%d bw=%d\n%s\n", runs[i], run.rc, run.opts->frame_tetra,
                         run.opts->rtl_dsp_bw_khz, run.err);
             test_rc = 1;

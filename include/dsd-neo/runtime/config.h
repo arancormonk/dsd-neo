@@ -822,6 +822,17 @@ void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, 
 void dsd_stage_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief The conventional scanner (dsd_opts::scanner_mode) applying @p cfg leaves on, without applying anything.
+ *
+ * A [trunking] section leaves it on only with trunking off: one automatic tuner owner, trunking winning when the
+ * config asks for both. A config without [trunking] leaves @p opts's setting (0 for NULL @p opts). The apply stages it
+ * by this rule, and a runtime apply asks it beforehand to know whether a running scan's row scope is left.
+ *
+ * @return 1 when the scanner is on after the apply, 0 otherwise (and for NULL @p cfg).
+ */
+int dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* opts);
+
+/**
  * @brief The radio input spec the config's [input] sets, without applying anything.
  *
  * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq`, an `rtltcp`

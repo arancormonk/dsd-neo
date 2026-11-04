@@ -78,7 +78,22 @@ The writer records:
 - capture-time transform policy (`fs4_shift_enabled`, `offset_tuning_enabled`, `combine_rotate_enabled`). CU8 captures
   record the active `DSD_NEO_COMBINE_ROT` selection: the combined transform by default, or the supported two-pass
   equivalent when explicitly disabled.
-- replay rate-chain fields (`base_decimation`, `post_downsample`, `demod_rate_hz`).
+- replay rate-chain fields (`base_decimation`, `post_downsample`, `demod_rate_hz`). `demod_rate_hz` is
+  `sample_rate_hz / base_decimation / post_downsample`, truncated, as every reader checks it; a chain the device forced
+  runs another rate, which the next fields record.
+- the live rate chain (issue #806), optional scalars a capture since then writes after `demod_rate_hz`:
+  `nominal_rate_hz` (the rate the chain was planned from: the rate dsd-neo programmed when the device's read-back is
+  within 100 ppm of it; `sample_rate_hz` stays the read-back, which paces the replay), `capture_rate_device_forced`
+  (the device chose the rate, not dsd-neo), `dsp_rate_hz` (the complex rate after the half-band chain and the I/Q rate
+  step), and the step's ratio `iq_step_l` / `iq_step_m` (`0` / `0` when the chain does not step) with
+  `iq_step_approx_ppm` (how far an approximated ratio leaves `dsp_rate_hz`, `0` when exact). The reader checks them
+  before it plans anything, a DSP bandwidth asked for included: `nominal_rate_hz` within 100 ppm of `sample_rate_hz`;
+  with no step, `dsp_rate_hz` exactly `nominal_rate_hz / base_decimation`; with one, the ratio the live rate planner
+  gives for those rates and passes, on a chain the device forced. The step's four fields come together. A sidecar
+  that disagrees is refused with the field that does, for example `IQ replay metadata error: iq_step_l/iq_step_m
+  (64/125) is not the step from nominal_rate_hz/base_decimation (2500000/32) to dsp_rate_hz (48000), which is
+  384/625`. Metadata written before them has none: a replay then derives the nominal rate from the sample rate and the
+  DSP bandwidth (see [Rate Chain And Resampling](#rate-chain-and-resampling); `--iq-info` says `derived`).
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
 - `size_limit_reached`: `true` when the capture ended because `--iq-capture-max-mb` was reached rather than being cut
@@ -91,6 +106,8 @@ The writer records:
   written by older builds has no `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and
   replays without one, and any other reads as known.
 - retune fields (`contains_retunes`, `capture_retune_count`).
+- `capture_end_reason`: present only when the capture stopped before its stream did. `"rate_changed"`: a retune changed
+  the device's sample rate (below). `--iq-info` prints it as `Capture end:`.
 - for v2 captures, an `events` array describing scheduled replay events.
 
 The v2 `events` array is ordered by capture-data `byte_offset`, not wall-clock time. Replay dispatches every event at an
@@ -119,6 +136,19 @@ live (the frame being decoded is dropped and calls end as after a fade, while th
 followed stay), before it reads the first sample after them. That holds for the symbol-rate reader and for the analog
 monitor's one-sample reader, in fast and realtime replay alike, so a capture with a recovery in it decodes the same in
 every run.
+
+Samples a receiver's driver lost are recorded as a `MUTE` with reason `driver_overflow` where they would have been. An
+Airspy reports how many it dropped; a SoapySDR driver only reports that it overflowed, so its `MUTE` lasts one sample.
+The live stream starts its filters over at the first sample after them, as after a stream gap, and so does a replay at
+that `MUTE`. A `MUTE` a retune records (`retune_mute`,
+`retune_reconfigure`) is not a gap: the retune's `RESET` starts the filters over.
+
+A capture records one sample rate. When a retune changes the device's rate while a capture runs (a device that reads
+back another rate than before), the capture stops there: the log says `I/Q capture stopped: the device rate changed
+from X to Y Hz on a retune; the file ends at the last sample at X Hz`, the decoder shows a notice, and `--iq-capture`
+stays off for the rest of the session so no later start writes over the file. The stream goes on. The file keeps every
+sample and event from before the retune and replays as usual; its sidecar is written when the stream stops, with
+`capture_end_reason: "rate_changed"` and the drop and retune counts as they were when the capture stopped.
 
 `data_bytes` is reconciled against the finished file at close, so it reports what is actually on disk rather than what
 the writer handed to `fwrite`. Anything the file system refused — a full disk, a size-limited file system — shows up in
@@ -247,16 +277,36 @@ rates.
 
 The chain:
 
-- **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded
-  (`base_decimation`, `post_downsample`, `demod_rate_hz`), exactly as before, unless the mode is TETRA and the chain
-  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz from 36 to 144 kHz, or its
-  `post_downsample` is above 1. A TETRA chain that misses only through a power-of-two `post_downsample` folds it into
-  the half-band chain where that reaches one of those rates. Every committed fixture keeps its chain, and so does
-  every committed TETRA fixture under TETRA but the unmodified 50 kHz capture, which TETRA resamples.
-- **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain TETRA cannot run): a capture at
+- **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded, as its live stream
+  ran it, when the mode can run that. Its complex rate is its nominal rate over `base_decimation` (the nominal rate is
+  `nominal_rate_hz`; for a sidecar without it, the rate an RTL-SDR asked for the recorded chain when `sample_rate_hz` is
+  within 100 ppm of it, as live plans a read-back that close, else `sample_rate_hz`). The mode decides two things:
+  TETRA's requirement (that rate is a multiple of 18 kHz from 36 to 144 kHz, with `post_downsample` 1), and the highest
+  rate the mode's channel filter is designed at (102,745 Hz for every digital mode, TETRA's own filter aside; none for
+  the analog monitor). The first that applies:
+  1. A chain that does not step runs unchanged where that rate is whole and meets both (every committed fixture).
+  2. A chain whose sidecar recorded a step runs that step, to `dsp_rate_hz`, where that rate meets both.
+  3. A chain the device forced, with `post_downsample` 1, keeps its passes and runs the live I/Q rate step to D, as the
+     live stream steps it (the step: exact where both reduced terms of the ratio fit 4096, else within 5 ppm). Its
+     passes must still reach D. This is how a capture from an Airspy replays: 2.5 MS/s over 32 is 78,125 Hz, stepped
+     384/625 to 48 kHz, or 576/625 to 72 kHz under TETRA, instead of the reader resampling 2.5 MS/s to 2.304 MS/s.
+  4. A chain that does not step folds: a power-of-two `post_downsample` that misses TETRA's requirement into the
+     half-band chain, then one more half-band pass at a time while the rate is above the mode's filter. The two 144 kHz
+     real-air TETRA captures run at 144 kHz under TETRA and at 72 kHz under P25 or DMR, and back at 144 kHz on a switch
+     back to TETRA.
+  A sidecar that recorded `capture_rate_device_forced` is forced as it says. One from before that field is taken as
+  forced when its sample rate is not within 100 ppm of what an RTL-SDR asks for its chain, the DSP bandwidth times
+  `base_decimation` (or times `post_downsample` too, for a chain whose bandwidth names the rate after it). This is a
+  guess from the rates, not the device's decision: an RTL-SDR capture is never forced, so an RTL-SDR's 24 kHz EDACS
+  capture runs `digital_resample = "auto"` as the live RTL-SDR did, and does not resample its output to 48 kHz. A
+  sidecar from before `nominal_rate_hz` of an RTL-SDR that read back 1,535,999 Hz plans from 1,536,000 Hz, so it is kept
+  at 48 kHz exactly, as live runs it. A chain that does not step and is not forced is not kept at a rate that is not a
+  whole number of Hz.
+- **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain the mode cannot run): a capture at
   D x 2^k (k from 0 to 10) is decimated by 2^k in the half-band chain with no resampling. Any other capture is
   resampled first, to R = D x 2^k, the largest such rate at or below its own (R = D when the capture is slower than
-  D), and then decimated by 2^k. `post_downsample` is 1 and the demodulator runs at D.
+  D), and then decimated by 2^k. `post_downsample` is 1 and the demodulator runs at D. These chains run no I/Q rate
+  step and run as forced, as every replay did before: a replay never resamples twice.
 
 | Capture | DSP rate | Chain |
 | --- | --- | --- |
@@ -273,7 +323,16 @@ A plan is refused for a capture slower than 8 kHz, one that would need more than
 than 256 taps per phase. A refused plan stops the start and `dsd-neo` exits with status 1, for example `IQ replay:
 'slow.wav' cannot run at the 48000 Hz DSP rate: the capture's rate (4000 Hz) is below the 8000 Hz a replay can
 resample.` (with ` TETRA needs` after `DSP rate` under `-fT`). `--iq-info` shows a WAV's plan at 48 and 72 kHz, and
-the reason where one is refused.
+the reason where one is refused. For a sidecar it shows the nominal rate and where it came from, the chain a replay at
+the recorded bandwidth runs (`Replay rate chain:   kept: 5 half-band passes to 78125 Hz, then the I/Q rate step
+384/625 to 48000 Hz`; a half-band output that is not a whole number of Hz as a fraction, `39062.5 Hz (78125/2^1)`), the
+DSP rate after it, and whether the device forced the rate (`recorded` or `derived`).
+
+A replay that runs the step designs it, and the auto and noise squelch model for it, when it opens or rewinds, as a live
+stream does in its open. The step starts over where the half-band chain does: at a `RESET`, at a `driver_overflow`
+`MUTE`, and at an `--iq-loop` rewind. Its group delay, up to a few milliseconds, is not compensated, as live. A reader
+from before these fields ignores them and plans a capture with its own rules: it keeps a forced Airspy chain at
+78,125 Hz for FSK and resamples it for TETRA, the chain that release ran live.
 
 The DSP bandwidth asked for is kept as asked: the plan's own target never replaces it. A replay asked for 24 kHz runs
 at 72 kHz while TETRA decodes and returns to 24 kHz when the mode leaves TETRA.
@@ -473,14 +532,15 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - The monitor runs at the demod rate the replay's rate chain plans (see
   [Rate Chain And Resampling](#rate-chain-and-resampling)). A sidecar capture keeps its recorded `demod_rate_hz`
   (48 kHz for every committed fixture) unless a DSP bandwidth is asked for, and then runs at that bandwidth, as an
-  RTL-SDR does; a WAV recording runs at the DSP bandwidth in force (48 kHz by default). A chain kept at another rate,
-  such as the 78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
+  RTL-SDR does; a WAV recording runs at the DSP bandwidth in force (48 kHz by default). A chain an Airspy forced, such
+  as 2.5 MS/s over 32 (78,125 Hz), runs the live I/Q rate step to its recorded bandwidth after its half-band passes,
+  as live, and the monitor runs at that bandwidth.
 - A width the replay's demod rate cannot filter is refused with the DSP bandwidths that would fit (`...; set the DSP
   bandwidth to 48 or 72 kHz`), since a DSP bandwidth change re-plans the replay's rate.
-- AM needs a replay that runs with `post_downsample` 1 (every committed fixture does): a sidecar that keeps a recorded
-  chain decimating after the demodulator would run the AM channel filter at a multiple of the demod rate, so the
-  stream start refuses it with `...; AM needs a capture with post_downsample 1`. A DSP bandwidth asked for re-plans the
-  chain with `post_downsample` 1, which AM runs. FM replays such a capture as before.
+- A sidecar that keeps a recorded chain decimating after the demodulator (`post_downsample` above 1; no committed
+  fixture does) runs the channel filter, the FM discriminator, the AM detector and the digital paths ahead of that
+  decimator, at the rate after the half-band chain. A width is checked and designed at that rate, so FM and AM run
+  such a capture with the width asked for; only the analog audio is decimated after the demodulator.
 - The power squelch, the monitor's voice filters (`-v`) and its gain stage (`-n`, the AGC by default) apply as they do
   live; `-o null` discards the audio.
 - The monitor plays a replayed signal at the level it plays at live: replay runs the FM discriminator output scale a
@@ -558,15 +618,17 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   decodes and loops without one; the frequency check a live RTL start makes does not apply to a replay.
 - `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.
 - A replay's rate follows its rate plan (see [Rate Chain And Resampling](#rate-chain-and-resampling)). A sidecar that
-  keeps its recorded chain keeps its demod rate, so a capture whose demod rate yields a non-integer samples-per-symbol
-  (for example 62,500 Hz at 4800 sym/s) is resampled after the demodulator to the resampler target (48,000 Hz by
-  default) under the default `digital_resample = "auto"` policy. Decode output for such captures can therefore differ
-  from releases that fed the raw demod rate through; set `digital_resample = "off"` to restore the previous behavior.
-  See `docs/soapysdr.md` for the full policy.
+  keeps its recorded chain keeps its complex rate (the DSP bandwidth, for a chain the live I/Q rate step ran), and its
+  forced flag decides `digital_resample = "auto"` as live: a forced capture whose rate yields a non-integer
+  samples-per-symbol (for example an Airspy's at a 12 kHz DSP bandwidth, 2.5 samples per symbol at 4800 sym/s) is
+  resampled after the demodulator to the resampler target (48,000 Hz by default), one that was not forced is not. A
+  replay the plan resamples or decimates runs as forced. Set `digital_resample = "off"` to never resample. See
+  `docs/soapysdr.md` for the full policy.
 
 ## Backend Notes
 
-- Capture is available on live radio inputs only: RTL USB, RTL-TCP, and SoapySDR when the active Soapy stream is `CF32`.
+- Capture is available on live radio inputs only: RTL USB, RTL-TCP, Airspy (`cf32`), and SoapySDR when the active Soapy
+  stream is `CF32`.
 - RTL USB / RTL-TCP captures are `cu8`.
 - `--iq-capture-format cf32` is only valid when the active backend stream is native `cf32` (for example Soapy CF32).
 - Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture

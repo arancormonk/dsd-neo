@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORMS = ("linux", "macos", "windows", "android")
 REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
-            "mbelib", "android-libusb", "android-rtl", "airspy", "ibm-plex", "recordings", "gqrx-scanner"}
+            "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
+            "gqrx-scanner"}
 
 
 def read_inventory(root=ROOT):

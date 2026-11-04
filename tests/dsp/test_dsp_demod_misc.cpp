@@ -38,6 +38,7 @@ channel_lpf_tone_gain_at(demod_state* s, int profile, int analog_width_hz, doubl
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->rate_out2 = 0;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;

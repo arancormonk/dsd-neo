@@ -78,6 +78,8 @@ extern int control_delay_ms;
 /* One transfer of @p pairs complex samples into the receive callback, if the stream is up; returns
    whether it was delivered. */
 bool deliver(const float* samples, int pairs);
+/* The same, for a transfer the SDK reports @p dropped samples lost before (its dropped_samples). */
+bool deliver_dropped(const float* samples, int pairs, uint64_t dropped);
 
 } // namespace airspy_double
 

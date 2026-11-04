@@ -4,6 +4,7 @@
 #define DSD_NEO_SRC_IO_RADIO_RTL_STREAM_TEST_SUPPORT_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/threading.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -194,6 +195,11 @@ typedef struct {
     int mute;
     int hold;
     uint64_t hardware_drops;
+    /* Optional (NULL: not reported): the input ring's gap marks after the delivery, as stream positions in floats from
+       the ring's first sample (issue #806 X12), up to gap_capacity of them, and how many. */
+    uint64_t* gap_at;
+    size_t gap_capacity;
+    size_t* gap_count;
 } rtl_device_test_airspy_request;
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
@@ -507,7 +513,26 @@ typedef struct {
     int downsample_passes;    /* half-band passes from the capture rate */
     uint32_t applied_hz;      /* centre the controller last finalized on (a session's start counts as finalized) */
     int completion;           /* RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE: the retune's completion (RTL_STREAM_TUNE_*) */
+    /* The live rate chain (issue #806). */
+    uint32_t nominal_hz; /* the rate plan's nominal rate (0: no plan) */
+    int step_enabled;    /* the I/Q rate step runs */
+    int step_l;          /* its L/M, the running design's (0 when no design ran yet) */
+    int step_m;
+    int step_retained;            /* a transaction still holds the step's earlier design (0 once it ended) */
+    int refused_status;           /* the planner's last refusal in the session (DSD_RATE_PLAN_OK: none) */
+    uint32_t refused_readback_hz; /* that refusal's read-back */
+    int refused_forced;           /* and its forced flag */
+    int published_rate_out_hz;    /* the demod rate the stream publishes for the other threads */
+    int published_forced;         /* and the forced flag */
 } rtl_stream_test_capture_result;
+
+/* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
+ * device's own (issue #806): a fake RTL-SDR dongle reading back another rate then stands in for a SoapySDR device whose
+ * driver snaps the rate. Set while no stream runs. */
+void rtl_stream_test_set_rate_plan_backend(int backend);
+/* Let the next @p ok I/Q rate step designs through, then fail the @p failing after them as when their memory is not
+ * there (0, 0: none fail). Set while no stream runs. Returns the designs asked for since the last call. */
+int rtl_stream_test_fail_step_designs(int ok, int failing);
 
 /* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
  * configured direct sampling mode and @p opts the session options; the stream's own state comes back afterwards. */
@@ -540,6 +565,15 @@ enum {
 
 /* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */
 int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out);
+/* Open the session's I/Q capture as a stream start does (stream_open_capture_writer(), @p opts naming it), attached to
+ * the session's device; returns the writer, NULL when it did not open. A producer's samples are the caller's to submit
+ * (dsd_iq_capture_submit()); the session's retunes record their events as the stream's do (issue #806 X9). */
+struct dsd_iq_capture_writer* rtl_stream_test_capture_session_open_capture(const dsd_opts* opts);
+/* Finalize it as the stream's shutdown does, with @p ring_drops the input ring's drops at the stream's end. */
+void rtl_stream_test_capture_session_close_capture(uint64_t ring_drops);
+/* The I/Q capture-stopped warnings the stream logged since the process started (issue #806 X9), the last one's text
+ * (without its newline) in @p out_last (may be NULL). */
+int rtl_stream_test_capture_stopped_warnings(char* out_last, size_t out_size);
 void rtl_stream_test_capture_session_end(void);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
@@ -729,16 +763,131 @@ enum {
  * Set while no stream runs. */
 void rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx);
 
+/* A live open's rate chain (issue #806) for DSP bandwidth @p dsp_bw_hz: the stream's RTL-shaped request, planned for
+ * @p backend (a dsd_rate_plan_backend) on a device that delivers @p device_rate_hz (0: the request) and reads back
+ * @p readback_hz (0: what it delivers), its I/Q rate step, then the open's demodulator finalize for @p opts at the
+ * rate the chain runs (the resampler chain, symbol timing, the output rate), in a stream open's order.
+ * The stream's own state comes back afterwards. Returns -1 for bad arguments or with a stream or device open. */
+typedef struct {
+    /* 0, or the planner's refusal (a dsd_rate_plan_status); -1 for a failed step design or options the finalize
+       refused */
+    int rc;
+    int passes;
+    int rate_out_hz; /* the exact rate after the step */
+    int forced;      /* capture_rate_device_forced */
+    int step_enabled;
+    int step_l;
+    int step_m;
+    int ted_sps;
+    int resamp_enabled; /* the output resampler (FSK digital_resample, monitor audio) */
+    int resamp_l;
+    int resamp_m;
+    unsigned int output_rate_hz;
+    int published_rate_out_hz;
+    int published_forced;
+    int complex_rate_hz; /* demod_state::complex_rate (issue #806) */
+    int published_complex_rate_hz;
+} rtl_stream_test_live_chain_result;
+
+int rtl_stream_test_live_rate_chain(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
+                                    uint32_t readback_hz, rtl_stream_test_live_chain_result* out);
+
+/* One symbol profile the decoder asks the front end for (rtl_stream_test_live_chain_profile_steps()). */
+typedef struct {
+    int cqpsk; /* 0/1, or -1 to leave the CQPSK state */
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile;
+    int ted_sps;      /* the TED the decoder queues with it, timed for the output rate it read */
+    int ted_override; /* 1: ted_sps is an override (a P25 voice channel's) */
+    int via_retune;   /* 1: a retune profile landed as an external backend's retune does; 0: a live request */
+} rtl_stream_test_profile_step;
+
+typedef struct {
+    int taken;
+    unsigned int predicted_rate_hz; /* rtl_stream_output_rate_for_family() for the step's profile, asked before it */
+    int ted_sps;
+    int ted_sps_override;
+    int symbol_rate_hz;
+    int output_kind;
+    int channel_profile;
+    unsigned int output_rate_hz;
+    int resamp_enabled;
+    int published_complex_rate_hz;
+    int published_ted_sps;
+    int published_tetra_stage;
+    double snr_bias_evm_db; /* rtl_stream_get_snr_bias_evm() */
+    int generation_moved;   /* the output generation moved: the ring the decoder reads was dropped */
+} rtl_stream_test_profile_step_result;
+
+/* rtl_stream_test_live_rate_chain()'s open for @p opts (no read-back other than the device's rate), then each of the
+ * @p count steps in order, each result in @p out (issue #806: the TED timing and the digital_resample decision a
+ * symbol profile lands on). The stream's own state comes back afterwards. Returns -1 for bad arguments or with a
+ * stream or device open; @p open_out->rc reports the open. */
+int rtl_stream_test_live_chain_profile_steps(const dsd_opts* opts, int backend, int dsp_bw_hz, uint32_t device_rate_hz,
+                                             const rtl_stream_test_profile_step* steps, size_t count,
+                                             rtl_stream_test_live_chain_result* open_out,
+                                             rtl_stream_test_profile_step_result* out);
+
+typedef struct {
+    int passes;       /* demod_state::downsample_passes */
+    int forced;       /* capture_rate_device_forced */
+    int step_enabled; /* the live I/Q rate step runs (issue #806) */
+    int step_l;
+    int step_m;
+    int squelch_step_model; /* the squelches' noise model is the running step's (dsd_demod_squelch_step_model_sync()) */
+    int complex_rate_hz;
+    int rate_out_hz;
+    int ted_sps;
+    int fsk_sample_rate_hz; /* the FSK modem's configured sample rate */
+    int output_kind;
+    int cqpsk_enable;
+    unsigned int output_rate_hz;    /* the output rate the stream landed on */
+    unsigned int predicted_rate_hz; /* rtl_stream_output_rate_for_family() for the family @p opts runs */
+    long long input_pairs;
+    long long emitted; /* samples (CQPSK: symbols) full_demod() and the output resampler emitted for them */
+    int tetra_chain;   /* the TETRA chain ran after the blocks */
+} rtl_stream_test_post_chain_result;
+
+/* An I/Q replay open of @p opts on a sidecar with no half-band pass and post-demod decimation @p post (the complex rate
+ * @p complex_rate_hz, its demod rate that over @p post), then @p blocks blocks of @p pairs complex noise samples
+ * through the demodulator and the output resampler (issue #806, X10). The stream's own state comes back afterwards.
+ * Returns -1 for bad arguments or with a stream or device open, -3 when the open failed. */
+int rtl_stream_test_replay_post_chain(const dsd_opts* opts, uint32_t complex_rate_hz, uint32_t post, int blocks,
+                                      int pairs, rtl_stream_test_post_chain_result* out);
+
+/* rtl_stream_test_replay_post_chain() for the sidecar @p sidecar describes (its events left out), planned as a replay
+ * of @p opts plans it (the stream's request and filter domain, dsd_iq_replay_plan_rate(); the plan in @p out_plan) and
+ * applied, then @p blocks blocks of @p pairs complex noise samples at the capture rate (issue #806). Returns -1 for bad
+ * arguments or with a stream or device open, -2 when the plan refused, -3 when the open failed. */
+int rtl_stream_test_replay_planned_chain(const dsd_opts* opts, const dsd_iq_replay_config* sidecar, int blocks,
+                                         int pairs, dsd_iq_replay_rate_plan* out_plan,
+                                         rtl_stream_test_post_chain_result* out);
+
+/* The filter domain a replay of @p sidecar plans for @p opts (issue #806 §13.8), as though the stream ran a TED override
+ * of @p ted_sps_override samples per symbol (0: none): 0 for no ceiling. */
+uint32_t rtl_stream_test_replay_filter_domain_hz(const dsd_opts* opts, const dsd_iq_replay_config* sidecar,
+                                                 int ted_sps_override);
+
+/* Call @p probe(@p out, @p ctx) inside rtl_stream_test_replay_post_chain() once the replay open landed and before the
+ * stream's own state comes back, so a test can read the stream through its public getters and the metrics hooks
+ * while the chain runs. NULL clears it. */
+void rtl_stream_test_set_post_chain_probe(void (*probe)(const rtl_stream_test_post_chain_result* out, void* ctx),
+                                          void* ctx);
+
+/* The rate planner's passes for a device that runs @p actual_rate_hz whatever is asked, at DSP bandwidth rate
+ * @p rate_in_hz (0 when it refuses). */
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */
 int rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* out_passes, int* out_rate_out_hz);
-/* The stream start's DSP rate warnings at @p dsp_rate_hz; returns 1 when it warned that TETRA cannot run there. */
-int rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz);
-/* The derived-SPS lines the rate-chain log writes for an output rate: the info line and the atypical-rate warning,
- * each empty when there is none. */
-void rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
-                                       size_t warn_size);
+/* The stream start's DSP rate warnings at @p dsp_rate_hz for a stream on CQPSK or not (@p cqpsk); returns 1 when it
+ * warned that TETRA cannot run there. */
+int rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk);
+/* The derived-SPS lines the rate-chain log writes for an output rate, on CQPSK or not (@p cqpsk): the info line and
+ * the atypical-rate warning, each empty when there is none. */
+void rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size,
+                                       char* warn, size_t warn_size);
 /* Forget the rate the last TETRA rate warning named, so the next one warns again. */
 void rtl_stream_test_reset_tetra_rate_warning(void);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
@@ -1405,7 +1554,8 @@ typedef struct rtl_stream_test_live_request_result {
 } rtl_stream_test_live_request_result;
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
- * with @p post_downsample published as an I/Q replay sidecar would set it, give it a designed channel plan, and ask
+ * with @p post_downsample published as an I/Q replay sidecar would set it (@p rate_hz is then the demod rate after
+ * that decimator, and the complex rate @p rate_hz x @p post_downsample), give it a designed channel plan, and ask
  * it while it runs for the analog profile (@p kind, @p width_hz): first through the check a decode-mode change makes
  * before it commits, then as a live request consumed at one demod-thread block boundary (made whatever the check
  * said), then as a retune profile for a target. */
@@ -1703,6 +1853,12 @@ int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retun
                                                      int forced_rate_out_hz, uint32_t external_steps,
                                                      rtl_stream_test_retune_landing* out);
 
+/* rtl_stream_test_retune_profile_sequence_external() on a DMR stream opened under digital_resample
+ * @p digital_resample_mode (a DSD_DIGITAL_RESAMPLE_* value; the others run AUTO), issue #806. */
+int rtl_stream_test_retune_profile_sequence_mode(const rtl_stream_test_retune_step* steps, size_t count,
+                                                 int forced_rate_out_hz, int digital_resample_mode,
+                                                 uint32_t external_steps, rtl_stream_test_retune_landing* out);
+
 /* External backends' retunes landing NFM profiles on a running monitor (issue #572), each over stale filter state. */
 typedef struct rtl_stream_test_external_landing_filter_result {
     int first_taken;                 /* 1 when the first landing (16 kHz on frequency A) took its profile */
@@ -1873,14 +2029,53 @@ typedef struct rtl_stream_test_replay_state {
     uint32_t replay_event_reset_purge_mismatch_count; /* RESETs whose finalize made any other number (none) */
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
+    int replay_loop_restart_step_l; /* the I/Q rate step the last rewind put back (issue #806), 0/0 for none */
+    int replay_loop_restart_step_m;
     uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
     uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
     uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
+    uint64_t input_gap_reset_count;   /* demod resets at producer gaps in the input (issue #806 X12), process-wide */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
+
+/* The three boundaries a live stream's samples cross, counted for a test that paces a live source as the replay's
+ * decoder pacing paces a replay (issue #806): it feeds a transfer once the demod and the decoder are done with the one
+ * before it, so each transfer is one demod block and the decoder reads its output before the next block starts, as in
+ * a replay of the capture. Counts run from process start. */
+typedef struct {
+    uint64_t input_produced;         /* floats the producer committed to the input ring */
+    uint64_t demod_idle_consumed;    /* floats the demod had released when it last came back for input (boundary 1) */
+    uint64_t published;              /* output samples live blocks wrote to the output ring (boundary 2) */
+    uint64_t decoder_idle_published; /* published as of a read that then found the output ring empty (boundary 3) */
+    uint64_t blocks;                 /* live input blocks the demod took */
+    uint64_t producer_drops;         /* the input ring's producer_drops */
+} rtl_stream_test_live_sequence;
+
+void rtl_stream_test_get_live_sequence(rtl_stream_test_live_sequence* out);
+
+/* The chain the running stream's demod runs (issue #806): its half-band passes, its I/Q rate step's plan key (on, L, M,
+ * the exact half-band output it takes in, its target and edges: dsd_live_iq_step_plan), the complex rate after them and
+ * the capture rate the capture-domain consumers (the wideband spectrum, the signal search, the capture writer) see.
+ * The step fields are 0 when it does not run. Returns -1 with no stream. Read it while the demod waits for input. */
+typedef struct {
+    int64_t step_hb_out_num; /* hb_out = step_hb_out_num / 2^step_hb_out_shift Hz */
+    unsigned step_hb_out_shift;
+    int passes;
+    int step_enabled;
+    int step_l;
+    int step_m;
+    int step_target_hz;
+    int step_protect_hz;
+    int step_stop_hz;
+    int complex_rate_hz;
+    uint32_t capture_rate_hz;
+    int forced;
+} rtl_stream_test_running_chain;
+
+int rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out);
 
 /* Points of the I/Q replay pipeline a test can stop at (issue #572). Each is reported to the hook that
  * rtl_stream_test_set_replay_stage_hook() installs, on the thread named, with the count the stage names (0 where it
@@ -1958,6 +2153,10 @@ void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook,
 /* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
  * closing on it would; 0 disarms. Set while no replay runs. */
 void rtl_stream_test_replay_discard_chunk(uint64_t sequence);
+/* The demod drops the I/Q replay block that holds chunk @p sequence before it enters its processing block, as a
+ * controller gate closed on it then would (issue #806 X12: a gap reset owed at that block is run by the next one); 0
+ * disarms. Set while no replay runs. */
+void rtl_stream_test_replay_refuse_chunk(uint64_t sequence);
 /* Raise the running I/Q replay's forced-stop flag and wake every replay wait, as the replay device's stop does, without
  * tearing the stream down. */
 void rtl_stream_test_replay_force_stop(void);

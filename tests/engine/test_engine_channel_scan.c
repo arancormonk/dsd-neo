@@ -2048,12 +2048,17 @@ test_nfm_row_warnings_once_per_row(void) {
                                             "16 kHz DSP rate"));
     assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
     /* The fix is the one the input allows (issue #525's wording): an RTL-SDR's DSP bandwidth is its rate, a SoapySDR or
-       Airspy device's capture rate only follows the DSP bandwidth, and an I/Q replay's rate plan follows the DSP
-       bandwidth as an RTL-SDR's does (issue #701), so it names the bandwidths that fit without calling them RTL's. */
+       Airspy device's capture rate is stepped to the DSP bandwidth (issue #806; it only followed it before, and the fix
+       was "raise the DSP bandwidth or narrow the NFM width"), and an I/Q replay's rate plan follows the DSP bandwidth
+       as an RTL-SDR's does (issue #701), so the last two name the bandwidths that fit without calling them RTL's. */
     assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24, 48 or 72 kHz"));
     g_nfm_warning_input_dev = "soapy:driver=airspy";
     assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
-    assert(strstr(g_analog_warning_rows[1], "raise the DSP bandwidth or narrow the NFM width"));
+    assert(strstr(g_analog_warning_rows[1], "; set the DSP bandwidth to 24, 48 or 72 kHz"));
+    assert(!strstr(g_analog_warning_rows[1], "RTL DSP bandwidth"));
+    g_nfm_warning_input_dev = "airspy";
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "; set the DSP bandwidth to 24, 48 or 72 kHz"));
     assert(!strstr(g_analog_warning_rows[1], "RTL DSP bandwidth"));
     g_nfm_warning_input_dev = "iqreplay:capture.iq.json";
     assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);

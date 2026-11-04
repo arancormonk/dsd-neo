@@ -921,10 +921,13 @@ test_am_system(void) {
         expect("a TETRA system replays a symbol capture",
                !args.isEmpty() && error == SessionArgsError::None && input_spec(args) == QString::fromLatin1(capture));
     }
-    expect("the TETRA refusal says why and names the radios TETRA runs on",
-           session_args_error_text(SessionArgsError::TetraNeedsIq)
-                   .startsWith(QStringLiteral("TETRA needs a USB or rtl_tcp radio, or a symbol capture (.bin) file"))
-               && !session_args_error_text(SessionArgsError::TetraNeedsIq).contains(QStringLiteral("Airspy")));
+    /* Issue #806: an Airspy decodes TETRA too, so the refusal names every radio source, as the AM one does. */
+    expect(
+        "the TETRA refusal says why and names the radios TETRA runs on",
+        session_args_error_text(SessionArgsError::TetraNeedsIq)
+            == QStringLiteral("TETRA needs a radio source (USB dongle, Airspy or RTL-TCP), or a symbol capture (.bin) "
+                              "file: network audio and audio files arrive already demodulated. Choose a radio source, "
+                              "or another decode mode."));
     const dsd_qt::SessionArgsBuilder tetraBuilder(nullptr);
     QVariantMap tcpTetra = tetra;
     tcpTetra.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
@@ -969,7 +972,9 @@ test_am_system(void) {
  * Issue #524: the engine holds the AM channel (the 6 kHz default) to the DSP bandwidth a USB or rtl_tcp spec carries
  * and refuses to start at 4 or 6 kHz, where no AM width fits. A system with that pair fails here with its own reason,
  * whether the bandwidth is its own or the app-wide default, and the wizard's gate says the same. A bandwidth the engine
- * does not run is its 48 kHz default, Airspy is held where its device sets the rate, and a digital mode is not held.
+ * does not run is its 48 kHz default, and a digital mode is not held. Issue #806: an Airspy runs at its DSP bandwidth
+ * too (its capture rate stepped to it), so it is held the same way, at the bandwidth its spec carries (snapped as the
+ * session snaps it), where it was let through to stream start before.
  */
 void
 test_am_bandwidth(void) {
@@ -1024,16 +1029,59 @@ test_am_bandwidth(void) {
     QVariantMap airspy = usb_system();
     airspy.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
     airspy.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
-    airspy.insert(QStringLiteral("bandwidthKhz"), 6);
     SessionArgsError error = SessionArgsError::None;
-    expect("Airspy is held at stream start, not here",
-           !session_args_build(airspy, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    /* 5 snaps to 4 on an Airspy (the narrower of two as near); on a USB radio it runs at 48 and builds (above). */
+    for (const int khz : {4, 6, 5}) {
+        airspy.insert(QStringLiteral("bandwidthKhz"), khz);
+        error = SessionArgsError::None;
+        expect("AM on an Airspy at a 4 or 6 kHz DSP bandwidth is refused",
+               session_args_build(airspy, SessionArgPrefs(), &error).isEmpty()
+                   && error == SessionArgsError::AmBandwidth);
+        expect("the gate refuses it on an Airspy too",
+               !dsd_qt::session_args_am_fits_bandwidth(QStringLiteral("airspy"), khz));
+    }
+    /* 100 is above the widest Airspy bandwidth: it runs at the 48 kHz default, as on a USB radio. */
+    for (const int khz : {8, 12, 24, 48, 72, 100}) {
+        airspy.insert(QStringLiteral("bandwidthKhz"), khz);
+        error = SessionArgsError::None;
+        expect("AM on an Airspy builds at 8 kHz and up, and above 72 kHz at 48 kHz",
+               !session_args_build(airspy, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    }
+    airspy.remove(QStringLiteral("bandwidthKhz"));
+    SessionArgPrefs narrowDefault;
+    narrowDefault.bandwidthKhz = 6;
+    error = SessionArgsError::None;
+    expect("AM on an Airspy under a 6 kHz app default is refused",
+           session_args_build(airspy, narrowDefault, &error).isEmpty() && error == SessionArgsError::AmBandwidth);
+    QString why;
+    expect("an Airspy's width refusal is the engine's, with the DSP bandwidth fix for a device",
+           !dsd_qt::session_args_analog_width_fits(QStringLiteral("airspy"), 6, DSD_ANALOG_DEMOD_AM,
+                                                   DSD_ANALOG_AM_WIDTH_DEFAULT_HZ, &why)
+               && why.startsWith(QStringLiteral("AM bandwidth 6 kHz does not fit the 6 kHz DSP rate"))
+               && why.endsWith(QStringLiteral("; set the DSP bandwidth to 8, 12, 16, 24, 48 or 72 kHz")));
+    why.clear();
+    expect("a USB radio's names the RTL DSP bandwidth",
+           !dsd_qt::session_args_analog_width_fits(QStringLiteral("usb"), 6, DSD_ANALOG_DEMOD_AM,
+                                                   DSD_ANALOG_AM_WIDTH_DEFAULT_HZ, &why)
+               && why.endsWith(QStringLiteral("; set the RTL DSP bandwidth to 8, 12, 16, 24, 48 or 72 kHz")));
+    why.clear();
+    expect("a fitting width leaves the reason alone",
+           dsd_qt::session_args_analog_width_fits(QStringLiteral("airspy"), 24, DSD_ANALOG_DEMOD_FM, 12500, &why)
+               && why.isEmpty());
+    expect("a 12.5 kHz NFM channel does not fit an Airspy at 12 kHz",
+           !dsd_qt::session_args_analog_width_fits(QStringLiteral("airspy"), 12, DSD_ANALOG_DEMOD_FM, 12500, nullptr)
+               && !dsd_qt::session_args_analog_width_fits(QStringLiteral("rtltcp"), 12, DSD_ANALOG_DEMOD_FM, 12500,
+                                                          nullptr));
     expect("a non-radio source is the I/Q refusal's, not this one",
            dsd_qt::session_args_am_fits_bandwidth(QStringLiteral("tcp"), 6));
 
     const dsd_qt::SessionArgsBuilder builder(nullptr);
     expect("the wizard gate names the fix", builder.amBandwidthError(QStringLiteral("usb"), 6)
                                                 == session_args_error_text(SessionArgsError::AmBandwidth));
+    expect("the wizard gate names the fix on an Airspy", builder.amBandwidthError(QStringLiteral("airspy"), 6)
+                                                             == session_args_error_text(SessionArgsError::AmBandwidth));
+    expect("the wizard gate passes an empty Airspy field at the 48 kHz default",
+           builder.amBandwidthError(QStringLiteral("airspy"), -1).isEmpty());
     expect("the wizard gate passes 8 kHz", builder.amBandwidthError(QStringLiteral("usb"), 8).isEmpty());
     expect("an empty bandwidth field follows the 48 kHz default",
            builder.amBandwidthError(QStringLiteral("rtltcp"), -1).isEmpty());
@@ -1054,11 +1102,12 @@ test_am_bandwidth(void) {
 }
 
 /*
- * Issue #803 (D-B1, D-B2): TETRA runs only where the DSP rate is a multiple of 18 kHz, which on a USB or rtl_tcp radio
- * is the 72 kHz DSP bandwidth, and on an Airspy is never (no Airspy sample rate halves to one). A system that would
- * start where TETRA cannot decode is refused, as an AM system at a bandwidth too narrow for its channel is, rather
- * than starting and never decoding. The bandwidth judged is the one the engine runs: a value it does not select (36)
- * runs at its 48 kHz default. Both cases started on main.
+ * Issue #803 (D-B1, D-B2): TETRA runs only where the DSP rate is a multiple of 18 kHz, which on a radio is the 72 kHz
+ * DSP bandwidth. A system that would start where TETRA cannot decode is refused, as an AM system at a bandwidth too
+ * narrow for its channel is, rather than starting and never decoding. The bandwidth judged is the one the engine runs:
+ * a value it does not select (36) runs at its 48 kHz default. Issue #806: an Airspy's capture rate is stepped to its
+ * DSP bandwidth, so a TETRA system on an Airspy builds blank or at 72 kHz (it was refused at every bandwidth) and is
+ * refused elsewhere with the same bandwidth fix a USB radio gets (it named another radio).
  */
 void
 test_tetra_rate(void) {
@@ -1068,11 +1117,30 @@ test_tetra_rate(void) {
     QVariantMap airspy = usb_system();
     airspy.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
     airspy.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fT"));
-    for (const int khz : {-1, 48, 72}) {
+    /* 61 is nearer 72 than 48; 100 and 73 are above the widest and run at 48; 36 snaps to 24 (of two as near). */
+    for (const int khz : {48, 24, 4, 25, 36, 100, 73}) {
         airspy.insert(QStringLiteral("bandwidthKhz"), khz);
         SessionArgsError error = SessionArgsError::None;
-        expect("D-B1: a TETRA system on an Airspy is refused",
+        expect("a TETRA system on an Airspy off 72 kHz is refused",
                session_args_build(airspy, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::TetraRate);
+    }
+    for (const int khz : {-1, 72, 61}) {
+        airspy.insert(QStringLiteral("bandwidthKhz"), khz);
+        SessionArgsError error = SessionArgsError::None;
+        const QStringList args = session_args_build(airspy, SessionArgPrefs(), &error);
+        expect("a TETRA system on an Airspy builds blank or at 72 kHz",
+               error == SessionArgsError::None && input_spec(args) == QStringLiteral("airspy:851.375M:72:0:2")
+                   && args.contains(QStringLiteral("-fT")));
+    }
+    {
+        airspy.remove(QStringLiteral("bandwidthKhz"));
+        SessionArgPrefs narrow;
+        narrow.bandwidthKhz = 24;
+        SessionArgsError error = SessionArgsError::None;
+        expect("a blank TETRA bandwidth on an Airspy ignores the app-wide default",
+               input_spec(session_args_build(airspy, narrow, &error)) == QStringLiteral("airspy:851.375M:72:0:2")
+                   && error == SessionArgsError::None);
+        airspy.insert(QStringLiteral("bandwidthKhz"), 48);
     }
 
     for (const char* source : {"usb", "rtltcp"}) {
@@ -1132,25 +1200,38 @@ test_tetra_rate(void) {
            session_args_effective_bandwidth_khz(QStringLiteral("-fs"), usb, -1, 24) == 24);
     expect("effective: an app default the engine does not run is 48",
            session_args_effective_bandwidth_khz(QString(), usb, -1, 36) == 48);
-    expect("effective: an Airspy takes no 72",
-           session_args_effective_bandwidth_khz(tetra, QStringLiteral("airspy"), -1, 48) == 48);
+    expect("effective: blank TETRA on an Airspy is 72 kHz",
+           session_args_effective_bandwidth_khz(tetra, QStringLiteral("airspy"), -1, 48) == 72);
+    expect("effective: an Airspy snaps to the nearest bandwidth",
+           session_args_effective_bandwidth_khz(tetra, QStringLiteral("airspy"), 25, 48) == 24);
+    expect("effective: an Airspy above 72 kHz runs at 48, as a USB radio does",
+           session_args_effective_bandwidth_khz(tetra, QStringLiteral("airspy"), 100, 48) == 48
+               && session_args_effective_bandwidth_khz(tetra, usb, 100, 48) == 48);
     expect("effective: a composite flag names TETRA",
            session_args_effective_bandwidth_khz(QStringLiteral("-fT -Z"), usb, -1, 48) == 72);
     expect("effective: a source with no DSP bandwidth keeps the request",
            session_args_effective_bandwidth_khz(QString(), QStringLiteral("tcp"), 36, 48) == 36);
     expect("runs: 72 kHz on USB", session_args_tetra_runs_on(usb, 72));
     expect("runs: not 48 kHz on rtl_tcp", !session_args_tetra_runs_on(QStringLiteral("rtltcp"), 48));
-    expect("runs: never on an Airspy", !session_args_tetra_runs_on(QStringLiteral("airspy"), 72));
+    expect("runs: 72 kHz on an Airspy", session_args_tetra_runs_on(QStringLiteral("airspy"), 72));
+    expect("runs: not 48 kHz on an Airspy", !session_args_tetra_runs_on(QStringLiteral("airspy"), 48));
+    expect("runs: an out-of-range request on an Airspy is no TETRA rate",
+           !session_args_tetra_runs_on(QStringLiteral("airspy"), std::numeric_limits<int>::max()));
     expect("runs: an out-of-range request is no TETRA rate",
            !session_args_tetra_runs_on(usb, std::numeric_limits<int>::max()));
     expect("runs: a non-radio source is the I/Q refusal's", session_args_tetra_runs_on(QStringLiteral("tcp"), 48));
 
     const dsd_qt::SessionArgsBuilder builder(nullptr);
-    const QString airspyText = builder.tetraRateError(tetra, QStringLiteral("airspy"), -1);
+    const QString airspyText = builder.tetraRateError(tetra, QStringLiteral("airspy"), 48);
     const QString bandwidthText = builder.tetraRateError(tetra, usb, 48);
-    expect("gate: an Airspy is named", airspyText.contains(QStringLiteral("Airspy")));
-    expect("gate: the bandwidth fix is named", bandwidthText.contains(QStringLiteral("72 kHz")));
-    expect("gate: the two cases say different things", airspyText != bandwidthText);
+    expect("gate: the bandwidth fix is named",
+           bandwidthText
+               == QStringLiteral("TETRA needs a bandwidth of 72 kHz: no other bandwidth decodes it. Set the bandwidth "
+                                 "to 72 kHz, or choose another decode mode."));
+    expect("gate: an Airspy off 72 kHz gets the same fix", airspyText == bandwidthText);
+    expect("gate: blank TETRA on an Airspy passes",
+           builder.tetraRateError(tetra, QStringLiteral("airspy"), -1).isEmpty());
+    expect("gate: 72 kHz on an Airspy passes", builder.tetraRateError(tetra, QStringLiteral("airspy"), 72).isEmpty());
     expect("gate: blank TETRA on USB passes", builder.tetraRateError(tetra, usb, -1).isEmpty());
     expect("gate: 72 kHz on rtl_tcp passes", builder.tetraRateError(tetra, QStringLiteral("rtltcp"), 72).isEmpty());
     expect("gate: 36 kHz is refused", !builder.tetraRateError(tetra, usb, 36).isEmpty());
@@ -1162,12 +1243,16 @@ test_tetra_rate(void) {
     expect("placeholder: blank otherwise shows the app default",
            builder.effectiveBandwidthKhz(QStringLiteral("-fs"), usb, -1) == SessionArgPrefs().bandwidthKhz);
 
-    /* The start refusal says the one fix for the system's source, as the gate does. */
+    /* The start refusal says the one fix, as the gate does. */
     const QVariantMap result = builder.build(airspy);
-    expect("the Airspy start refusal carries its category and the Airspy text",
+    expect("the Airspy start refusal carries its category and the bandwidth text",
            !result.value(QStringLiteral("ok")).toBool()
                && result.value(QStringLiteral("error")).toString() == QStringLiteral("tetra-rate")
-               && result.value(QStringLiteral("errorText")).toString() == airspyText);
+               && result.value(QStringLiteral("errorText")).toString() == bandwidthText);
+    QVariantMap airspyBlank = airspy;
+    airspyBlank.remove(QStringLiteral("bandwidthKhz"));
+    expect("a blank Airspy TETRA system passes the start check",
+           builder.build(airspyBlank).value(QStringLiteral("ok")).toBool());
     QVariantMap remote = usb_system();
     remote.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
     remote.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
@@ -1175,13 +1260,11 @@ test_tetra_rate(void) {
     remote.insert(QStringLiteral("decodeFlag"), tetra);
     remote.insert(QStringLiteral("bandwidthKhz"), 48);
     const QVariantMap remoteResult = builder.build(remote);
-    expect("the rtl_tcp start refusal carries its category and the bandwidth text, not the Airspy one",
+    expect("the rtl_tcp start refusal carries its category and the bandwidth text",
            remoteResult.value(QStringLiteral("error")).toString() == QStringLiteral("tetra-rate")
-               && remoteResult.value(QStringLiteral("errorText")).toString() == bandwidthText
-               && !remoteResult.value(QStringLiteral("errorText")).toString().contains(QStringLiteral("Airspy")));
-    expect("the start refusal names both fixes",
-           session_args_error_text(SessionArgsError::TetraRate).contains(QStringLiteral("Airspy"))
-               && session_args_error_text(SessionArgsError::TetraRate).contains(QStringLiteral("72 kHz")));
+               && remoteResult.value(QStringLiteral("errorText")).toString() == bandwidthText);
+    expect("the start refusal names the one fix, never another radio",
+           session_args_error_text(SessionArgsError::TetraRate) == bandwidthText);
 }
 
 void
@@ -1234,9 +1317,13 @@ test_airspy_bandwidth(void) {
                  {1, 4},
                  {10, 8},
                  {20, 16},
+                 /* Issue #806: an Airspy runs 72 kHz (TETRA's); above it, the 48 kHz default, as a USB radio runs it
+                    (D4: never a silent jump to the widest for a mistyped 100). Of two as near (60), the narrower. */
+                 {72, 72},
+                 {61, 72},
+                 {73, 48},
                  {100, 48},
-                 /* 72 kHz (TETRA's) is no Airspy bandwidth: no Airspy sample rate halves to it. */
-                 {72, 48},
+                 {36, 24},
                  {60, 48},
                  {0, 48},
                  {-1, 48},

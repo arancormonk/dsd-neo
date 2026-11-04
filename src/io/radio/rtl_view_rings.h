@@ -17,13 +17,13 @@ extern "C" {
 /**
  * @brief Inputs of a view-ring SNR fallback estimate besides the ring contents.
  *
- * `ted_sps` places the eye symbol centers and, with `rate_out`,
+ * `ted_sps` places the eye symbol centers and, with `complex_rate` (the rate it is paired with),
  * `channel_profile` and `tetra_stage` (DSD_SNR_TETRA_STAGE_*), sets the estimator bias
  * (dsd_snr_bias_*_db()).
  */
 typedef struct {
     int ted_sps;
-    int rate_out;
+    int complex_rate;
     int channel_profile;
     int tetra_stage;
 } rtl_view_snr_inputs;

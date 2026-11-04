@@ -33,4 +33,16 @@ int airspy_source_fd_held(void);
 int airspy_source_last_open_error(void);
 void airspy_source_clear_open_error(void);
 int airspy_source_list(uint64_t* serials, int capacity);
+/* Whether an open with no rate configured takes the device's lowest listed rate (Android, where the USB transfers
+ * and the half-band filters at the highest rate cost the most) rather than its highest. A test build may set it. */
+#ifndef AIRSPY_SOURCE_PREFER_LOWEST_RATE
+#ifdef __ANDROID__
+#define AIRSPY_SOURCE_PREFER_LOWEST_RATE 1
+#else
+#define AIRSPY_SOURCE_PREFER_LOWEST_RATE 0
+#endif
+#endif
+/* The rate an open with no rate configured programs: the lowest of @p rates with @p prefer_lowest, else the highest.
+ * 0 when @p n is 0. Pure: no device needed. */
+uint32_t airspy_pick_default_rate(const uint32_t* rates, size_t n, int prefer_lowest);
 #endif

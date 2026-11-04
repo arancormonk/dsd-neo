@@ -8,12 +8,16 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -1089,18 +1093,27 @@ test_same_offset_mute_events_merge_duration(void) {
     uint8_t payload[2] = {1, 2};
     rc |= expect_int("submit mute merge", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
+    /* Two MUTEs for the same reason at one offset (a retune's settle hold, block after block) merge into one. */
     dsd_iq_event ev;
     DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 2;
-    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "first_mute");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
     rc |= expect_int("record first merge mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 4;
-    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "second_mute");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
     rc |= expect_int("record second merge mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
+
+    /* A MUTE for another reason at the same offset stays its own event (issue #806 X12): merged into the settle MUTE,
+       a driver overflow lost its reason, and the replay did not reset at the gap it marks. */
+    DSD_MEMSET(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_MUTE;
+    ev.duration_bytes = 2;
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "driver_overflow");
+    rc |= expect_int("record overflow mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
     DSD_MEMSET(&stats, 0, sizeof(stats));
@@ -1110,11 +1123,16 @@ test_same_offset_mute_events_merge_duration(void) {
     DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("mute merge metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
-    rc |= expect_int("mute merge event_count", (int)meta.event_count, 1);
-    if (meta.event_count == 1) {
+    rc |= expect_int("mute merge event_count", (int)meta.event_count, 2);
+    if (meta.event_count == 2) {
         rc |= expect_int("mute merge kind", (int)meta.events[0].kind, (int)DSD_IQ_EVENT_MUTE);
         rc |= expect_u64("mute merge offset", meta.events[0].byte_offset, 2);
         rc |= expect_u64("mute merge duration", meta.events[0].duration_bytes, 6);
+        rc |= expect_true("mute merge reason", strcmp(meta.events[0].reason, "retune_mute") == 0);
+        rc |= expect_int("overflow mute kind", (int)meta.events[1].kind, (int)DSD_IQ_EVENT_MUTE);
+        rc |= expect_u64("overflow mute offset", meta.events[1].byte_offset, 2);
+        rc |= expect_u64("overflow mute duration", meta.events[1].duration_bytes, 2);
+        rc |= expect_true("overflow mute keeps its reason", strcmp(meta.events[1].reason, "driver_overflow") == 0);
     }
     dsd_iq_replay_config_clear(&meta);
     cleanup_capture(dir, data_path, metadata_path);
@@ -1947,6 +1965,278 @@ test_open_reports_whether_it_opened_the_data_file(void) {
     return rc;
 }
 
+/* Whether the sidecar at @p path names @p reason as its capture_end_reason (0: it has none, -1: unreadable). */
+static int
+sidecar_end_reason_is(const char* path, const char* reason) {
+    uint8_t text[8192];
+    size_t n = 0;
+    if (read_file_all(path, text, sizeof(text) - 1U, &n) != 0) {
+        return -1;
+    }
+    text[n] = '\0';
+    const char* field = strstr((const char*)text, "\"capture_end_reason\"");
+    if (!field) {
+        return 0;
+    }
+    char want[96];
+    DSD_SNPRINTF(want, sizeof(want), "\"capture_end_reason\": \"%s\"", reason);
+    return strncmp(field, want, strlen(want)) == 0 ? 1 : -1;
+}
+
+static void
+fill_retune_event(dsd_iq_event* ev, dsd_iq_event_kind kind, uint32_t rate_hz) {
+    DSD_MEMSET(ev, 0, sizeof(*ev));
+    ev->kind = kind;
+    ev->center_frequency_hz = 851500000ULL;
+    ev->capture_center_frequency_hz = 851884000ULL;
+    ev->sample_rate_hz = rate_hz;
+    DSD_SNPRINTF(ev->reason, sizeof(ev->reason), "%s", "frequency");
+}
+
+/*
+ * Issue #806 X9: a retune that changes the device rate while a capture runs. The writer used to refuse the event and
+ * keep taking samples, so the file went on at the new rate under a sidecar naming the old one. Now the event seals it:
+ * the file ends with what came before (the partly packed block included), every later submission and event is refused
+ * with DSD_IQ_ERR_SEALED, the sidecar reports the stream's counts at the seal (dsd_iq_capture_freeze_final_stats()),
+ * not the later totals close is given, and names its end, and the capture still replays. A RESET at another rate seals
+ * as a RETUNE does.
+ */
+static int
+test_rate_change_seals_capture(dsd_iq_event_kind sealing_kind) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "sealed.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "sealed.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.queue_block_bytes = 4096;
+    cfg.queue_block_count = 4;
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("seal: open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+    const uint8_t before[6] = {10, 11, 12, 13, 14, 15};
+    const uint8_t after[4] = {90, 91, 92, 93};
+    dsd_iq_event ev;
+    rc |= expect_int("seal: submit before", dsd_iq_capture_submit(writer, before, 4), DSD_IQ_OK);
+    fill_retune_event(&ev, DSD_IQ_EVENT_RETUNE, cfg.sample_rate_hz);
+    rc |= expect_int("seal: same-rate retune taken", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
+    rc |= expect_int("seal: submit packed", dsd_iq_capture_submit(writer, before + 4, 2), DSD_IQ_OK);
+    const dsd_iq_capture_final_stats early = {1U, 1U};
+    rc |= expect_int("seal: freeze before the seal refused", dsd_iq_capture_freeze_final_stats(writer, &early),
+                     DSD_IQ_ERR_INVALID_ARG);
+
+    fill_retune_event(&ev, sealing_kind, 2000000U);
+    rc |= expect_int("seal: the rate change seals", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_RATE_CHAIN);
+    const dsd_iq_capture_final_stats at_seal = {5U, 1U};
+    rc |= expect_int("seal: counts frozen", dsd_iq_capture_freeze_final_stats(writer, &at_seal), DSD_IQ_OK);
+    rc |= expect_int("seal: frozen once", dsd_iq_capture_freeze_final_stats(writer, &at_seal), DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_int("seal: samples after refused", dsd_iq_capture_submit(writer, after, sizeof(after)),
+                     DSD_IQ_ERR_SEALED);
+    fill_retune_event(&ev, DSD_IQ_EVENT_RETUNE, cfg.sample_rate_hz);
+    rc |= expect_int("seal: a retune after refused", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_SEALED);
+    fill_retune_event(&ev, DSD_IQ_EVENT_RESET, 2000000U);
+    rc |= expect_int("seal: a reset after refused", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_SEALED);
+    DSD_MEMSET(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_MUTE;
+    ev.duration_bytes = 2;
+    rc |= expect_int("seal: a mute after refused", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_SEALED);
+
+    /* The stream's totals at its end count retunes and drops after the seal: the sidecar does not. */
+    const dsd_iq_capture_final_stats at_end = {99U, 50U};
+    dsd_iq_capture_close(writer, &at_end);
+
+    uint8_t data[64];
+    size_t n = 0;
+    rc |= expect_int("seal: data readable", read_file_all(data_path, data, sizeof(data), &n), 0);
+    rc |= expect_u64("seal: the file holds the samples before the seal", (uint64_t)n, sizeof(before));
+    rc |= expect_true("seal: the partly packed block was written",
+                      n == sizeof(before) && memcmp(data, before, sizeof(before)) == 0);
+    dsd_iq_replay_config meta;
+    DSD_MEMSET(&meta, 0, sizeof(meta));
+    rc |= expect_int("seal: sidecar replays", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_u64("seal: data_bytes", meta.data_bytes, sizeof(before));
+    rc |= expect_int("seal: the rate is the capture's", (int)meta.sample_rate_hz, (int)cfg.sample_rate_hz);
+    rc |= expect_int("seal: only the event before the seal", (int)meta.event_count, 1);
+    rc |= expect_int("seal: retunes at the seal", (int)meta.capture_retune_count, 1);
+    rc |= expect_u64("seal: ring drops at the seal", meta.input_ring_drops, 5U);
+    dsd_iq_replay_config_clear(&meta);
+    rc |= expect_int("seal: capture_end_reason", sidecar_end_reason_is(metadata_path, DSD_IQ_CAPTURE_END_RATE_CHANGED),
+                     1);
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/* A capture that ran to its stream's end has no capture_end_reason. */
+static int
+test_unsealed_capture_has_no_end_reason(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "plain.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "plain.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("plain: open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (writer) {
+        const uint8_t payload[4] = {1, 2, 3, 4};
+        rc |= expect_int("plain: submit", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+        const dsd_iq_capture_final_stats stats = {3U, 0U};
+        rc |= expect_int("plain: nothing to freeze", dsd_iq_capture_freeze_final_stats(writer, &stats),
+                         DSD_IQ_ERR_INVALID_ARG);
+        dsd_iq_capture_close(writer, &stats);
+        rc |= expect_int("plain: no capture_end_reason", sidecar_end_reason_is(metadata_path, "rate_changed"), 0);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/* Producers submitting samples and events on their own threads while another seals the writer (run under TSan by the
+ * tsan-debug preset): every submission is either taken whole before the seal or refused after it, the file holds
+ * exactly the bytes taken, every event recorded lies inside them, and the sidecar names the end. */
+struct seal_race {
+    dsd_iq_capture_writer* writer;
+    atomic_int go;
+    atomic_int sealed_seen;
+    uint64_t taken_bytes;
+    uint32_t events_taken;
+};
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    seal_race_samples(void* arg) {
+    struct seal_race* race = (struct seal_race*)arg;
+    float block[64];
+    for (size_t i = 0; i < 64U; i++) {
+        block[i] = (float)i * 0.01f;
+    }
+    while (!atomic_load(&race->go)) {
+        dsd_thread_yield();
+    }
+    for (int i = 0; i < 50000000; i++) {
+        const size_t bytes = (size_t)(8 * (1 + (i % 32)));
+        const int src = dsd_iq_capture_submit(race->writer, block, bytes);
+        if (src == DSD_IQ_ERR_SEALED) {
+            atomic_store(&race->sealed_seen, 1);
+            break;
+        }
+        if (src == DSD_IQ_OK) {
+            race->taken_bytes += bytes;
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    seal_race_events(void* arg) {
+    struct seal_race* race = (struct seal_race*)arg;
+    while (!atomic_load(&race->go)) {
+        dsd_thread_yield();
+    }
+    for (int i = 0; i < 50000000; i++) {
+        dsd_iq_event ev;
+        if (i % 3 == 0) {
+            DSD_MEMSET(&ev, 0, sizeof(ev));
+            ev.kind = DSD_IQ_EVENT_MUTE;
+            ev.duration_bytes = 16;
+            DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "driver_overflow");
+        } else {
+            fill_retune_event(&ev, (i % 3 == 1) ? DSD_IQ_EVENT_RETUNE : DSD_IQ_EVENT_RESET, 1536000U);
+        }
+        const int erc = dsd_iq_capture_record_event(race->writer, &ev);
+        if (erc == DSD_IQ_ERR_SEALED) {
+            break;
+        }
+        if (erc == DSD_IQ_OK) {
+            race->events_taken++;
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_concurrent_submissions_and_seal(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "race.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "race.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32);
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+    cfg.queue_block_bytes = 4096;
+    cfg.queue_block_count = 64;
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("race: open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+    struct seal_race race;
+    DSD_MEMSET(&race, 0, sizeof(race));
+    race.writer = writer;
+    atomic_store(&race.go, 0);
+    atomic_store(&race.sealed_seen, 0);
+    dsd_thread_t samples_thread;
+    dsd_thread_t events_thread;
+    rc |= expect_int("race: sample producer", dsd_thread_create(&samples_thread, seal_race_samples, &race), 0);
+    rc |= expect_int("race: event producer", dsd_thread_create(&events_thread, seal_race_events, &race), 0);
+    atomic_store(&race.go, 1);
+    dsd_sleep_ms(5);
+    dsd_iq_event ev;
+    fill_retune_event(&ev, DSD_IQ_EVENT_RETUNE, 2000000U);
+    rc |= expect_int("race: the rate change seals", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_RATE_CHAIN);
+    dsd_thread_join(samples_thread);
+    dsd_thread_join(events_thread);
+    const dsd_iq_capture_final_stats stats = {0U, 0U};
+    dsd_iq_capture_close(writer, &stats);
+
+    dsd_iq_replay_config meta;
+    DSD_MEMSET(&meta, 0, sizeof(meta));
+    rc |= expect_int("race: sidecar replays", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                     DSD_IQ_OK);
+    /* A writer thread that fell behind drops what it had no block for, and counts it: never the seal's doing. */
+    rc |= expect_u64("race: the bytes taken are written or counted dropped", meta.data_bytes + meta.capture_drops,
+                     race.taken_bytes);
+    rc |= expect_true("race: the file holds data_bytes", file_size_or_missing(data_path) == (long)meta.data_bytes);
+    rc |= expect_true("race: the producer saw the seal", atomic_load(&race.sealed_seen) == 1);
+    rc |= expect_int("race: every event taken is recorded", (int)meta.event_count, (int)race.events_taken);
+    for (uint32_t i = 0; i < meta.event_count; i++) {
+        rc |= expect_true("race: events inside the data", meta.events[i].byte_offset <= meta.data_bytes);
+    }
+    dsd_iq_replay_config_clear(&meta);
+    rc |= expect_int("race: capture_end_reason", sidecar_end_reason_is(metadata_path, DSD_IQ_CAPTURE_END_RATE_CHANGED),
+                     1);
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
 #if defined(DSD_TEST_FAULT_FDOPEN)
 /* The next fdopen() fails once (ENOMEM), after the descriptor it is handed was opened: a private open for writing has
    then already created or emptied the file. */
@@ -2013,6 +2303,256 @@ test_open_reports_a_data_file_it_emptied_without_a_stream(void) {
 }
 #endif
 
+/* ---------------- The live rate chain's scalars (issue #806) ---------------- */
+
+/* The chain a live stream records: the nominal rate, the forced flag, the DSP rate after the step and its ratio. */
+static dsd_iq_rate_chain
+live_chain(uint32_t nominal_hz, int forced, uint32_t dsp_hz, uint32_t L, uint32_t M, double approx_ppm) {
+    dsd_iq_rate_chain chain;
+    DSD_MEMSET(&chain, 0, sizeof(chain));
+    chain.has_nominal = 1;
+    chain.nominal_rate_hz = nominal_hz;
+    chain.has_forced = 1;
+    chain.device_forced = forced;
+    chain.has_step = 1;
+    chain.dsp_rate_hz = dsp_hz;
+    chain.step_l = L;
+    chain.step_m = M;
+    chain.step_approx_ppm = approx_ppm;
+    return chain;
+}
+
+typedef struct {
+    const char* name;
+    const char* want_err; /* a refusal names this */
+    dsd_iq_rate_chain chain;
+    uint32_t sample_rate_hz;
+    uint32_t base;
+    int bw_khz;
+    int want_rc; /* the open's result */
+} chain_case;
+
+/* Open a capture of @p c's chain, and for one the writer takes, read it back: the reader gets the chain as written. */
+static int
+check_chain_case(const chain_case* c) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256] = {0};
+    char label[192];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "chain.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "chain.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32);
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "airspy");
+    cfg.sample_rate_hz = c->sample_rate_hz;
+    cfg.base_decimation = c->base;
+    cfg.rtl_dsp_bw_khz = c->bw_khz;
+    cfg.demod_rate_hz = c->sample_rate_hz / c->base;
+    cfg.rate_chain = c->chain;
+    dsd_iq_capture_writer* writer = NULL;
+    const int orc = dsd_iq_capture_open(&cfg, &writer, err, sizeof(err));
+    DSD_SNPRINTF(label, sizeof(label), "%s: open", c->name);
+    rc |= expect_int(label, orc, c->want_rc);
+    if (c->want_err) {
+        DSD_SNPRINTF(label, sizeof(label), "%s: the refusal names '%s' (%s)", c->name, c->want_err, err);
+        rc |= expect_true(label, strstr(err, c->want_err) != NULL);
+    }
+    if (writer) {
+        const float iq[4] = {0.1f, -0.1f, 0.2f, -0.2f};
+        rc |= expect_int("chain: submit", dsd_iq_capture_submit(writer, iq, sizeof(iq)), DSD_IQ_OK);
+        const dsd_iq_capture_final_stats stats = {0U, 0U};
+        dsd_iq_capture_close(writer, &stats);
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        DSD_SNPRINTF(label, sizeof(label), "%s: the reader takes it", c->name);
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        const dsd_iq_rate_chain* got = &meta.rate_chain;
+        const dsd_iq_rate_chain* want = &c->chain;
+        DSD_SNPRINTF(label, sizeof(label), "%s: the chain reads back as written", c->name);
+        rc |= expect_true(label, got->has_nominal == want->has_nominal && got->nominal_rate_hz == want->nominal_rate_hz
+                                     && got->has_forced == want->has_forced && got->device_forced == want->device_forced
+                                     && got->has_step == want->has_step && got->dsp_rate_hz == want->dsp_rate_hz
+                                     && got->step_l == want->step_l && got->step_m == want->step_m
+                                     && fabs(got->step_approx_ppm - want->step_approx_ppm) <= 1e-6);
+        DSD_SNPRINTF(label, sizeof(label), "%s: the legacy demod rate is the truncated one", c->name);
+        rc |= expect_true(label, meta.demod_rate_hz == c->sample_rate_hz / c->base);
+        dsd_iq_replay_config_clear(&meta);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/* The writer records the live chain and refuses one that does not agree with itself, which the reader would refuse. */
+static int
+test_rate_chain_written_and_checked(void) {
+    const dsd_iq_rate_chain none = {0, 0U, 0, 0, 0, 0U, 0U, 0U, 0.0};
+    const chain_case k_cases[] = {
+        {"Airspy 2.5 MS/s base 32 at 48 kHz", NULL, live_chain(2500000U, 1, 48000U, 384U, 625U, 0.0), 2500000U, 32U, 48,
+         DSD_IQ_OK},
+        {"Airspy 2.5 MS/s base 64 at 24 kHz", NULL, live_chain(2500000U, 1, 24000U, 384U, 625U, 0.0), 2500000U, 64U, 24,
+         DSD_IQ_OK},
+        {"Airspy Mini 3 MS/s base 32 at 72 kHz", NULL, live_chain(3000000U, 1, 72000U, 96U, 125U, 0.0), 3000000U, 32U,
+         72, DSD_IQ_OK},
+        /* The tolerance boundary: an RTL-SDR read back 1 Hz under 1.536 MS/s runs the 1.536 MS/s chain exactly. */
+        {"RTL read back 1535999", NULL, live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1535999U, 32U, 48, DSD_IQ_OK},
+        /* 100 ppm of 1536000 is 153.6 Hz: 153 Hz is in, 154 Hz out. */
+        {"RTL read back 153 Hz over", NULL, live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1536153U, 32U, 48, DSD_IQ_OK},
+        {"RTL read back 154 Hz over", "nominal_rate_hz", live_chain(1536000U, 0, 48000U, 0U, 0U, 0.0), 1536154U, 32U,
+         48, DSD_IQ_ERR_RATE_CHAIN},
+        /* A SoapySDR device at 1536200 Hz: out of tolerance, and 7680/7681 has no ratio within 5 ppm in 4096 terms. */
+        {"Soapy 1536200 against a 1536000 nominal", "nominal_rate_hz", live_chain(1536000U, 1, 48000U, 0U, 0U, 0.0),
+         1536200U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"Soapy 1536200 stepped 7680/7681", "no step takes", live_chain(1536200U, 1, 48000U, 7680U, 7681U, 0.0),
+         1536200U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        /* The approximation the planner accepts: 2000001 Hz to 48 kHz by 96/125, 0.5 ppm off. */
+        {"Soapy 2000001 approximated", NULL, live_chain(2000001U, 1, 48000U, 96U, 125U, 0.5), 2000001U, 32U, 48,
+         DSD_IQ_OK},
+        {"Soapy 2000001 approximated, ppm wrong", "iq_step_approx_ppm", live_chain(2000001U, 1, 48000U, 96U, 125U, 0.0),
+         2000001U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a ratio that is not the planner's", "384/625", live_chain(2500000U, 1, 48000U, 384U, 624U, 0.0), 2500000U,
+         32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a step with half a ratio", "both", live_chain(2500000U, 1, 48000U, 384U, 0U, 0.0), 2500000U, 32U, 48,
+         DSD_IQ_ERR_RATE_CHAIN},
+        {"a step on a chain not forced", "capture_rate_device_forced", live_chain(2500000U, 0, 48000U, 384U, 625U, 0.0),
+         2500000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"no step but a DSP rate off the half-band output", "dsp_rate_hz", live_chain(1536000U, 0, 47999U, 0U, 0U, 0.0),
+         1536000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a step where the half-band chain lands on the DSP rate", "with no step",
+         live_chain(1536000U, 1, 48000U, 1U, 1U, 0.0), 1536000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        /* A capture with no live plan writes none, as before. */
+        {"no chain", NULL, none, 1536000U, 32U, 48, DSD_IQ_OK},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        rc |= check_chain_case(&k_cases[i]);
+    }
+    return rc;
+}
+
+/* The pre-#806 replay planner (src/io/iq/iq_replay.c at b08406ebc, rate_plan_keep() and dsd_iq_replay_plan_rate()),
+   frozen here by hand as that code reads, for the cases below (no post decimation): what a reader from before the rate chain's scalars plans for a capture, from its legacy fields. Fills the
+   DSP input rate, base and demod rate; returns 1 when it kept the recorded chain. */
+static int
+old_reader_plan(uint32_t fs, uint32_t base, uint32_t demod, uint32_t target_hz, int tetra, uint32_t* dsp_in,
+                uint32_t* out_base, uint32_t* out_demod) {
+    if (fs / base == demod && (!tetra || dsd_tetra_dsp_rate_runs((int)(fs / base)))) {
+        *dsp_in = fs;
+        *out_base = base;
+        *out_demod = demod;
+        return 1;
+    }
+    uint32_t k = 0U;
+    while (k < 10U && ((uint64_t)target_hz << (k + 1U)) <= (uint64_t)fs) {
+        k++;
+    }
+    *dsp_in = target_hz << k;
+    *out_base = 1U << k;
+    *out_demod = target_hz;
+    return 0;
+}
+
+/* Whether the top-level JSON object @p text holds only scalars (an old reader refuses a nested value). */
+static int
+sidecar_is_flat(const char* text) {
+    const char* first = strchr(text, '{');
+    return first && !strchr(first + 1, '{') && !strchr(text, '[');
+}
+
+/* An old reader reads a capture this writer makes with its own policy (spec D2): the new scalars are flat scalars it
+   ignores, the legacy fields it checks still agree, so it keeps an FSK chain at the forced 78,125 Hz and re-plans TETRA
+   to a reader-resampled 72 kHz, where a reader since issue #806 runs the live step. A reader ignores a scalar it does
+   not know, as an old one ignores these. */
+static int
+test_old_reader_golden(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256] = {0};
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "old_reader.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "old_reader.iq.json");
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.sample_rate_hz = 2500000U;
+    cfg.base_decimation = 32U;
+    cfg.demod_rate_hz = 78125U;
+    cfg.rate_chain = live_chain(2500000U, 1, 48000U, 384U, 625U, 0.0);
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("old reader: open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (writer) {
+        const uint8_t payload[4] = {127, 128, 129, 126};
+        rc |= expect_int("old reader: submit", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+        const dsd_iq_capture_final_stats stats = {0U, 0U};
+        dsd_iq_capture_close(writer, &stats);
+    }
+    uint8_t text[8192];
+    size_t n = 0;
+    rc |= expect_int("old reader: read the sidecar", read_file_all(metadata_path, text, sizeof(text) - 1U, &n), 0);
+    text[n] = '\0';
+    const char* json = (const char*)text;
+    rc |= expect_true("old reader: version 1 or 2", strstr(json, "\"version\": 1,") || strstr(json, "\"version\": 2,"));
+    rc |= expect_true("old reader: the new fields are flat scalars", sidecar_is_flat(json));
+    rc |= expect_true("old reader: the legacy demod rate is the truncated chain",
+                      strstr(json, "\"demod_rate_hz\": 78125,") != NULL);
+    rc |= expect_true("old reader: the step is recorded", strstr(json, "\"iq_step_l\": 384,") != NULL);
+
+    /* The frozen old policy, from the legacy fields alone. */
+    uint32_t dsp_in = 0U;
+    uint32_t base = 0U;
+    uint32_t demod = 0U;
+    rc |= expect_true("old reader: FSK keeps the chain",
+                      old_reader_plan(2500000U, 32U, 78125U, 48000U, 0, &dsp_in, &base, &demod));
+    rc |= expect_true("old reader: FSK at 78125 Hz", dsp_in == 2500000U && base == 32U && demod == 78125U);
+    rc |= expect_true("old reader: TETRA re-plans",
+                      !old_reader_plan(2500000U, 32U, 78125U, 72000U, 1, &dsp_in, &base, &demod));
+    rc |= expect_true("old reader: TETRA resampled to 2.304 MS/s, 72 kHz",
+                      dsp_in == 2304000U && base == 32U && demod == 72000U);
+
+    /* This reader: the live step for both. */
+    dsd_iq_replay_config meta;
+    DSD_MEMSET(&meta, 0, sizeof(meta));
+    rc |= expect_int("old reader: this reader takes it",
+                     dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+    dsd_iq_replay_rate_plan plan;
+    rc |= expect_int("this reader: FSK plan",
+                     dsd_iq_replay_plan_rate(&meta, 48000U, 0U, 0, 0U, &plan, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_true("this reader: FSK steps to 48 kHz",
+                      plan.chain.step.enabled && plan.complex_rate_hz == 48000U && !plan.resample);
+    rc |= expect_int("this reader: TETRA plan",
+                     dsd_iq_replay_plan_rate(&meta, 72000U, 18000U, 0, 0U, &plan, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_true("this reader: TETRA steps to 72 kHz",
+                      plan.chain.step.enabled && plan.complex_rate_hz == 72000U && !plan.resample);
+    dsd_iq_replay_config_clear(&meta);
+
+    /* An unknown scalar, an integer or not, is ignored: the rule old readers apply to these fields. The fallthrough
+       that ignores it (metadata_parse_field_value() in src/io/iq/iq_replay.c: neither handled nor nested) is unchanged
+       since b08406ebc, so this reader runs it as an old one does. */
+    char* end = strrchr((char*)text, '}');
+    if (end) {
+        DSD_SNPRINTF(end, sizeof(text) - (size_t)(end - (char*)text), "%s", ",\n  \"a_later_field\": 1.25\n}\n");
+        FILE* fp = dsd_fopen_private(metadata_path, "wb");
+        if (fp) {
+            (void)fwrite(json, 1, strlen(json), fp);
+            fclose(fp);
+        }
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("an unknown scalar is ignored",
+                         dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        dsd_iq_replay_config_clear(&meta);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2042,6 +2582,12 @@ main(void) {
     rc |= test_bare_name_roundtrip_and_legacy_resolution();
     rc |= test_public_error_contracts();
     rc |= test_open_reports_whether_it_opened_the_data_file();
+    rc |= test_rate_change_seals_capture(DSD_IQ_EVENT_RETUNE);
+    rc |= test_rate_change_seals_capture(DSD_IQ_EVENT_RESET);
+    rc |= test_unsealed_capture_has_no_end_reason();
+    rc |= test_concurrent_submissions_and_seal();
+    rc |= test_rate_chain_written_and_checked();
+    rc |= test_old_reader_golden();
 #if defined(DSD_TEST_FAULT_FDOPEN)
     rc |= test_open_reports_a_data_file_it_emptied_without_a_stream();
 #endif

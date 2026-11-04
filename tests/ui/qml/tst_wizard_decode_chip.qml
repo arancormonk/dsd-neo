@@ -100,7 +100,7 @@ Item {
             tc.wizard.dropRadioOnlyDecodeFlag()
             verify(!chip.enabled, "the TETRA chip is offered for TCP audio")
             compare(tc.wizard.decodeFlag, "", "TETRA stays picked on TCP audio")
-            verify(note.text.indexOf("TETRA a USB or rtl_tcp radio or a symbol capture") > 0,
+            verify(note.text.indexOf("TETRA a radio source or a symbol capture") > 0,
                    "the note does not name TETRA's reason: " + note.text)
             tc.wizard.sourceType = "file"
             tc.wizard.fileText = "/tmp/capture.wav"
@@ -115,49 +115,50 @@ Item {
             tc.wizard.pickDecodeFlag("")
         }
 
-        // Regression (#803 D-B1): an Airspy cannot decode TETRA, yet its chip
-        // was offered there and the system saved, to start and stay silent.
-        // The chip is greyed out on an Airspy with the reason under the row.
-        // Switching an imported TETRA system's source to an Airspy keeps -fT
-        // (the import's answer, not Auto) and holds step 1 with the reason;
-        // switching back to USB clears the hold.
-        function test_01d_tetra_waits_on_an_airspy() {
+        // Issue #806 (replaces #803 D-B1's greyed-out chip): an Airspy's
+        // capture rate is stepped to its DSP bandwidth, so it decodes TETRA at
+        // 72 kHz like a USB or rtl_tcp radio. The chip is offered there, an
+        // imported TETRA system keeps -fT and passes step 1 when its source
+        // moves to an Airspy, and the bandwidth field (shown on an Airspy now)
+        // holds the step off 72 kHz with the same fix a USB radio gets.
+        function test_01d_tetra_runs_on_an_airspy() {
             var chip = tc.chipFor("TETRA")
             var rate = findChild(tc.wizard, "wizardDecodeTetraRateNote")
             var iq = findChild(tc.wizard, "wizardDecodeIqNote")
-            verify(rate !== null, "the wizard has no TETRA rate note")
+            var bw = findChild(tc.wizard, "systemBandwidthField")
+            verify(rate !== null && bw !== null, "the wizard has no TETRA rate note or bandwidth field")
             tc.wizard.applyRadioReference({ "name": "KorKor", "freqMhz": "390.0125", "decodeFlag": "-fT",
                                             "trunking": true, "rrSid": 10880, "rrSiteId": 1 })
             compare(tc.wizard.step, 1)
             verify(tc.wizard.stepValid(), "an imported TETRA system on USB is held")
-            verify(!rate.visible)
 
             findChild(tc.wizard, "wizardSource_airspy").clicked()
             compare(tc.wizard.sourceType, "airspy")
             compare(tc.wizard.decodeFlag, "-fT", "switching to an Airspy dropped the imported TETRA flag")
-            verify(!chip.enabled, "the TETRA chip is offered on an Airspy")
-            verify(!tc.wizard.stepValid(), "TETRA on an Airspy passes step 1")
+            verify(chip.enabled, "the TETRA chip is greyed out on an Airspy")
+            verify(tc.wizard.decodeFlagRunsHere("-fT"))
+            verify(tc.wizard.stepValid(), "TETRA on an Airspy at an empty bandwidth is held")
+            verify(!rate.visible, "TETRA on an Airspy at 72 kHz is explained as a refusal: " + rate.text)
+            verify(!iq.visible, "a radio source shows the I/Q note")
+
+            tc.wizard.advancedOpen = true
+            verify(bw.visible, "the bandwidth field is hidden on an Airspy")
+            compare(bw.placeholderText, "72", "an empty bandwidth on an Airspy does not run TETRA at 72 kHz")
+            tc.wizard.bwText = "48"
+            verify(!tc.wizard.stepValid(), "TETRA on an Airspy at 48 kHz passes step 1")
             verify(rate.visible, "the hold on an Airspy is not explained")
-            verify(rate.text.indexOf("Airspy") >= 0 && rate.text.indexOf("USB or rtl_tcp") >= 0, rate.text)
+            compare(rate.text, sessionArgs.tetraRateError("-fT", "usb", 48), "an Airspy gets another fix than USB")
+            verify(rate.text.indexOf("72 kHz") >= 0 && rate.text.indexOf("Airspy") < 0, rate.text)
             compare(rate.Accessible.name, rate.text)
-            verify(!iq.visible, "two notes give the one reason")
-
-            findChild(tc.wizard, "wizardSource_usb").clicked()
-            compare(tc.wizard.decodeFlag, "-fT")
-            verify(chip.enabled)
-            verify(tc.wizard.stepValid(), "switching back to USB did not clear the hold")
+            tc.wizard.bwText = "72"
+            verify(tc.wizard.stepValid(), "TETRA on an Airspy at 72 kHz is held")
             verify(!rate.visible)
+            tc.wizard.bwText = ""
 
-            // Another chip picked on the Airspy: the greyed TETRA chip still
-            // says why, as AM's does on network audio.
-            findChild(tc.wizard, "wizardSource_airspy").clicked()
+            // Another chip picked on the Airspy leaves no note behind.
             tc.wizard.pickDecodeFlag("-fs")
             verify(tc.wizard.stepValid())
-            verify(!rate.visible)
-            verify(iq.visible, "the greyed-out TETRA chip is not explained on an Airspy")
-            verify(iq.text.indexOf("Airspy") >= 0, iq.text)
-            findChild(tc.wizard, "wizardSource_usb").clicked()
-            verify(!iq.visible)
+            verify(!rate.visible && !iq.visible)
             // A fresh wizard for the next case: this one imported a system.
             tc.wizard.openForAdd(false)
         }
@@ -318,9 +319,9 @@ Item {
         // Issue #524: the engine refuses an AM channel the radio's DSP bandwidth
         // cannot filter, and at 4 or 6 kHz none fits. Step 1 waits for a wider
         // bandwidth, with the reason and the fix under the chips; 8 kHz takes
-        // the 6 kHz default, an empty field follows the 48 kHz app default, a
-        // digital pick is not held, and neither is Airspy, whose device sets
-        // the rate the engine checks at start.
+        // the 6 kHz default, an empty field follows the 48 kHz app default, and
+        // a digital pick is not held. Issue #806: an Airspy runs at its DSP
+        // bandwidth too, so it is held the same way (it was let through).
         function test_12_am_waits_for_a_bandwidth_that_fits() {
             var note = findChild(tc.wizard, "wizardDecodeAmBandwidthNote")
             verify(note !== null, "the wizard has no AM bandwidth note")
@@ -349,7 +350,11 @@ Item {
             verify(!note.visible)
             tc.wizard.pickDecodeFlag("-fM")
             tc.wizard.sourceType = "airspy"
-            verify(tc.wizard.stepValid(), "Airspy is held here rather than where its device sets the rate")
+            verify(!tc.wizard.stepValid(), "AM on an Airspy at a 6 kHz bandwidth passes step 1")
+            verify(note.visible && note.text.indexOf("Set the bandwidth to 8, 12, 16, 24, 48 or 72 kHz") > 0, note.text)
+            tc.wizard.bwText = "8"
+            verify(tc.wizard.stepValid(), "AM on an Airspy at 8 kHz is refused")
+            verify(!note.visible)
             tc.wizard.sourceType = "usb"
             tc.wizard.bwText = ""
             verify(tc.wizard.stepValid(), "an empty bandwidth does not follow the 48 kHz app default")

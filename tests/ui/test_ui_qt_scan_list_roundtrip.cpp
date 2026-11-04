@@ -209,8 +209,10 @@ checkAnalogEntriesIgnoreHiddenDecryption() {
 
 /* Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR list at a DSP bandwidth that cannot filter the AM
  * default names the am entries it would skip at every visit, as a warning beside the targets ready (the rest of the
- * list still scans); a bandwidth that fits, an nfm entry at the unset NFM default and an Airspy list, whose device sets
- * the rate, say nothing. A CSV-backed list is held the same way, each analog target at its own width. */
+ * list still scans); a bandwidth that fits and an nfm entry at the unset NFM default say nothing. A CSV-backed list is
+ * held the same way, each analog target at its own width. Issue #806: an Airspy list runs at its DSP bandwidth too
+ * (its capture rate stepped to it), snapped as its session's spec snaps it, so it is held the same way, where it said
+ * nothing before. */
 static void
 checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     const QVariantList entries{
@@ -257,6 +259,26 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     prefs.setExtraArgs(QString());
     list["bandwidthKhz"] = 6;
     list["sourceType"] = "airspy";
+    const QString airspyWarning = starter.validate(list).value("warnings").toStringList().join("\n");
+    check(
+        airspyWarning.contains("Skipped at every visit at this bandwidth: Guard: AM bandwidth 6 kHz does not fit the 6 "
+                               "kHz DSP rate")
+        && airspyWarning.contains("; set the DSP bandwidth to 8, 12, 16, 24, 48 or 72 kHz")
+        && !airspyWarning.contains("RTL"));
+    if (!airspyWarning.contains("Guard")) {
+        std::fprintf(stderr, "Airspy rate diagnostic: '%s'\n", qPrintable(airspyWarning));
+    }
+    // The bandwidth the session's spec carries: 5 snaps to 4 on an Airspy, where a USB list runs it at 48 kHz.
+    list["bandwidthKhz"] = 5;
+    check(
+        starter.validate(list).value("warnings").toStringList().join("\n").contains("does not fit the 4 kHz DSP rate"));
+    list["sourceType"] = "usb";
+    check(starter.validate(list).value("warnings").toStringList().isEmpty());
+    // Above the widest, an Airspy runs at 48 kHz as a USB list does.
+    list["sourceType"] = "airspy";
+    list["bandwidthKhz"] = 100;
+    check(starter.validate(list).value("warnings").toStringList().isEmpty());
+    list["bandwidthKhz"] = 12;
     check(starter.validate(list).value("warnings").toStringList().isEmpty());
 
     const QString targetPath = dir.filePath("rate-targets.csv");

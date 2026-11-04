@@ -550,13 +550,13 @@ test_replan_check(const char* meta) {
                       rtl_stream_replay_replan_check(preset.get(), &rate, &resampled, why, sizeof(why))
                           == RTL_STREAM_REPLAN_SAME);
     /* A request the options do not hold yet plans as the options holding it would. */
-    const rtl_stream_replay_request tetra_req = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 1};
+    const rtl_stream_replay_request tetra_req = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 1, 0};
     rc |=
         expect_true("a TETRA request plans TETRA's chain",
                     rtl_stream_replay_replan_check_request(opts.get(), &tetra_req, &rate, &resampled, why, sizeof(why))
                             == RTL_STREAM_REPLAN_DIFFERS
                         && rate == 72000U && resampled == 1);
-    const rtl_stream_replay_request narrow_req = {24, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, 0};
+    const rtl_stream_replay_request narrow_req = {24, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, 0, 0};
     rc |=
         expect_true("an explicit 24 kHz request plans 24 kHz",
                     rtl_stream_replay_replan_check_request(opts.get(), &narrow_req, &rate, &resampled, why, sizeof(why))

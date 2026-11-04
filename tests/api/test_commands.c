@@ -245,14 +245,10 @@ is_ok(const dsd_json_node* resp) {
     return dsd_json_as_bool(dsd_json_obj_get(resp, "ok"), &ok) == 0 && ok;
 }
 
-/*
- * Issue #803: rr_apply_import's response acknowledges the queue; the decoder's verdict arrives in status.message
- * (state->ui_msg, which the status feed publishes). TETRA on a receiver that cannot decode it is refused with the
- * reason, and the mode stays.
- */
+/* A session on @p audio_in_dev (@p audio_in_type) at a DSP bandwidth of @p bw_khz, with the frontend runtime started on
+   it: the API's commands reach these options. */
 static void
-check_rr_apply_tetra_refusal(const char* what, int audio_in_type, const char* audio_in_dev, int bw_khz,
-                             const char* want_message) {
+api_session_start(dsd_opts** out_opts, dsd_state** out_state, int audio_in_type, const char* audio_in_dev, int bw_khz) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
     dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
     assert(opts != NULL && state != NULL);
@@ -263,22 +259,86 @@ check_rr_apply_tetra_refusal(const char* what, int audio_in_type, const char* au
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", audio_in_dev);
     opts->rtl_dsp_bw_khz = bw_khz;
     dsd_app_frontend_runtime_start(opts, state);
-    dsd_json_node* resp = execute("rr_apply_import", "{\"decode_mode\":17,\"trunking\":true,\"tune_hz\":390012500}");
+    *out_opts = opts;
+    *out_state = state;
+}
+
+static void
+api_session_stop(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/* Run API command @p name with @p params and drain it, as the decoder does; the status message is in state->ui_msg. */
+static void
+api_execute_and_drain(dsd_opts* opts, dsd_state* state, const char* name, const char* params) {
+    dsd_json_node* resp = execute(name, params);
     assert(is_ok(resp));
     dsd_json_free(resp);
     state->ui_msg[0] = '\0';
     assert(dsd_app_drain_cmds(opts, state) == 1);
+}
+
+/*
+ * Issue #803: rr_apply_import's response acknowledges the queue; the decoder's verdict arrives in status.message
+ * (state->ui_msg, which the status feed publishes). TETRA on a receiver that cannot decode it is refused with the
+ * reason, and the mode stays.
+ */
+static void
+check_rr_apply_tetra_refusal(const char* what, int audio_in_type, const char* audio_in_dev, int bw_khz,
+                             const char* want_message) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    api_session_start(&opts, &state, audio_in_type, audio_in_dev, bw_khz);
+    api_execute_and_drain(opts, state, "rr_apply_import",
+                          "{\"decode_mode\":17,\"trunking\":true,\"tune_hz\":390012500}");
     if (strcmp(state->ui_msg, want_message) != 0) {
         DSD_FPRINTF(stderr, "rr_apply_import %s: status message \"%s\", want \"%s\"\n", what, state->ui_msg,
                     want_message);
         assert(0);
     }
     assert(dsd_infer_decode_mode_preset(opts) != DSDCFG_MODE_TETRA && opts->trunk_enable == 0);
-    dsd_app_frontend_runtime_stop();
-    freeState(state);
-    free(state);
-    free(opts);
+    api_session_stop(opts, state);
 }
+
+/* Issue #806: a TETRA import on a radio at the 72 kHz DSP bandwidth is taken, an Airspy's and a SoapySDR device's as
+   an RTL-SDR's (each runs at its DSP bandwidth; every Airspy was refused before). No tune, which a session with no
+   stream cannot make here. */
+static void
+check_rr_apply_tetra_accepted(const char* what, const char* audio_in_dev) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    api_session_start(&opts, &state, AUDIO_IN_RTL, audio_in_dev, 72);
+    api_execute_and_drain(opts, state, "rr_apply_import", "{\"decode_mode\":17,\"trunking\":true,\"tune_hz\":0}");
+    if (strncmp(state->ui_msg, "Applied: RR import (TETRA)", strlen("Applied: RR import (TETRA)")) != 0
+        || dsd_infer_decode_mode_preset(opts) != DSDCFG_MODE_TETRA || opts->rtl_dsp_bw_khz != 72) {
+        DSD_FPRINTF(stderr, "rr_apply_import %s: status message \"%s\", bw %d\n", what, state->ui_msg,
+                    opts->rtl_dsp_bw_khz);
+        assert(0);
+    }
+    api_session_stop(opts, state);
+}
+
+#ifdef USE_RADIO
+/* Issue #806: rtl_set_bw 72 on an Airspy is taken, as on an RTL-SDR (it was refused: "an Airspy cannot run a 72 kHz
+   DSP bandwidth"). No stream runs (a PCM session naming the Airspy), so nothing reopens and the bandwidth is stored for
+   the next start. A build without radio support handles no RTL_SET_BW. */
+static void
+check_rtl_set_bw_72_on_airspy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    api_session_start(&opts, &state, AUDIO_IN_PULSE, "airspy", 48);
+    api_execute_and_drain(opts, state, "rtl_set_bw", "{\"value\":72}");
+    if (opts->rtl_dsp_bw_khz != 72 || strstr(state->ui_msg, "Refused") != NULL) {
+        DSD_FPRINTF(stderr, "rtl_set_bw 72 on an Airspy: bw %d, status message \"%s\"\n", opts->rtl_dsp_bw_khz,
+                    state->ui_msg);
+        assert(0);
+    }
+    api_session_stop(opts, state);
+}
+#endif
 
 /* Issue #697: scan_list_set takes its request id from app-control's counter, the one the terminal and Qt draw theirs
    from, and the reply echoes it as a number, so an API request never shares an id with a frontend's; the decoder's
@@ -372,8 +432,18 @@ main(void) {
 
     check_rr_apply_tetra_refusal("on PulseAudio", AUDIO_IN_PULSE, "pulse", 48,
                                  "Failed: RR import -> TETRA needs an I/Q radio input or a symbol capture");
-    check_rr_apply_tetra_refusal("on an Airspy", AUDIO_IN_RTL, "airspy", 48,
-                                 "Failed: RR import -> an Airspy cannot decode TETRA yet; use RTL-SDR or rtl_tcp");
+    /* Issue #806: an Airspy runs at its DSP bandwidth, as an RTL-SDR does, and is held to the same 72 kHz (it was
+       refused at every bandwidth: "an Airspy cannot decode TETRA yet"). */
+    check_rr_apply_tetra_refusal("on an Airspy at 48 kHz", AUDIO_IN_RTL, "airspy", 48,
+                                 "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
+    check_rr_apply_tetra_refusal("on a SoapySDR device at 48 kHz", AUDIO_IN_RTL, "soapy:driver=sdrplay", 48,
+                                 "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
+    check_rr_apply_tetra_accepted("on an Airspy at 72 kHz", "airspy");
+    check_rr_apply_tetra_accepted("on a SoapySDR device at 72 kHz", "soapy:driver=sdrplay");
+    check_rr_apply_tetra_accepted("on an RTL-SDR at 72 kHz", "rtl:0");
+#ifdef USE_RADIO
+    check_rtl_set_bw_72_on_airspy();
+#endif
     check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
                                  "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");
 

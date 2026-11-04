@@ -80,8 +80,8 @@ int dsd_app_rr_fill_apply_mode(const dsd_rr_import_plan* plan, dsd_app_rr_apply_
 typedef enum {
     DSD_APP_RR_INPUT_AUDIO = 0,     /**< demodulated audio: PulseAudio, a WAV file, TCP/UDP PCM, stdin */
     DSD_APP_RR_INPUT_RTL = 1,       /**< an RTL-SDR or rtl_tcp radio, whose DSP rate is its DSP bandwidth */
-    DSD_APP_RR_INPUT_SOAPY = 2,     /**< a SoapySDR device, whose DSP rate the device settles */
-    DSD_APP_RR_INPUT_AIRSPY = 3,    /**< an Airspy, whose sample rates halve to no TETRA rate */
+    DSD_APP_RR_INPUT_SOAPY = 2,     /**< a SoapySDR device, whose DSP rate is its DSP bandwidth (issue #806) */
+    DSD_APP_RR_INPUT_AIRSPY = 3,    /**< an Airspy, whose DSP rate is its DSP bandwidth too (issue #806) */
     DSD_APP_RR_INPUT_IQ_REPLAY = 4, /**< an I/Q replay, which a mode change re-plans or refuses (issue #701) */
     DSD_APP_RR_INPUT_SYMBOLS = 5,   /**< a symbol capture (.bin dibits, or float symbols) */
 } dsd_app_rr_input_kind;
@@ -89,15 +89,14 @@ typedef enum {
 /**
  * @brief The session facts an import is checked against, in plain values (issue #803).
  *
- * The decoder thread fills them from the live options and the running stream's committed rate; a frontend fills them
- * from the published snapshots, with no measured rate. has_group, has_chan, trunking and scanner are what the import
+ * The decoder thread fills them from the live options, a frontend from the published snapshots: every live radio
+ * runs at its DSP bandwidth (issue #806), so the bandwidth decides and no measured rate is needed. has_group, has_chan, trunking and scanner are what the import
  * would leave (before its files exist, in a frontend), for the next-start check beside the verdict.
  */
 typedef struct {
     int32_t decode_mode;     /**< dsdneoUserDecodeMode the import selects */
     int input_kind;          /**< dsd_app_rr_input_kind */
     int rtl_dsp_bw_khz;      /**< dsd_opts::rtl_dsp_bw_khz, the committed DSP bandwidth */
-    uint32_t actual_rate_hz; /**< the running stream's committed DSP rate; 0 when unknown (no stream, a frontend) */
     int tetra_uplink;        /**< dsd_opts::tetra_uplink (--tetra-uplink) */
     int trunk_scan_running;  /**< dsd_opts::trunk_scan_enabled == 1 */
     int has_group, has_chan; /**< the import loads a group list / a channel map */
@@ -111,10 +110,9 @@ typedef struct {
  * @brief Whether the session can take an import at all, and decode what it selects. Pure.
  *
  * Refuses an import while a trunk scan runs (it keeps its own channel maps), AM or TETRA on demodulated audio, and
- * TETRA where it decodes nothing: an RTL-SDR or rtl_tcp radio off the 72 kHz DSP bandwidth (no live reopen: it would
- * restart an --iq-capture), an Airspy, a SoapySDR device whose known rate is no TETRA rate (an unknown rate passes:
- * the decoder thread decides), or a --tetra-uplink session. An I/Q replay and a symbol capture pass; a replay's mode
- * change re-plans or refuses on its own.
+ * TETRA where it decodes nothing: a live radio (RTL-SDR, rtl_tcp, SoapySDR or Airspy) off the 72 kHz DSP bandwidth (no
+ * live reopen: it would restart an --iq-capture), or a --tetra-uplink session. An I/Q replay and a symbol capture
+ * pass; a replay's mode change re-plans or refuses on its own.
  *
  * @param facts    The session and the import.
  * @param why      Receives the reason as a phrase for "Failed: RR import -> <why>", or "" when it passes; may be NULL.
@@ -127,10 +125,10 @@ int dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* wh
  * @brief A frontend's advisory pre-check of an import before it writes files or queues the apply.
  *
  * Reads only the published snapshot pair it is handed, never the accessors: the terminal hands the pair its frame
- * acquired, so a check mid-frame cannot refresh that pair in place. Runs dsd_app_rr_receiver_verdict() with no measured
- * rate (a SoapySDR device passes to the decoder), then the next-start rule the decoder thread applies (a trunk scan
- * waiting for the next start cannot start beside a channel map or the -Y scanner), on the snapshot copies. The decoder
- * thread checks again.
+ * acquired, so a check mid-frame cannot refresh that pair in place. Runs dsd_app_rr_receiver_verdict() on the
+ * committed DSP bandwidth (every live radio runs at it, issue #806), then the next-start rule the decoder thread applies
+ * (a trunk scan waiting for the next start cannot start beside a channel map or the -Y scanner), on the snapshot
+ * copies. The decoder thread checks again.
  *
  * @param opts       The published options snapshot; NULL (nothing published yet) passes.
  * @param state      The published state snapshot; NULL skips the next-start rule.

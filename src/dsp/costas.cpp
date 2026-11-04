@@ -236,10 +236,10 @@ computed_float_is_finite(float value) {
 
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
-    if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
+    if (!d || d->complex_rate <= 0 || d->ted_sps <= 0) {
         return 4800;
     }
-    return (d->rate_out + (d->ted_sps / 2)) / d->ted_sps;
+    return (d->complex_rate + (d->ted_sps / 2)) / d->ted_sps;
 }
 
 /* The TETRA chain's Gardner gain when none was set. OP25's 0.025 is a P25 gain; behind the TETRA matched filter it
@@ -866,7 +866,7 @@ fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, ds
     fll_band_edge_clear_delay(f);
 
     if (debug_cqpsk_enabled()) {
-        const float sample_rate = (float)(d->rate_out > 0 ? d->rate_out : 24000);
+        const float sample_rate = (float)(d->complex_rate > 0 ? d->complex_rate : 24000);
         const float freq_hz = f->freq * (sample_rate / kTwoPi);
         if (is_first_init) {
             DSD_FPRINTF(stderr, "[FLL] init: sps=%d filter_size=%d loop_bw=%.6f\n", sps, filter_size, f->loop_bw);
@@ -1749,7 +1749,7 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
             static float prev_freq = 0.0f;
             /* Convert freq rad/sample to Hz: f_hz = freq * Fs / (2π) */
-            float Fs = (float)d->rate_out;
+            float Fs = (float)d->complex_rate;
             float freq_hz = ctx.freq * Fs / kTwoPi;
             float delta_freq_hz = (ctx.freq - prev_freq) * Fs / kTwoPi;
             prev_freq = ctx.freq;

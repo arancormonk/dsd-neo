@@ -1,0 +1,19 @@
+librtlsdr in this package
+=========================
+
+This package bundles librtlsdr, the osmocom rtl-sdr library (GPL-2.0-or-later;
+the license text is librtlsdr-GPL-2.0-or-later.txt next to this file). It is
+built from rtl-sdr v2.0.3, commit 797f8143266d983c56d8f35d2d442527529dd8a5
+(https://github.com/arancormonk/rtl-sdr, a mirror of
+https://gitea.osmocom.org/sdr/rtl-sdr), with two changes made by the dsd-neo
+project:
+
+- 0002-librtlsdr-check-async-buffer-allocation.patch: the async reader checks
+  its USB transfer allocations and returns -ENOMEM instead of submitting NULL
+  transfers.
+- 0003-librtlsdr-account-for-every-transfer.patch: the async reader counts the
+  USB transfers libusb owns, returns -1 once none is left, and frees nothing
+  until every transfer has been called back.
+
+Both patch files are part of the dsd-neo source, in
+android/third_party/patches/; tools/usb_dependency_patches.sh applies them.

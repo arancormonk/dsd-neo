@@ -660,6 +660,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/dsp/iq_resampler.h
   CXX
 )
+# The live I/Q rate step (issue #806).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_live_iq_step
+  HEADERS_PUBLIC_DSP_LIVE_IQ_STEP
+  dsd-neo/dsp/live_iq_step.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_live_iq_step_cxx
+  HEADERS_PUBLIC_DSP_LIVE_IQ_STEP_CXX
+  dsd-neo/dsp/live_iq_step.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_analog_sink
   HEADERS_PUBLIC_DSP_ANALOG_SINK
@@ -2647,6 +2660,24 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_INPUT_RING_INIT
     COMMAND dsd-neo_test_runtime_input_ring_init
+)
+
+# Issue #806 X12: gap marks travel with the input ring's data.
+add_executable(
+    dsd-neo_test_runtime_input_ring_gap
+    runtime/test_runtime_input_ring_gap.cpp
+)
+target_include_directories(
+    dsd-neo_test_runtime_input_ring_gap
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_input_ring_gap
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_INPUT_RING_GAP
+    COMMAND dsd-neo_test_runtime_input_ring_gap
 )
 
 # A commit between the reader's first look at an empty input ring and its lock is read
@@ -7531,6 +7562,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_family_landing_after_pending"
             "-Wl,--wrap=rtl_stream_get_analog_profile"
             "-Wl,--wrap=rtl_stream_get_request_rate_hz"
+            "-Wl,--wrap=rtl_stream_get_complex_rate_hz"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
@@ -9470,9 +9502,44 @@ if(DSD_HAS_RADIO)
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-rtl -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
+    # Issue #806: an Airspy or SoapySDR device runs at its DSP bandwidth too, so its spec's bandwidth holds the
+    # width up front as well, before any device is looked for.
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_AIRSPY
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_SOAPY
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-soapy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # BUG-4: --validate-config and the startup it vouches for refuse the same Airspy [input] width alike.
+    add_test(
+        NAME RUNTIME_AIRSPY_CONFIG_WIDTH_VALIDATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=airspy-config-width-validate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=airspy-config-width-startup -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
     set_tests_properties(
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_AIRSPY
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_SOAPY
+        RUNTIME_AIRSPY_CONFIG_WIDTH_VALIDATE
+        RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP
         PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
     )
     # The same check lets existing low-rate -fA command lines start: the unset
@@ -11462,6 +11529,61 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_resampler ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_IQ_RESAMPLER COMMAND dsd-neo_test_dsp_iq_resampler)
 
+# The live I/Q rate step in full_demod() and its design transaction (issue #806). The design-failure seam is in the
+# DSP module's test-hook build.
+add_executable(dsd-neo_test_dsp_live_iq_step dsp/test_dsp_live_iq_step.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_live_iq_step
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_live_iq_step
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_io_iq
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_LIVE_IQ_STEP COMMAND dsd-neo_test_dsp_live_iq_step)
+
+# The dynamic squelches through the live I/Q rate step (issue #806): R_hb and the step model's covariance against the
+# real cascade and step (exactly), the floor plan's arithmetic and window statistics, and, with --matrix, the auto and
+# noise squelch plans at every DSP bandwidth on the Airspy post-half-band rates against noise through full_demod(), held
+# to the RTL-SDR chain's bounds.
+add_executable(
+    dsd-neo_test_dsp_squelch_step_model
+    dsp/test_dsp_squelch_step_model.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_step_model
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_step_model
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_io_iq
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_SQUELCH_STEP_MODEL
+    COMMAND dsd-neo_test_dsp_squelch_step_model
+)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL PROPERTIES TIMEOUT 120)
+add_test(
+    NAME DSP_SQUELCH_STEP_MODEL_MATRIX
+    COMMAND dsd-neo_test_dsp_squelch_step_model --matrix
+)
+set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 300)
+
+# The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
+add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
+target_include_directories(
+    dsd-neo_test_dsp_rate_plan_step
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_rate_plan_step ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_RATE_PLAN_STEP COMMAND dsd-neo_test_dsp_rate_plan_step)
+
 add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
 target_include_directories(
     dsd-neo_test_dsp_firdes
@@ -12184,6 +12306,19 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_cqpsk_evm)
 add_test(NAME DSP_CQPSK_EVM COMMAND dsd-neo_test_dsp_cqpsk_evm)
+
+# Digital channel-filter rejection of a neighbour 12.5 kHz away on the live chain: an RTL-SDR at the 72 kHz DSP
+# bandwidth, and Airspy-shaped captures stepped to 48 kHz (issue #806).
+add_executable(
+    dsd-neo_test_dsp_adjacent_channel
+    dsp/test_dsp_adjacent_channel.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_adjacent_channel
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_adjacent_channel)
+add_test(NAME DSP_ADJACENT_CHANNEL COMMAND dsd-neo_test_dsp_adjacent_channel)
 
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
@@ -15090,6 +15225,19 @@ add_test(
     COMMAND dsd-neo_test_io_iq_replay_rate_plan
 )
 
+# The live rate plan (issue #806): every backend over the Airspy and SoapySDR rate grid, tolerance before passes, the
+# refusals and the step's delay and tail.
+add_executable(dsd-neo_test_io_rate_plan io/test_io_rate_plan.c)
+target_include_directories(
+    dsd-neo_test_io_rate_plan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_io_rate_plan
+    PRIVATE dsd-neo_io_iq dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME IO_RATE_PLAN COMMAND dsd-neo_test_io_rate_plan)
+
 # Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
 # a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
 # sidecar fallback. iq_replay.c is compiled in again with DSD_NEO_TEST_HOOKS for those seams, and dsd-neo_io_iq links
@@ -15636,6 +15784,50 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
+    # Issue #806: the complex rate beside rate_out, X10 (FSK/CQPSK under a replay's post-demod decimation) and X11 (the
+    # TED a symbol profile lands on).
+    add_executable(
+        dsd-neo_test_io_rtl_complex_rate
+        io/test_io_rtl_complex_rate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_complex_rate
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_complex_rate
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_complex_rate
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_COMPLEX_RATE COMMAND dsd-neo_test_io_rtl_complex_rate)
+
+    # Issue #806: an I/Q replay runs the chain its live stream ran: the step a forced chain ran, the forced flag it
+    # recorded or derives (A-B4), and the filter domain the mode's channel filter has.
+    add_executable(
+        dsd-neo_test_io_rtl_replay_step
+        io/test_io_rtl_replay_step.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_step
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_step
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_step
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_REPLAY_STEP COMMAND dsd-neo_test_io_rtl_replay_step)
+
     add_executable(
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
@@ -16132,6 +16324,41 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_replay_resample
     )
 
+    # Issue #806 X12: samples a producer lost leave a gap the demod starts over at, live and in a replay of the capture.
+    # The live case runs an Airspy on the SDK double, added below where the build has Airspy support.
+    add_executable(
+        dsd-neo_test_io_rtl_stream_input_gap
+        io/test_io_rtl_stream_input_gap.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_stream_input_gap
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_stream_input_gap
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_dsp
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_STREAM_INPUT_GAP
+        COMMAND dsd-neo_test_io_rtl_stream_input_gap
+    )
+    set_tests_properties(IO_RTL_STREAM_INPUT_GAP PROPERTIES TIMEOUT 120)
+
     # Issue #701: a run-time re-plan reopens an I/Q replay where the stopped stream left it. The checkpoint after a
     # MUTE, a RETUNE and a completed --iq-loop pass names the event to apply next and the media time so far, and the
     # resumed replay goes on with the straight replay's blocks, at the capture's rate, an explicit 24 kHz bandwidth or
@@ -16317,7 +16544,11 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_test_io_soapy_stream_loss
-        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
     )
     add_test(
         NAME IO_SOAPY_STREAM_LOSS
@@ -16503,7 +16734,11 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_capture_writes
-        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
     )
     add_test(
         NAME IO_RTL_CAPTURE_WRITES
@@ -16641,118 +16876,148 @@ if(DSD_HAS_RADIO)
     endif()
 endif()
 
-# The Android app's vendored librtlsdr, async reader setup under allocation
-# failure. The test includes librtlsdr.c itself against stub libusb entry points,
-# so it needs only a POSIX host and the vendored headers, not an SDR library;
-# Windows and macOS skip it.
-if(
-    UNIX
-    AND NOT APPLE
-    AND NOT ANDROID
-    AND NOT CYGWIN
-    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+# The libraries' USB transfer handling, each source compiled into its test
+# against stub libusb entry points: librtlsdr's async reader setup under
+# allocation failure and its accounting for every transfer, and libairspy's
+# stop, close, restart and packing change waiting for cancelled transfers. They
+# need no SDR library, only threads (PThreads4W under MSVC, which vcpkg already
+# installs for libairspy) and the vendored libusb header. VENDORED_* build the
+# Android app's copies. DESKTOP_* build the pinned upstream sources with the
+# patches the Windows, AppImage and macOS releases carry, from the tree that
+# tools/usb_dependency_patches.sh fetch-all writes, when
+# DSD_TEST_DESKTOP_USB_SOURCES names it.
+set(DSD_TEST_DESKTOP_USB_SOURCES
+    ""
+    CACHE PATH
+    "Patched desktop libairspy and librtlsdr sources (tools/usb_dependency_patches.sh fetch-all)"
 )
-    set(_DSD_NEO_VENDORED_RTLSDR
-        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+
+function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
+    string(TOUPPER "${kind}" _kind_upper)
+    set(_libusb_include
+        "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
     )
+
     # The tuner drivers stay in upstream style, built without the project
     # warnings as android/third_party/CMakeLists.txt builds them.
+    set(_tuners dsd-neo_test_${kind}_rtlsdr_tuners)
     add_library(
-        dsd-neo_test_vendored_rtlsdr_tuners
+        ${_tuners}
         STATIC
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_e4k.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0012.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0013.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc2580.c
-        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_r82xx.c
+        ${rtlsdr_root}/src/tuner_e4k.c
+        ${rtlsdr_root}/src/tuner_fc0012.c
+        ${rtlsdr_root}/src/tuner_fc0013.c
+        ${rtlsdr_root}/src/tuner_fc2580.c
+        ${rtlsdr_root}/src/tuner_r82xx.c
     )
-    set_property(
-        TARGET dsd-neo_test_vendored_rtlsdr_tuners
-        PROPERTY LINK_LIBRARIES ""
-    )
-    target_include_directories(
-        dsd-neo_test_vendored_rtlsdr_tuners
-        SYSTEM
-        PRIVATE ${_DSD_NEO_VENDORED_RTLSDR}/include
+    set_property(TARGET ${_tuners} PROPERTY LINK_LIBRARIES "")
+    target_include_directories(${_tuners} SYSTEM PRIVATE ${rtlsdr_root}/include)
+
+    foreach(_case async_alloc transfers)
+        string(TOUPPER "${_case}" _case_upper)
+        set(_target dsd-neo_test_${kind}_librtlsdr_${_case})
+        add_executable(${_target} io/test_vendored_librtlsdr_${_case}.c)
+        target_include_directories(
+            ${_target}
+            SYSTEM
+            PRIVATE ${rtlsdr_root}/include ${_libusb_include}
+        )
+        target_compile_definitions(
+            ${_target}
+            PRIVATE
+                rtlsdr_STATIC
+                "DSD_TEST_LIBRTLSDR_SOURCE=\"${rtlsdr_root}/src/librtlsdr.c\""
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                ${_tuners}
+                dsd-neo_platform
+                ${threads}
+                ${DSD_NEO_TEST_MATH_LIB}
+        )
+        add_test(
+            NAME ${_kind_upper}_LIBRTLSDR_${_case_upper}
+            COMMAND ${_target}
+        )
+    endforeach()
+    set_tests_properties(
+        ${_kind_upper}_LIBRTLSDR_TRANSFERS
+        PROPERTIES TIMEOUT 120
     )
 
-    add_executable(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        io/test_vendored_librtlsdr_async_alloc.c
-    )
+    get_filename_component(_airspy_dir "${airspy_src}" DIRECTORY)
+    set(_target dsd-neo_test_${kind}_libairspy_transfers)
+    add_executable(${_target} io/test_vendored_libairspy_transfers.c)
     target_include_directories(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
+        ${_target}
         SYSTEM
-        PRIVATE
-            ${_DSD_NEO_VENDORED_RTLSDR}/include
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+        PRIVATE ${_airspy_dir} ${_libusb_include}
     )
     target_compile_definitions(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        PRIVATE rtlsdr_STATIC
+        ${_target}
+        PRIVATE "DSD_TEST_LIBAIRSPY_SOURCE=\"${airspy_src}\""
     )
-    target_link_libraries(
-        dsd-neo_test_vendored_librtlsdr_async_alloc
-        PRIVATE dsd-neo_test_vendored_rtlsdr_tuners ${DSD_NEO_TEST_MATH_LIB}
+    target_link_libraries(${_target} PRIVATE dsd-neo_platform ${threads})
+    add_test(NAME ${_kind_upper}_LIBAIRSPY_TRANSFERS COMMAND ${_target})
+    set_tests_properties(
+        ${_kind_upper}_LIBAIRSPY_TRANSFERS
+        PROPERTIES TIMEOUT 120
     )
-    add_test(
-        NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
-        COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
-    )
+endfunction()
 
-    # The same reader accounting for every USB transfer: a stub libusb whose
-    # transfers a second thread completes, fails and cancels.
-    add_executable(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        io/test_vendored_librtlsdr_transfers.c
+set(_dsd_neo_usb_test_threads "")
+if(NOT ANDROID AND NOT CYGWIN)
+    if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(_dsd_neo_usb_test_threads Threads::Threads)
+    elseif(MSVC)
+        # Windows CI requires Airspy, whose vcpkg port brings PThreads4W.
+        if(DSD_REQUIRE_AIRSPY)
+            find_package(PThreads4W REQUIRED)
+        else()
+            find_package(PThreads4W QUIET)
+        endif()
+        if(PThreads4W_FOUND)
+            # winmm: the tests ask for a 1 ms timer resolution.
+            set(_dsd_neo_usb_test_threads PThreads4W::PThreads4W winmm)
+        endif()
+    endif()
+endif()
+if(_dsd_neo_usb_test_threads)
+    dsd_neo_add_usb_library_tests(
+        vendored
+        "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy.c"
+        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+        "${_dsd_neo_usb_test_threads}"
     )
-    target_include_directories(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        SYSTEM
-        PRIVATE
-            ${_DSD_NEO_VENDORED_RTLSDR}/include
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    if(DSD_TEST_DESKTOP_USB_SOURCES)
+        set(_desktop_airspy
+            "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspy/libairspy/src/airspy.c"
+        )
+        set(_desktop_rtlsdr "${DSD_TEST_DESKTOP_USB_SOURCES}/librtlsdr")
+        if(
+            NOT EXISTS "${_desktop_airspy}"
+            OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
+        )
+            message(
+                FATAL_ERROR
+                "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
+                "libairspy/ and librtlsdr/ trees; create them with "
+                "tools/usb_dependency_patches.sh fetch-all"
+            )
+        endif()
+        dsd_neo_add_usb_library_tests(
+            desktop
+            "${_desktop_airspy}"
+            "${_desktop_rtlsdr}"
+            "${_dsd_neo_usb_test_threads}"
+        )
+    endif()
+elseif(DSD_TEST_DESKTOP_USB_SOURCES)
+    message(
+        FATAL_ERROR
+        "DSD_TEST_DESKTOP_USB_SOURCES is set, but this toolchain cannot build the USB library tests"
     )
-    target_compile_definitions(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        PRIVATE rtlsdr_STATIC
-    )
-    target_link_libraries(
-        dsd-neo_test_vendored_librtlsdr_transfers
-        PRIVATE
-            dsd-neo_test_vendored_rtlsdr_tuners
-            Threads::Threads
-            ${DSD_NEO_TEST_MATH_LIB}
-    )
-    add_test(
-        NAME VENDORED_LIBRTLSDR_TRANSFERS
-        COMMAND dsd-neo_test_vendored_librtlsdr_transfers
-    )
-    set_tests_properties(VENDORED_LIBRTLSDR_TRANSFERS PROPERTIES TIMEOUT 120)
-
-    # The vendored libairspy's stop, close, restart and packing change waiting
-    # for cancelled USB transfers: airspy.c against the same kind of stub libusb,
-    # its own transfer thread polling for events.
-    add_executable(
-        dsd-neo_test_vendored_libairspy_transfers
-        io/test_vendored_libairspy_transfers.c
-    )
-    target_include_directories(
-        dsd-neo_test_vendored_libairspy_transfers
-        SYSTEM
-        PRIVATE
-            ${PROJECT_SOURCE_DIR}/android/third_party/libairspy
-            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
-    )
-    target_link_libraries(
-        dsd-neo_test_vendored_libairspy_transfers
-        PRIVATE Threads::Threads
-    )
-    add_test(
-        NAME VENDORED_LIBAIRSPY_TRANSFERS
-        COMMAND dsd-neo_test_vendored_libairspy_transfers
-    )
-    set_tests_properties(VENDORED_LIBAIRSPY_TRANSFERS PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(
@@ -17293,6 +17558,50 @@ if(DSD_HAS_RADIO)
         "-f1 -mq"
         "Group Voice Channel User"
     )
+    # The two control channels at the 72 kHz RTL-SDR DSP bandwidth next to an equal-level neighbour 12.5 kHz up
+    # (DERIVED_ADJACENT in tools/build_iq_fixtures.py, issue #806). The P25 channel filters ran a 63-tap fallback cut at
+    # a third of the rate there, which passed the neighbour whole, and neither replay decoded anything; with each
+    # profile's own design they decode what the clean captures do (27 and 41).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_ADJACENT_72K
+        p25p1_c4fm_adjacent_72k
+        -f1
+        "NAC/CC: 140"
+        ""
+        24
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_ADJACENT_72K
+        p25p1_cqpsk_adjacent_72k
+        "-f1 -mq"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        36
+    )
+    # The same mix at the rates an Airspy forces after its half-band passes (78,125 and 93,750 Hz), recorded at the
+    # 48 kHz DSP bandwidth (issue #806). The replay keeps the chain and runs the live I/Q rate step to 48 kHz, from the
+    # step the 78k C4FM and 94k CQPSK sidecars record and from the forced flag the other two derive. Before, the replay
+    # ran the chain unstepped, where the channel filter fell back and CQPSK timed a fractional SPS: all four decoded
+    # nothing. Stepped they decode what the 48 kHz captures do (27 and 41).
+    foreach(_rate 78K 94K)
+        string(TOLOWER "${_rate}" _rate_lower)
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_P25P1_C4FM_ADJACENT_${_rate}
+            p25p1_c4fm_adjacent_${_rate_lower}
+            -f1
+            "NAC/CC: 140"
+            ""
+            24
+        )
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_P25P1_CQPSK_ADJACENT_${_rate}
+            p25p1_cqpsk_adjacent_${_rate_lower}
+            "-f1 -mq"
+            "WACN: 92065; SYS: 0D5"
+            ""
+            36
+        )
+    endforeach()
     # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
     # here with failing NIDs between the frames that decode, and consumption credit is bounded
     # by what a handler read -- 33 symbols for a failed NID, 134 of a ~180-symbol slot for a
@@ -17673,6 +17982,103 @@ if(DSD_HAS_RADIO)
         IQ_WAV_FIXTURES
         PROPERTIES FIXTURES_SETUP IQ_WAV_FIXTURES LABELS "iq-decode" TIMEOUT 120
     )
+
+    # Issue #806: committed 48/72 kHz fixtures as an Airspy at a forced rate captures them.
+    # dsd-neo_test_iq_forced_rate_fixture_tool (tests/io/iq_forced_rate_fixture_tool.c) upsamples each with
+    # dsd_iq_resampler (tests/io/forced_rate_input.c, which the live decode tests feed too) and writes it with the
+    # sidecar a live capture of that chain writes, into the build tree; IQ_FORCED_RATE_FIXTURES makes them once for every
+    # case that replays one. Each case reads a recording of its own.
+    add_executable(
+        dsd-neo_test_iq_forced_rate_fixture_tool
+        io/iq_forced_rate_fixture_tool.c
+        io/forced_rate_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_iq_forced_rate_fixture_tool
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_iq_forced_rate_fixture_tool
+        PRIVATE dsd-neo_io_iq dsd-neo_dsp dsd-neo_platform dsd-neo_core
+    )
+    if(NOT MSVC)
+        target_link_libraries(
+            dsd-neo_test_iq_forced_rate_fixture_tool
+            PRIVATE m
+        )
+    endif()
+    set(_dsd_iq_forced_rate_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/iq_forced_rate_fixtures"
+    )
+    add_test(
+        NAME IQ_FORCED_RATE_FIXTURES
+        COMMAND
+            dsd-neo_test_iq_forced_rate_fixture_tool
+            "${_DSD_NEO_IQ_FIXTURE_DIR}" "${_dsd_iq_forced_rate_dir}"
+    )
+    set_tests_properties(
+        IQ_FORCED_RATE_FIXTURES
+        PROPERTIES
+            FIXTURES_SETUP IQ_FORCED_RATE_FIXTURES
+            LABELS "iq-decode"
+            TIMEOUT 120
+    )
+    # Each recording's replay keeps the chain its sidecar records (312,500 or 375,000 Hz, two half-band passes to
+    # 78,125 or 93,750 Hz) and runs the I/Q rate step to the DSP bandwidth rate, as the live Airspy stream does
+    # (ENGINE_AIRSPY_FORCED_RATE_*, which feeds the same samples live). Each must decode at least what the same samples
+    # decode at the native rate (48 kHz, 72 kHz for TETRA, with no step) less a frame or two at the excerpt's edges:
+    # p25p1_cqpsk_cc 41 network status and 18 grants, the simulcast control channel the same, p25p2_cc 10 SACCH (its
+    # DUID FEC alone: the capture is remodulated audio with no RS-checkable payload, so weak evidence), dmr_voice_synth's
+    # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
+    # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
+    # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
+    # through a resampled replay (288 kHz), not the recorded chain.
+    foreach(
+        _forced_case
+        IN
+        ITEMS
+            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
+            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@-@@0@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
+            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
+            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
+    )
+        string(REPLACE "@@" ";" _forced_fields "${_forced_case}")
+        list(GET _forced_fields 0 _forced_name)
+        list(GET _forced_fields 1 _forced_fixture)
+        list(GET _forced_fields 2 _forced_mode)
+        list(GET _forced_fields 3 _forced_expected)
+        list(GET _forced_fields 4 _forced_min)
+        list(GET _forced_fields 5 _forced_expected2)
+        list(GET _forced_fields 6 _forced_min2)
+        list(GET _forced_fields 7 _forced_chain)
+        set(_forced_second)
+        if(NOT _forced_expected2 STREQUAL "-")
+            set(_forced_second
+                "-DEXPECTED2=${_forced_expected2}"
+                "-DMIN_MATCHES2=${_forced_min2}"
+            )
+        endif()
+        add_test(
+            NAME DECODE_IQ_${_forced_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_forced_mode}"
+                "-DFIXTURE=${_dsd_iq_forced_rate_dir}/${_forced_fixture}/${_forced_fixture}.iq.json"
+                "-DEXPECTED=${_forced_expected}" "-DMIN_MATCHES=${_forced_min}"
+                ${_forced_second}
+                "-DEXPECTED3=Rate chain: ${_forced_chain}, post=1 -> demod=[0-9]+ Hz"
+                "-DNOT_EXPECTED=resampling the|TETRA needs a DSP rate" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_${_forced_name}
+            PROPERTIES
+                LABELS "iq-decode"
+                TIMEOUT 120
+                FIXTURES_REQUIRED IQ_FORCED_RATE_FIXTURES
+        )
+    endforeach()
 
     # The unmodified 50 kHz source of tetra_scbs_real_air_54k, under a hand-written sidecar: TETRA cannot time its
     # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 79 identities in the dev-debug build.
@@ -19231,6 +19637,8 @@ if(DSD_HAS_RADIO)
     #                                 min_total [NOT_EXPECTED regex])
     # runs is the ;-list of legs (see iq_determinism_check.cmake for the leg grammar).
     # min_total floors FSK samples + 8 x CQPSK symbols, which no hunt split moves.
+    # fixture names a committed fixture, or is the absolute path of a sidecar a fixture
+    # setup writes into the build tree.
     function(
         dsd_neo_add_iq_determinism_test
         test_name
@@ -19247,14 +19655,18 @@ if(DSD_HAS_RADIO)
         if(DEFINED _det_NOT_EXPECTED)
             set(_not_expected_arg "-DNOT_EXPECTED=${_det_NOT_EXPECTED}")
         endif()
+        if(IS_ABSOLUTE "${fixture}")
+            set(_det_fixture "${fixture}")
+        else()
+            set(_det_fixture "${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
                 ${CMAKE_COMMAND}
                 "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_replay_jitter>"
-                "-DMODE=${mode}"
-                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
-                "-DRUNS=${runs}" "-DEXPECTED=${expected}" "-DMIN_FSK=${min_fsk}"
+                "-DMODE=${mode}" "-DFIXTURE=${_det_fixture}" "-DRUNS=${runs}"
+                "-DEXPECTED=${expected}" "-DMIN_FSK=${min_fsk}"
                 "-DMIN_CQPSK=${min_cqpsk}" "-DMIN_TOTAL=${min_total}"
                 ${_not_expected_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
@@ -19404,6 +19816,22 @@ if(DSD_HAS_RADIO)
             ${_nxdn48_retune_min_cqpsk}
             ${_nxdn48_retune_min_total}
         )
+        # The P25 voice call at an Airspy's forced 375,000 Hz below, with its audio into a sink that takes everything
+        # and into one that stalls (issue #806).
+        dsd_neo_add_iq_determinism_test(
+            DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM_STALLED_SINK
+            "${_dsd_iq_forced_rate_dir}/p25p1_cqpsk_vc_airspy_375k_sink/p25p1_cqpsk_vc_airspy_375k_sink.iq.json"
+            "-f1 -mq"
+            "sink:free;sink:stalled"
+            "Group Voice Channel User"
+            0
+            10000
+            80000
+        )
+        set_tests_properties(
+            DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM_STALLED_SINK
+            PROPERTIES FIXTURES_REQUIRED IQ_FORCED_RATE_FIXTURES
+        )
     endif()
     # The input-level advisories are decoder lines too, compared like the rest: their 10 s
     # cooldown runs on decode time (dsd_input_level_publish()), so a replay prints each at the
@@ -19462,6 +19890,28 @@ if(DSD_HAS_RADIO)
         0
         11900
         95000
+    )
+    # A kept forced chain (issue #806): p25p1_cqpsk_vc as an Airspy at 375,000 Hz captures it
+    # (IQ_FORCED_RATE_FIXTURES), whose replay runs two half-band passes and the I/Q rate step
+    # to 48 kHz. Fast, realtime, short-read and jitter legs must decode its call the same way:
+    # the step's output does not depend on how the decoder reads. Each leg measured
+    # cqpsk_symbols=10072 (2.1 s at 4800 symbols/s, less the chain's delay) and no FSK
+    # samples; MIN_CQPSK 10,000 and MIN_TOTAL 80,000 (8 x 10,000) sit just under that. The
+    # jitter leg sleeps after about one read in 24 of the decoder's ~410 and must still be
+    # sleeping past 1.5 s.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM
+        "${_dsd_iq_forced_rate_dir}/p25p1_cqpsk_vc_airspy_375k_det/p25p1_cqpsk_vc_airspy_375k_det.iq.json"
+        "-f1 -mq"
+        "fast;realtime;short:29;jitter:31:120:24:1500"
+        "Group Voice Channel User"
+        0
+        10000
+        80000
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM
+        PROPERTIES FIXTURES_REQUIRED IQ_FORCED_RATE_FIXTURES
     )
 
     # The runner's realtime pacing check reads a leg's wall time from the host's
@@ -22101,9 +22551,126 @@ target_include_directories(
 target_compile_definitions(dsd-neo_test_io_airspy_source PRIVATE USE_AIRSPY)
 target_link_libraries(
     dsd-neo_test_io_airspy_source
-    PRIVATE dsd-neo_runtime dsd-neo_platform
+    PRIVATE dsd-neo_runtime dsd-neo_io_iq dsd-neo_platform
 )
 add_test(NAME IO_AIRSPY_SOURCE COMMAND dsd-neo_test_io_airspy_source)
+
+# The same adapter built with Android's default-rate preference (the lowest listed rate), so a desktop run proves that
+# wiring too (#806).
+add_executable(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    io/test_io_airspy_source.cpp
+    io/airspy_sdk_double.cpp
+    ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+)
+target_include_directories(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+)
+target_compile_definitions(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE USE_AIRSPY AIRSPY_SOURCE_PREFER_LOWEST_RATE=1
+)
+target_link_libraries(
+    dsd-neo_test_io_airspy_source_prefer_lowest
+    PRIVATE dsd-neo_runtime dsd-neo_io_iq dsd-neo_platform
+)
+add_test(
+    NAME IO_AIRSPY_SOURCE_PREFER_LOWEST
+    COMMAND dsd-neo_test_io_airspy_source_prefer_lowest
+)
+
+# A terminal menu callback named like a libairspy call shadows the SDK in the desktop CLI (#806).
+# The compile-time unit runs wherever the terminal UI and libairspy build. The runtime check builds
+# the SDK double as a shared library and relies on ELF/Mach-O symbol interposition order (an
+# executable symbol beats a library's), so it is skipped on Windows, where a link against an import
+# library cannot reproduce the clash; the compile-time unit covers that platform.
+if(DSD_HAS_AIRSPY AND DSD_ENABLE_TERMINAL_UI)
+    add_executable(
+        dsd-neo_test_ui_airspy_symbol_clash
+        ui/test_ui_airspy_symbol_clash.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_airspy_symbol_clash
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_airspy_symbol_clash
+        PRIVATE Airspy::Airspy
+    )
+    add_test(
+        NAME UI_AIRSPY_SYMBOL_CLASH
+        COMMAND dsd-neo_test_ui_airspy_symbol_clash
+    )
+
+    if(NOT WIN32)
+        add_library(
+            dsd-neo_test_airspy_sdk_double_shared
+            SHARED
+            io/airspy_sdk_double.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_airspy_sdk_double_shared
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_link_libraries(
+            dsd-neo_test_airspy_sdk_double_shared
+            PRIVATE dsd-neo_platform
+        )
+        add_executable(
+            dsd-neo_test_ui_airspy_menu_shadow
+            ui/test_ui_airspy_menu_shadow.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_airspy_menu_shadow
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/io/radio
+                ${_AIRSPY_TEST_SDK}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io
+        )
+        # The double comes first so its definitions precede libairspy's in the lookup order. The terminal UI
+        # reaches the engine through app-control, so group the static providers ahead of ${LIBS}, as
+        # ENGINE_CHANNEL_SCAN_SQUELCH_GATE does: linkers that default to --as-needed (Debian/Ubuntu) would
+        # otherwise drop librtlsdr and Codec2 before anything references them.
+        if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+            target_link_libraries(
+                dsd-neo_test_ui_airspy_menu_shadow
+                PRIVATE
+                    dsd-neo_test_airspy_sdk_double_shared
+                    "-Wl,--start-group"
+                    dsd-neo_ui_terminal
+                    dsd-neo_app_control
+                    dsd-neo_engine
+                    dsd-neo_dispatch
+                    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+                    "-Wl,--end-group"
+                    ${LIBS}
+                    dsd-neo_test_support
+            )
+            # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                target_link_options(
+                    dsd-neo_test_ui_airspy_menu_shadow
+                    PRIVATE "LINKER:--as-needed"
+                )
+            endif()
+        else()
+            target_link_libraries(
+                dsd-neo_test_ui_airspy_menu_shadow
+                PRIVATE
+                    dsd-neo_test_airspy_sdk_double_shared
+                    dsd-neo_ui_terminal
+                    dsd-neo_io_radio
+                    ${LIBS}
+                    dsd-neo_test_support
+            )
+        endif()
+        add_test(
+            NAME UI_AIRSPY_MENU_SHADOW
+            COMMAND dsd-neo_test_ui_airspy_menu_shadow
+        )
+    endif()
+endif()
 add_executable(
     dsd-neo_test_runtime_airspy_config
     runtime/test_runtime_airspy_config.cpp
@@ -22168,6 +22735,97 @@ if(DSD_HAS_AIRSPY)
         COMMAND dsd-neo_test_io_rtl_stream_start_failure
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
+
+    # Issue #806: live decode at the rates an Airspy forces. The real engine runs a live Airspy session on the SDK
+    # double (its stream workers and the native adapter, as IO_RTL_STREAM_START_FAILURE), fed committed fixtures
+    # upsampled to the device rate, paced by the stream's own acknowledgements; then it replays the session's capture
+    # and compares the two (tests/engine/test_engine_airspy_forced_rate.cpp). The stream and DSP test hooks come from
+    # the private test-hook archives, grouped with the engine so they resolve its radio and DSP references first, the
+    # way ENGINE_REPLAY_IDENTITY groups the shipped ones.
+    if(
+        DSD_HAS_RADIO
+        AND NOT APPLE
+        AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    )
+        add_executable(
+            dsd-neo_test_engine_airspy_forced_rate
+            engine/test_engine_airspy_forced_rate.cpp
+            io/airspy_sdk_double.cpp
+            io/forced_rate_input.c
+            ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_engine_airspy_forced_rate
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/io/radio
+                ${PROJECT_SOURCE_DIR}/src/dsp
+                ${CMAKE_CURRENT_SOURCE_DIR}/io
+                ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            dsd-neo_test_engine_airspy_forced_rate
+            PRIVATE
+                USE_AIRSPY
+                "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_airspy_forced_rate
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+                dsd-neo_warnings
+        )
+        if(DSD_HAS_RTLSDR)
+            target_link_libraries(
+                dsd-neo_test_engine_airspy_forced_rate
+                PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+            )
+        endif()
+        foreach(
+            _case
+            P25P1_CQPSK_CC_312K
+            P25P1_CQPSK_VC_375K
+            P25P1_CQPSK_SIMULCAST_312K
+            P25P1_CQPSK_CC_2500K
+            P25P2_CC_375K
+            DMR_VOICE_312K
+            TETRA_CALL_375K
+            RETUNE_375K
+        )
+            add_test(
+                NAME ENGINE_AIRSPY_FORCED_RATE_${_case}
+                COMMAND dsd-neo_test_engine_airspy_forced_rate ${_case}
+            )
+            set_tests_properties(
+                ENGINE_AIRSPY_FORCED_RATE_${_case}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endif()
+
+    if(TARGET dsd-neo_test_io_rtl_stream_input_gap)
+        target_sources(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE
+                io/airspy_sdk_double.cpp
+                ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_stream_input_gap
+            PRIVATE USE_AIRSPY DSD_TEST_AIRSPY_LIVE
+        )
+    endif()
 
     if(TARGET dsd-neo_test_io_usb_progress_monitor)
         target_sources(
@@ -22255,6 +22913,10 @@ if(
         COMMAND dsd-neo_test_ui_airspy_config_apply M11
     )
     add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_72
+        COMMAND dsd-neo_test_ui_airspy_config_apply BUG1
+    )
+    add_test(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
@@ -22262,6 +22924,7 @@ if(
         UI_MENU_AIRSPY_CONFIG_FAILURE
         UI_MENU_AIRSPY_CONFIG_TUNING
         UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
+        UI_MENU_AIRSPY_CONFIG_72
         RUNTIME_AIRSPY_CLI_OVERRIDE
         PROPERTIES TIMEOUT 120
     )
@@ -22341,6 +23004,10 @@ if(DSD_ENABLE_API)
         dsd-neo_test_api_commands
         PRIVATE ${_dsd_neo_api_test_deps}
     )
+    if(DSD_HAS_RADIO)
+        # The radio commands (rtl_set_bw) are handled only in a build with radio support.
+        target_compile_definitions(dsd-neo_test_api_commands PRIVATE USE_RADIO)
+    endif()
     add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
     # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

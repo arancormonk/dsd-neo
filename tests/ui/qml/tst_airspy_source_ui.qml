@@ -34,6 +34,37 @@ Item {
                     verify(control !== null, name);
                     compare(control.visible, source !== "airspy", source + ": " + name);
                 }
+                // The DSP bandwidth is every radio's (issue #806): TETRA and
+                // AM hold step 1 on an Airspy until it fits, so it is shown.
+                verify(findChild(wizard, "systemBandwidthField").visible, source + ": systemBandwidthField");
+            }
+        }
+
+        // Issue #806: on an Airspy the Advanced pane names only what it shows
+        // (its own gain controls and bias tee, no PPM), and the bandwidth field,
+        // alone in its row, takes the row and its own label without the
+        // caption the three narrow columns share.
+        function test_wizard_airspy_advanced_pane() {
+            screenLoader.source = uiDir + "/WizardScreen.qml";
+            var wizard = screenLoader.item;
+            verify(wizard !== null);
+            wizard.openForAdd(false);
+            wizard.step = 1;
+            wizard.advancedOpen = true;
+            var subtitle = findChild(wizard, "wizardAdvancedSubtitle");
+            var caption = findChild(wizard, "wizardBandwidthCaption");
+            var bw = findChild(wizard, "systemBandwidthField");
+            verify(subtitle !== null && caption !== null && bw !== null);
+            var row = bw.parent.parent;
+            for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
+                wizard.sourceType = source;
+                var airspy = source === "airspy";
+                compare(subtitle.text, airspy ? "Gain, bandwidth, bias tee — defaults work" : "Gain, PPM, bandwidth, bias tee — defaults work", source);
+                compare(caption.visible, !airspy, source + ": caption");
+                if (airspy)
+                    compare(bw.width, row.width, source + ": full row");
+                else
+                    verify(bw.width < row.width / 2, source + ": a third of the row");
             }
         }
 

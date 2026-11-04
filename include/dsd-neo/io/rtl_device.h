@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -284,6 +285,17 @@ int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
  * @return 0 on success, negative when the backend cannot answer.
  */
 int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual);
+
+/**
+ * @brief The rate planner's backend for @p dev (issue #806, <dsd-neo/io/rate_plan.h>).
+ *
+ * An Airspy and a SoapySDR device may force their own rate and step it to the DSP bandwidth; an RTL-SDR, rtl_tcp and
+ * no device at all (NULL) run the rate asked for. An I/Q replay plans its chain itself and answers
+ * DSD_RATE_PLAN_BACKEND_REPLAY_EXACT, which never steps.
+ *
+ * @return A dsd_rate_plan_backend value.
+ */
+dsd_rate_plan_backend rtl_device_rate_plan_backend(const struct rtl_device* dev);
 
 /**
  * @brief Query the current device sample rate.
@@ -728,11 +740,23 @@ void rtl_device_end_capture_reconfigure(struct rtl_device* dev);
  * @param dev RTL-SDR device handle.
  */
 void rtl_device_note_capture_retune(struct rtl_device* dev);
-void rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequency_hz,
-                                      uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz,
-                                      const char* reason);
-void rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequency_hz,
+/**
+ * @brief Record a RETUNE (rtl_device_record_capture_retune()) or RESET (rtl_device_record_capture_reset()) event in
+ * the attached capture.
+ *
+ * @return The writer's result (dsd_iq_capture_record_event()), DSD_IQ_OK with no writer attached. DSD_IQ_ERR_RATE_CHAIN
+ *         means this event's sample rate sealed the capture (issue #806 X9): the device froze the input-ring drops and
+ *         retune count its sidecar reports, and counts no retune after it; DSD_IQ_ERR_SEALED, that it was sealed
+ *         before.
+ */
+int rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequency_hz,
                                      uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason);
+int rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequency_hz,
+                                    uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason);
+
+/** The reason of the capture MUTE an Airspy's driver overflow records: samples the driver lost, which a replay treats
+ *  as a gap in the stream, starting the demodulator's filters over there as the live stream did (issue #806 X12). */
+#define RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW "driver_overflow"
 
 /**
  * @brief Snapshot replay/capture retune count accumulated by the device.

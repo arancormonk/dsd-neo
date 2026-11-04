@@ -2,18 +2,23 @@
 /* Link the real native adapter against the in-process SDK double (airspy_sdk_double.h). No USB access. */
 
 #include <dsd-neo/core/airspy_config.h>
-#include <dsd-neo/core/safe_api.h>
 #include <memory>
 #include "airspy_sdk_double.h"
 
 #ifndef DSD_TEST_AIRSPY_STREAM
-#include <airspy.h>
-#include <atomic>
-#include <cstring>
-#include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/io/rate_plan.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <vector>
 #include "airspy_source.h"
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+/* For the adapter lifecycle tests, which run in the desktop build only. */
+#include <airspy.h>
+#include <atomic>
+#include <cstring>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/input_failure.h>
+#endif
 
 using namespace airspy_double;
 
@@ -26,8 +31,73 @@ capture(void* context, const float* samples, size_t count, uint64_t dropped) {
     received->assign(samples, samples + count * 2);
 }
 
-int
-main() {
+/* The helper on its own, both preferences, whatever order the rates come in. */
+static void
+test_pick_default_rate() {
+    const uint32_t r2[] = {10000000, 2500000};
+    const uint32_t mini[] = {3000000, 6000000};
+    CHECK(airspy_pick_default_rate(r2, 2, 0) == 10000000 && airspy_pick_default_rate(r2, 2, 1) == 2500000);
+    CHECK(airspy_pick_default_rate(mini, 2, 0) == 6000000 && airspy_pick_default_rate(mini, 2, 1) == 3000000);
+    CHECK(airspy_pick_default_rate(r2, 1, 1) == 10000000 && airspy_pick_default_rate(r2, 0, 1) == 0);
+    CHECK(airspy_pick_default_rate(nullptr, 2, 0) == 0);
+}
+
+/* An open with no rate configured, on an R2 and on a Mini, programs the rate this build's preference picks (the
+ * highest on the desktop, the lowest on Android; the IO_AIRSPY_SOURCE_PREFER_LOWEST build runs the adapter with the
+ * Android preference), and the live plan at 48 and 72 kHz steps from it to the DSP bandwidth rate. */
+static void
+test_default_rate_plan() {
+    struct pair_case {
+        uint32_t listed[2];
+        uint32_t want;
+        int passes; /* the same at 48 and 72 kHz */
+        int m;      /* M at 48 and 72 kHz: 625 from an R2 rate (384/625, 576/625), 125 from a Mini's (64/125, 96/125) */
+    };
+
+    const bool lowest = AIRSPY_SOURCE_PREFER_LOWEST_RATE != 0;
+    const pair_case cases[] = {
+        {{10000000, 2500000}, lowest ? 2500000U : 10000000U, lowest ? 5 : 7, 625},
+        {{6000000, 3000000}, lowest ? 3000000U : 6000000U, lowest ? 5 : 6, 125},
+    };
+    const uint32_t saved[2] = {rates[0], rates[1]};
+    for (const pair_case& c : cases) {
+        rates[0] = c.listed[0];
+        rates[1] = c.listed[1];
+        dsd_airspy_config cfg;
+        dsd_airspy_config_defaults(&cfg);
+        CHECK(cfg.sample_rate == 0);
+        auto received = std::make_unique<std::vector<float>>();
+        airspy_source* s = airspy_source_open(&cfg, capture, received.get());
+        CHECK(s && rate == c.want);
+        CHECK(rate == airspy_pick_default_rate(c.listed, 2, AIRSPY_SOURCE_PREFER_LOWEST_RATE));
+        dsd_airspy_info info{};
+        CHECK(airspy_source_info(s, &info) == 0 && info.sample_rate == c.want);
+        airspy_source_close(s);
+
+        const uint32_t targets[] = {48000, 72000};
+        for (uint32_t target : targets) {
+            dsd_rate_plan_input in{};
+            in.backend = DSD_RATE_PLAN_BACKEND_AIRSPY;
+            in.request_hz = target == 48000 ? 1536000U : 1152000U;
+            in.programmed_hz = rate;
+            in.readback_hz = info.sample_rate;
+            in.target_hz = target;
+            in.max_passes = 10;
+            dsd_rate_plan plan{};
+            CHECK(dsd_rate_plan_compute(&in, &plan) == DSD_RATE_PLAN_OK);
+            CHECK(plan.device_forced && plan.step.enabled && plan.step_out_hz == target);
+            const int want_l = target == 48000 ? (c.m == 625 ? 384 : 64) : (c.m == 625 ? 576 : 96);
+            CHECK(plan.passes == c.passes && plan.step.L == want_l && plan.step.M == c.m);
+        }
+    }
+    rates[0] = saved[0];
+    rates[1] = saved[1];
+}
+
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+/* The adapter's lifecycle, with the desktop's default rate (the highest listed). */
+static void
+test_adapter() {
     dsd_airspy_config cfg;
     dsd_airspy_config_defaults(&cfg);
     // The adapter retains this context until close joins the receive callback.
@@ -136,6 +206,16 @@ main() {
     CHECK(airspy_source_last_open_error() == 0);
     airspy_source_close(s);
     CHECK(airspy_source_set_fd(42) != 0 && !airspy_source_fd_in_use());
+}
+#endif
+
+int
+main() {
+    test_pick_default_rate();
+#if !AIRSPY_SOURCE_PREFER_LOWEST_RATE
+    test_adapter();
+#endif
+    test_default_rate_plan();
     return 0;
 }
 
@@ -143,6 +223,7 @@ main() {
 #include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream.h>
@@ -158,6 +239,7 @@ main() {
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <initializer_list>
+#include <stdint.h>
 #include <stdio.h>
 #include "rtl_stream_test_support.h"
 #include "test_support.h"
@@ -289,11 +371,12 @@ main() {
     }
 
     // Issue #578: a start that refuses the analog width at the rate the device delivers records the refusal, which
-    // names that rate once the stream is gone. The Airspy decimates its capture to 19,531 Hz at a 12 kHz DSP bandwidth,
-    // which filters NFM 12.5 kHz but not 25 kHz.
+    // names that rate once the stream is gone. The Airspy's 10 MS/s steps to exactly 24,000 Hz at a 24 kHz DSP
+    // bandwidth (issue #806; it ran 19,531 Hz at 12 kHz before, a rate no DSP bandwidth names), which filters NFM
+    // 12.5 kHz but not 25 kHz.
     opts->analog_only = 1;
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
-    opts->rtl_dsp_bw_khz = 12;
+    opts->rtl_dsp_bw_khz = 24;
     for (int width_hz : {25000, 12500}) {
         opts->analog_nfm_bandwidth_hz = width_hz;
         fail_create = failure = create_calls = 0;
@@ -308,7 +391,8 @@ main() {
             CHECK(stream.start() != 0);
             CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
             CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 25000);
-            CHECK(rate_hz == 19531 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(rate_hz == 24000 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(dsd_analog_width_realizable(12500, rate_hz));
             CHECK(!rtl_stream_test_has_resources());
             CHECK(!device_open && closes == previous_closes + 1 && !streaming);
         } else {
@@ -320,6 +404,55 @@ main() {
         }
         CHECK(!dsd_exitflag_load());
     }
+    // Issue #806 D5: at a 12 kHz DSP bandwidth the Airspy runs exactly 12,000 Hz too (19,531 Hz before), whose 9.6 kHz
+    // filters no NFM 12.5 kHz: the start refuses it there, as an RTL-SDR's would, at the rate named.
+    opts->rtl_dsp_bw_khz = 12;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    fail_create = failure = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(*opts);
+        CHECK(stream.start() != 0);
+        int kind = -1;
+        int refused_width_hz = -1;
+        int rate_hz = -1;
+        CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
+        CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 12500 && rate_hz == 12000);
+    }
+    CHECK(!rtl_stream_test_has_resources() && !device_open);
+
+    // Issue #806 D-BUG-1..4, B-6a: whatever surface hands it 72 kHz (-fT, -i airspy:F:72, [input] rtl_bw_khz = 72 at
+    // startup or live, Input > Switch source > Airspy from an RTL-SDR at 72 kHz), an Airspy stream delivers exactly
+    // 72,000 Hz past the rate step, from either rate of an R2 or a Mini (78,125 or 93,750 Hz before: the 48 kHz chain).
+    opts->analog_only = 0;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->rtl_dsp_bw_khz = 72;
+    const uint32_t saved_rates[2] = {rates[0], rates[1]};
+    static const uint32_t kPairs[2][2] = {{10000000U, 2500000U}, {6000000U, 3000000U}};
+    for (const auto& pair : kPairs) {
+        rates[0] = pair[0];
+        rates[1] = pair[1];
+        for (uint32_t listed : pair) {
+            opts->airspy.sample_rate = listed;
+            fail_create = failure = create_calls = 0;
+            workers_entered.store(0);
+            workers_exited.store(0);
+            RtlSdrOrchestrator stream(*opts);
+            CHECK(stream.start() == 0);
+            CHECK(rate == listed);
+            CHECK(rtl_stream_get_request_rate_hz() == 72000);
+            CHECK(stream.stop() == 0);
+            CHECK(!rtl_stream_test_has_resources());
+        }
+    }
+    rates[0] = saved_rates[0];
+    rates[1] = saved_rates[1];
+    opts->airspy.sample_rate = 0;
+    opts->analog_only = 1;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    opts->rtl_dsp_bw_khz = 24;
+
     // A create forgets the last start's refusal, so a start that never runs leaves none to report.
     opts->analog_nfm_bandwidth_hz = 25000;
     fail_create = failure = create_calls = 0;

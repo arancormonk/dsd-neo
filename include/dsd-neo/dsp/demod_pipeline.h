@@ -14,6 +14,7 @@
 #ifndef DSP_DEMOD_PIPELINE_H
 #define DSP_DEMOD_PIPELINE_H
 
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -186,9 +187,9 @@ void full_demod(struct demod_state* d);
  *
  * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol
  * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) and ted_sps
- * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal rate_out / 18000 exactly;
- * rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is enabled; and
- * dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now. That last answer is memoized by rate
+ * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal complex_rate / 18000
+ * exactly; complex_rate is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is
+ * enabled; and dsd_tetra_channel_design() succeeds at complex_rate, whatever plan is installed now. That last answer is memoized by rate
  * (demod_state::tetra_design_rate_out): full_demod() checks the design once per rate, and the predicate reads the memo
  * for its rate, designing only when the memo is for another one.
  *
@@ -286,7 +287,8 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
 
 /**
  * Return the filter state to a fresh stream's: each half-band stage's history and pending count (its look-ahead and
- * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
+ * decimation phase), the live I/Q rate step's history and phase (its design stays), the channel FIR's history and
+ * pending outputs, and a replay's post-demod audio decimator on either
  * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is
  * centred on its next input sample, the decimator's next output comes with the post_downsample-th sample, and what
  * they held back is dropped. The auto squelch's tracker starts its windows over at its next block, keeping its floor
@@ -295,6 +297,28 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
  * @param d Demodulator state; NULL is ignored.
  */
 void dsd_demod_reset_filter_state(struct demod_state* d);
+
+/**
+ * Prepare @p plan as the live I/Q rate step's candidate (issue #806; dsd_live_iq_step_prepare() on
+ * demod_state::live_iq_step) with this pipeline's capacities: a block brings the step at most MAXIMUM_BUF_LENGTH / 2
+ * complex samples halved by each of the plan's passes, and the step writes it to a DSD_DEMOD_WORKBUF_LENGTH work
+ * buffer. A plan whose largest block would not fit (one that upsamples) is refused here, before any sample flows.
+ * Call it, and the commit, rollback and finish after it, on the controller thread while the demod thread is paused.
+ *
+ * @return DSD_LIVE_IQ_STEP_OK, or a negative dsd_live_iq_step_status.
+ */
+int dsd_demod_live_step_prepare(struct demod_state* d, const dsd_live_iq_step_plan* plan);
+
+/**
+ * Build the dynamic squelches' noise model for the live I/Q rate step's active plan (issue #806;
+ * dsd_squelch_step_model_build() on demod_state::squelch_step_model, behind the half-band cascade the plan's passes
+ * run). Call it after every commit or rollback that leaves the step running, on the controller thread while the demod
+ * thread is paused: the auto and noise squelch plans of a stepping chain come from it, and stay not valid (the gate
+ * open) without it. A model already built for the plan is kept; with the step off nothing changes.
+ *
+ * @return 0, or -1 when the model could not be built (the squelch gate then stays open behind the step).
+ */
+int dsd_demod_squelch_step_model_sync(struct demod_state* d);
 
 /**
  * Channel edge (Hz) that the channel low-pass protects for a profile.
@@ -315,14 +339,14 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  * Cutoff is width/2 + DSD_ANALOG_CHANNEL_GUARD_HZ with the fixed
  * DSD_ANALOG_CHANNEL_TRANSITION_HZ Blackman transition, so the width is the
  * protected passband. 16000 Hz reproduces the WIDE profile's taps wherever the
- * WIDE design succeeds (rates from about 19.1 to 51.4 kHz: no 0.9 x Nyquist
- * clamp, within its 144-tap cap). Above that WIDE runs its 63-tap fallback
- * prototype, and this design gives 16000 Hz its full length instead (219 taps at
- * 78,125 Hz), up to the analog tap capacity at about 102.7 kHz. There is no
- * Nyquist clamp and no fallback prototype here: a width the rate cannot realize
- * (see dsd_analog_width_realizable()) is an error.
+ * WIDE design runs unclamped: rates from about 19.1 kHz, where its cutoff stops
+ * being held to 0.9 x Nyquist, up to the 288-tap capacity both share at about
+ * 102.7 kHz (DSD_DIGITAL_CHANNEL_MAX_RATE_HZ; 219 taps at 78,125 Hz). Above that
+ * WIDE runs its 63-tap fallback prototype. There is no Nyquist clamp and no
+ * fallback prototype here: a width the rate cannot realize (see
+ * dsd_analog_width_realizable()) is an error.
  *
- * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz  Channel-filter sample rate (demod complex_rate) in Hz.
  * @param width_hz Full channel width in Hz.
  * @param taps_out Output taps; must hold @p max_taps floats.
  * @param max_taps Capacity of @p taps_out (at most DSD_ANALOG_CHANNEL_MAX_TAPS is used).
@@ -341,7 +365,7 @@ int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, in
  * does not clear the 13750 Hz stopband edge, or a design longer than the
  * capacity, is an error.
  *
- * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz  Channel-filter sample rate (demod complex_rate) in Hz.
  * @param taps_out Output taps; must hold @p max_taps floats.
  * @param max_taps Capacity of @p taps_out (at most DSD_CHANNEL_LPF_MAX_TAPS is used).
  * @return Number of taps written, or -1 when the rate cannot be designed for (nothing written).
@@ -352,13 +376,14 @@ int dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps);
  * Channel width the legacy WIDE profile plan protects at a rate.
  *
  * The plan the unset NFM default runs where the rate cannot realize the 16 kHz
- * width-driven design: the 144-tap WIDE design with its cutoff held to 0.9 x
- * Nyquist, or, at rates that design cannot fit (above about 51.4 kHz), the
- * 63-tap WIDE fallback prototype, whose response scales with the rate it runs
- * at. The width is the protected passband (twice the edge the transition
- * starts at), measured the same way as an analog width.
+ * width-driven design: the WIDE design within DSD_CHANNEL_LPF_MAX_TAPS with its
+ * cutoff held to 0.9 x Nyquist, or, at rates that design cannot fit (above
+ * DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, about 102.7 kHz), the 63-tap WIDE fallback
+ * prototype, whose response scales with the rate it runs at. The width is the
+ * protected passband (twice the edge the transition starts at), measured the
+ * same way as an analog width.
  *
- * @param rate_hz Channel-filter sample rate (demod rate_out) in Hz.
+ * @param rate_hz Channel-filter sample rate (demod complex_rate) in Hz.
  * @return Protected width in Hz, or 0 for a rate of 0 or less.
  */
 int dsd_channel_lpf_legacy_wide_width_hz(int rate_hz);

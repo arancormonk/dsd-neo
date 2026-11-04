@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/log.h>
+#include <initializer_list>
 #include <stdio.h>
 #include "test_support.h"
 
@@ -171,6 +172,52 @@ test_forgiving_tail() {
     }
 }
 
+/* Issue #806 BUG-4: --validate-config and the startup's config apply agree on an Airspy at a 72 kHz DSP bandwidth
+   decoding TETRA. The validator said nothing while the startup fell back to 48 kHz with a warning (and TETRA decoded
+   nothing); now the apply and the Airspy spec normalization keep 72 kHz, which the live rate step lands the Airspy's
+   capture rate on, with no word. For a width the bandwidth cannot filter this checks the validator's error and that
+   the apply keeps the 24 kHz the startup check holds it to; that the startup itself refuses it, with the validator's
+   text, is RUNTIME_AIRSPY_CONFIG_WIDTH_STARTUP's (tests/cmake/RunCliSmoke.cmake). */
+static void
+test_validate_agrees_with_startup() {
+    static const struct {
+        const char* ini;
+        int want_bw_khz;
+        int want_errors;
+    } cases[] = {
+        {"[input]\nsource = \"airspy\"\nrtl_freq = \"851000000\"\nrtl_bw_khz = 72\n[mode]\ndecode = \"tetra\"\n", 72,
+         0},
+        {"[input]\nsource = \"airspy\"\nrtl_bw_khz = 72\n[mode]\ndecode = \"analog\"\n", 72, 0},
+        {"[input]\nsource = \"airspy\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n[analog]\n"
+         "nfm_bandwidth_hz = 25000\n",
+         24, 1},
+    };
+
+    for (const auto& c : cases) {
+        char path[DSD_TEST_PATH_MAX];
+        int fd = dsd_test_mkstemp(path, sizeof path, "airspy-validate");
+        CHECK(fd >= 0);
+        const size_t len = strlen(c.ini);
+        CHECK(dsd_write(fd, c.ini, len) == (int)len);
+        CHECK(dsd_close(fd) == 0);
+        dsdcfg_diagnostics_t diags;
+        dsdcfg_diags_init(&diags);
+        (void)dsd_user_config_validate(path, &diags);
+        CHECK(diags.error_count == c.want_errors && diags.warning_count == 0);
+        dsdcfg_diags_free(&diags);
+
+        static dsdneoUserConfig cfg;
+        static dsd_opts opts;
+        static dsd_state state;
+        CHECK(dsd_user_config_load(path, &cfg) == 0);
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        last_warning[0] = '\0';
+        CHECK(dsd_normalize_airspy_input_spec(&opts) == 0);
+        CHECK(opts.rtl_dsp_bw_khz == c.want_bw_khz && last_warning[0] == '\0');
+        CHECK(remove(path) == 0);
+    }
+}
+
 int
 main(int argc, char** argv) {
     dsd_neo_log_set_tap(capture_log, NULL);
@@ -189,6 +236,7 @@ main(int argc, char** argv) {
     test_snapshot_threshold();
     test_invalid_config();
     test_forgiving_tail();
+    test_validate_agrees_with_startup();
     test_roundtrip();
     static dsd_opts opts;
     dsd_airspy_config_defaults(&opts.airspy);
@@ -240,20 +288,32 @@ main(int argc, char** argv) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851M:extra");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
 
-    /* 72 kHz is a selectable DSP bandwidth elsewhere, but no Airspy sample rate halves to it: the spec's field and a
-       bandwidth in force from another input both run at 48 kHz, and say why. The Airspy bandwidths are kept. */
+    /* Issue #806: an Airspy runs every selectable DSP bandwidth, 72 kHz included (the live rate step lands its capture
+       rate on it), so the spec's field and a bandwidth in force from another input or a preset (-fT's 72 kHz, BUG-3:
+       it ran 48 kHz with a warning that blamed a bandwidth the user never set) are kept, with no warning. Only a
+       bandwidth no input takes falls back to 48 kHz, and says so. */
+    for (int bw : {4, 6, 8, 12, 16, 24, 48, 72}) {
+        last_warning[0] = '\0';
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "airspy:420.1M:%d:0:2", bw);
+        CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == bw && last_warning[0] == '\0');
+        CHECK(opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
     last_warning[0] = '\0';
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M:72:0:2");
-    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
-    CHECK(strstr(last_warning, "Airspy bandwidth 72 kHz is unsupported: no Airspy sample rate halves to it") != NULL);
-    last_warning[0] = '\0';
-    opts.rtl_dsp_bw_khz = 72;
+    dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_PRESET);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M");
-    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
-    CHECK(strstr(last_warning, "no Airspy sample rate halves to it") != NULL);
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 72 && last_warning[0] == '\0');
+    CHECK(opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_PRESET);
     last_warning[0] = '\0';
     opts.rtl_dsp_bw_khz = 24;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 24 && last_warning[0] == '\0');
+    for (int bw : {96, 25, 0}) {
+        last_warning[0] = '\0';
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "airspy:420.1M:%d:0:2", bw);
+        CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
+        char want[64];
+        DSD_SNPRINTF(want, sizeof want, "Airspy bandwidth %d kHz is unsupported; using 48 kHz.", bw);
+        CHECK(strstr(last_warning, want) != NULL);
+    }
     return 0;
 }

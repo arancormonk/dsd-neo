@@ -10,3 +10,8 @@ android/third_party/libairspy/** linguist-vendored
 # Binary I/Q fixtures (cu8): never line-ending converted or diffed as text. Git's
 # own detection can take a capture that happens to hold no NUL byte for text.
 tests/fixtures/iq/*.iq binary
+
+# Patch series whose digests the vcpkg overlays and the release workflows pin
+# (tools/usb_dependency_patches.sh): LF on every platform, so a Windows checkout
+# hashes the same.
+android/third_party/patches/*.patch text eol=lf

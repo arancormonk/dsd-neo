@@ -675,10 +675,19 @@ test_analog_am_bandwidth_validation(void) {
          "am_bandwidth_hz = 20000\n",
          NULL},
         {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 8\n[mode]\ndecode = am\n", NULL},
-        /* Not the AM preset, a device that may force its own rate, and an rtl source startup does not build (no
-         * rtl_freq): nothing to hold the width to here. */
+        /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth (its capture rate is stepped to it), so
+         * its width is held to rtl_bw_khz as an RTL-SDR's is, with the bandwidths that fit as the fix (D5: an Airspy
+         * at 6 kHz runs no AM default). Before, a device was left to its stream start. */
+        {"[input]\nsource = soapy\nrtl_bw_khz = 6\n[mode]\ndecode = am\n",
+         "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate (the largest width it fits is 4.2 kHz); set the DSP "
+         "bandwidth to 8, 12, 16, 24, 48 or 72 kHz"},
+        {"[input]\nsource = airspy\nrtl_bw_khz = 6\n[mode]\ndecode = am\n",
+         "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate (the largest width it fits is 4.2 kHz); set the DSP "
+         "bandwidth to 8, 12, 16, 24, 48 or 72 kHz"},
+        {"[input]\nsource = airspy\nrtl_bw_khz = 8\n[mode]\ndecode = am\n", NULL},
+        /* Not the AM preset, and an rtl source startup does not build (no rtl_freq): nothing to hold the width to
+         * here. */
         {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = analog\n", NULL},
-        {"[input]\nsource = soapy\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
         {"[input]\nsource = rtl\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
     };
 
@@ -1777,9 +1786,20 @@ test_analog_nfm_bandwidth_validation(void) {
     rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
                                 "decode = \"dmr\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
                                 "", NULL);
-    /* A device that may force its own rate is checked against the rate it delivers, at stream start. */
+    /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth, so its width is held to it here, as the
+       startup check holds it (D5: an Airspy's limits are an RTL-SDR's; a device was left to its stream start
+       before). Whether a SoapySDR device delivers a rate stepped to it is known only when it opens. */
     rc |= run_analog_width_case("[input]\nsource = \"soapy\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
                                 "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "does not fit the 24 kHz DSP rate", "; set the DSP bandwidth to 48 or 72 kHz");
+    rc |= run_analog_width_case("[input]\nsource = \"airspy\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "does not fit the 24 kHz DSP rate", "; set the DSP bandwidth to 48 or 72 kHz");
+    rc |= run_analog_width_case("[input]\nsource = \"airspy\"\nrtl_bw_khz = 12\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 12500\n",
+                                "does not fit the 12 kHz DSP rate", "set the DSP bandwidth to 16, 24, 48 or 72 kHz");
+    rc |= run_analog_width_case("[input]\nsource = \"airspy\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 12500\n",
                                 "", NULL);
     /* Profiles compose the same rule. */
     rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"

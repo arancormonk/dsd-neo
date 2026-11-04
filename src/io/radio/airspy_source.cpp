@@ -4,6 +4,20 @@
 #include <stdint.h>
 #include "airspy_source.h"
 
+uint32_t
+airspy_pick_default_rate(const uint32_t* rates, size_t n, int prefer_lowest) {
+    if (!rates || n == 0U) {
+        return 0U;
+    }
+    uint32_t pick = rates[0];
+    for (size_t i = 1; i < n; ++i) {
+        if (prefer_lowest ? rates[i] < pick : rates[i] > pick) {
+            pick = rates[i];
+        }
+    }
+    return pick;
+}
+
 #ifdef USE_AIRSPY
 #include <airspy.h>
 #include <algorithm>
@@ -197,11 +211,7 @@ configure_device(airspy_source* s, uint64_t serial) {
     }
     uint32_t rate = s->config.sample_rate;
     if (!rate) {
-#ifdef __ANDROID__
-        rate = s->info.rates[0];
-#else
-        rate = s->info.rates[s->info.rate_count - 1];
-#endif
+        rate = airspy_pick_default_rate(s->info.rates, s->info.rate_count, AIRSPY_SOURCE_PREFER_LOWEST_RATE);
     }
     rc = airspy_set_sample_type(s->device, AIRSPY_SAMPLE_FLOAT32_IQ);
     if (rc == 0) {

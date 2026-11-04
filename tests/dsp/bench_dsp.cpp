@@ -28,6 +28,8 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -36,6 +38,8 @@
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -108,6 +112,7 @@ struct DemodHolder {
             return;
         }
         dsd_fsk_modem_release(&s->fsk_modem_state);
+        dsd_live_iq_step_disable(&s->live_iq_step);
         if (s->post_polydecim_taps) {
             dsd_neo_aligned_free(s->post_polydecim_taps);
         }
@@ -578,9 +583,8 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
 
 static int
 bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile, int pairs = 4096) {
-    constexpr int kMaxTaps = 144;
-    std::vector<float> taps(kMaxTaps);
-    int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
+    std::vector<float> taps(DSD_CHANNEL_LPF_MAX_TAPS);
+    int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
     if (taps_len <= 0) {
         DSD_FPRINTF(stderr, "channel LPF design failed for %s\n", name);
         return 0;
@@ -615,9 +619,10 @@ bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rat
                                   pairs);
 }
 
-/* What a digital profile runs at a device-forced rate above ~51.4 kHz, and what the analog path ran there before it
- * got the 288-tap capacity: the 144-tap design fails, so the demodulator plans the 63-tap fallback prototype. The
- * taps come from the demodulator's own plan, so the case measures exactly the filter it replaces. */
+/* What a digital profile runs above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, where no design fits the 288 taps, and what every
+ * digital profile ran above ~51.4 kHz while their designs were held to 144 taps (issue #806), as did the analog path
+ * before it got the 288-tap capacity: the 63-tap fallback prototype. The taps come from the demodulator's own plan, so
+ * the case measures exactly the filter the designs replace; per pair it costs the same at any rate. */
 static int
 bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
     DemodHolder holder;
@@ -628,6 +633,7 @@ bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int r
     }
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
@@ -635,7 +641,7 @@ bench_one_channel_lpf_fallback(const BenchOptions& opts, const char* name, int r
     s->channel_lpf_profile = profile;
     full_demod(s);
     const int taps_len = s->channel_lpf_plan_taps_len;
-    if (taps_len <= 0 || taps_len >= 144) {
+    if (taps_len != 63) {
         DSD_FPRINTF(stderr, "%s: expected the fallback prototype, got a %d-tap plan\n", name, taps_len);
         return 0;
     }
@@ -661,7 +667,10 @@ bench_channel_lpf(const BenchOptions& opts) {
     ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5", 24000, DSD_CH_LPF_PROFILE_12K5);
     ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5", 48000, DSD_CH_LPF_PROFILE_12K5);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_48k_analog_16k", 48000, 16000);
-    ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_78k_wide_fallback", 78125, DSD_CH_LPF_PROFILE_WIDE);
+    /* The RTL-SDR 72 kHz DSP bandwidth, which ran the fallback below before the profiles designed past 144 taps. */
+    ran += bench_one_channel_lpf(opts, "channel_lpf_72k_p25_c4fm", 72000, DSD_CH_LPF_PROFILE_P25_C4FM);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_72k_p25_cqpsk", 72000, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_128k_wide_fallback", 128000, DSD_CH_LPF_PROFILE_WIDE);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_78k_analog_16k", 78125, 16000);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k", 96000, 25000);
     /* A live 16 KiB RTL transfer leaves 256 pairs after five half-band stages. Also cover shorter history-spanning blocks. */
@@ -986,6 +995,7 @@ bench_carrier_loops(const BenchOptions& opts) {
     fll_state.s->lp_len = kInLen;
     fll_state.s->ted_sps = 5;
     fll_state.s->rate_out = 24000;
+    fll_state.s->complex_rate = 24000;
 
     ran += run_case(opts, "op25_fll_band_edge_cc", "pair", (double)kPairs, [&]() -> float {
         op25_fll_band_edge_cc(fll_state.s);
@@ -997,6 +1007,7 @@ bench_carrier_loops(const BenchOptions& opts) {
     costas_state.s->lp_len = kInLen;
     costas_state.s->ted_sps = 5;
     costas_state.s->rate_out = 24000;
+    costas_state.s->complex_rate = 24000;
 
     ran += run_case(opts, "op25_costas_loop_cc", "pair", (double)kPairs, [&]() -> float {
         op25_costas_loop_cc(costas_state.s);
@@ -1011,6 +1022,7 @@ configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps) {
     s->cqpsk_enable = 1;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->symbol_rate_hz = (sps > 0) ? sample_rate / sps : 4800;
     s->symbol_levels = 4;
     s->ted_sps = sps;
@@ -1124,6 +1136,7 @@ static void
 configure_common_fsk_state(demod_state* s, int sample_rate, int symbol_rate, int channel_lpf_enable, int squelched) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
@@ -1152,6 +1165,7 @@ configure_common_c4fm_audio_state(demod_state* s, int sample_rate, int symbol_ra
                                   int squelched) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
@@ -1175,6 +1189,7 @@ static void
 configure_common_cqpsk_state(demod_state* s, int sample_rate, int symbol_rate, int sps) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
+    s->complex_rate = sample_rate;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
@@ -1279,6 +1294,7 @@ bench_full_demod(const BenchOptions& opts) {
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_lpf_on", 48000, 4800, 1, 0);
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_lpf_off", 48000, 4800, 0, 0);
     ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_48k_squelched", 48000, 4800, 1, 1);
+    ran += bench_one_c4fm_audio_full_demod(opts, "full_demod_c4fm_72k_lpf_on", 72000, 4800, 1, 0);
 
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_24k_lpf_on", 24000, 4800, 1, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_24k_lpf_off", 24000, 4800, 0, 0);
@@ -1286,10 +1302,323 @@ bench_full_demod(const BenchOptions& opts) {
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_lpf_on", 48000, 4800, 1, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_lpf_off", 48000, 4800, 0, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_squelched", 48000, 4800, 1, 1);
+    ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_72k_lpf_on", 72000, 4800, 1, 0);
 
     ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1", 24000, 4800, 5);
     ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p2", 48000, 6000, 8);
+    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1_72k", 72000, 4800, 15);
 
+    return ran;
+}
+
+/* A device-forced rate's live chain (issue #806): the half-band cascade on a maximum live block, the I/Q rate step on
+   what the cascade leaves of one, and the CQPSK chain at 2.5 MS/s with and without the step. */
+static constexpr int kLiveBlockPairs = MAXIMUM_BUF_LENGTH / 2;
+
+static int
+bench_one_hb_cascade(const BenchOptions& opts, const char* name, int rate_hz, int stages) {
+    std::vector<float> in((size_t)kLiveBlockPairs * 2U);
+    std::vector<float> work_a(in.size());
+    std::vector<float> work_b(in.size());
+    std::vector<std::vector<float>> hist_i((size_t)stages);
+    std::vector<std::vector<float>> hist_q((size_t)stages);
+    std::vector<int> pending((size_t)stages, 0);
+    fill_noise(&in, 0x806Au);
+    for (int stage = 0; stage < stages; stage++) {
+        const size_t hist_len = (stage == 0) ? 30U : (size_t)HB_TAPS - 1U;
+        hist_i[(size_t)stage].assign(hist_len, 0.0f);
+        hist_q[(size_t)stage].assign(hist_len, 0.0f);
+    }
+    BenchMeta meta;
+    meta.rate_hz = rate_hz;
+    meta.profile = "airspy";
+    meta.variant = stages == 5 ? "31/15x4" : "31/15x6";
+    return run_case(
+        opts, name, "input_pair", (double)kLiveBlockPairs,
+        [&]() -> float {
+            const float* src = in.data();
+            float* dst = work_a.data();
+            int in_len = (int)in.size();
+            for (int stage = 0; stage < stages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got =
+                    simd_hb_decim2_complex(src, in_len, dst, hist_i[(size_t)stage].data(), hist_q[(size_t)stage].data(),
+                                           &pending[(size_t)stage], stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == work_a.data()) ? work_b.data() : work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + (float)in_len;
+        },
+        &meta);
+}
+
+/* The step alone, on the 4096 pairs a maximum 2.5 or 3 MS/s block leaves after five passes, per output pair. */
+static int
+bench_one_iq_step(const BenchOptions& opts, const char* name, int hb_out_hz, int target_hz, int L, int M) {
+    constexpr int kStepIn = kLiveBlockPairs >> 5;
+    const int protect = target_hz * 9 / 20;
+    dsd_iq_resampler r;
+    dsd_iq_resampler_init(&r);
+    if (dsd_iq_resampler_configure_ratio(&r, L, M, hb_out_hz, 0U, protect, target_hz - protect,
+                                         DSD_LIVE_IQ_STEP_PASS_PAIRS)
+        != DSD_IQ_RESAMPLER_OK) {
+        DSD_FPRINTF(stderr, "%s: step design failed\n", name);
+        return 0;
+    }
+    std::vector<float> in((size_t)kStepIn * 2U);
+    fill_noise(&in, 0x806Bu);
+    const size_t cap = dsd_iq_resampler_max_out(&r, kStepIn);
+    std::vector<float> out(cap * 2U);
+    BenchMeta meta;
+    meta.rate_hz = hb_out_hz;
+    meta.profile = "iq_step";
+    meta.tap_count = r.taps_per_phase;
+    meta.variant = target_hz == 48000 ? "to_48k" : "to_72k";
+    const int ran = run_case(
+        opts, name, "out_pair", (double)kStepIn * (double)L / (double)M,
+        [&]() -> float {
+            const int made = dsd_iq_resampler_process(&r, in.data(), kStepIn, out.data(), cap);
+            return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + (float)made;
+        },
+        &meta);
+    dsd_iq_resampler_free(&r);
+    return ran;
+}
+
+/* A rectangular pi/4-DQPSK stream at @p rate_hz carrying @p symbol_hz symbols (not necessarily a whole sps). */
+static void
+fill_cqpsk_iq_rate(std::vector<float>* v, int rate_hz, int symbol_hz) {
+    static const float symbols[] = {-3.0f, -1.0f, 1.0f, 3.0f};
+    float phase = 0.0f;
+    long long last = -1;
+    const int pairs = (int)(v->size() >> 1);
+    for (int n = 0; n < pairs; n++) {
+        const long long k = ((long long)n * symbol_hz) / rate_hz;
+        if (k != last) {
+            last = k;
+            phase += symbols[k & 3] * (kPi / 4.0f);
+            while (phase > kPi) {
+                phase -= 2.0f * kPi;
+            }
+            while (phase < -kPi) {
+                phase += 2.0f * kPi;
+            }
+        }
+        (*v)[(size_t)n * 2] = std::cos(phase);
+        (*v)[(size_t)n * 2 + 1] = std::sin(phase);
+    }
+}
+
+/* full_demod() on maximum 2.5 MS/s blocks: five passes to 78,125 Hz, then the step to 48 kHz and P25p1 at 10 sps, or
+   (step 0) today's chain at the truncated 78,125 Hz with a rounded 16 sps. */
+static int
+bench_one_cqpsk_airspy_full_demod(const BenchOptions& opts, const char* name, int step) {
+    constexpr int kCaptureHz = 2500000;
+    std::vector<float> in((size_t)kLiveBlockPairs * 2U);
+    fill_cqpsk_iq_rate(&in, kCaptureHz, 4800);
+    DemodHolder state;
+    if (!state) {
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
+        return 0;
+    }
+    if (step) {
+        configure_common_cqpsk_state(state.s, 48000, 4800, 10);
+        dsd_live_iq_step_plan plan;
+        DSD_MEMSET(&plan, 0, sizeof(plan));
+        plan.enabled = 1;
+        plan.passes = 5;
+        plan.hb_out_num = 78125;
+        plan.L = 384;
+        plan.M = 625;
+        plan.target_hz = 48000;
+        plan.protect_hz = 21600;
+        plan.stop_hz = 26400;
+        int rc = dsd_demod_live_step_prepare(state.s, &plan);
+        if (rc == DSD_LIVE_IQ_STEP_OK) {
+            rc = dsd_live_iq_step_commit(&state.s->live_iq_step);
+        }
+        dsd_live_iq_step_finish(&state.s->live_iq_step);
+        if (rc != DSD_LIVE_IQ_STEP_OK) {
+            DSD_FPRINTF(stderr, "%s: step refused (%d)\n", name, rc);
+            return 0;
+        }
+    } else {
+        configure_common_cqpsk_state(state.s, 78125, 4800, 16);
+        state.s->sps_is_integer = 0;
+    }
+    state.s->downsample_passes = 5;
+    BenchMeta meta;
+    meta.rate_hz = kCaptureHz;
+    meta.profile = "cqpsk";
+    meta.variant = step ? "cascade+step" : "cascade";
+    return run_case(
+        opts, name, "input_pair", (double)kLiveBlockPairs,
+        [&]() -> float {
+            DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+            state.s->lowpassed = state.s->input_cb_buf;
+            state.s->lp_len = (int)in.size();
+            full_demod(state.s);
+            return state.s->result[0] + state.s->result[(state.s->result_len > 0) ? state.s->result_len - 1 : 0]
+                   + (float)state.s->result_len;
+        },
+        &meta);
+}
+
+/* A case that runs only when named with --case (one call takes milliseconds); listed as any other. */
+template <typename Fn>
+static int
+run_named_case(const BenchOptions& opts, const char* name, const char* item_unit, double work_items, Fn fn,
+               const BenchMeta* meta = NULL) {
+    if (!opts.list_cases && (!opts.case_filter || std::strcmp(opts.case_filter, name) != 0)) {
+        return 0;
+    }
+    return run_case(opts, name, item_unit, work_items, fn, meta);
+}
+
+/* The step model's key: the 2.5 MS/s plan to @p target_hz (kind 0, five passes), the 3 MS/s one (kind 1), or a
+   SoapySDR ratio near the 4096-term limit (kind 2: 2,095,616 Hz over 32 is 65,488 Hz, to 48 kHz by 3000/4093). */
+static dsd_live_iq_step_plan
+bench_airspy_step_plan(int target_hz, int kind) {
+    dsd_live_iq_step_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    plan.enabled = 1;
+    plan.passes = 5;
+    plan.hb_out_num = kind == 2 ? 65488 : (kind == 1 ? 93750 : 78125);
+    int g = target_hz;
+    for (int b = (int)plan.hb_out_num; b != 0;) {
+        const int t = g % b;
+        g = b;
+        b = t;
+    }
+    plan.L = target_hz / g;
+    plan.M = (int)plan.hb_out_num / g;
+    plan.target_hz = target_hz;
+    plan.protect_hz = target_hz * 9 / 20;
+    plan.stop_hz = target_hz - plan.protect_hz;
+    return plan;
+}
+
+static int
+bench_squelch_stages(dsd_noise_squelch_stage* st) {
+    for (int i = 0; i < 5; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    return 5;
+}
+
+/* The squelch step model's build, what the rate chain's transaction runs when the step's plan changes (issue #806):
+   L = 576 at 72 kHz is the largest an Airspy steps to. */
+static int
+bench_one_squelch_model_build(const BenchOptions& opts, const char* name, int target_hz, int kind) {
+    const dsd_live_iq_step_plan plan = bench_airspy_step_plan(target_hz, kind);
+    dsd_noise_squelch_stage st[5];
+    const int count = bench_squelch_stages(st);
+    dsd_squelch_step_model m;
+    dsd_squelch_step_model_init(&m);
+    BenchMeta meta;
+    meta.rate_hz = target_hz;
+    meta.profile = "squelch_model";
+    meta.tap_count = plan.L;
+    const int ran = run_named_case(
+        opts, name, "build", 1.0,
+        [&]() -> float {
+            dsd_squelch_step_model_release(&m);
+            return dsd_squelch_step_model_build(&m, &plan, st, count) == 0 ? (float)m.factor_len : -1.0f;
+        },
+        &meta);
+    dsd_squelch_step_model_release(&m);
+    return ran;
+}
+
+/* How a bench squelch plan is designed: today's behind the five-pass cascade, behind the step (the floor plan's
+   averaged path), or the floor plan from every output phase in full. */
+enum { BENCH_PLAN_CASCADE = 0, BENCH_PLAN_STEP = 1, BENCH_PLAN_STEP_EXACT = 2 };
+
+/* The floor or noise plan the demod thread designs at a squelch plan key change (@p step a BENCH_PLAN_*), for NFM
+   @p width_hz at @p target_hz, behind the step of @p kind (bench_airspy_step_plan()). */
+static int
+bench_one_squelch_plan(const BenchOptions& opts, const char* name, int target_hz, int width_hz, int noise, int step,
+                       int kind = 0) {
+    std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+    const int taps_len = dsd_channel_lpf_design_analog(target_hz, width_hz, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+    const dsd_live_iq_step_plan plan = bench_airspy_step_plan(target_hz, kind);
+    dsd_noise_squelch_stage st[5];
+    const int count = bench_squelch_stages(st);
+    dsd_squelch_step_model m;
+    dsd_squelch_step_model_init(&m);
+    if (taps_len <= 0 || (step && dsd_squelch_step_model_build(&m, &plan, st, count) != 0)) {
+        DSD_FPRINTF(stderr, "%s: setup failed\n", name);
+        return 0;
+    }
+    static dsd_noise_squelch_plan np;
+    dsd_squelch_floor_plan fp;
+    BenchMeta meta;
+    meta.rate_hz = target_hz;
+    meta.profile = noise ? "noise_plan" : "floor_plan";
+    meta.tap_count = taps_len;
+    meta.variant = step == BENCH_PLAN_STEP_EXACT ? "step_exact" : (step == BENCH_PLAN_STEP ? "step" : "cascade");
+    const int ran = run_named_case(
+        opts, name, "plan", 1.0,
+        [&]() -> float {
+            if (noise) {
+                (void)(step ? dsd_squelch_step_model_noise_plan(&m, &np, taps.data(), taps_len, target_hz)
+                            : dsd_noise_squelch_plan_design(&np, taps.data(), taps_len, st, count, target_hz));
+                return (float)np.p_ref_sum;
+            }
+            if (step == BENCH_PLAN_STEP_EXACT) {
+                (void)dsd_squelch_step_model_floor_plan_exact(&m, &fp, taps.data(), taps_len, target_hz);
+            } else if (step == BENCH_PLAN_STEP) {
+                (void)dsd_squelch_step_model_floor_plan(&m, &fp, taps.data(), taps_len, target_hz);
+            } else {
+                (void)dsd_squelch_floor_plan_design(&fp, taps.data(), taps_len, hb_q15_taps, HB_TAPS, target_hz);
+            }
+            return (float)fp.neff;
+        },
+        &meta);
+    dsd_squelch_step_model_release(&m);
+    return ran;
+}
+
+static int
+bench_squelch_plans(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_78k125_72k", 72000, 0);
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_78k125_48k", 48000, 0);
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_93k75_48k", 48000, 1);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_72k_nfm25k", 72000, 25000, 0, BENCH_PLAN_STEP);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_72k_nfm25k", 72000, 25000, 0, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_72k_nfm25k", 72000, 25000, 1, BENCH_PLAN_STEP);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_72k_nfm25k", 72000, 25000, 1, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_48k_nfm12k5", 48000, 12500, 0, BENCH_PLAN_STEP);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_48k_nfm12k5", 48000, 12500, 0, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_48k_nfm12k5", 48000, 12500, 1, BENCH_PLAN_STEP);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_48k_nfm12k5", 48000, 12500, 1, 0);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_exact_72k_nfm25k", 72000, 25000, 0,
+                                  BENCH_PLAN_STEP_EXACT);
+    ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_soapy_m4093_48k", 48000, 2);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_soapy_m4093_48k_nfm25k", 48000, 25000, 0,
+                                  BENCH_PLAN_STEP, 2);
+    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_exact_soapy_m4093_48k_nfm25k", 48000, 25000, 0,
+                                  BENCH_PLAN_STEP_EXACT, 2);
+    ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_soapy_m4093_48k_nfm25k", 48000, 25000, 1,
+                                  BENCH_PLAN_STEP, 2);
+    return ran;
+}
+
+static int
+bench_live_step(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_hb_cascade(opts, "hb_cascade_2500k", 2500000, 5);
+    ran += bench_one_hb_cascade(opts, "hb_cascade_10000k", 10000000, 7);
+    ran += bench_one_iq_step(opts, "iq_step_78k125_48k", 78125, 48000, 384, 625);
+    ran += bench_one_iq_step(opts, "iq_step_78k125_72k", 78125, 72000, 576, 625);
+    ran += bench_one_iq_step(opts, "iq_step_93k75_48k", 93750, 48000, 64, 125);
+    ran += bench_one_iq_step(opts, "iq_step_93k75_72k", 93750, 72000, 96, 125);
+    ran += bench_one_cqpsk_airspy_full_demod(opts, "full_demod_cqpsk_p25p1_airspy_78k", 1);
+    ran += bench_one_cqpsk_airspy_full_demod(opts, "full_demod_cqpsk_p25p1_airspy_78k_nostep", 0);
     return ran;
 }
 
@@ -1604,6 +1933,8 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_live_step(opts);
+    ran += bench_squelch_plans(opts);
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);

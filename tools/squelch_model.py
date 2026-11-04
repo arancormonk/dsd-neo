@@ -28,7 +28,7 @@ Everything comes from the repository, not from invented numbers:
     rules in src/io/radio/rtl_demod_config.cpp and src/runtime/analog_channel.c: an explicit NFM
     width and every AM width need dsd_analog_width_realizable() at the demod rate and
     post_downsample 1; the unset NFM default runs everywhere, with the 16 kHz design where the rate
-    realizes it, the legacy WIDE profile plan (144-tap cap, 63-tap fallback prototype) where it does
+    realizes it, the legacy WIDE profile plan (288-tap cap, 63-tap fallback prototype) where it does
     not, and no channel filter at all where the channel LPF is off (rate_in below 20 kHz, or
     DSD_NEO_CHANNEL_LPF=0). With post_downsample above 1 the plan designed at the demod rate runs
     at rate_out x post_downsample; every window and lag here is at that pre-post-decimation rate.
@@ -115,7 +115,7 @@ TRANSITION_HZ = 1200
 GUARD_HZ = 600
 ANALOG_MAX_TAPS = 288
 LEGACY_WIDE_CUTOFF_HZ = 8000.0 + GUARD_HZ  # kChannelEdgeWideHz + kChannelLpfGuardHz
-LEGACY_WIDE_MAX_TAPS = 144  # kChannelLpfTaps
+LEGACY_WIDE_MAX_TAPS = 288  # DSD_CHANNEL_LPF_MAX_TAPS, the digital profiles' cap since issue #806
 LPF_DEFAULT_ENABLE_RATE_IN_HZ = 20000  # demod_channel_lpf_default_enable()
 
 NFM_WIDTHS_HZ = (8000, 10000, 12500, 16000, 20000, 25000)

@@ -345,25 +345,23 @@ rigctl peer the Passband sheet) keep editing the configured width: while the row
 leave, and the message says the channel overrides it. An edit of the other kind's width is not shadowed: an AM width
 edit under an `nfm` row, or an NFM width edit under an `am` row, is the configured width's at once. A width the running
 DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz DSP
-bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth that
-fits; on a SoapySDR or Airspy device a wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width) in
+bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix (the DSP bandwidths that fit) in
 the log and on the status line when the scan starts, against the rate the running stream publishes, and again whenever
 that rate changes. A channel map imported while DSD-neo runs (the terminal menu, Qt, Android) is held to the DSP rate
-known then: the running stream's, or on an RTL-SDR or rtl_tcp input with no stream running the one its DSP bandwidth
-sets. The map still loads, since the DSP bandwidth that fits it can be set afterwards, and the import message names the
-first row that rate cannot run and how many more there are. A SoapySDR or Airspy device, or an I/Q replay, delivers its
-rate only once its stream runs, so its rows are held to it at scan start; the Qt/Android review before an import, like a
+known then: the running stream's, or on a radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) with no stream running
+the one its DSP bandwidth sets. The map still loads, since the DSP bandwidth that fits it can be set afterwards, and the
+import message names the first row that rate cannot run and how many more there are. An I/Q replay's rate is known only
+once its stream runs, so its rows are held to it at scan start; the Qt/Android review before an import, like a
 trunk-scan list's preview, checks the width's range only. A row the rate cannot filter is skipped at every visit rather
 than received without its filter, and so is every row with a width of its own while `DSD_NEO_CHANNEL_LPF=0` turns off
 the channel filter each explicit width needs. A row without a width of its own is held to the rate with the configured
 width of its kind it runs, and is named again whenever that configured width changes; the AM default always runs its
 channel filter, so an `am` row on it is held like an explicit width. While the scan has such a row, the configured width
 of its kind is in use on any session, as under `-fA` or `-fM`: a width edit or a loaded config that sets a width the DSP
-rate cannot filter, and a DSP bandwidth or an input switch that would open an RTL-SDR or rtl_tcp device at a rate that
-cannot filter the configured width, is refused, whichever row is on air (a SoapySDR or Airspy device's start checks only
-the width in force against the rate it delivers).
-While a row with its own width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than
-reopening the stream on it, from the DSP bandwidth control, Input > Switch source and a loaded config alike.
+rate cannot filter, and a DSP bandwidth or an input switch that would open a radio at a rate that cannot filter the
+configured width, is refused, whichever row is on air. While a row with its own width is on air, a DSP bandwidth that
+cannot filter the width is refused rather than reopening the stream on it, from the DSP bandwidth control, Input >
+Switch source and a loaded config alike.
 
 On audio input (rigctl tuning a PCM, UDP or TCP source) the rigctl peer demodulates, so each row's tune asks it for the
 row's demodulator and passband before the frequency: an `am` row sends `M AM <width>` with the AM width it runs (its

@@ -7,6 +7,8 @@
 
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <math.h>
 #include <stddef.h>
@@ -160,11 +162,28 @@ nsq_rng_complex(nsq_rng* r) {
     return nsq_c(re, im);
 }
 
+/* The calibration noise ahead of the channel filter behind a live rate step (issue #806): complex Gaussian noise at the
+   step's input rate through the spectral factor of the cascade's output, then the step, a pass of
+   DSD_LIVE_IQ_STEP_PASS_PAIRS inputs at a time. The ring holds the factor's newest input at pos - 1. */
+typedef struct {
+    const double* factor;
+    int factor_len;
+    nsq_cplx ring[DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS];
+    int pos;
+    dsd_iq_resampler* step;
+    float in[2 * DSD_LIVE_IQ_STEP_PASS_PAIRS];
+    float out[2 * DSD_LIVE_IQ_STEP_PASS_PAIRS];
+    int out_len;
+    int out_at;
+    int failed;
+} nsq_step_source;
+
 /* The calibration noise as the channel filter puts it out: white complex noise at twice the rate through the plan's
-   cascade FIR (the stages ahead of the last) and the last half-band stage (one output per two inputs), then the
-   channel taps. Each ring holds its newest sample at pos - 1. */
+   cascade FIR (the stages ahead of the last) and the last half-band stage (one output per two inputs), or through a
+   live rate step (stepped), then the channel taps. Each ring holds its newest sample at pos - 1. */
 typedef struct {
     nsq_rng rng;
+    nsq_step_source* stepped;
     const double* pre;
     int pre_len;
     const float* hb;
@@ -217,10 +236,39 @@ nsq_noise_wide(nsq_noise_source* src) {
     return nsq_ring_fir_d(src->pre_ring, src->pre_pos, src->pre, src->pre_len);
 }
 
+/* The step's next output, a pass of new noise through the factor and the step when the last pass is used up. A step
+   that refuses a pass marks the source failed and gives silence. */
+static nsq_cplx
+nsq_step_next(nsq_step_source* s, nsq_rng* rng) {
+    while (s->out_at >= s->out_len) {
+        if (s->failed) {
+            return nsq_c(0.0, 0.0);
+        }
+        for (int i = 0; i < DSD_LIVE_IQ_STEP_PASS_PAIRS; i++) {
+            s->ring[s->pos] = nsq_rng_complex(rng);
+            s->pos = (s->pos + 1) % s->factor_len;
+            const nsq_cplx x = nsq_ring_fir_d(s->ring, s->pos, s->factor, s->factor_len);
+            s->in[(size_t)i * 2U] = (float)x.re;
+            s->in[((size_t)i * 2U) + 1U] = (float)x.im;
+        }
+        const int made =
+            dsd_iq_resampler_process(s->step, s->in, DSD_LIVE_IQ_STEP_PASS_PAIRS, s->out, DSD_LIVE_IQ_STEP_PASS_PAIRS);
+        s->failed = made < 0;
+        s->out_len = made > 0 ? made : 0;
+        s->out_at = 0;
+    }
+    const size_t at = (size_t)s->out_at * 2U;
+    const nsq_cplx y = nsq_c((double)s->out[at], (double)s->out[at + 1U]);
+    s->out_at++;
+    return y;
+}
+
 static nsq_cplx
 nsq_noise_next(nsq_noise_source* src) {
     nsq_cplx in;
-    if (src->hb_len > 0) {
+    if (src->stepped) {
+        in = nsq_step_next(src->stepped, &src->rng);
+    } else if (src->hb_len > 0) {
         for (int k = 0; k < 2; k++) {
             src->hb_ring[src->hb_pos] = nsq_noise_wide(src);
             src->hb_pos = (src->hb_pos + 1) % src->hb_len;
@@ -234,21 +282,14 @@ nsq_noise_next(nsq_noise_source* src) {
     return nsq_ring_fir(src->ch_ring, src->ch_pos, src->taps, src->taps_len);
 }
 
-/* Each band-pass's mean output power for noise alone: 2 s through the cascade FIR and the last half-band stage, the
-   channel taps, the discriminator and the band-pass, once the filters have filled and settled. */
+static const float k_unit_tap[1] = {1.0f};
+/* The calibration noise's seed: every plan calibrates on the same noise, so a plan reproduces exactly. */
+static const uint64_t k_calibration_seed = 0x9E3779B97F4A7C15ULL;
+
+/* Each band-pass's mean output power for noise alone from @p src: 2 s through the channel taps, the discriminator and
+   the band-pass, once the filters have filled (@p fill samples) and settled. */
 static void
-nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, const float* hb, int hb_len) {
-    static const float k_unit_tap[1] = {1.0f};
-    nsq_noise_source src;
-    DSD_MEMSET(&src, 0, sizeof(src));
-    src.rng.state = 0x9E3779B97F4A7C15ULL;
-    src.hb = hb;
-    src.hb_len = hb ? hb_len : 0;
-    src.pre = plan->cascade;
-    src.pre_len = src.hb_len > 0 ? plan->cascade_len : 0;
-    src.taps = taps ? taps : k_unit_tap;
-    src.taps_len = taps ? taps_len : 1;
-    const int fill = src.taps_len + src.hb_len + src.pre_len;
+nsq_calibrate_from(dsd_noise_squelch_plan* plan, nsq_noise_source* src, int fill) {
     const int settle = (int)(k_settle_s * (double)plan->rate_hz);
     const int measured = (int)(k_calibration_s * (double)plan->rate_hz);
     dsd_noise_squelch_band_group
@@ -261,7 +302,7 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     DSD_MEMSET(energy, 0, sizeof(energy));
     nsq_cplx prev = nsq_c(0.0, 0.0);
     for (int n = 0; n < fill + settle + measured; n++) {
-        const nsq_cplx z = nsq_noise_next(&src);
+        const nsq_cplx z = nsq_noise_next(src);
         const nsq_cplx step = nsq_mul(z, nsq_c(prev.re, -prev.im));
         prev = z;
         if (n < fill) {
@@ -280,6 +321,22 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
             plan->p_ref_sum += plan->p_ref[k];
         }
     }
+}
+
+/* The calibration behind the half-band cascade: 2 s through the cascade FIR and the last half-band stage, the channel
+   taps, the discriminator and the band-pass. */
+static void
+nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, const float* hb, int hb_len) {
+    nsq_noise_source src;
+    DSD_MEMSET(&src, 0, sizeof(src));
+    src.rng.state = k_calibration_seed;
+    src.hb = hb;
+    src.hb_len = hb ? hb_len : 0;
+    src.pre = plan->cascade;
+    src.pre_len = src.hb_len > 0 ? plan->cascade_len : 0;
+    src.taps = taps ? taps : k_unit_tap;
+    src.taps_len = taps ? taps_len : 1;
+    nsq_calibrate_from(plan, &src, src.taps_len + src.hb_len + src.pre_len);
 }
 
 /* |H(f)| of a stage's (symmetric) taps run at @p rate, against their DC gain. */
@@ -425,6 +482,67 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
     const dsd_noise_squelch_stage* last = stage_count > 0 ? &stages[stage_count - 1] : NULL;
     nsq_calibrate(out, taps, taps_len, last ? last->taps : NULL, last ? last->len : 0);
     if (!(out->p_ref_sum > k_min_power)) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return -1;
+    }
+    out->valid = 1;
+    return 0;
+}
+
+/* Whether the arguments describe a stepped plan the squelch can take: a factor it can ring, a configured step that
+   never makes more outputs than a pass's inputs, and the channel taps and rate nsq_design_args_ok() takes. */
+static int
+nsq_stepped_args_ok(const double* factor, int factor_len, const dsd_iq_resampler* step, int taps_len, int rate_hz) {
+    return factor && factor_len >= 1 && factor_len <= DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS && step && step->configured
+           && dsd_iq_resampler_max_out(step, DSD_LIVE_IQ_STEP_PASS_PAIRS) <= (size_t)DSD_LIVE_IQ_STEP_PASS_PAIRS
+           && nsq_design_args_ok(taps_len, NULL, 0, rate_hz);
+}
+
+/* The calibration behind the step: 2 s of the same noise through the factor and @p step (cleared before and after),
+   the channel taps (NULL: none), the discriminator and the band-pass. Returns 0, or -1 when the step refused a pass. */
+static int
+nsq_calibrate_stepped(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, const double* factor,
+                      int factor_len, dsd_iq_resampler* step) {
+    nsq_step_source stepped;
+    DSD_MEMSET(&stepped, 0, sizeof(stepped));
+    stepped.factor = factor;
+    stepped.factor_len = factor_len;
+    stepped.step = step;
+    nsq_noise_source src;
+    DSD_MEMSET(&src, 0, sizeof(src));
+    src.rng.state = k_calibration_seed;
+    src.stepped = &stepped;
+    src.taps = taps ? taps : k_unit_tap;
+    src.taps_len = taps ? taps_len : 1;
+    dsd_iq_resampler_clear(step);
+    /* The factor and the step fill within their own taps, counted as outputs (the step never makes more than it takes). */
+    nsq_calibrate_from(plan, &src, src.taps_len + factor_len + step->taps_per_phase);
+    dsd_iq_resampler_clear(step);
+    return stepped.failed ? -1 : 0;
+}
+
+int
+dsd_noise_squelch_plan_design_stepped(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                      const double* factor, int factor_len, dsd_iq_resampler* step, int rate_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!nsq_stepped_args_ok(factor, factor_len, step, taps_len, rate_hz)) {
+        return -1;
+    }
+    if (!taps || taps_len <= 0) {
+        taps = NULL;
+        taps_len = 0;
+    }
+    /* With no channel filter the step's edge is the channel's, and it truncates a wide signal as the cascade's roll-off
+       does: the same rule. The band's 0.45 fs cap is the step's protected band. */
+    if (nsq_design_band(out, taps, taps_len, 1, rate_hz) != 0) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return -1;
+    }
+    nsq_design_band_passes(out);
+    if (nsq_calibrate_stepped(out, taps, taps_len, factor, factor_len, step) != 0 || !(out->p_ref_sum > k_min_power)) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }

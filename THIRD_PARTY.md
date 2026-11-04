@@ -35,7 +35,9 @@ not a finding that every component is cleared for redistribution.
   `0002-librtlsdr-check-async-buffer-allocation.patch` makes the async reader check its transfer allocations and
   return `-ENOMEM` instead of submitting NULL transfers, and `0003-librtlsdr-account-for-every-transfer.patch` makes
   it count the transfers libusb owns, return `-1` once none is left, and free nothing until every transfer has been
-  called back. Not part of any non-Android build.
+  called back. The snapshot is not part of any non-Android build, but the Windows, AppImage and macOS release
+  packages build librtlsdr from the same pinned upstream revision with `0002` and `0003` applied
+  (`tools/usb_dependency_patches.sh`).
 - **libusb** (`android/third_party/libusb`; https://github.com/libusb/libusb) - LGPL-2.1-or-later; license text
   `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
   own Android build uses) built into the Android app. Not part of any non-Android build.
@@ -123,6 +125,16 @@ not a finding that every component is cleared for redistribution.
     from `noise_floor`; its recorded portion carries the `nxdn96` fixture's terms.
   - The `nxdn96_weak` and `nxdn96_weak_0db` fixtures are the `nxdn96` fixture with seeded complex Gaussian noise added
     by `tools/build_iq_fixtures.py` (no recorded material of its own); they carry the `nxdn96` fixture's terms.
+  - The `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` fixtures are the `p25p1_c4fm_cc` and `p25p1_cqpsk_cc`
+    fixtures resampled to 72 kHz with a time-reversed copy of themselves added 12.5 kHz up, by
+    `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures' terms. The
+    `p25p1_c4fm_adjacent_78k`, `p25p1_c4fm_adjacent_94k`, `p25p1_cqpsk_adjacent_78k` and `p25p1_cqpsk_adjacent_94k`
+    fixtures are the same mix at 78,125 and 93,750 Hz and carry the same terms.
+  - The forced-rate recordings the `DECODE_IQ_*_AIRSPY_*` and `ENGINE_AIRSPY_FORCED_RATE_*` tests use are not committed:
+    `tests/io/forced_rate_input.c` makes them at test time from excerpts of the `p25p1_cqpsk_cc`, `p25p1_cqpsk_vc`,
+    `p25p1_cqpsk_cc_simulcast`, `p25p2_cc`, `dmr_voice_synth` and `tetra_call_real_air_72k` fixtures, upsampled to an
+    Airspy's rates with seeded noise added before and after (no recorded material of their own). They carry their
+    source fixtures' terms.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source
@@ -154,11 +166,13 @@ not a finding that every component is cleared for redistribution.
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
-librtlsdr/libusb notices for the Android package.
+librtlsdr/libusb notices for the Android package. The Windows, AppImage and macOS release packages, which bundle a
+librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt` and
+`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`.
 
 Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
 and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.
 This does not close the separate complete-runtime-notice or corresponding-source
 findings in `legal/status.md`.
 
-Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, and AppImage builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`. The Android copy (`android/third_party/libairspy`) carries one project patch, kept in `android/third_party/patches/`: `0001-libairspy-wait-for-cancelled-transfers.patch` makes stop, close, restart and a packing change wait until libusb has called back every cancelled transfer before freeing or resubmitting any. Windows overlay and AppImage builds use upstream unpatched.
+Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, AppImage builds and macOS DMG builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`. The Android copy (`android/third_party/libairspy`) carries one project patch, kept in `android/third_party/patches/`: `0001-libairspy-wait-for-cancelled-transfers.patch` makes stop, close, restart and a packing change wait until libusb has called back every cancelled transfer before freeing or resubmitting any. Windows overlay, AppImage and macOS DMG builds apply the same patch (`tools/usb_dependency_patches.sh`); builds against a system libairspy use it unpatched.

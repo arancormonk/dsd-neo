@@ -718,6 +718,8 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
             result[QStringLiteral("ppm")] = QString::number(hit.value(QStringLiteral("ppm")).toInt());
             result[QStringLiteral("biasTee")] = hit.value(QStringLiteral("biasTee")).toBool() ? 1 : 0;
         }
+        /* The 48 kHz default, whatever the app's: every radio runs it as it is, an Airspy's capture rate stepped to it
+           (issue #806), so the width saved below is held to the same DSP rate on each. */
         result[QStringLiteral("bandwidthKhz")] = 48;
     }
     result[QStringLiteral("freqMhz")] = hit.value(QStringLiteral("freqMHz"));

@@ -1,7 +1,12 @@
 name: linux-ci
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dsp_bench:
+        description: Also run the DSP benchmark against the merge base with main on the native arm64 runner
+        type: boolean
+        default: false
   push:
     branches: [main, master]
     tags:
@@ -177,12 +182,22 @@ jobs:
             echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
+      # The DESKTOP_* transfer tests build these, the sources the AppImage ships;
+      # the `both` legs (x86_64 and arm64) run them.
+      - name: Fetch the patched libairspy and librtlsdr sources
+        if: env.CI_RUN_CHECK == 'true' && matrix.variant == 'both'
+        run: tools/usb_dependency_patches.sh fetch-all "$RUNNER_TEMP/desktop-usb"
+
       - name: Configure (${{ matrix.variant }})
         if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-${{ matrix.variant }}.log"
-          cmake --preset dev-debug ${{ matrix.cmake_flags }} 2>&1 | tee "$log"
+          desktop_usb=()
+          if [ -d "$RUNNER_TEMP/desktop-usb" ]; then
+            desktop_usb=("-DDSD_TEST_DESKTOP_USB_SOURCES=$RUNNER_TEMP/desktop-usb")
+          fi
+          cmake --preset dev-debug ${{ matrix.cmake_flags }} "${desktop_usb[@]}" 2>&1 | tee "$log"
           grep -F "RTL-SDR backend enabled: ${{ matrix.rtl_enabled }} (available: ${{ matrix.rtl_available }})" "$log"
           grep -F "Airspy backend enabled: ${{ matrix.airspy_enabled }} (available: ${{ matrix.airspy_available }})" "$log"
           grep -F "SoapySDR backend enabled: ${{ matrix.soapy_enabled }} (available: ${{ matrix.soapy_available }})" "$log"
@@ -201,6 +216,121 @@ jobs:
         run: |
           ctest --preset dev-debug -N | tail -n 1
           ctest --preset dev-debug --parallel 2 --output-on-failure
+
+  # Manual only: dispatch this workflow on a branch with dsp_bench set. It builds
+  # dsd-neo_bench_dsp (perf-bench preset) for the branch and for its merge base
+  # with main on the native arm64 runner, where the NEON paths run, and runs the
+  # full benchmark three times on each build, alternating, plus the cases that
+  # run only by name (docs/dsp-benchmarking.md). The CSVs and a head/base
+  # summary are uploaded as the dsp-bench-arm64 artifact; pull requests and
+  # pushes never run it.
+  dsp-bench-arm64:
+    if: github.event_name == 'workflow_dispatch' && inputs.dsp_bench
+    name: dsp-bench (arm64, manual)
+    runs-on: ubuntu-24.04-arm
+    concurrency:
+      group: ci-worker-06
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev \
+            portaudio19-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+          {
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the benchmark for this ref and its merge base with main
+        run: |
+          set -euxo pipefail
+          git fetch --no-tags origin main
+          base=$(git merge-base HEAD origin/main)
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          for tree in "$GITHUB_WORKSPACE" "$RUNNER_TEMP/base"; do
+            (cd "$tree" && cmake --preset perf-bench > /dev/null && cmake --build --preset perf-bench -j --target dsd-neo_bench_dsp)
+          done
+          echo "BENCH_BASE_SHA=$base" >> "$GITHUB_ENV"
+
+      - name: Run the benchmark, alternating the builds
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/dsp-bench-arm64"
+          mkdir -p "$out"
+          head_bin="$GITHUB_WORKSPACE/build/perf-bench/tests/dsd-neo_bench_dsp"
+          base_bin="$RUNNER_TEMP/base/build/perf-bench/tests/dsd-neo_bench_dsp"
+          { echo "head=$(git rev-parse HEAD)"; echo "base=$BENCH_BASE_SHA"; nproc; lscpu; } > "$out/host.txt"
+          for round in 1 2 3; do
+            order="base head"
+            if [ "$round" = 2 ]; then order="head base"; fi
+            for build in $order; do
+              bin=$head_bin
+              if [ "$build" = base ]; then bin=$base_bin; fi
+              "$bin" --iters 3000 --repeat 5 --format csv > "$out/${build}_r${round}.csv"
+            done
+          done
+          # The cases that run only by name (squelch model and plan builds) are new with the step. One CSV: the
+          # first case keeps its header row, the rest drop theirs.
+          skip=1
+          "$head_bin" --list | grep -E '^squelch_(step_model_build|floor_plan|noise_plan)_' | while read -r name; do
+            "$head_bin" --case "$name" --iters 3 --warmup 1 --repeat 3 --format csv | tail -n "+$skip"
+            skip=2
+          done > "$out/head_named.csv"
+          python3 - "$out" > "$out/summary.tsv" << 'EOF'
+          import csv, pathlib, sys
+          out = pathlib.Path(sys.argv[1])
+          def best(build):
+              runs = {}
+              for path in sorted(out.glob(f"{build}_r*.csv")):
+                  for row in csv.DictReader(path.open()):
+                      runs.setdefault(row["case"], []).append(float(row["median_ns_per_call"]))
+              return {case: min(values) for case, values in runs.items()}
+          base, head = best("base"), best("head")
+          print("case\tbase_ns_per_call\thead_ns_per_call\thead_over_base")
+          for case in head:
+              if case in base:
+                  print(f"{case}\t{base[case]:.1f}\t{head[case]:.1f}\t{head[case] / base[case]:.3f}")
+              else:
+                  print(f"{case}\t-\t{head[case]:.1f}\tnew")
+          EOF
+          {
+            echo '### DSP benchmark, arm64 (head vs merge base, best of 3 medians)'
+            echo 'Shared runner: read head_over_base within ±3 % (0.97 to 1.03) as noise.'
+            echo '```'
+            column -t -s $'\t' "$out/summary.tsv"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the benchmark results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dsp-bench-arm64
+          path: ${{ runner.temp }}/dsp-bench-arm64
+          retention-days: 30
 
   # The arm64 entry is the Android ABI's instruction set with the Android option
   # set; a missing name_suffix keeps the x86_64 check name unchanged.

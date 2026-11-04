@@ -38,6 +38,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/costas.h"
 #include "dsd-neo/dsp/fsk_modem.h"
+#include "dsd-neo/dsp/live_iq_step.h"
+#include "dsd-neo/dsp/squelch_step_model.h"
 #include "dsd-neo/platform/threading.h"
 #include "rtl_stream_mirrors.hpp"
 
@@ -57,8 +59,9 @@ fsk_modem_apply_config(struct demod_state* s) {
     if (!s) {
         return;
     }
+    /* The discriminator runs at the complex rate: the FSK path never post-decimates (issue #806). */
     dsd_fsk_modem_config cfg = {};
-    cfg.sample_rate_hz = s->rate_out > 0 ? s->rate_out : s->rate_in;
+    cfg.sample_rate_hz = s->complex_rate > 0 ? s->complex_rate : s->rate_in;
     cfg.symbol_rate_hz = s->symbol_rate_hz > 0 ? s->symbol_rate_hz : 4800;
     cfg.levels = (s->symbol_levels == 2) ? 2 : 4;
     cfg.channel_profile = s->channel_lpf_profile;
@@ -286,6 +289,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     (void)output;
     s->rate_in = rtl_dsp_bw_hz;
     s->rate_out = rtl_dsp_bw_hz;
+    s->complex_rate = rtl_dsp_bw_hz;
     s->squelch_level = 0.0f;
     s->conseq_squelch = 10;
     s->terminate_on_squelch = 0;
@@ -397,7 +401,7 @@ demod_init_cqpsk_defaults(struct demod_state* s) {
     s->cqpsk_diff_prev_j = 0.0f;
     s->cqpsk_agc_avg = 1.0f;
     dsd_fsk_modem_config fsk_cfg = {};
-    fsk_cfg.sample_rate_hz = s->rate_out;
+    fsk_cfg.sample_rate_hz = s->complex_rate;
     fsk_cfg.symbol_rate_hz = s->symbol_rate_hz;
     fsk_cfg.levels = s->symbol_levels;
     fsk_cfg.channel_profile = s->channel_lpf_profile;
@@ -462,7 +466,7 @@ demod_apply_costas_defaults(struct demod_state* demod, const dsdneoRuntimeConfig
     cl->phase = 0.0f;
     cl->freq = 0.0f;
     const float kTwoPi = 6.28318530717958647692f;
-    float if_rate = (demod->rate_out > 0) ? (float)demod->rate_out : 24000.0f;
+    float if_rate = (demod->complex_rate > 0) ? (float)demod->complex_rate : 24000.0f;
     cl->max_freq = kTwoPi * 2400.0f / if_rate;
     cl->min_freq = -cl->max_freq;
     cl->loop_bw = cfg->costas_bw_is_set ? (float)cfg->costas_loop_bw : 0.008f;
@@ -552,7 +556,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     demod->analog_width_request_hz = 0;
     demod->analog_width_setting_hz = 0;
     if (dsd_opts_is_analog_family(opts)) {
-        /* Provisional: rate_out is not final yet. rtl_demod_finalize_analog_channel() settles it. */
+        /* Provisional: complex_rate is not final yet. rtl_demod_finalize_analog_channel() settles it. */
         (void)rtl_demod_apply_analog_channel(demod, opts->analog_demod, dsd_opts_analog_width_hz(opts));
     }
     fsk_modem_apply_config(demod);
@@ -674,7 +678,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
 
 static int
 rtl_demod_resolve_complex_rate(const struct demod_state* demod, const struct output_state* output) {
-    int fs = demod->rate_out > 0 ? demod->rate_out : (int)output->rate;
+    int fs = demod->complex_rate > 0 ? demod->complex_rate : (int)output->rate;
     return (fs > 0) ? fs : 48000;
 }
 
@@ -690,37 +694,15 @@ rtl_demod_clamp_sps(int sps) {
 }
 
 static void
-rtl_demod_log_non_integer_defaults(const struct demod_state* demod, int fs_cx, int sym_rate, int sps) {
-    if (demod->cqpsk_enable) {
-        LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                 "CQPSK timing will continue at the rounded SPS. Use a DSP bandwidth that results in "
-                 "integer SPS for optimal performance.\n",
-                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
-        return;
-    }
-    LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-             "Symbol timing will use the rounded SPS. "
-             "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
-             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
-}
-
-static void
 rtl_demod_apply_digital_default_tracking(struct demod_state* demod, const dsd_opts* opts,
                                          const struct output_state* output, int ted_gain_is_set) {
+    /* Before the rate plan: the device may still force another rate, so nothing is warned about this one. The timing
+       warning comes once the plan is final (rtl_demod_warn_symbol_timing()). */
     int fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate = opts_symbol_rate_hz(opts);
-    if (fs_cx < (sym_rate * 2)) {
-        LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx,
-                 sym_rate);
-    }
     int sps = rtl_demod_clamp_sps((fs_cx + (sym_rate / 2)) / sym_rate);
     demod->ted_sps = sps;
-    if ((fs_cx % sym_rate) == 0) {
-        demod->sps_is_integer = 1;
-    } else {
-        demod->sps_is_integer = 0;
-        rtl_demod_log_non_integer_defaults(demod, fs_cx, sym_rate, sps);
-    }
+    demod->sps_is_integer = (fs_cx % sym_rate) == 0 ? 1 : 0;
     if (!ted_gain_is_set) {
         demod->ted_gain = 0.025f;
         demod->ted_effective_gain = demod->ted_gain;
@@ -754,9 +736,10 @@ rtl_demod_disable_resampler(struct demod_state* demod, int reset_ratio) {
 
 int
 rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode, int resamp_target_hz,
-                                      int symbol_rate_hz, int rate_out_hz, int capture_rate_device_forced) {
-    /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value
-       per symbol from the Gardner loop, which absorbs a fractional SPS on its own. */
+                                      int symbol_rate_hz, int complex_rate_hz, int capture_rate_device_forced) {
+    /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value per symbol from the
+       Gardner loop, so there is nothing to resample after it. The loop cannot time a fractional SPS (it slips
+       symbols), which rtl_demod_warn_symbol_timing() says. */
     if (output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
@@ -765,7 +748,7 @@ rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode
     }
     const int target = resamp_target_hz;
     const int sym_rate = symbol_rate_hz > 0 ? symbol_rate_hz : 4800;
-    const int in_rate = rate_out_hz;
+    const int in_rate = complex_rate_hz;
     if (target <= 0 || in_rate <= 0 || target == in_rate) {
         return 0;
     }
@@ -787,12 +770,23 @@ rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode
 }
 
 int
+rtl_demod_emitted_rate_hz(const struct demod_state* demod) {
+    if (!demod) {
+        return 0;
+    }
+    /* Only the audio monitor runs the post-demod decimator (full_demod_apply_post_audio_decimation()). */
+    const int complex_path = demod->cqpsk_enable || demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK
+                             || demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    return complex_path ? demod->complex_rate : demod->rate_out;
+}
+
+int
 rtl_demod_digital_resample_target_hz(const struct demod_state* demod) {
     if (!demod) {
         return 0;
     }
     return rtl_demod_digital_resample_target_for(demod->output_kind, demod->digital_resample_mode,
-                                                 demod->resamp_target_hz, demod->symbol_rate_hz, demod->rate_out,
+                                                 demod->resamp_target_hz, demod->symbol_rate_hz, demod->complex_rate,
                                                  demod->capture_rate_device_forced);
 }
 
@@ -839,19 +833,6 @@ rtl_demod_resampler_needs_reconfigure(const struct demod_state* demod, int L, in
             || demod->resamp_hist == NULL);
 }
 
-static void
-rtl_demod_log_non_integer_after_rate_change(const struct demod_state* demod, int fs_cx, int sym_rate) {
-    if (demod->cqpsk_enable) {
-        LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                 "CQPSK timing continues at the rounded SPS.\n",
-                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
-        return;
-    }
-    LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-             "Symbol timing will use the rounded SPS.\n",
-             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
-}
-
 /**
  * @brief Apply sane defaults for digital vs analog demodulation when unset.
  *
@@ -888,7 +869,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opts* op
  *
  * @param demod         Demodulator state (contains resampler config).
  * @param output        Output ring state to refresh.
- * @param rtl_dsp_bw_hz DSP baseband bandwidth in Hz when rate_out is unset.
+ * @param rtl_dsp_bw_hz DSP baseband bandwidth in Hz when the demod rates are unset.
  */
 void
 rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, struct output_state* output,
@@ -896,7 +877,8 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     if (!demod || !output) {
         return;
     }
-    int inRate = demod->rate_out > 0 ? demod->rate_out : rtl_dsp_bw_hz;
+    const int emitted_hz = rtl_demod_emitted_rate_hz(demod);
+    int inRate = emitted_hz > 0 ? emitted_hz : rtl_dsp_bw_hz;
     if (rtl_demod_should_skip_resampler(demod)) {
         rtl_demod_disable_resampler(demod, 0);
         output->rate = inRate;
@@ -996,17 +978,8 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int sym_rate;
     int sym_levels;
     rtl_demod_ted_symbol_profile(demod, opts, preserve_active_profile, &sym_rate, &sym_levels);
-    if (Fs_cx < (sym_rate * 2)) {
-        LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
-                 sym_rate);
-    }
     int sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
-    if ((Fs_cx % sym_rate) == 0) {
-        demod->sps_is_integer = 1;
-    } else {
-        demod->sps_is_integer = 0;
-        rtl_demod_log_non_integer_after_rate_change(demod, Fs_cx, sym_rate);
-    }
+    demod->sps_is_integer = (Fs_cx % sym_rate) == 0 ? 1 : 0;
     demod->symbol_rate_hz = sym_rate;
     demod->symbol_levels = sym_levels;
     sps = rtl_demod_clamp_sps(sps);
@@ -1023,6 +996,62 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);
+}
+
+/* Symbol timing runs at @p rate_hz for @p sym_rate: a whole number of samples per symbol, at least 2. */
+static int
+rtl_demod_sps_is_whole(int rate_hz, int sym_rate) {
+    return rate_hz > 0 && sym_rate > 0 && rate_hz % sym_rate == 0 && rate_hz / sym_rate >= 2;
+}
+
+/* "; use a DSP bandwidth of 24, 48 or 72 kHz" for @p sym_rate into @p out, empty when no bandwidth gives it a whole
+   number of samples per symbol. */
+static void
+rtl_demod_whole_sps_advice(int sym_rate, char* out, size_t out_size) {
+    char list[64];
+    out[0] = '\0';
+    if (dsd_analog_rtl_bandwidths_with_whole_sps(sym_rate, list, sizeof list) == 0 && list[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "; use a DSP bandwidth of %s kHz", list);
+    }
+}
+
+void
+rtl_demod_warn_symbol_timing(const struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    const int rate = demod->complex_rate;
+    const int sym_rate = demod->symbol_rate_hz;
+    if (rate <= 0 || sym_rate <= 0) {
+        return;
+    }
+    char advice[96];
+    if (demod->cqpsk_enable) {
+        /* TETRA's own warnings name its rate and cause (dsd_tetra_dsp_rate_advice(), the chain's inactive warning). */
+        if (sym_rate == DSD_TETRA_SYMBOL_RATE_HZ || rtl_demod_sps_is_whole(rate, sym_rate)) {
+            return;
+        }
+        rtl_demod_whole_sps_advice(sym_rate, advice, sizeof advice);
+        LOG_WARN("WARNING: CQPSK cannot time symbols at %d Hz (%.3f samples per symbol for %d sym/s)%s.\n", rate,
+                 (double)rate / (double)sym_rate, sym_rate, advice);
+        return;
+    }
+    if (demod->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return;
+    }
+    /* The FSK decoder slices the stream digital_resample hands it: a device-forced rate it resamples to a whole number
+       of samples per symbol is no reason to warn. */
+    const int resampled_hz =
+        rtl_demod_digital_resample_target_for(demod->output_kind, demod->digital_resample_mode, demod->resamp_target_hz,
+                                              sym_rate, rate, demod->capture_rate_device_forced);
+    const int decoder_hz = resampled_hz > 0 ? resampled_hz : rate;
+    if (rtl_demod_sps_is_whole(decoder_hz, sym_rate)) {
+        return;
+    }
+    rtl_demod_whole_sps_advice(sym_rate, advice, sizeof advice);
+    LOG_WARN("WARNING: The decoder gets %d Hz, %.3f samples per symbol for %d sym/s; symbol timing works best with a "
+             "whole number%s.\n",
+             decoder_hz, (double)decoder_hz / (double)sym_rate, sym_rate, advice);
 }
 
 /**
@@ -1042,6 +1071,8 @@ rtl_demod_cleanup(struct demod_state* demod) {
     dsd_cond_destroy(&demod->ready);
     dsd_mutex_destroy(&demod->ready_m);
     dsd_fsk_modem_release(&demod->fsk_modem_state);
+    dsd_live_iq_step_disable(&demod->live_iq_step);
+    dsd_squelch_step_model_release(&demod->squelch_step_model);
     if (demod->resamp_taps) {
         dsd_neo_aligned_free(demod->resamp_taps);
         demod->resamp_taps = NULL;
@@ -1135,32 +1166,6 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
 }
 
 int
-rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate_out_hz, int post_downsample, char* err,
-                                       size_t err_size) {
-    demod_error_text(err, err_size, "");
-    if (post_downsample <= 1 || (explicit_width_hz <= 0 && kind == DSD_ANALOG_DEMOD_FM)) {
-        /* No post-demod decimation, or the unset NFM default, which keeps the legacy design at every rate chain. */
-        return 0;
-    }
-    if (err && err_size > 0U) {
-        char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
-        (void)dsd_analog_width_format(rtl_demod_analog_requested_width_hz(kind, explicit_width_hz), width_text,
-                                      sizeof width_text);
-        /* NFM can fall back on its unset default, which keeps the legacy design at any rate chain; AM has no width
-           that runs here, its default included. */
-        const char* fix = kind == DSD_ANALOG_DEMOD_FM
-                              ? "drop the explicit bandwidth or use a capture with post_downsample 1"
-                              : "AM needs a capture with post_downsample 1";
-        DSD_SNPRINTF(err, err_size,
-                     "%s bandwidth %s cannot be applied to this I/Q replay: post_downsample %d runs the channel filter "
-                     "at %d Hz, not the %d Hz demod rate; %s",
-                     dsd_analog_demod_label(kind), width_text, post_downsample, rate_out_hz * post_downsample,
-                     rate_out_hz, fix);
-    }
-    return -1;
-}
-
-int
 rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit_width_hz) {
     if (!demod) {
         return 0;
@@ -1186,7 +1191,7 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
         /* The unset NFM default keeps the enable decision stream configuration made, and where the rate cannot fit
            the default width the legacy WIDE design (width 0) stays in charge rather than failing the stream. */
         demod->channel_lpf_enable = demod->channel_lpf_default_enable;
-        demod->channel_lpf_width_hz = dsd_analog_width_realizable(width_hz, demod->rate_out) ? width_hz : 0;
+        demod->channel_lpf_width_hz = dsd_analog_width_realizable(width_hz, demod->complex_rate) ? width_hz : 0;
     }
     return (prev_family != 1 || prev_width != demod->channel_lpf_width_hz || prev_enable != demod->channel_lpf_enable
             || prev_profile != demod->channel_lpf_profile)
@@ -1206,7 +1211,7 @@ rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, 
     const int requested_hz = demod->analog_width_request_hz;
     int rc = 0;
     if (requested_hz > 0
-        && dsd_analog_width_check(demod->analog_demod, requested_hz, demod->rate_out, err, err_size) != 0) {
+        && dsd_analog_width_check(demod->analog_demod, requested_hz, demod->complex_rate, err, err_size) != 0) {
         /* Kept as requested: never clamped and never swapped for another design. */
         rc = -1;
     }
@@ -1226,12 +1231,9 @@ rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opt
     }
     const int kind = opts->analog_demod;
     const int explicit_width_hz = dsd_opts_analog_width_hz(opts);
-    if (demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, dsd_opts_analog_rate_source(opts), err,
-                                   err_size)
-            != 0
-        || rtl_demod_check_analog_post_decimation(kind, explicit_width_hz, demod->rate_out, demod->post_downsample, err,
-                                                  err_size)
-               != 0) {
+    if (demod_check_analog_channel(kind, explicit_width_hz, demod->complex_rate, dsd_input_dsp_rate_policy(opts).source,
+                                   err, err_size)
+        != 0) {
         return -1;
     }
     (void)rtl_demod_apply_analog_channel(demod, kind, explicit_width_hz);

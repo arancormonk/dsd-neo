@@ -84,16 +84,26 @@ expect_int(const char* what, int got, int want) {
 }
 
 /* The warnings a stream logs about a TETRA profile whose chain (or on the uplink, channel filter) cannot run, counted
- * by cause; uplink counts the uplink's. */
+ * by cause; uplink counts the uplink's. last is the text of the last one, whole. */
 struct WarnCounts {
     int total;
     int rate;
     int ted;
     int lpf;
     int uplink;
+    char last[256];
 };
 
 WarnCounts g_warns;
+
+int
+expect_last_warning(const char* what, const char* want) {
+    if (std::strcmp(g_warns.last, want) != 0) {
+        DSD_FPRINTF(stderr, "TETRA chain: %s: got \"%s\" want \"%s\"\n", what, g_warns.last, want);
+        return 1;
+    }
+    return 0;
+}
 
 void
 count_tetra_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -107,7 +117,8 @@ count_tetra_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
     g_warns.total++;
     g_warns.uplink += uplink ? 1 : 0;
-    if (std::strstr(text, "DSP rate")) {
+    DSD_SNPRINTF(g_warns.last, sizeof g_warns.last, "%s", text);
+    if (std::strstr(text, "TETRA cannot decode at")) {
         g_warns.rate++;
     }
     if (std::strstr(text, "samples per symbol")) {
@@ -142,6 +153,7 @@ void
 configure_cqpsk(demod_state* s, int rate, int profile, int symbol_rate, int sps) {
     s->rate_in = rate;
     s->rate_out = rate;
+    s->complex_rate = rate;
     s->rate_out2 = 0;
     s->mode_demod = &dsd_fm_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
@@ -269,6 +281,16 @@ test_predicate_truth_table(void) {
         return fail("alloc");
     }
     rc |= expect_int("NULL demod", dsd_demod_tetra_chain_wanted(NULL), 0);
+    /* D3 (a) (issue #806): TETRA switched on at any DSP bandwidth below 72 kHz on a live radio, whose rate is that
+       bandwidth, an Airspy's included, keeps the chain inactive: the bandwidth is not changed for it. */
+    static const int below_72_khz[] = {4, 6, 8, 12, 16, 24, 48};
+    for (int khz : below_72_khz) {
+        DSD_MEMSET(s, 0, sizeof(*s));
+        configure_cqpsk(s, khz * 1000, DSD_CH_LPF_PROFILE_TETRA, 18000, (khz * 1000 + 9000) / 18000);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "TETRA at a %d kHz DSP bandwidth stays inactive", khz);
+        rc |= expect_int(label, dsd_demod_tetra_chain_wanted(s), 0);
+    }
     for (int rate = 36000; rate <= 144000; rate += 18000) {
         DSD_MEMSET(s, 0, sizeof(*s));
         configure_tetra(s, rate);
@@ -600,6 +622,31 @@ test_entering_splits(void) {
     return rc;
 }
 
+/* A switch from P25 to TETRA at the same 72 kHz rate: the P25 profile's channel filter (the WIDE plan, longer than
+ * TETRA's 97 taps) holds samples when the chain turns on, and turning it on starts the channel filter over, so nothing
+ * the longer design held back is carried into the TETRA design. */
+int
+test_entering_from_p25_starts_channel_filter_over(void) {
+    int rc = 0;
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_cqpsk(s, 72000, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 15);
+    const std::vector<float> block = constant_block(1440, 0.01f, 0.0f);
+    (void)run_block(s, block.data(), 1440);
+    rc |= expect_int("P25: chain off", s->tetra_chain, 0);
+    if (s->channel_lpf_pending <= 0 || s->channel_lpf_plan_taps_len <= 97) {
+        rc |= fail("P25: the channel filter holds nothing from a longer design, so the check proves nothing");
+    }
+    configure_tetra(s, 72000);
+    dsd_demod_update_tetra_chain(s);
+    rc |= expect_int("TETRA: chain on", s->tetra_chain, 1);
+    rc |= expect_int("TETRA: channel filter pending", s->channel_lpf_pending, 0);
+    free_demod(s);
+    return rc;
+}
+
 /* Leaving by a CQPSK toggle, then coming back: leaving folds the mixer into the FLL, which takes the P25 parameters,
  * and resets the TETRA histories; the TETRA profile then runs the WIDE plan. Entering again splits again. */
 int
@@ -666,6 +713,8 @@ test_warned_fallbacks(void) {
     rc |= expect_reset_histories("LPF off", s);
     rc |= expect_int("LPF off: one warning", g_warns.total, 1);
     rc |= expect_int("LPF off: names the channel filter", g_warns.lpf, 1);
+    rc |= expect_last_warning("LPF off: text", "TETRA receive chain inactive: the channel filter is off "
+                                               "(DSD_NEO_CHANNEL_LPF=0); unset DSD_NEO_CHANNEL_LPF or set it to 1.\n");
 
     /* A TED override inconsistent with the rate (sps 8 at 72 kHz). */
     rc |= make_active(s, 0.0, 0.0);
@@ -677,6 +726,9 @@ test_warned_fallbacks(void) {
     rc |= expect_int("override 8: chain inactive", s->tetra_chain, 0);
     rc |= expect_int("override 8: one warning", g_warns.total, 1);
     rc |= expect_int("override 8: names the samples per symbol", g_warns.ted, 1);
+    rc |= expect_last_warning("override 8: text",
+                              "TETRA receive chain inactive: a timing setting from another mode is in force (8 "
+                              "samples per symbol, where 72000 Hz needs 4), so TETRA cannot decode.\n");
 
     /* A rate out of the domain, from a cold start: inactive from the first block, warned once. */
     DSD_MEMSET(s, 0, sizeof(*s));
@@ -688,11 +740,29 @@ test_warned_fallbacks(void) {
     rc |= expect_int("48 kHz: chain inactive", s->tetra_chain, 0);
     rc |= expect_int("48 kHz: one warning", g_warns.total, 1);
     rc |= expect_int("48 kHz: names the DSP rate", g_warns.rate, 1);
+    rc |= expect_last_warning("48 kHz: text", "TETRA receive chain inactive: TETRA cannot decode at 48000 Hz; it needs "
+                                              "a multiple of 18 kHz from 36 to 144 kHz (a 72 kHz DSP bandwidth).\n");
 
     /* A stream open clears what was warned (the stream does this in its demod init); the next stream warns again. */
     s->tetra_chain_warned = 0;
     (void)run_block(s, b48.data(), 960);
     rc |= expect_int("48 kHz, next stream: warns again", g_warns.rate, 2);
+
+    /* Out of the domain the rate is the whole story: an override set for it and the channel filter off say nothing
+       more (the generic path decodes no TETRA at 48, 78.125 or 93.75 kHz whatever they are). */
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_cqpsk(s, 78125, DSD_CH_LPF_PROFILE_TETRA, 18000, 4);
+    s->ted_sps_override = 4;
+    s->channel_lpf_enable = 0;
+    g_warns = WarnCounts{};
+    const std::vector<float> b78 = constant_block(1250, 0.01f, 0.0f);
+    (void)run_block(s, b78.data(), 1250);
+    (void)run_block(s, b78.data(), 1250);
+    rc |= expect_int("78.125 kHz, override, LPF off: chain inactive", s->tetra_chain, 0);
+    rc |= expect_int("78.125 kHz, override, LPF off: one warning", g_warns.total, 1);
+    rc |= expect_last_warning("78.125 kHz: text", "TETRA receive chain inactive: TETRA cannot decode at 78125 Hz; it "
+                                                  "needs a multiple of 18 kHz from 36 to 144 kHz (a 72 kHz DSP "
+                                                  "bandwidth).\n");
 
     /* Nothing is warned for an inactive chain the mode does not ask for (CQPSK off). */
     DSD_MEMSET(s, 0, sizeof(*s));
@@ -837,6 +907,9 @@ test_uplink_keeps_channel_filter_only(void) {
     rc |= expect_int("uplink at 48 kHz: one warning", g_warns.total, 1);
     rc |= expect_int("uplink at 48 kHz: names the DSP rate", g_warns.rate, 1);
     rc |= expect_int("uplink at 48 kHz: an uplink warning", g_warns.uplink, 1);
+    rc |= expect_last_warning("uplink at 48 kHz: text",
+                              "TETRA uplink channel filter inactive: TETRA cannot decode at 48000 Hz; it needs a "
+                              "multiple of 18 kHz from 36 to 144 kHz (a 72 kHz DSP bandwidth).\n");
 
     /* With the channel LPF off (DSD_NEO_CHANNEL_LPF=0) no TETRA filter runs either, and that is said once too. */
     DSD_MEMSET(s, 0, sizeof(*s));
@@ -851,6 +924,10 @@ test_uplink_keeps_channel_filter_only(void) {
     rc |= expect_int("uplink, LPF off: one warning", g_warns.total, 1);
     rc |= expect_int("uplink, LPF off: names the channel filter", g_warns.lpf, 1);
     rc |= expect_int("uplink, LPF off: an uplink warning", g_warns.uplink, 1);
+    rc |=
+        expect_last_warning("uplink, LPF off: text",
+                            "TETRA uplink channel filter inactive: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); "
+                            "unset DSD_NEO_CHANNEL_LPF or set it to 1.\n");
     free_demod(s);
     return rc;
 }
@@ -1878,6 +1955,7 @@ main(void) {
     rc |= test_cold_start_activates();
     rc |= test_agc_alpha_wiring();
     rc |= test_entering_splits();
+    rc |= test_entering_from_p25_starts_channel_filter_over();
     rc |= test_cqpsk_toggle_leaves_and_enters();
     rc |= test_warned_fallbacks();
     rc |= test_inactive_runs_wide_path();

@@ -98,6 +98,7 @@ new_monitor(int am, int rate_out, int post_downsample, int width_hz) {
     s->channel_lpf_width_hz = width_hz;
     s->rate_in = rate_out * post_downsample;
     s->rate_out = rate_out;
+    s->complex_rate = rate_out * post_downsample;
     s->post_downsample = post_downsample;
     s->squelch_mode = DSD_SQUELCH_MODE_NOISE;
     s->squelch_margin_db = 10;

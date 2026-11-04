@@ -137,6 +137,7 @@ new_demod(void) {
         DSD_MEMSET(s, 0, sizeof(*s));
         s->rate_in = kRate;
         s->rate_out = kRate;
+        s->complex_rate = kRate;
         s->post_downsample = 1;
         s->mode_demod = &dsd_am_demod;
     }

@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
 
 #ifdef USE_RADIO
@@ -57,6 +58,7 @@ input_ring_init(struct input_ring_state* r, size_t capacity) {
     r->producer_drops.store(0, std::memory_order_relaxed);
     r->read_timeouts.store(0, std::memory_order_relaxed);
     r->discard_generation.store(0, std::memory_order_relaxed);
+    input_ring_reset_positions(r);
     return 0;
 }
 
@@ -81,6 +83,72 @@ input_ring_destroy(struct input_ring_state* r) {
     r->producer_drops.store(0, std::memory_order_relaxed);
     r->read_timeouts.store(0, std::memory_order_relaxed);
     r->discard_generation.store(0, std::memory_order_relaxed);
+    input_ring_reset_positions(r);
+}
+
+void
+input_ring_reset_positions(struct input_ring_state* r) {
+    if (!r) {
+        return;
+    }
+    r->produced_total.store(0U, std::memory_order_relaxed);
+    r->consumed_total.store(0U, std::memory_order_relaxed);
+    for (std::atomic<uint64_t>& at : r->gap_at) {
+        at.store(0U, std::memory_order_relaxed);
+    }
+    r->gap_write.store(0U, std::memory_order_relaxed);
+    r->gap_read.store(0U, std::memory_order_relaxed);
+}
+
+void
+input_ring_note_gap(struct input_ring_state* r) {
+    if (!r) {
+        return;
+    }
+    const uint64_t at = r->produced_total.load(std::memory_order_relaxed);
+    const uint64_t write = r->gap_write.load(std::memory_order_relaxed);
+    const uint64_t pending = write - r->gap_read.load(std::memory_order_acquire);
+    if (pending > 0U) {
+        std::atomic<uint64_t>& newest = r->gap_at[(write - 1U) % INPUT_RING_GAP_SLOTS];
+        if (newest.load(std::memory_order_relaxed) == at) {
+            return;
+        }
+        if (pending >= INPUT_RING_GAP_SLOTS) {
+            /* Best effort: the consumer may have caught up since `pending` was read and taken that slot's old value
+               already, and then this mark is lost too. Either way the consumer is a full queue of losses behind. */
+            newest.store(at, std::memory_order_release);
+            return;
+        }
+    }
+    r->gap_at[write % INPUT_RING_GAP_SLOTS].store(at, std::memory_order_relaxed);
+    r->gap_write.store(write + 1U, std::memory_order_release);
+}
+
+size_t
+input_ring_take_gap(struct input_ring_state* r, int* out_gap_at_read) {
+    if (out_gap_at_read) {
+        *out_gap_at_read = 0;
+    }
+    if (!r) {
+        return SIZE_MAX;
+    }
+    const uint64_t consumed = r->consumed_total.load(std::memory_order_relaxed);
+    const uint64_t write = r->gap_write.load(std::memory_order_acquire);
+    uint64_t read = r->gap_read.load(std::memory_order_relaxed);
+    size_t until = SIZE_MAX;
+    for (; read != write; read++) {
+        const uint64_t at = r->gap_at[read % INPUT_RING_GAP_SLOTS].load(std::memory_order_acquire);
+        if (at > consumed) {
+            const uint64_t ahead = at - consumed;
+            until = ahead < (uint64_t)SIZE_MAX ? (size_t)ahead : SIZE_MAX;
+            break;
+        }
+        if (at == consumed && out_gap_at_read) {
+            *out_gap_at_read = 1;
+        }
+    }
+    r->gap_read.store(read, std::memory_order_release);
+    return until;
 }
 
 void
@@ -152,6 +220,7 @@ input_ring_commit(struct input_ring_state* r, size_t produced) {
     if (h >= r->capacity) {
         h -= r->capacity;
     }
+    r->produced_total.store(r->produced_total.load(std::memory_order_relaxed) + produced, std::memory_order_relaxed);
     r->head.store(h);
     if (need_signal) {
         dsd_mutex_lock(&r->ready_m);
@@ -224,6 +293,7 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
         DSD_MEMCPY(out + first, r->buffer, (read_now - first) * sizeof(float));
         t = read_now - first;
     }
+    r->consumed_total.store(r->consumed_total.load(std::memory_order_relaxed) + read_now, std::memory_order_relaxed);
     r->tail.store(t);
     if (r->space_notify_enabled.load(std::memory_order_relaxed)) {
         dsd_mutex_lock(&r->ready_m);
@@ -283,6 +353,7 @@ input_ring_read_commit(struct input_ring_state* r, size_t consumed) {
     while (t >= r->capacity) {
         t -= r->capacity;
     }
+    r->consumed_total.store(r->consumed_total.load(std::memory_order_relaxed) + consumed, std::memory_order_relaxed);
     r->tail.store(t);
     if (r->space_notify_enabled.load(std::memory_order_relaxed)) {
         dsd_mutex_lock(&r->ready_m);

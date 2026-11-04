@@ -426,8 +426,8 @@ struct Filter {
 };
 } // namespace
 
-/* The 63-tap prototype the pipeline falls back to where a digital profile's design does not fit (WIDE at 78125 Hz),
- * read from the demodulator's own plan. */
+/* The 63-tap prototype the pipeline falls back to where a digital profile's design does not fit (WIDE at 128 kHz,
+ * above DSD_DIGITAL_CHANNEL_MAX_RATE_HZ), read from the demodulator's own plan. */
 static std::vector<float>
 fallback_taps(void) {
     std::vector<float> taps;
@@ -436,8 +436,9 @@ fallback_taps(void) {
         return taps;
     }
     DSD_MEMSET(s, 0, sizeof(*s));
-    s->rate_in = 78125;
-    s->rate_out = 78125;
+    s->rate_in = 128000;
+    s->rate_out = 128000;
+    s->complex_rate = 128000;
     s->mode_demod = &raw_demod;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
@@ -1472,6 +1473,7 @@ static void
 configure_raw(demod_state* s, int rate_out, int profile, int passes) {
     s->rate_in = rate_out << passes;
     s->rate_out = rate_out;
+    s->complex_rate = rate_out;
     s->mode_demod = &raw_demod;
     s->downsample_passes = passes;
     s->channel_lpf_enable = 1;
@@ -1571,10 +1573,11 @@ test_channel_state_rules(void) {
     const std::vector<float> small = make_stream(10, 0x2222u);
 
     /* Warm on the analog monitor's 16 kHz width at 78125 Hz: 219 taps, pending 109. A profile change at the same rate
-       keeps the state, and the tap count it changes reconciles through pending. Onto the 12K5 profile, whose design
-       does not fit its 144-tap cap there and runs the 63-tap fallback (a typed digital row's profile on an analog
-       session at the Airspy's rate), 10 samples make 109 + 10 - 31 = 88 outputs and leave 31 pending; back onto the
-       219-tap analog design, 10 samples make none and leave 41. */
+       keeps the state. Onto the 12K5 profile (a typed digital row's profile on an analog session at the Airspy's
+       rate), which designs its own 219 taps there (it ran the 63-tap fallback while the digital designs were held to
+       144 taps, issue #806): other taps, 10 samples make 10 outputs and leave 109 pending; back onto the analog
+       design, the same. (A tap-count change at one rate, which the TETRA chain makes, reconciles through pending:
+       test_max_block_shrink() and the tap-switch cases.) */
     configure_raw(s, 78125, DSD_CH_LPF_PROFILE_WIDE, 0);
     s->analog_family = 1;
     s->analog_demod = DSD_ANALOG_DEMOD_FM;
@@ -1582,27 +1585,31 @@ test_channel_state_rules(void) {
     run_block(s, warm);
     const int warm_taps = s->channel_lpf_plan_taps_len;
     const int warm_pending = *channel_pending_of(s);
+    const float warm_centre = s->channel_lpf_plan_taps[109];
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
     run_block(s, small);
-    const int fewer_taps = s->channel_lpf_plan_taps_len;
-    const int fewer_len = s->result_len;
-    const int fewer_pending = *channel_pending_of(s);
+    const int row_taps = s->channel_lpf_plan_taps_len;
+    const int row_len = s->result_len;
+    const int row_pending = *channel_pending_of(s);
+    const int row_redesigned = std::fabs((double)s->channel_lpf_plan_taps[109] - (double)warm_centre) > 1e-3;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     run_block(s, small);
-    if (warm_taps != 219 || warm_pending != 109 || fewer_taps != 63 || fewer_len != 176 || fewer_pending != 31
-        || s->channel_lpf_plan_taps_len != 219 || s->result_len != 0 || *channel_pending_of(s) != 41) {
+    if (warm_taps != 219 || warm_pending != 109 || row_taps != 219 || !row_redesigned || row_len != 20
+        || row_pending != 109 || s->channel_lpf_plan_taps_len != 219 || s->result_len != 20
+        || *channel_pending_of(s) != 109) {
         DSD_FPRINTF(stderr,
-                    "  FAIL: profile changes at 78125 Hz: warm %d taps, pending %d; onto fewer taps %d taps, %d floats "
-                    "out, pending %d; back onto more %d taps, %d floats out, pending %d; want 219, 109; 63, 176, 31; "
-                    "219, 0, 41\n",
-                    warm_taps, warm_pending, fewer_taps, fewer_len, fewer_pending, s->channel_lpf_plan_taps_len,
-                    s->result_len, *channel_pending_of(s));
+                    "  FAIL: profile changes at 78125 Hz: warm %d taps, pending %d; onto 12K5 %d taps (redesigned %d), "
+                    "%d floats out, pending %d; back %d taps, %d floats out, pending %d; want 219, 109; 219 (1), 20, "
+                    "109; 219, 20, 109\n",
+                    warm_taps, warm_pending, row_taps, row_redesigned, row_len, row_pending,
+                    s->channel_lpf_plan_taps_len, s->result_len, *channel_pending_of(s));
         rc = 1;
     }
 
     /* A rate change starts the channel over: 67 taps at 24 kHz, 10 samples make nothing yet. */
     s->rate_in = 24000;
     s->rate_out = 24000;
+    s->complex_rate = 24000;
     run_block(s, small);
     if (s->channel_lpf_plan_taps_len != 67 || s->result_len != 0 || *channel_pending_of(s) != 10) {
         DSD_FPRINTF(stderr, "  FAIL: a rate change: %d taps, %d floats out, pending %d; want 67, 0, 10\n",
@@ -1647,6 +1654,7 @@ static void
 configure_hb_raw(demod_state* s, int passes) {
     s->rate_in = 48000 << passes;
     s->rate_out = 48000;
+    s->complex_rate = 48000;
     s->mode_demod = &raw_demod;
     s->downsample_passes = passes;
     s->channel_lpf_enable = 0;
@@ -1779,6 +1787,7 @@ test_empty_front_end_block(void) {
         }
         s->rate_in = 48000;
         s->rate_out = 48000;
+        s->complex_rate = 48000;
         s->channel_lpf_enable = 1;
         s->channel_lpf_profile = t.cqpsk ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_WIDE;
         s->mode_demod = &dsd_fm_demod;

@@ -6,7 +6,7 @@ The auto squelch's classifier was chosen by tools/squelch_model.py on the channe
 #625 runs the same tracker, with its shipped thresholds unchanged, on two more paths:
 
   - EDACS analog voice. EDACS keeps the stream on the FSK discriminator at 9600 bit/s, two levels, so the plan is the
-    PROVOICE profile's (designed within the 144-tap cap, or its 63-tap fallback), no channel filter at all (the channel
+    PROVOICE profile's (designed within the 288-tap cap, or its 63-tap fallback), no channel filter at all (the channel
     LPF off: rate_in under 20 kHz, or DSD_NEO_CHANNEL_LPF=0), or WIDE where a live switch leaves that label in force.
     The FSK path never post-decimates, and EDACS needs a channel rate of at least 12 kHz: under it a 9600 bit/s
     symbol gets fewer than 1.25 samples, EDACS cannot decode its control channel, and it never reaches a voice channel
@@ -17,7 +17,7 @@ The auto squelch's classifier was chosen by tools/squelch_model.py on the channe
     channel carries 9600 bit/s data and dotting at the start and end of a call (2.5-4.5 kHz, also an assumption): the
     data counts towards the floor-pollution target (a data burst read as noise would teach the floor carrier power), not
     towards the miss target (a missed burst only closes the gate a moment early or late).
-  - The M17 encoder's monitor: the legacy WIDE profile plan (144-tap cap, 63-tap fallback) off the analog family, or no
+  - The M17 encoder's monitor: the legacy WIDE profile plan (288-tap cap, 63-tap fallback) off the analog family, or no
     filter, at every rate chain, with the analog monitor's own NFM carrier set.
 
 It evaluates the shipped classifier exactly (src/dsp/squelch_floor.c): 40 ms windows, X = (CV^2 - 1) sqrt(N_eff) and

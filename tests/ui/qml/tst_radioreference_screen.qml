@@ -242,7 +242,9 @@ Item {
         // New feature (#803): a lone TETRA cell picks itself like any trunked
         // site, and the preview and the review both say what the import needs
         // to decode, before and at the last step. The note is read by its own
-        // words, so TalkBack reaches it.
+        // words, so TalkBack reaches it. Issue #806: every radio decodes TETRA
+        // at 72 kHz, an Airspy's included, so the note no longer turns an
+        // Airspy away.
         function test_18_a_tetra_import_says_what_it_needs() {
             loadTetraSystem(1)
             tryVerify(function () { return tc.screen.selectedSites.length === 1 },
@@ -252,8 +254,8 @@ Item {
             var note = findChild(tc.screen, "radioReferenceTetraNote")
             verify(note !== null, "the TETRA note is missing")
             tryVerify(function () { return note.visible }, 2000, "the TETRA note is not shown for a TETRA system")
-            for (var word of ["USB", "rtl_tcp", "72 kHz", "Airspy", "Tetrapol"])
-                verify(note.text.indexOf(word) >= 0, "the TETRA note does not mention " + word + ": " + note.text)
+            compare(note.text, "TETRA needs a radio source at a 72 kHz bandwidth (leave the bandwidth empty for that). Some systems listed as TETRA actually run Tetrapol, which dsd-neo can't decode.")
+            verify(note.text.indexOf("Airspy") < 0, "the TETRA note still turns an Airspy away: " + note.text)
             compare(note.Accessible.name, note.text, "the TETRA note is not read by its own words")
 
             var review = openReview()

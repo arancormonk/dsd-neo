@@ -110,6 +110,7 @@ static void
 configure(demod_state* s, const Config& config) {
     s->rate_in = kCaptureRateHz;
     s->rate_out = kDemodRateHz;
+    s->complex_rate = kDemodRateHz;
     s->downsample_passes = kPasses;
     s->mode_demod = config.fm ? &dsd_fm_demod : &raw_demod;
     s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;

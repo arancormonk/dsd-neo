@@ -97,7 +97,7 @@ typedef struct {
 
 /* Every temp directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
  * that made it returned. */
-static temp_dir_entry g_temp_dirs[16];
+static temp_dir_entry g_temp_dirs[24];
 static size_t g_temp_dir_count = 0;
 
 static int
@@ -1960,6 +1960,211 @@ test_replay_chunk_is_one_live_transfer(void) {
     return rc;
 }
 
+/* A cf32 sidecar for @p data_file at @p sample_rate_hz / @p base for a @p bw_khz DSP bandwidth, with @p extra (whole
+   lines, each ending ",\n") after demod_rate_hz: the place the capture writer puts the rate chain's scalars. */
+static int
+write_chain_metadata(const char* metadata_path, const char* data_file, uint32_t sample_rate_hz, uint32_t base,
+                     int bw_khz, const char* extra) {
+    char json[4096];
+    DSD_SNPRINTF(json, sizeof(json),
+                 "{\n"
+                 "  \"format\": \"dsd-neo-iq\",\n"
+                 "  \"version\": 1,\n"
+                 "  \"sample_format\": \"cf32\",\n"
+                 "  \"iq_order\": \"IQ\",\n"
+                 "  \"endianness\": \"little\",\n"
+                 "  \"capture_stage\": \"post_driver_cf32_pre_ring\",\n"
+                 "  \"sample_rate_hz\": %u,\n"
+                 "  \"center_frequency_hz\": 851375000,\n"
+                 "  \"capture_center_frequency_hz\": 851375000,\n"
+                 "  \"ppm\": 0,\n"
+                 "  \"tuner_gain_tenth_db\": 0,\n"
+                 "  \"tuner_gain_known\": false,\n"
+                 "  \"rtl_dsp_bw_khz\": %d,\n"
+                 "  \"base_decimation\": %u,\n"
+                 "  \"post_downsample\": 1,\n"
+                 "  \"demod_rate_hz\": %u,\n"
+                 "%s"
+                 "  \"offset_tuning_enabled\": false,\n"
+                 "  \"fs4_shift_enabled\": false,\n"
+                 "  \"combine_rotate_enabled\": true,\n"
+                 "  \"muted_bytes_excluded\": true,\n"
+                 "  \"contains_retunes\": false,\n"
+                 "  \"capture_retune_count\": 0,\n"
+                 "  \"source_backend\": \"airspy\",\n"
+                 "  \"source_args\": \"serial=1\",\n"
+                 "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
+                 "  \"data_file\": \"%s\",\n"
+                 "  \"data_bytes\": 16,\n"
+                 "  \"capture_drops\": 0,\n"
+                 "  \"capture_drop_blocks\": 0,\n"
+                 "  \"input_ring_drops\": 0,\n"
+                 "  \"notes\": \"\"\n"
+                 "}\n",
+                 (unsigned)sample_rate_hz, bw_khz, (unsigned)base, (unsigned)(sample_rate_hz / base), extra, data_file);
+    return write_text_file(metadata_path, json);
+}
+
+typedef struct {
+    const char* name;
+    const char* extra;
+    const char* want_err; /* a refusal names this */
+    uint32_t sample_rate_hz;
+    uint32_t base;
+    int bw_khz;
+    int want_rc;
+} chain_meta_case;
+
+/* The live rate chain's scalars as read (issue #806): strict, each optional, the step's four together, and checked
+   against the capture's rates before anything plans from them. */
+static int
+test_rate_chain_fields(void) {
+    static const chain_meta_case k_cases[] = {
+        {"the Airspy step",
+         "  \"nominal_rate_hz\": 2500000,\n  \"capture_rate_device_forced\": true,\n  \"dsp_rate_hz\": 48000,\n"
+         "  \"iq_step_l\": 384,\n  \"iq_step_m\": 625,\n  \"iq_step_approx_ppm\": 0.000000,\n",
+         NULL, 2500000U, 32U, 48, DSD_IQ_OK},
+        {"a nominal rate alone", "  \"nominal_rate_hz\": 1536000,\n", NULL, 1535999U, 32U, 48, DSD_IQ_OK},
+        {"a forced flag alone", "  \"capture_rate_device_forced\": false,\n", NULL, 1536000U, 32U, 48, DSD_IQ_OK},
+        {"the approximated step",
+         "  \"nominal_rate_hz\": 2000001,\n  \"capture_rate_device_forced\": true,\n  \"dsp_rate_hz\": 48000,\n"
+         "  \"iq_step_l\": 96,\n  \"iq_step_m\": 125,\n  \"iq_step_approx_ppm\": 0.5,\n",
+         NULL, 2000001U, 32U, 48, DSD_IQ_OK},
+        {"a nominal rate out of tolerance", "  \"nominal_rate_hz\": 1536000,\n", "within 100 ppm", 1536200U, 32U, 48,
+         DSD_IQ_ERR_RATE_CHAIN},
+        {"a step ratio the rates do not give",
+         "  \"dsp_rate_hz\": 48000,\n  \"iq_step_l\": 64,\n  \"iq_step_m\": 125,\n  \"iq_step_approx_ppm\": 0,\n",
+         "384/625", 2500000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a DSP rate off the unstepped chain",
+         "  \"dsp_rate_hz\": 24000,\n  \"iq_step_l\": 0,\n  \"iq_step_m\": 0,\n  \"iq_step_approx_ppm\": 0,\n",
+         "dsp_rate_hz (24000)", 1536000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a step field alone", "  \"dsp_rate_hz\": 48000,\n", "iq_step_l", 2500000U, 32U, 48, DSD_IQ_ERR_RATE_CHAIN},
+        {"a nominal rate as a string", "  \"nominal_rate_hz\": \"1536000\",\n", "nominal_rate_hz", 1536000U, 32U, 48,
+         DSD_IQ_ERR_INVALID_META},
+        {"a forced flag as a number", "  \"capture_rate_device_forced\": 1,\n", "capture_rate_device_forced", 1536000U,
+         32U, 48, DSD_IQ_ERR_INVALID_META},
+        {"a negative step term",
+         "  \"dsp_rate_hz\": 48000,\n  \"iq_step_l\": -384,\n  \"iq_step_m\": 625,\n  \"iq_step_approx_ppm\": 0,\n",
+         "iq_step_l", 2500000U, 32U, 48, DSD_IQ_ERR_INVALID_META},
+        {"an approximation as a string",
+         "  \"dsp_rate_hz\": 48000,\n  \"iq_step_l\": 384,\n  \"iq_step_m\": 625,\n  \"iq_step_approx_ppm\": \"0\",\n",
+         "iq_step_approx_ppm", 2500000U, 32U, 48, DSD_IQ_ERR_INVALID_META},
+        {"an end reason as a number", "  \"capture_end_reason\": 3,\n", "capture_end_reason", 1536000U, 32U, 48,
+         DSD_IQ_ERR_INVALID_META},
+    };
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"c.iq", "c.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data[512];
+    char meta[512];
+    path_join(data, sizeof(data), dir, "c.iq");
+    path_join(meta, sizeof(meta), dir, "c.iq.json");
+    const uint8_t bytes[16] = {0};
+    write_bytes_file(data, bytes, sizeof(bytes));
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        const chain_meta_case* c = &k_cases[i];
+        char label[160];
+        char err[256] = {0};
+        write_chain_metadata(meta, "c.iq", c->sample_rate_hz, c->base, c->bw_khz, c->extra);
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        DSD_SNPRINTF(label, sizeof(label), "rate chain: %s", c->name);
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err)), c->want_rc);
+        if (c->want_err) {
+            DSD_SNPRINTF(label, sizeof(label), "rate chain: %s names '%s' (%s)", c->name, c->want_err, err);
+            rc |= expect_true(label, strstr(err, c->want_err) != NULL);
+        } else {
+            dsd_iq_replay_config_clear(&cfg);
+        }
+    }
+    return rc;
+}
+
+/* --iq-info prints the rate chain a replay runs (issue #806): the nominal rate, the passes to the half-band output as
+   an exact fraction, the step and the DSP rate after it, the forced flag and where it came from, and why a capture
+   ended early. */
+static int
+test_iq_info_rate_chain(void) {
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"i.iq", "i.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data[512];
+    char meta[512];
+    path_join(data, sizeof(data), dir, "i.iq");
+    path_join(meta, sizeof(meta), dir, "i.iq.json");
+    const uint8_t bytes[16] = {0};
+    write_bytes_file(data, bytes, sizeof(bytes));
+
+    static const struct {
+        const char* name;
+        uint32_t sample_rate_hz;
+        uint32_t base;
+        int bw_khz;
+        const char* extra;
+        const char* want[4];
+    } k_cases[] = {
+        {"a recorded step",
+         2500000U,
+         64U,
+         24,
+         "  \"nominal_rate_hz\": 2500000,\n  \"capture_rate_device_forced\": true,\n  \"dsp_rate_hz\": 24000,\n"
+         "  \"iq_step_l\": 384,\n  \"iq_step_m\": 625,\n  \"iq_step_approx_ppm\": 0.000000,\n"
+         "  \"capture_end_reason\": \"rate_changed\",\n",
+         {"Nominal rate:        2500000 Hz (recorded)",
+          "Replay rate chain:   kept: 6 half-band passes to 39062.5 Hz (78125/2^1), then the I/Q rate step 384/625 to "
+          "24000 Hz",
+          "Device-forced rate:  yes (recorded)", "Capture end:         rate_changed (the device rate changed"}},
+        {"a capture from before the scalars",
+         1536000U,
+         32U,
+         48,
+         "",
+         {"Nominal rate:        1536000 Hz (derived from the sample rate and the DSP bandwidth)",
+          "Replay rate chain:   kept: 5 half-band passes to 48000 Hz, no I/Q rate step",
+          "DSP rate:            48000 Hz\n", "Device-forced rate:  no (derived)"}},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        write_chain_metadata(meta, "i.iq", k_cases[i].sample_rate_hz, k_cases[i].base, k_cases[i].bw_khz,
+                             k_cases[i].extra);
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        char err[256] = {0};
+        char label[160];
+        DSD_SNPRINTF(label, sizeof(label), "info: %s parses", k_cases[i].name);
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err)), DSD_IQ_OK);
+        FILE* out = tmpfile();
+        if (!out) {
+            dsd_iq_replay_config_clear(&cfg);
+            return 1;
+        }
+        rc |= expect_int(label, dsd_iq_info_print(&cfg, meta, 16, out, NULL), DSD_IQ_OK);
+        fflush(out);
+        fseek(out, 0, SEEK_SET);
+        char buf[4096];
+        const size_t n = fread(buf, 1, sizeof(buf) - 1U, out);
+        buf[n] = '\0';
+        fclose(out);
+        for (size_t w = 0; w < 4U; w++) {
+            DSD_SNPRINTF(label, sizeof(label), "info: %s prints '%.60s'", k_cases[i].name, k_cases[i].want[w]);
+            rc |= expect_true(label, strstr(buf, k_cases[i].want[w]) != NULL);
+        }
+        rc |= expect_true("info: an unsealed capture names no end",
+                          k_cases[i].extra[0] != '\0' || strstr(buf, "Capture end:") == NULL);
+        DSD_SNPRINTF(label, sizeof(label), "info: %s reads its end reason", k_cases[i].name);
+        rc |=
+            expect_true(label, (strcmp(cfg.capture_end_reason, "rate_changed") == 0) == (k_cases[i].extra[0] != '\0'));
+        dsd_iq_replay_config_clear(&cfg);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1975,6 +2180,8 @@ main(void) {
     rc |= test_invalid_json_shapes_and_number_types();
     rc |= test_event_timeline_validation();
     rc |= test_rate_chain_validation();
+    rc |= test_rate_chain_fields();
+    rc |= test_iq_info_rate_chain();
     rc |= test_relative_data_resolution_info_and_open_validation();
     rc |= test_replay_read_partial_eof_and_rewind();
     rc |= test_replay_read_of_a_data_file_cut_short();

@@ -30,6 +30,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/tcp_quality_metrics.h>
@@ -522,6 +523,9 @@ struct rtl_device {
     std::atomic<uint64_t> progress{0U};
     int thread_started = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
+    /* The attached capture writer was sealed by a rate-changing event (issue #806 X9): its retunes are no longer
+       counted. Cleared with the writer. */
+    std::atomic<int> capture_sealed{0};
     /* Moves before a USB recovery reopens the dongle: rtl_device_capture_settings_generation(). */
     std::atomic<uint32_t> capture_settings_generation{0U};
     std::atomic<int> capture_reconfigure_hold{0};
@@ -1108,6 +1112,8 @@ rtl_finalize_u8_ring_exhaustion(struct rtl_device* s, const rtl_u8_finalize_stat
         rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
                                              final_state->carry, final_state->phase, final_state->fs4_shift_active);
     rtl_accumulate_ring_drops(s->input_ring, dropped);
+    /* The rest of the transfer is lost: the next one does not follow what reached the ring (issue #806 X12). */
+    input_ring_note_gap(s->input_ring);
     if (final_state->count_full_reserve) {
         s->reserve_full_events++;
     }
@@ -1342,12 +1348,23 @@ rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
     DSD_SNPRINTF(dst, dst_size, "%s", reason);
 }
 
-static inline void
+/* Record @p event in the attached capture; returns the writer's result (DSD_IQ_OK with no writer). The event that seals
+ * the writer (DSD_IQ_ERR_RATE_CHAIN, issue #806 X9) freezes the counts its sidecar reports at this moment: the input
+ * ring's drops and the retunes counted so far; none after it are counted for the capture. */
+static inline int
 rtl_record_capture_event(struct rtl_device* s, const dsd_iq_event* event) {
     if (!s || !s->iq_capture_writer || !event) {
-        return;
+        return DSD_IQ_OK;
     }
-    (void)dsd_iq_capture_record_event(s->iq_capture_writer, event);
+    const int rc = dsd_iq_capture_record_event(s->iq_capture_writer, event);
+    if (rc == DSD_IQ_ERR_RATE_CHAIN) {
+        dsd_iq_capture_final_stats frozen = {};
+        frozen.input_ring_drops = s->input_ring ? s->input_ring->producer_drops.load(std::memory_order_acquire) : 0U;
+        frozen.retune_count = s->capture_retune_count.load(std::memory_order_acquire);
+        s->capture_sealed.store(1, std::memory_order_release);
+        (void)dsd_iq_capture_freeze_final_stats(s->iq_capture_writer, &frozen);
+    }
+    return rc;
 }
 
 static inline int
@@ -1458,7 +1475,7 @@ rtl_record_capture_mute(struct rtl_device* s, uint64_t duration_bytes, const cha
     event.kind = DSD_IQ_EVENT_MUTE;
     event.duration_bytes = duration_bytes;
     rtl_copy_event_reason(event.reason, sizeof(event.reason), reason);
-    rtl_record_capture_event(s, &event);
+    (void)rtl_record_capture_event(s, &event);
 }
 
 static inline void
@@ -1519,6 +1536,8 @@ soapy_handle_no_space(struct input_ring_state* ring, size_t need, int apply_rot,
         return;
     }
     rtl_accumulate_ring_drops(ring, need);
+    /* The rest of the read is lost: the next one does not follow what reached the ring (issue #806 X12). */
+    input_ring_note_gap(ring);
     if (apply_rot && phase) {
         *phase = rtl_capture_phase_advance_pairs(*phase, need / 2U);
     }
@@ -2575,6 +2594,14 @@ replay_reset_stream_position(const struct rtl_device* s, int* io_phase, int* io_
     }
 }
 
+/* A MUTE the live stream recorded for samples its driver lost (RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW): a gap that
+ * starts the demod over, unlike a retune's omitted span, inside a retune that resets anyway. */
+static int
+replay_event_is_stream_gap(const dsd_iq_event* event) {
+    return event->kind == DSD_IQ_EVENT_MUTE
+           && strncmp(event->reason, RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW, sizeof(event->reason)) == 0;
+}
+
 /* A resampled replay's signal is discontinuous here (a retune, a reset, samples a MUTE omitted, a loop rewind): its
  * resampler starts over from silence, as the demod's filters do. */
 static void
@@ -2612,6 +2639,11 @@ replay_dispatch_event(struct rtl_device* s, const dsd_iq_event* event, int* io_p
             replay_advance_omitted_bytes(s, event->duration_bytes, io_phase, io_have_carry, io_carry_byte,
                                          complex_written);
             replay_clear_resampler(s);
+            /* Samples the live driver lost: the demod starts its filters over before the next chunk, at the sample
+               the live stream did (issue #806 X12). A retune's omitted span is not a gap: its RESET resets. */
+            if (replay_event_is_stream_gap(event)) {
+                input_ring_note_gap(s->input_ring);
+            }
             if (s->replay_has_eof_state && s->replay_eof.on_mute_event) {
                 s->replay_eof.on_mute_event(&seen, s->replay_eof.event_user);
             }
@@ -2808,14 +2840,18 @@ replay_set_input_boundary(struct rtl_device* s, int on) {
 }
 
 /* The idle wait before an event (replay_wait_for_event_boundary_drain()), with the input marked stopped at a boundary
-   (replay_set_input_boundary()) for the kinds that start the demod over. 1 once idle, 0 when the replay stops. */
+   (replay_set_input_boundary()) for the events that start the demod over: a RETUNE, a RESET, a driver overflow's gap.
+   1 once idle, 0 when the replay stops. */
 static int
-replay_wait_for_event_idle(struct rtl_device* s, dsd_iq_event_kind kind) {
-    const int starts_over = (kind == DSD_IQ_EVENT_RETUNE || kind == DSD_IQ_EVENT_RESET) ? 1 : 0;
+replay_wait_for_event_idle(struct rtl_device* s, const dsd_iq_event* event) {
+    const int starts_over =
+        (event->kind == DSD_IQ_EVENT_RETUNE || event->kind == DSD_IQ_EVENT_RESET || replay_event_is_stream_gap(event))
+            ? 1
+            : 0;
     if (starts_over) {
         replay_set_input_boundary(s, 1);
     }
-    const int idle = replay_wait_for_event_boundary_drain(s, (int)kind);
+    const int idle = replay_wait_for_event_boundary_drain(s, (int)event->kind);
     if (starts_over) {
         replay_set_input_boundary(s, 0);
     }
@@ -2832,8 +2868,9 @@ replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uin
            && s->replay_cfg.events[*event_cursor].byte_offset <= data_offset) {
         const dsd_iq_event* event = &s->replay_cfg.events[*event_cursor];
         /* Every event waits for an idle pipeline, even one at the offset of the event before it (the wait then returns
-           at once). A RETUNE or a RESET starts the demod over, so an uplink look-ahead is pushed out before it. */
-        if (!replay_wait_for_event_idle(s, event->kind)) {
+           at once). A RETUNE, a RESET or a driver overflow's gap starts the demod over, so an uplink look-ahead is pushed
+           out before it. */
+        if (!replay_wait_for_event_idle(s, event)) {
             return 0;
         }
         replay_dispatch_event(s, event, phase, have_carry, carry_byte, complex_written);
@@ -5113,6 +5150,20 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
     return ret;
 }
 
+/* A SoapySDR driver overflow (issue #806 X12): the driver lost samples before the next read, and does not say how
+ * many. The ring takes a gap mark there, so the demod starts its filters over at the next sample, and the capture
+ * records a driver_overflow MUTE of one sample standing for the loss, so a replay resets at the same sample. The fs/4
+ * rotation moves on by that one sample here too, as the replay's does over the MUTE, keeping the two in step. */
+static void
+soapy_note_driver_overflow(struct rtl_device* dev) {
+    rtl_record_capture_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
+    rtl_finish_capture_mute_span(dev);
+    if (fs4_shift_capture_active(dev)) {
+        dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, 1U);
+    }
+    input_ring_note_gap(dev->input_ring);
+}
+
 static int
 soapy_handle_read_result(struct rtl_device* dev, int ret) {
     if (!dev) {
@@ -5132,6 +5183,7 @@ soapy_handle_read_result(struct rtl_device* dev, int ret) {
             DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)overflows);
             dev->soapy_last_overflow_log_ns = now_ns;
         }
+        soapy_note_driver_overflow(dev);
         return 1;
     }
     if (ret < 0) {
@@ -5385,8 +5437,11 @@ airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64
     }
     if (dropped) {
         rtl_accumulate_ring_drops(dev->input_ring, (size_t)dropped * 2U);
-        rtl_record_capture_mute(dev, dropped * 2U * sizeof(float), "driver_overflow");
+        rtl_record_capture_mute(dev, dropped * 2U * sizeof(float), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
         rtl_finish_capture_mute_span(dev);
+        /* The samples after the overflow do not follow the ones before it: the demod starts its filters over between
+           them (issue #806 X12), as a replay does at the MUTE recorded here. */
+        input_ring_note_gap(dev->input_ring);
     }
     int mute = dev->mute.load(std::memory_order_relaxed);
     size_t skip = mute > 0 ? std::min(pairs, ((size_t)mute + 1U) / 2U) : 0;
@@ -5451,6 +5506,13 @@ rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, flo
     }
     *output_count = count;
     *dropped = ring.producer_drops.load();
+    if (request->gap_at && request->gap_count) {
+        size_t gaps = 0U;
+        for (uint64_t i = ring.gap_read.load(); i != ring.gap_write.load() && gaps < request->gap_capacity; ++i) {
+            request->gap_at[gaps++] = ring.gap_at[i % INPUT_RING_GAP_SLOTS].load();
+        }
+        *request->gap_count = gaps;
+    }
     input_ring_destroy(&ring);
     return 0;
 }
@@ -9551,6 +9613,9 @@ rtl_device_open_iq_replay_source(struct rtl_device* dev, const dsd_iq_replay_con
     opened_cfg.base_decimation = cfg->base_decimation;
     opened_cfg.post_downsample = cfg->post_downsample;
     opened_cfg.demod_rate_hz = cfg->demod_rate_hz;
+    /* And the plan with it (issue #806): a loop rewind applies these settings again, the step and forced flag too. */
+    opened_cfg.plan = cfg->plan;
+    opened_cfg.plan_applied = cfg->plan_applied;
     /* A loop rewinds to the capture's opening centre and rate, wherever the replay opened. */
     dev->replay_initial_center_frequency_hz = opened_cfg.center_frequency_hz;
     dev->replay_initial_capture_center_frequency_hz = opened_cfg.capture_center_frequency_hz;
@@ -10265,6 +10330,20 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
 #else
     return -1;
 #endif
+}
+
+dsd_rate_plan_backend
+rtl_device_rate_plan_backend(const struct rtl_device* dev) {
+    if (!dev) {
+        return DSD_RATE_PLAN_BACKEND_RTL_USB;
+    }
+    switch (dev->backend) {
+        case RTL_BACKEND_TCP: return DSD_RATE_PLAN_BACKEND_RTL_TCP;
+        case RTL_BACKEND_SOAPY: return DSD_RATE_PLAN_BACKEND_SOAPY;
+        case RTL_BACKEND_AIRSPY: return DSD_RATE_PLAN_BACKEND_AIRSPY;
+        case RTL_BACKEND_IQ_REPLAY: return DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
+        default: return DSD_RATE_PLAN_BACKEND_RTL_USB;
+    }
 }
 
 /**
@@ -12553,6 +12632,7 @@ rtl_device_set_iq_capture_writer(struct rtl_device* dev, struct dsd_iq_capture_w
     dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_release);
     if (!writer) {
         dev->capture_retune_count.store(0, std::memory_order_release);
+        dev->capture_sealed.store(0, std::memory_order_release);
     }
 }
 
@@ -12681,10 +12761,11 @@ rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_c
     return 0;
 }
 
+/* @p out_gaps: the gap marks the drop left (issue #806 X12), each at the floats committed before it in *out_gap_at. */
 extern "C" int
 rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_t* out_full_events, int* out_phase,
-                                  int* out_status) {
-    if (!out_used || !out_drops || !out_full_events || !out_phase || !out_status) {
+                                  int* out_status, size_t* out_gaps, uint64_t* out_gap_at) {
+    if (!out_used || !out_drops || !out_full_events || !out_phase || !out_status || !out_gaps || !out_gap_at) {
         return -1;
     }
     input_ring_state ring{};
@@ -12704,6 +12785,8 @@ rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_
     *out_drops = ring.producer_drops.load(std::memory_order_acquire);
     *out_full_events = dev.reserve_full_events;
     *out_phase = dev.rot_phase;
+    *out_gaps = (size_t)(ring.gap_write.load() - ring.gap_read.load());
+    *out_gap_at = *out_gaps > 0U ? ring.gap_at[ring.gap_read.load() % INPUT_RING_GAP_SLOTS].load() : 0U;
 
     input_ring_destroy(&ring);
     return 0;
@@ -12859,17 +12942,17 @@ rtl_device_test_u8_moment_accounting(dsd_input_level_cu8_moments* out, size_t ou
 
 void
 rtl_device_note_capture_retune(struct rtl_device* dev) {
-    if (!dev || !dev->iq_capture_writer) {
+    if (!dev || !dev->iq_capture_writer || dev->capture_sealed.load(std::memory_order_acquire)) {
         return;
     }
     (void)dev->capture_retune_count.fetch_add(1U, std::memory_order_relaxed);
 }
 
-void
+int
 rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequency_hz,
                                  uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason) {
     if (!dev || !dev->iq_capture_writer) {
-        return;
+        return DSD_IQ_OK;
     }
     dsd_iq_event event;
     DSD_MEMSET(&event, 0, sizeof(event));
@@ -12878,15 +12961,16 @@ rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequen
     event.capture_center_frequency_hz = capture_center_frequency_hz;
     event.sample_rate_hz = sample_rate_hz;
     rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "retune");
-    rtl_record_capture_event(dev, &event);
-    (void)dev->capture_retune_count.fetch_add(1U, std::memory_order_relaxed);
+    const int rc = rtl_record_capture_event(dev, &event);
+    rtl_device_note_capture_retune(dev);
+    return rc;
 }
 
-void
+int
 rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequency_hz,
                                 uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason) {
     if (!dev || !dev->iq_capture_writer) {
-        return;
+        return DSD_IQ_OK;
     }
     dsd_iq_event event;
     DSD_MEMSET(&event, 0, sizeof(event));
@@ -12895,7 +12979,7 @@ rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequenc
     event.capture_center_frequency_hz = capture_center_frequency_hz;
     event.sample_rate_hz = sample_rate_hz;
     rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "reset");
-    rtl_record_capture_event(dev, &event);
+    return rtl_record_capture_event(dev, &event);
 }
 
 uint32_t

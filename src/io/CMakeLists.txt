@@ -2,7 +2,15 @@
 
 # IQ capture/replay metadata and file helpers (no SDR dependency)
 add_library(dsd-neo_io_iq)
-target_sources(dsd-neo_io_iq PRIVATE iq/iq_capture.c iq/iq_replay.c iq/iq_wav.c)
+target_sources(
+    dsd-neo_io_iq
+    PRIVATE
+        iq/iq_capture.c
+        iq/iq_rate_chain.c
+        iq/iq_replay.c
+        iq/iq_wav.c
+        iq/rate_plan.c
+)
 target_include_directories(
     dsd-neo_io_iq
     PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -10,6 +18,10 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_io_iq PUBLIC dsd-neo_platform)
 target_link_libraries(dsd-neo_io_iq PRIVATE dsd-neo_warnings)
+# The rate plan (rate_plan.c) uses the C math library.
+if(NOT WIN32)
+    target_link_libraries(dsd-neo_io_iq PRIVATE m)
+endif()
 
 install(
     TARGETS dsd-neo_io_iq

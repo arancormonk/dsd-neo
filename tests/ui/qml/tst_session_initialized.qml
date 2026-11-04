@@ -189,16 +189,18 @@ Item {
                         sourceType: "tcp",
                         decodeFlag: "-fT"
                     },
-                    sentence: "“First” decodes TETRA, which needs a USB or rtl_tcp radio or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it."
+                    sentence: "“First” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it."
                 },
                 {
-                    // Issue #803 (D-B1): no Airspy rate decodes TETRA.
+                    // Issue #806: an Airspy decodes TETRA at 72 kHz, so off it
+                    // the start names the bandwidth, as on USB and rtl_tcp.
                     tag: "tetra-rate-airspy",
                     fields: {
                         sourceType: "airspy",
-                        decodeFlag: "-fT"
+                        decodeFlag: "-fT",
+                        bandwidthKhz: 48
                     },
-                    sentence: "“First” decodes TETRA, which needs a USB or rtl_tcp radio: an Airspy can't decode it. Edit the source to correct it."
+                    sentence: "“First” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty."
                 },
                 {
                     // Issue #803 (D-B2): an rtl_tcp radio decodes TETRA only at 72 kHz.

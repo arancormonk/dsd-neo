@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cmath>
 #include <cstdlib>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/runtime/fp_mode.h>
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
 
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
@@ -46,7 +49,7 @@ check_fp_mode_scope(const float* samples, dsd_fp_mode mode, unsigned int library
     float output[8] = {};
     size_t count = 8;
     uint64_t drops = 0;
-    rtl_device_test_airspy_request request{samples, 4, 16, 0, 0, 0, 0};
+    rtl_device_test_airspy_request request{samples, 4, 16, 0, 0, 0, 0, nullptr, 0U, nullptr};
     const int rc = rtl_device_test_airspy_ingest(&request, output, &count, &drops);
     const unsigned int after = _mm_getcsr();
     rtl_device_test_set_airspy_work_probe(nullptr);
@@ -63,15 +66,70 @@ check_fp_mode_scope(const float* samples, dsd_fp_mode mode, unsigned int library
 #endif
 }
 
+/* Issue #806: an Airspy's own rates on the live rate chain. The half-band output (78,125 Hz from 2.5 or 10 MS/s at
+   48 kHz, 93,750 Hz from 3 or 6 MS/s) steps to exactly the DSP bandwidth, so FSK at 4800 sym/s is a whole 10 samples a
+   symbol with no output resampler, CQPSK times a whole 10, and TETRA at 72 kHz a whole 4. */
+namespace {
+struct airspy_rate {
+    uint32_t rate;
+    int passes_48k;
+    int l_48k;
+    int m_48k;
+    int l_72k;
+    int m_72k;
+};
+
+void
+expect_live_plans() {
+    static const airspy_rate kRates[] = {{2500000U, 5, 384, 625, 576, 625},
+                                         {3000000U, 5, 64, 125, 96, 125},
+                                         {6000000U, 6, 64, 125, 96, 125},
+                                         {10000000U, 7, 384, 625, 576, 625}};
+    static dsd_opts fsk;
+    static dsd_opts cqpsk;
+    static dsd_opts tetra;
+    DSD_MEMSET(&fsk, 0, sizeof fsk);
+    fsk.frame_p25p1 = 1;
+    fsk.mod_c4fm = 1;
+    DSD_MEMSET(&cqpsk, 0, sizeof cqpsk);
+    cqpsk.frame_p25p1 = 1;
+    cqpsk.mod_qpsk = 1;
+    DSD_MEMSET(&tetra, 0, sizeof tetra);
+    tetra.frame_tetra = 1;
+    tetra.mod_qpsk = 1;
+    for (const airspy_rate& a : kRates) {
+        rtl_stream_test_live_chain_result r{};
+        CHECK(rtl_stream_test_live_rate_chain(&fsk, DSD_RATE_PLAN_BACKEND_AIRSPY, 48000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.forced == 1);
+        CHECK(r.step_enabled == 1 && r.step_l == a.l_48k && r.step_m == a.m_48k);
+        CHECK(r.rate_out_hz == 48000 && r.ted_sps == 10);
+        CHECK(r.resamp_enabled == 0 && r.output_rate_hz == 48000U);
+
+        CHECK(rtl_stream_test_live_rate_chain(&cqpsk, DSD_RATE_PLAN_BACKEND_AIRSPY, 48000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.step_enabled == 1);
+        CHECK(r.step_l == a.l_48k && r.step_m == a.m_48k);
+        CHECK(r.rate_out_hz == 48000 && r.ted_sps == 10 && r.resamp_enabled == 0 && r.output_rate_hz == 48000U);
+        CHECK(r.published_rate_out_hz == 48000 && r.published_forced == 1);
+
+        CHECK(rtl_stream_test_live_rate_chain(&tetra, DSD_RATE_PLAN_BACKEND_AIRSPY, 72000, a.rate, 0U, &r) == 0);
+        CHECK(r.rc == 0 && r.passes == a.passes_48k && r.step_enabled == 1);
+        CHECK(r.step_l == a.l_72k && r.step_m == a.m_72k);
+        CHECK(r.rate_out_hz == 72000 && r.ted_sps == 4 && r.resamp_enabled == 0 && r.output_rate_hz == 72000U);
+    }
+}
+} // namespace
+
 int
 main() {
     const float samples[] = {0.1f, -0.2f, 0.3f, -0.4f, 0.5f, -0.6f, 0.7f, -0.8f};
     float output[8] = {};
     size_t count = 8;
     uint64_t drops = 0;
-    rtl_device_test_airspy_request request{samples, 4, 16, 12, 0, 0, 0};
+    uint64_t gap_at[4] = {};
+    size_t gaps = 99U;
+    rtl_device_test_airspy_request request{samples, 4, 16, 12, 0, 0, 0, gap_at, 4U, &gaps};
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0);
-    CHECK(count == 8 && drops == 0);
+    CHECK(count == 8 && drops == 0 && gaps == 0U);
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
@@ -81,9 +139,12 @@ main() {
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i + 4]) < 1e-6f);
     }
+    // Issue #806 X12: what a retune omits on purpose (its mute, its reconfigure hold) is no gap: the retune resets.
+    CHECK(gaps == 0U);
     request.hold = 1;
     count = 8;
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0 && count == 0);
+    CHECK(gaps == 0U);
     request.hold = request.mute = 0;
     request.capacity = 8;
     request.start = 4;
@@ -94,6 +155,9 @@ main() {
     for (size_t i = 0; i < count; ++i) {
         CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
+    // Issue #806 X12: each loss leaves a gap mark where its samples would have been: the driver overflow before the
+    // transfer's first sample, the full ring after the last one it took.
+    CHECK(gaps == 2U && gap_at[0] == 0U && gap_at[1] == 6U);
     for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
         int passes = rtl_stream_test_passes_for_actual_rate(rate, 48000);
         CHECK(passes > 0 && passes <= 10);
@@ -104,6 +168,7 @@ main() {
               == 0);
         CHECK(actual == 48000 && enabled == 1);
     }
+    expect_live_plans();
     check_fp_mode_scope(samples, DSD_FP_MODE_ON, 0U, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS);
     check_fp_mode_scope(samples, DSD_FP_MODE_OFF, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS, 0U);
     check_fp_mode_scope(samples, DSD_FP_MODE_INHERIT, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS,

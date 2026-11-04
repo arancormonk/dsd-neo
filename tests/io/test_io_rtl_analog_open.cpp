@@ -9,15 +9,14 @@
  * first applied at. An IQ replay stands in for a device that forces its rate:
  * the sidecar's demod rate differs from its rtl_bw_khz, so the provisional
  * choice made while the pipeline is configured is wrong until the rate chain
- * is final. Like a live device, the fixtures have no post-demod decimation
- * (post_downsample 1): the channel filter runs at the demod rate it is designed
- * for, which a post_downsample above 1 would break.
+ * is final. Like a live device, most fixtures have no post-demod decimation
+ * (post_downsample 1).
  *
- * - a sidecar with post_downsample 3: the channel filter runs at three times
- *   the demod rate the width would be designed and checked at, so an explicit
- *   width fails the start with an actionable message, while the unset default
- *   keeps the legacy design and starts, published as DSP-limited at the width
- *   that design protects at the rate it really runs at.
+ * - a sidecar with post_downsample 3: the channel filter runs ahead of that
+ *   decimator, at three times the demod rate, and is designed and checked at
+ *   that complex rate (issue #806): an explicit width it fits runs at the
+ *   configured width, the unset default runs the 16 kHz design, and a width the
+ *   complex rate cannot fit fails the start with that rate's text.
  * - demod_rate 16000 with the unset default: 16 kHz does not fit, so the legacy
  *   WIDE design takes over and the channel is published as DSP-limited at the
  *   width the rate leaves (not the 16 kHz picked for the 48 kHz bandwidth).
@@ -107,6 +106,10 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     cfg->base_decimation = r.base_decimation;
     cfg->post_downsample = r.post_downsample;
     cfg->demod_rate_hz = r.demod_rate_hz;
+    /* Not forced, recorded (issue #806): these chains deliver another rate than the 48 kHz bandwidth, which a replay
+       would otherwise take for a device-forced chain and re-plan; recorded as the device's own, they run as kept. */
+    cfg->rate_chain.has_forced = 1;
+    cfg->rate_chain.device_forced = 0;
     cfg->offset_tuning_enabled = 0;
     cfg->fs4_shift_enabled = 1;
     cfg->combine_rotate_enabled = 1;
@@ -545,26 +548,28 @@ main(void) {
     rc |= expect_int("refusal carries the validator text",
                      std::strstr(g_errors, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
 
-    /* 1536000 / 32 / 3 = 16000 Hz after a post-demod decimation of 3: the channel filter runs at 48 kHz. 12.5 kHz
-     * fits a 16 kHz rate, so only the post-decimation rule stands between it and a filter designed for the wrong
-     * rate. */
+    /* 1536000 / 32 / 3 = 16000 Hz after a post-demod decimation of 3: the channel filter runs at 48 kHz, ahead of the
+     * decimator, and is designed there (issue #806). Before, it was designed for 16 kHz and ran three times wider, so
+     * every explicit width was refused on such a capture and the default published 39.6 kHz. */
     const ReplayRate post3 = {1536000U, 32U, 3U, 16000U};
     g_errors[0] = '\0';
     rc |= open_analog_replay(post3, "dsdneo_analog_open_post3", 12500, &r);
-    rc |= expect_int("explicit width with post_downsample 3 refused", r.start_rc != 0, 1);
-    rc |= expect_int("post-decimation refusal names the cause",
-                     std::strstr(g_errors, "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: "
-                                           "post_downsample 3 runs the channel filter at 48000 Hz")
-                         != NULL,
-                     1);
+    rc |= expect_int("explicit width with post_downsample 3 starts", r.start_rc, 0);
+    rc |= expect_int("explicit width with post_downsample 3 runs its filter", r.lpf_on, 1);
+    rc |= expect_int("explicit width with post_downsample 3 is the width it filters", r.width_hz, 12500);
     g_errors[0] = '\0';
     rc |= open_analog_replay(post3, "dsdneo_analog_open_post3_default", 0, &r);
     rc |= expect_int("default with post_downsample 3 still starts", r.start_rc, 0);
     rc |= expect_int("default with post_downsample 3 is the analog family", r.family, 1);
-    /* The legacy WIDE design at 16000 Hz protects 13.2 kHz; run at three times that rate it protects 39.6 kHz, which
-     * is not the configured width, so it is published as DSP-limited. */
-    rc |= expect_int("default with post_downsample 3 runs DSP-limited", r.lpf_on, 0);
-    rc |= expect_int("default with post_downsample 3 publishes the width it filters", r.width_hz, 39600);
+    rc |= expect_int("default with post_downsample 3 runs the 16 kHz design", r.lpf_on, 1);
+    rc |= expect_int("default with post_downsample 3 publishes the width it filters", r.width_hz, 16000);
+    /* 768000 / 32 / 3 = 8000 Hz after the decimator, 24 kHz ahead of it: 25 kHz does not fit there. */
+    const ReplayRate post3_24k = {768000U, 32U, 3U, 8000U};
+    g_errors[0] = '\0';
+    rc |= open_analog_replay(post3_24k, "dsdneo_analog_open_post3_refused", 25000, &r);
+    rc |= expect_int("25 kHz with post_downsample 3 at 24 kHz refused", r.start_rc != 0, 1);
+    rc |= expect_int("refusal names the complex rate",
+                     std::strstr(g_errors, "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate") != NULL, 1);
 
     rc |= test_forced_rate_monitor_audio_is_resampled_once();
     rc |= test_fa_start_switches_to_digital_through_the_stream();

@@ -43,14 +43,20 @@ int control_delay_ms;
 static std::mutex consumer;
 
 bool
-deliver(const float* samples, int pairs) {
+deliver_dropped(const float* samples, int pairs, uint64_t dropped) {
     std::lock_guard<std::mutex> hold(consumer);
     if (!streaming || !rx) {
         return false;
     }
-    airspy_transfer transfer{&device, rx_context, const_cast<float*>(samples), pairs, 0, AIRSPY_SAMPLE_FLOAT32_IQ};
+    airspy_transfer transfer{&device, rx_context, const_cast<float*>(samples),
+                             pairs,   dropped,    AIRSPY_SAMPLE_FLOAT32_IQ};
     (void)rx(&transfer);
     return true;
+}
+
+bool
+deliver(const float* samples, int pairs) {
+    return deliver_dropped(samples, pairs, 0U);
 }
 
 } // namespace airspy_double
