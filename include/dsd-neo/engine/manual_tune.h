@@ -32,6 +32,8 @@ typedef enum {
     DSD_MANUAL_TUNE_ENTRY = 1,
     DSD_MANUAL_TUNE_UNTYPED_STEP = 2,
     DSD_MANUAL_TUNE_RR_IMPORT = 3, /**< A RadioReference import's tune (issue #803). */
+    DSD_MANUAL_TUNE_LCN_CYCLE =
+        4, /**< A Next or Previous walk's tune over a list without modes (`L`/`J`, issue #644). */
 } dsd_manual_tune_kind;
 
 /** dsd_engine_manual_tune_poll() results. */
@@ -57,6 +59,28 @@ enum {
 void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id,
                                          uint32_t requested_hz, uint32_t prior_applied_hz, int row,
                                          uint32_t scan_session, uint64_t list_rev);
+
+/**
+ * @brief Note a Next or Previous walk's tune that timed out with @p id (`L`/`J` over a list without modes, issue #644):
+ * what dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_LCN_CYCLE, with the walk's direction and owner.
+ *
+ * The row, its keys and the call boundary wait for the landing. The record carries the scan session and the list
+ * (dsd_state::lcn_scan_session, dsd_state::lcn_list_rev) the row belongs to now, so a landing after either moved names
+ * no row. Its drop changes nothing (what dropped it decides the receiver), so a newer tune noted over it keeps no report
+ * of it.
+ *
+ * @param state            Decoder state.
+ * @param id               The ID the RTL leg handed back; 0 notes nothing and leaves any older tune noted.
+ * @param requested_hz     The row's frequency.
+ * @param prior_applied_hz The centre in force before the tune.
+ * @param row              The row walked to.
+ * @param dir              The walk's direction: 1 Next, -1 Previous (a late failure passes or retries the row by it).
+ * @param scan_owned       1 when the running -Y scan owns the walk (its landing commits the row as the scan's step
+ *                         does), 0 for a walk off any scan (app-control settles it through the walk hook,
+ *                         <dsd-neo/runtime/channel_scan_hooks.h>).
+ */
+void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t requested_hz,
+                                           uint32_t prior_applied_hz, int row, int dir, int scan_owned);
 
 /**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
@@ -105,8 +129,9 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
  * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
  * A RadioReference import's tune posts every outcome (dsd_engine_manual_tune_note_rr_import()).
- * An untyped -Y step's failure is not toasted: the scan passes the row, as after a step that failed in its wait (issue
- * #666), and the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
+ * An untyped -Y step's failure is not toasted, nor a walk's (DSD_MANUAL_TUNE_LCN_CYCLE): the scan passes the row, as
+ * after a step that failed in its wait (issue #666), and the engine's loop settles the row
+ * (dsd_engine_scan_untyped_poll()).
  *
  * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or DSD_MANUAL_TUNE_DROPPED.
  */

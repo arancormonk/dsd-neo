@@ -490,6 +490,61 @@ test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
     fixture_end();
 }
 
+/* Issue #644 (B-2): a Next or Previous walk's tune that timed out is noted with what settles it later: the row, the
+   direction (a late failure passes or retries the row by it), the walk's owner, and the scan session and list the row
+   belongs to. Its landing ends a synced reception, as a step's does. A walk's drop settles nothing, so a newer tune
+   noted over it leaves no report of it; one with no ID keeps the older tune. */
+static void
+test_walk_records_what_settles_it(fixture* f) {
+    fixture_begin(f);
+    f->state->lcn_scan_session = 4U;
+    f->state->lcn_list_rev = 9U;
+    const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
+    uint64_t id = 0U;
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_A_HZ, prior_hz, 2, -1, 1);
+    assert(dsd_engine_manual_tune_noted() == 1);
+    dsd_engine_manual_tune_note_lcn_cycle(f->state, 0U, ENTRY_B_HZ, prior_hz, 1, 1, 0);
+    assert(dsd_engine_manual_tune_noted() == 1); /* no ID: the walk stays noted */
+    take_request(id, ENTRY_A_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+    dsd_manual_tune_settled settled;
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_LCN_CYCLE && settled.requested_hz == ENTRY_A_HZ && settled.row == 2
+           && settled.dir == -1 && settled.scan_owned == 1 && settled.scan_session == 4U && settled.list_rev == 9U);
+    assert(f->state->ui_msg[0] == '\0');
+
+    /* A walk off any scan fails late, unannounced: the walk passes the row itself. */
+    id = 0U;
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_B_HZ, ENTRY_A_HZ, 1, 1, 0);
+    take_request(id, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_FAILED);
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_LCN_CYCLE && settled.row == 1 && settled.dir == 1
+           && settled.scan_owned == 0);
+    assert(f->opts->rtlsdr_center_freq == ENTRY_A_HZ);
+    assert(f->state->ui_msg[0] == '\0');
+
+    /* A newer entry noted over a walk's record: the walk's drop is not reported, the entry is polled on its own. */
+    id = 0U;
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_B_HZ, ENTRY_A_HZ, 1, 1, 1);
+    const uint64_t entry_id = enter_frequency(f, ENTRY_A_HZ + 12500U);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    take_request(entry_id, ENTRY_A_HZ + 12500U);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ + 12500U) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_ENTRY && settled.dir == 0 && settled.scan_owned == 0);
+    fixture_end();
+}
+
 /* A manual tune never enters the trunk-tuning ledger, so its late failure gates no frame; a ledger request's failure
    still reaches the ledger through the same callback. */
 static void
@@ -681,6 +736,7 @@ main(void) {
     test_older_completion_keeps_the_awaited_one(&f);
     test_displaced_step_reports_its_drop(&f);
     test_settled_ready_names_what_the_poll_acts_on(&f);
+    test_walk_records_what_settles_it(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
     test_rr_import_reports_each_outcome(&f);
     test_rr_import_owner_continuation_is_quiet(&f);

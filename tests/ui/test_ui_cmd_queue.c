@@ -48,6 +48,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -131,6 +132,9 @@
 static long int g_cc_tune_refuse_except_hz = 0;
 #endif
 
+/* The manual-tune IDs the fakes hand out, never reused: the engine's completion slots outlive a case. */
+static uint32_t g_fake_manual_id_seq = 0x7000U;
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
@@ -141,6 +145,13 @@ static uint32_t g_io_control_tune_freq = 0U;
 static int g_mod_state_resets = 0;
 /* The frequency the stub reports the controller applied on success; 0 applies the request (issue #670). */
 static uint32_t g_io_control_applied_freq = 0U;
+/* Set: a timed-out stub tune hands back a manual-tune ID of its own, as the real RTL leg does (issue #644), and the
+   last one handed out. */
+static int g_io_control_timeout_ids = 0;
+static uint64_t g_io_control_pending_id = 0U;
+/* The manual retunes' portable seam (manual_leg(), below) as the -Y walk's RTL leg answers it while a case arms it:
+   that walk tunes in the engine, past the queue's seam. */
+static int (*g_rtl_leg_seam)(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) = NULL;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
@@ -208,7 +219,8 @@ static int g_rigctl_fake_last_bw = -1;
 /* Armed apart from the passband fake: a frequency the peer takes (issue #671), and the last one sent. */
 static int g_rigctl_fake_freq_armed = 0;
 static long int g_rigctl_fake_freq = 0;
-static int g_rigctl_fake_freq_refuse = 0; /* the peer answers RPRT -1 to every frequency (issue #666) */
+static long int g_rigctl_fake_freq_asked = 0; /* the last frequency sent, taken or not (issue #644) */
+static int g_rigctl_fake_freq_refuse = 0;     /* the peer answers RPRT -1 to every frequency (issue #666) */
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -234,6 +246,10 @@ int __real_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
                                       uint64_t* out_pending_id);
+int __real_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                          uint64_t* out_pending_id);
+int __wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                          uint64_t* out_pending_id);
 void __real_dsd_frame_sync_reset_mod_state(void);
 void __wrap_dsd_frame_sync_reset_mod_state(void);
 #ifdef USE_RADIO
@@ -394,8 +410,30 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
         opts->rtlsdr_center_freq = g_io_control_applied_freq != 0U ? g_io_control_applied_freq : freq_hz;
     } else if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
         opts->rtlsdr_center_freq = freq_hz;
+        if (g_io_control_timeout_ids && out_pending_id) {
+            g_io_control_pending_id = RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)++g_fake_manual_id_seq;
+            *out_pending_id = g_io_control_pending_id;
+        }
     }
     return g_io_control_tune_result;
+}
+
+/* The RTL-only leg (the -Y walk's and the timed step's; issue #644): the manual seam's answer while a case arms it;
+   on a fake RTL context the real leg, which the RTL wraps answer; without one the io_control stub, as the walk's one
+   leg was answered before it tuned in the engine. */
+int
+__wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id) {
+    if (g_rtl_leg_seam) {
+        if (out_pending_id) {
+            *out_pending_id = 0U;
+        }
+        return g_rtl_leg_seam(opts, state, freq_hz, out_pending_id);
+    }
+    if (state && state->rtl_ctx) {
+        return __real_io_control_set_rtl_freq_tagged(opts, state, freq_hz, out_pending_id);
+    }
+    return __wrap_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id);
 }
 
 /* A pending manual tune superseded by a tune app-control makes itself (issue #671): counted, and superseded for real.
@@ -525,6 +563,7 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     if (!g_rigctl_fake_freq_armed) {
         return __real_SetFreq(sockfd, freq);
     }
+    g_rigctl_fake_freq_asked = freq;
     if (g_rigctl_fake_freq_refuse) {
         return false;
     }
@@ -578,6 +617,8 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0U;
     g_io_control_applied_freq = 0U;
+    g_io_control_timeout_ids = 0;
+    g_io_control_pending_id = 0U;
     g_io_control_tune_seals_capture = 0;
     g_mod_state_resets = 0;
     g_manual_tune_supersedes = 0;
@@ -1627,6 +1668,82 @@ expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_cal
     return expect_int(tag, snapshot.phase, want);
 }
 
+/* Issue #666: the manual retunes' io_control leg through the queue's portable seam
+   (dsd_app_command_test_set_manual_tune_leg()), so the untyped walk's cases run on every toolchain. Each frequency
+   answers as g_manual_leg_rows scripts it (an accepted tune for one not listed), and an accepted tune caches what it
+   asked for, as io_control_set_freq() does. */
+typedef struct {
+    uint32_t hz;
+    int result;
+} manual_leg_answer;
+
+static manual_leg_answer g_manual_leg_rows[4];
+static int g_manual_leg_row_count;
+static int g_manual_leg_calls;
+static uint32_t g_manual_leg_hz;
+/* The ID the last timed-out tune handed back (issue #644), for a case to land or fail it later. */
+static uint64_t g_manual_leg_pending_id;
+
+static int
+manual_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
+    (void)state;
+    g_manual_leg_calls++;
+    g_manual_leg_hz = hz;
+    int result = RTL_STREAM_TUNE_OK;
+    for (int i = 0; i < g_manual_leg_row_count; i++) {
+        if (g_manual_leg_rows[i].hz == hz) {
+            result = g_manual_leg_rows[i].result;
+        }
+    }
+    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
+        opts->rtlsdr_center_freq = hz;
+    }
+    if (result == RTL_STREAM_TUNE_TIMEOUT && out_pending_id) {
+        g_manual_leg_pending_id = RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)++g_fake_manual_id_seq;
+        *out_pending_id = g_manual_leg_pending_id;
+    }
+    return result;
+}
+
+static void
+arm_manual_leg(void) {
+    g_manual_leg_row_count = 0;
+    g_manual_leg_calls = 0;
+    g_manual_leg_hz = 0U;
+    dsd_app_command_test_set_manual_tune_leg(manual_leg);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    g_rtl_leg_seam = manual_leg;
+#endif
+}
+
+/* Put the real legs back. */
+static void
+disarm_manual_leg(void) {
+    dsd_app_command_test_set_manual_tune_leg(NULL);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    g_rtl_leg_seam = NULL;
+#endif
+}
+
+/* Script @p hz to answer @p result from now on. */
+static void
+manual_leg_script(uint32_t hz, int result) {
+    for (int i = 0; i < g_manual_leg_row_count; i++) {
+        if (g_manual_leg_rows[i].hz == hz) {
+            g_manual_leg_rows[i].result = result;
+            return;
+        }
+    }
+    if (g_manual_leg_row_count >= (int)(sizeof g_manual_leg_rows / sizeof g_manual_leg_rows[0])) {
+        /* A dropped entry would answer OK and pass a case it should fail: stop here instead. */
+        DSD_FPRINTF(stderr, "manual_leg_script: no room for %u Hz; enlarge g_manual_leg_rows\n", hz);
+        abort();
+    }
+    g_manual_leg_rows[g_manual_leg_row_count].hz = hz;
+    g_manual_leg_rows[g_manual_leg_row_count].result = result;
+    g_manual_leg_row_count++;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 // A patched call's policy target is the member WG the grant matched, while its
 // over-the-air target stays the supergroup the frontends show.
@@ -1918,10 +2035,30 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
     state.sps_hunt_counter = 23;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    g_io_control_timeout_ids = 1;
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
     rc |= expect_int("accepted channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* Issue #644 (B-2): the tune timed out, so the receiver may not be on the row yet. Nothing of the row, the call
+       boundary or the handoff is published until it lands; the tune itself already decides where the receiver goes. */
+    rc |= expect_int("pending channel cycle keeps roll", state.lcn_freq_roll, 0);
+    rc |= expect_int("pending channel cycle keeps tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_true("pending channel cycle keeps VC", state.p25_vc_freq[0] == 856000000L);
+    rc |= expect_true("pending channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
+    rc |= expect_call_phase("pending channel cycle keeps canonical slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("pending channel cycle keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("pending channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+    rc |= expect_int("pending channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
+    rc |= expect_true("pending channel cycle is noted",
+                      dsd_engine_manual_tune_settled_ready() == 0
+                          && dsd_engine_scan_untyped_poll(&opts, &state) == DSD_MANUAL_TUNE_NONE);
+    dsd_engine_manual_tune_completion(g_io_control_pending_id, RTL_STREAM_TUNE_OK);
+    rc |=
+        expect_int("pending channel cycle landing ends a synced reception", dsd_engine_manual_tune_settled_ready(), 1);
+    rc |= expect_int("pending channel cycle landing taken", dsd_engine_scan_untyped_poll(&opts, &state),
+                     DSD_MANUAL_TUNE_LANDED);
+    g_io_control_timeout_ids = 0;
     rc |= expect_int("accepted channel cycle skips empty entry", state.lcn_freq_roll, 2);
     rc |= expect_int("accepted channel cycle clears tuned", opts.trunk_is_tuned, 0);
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
@@ -2401,109 +2538,156 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
     return rc;
 }
 
+/* A case's front end for an untyped -Y step through the queue (issue #644): a rigctl peer on audio input, which takes
+   or refuses the row at once through the legacy leg the walk tunes as the scan's step does, or an RTL front end whose
+   answer the manual seam scripts. */
+enum { MANUAL_STEP_BY_RIGCTL = 0, MANUAL_STEP_BY_RTL = 1 };
+
+/* An untyped -Y list [461.0125, 462.0125, 463.0125 MHz] on @p leg answering @p tune_result, row 0 on air. */
+static void
+init_manual_scan_step_case(dsd_opts* opts, dsd_state* state, int leg, int tune_result) {
+    init_test_context(opts, state);
+    opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
+    state->lcn_freq_count = 3;
+    state->trunk_lcn_freq[0] = 461012500L;
+    state->trunk_lcn_freq[1] = 462012500L;
+    state->trunk_lcn_freq[2] = 463012500L;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+    /* The legacy legs skip a frequency they last sent; each case asks its own. */
+    dsd_engine_legacy_tune_caches_forget();
+    if (leg == MANUAL_STEP_BY_RIGCTL) {
+        arm_rigctl_fake(opts, DSD_ANALOG_DEMOD_FM, 0);
+        g_rigctl_fake_freq_armed = 1;
+        g_rigctl_fake_freq_refuse = tune_result != RTL_STREAM_TUNE_OK;
+        g_rigctl_fake_freq = 0;
+        g_rigctl_fake_freq_asked = 0;
+        return;
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    arm_manual_leg();
+    manual_leg_script(461012500U, tune_result);
+    manual_leg_script(462012500U, tune_result);
+    manual_leg_script(463012500U, tune_result);
+}
+
+static void
+finish_manual_scan_step_case(dsd_opts* opts, dsd_state* state) {
+    g_rigctl_fake_freq_armed = 0;
+    g_rigctl_fake_freq_refuse = 0;
+    disarm_rigctl_fake(opts);
+    disarm_manual_leg();
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    freeState(state);
+}
+
+/* The frequency @p leg was asked for, 0 for none. */
+static long
+manual_scan_step_tuned_hz(int leg) {
+    return leg == MANUAL_STEP_BY_RIGCTL ? g_rigctl_fake_freq_asked : (long)g_manual_leg_hz;
+}
+
 /*
  * The manual channel cycle and scan avoid on an untyped -Y list move an external radio
  * through rigctl on PCM input: no RTL stream generation moves and io_control does not advance
  * the trunk-tuning generation, so nothing else tells the analog tap (issue #522). An accepted
- * step -- pending included -- clears the received tone; a refused one leaves the radio, and so
- * its tone, where they were.
+ * step clears the received tone; a refused one leaves the radio, and so its tone, where they
+ * were. An RTL tune that timed out leaves it until the tune lands, as the scan's own step does
+ * (issue #644 B-2): until then the receiver may still be on the row heard.
  */
 static int
 test_manual_scan_steps_clear_received_tone(void) {
     static const struct {
         int cmd;
+        int leg;
         int tune_result;
         int clears;
         const char* tag;
     } cases[] = {
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 1, "channel cycle by rigctl clears the received tone"},
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 1, "pending channel cycle clears the received tone"},
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0, "refused channel cycle keeps the received tone"},
-        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 1, "scan avoid by rigctl clears the received tone"},
-        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_FAILED, 0, "refused scan avoid step keeps the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_OK, 1,
+         "channel cycle by rigctl clears the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RTL, RTL_STREAM_TUNE_TIMEOUT, 0,
+         "pending channel cycle keeps the received tone until it lands"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_FAILED, 0,
+         "refused channel cycle keeps the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_OK, 1,
+         "scan avoid by rigctl clears the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_FAILED, 0,
+         "refused scan avoid step keeps the received tone"},
     };
 
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        init_test_context(&opts, &state);
-        opts.scanner_mode = 1;
-        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
-        opts.use_rigctl = 1;
-        opts.audio_in_type = AUDIO_IN_PULSE;
-        state.lcn_freq_count = 3;
-        state.trunk_lcn_freq[0] = 461012500L;
-        state.trunk_lcn_freq[1] = 462012500L;
-        state.trunk_lcn_freq[2] = 463012500L;
-        state.lcn_freq_roll = 1; /* row 0 is on air */
+        init_manual_scan_step_case(&opts, &state, cases[i].leg, cases[i].tune_result);
         seed_received_tone(&state);
         const uint32_t seeded = state.analog_rx.generation;
-        reset_io_control_tune_stub(cases[i].tune_result);
         rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
-        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
-        rc |= expect_true(cases[i].tag, g_io_control_tune_freq == 462012500L);
+        rc |= expect_true(cases[i].tag, manual_scan_step_tuned_hz(cases[i].leg) == 462012500L);
         if (cases[i].clears) {
             rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
         } else {
-            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
-                                                && state.analog_rx.ctcss_tenths_hz == 1000
-                                                && state.analog_rx.generation == seeded);
+            rc |= expect_received_tone_kept(cases[i].tag, &state, seeded);
         }
-        freeState(&state);
+        if (cases[i].tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+            /* The row lands: the tone heard on the row left goes with it. */
+            dsd_engine_manual_tune_completion(g_manual_leg_pending_id, RTL_STREAM_TUNE_OK);
+            rc |= expect_int(cases[i].tag, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        }
+        finish_manual_scan_step_case(&opts, &state);
     }
-    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
 
 /*
  * A manual step of a running untyped -Y list (Next, Previous) is the scan's own step to its own row, so a tune the
  * front end confirmed names that row's frequency for an analog call on audio input (issue #667 D9). One accepted but
- * not confirmed (a timeout), a refused one and a deferred one name none: the receiver may be anywhere. The row left's
- * landing never survives either.
+ * not confirmed (a timeout) names none until it lands, and then its row (issue #644 B-2); a refused one and a deferred
+ * one name none: the receiver may be anywhere. The row left's landing never survives either.
  */
 static int
 test_manual_scan_steps_note_landing(void) {
     static const struct {
         int cmd;
+        int leg;
         int tune_result;
         long landed_hz;
         const char* tag;
     } cases[] = {
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 462012500L, "confirmed Next names its row"},
-        {DSD_APP_CMD_CHANNEL_CYCLE_PREV, RTL_STREAM_TUNE_OK, 463012500L, "confirmed Previous names its row"},
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 0L, "unconfirmed Next names no row"},
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0L, "refused Next names no row"},
-        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_DEFERRED, 0L, "deferred Next names no row"},
-        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 462012500L, "confirmed avoid step names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_OK, 462012500L,
+         "confirmed Next names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE_PREV, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_OK, 463012500L,
+         "confirmed Previous names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RTL, RTL_STREAM_TUNE_TIMEOUT, 0L, "unconfirmed Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_FAILED, 0L, "refused Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, MANUAL_STEP_BY_RTL, RTL_STREAM_TUNE_DEFERRED, 0L, "deferred Next names no row"},
+        {DSD_APP_CMD_SCAN_AVOID, MANUAL_STEP_BY_RIGCTL, RTL_STREAM_TUNE_OK, 462012500L,
+         "confirmed avoid step names its row"},
     };
 
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        init_test_context(&opts, &state);
-        opts.scanner_mode = 1;
-        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
-        opts.use_rigctl = 1;
-        opts.audio_in_type = AUDIO_IN_PULSE;
-        state.lcn_freq_count = 3;
-        state.trunk_lcn_freq[0] = 461012500L;
-        state.trunk_lcn_freq[1] = 462012500L;
-        state.trunk_lcn_freq[2] = 463012500L;
-        state.lcn_freq_roll = 1; /* row 0 is on air, landed by the scan */
-        dsd_state_lcn_on_air_note(&state, 0);
+        init_manual_scan_step_case(&opts, &state, cases[i].leg, cases[i].tune_result);
+        dsd_state_lcn_on_air_note(&state, 0); /* landed by the scan */
         dsd_engine_scan_landing_note_row(&state, 461012500L);
         rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
-        reset_io_control_tune_stub(cases[i].tune_result);
         rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
-        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(cases[i].tag, manual_scan_step_tuned_hz(cases[i].leg) != 0L);
         rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == (uint32_t)cases[i].landed_hz);
-        freeState(&state);
+        if (cases[i].tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+            dsd_engine_manual_tune_completion(g_manual_leg_pending_id, RTL_STREAM_TUNE_OK);
+            rc |= expect_int(cases[i].tag, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
+            rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 462012500U);
+        }
+        finish_manual_scan_step_case(&opts, &state);
     }
-    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
 
@@ -4876,64 +5060,6 @@ drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
     return rc;
 }
 
-/* Issue #666: the manual retunes' io_control leg through the queue's portable seam
-   (dsd_app_command_test_set_manual_tune_leg()), so the untyped walk's cases run on every toolchain. Each frequency
-   answers as g_manual_leg_rows scripts it (an accepted tune for one not listed), and an accepted tune caches what it
-   asked for, as io_control_set_freq() does. */
-typedef struct {
-    uint32_t hz;
-    int result;
-} manual_leg_answer;
-
-static manual_leg_answer g_manual_leg_rows[4];
-static int g_manual_leg_row_count;
-static int g_manual_leg_calls;
-static uint32_t g_manual_leg_hz;
-
-static int
-manual_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
-    (void)state;
-    g_manual_leg_calls++;
-    g_manual_leg_hz = hz;
-    int result = RTL_STREAM_TUNE_OK;
-    for (int i = 0; i < g_manual_leg_row_count; i++) {
-        if (g_manual_leg_rows[i].hz == hz) {
-            result = g_manual_leg_rows[i].result;
-        }
-    }
-    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
-        opts->rtlsdr_center_freq = hz;
-    }
-    return result;
-}
-
-static void
-arm_manual_leg(void) {
-    g_manual_leg_row_count = 0;
-    g_manual_leg_calls = 0;
-    g_manual_leg_hz = 0U;
-    dsd_app_command_test_set_manual_tune_leg(manual_leg);
-}
-
-/* Script @p hz to answer @p result from now on. */
-static void
-manual_leg_script(uint32_t hz, int result) {
-    for (int i = 0; i < g_manual_leg_row_count; i++) {
-        if (g_manual_leg_rows[i].hz == hz) {
-            g_manual_leg_rows[i].result = result;
-            return;
-        }
-    }
-    if (g_manual_leg_row_count >= (int)(sizeof g_manual_leg_rows / sizeof g_manual_leg_rows[0])) {
-        /* A dropped entry would answer OK and pass a case it should fail: stop here instead. */
-        DSD_FPRINTF(stderr, "manual_leg_script: no room for %u Hz; enlarge g_manual_leg_rows\n", hz);
-        abort();
-    }
-    g_manual_leg_rows[g_manual_leg_row_count].hz = hz;
-    g_manual_leg_rows[g_manual_leg_row_count].result = result;
-    g_manual_leg_row_count++;
-}
-
 /* An untyped -Y list of @p count rows from @p rows on a tuner the seam answers for, the cursor at row 0. */
 static void
 init_manual_walk_context(dsd_opts* opts, dsd_state* state, const long* rows, int count) {
@@ -4950,6 +5076,11 @@ init_manual_walk_context(dsd_opts* opts, dsd_state* state, const long* rows, int
     arm_manual_leg();
 }
 
+/* A walk the running -Y scan owns tunes in the engine (dsd_engine_channel_scan_walk_row(), issue #644), past the
+   queue's portable seam: its RTL leg reaches manual_leg() only through the link-time wrap of
+   io_control_set_rtl_freq_tagged(). The walk off any scan keeps the portable seam
+   (test_channel_walk_off_scan_rules()). */
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #666 (B1): a row the tuner refuses (a rigctl peer answering RPRT -1 for a frequency out of its band) trapped
  * Next on an untyped list: the walk returned before it moved the cursor, so every press retried the same row and the
@@ -4991,7 +5122,7 @@ test_channel_cycle_passes_a_refused_row(void) {
     rc |= expect_true("dead row: the next press reaches B",
                       g_manual_leg_calls == calls + 1 && g_manual_leg_hz == 863000000U && state.lcn_freq_roll == 3);
     rc |= expect_int("dead row: B is the row heard", dsd_state_lcn_heard_row(&state), 2);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5050,7 +5181,7 @@ test_channel_cycle_refusal_keeps_the_visit_windows(void) {
     tick_scan_visit(&opts, &state);
     rc |= expect_true("windows: B's visit starts over", state.scan_visit_since_m > since + 0.5);
     rc |= expect_true("windows: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 0.5);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5087,7 +5218,7 @@ test_channel_cycle_refusal_after_a_landing_in_one_drain(void) {
     tick_scan_visit(&opts, &state);
     rc |= expect_true("one drain: B's visit starts over", state.scan_visit_since_m > since + 0.5);
     rc |= expect_true("one drain: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 0.5);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5113,7 +5244,69 @@ test_channel_cycle_with_nothing_to_land_on(void) {
     rc |= expect_int("fruitless: nothing tuned", g_manual_leg_calls, calls);
     rc |= expect_int("fruitless: the cursor steps on", state.lcn_freq_roll, 2);
     rc |= expect_int("fruitless: A is still the row heard", dsd_state_lcn_heard_row(&state), 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
+    freeState(&state);
+    return rc;
+}
+#endif
+
+/* Settle the walk's timed-out tune (manual_leg()'s last ID) as @p result, through the engine loop's poll. */
+static int
+settle_walk_tune(dsd_opts* opts, dsd_state* state, int result) {
+    dsd_engine_manual_tune_completion(g_manual_leg_pending_id, result);
+    return dsd_engine_scan_untyped_poll(opts, state);
+}
+
+/*
+ * Issue #644 (B-2), on every toolchain: a Next or Previous walk off any scan (no -Y running) through the queue's
+ * portable seam. A landing names the row; a refusal passes it going forward and keeps it for a retry going back. A
+ * tune that times out names nothing until it lands (then its row), fails late (then the refusal rules, by the walk's
+ * direction) or is dropped (then nothing at all). Before, a timeout was taken as a landing at once.
+ */
+static int
+test_channel_walk_off_scan_rules(void) {
+    static const long kRows[] = {895000000L, 896000000L, 897000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    opts.scanner_mode = 0;
+    state.lcn_freq_roll = 1;
+    dsd_state_lcn_on_air_note(&state, 0);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to B");
+    rc |= expect_true("off-scan walk: B lands", g_manual_leg_hz == 896000000U && state.lcn_freq_roll == 2
+                                                    && dsd_state_lcn_heard_row(&state) == 1);
+
+    manual_leg_script(895000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "off-scan walk: previous refused on A");
+    rc |= expect_true("off-scan walk: A kept for a retry", state.lcn_freq_roll == 2
+                                                               && dsd_state_lcn_back_retry_row(&state) == 0
+                                                               && dsd_state_lcn_heard_row(&state) == 1);
+
+    manual_leg_script(897000000U, RTL_STREAM_TUNE_TIMEOUT);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to C times out");
+    rc |= expect_true("off-scan walk: C waits", g_manual_leg_hz == 897000000U && state.lcn_freq_roll == 2
+                                                    && dsd_state_lcn_heard_row(&state) == 1);
+    rc |= expect_int("off-scan walk: C lands", settle_walk_tune(&opts, &state, RTL_STREAM_TUNE_OK),
+                     DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_true("off-scan walk: C named", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+
+    manual_leg_script(895000000U, RTL_STREAM_TUNE_TIMEOUT);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to A times out");
+    rc |= expect_int("off-scan walk: A fails late", settle_walk_tune(&opts, &state, RTL_STREAM_TUNE_FAILED),
+                     DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_true("off-scan walk: Next passes A", state.lcn_freq_roll == 1 && dsd_state_lcn_heard_row(&state) == 2);
+
+    manual_leg_script(896000000U, RTL_STREAM_TUNE_TIMEOUT);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "off-scan walk: previous to B times out");
+    rc |= expect_true("off-scan walk: previous asked for B", g_manual_leg_hz == 896000000U);
+    dsd_engine_manual_tune_supersede(&state);
+    rc |= expect_int("off-scan walk: B dropped", dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_DROPPED);
+    rc |= expect_true("off-scan walk: a drop changes nothing", state.lcn_freq_roll == 1
+                                                                   && dsd_state_lcn_heard_row(&state) == 2
+                                                                   && dsd_state_lcn_back_retry_row(&state) < 0);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5172,7 +5365,7 @@ test_channel_cycle_retries_a_deferred_candidate(void) {
     rc |= expect_candidate_walk("candidate: a refusal passes C", &state, 3, 3U);
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "candidate: after the refusal");
     rc |= expect_true("candidate: the next press wraps to A", g_manual_leg_hz == 381012500U);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5726,6 +5919,7 @@ prev_lands(dsd_opts* opts, dsd_state* state, uint32_t hz, int roll, int heard, c
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #666 (review gate G1): before any step recorded a row heard, the row heard is the row before the cursor. A
  * refused Next moved the cursor past the row it never tuned, so that fallback named the refused row: it labelled the
@@ -5767,10 +5961,11 @@ test_channel_cycle_first_refusal_names_no_row(void) {
                       g_manual_leg_hz == 872000000U && state.lcn_freq_roll == 2);
     rc |= expect_int("legacy cursor: no row heard", dsd_state_lcn_heard_row(&state), -1);
     rc |= prev_lands(&opts, &state, 874000000U, 3, 2, "legacy cursor: the next previous goes on past A");
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
+#endif
 
 /*
  * Issue #697: `b` refuses to avoid the last row a step can land on. Beside the DMR row on air the list holds only an am
@@ -5791,7 +5986,7 @@ test_scan_avoid_counts_width_skipped_rows_out(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "skipped alternate: avoid");
     rc |= expect_int("skipped alternate: the dmr row is not avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U), 0);
     rc |= expect_contains("skipped alternate: refused", state.ui_msg, "Cannot avoid the last usable scan channel");
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5829,11 +6024,12 @@ test_clear_channel_map_leaves_learned_channels_unscanned(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, "learned: avoid");
     rc |= expect_int("learned: the channel is not avoided", dsd_state_trunk_lcn_avoid_get(&state, 0U), 0);
     rc |= expect_contains("learned: avoid refused", state.ui_msg, "No channel map: nothing to avoid");
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #666 (review gate G2): a landing restarts the row's visit even when it leaves the cursor where it was. On
  * [A, B], Next refused on B moves the cursor to 2 and tells both visit timers so (the receiver stayed on A); Previous
@@ -5867,7 +6063,7 @@ test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit(void) {
     rc |= expect_true("same cursor: B's gate starts over", state.scan_voice_gate_arrive_m > arrive + 2.5);
     rc |= expect_int("same cursor: B's cap has not expired",
                      dsd_engine_scan_visit_expired(&opts, &state, dsd_decode_now_mono_s()), 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5899,7 +6095,7 @@ test_channel_cycle_prev_walks_back(void) {
     rc |= expect_int("prev: held", (int)state.lcn_scan_hold, 1);
     rc |= prev_lands(&opts, &state, 884000000U, 4, 3, "prev: moves while held");
     rc |= expect_int("prev: the hold stays", (int)state.lcn_scan_hold, 1);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -5937,10 +6133,11 @@ test_channel_cycle_candidate_next_drops_the_retry(void) {
     opts.p25_prefer_candidates = 0;
     manual_leg_script(892000000U, RTL_STREAM_TUNE_OK);
     rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "cand retry: previous goes back from C to B");
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
+#endif
 
 /* The P25 hunt's control-channel tune off the wrap toolchains (on them __wrap_dsd_trunk_tuning_hook_tune_to_cc answers
    with g_cc_tune_result first): g_hunt_cc_result. */
@@ -5996,7 +6193,7 @@ end_p25_hunt_context(dsd_state* state) {
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
 #endif
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(state);
 }
 
@@ -6112,6 +6309,7 @@ test_channel_cycle_p25_candidate_hunt_drops_the_retry(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #666: rows on one frequency in a row are one channel, from either side: Previous lands on a run's first row,
  * goes back from the first row of the run heard (here a timed step had landed its second row), and skips a run whose
@@ -6137,11 +6335,13 @@ test_channel_cycle_prev_duplicate_runs(void) {
     rc |= prev_lands(&opts, &state, 891000000U, 1, 0, "runs: P again");
     rc |= prev_lands(&opts, &state, 891000000U, 6, 5, "runs: and the last P");
     rc |= prev_lands(&opts, &state, 892000000U, 2, 1, "runs: past the avoided run from its other side");
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
+#endif
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* Row @p row's own key set: one keyloader key, @p value at index 9. */
 static int
 set_row_key(dsd_state* state, size_t row, unsigned long long value) {
@@ -6215,7 +6415,7 @@ test_channel_cycle_prev_refused_row(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev then next: prev again");
     rc |= expect_prev_tuned("prev then next: from the row heard again", 901000000U, calls);
     rc |= expect_int("prev then next: W still heard", dsd_state_lcn_heard_row(&state), 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -6247,7 +6447,7 @@ test_channel_cycle_prev_after_avoid_and_reload(void) {
     dsd_test_temp_cwd cwd;
     if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_prev_reload") != 0) {
         DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
-        dsd_app_command_test_set_manual_tune_leg(NULL);
+        disarm_manual_leg();
         freeState(&state);
         return 1;
     }
@@ -6260,10 +6460,11 @@ test_channel_cycle_prev_after_avoid_and_reload(void) {
     rc |= prev_lands(&opts, &state, 923000000U, 3, 2, "reload: first use starts at the end again");
     rc |= expect_int("reload: remove the map", remove("prev_reload.csv"), 0);
     rc |= expect_int("reload: leave the temp directory", dsd_test_temp_cwd_leave(&cwd), 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
+#endif
 
 /*
  * Issue #666 (D7): Previous on a control-channel candidate list walks it backward, from the last candidate when none
@@ -6307,7 +6508,7 @@ test_channel_cycle_prev_candidates(void) {
     rc |= expect_candidate_walk("prev candidate: a refusal passes A", &state, 1, 5U);
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev candidate: after the refusal");
     rc |= expect_true("prev candidate: the next press wraps to C", g_manual_leg_hz == 388012500U);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -6333,7 +6534,7 @@ test_channel_cycle_without_a_tuner_says_so(void) {
                          "No tuner to change channel: use a radio input or a rigctl peer");
         rc |= expect_int("no tuner: the press fails", dsd_app_command_test_last_failed(), 1);
         rc |= expect_true("no tuner: nothing tuned or moved", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
-        dsd_app_command_test_set_manual_tune_leg(NULL);
+        disarm_manual_leg();
         freeState(&state);
     }
     return rc;
@@ -6358,7 +6559,7 @@ test_channel_cycle_prev_refusals_and_trunk_scan(void) {
     rc |= expect_contains("prev refused: the replay's reason", state.ui_msg, "An I/Q replay cannot retune.");
     rc |= expect_int("prev refused: replay fails the press", dsd_app_command_test_last_failed(), 1);
     rc |= expect_true("prev refused: replay tunes nothing", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
 
     init_manual_walk_context(&opts, &state, kRows, 2);
@@ -6367,7 +6568,7 @@ test_channel_cycle_prev_refusals_and_trunk_scan(void) {
     rc |= expect_str("prev refused: paused -Y toast", state.ui_msg, "Scan paused: resume it first");
     rc |= expect_int("prev refused: paused -Y fails the press", dsd_app_command_test_last_failed(), 1);
     rc |= expect_true("prev refused: paused -Y tunes nothing", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -6418,7 +6619,7 @@ test_signal_search_refuses_channel_cycle_prev(void) {
     g_signal_search_active = 0;
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "search: stopped");
     rc |= expect_true("search: previous goes through", g_manual_leg_hz == 952000000U && state.lcn_freq_roll == 2);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -7298,8 +7499,11 @@ test_manual_tunes_hand_a_tetra_return_over(void) {
 
 /*
  * Per-row keys through the command queue: a channel cycle onto a keyed row
- * installs its set, a runtime key import while parked lands in the globals
- * and survives the next leave, and scanner toggle off restores the baseline.
+ * installs its set under -Y, a runtime key import while parked lands in the
+ * globals and survives the next leave, and scanner toggle off restores the
+ * baseline. Off any scan, and under plain trunking, the same cycle installs
+ * nothing (issue #644 B-1): row keys take effect only under -Y
+ * (docs/csv-formats.md), and nothing would take them back.
  */
 static int
 test_scan_row_keys_commands(void) {
@@ -7341,9 +7545,26 @@ test_scan_row_keys_commands(void) {
         }
     }
 
+    opts.audio_in_type = AUDIO_IN_RTL;
+    for (int trunked = 0; trunked <= 1; trunked++) {
+        const char* tag = trunked ? "keyed cycle under -T" : "keyed cycle off any scan";
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        opts.scanner_mode = 0;
+        opts.trunk_enable = trunked;
+        state.lcn_freq_roll = 1;
+        rc |= expect_int(tag, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true(tag, g_io_control_tune_freq == 858000000L && dsd_state_lcn_heard_row(&state) == 1);
+        rc |= expect_u64(tag, state.rkey_array[9], 0ULL);
+        rc |= expect_int(tag, (int)state.scan_keys_active_set, 0);
+        rc |= expect_int(tag, state.keyloader, 0);
+    }
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 1;
+    state.lcn_freq_roll = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    opts.audio_in_type = AUDIO_IN_RTL;
     rc |= expect_int("keyed cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("keyed cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -7362,7 +7583,6 @@ test_scan_row_keys_commands(void) {
 
     // Scanner toggle off hands the foreground keyring back to the globals.
     rc |= expect_int("repark installs again", dsd_scan_keys_enter(&state, dsd_state_trunk_lcn_keys_get(&state, 1U)), 1);
-    opts.scanner_mode = 1;
     rc |= expect_int("scanner toggle queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -25570,7 +25790,7 @@ test_scan_avoid_remove_lcn_identity(void) {
     rc |= expect_avoid_remove_stale(&opts, &state, &id, "LCN identity under a trunk scan");
     rc |= expect_true("LCN identity under a trunk scan keeps the flag", dsd_state_trunk_lcn_avoid_get(&state, 0U) == 1);
     opts.trunk_scan_enabled = 0;
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -25727,6 +25947,7 @@ test_scan_avoid_remove_trunk_scan(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* B4: Avoid on a -Y row already avoided (a failed tune left the receiver on it) changes no flag, revision, cursor or
    visit clock and tunes nothing, with two and with several usable rows; the drain's own maintenance is the baseline. */
 static int
@@ -25755,7 +25976,7 @@ expect_avoid_on_avoided_row(const long* rows, int count, const char* label) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_AVOID, label);
     DSD_SNPRINTF(tag, sizeof tag, "%s: a fresh avoid steps", label);
     rc |= expect_true(tag, g_manual_leg_calls == 1 && dsd_state_trunk_lcn_avoid_get(&state, 1U) == 1);
-    dsd_app_command_test_set_manual_tune_leg(NULL);
+    disarm_manual_leg();
     freeState(&state);
     return rc;
 }
@@ -25767,6 +25988,7 @@ test_scan_avoid_on_an_avoided_row(void) {
     return expect_avoid_on_avoided_row(k_three, 3, "two usable rows")
            | expect_avoid_on_avoided_row(k_four, 4, "three usable rows");
 }
+#endif
 
 /* B6: more avoided rows than lcn_avoid_count holds (65,535): the avoid and clear toasts count them exactly. */
 static int
@@ -27138,32 +27360,45 @@ main(void) {
 #endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_cycle_passes_a_refused_row();
     rc |= test_channel_cycle_refusal_keeps_the_visit_windows();
     rc |= test_channel_cycle_refusal_after_a_landing_in_one_drain();
     rc |= test_channel_cycle_first_refusal_names_no_row();
     rc |= test_channel_cycle_landing_on_the_same_cursor_restarts_the_visit();
+#endif
     rc |= test_clear_channel_map_leaves_learned_channels_unscanned();
     rc |= test_scan_avoid_counts_width_skipped_rows_out();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_cycle_with_nothing_to_land_on();
+#endif
+    rc |= test_channel_walk_off_scan_rules();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_cycle_prev_walks_back();
+#endif
     rc |= test_channel_cycle_prev_after_p25_hunt();
     rc |= test_channel_cycle_prev_after_refused_p25_hunt();
     rc |= test_channel_cycle_p25_hunt_drops_the_retry();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_cycle_candidate_next_drops_the_retry();
+#endif
     rc |= test_channel_cycle_p25_candidate_hunt_drops_the_retry();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_cycle_prev_duplicate_runs();
     rc |= test_channel_cycle_prev_refused_row();
     rc |= test_channel_cycle_prev_after_avoid_and_reload();
+#endif
     rc |= test_channel_cycle_prev_candidates();
     rc |= test_channel_cycle_without_a_tuner_says_so();
     rc |= test_channel_cycle_prev_refusals_and_trunk_scan();
     rc |= test_scan_avoid_remove_lcn_identity();
     rc |= test_scan_avoid_clear_outside_a_rotation();
     rc |= test_scan_avoid_remove_trunk_scan();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_scan_avoid_on_an_avoided_row();
+#endif
     rc |= test_scan_avoid_counts_past_65535();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_scan_avoid_edits_under_search_and_replay();

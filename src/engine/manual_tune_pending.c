@@ -40,6 +40,8 @@ typedef struct {
     int row;
     uint32_t scan_session;
     uint64_t list_rev;
+    int dir;
+    int scan_owned;
     uint32_t session_generation;
 } dsd_manual_tune_record;
 
@@ -131,27 +133,57 @@ dsd_engine_manual_tune_completion(uint64_t id, int result) {
     dsd_atomic_u64_store_release(&g_completions[slot], packed);
 }
 
-void
-dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
-                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t list_rev) {
+/* Note @p record (its id, kind and what it was for) in place of any tune noted before it. */
+static void
+manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
     if (atomic_load(&g_record_pending) != MANUAL_TUNE_NONE_NOTED && g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP) {
         g_displaced = g_record;
         g_displaced_unreported = 1;
     }
     dsd_engine_manual_tune_supersede(state);
-    if (id == 0U) {
+    if (record->id == 0U) {
         return;
     }
-    g_record.id = id;
-    g_record.kind = kind;
-    g_record.requested_hz = requested_hz;
-    g_record.prior_applied_hz = prior_applied_hz;
-    g_record.row = row;
-    g_record.scan_session = scan_session;
-    g_record.list_rev = list_rev;
+    g_record = *record;
     g_record.session_generation = manual_tune_session_generation();
     atomic_store(&g_rr_owner_took_over, 0);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
+}
+
+void
+dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t list_rev) {
+    const dsd_manual_tune_record record = {
+        .id = id,
+        .kind = kind,
+        .requested_hz = requested_hz,
+        .prior_applied_hz = prior_applied_hz,
+        .row = row,
+        .scan_session = scan_session,
+        .list_rev = list_rev,
+    };
+    manual_tune_note(state, &record);
+}
+
+void
+dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t requested_hz, uint32_t prior_applied_hz,
+                                      int row, int dir, int scan_owned) {
+    if (id == 0U) {
+        /* Nothing was queued, so nothing decides the receiver: an older tune noted stays. */
+        return;
+    }
+    const dsd_manual_tune_record record = {
+        .id = id,
+        .kind = DSD_MANUAL_TUNE_LCN_CYCLE,
+        .requested_hz = requested_hz,
+        .prior_applied_hz = prior_applied_hz,
+        .row = row,
+        .scan_session = state ? state->lcn_scan_session : 0U,
+        .list_rev = state ? state->lcn_list_rev : 0U,
+        .dir = dir < 0 ? -1 : 1,
+        .scan_owned = scan_owned ? 1 : 0,
+    };
+    manual_tune_note(state, &record);
 }
 
 void
@@ -195,6 +227,8 @@ manual_tune_keep_settled(const dsd_manual_tune_record* record) {
     g_settled.row = record->row;
     g_settled.scan_session = record->scan_session;
     g_settled.list_rev = record->list_rev;
+    g_settled.dir = record->dir;
+    g_settled.scan_owned = record->scan_owned;
 }
 
 /* The record goes, and what it was stays for its owner. */
@@ -383,7 +417,8 @@ dsd_engine_manual_tune_settled_ready(void) {
     if (!manual_tune_completion_for(g_record.id, &packed)) {
         return 0;
     }
-    /* A RadioReference import's landing is reported, so the reception it ends hands its toast to the outer pass. */
+    /* A row's landing (a step's, a walk's) commits it, so a frame decoded after it is not named after the row left; a
+       RadioReference import's landing is reported, so the reception it ends hands its toast to the outer pass. */
     return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP
-           || g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT;
+           || g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE || g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT;
 }

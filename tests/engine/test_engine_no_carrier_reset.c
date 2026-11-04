@@ -83,8 +83,11 @@
 #include "engine_test_support.h"
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -366,6 +369,23 @@ static int g_rigctl_kindmod_refuse = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+/* A scan step's tune supersedes a pending manual tune (issue #671): counted where a case reads it, and superseded for
+   real. Wrapped in every build these wraps link, radio support or not: a -Y walk's RTL leg supersedes too (issue
+   #644). */
+#ifdef USE_RADIO
+static int g_manual_tune_supersedes = 0;
+#endif
+void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+
+void
+__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
+#ifdef USE_RADIO
+    g_manual_tune_supersedes++;
+#endif
+    __real_dsd_engine_manual_tune_supersede(state);
+}
+
 #ifdef USE_RADIO
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
@@ -775,17 +795,6 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
         apply_pending_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
-}
-
-/* A scan step's tune supersedes a pending manual tune (issue #671): counted, and superseded for real. */
-static int g_manual_tune_supersedes = 0;
-void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
-void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
-
-void
-__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
-    g_manual_tune_supersedes++;
-    __real_dsd_engine_manual_tune_supersede(state);
 }
 
 /* Stream opens and stops, moved by a case that stops the stream (issue #803). */
@@ -7490,6 +7499,287 @@ test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* --- Issue #644 (B-2): the Next and Previous walk (`L`/`J`) over a list without modes. Its tune reported an RTL
+ * timeout as complete, so the row, its keys and the call boundary were published before the receiver got there, and a
+ * late failure or a drop could not take them back. The walk now waits for the landing, in both of its ownership
+ * modes: a walk the running -Y scan owns, which tunes as the scan's step does (rigctl, then RTL), and a walk off any
+ * scan, which keeps its one leg. --- */
+
+/* An untyped list of three rows from @p base_hz, 1 MHz apart, the receiver on row 0 and keys on rows 1 (rkey 9 = 999)
+   and 2 (rkey 9 = 777): Next lands on row 1, Previous on row 2. With @p scan_owned the -Y scan runs it; otherwise no
+   scan does and trunking is off. Frequencies of their own per case: the legacy legs' caches outlive the runtime. */
+static int
+setup_walk_list(dsd_opts* opts, dsd_state* state, int scan_owned, long int base_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {} /* and the drops' reports with it */
+    opts->scanner_mode = scan_owned ? 1 : 0;
+    opts->trunk_enable = 0;
+    mark_scan_list_imported(opts);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    opts->rtlsdr_center_freq = (uint32_t)base_hz;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = base_hz + (long int)i * 1000000L;
+    }
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 1;
+    dsd_state_lcn_on_air_note(state, 0);
+    g_rtl_last_applied_hz = (uint32_t)base_hz;
+    if (set_untyped_row_key(state, 1U, 999ULL) != 0 || set_untyped_row_key(state, 2U, 777ULL) != 0) {
+        return -1;
+    }
+    dsd_app_frontend_runtime_start(opts, state);
+    return 0;
+}
+
+static void
+teardown_walk_list(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rigctl_setfreq_ok = 0;
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    free_test_runtime(opts, state);
+}
+
+/* Press Next (@p dir 1) or Previous (-1) through the command queue, as a frontend's key does. Returns the drain's
+   count. */
+static int
+press_walk(dsd_opts* opts, dsd_state* state, int dir) {
+    state->ui_msg[0] = '\0';
+    if (dsd_app_command_action(dir < 0 ? DSD_APP_CMD_CHANNEL_CYCLE_PREV : DSD_APP_CMD_CHANNEL_CYCLE) <= 0) {
+        return 0;
+    }
+    return dsd_app_drain_cmds(opts, state);
+}
+
+/* Press in direction @p dir with the RTL tune timing out: the controller keeps it outstanding. */
+static int
+press_walk_into_a_timeout(dsd_opts* opts, dsd_state* state, int dir) {
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    const int drained = press_walk(opts, state, dir);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return drained;
+}
+
+/* Nothing of row 0 has moved: the cursor past it, it is the row heard, no row is left to retry, no row's keys are
+   installed, and no boundary ran since @p carrier_seq. */
+static int
+expect_walk_left_alone(const char* what, const char* step, const dsd_state* state, uint32_t carrier_seq) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s %s", what, step);
+    int rc = expect_case(label, "the cursor stays", state->lcn_freq_roll == 1);
+    rc |= expect_case(label, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+    rc |= expect_case(label, "no row to retry", dsd_state_lcn_back_retry_row(state) < 0);
+    rc |= expect_case(label, "no row keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_case(label, "no boundary", state->carrier_seq == carrier_seq);
+    return rc;
+}
+
+/* A refused @p row, as the walk in direction @p dir passes it (issue #666): going forward the cursor moves past it,
+   going back the cursor stays and the row is the one the next Previous retries. Either way row 0 is still the row
+   heard and no row's keys are installed. */
+static int
+expect_walk_refused(const char* what, const dsd_state* state, int dir, int row) {
+    int rc = expect_case(what, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+    rc |= expect_case(what, "no row keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    if (dir > 0) {
+        rc |= expect_case(what, "Next passes the row", state->lcn_freq_roll == row + 1);
+        rc |= expect_case(what, "no row to retry", dsd_state_lcn_back_retry_row(state) < 0);
+    } else {
+        rc |= expect_case(what, "Previous keeps the cursor", state->lcn_freq_roll == 1);
+        rc |= expect_case(what, "and retries the row", dsd_state_lcn_back_retry_row(state) == row);
+    }
+    return rc;
+}
+
+enum { WALK_LANDS = 0, WALK_FAILS_LATE = 1, WALK_DROPPED = 2, WALK_OUTCOMES = 3 };
+
+/* One walk in direction @p dir, owned by the -Y scan or not (@p scan_owned), whose RTL tune times out and then ends as
+   @p outcome. */
+static int
+walk_timeout_case(int dir, int scan_owned, int outcome) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const outcome_names[] = {"lands", "fails late", "dropped"};
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s %s %s", dir > 0 ? "next" : "prev", scan_owned ? "-Y" : "no-scan",
+                 outcome_names[outcome]);
+    const long int base_hz = 930012500L + (long int)(((dir > 0 ? 0 : 1) * 2 + scan_owned) * 3 + outcome) * 3000000L;
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const int row = dir > 0 ? 1 : 2;
+    const uint32_t row_hz = (uint32_t)(base_hz + (long int)row * 1000000L);
+    const uint32_t carrier_seq = state->carrier_seq;
+    int rc = expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    rc |= expect_case(what, "the row is tuned", g_rtl_tune_freq == row_hz && g_retune_in_flight.active);
+    rc |= expect_walk_left_alone(what, "pending", state, carrier_seq);
+    rc |= expect_case(what, "no completion yet",
+                      dsd_engine_manual_tune_settled_ready() == 0
+                          && dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+    rc |= expect_walk_left_alone(what, "after an empty poll", state, carrier_seq);
+
+    if (outcome == WALK_LANDS) {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing ends a synced reception", dsd_engine_manual_tune_settled_ready() == 1);
+        rc |= expect_case(what, "the landing is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+        rc |= expect_case(what, "the row commits",
+                          state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+        rc |= expect_case(what, "the call boundary runs", state->carrier_seq != carrier_seq);
+        if (scan_owned) {
+            rc |= expect_case(what, "the -Y row's keys install",
+                              state->rkey_array[9] == (dir > 0 ? 999ULL : 777ULL) && state->scan_keys_active_set == 1);
+        } else {
+            /* B-1: row keys take effect only under -Y. */
+            rc |= expect_case(what, "no scan, no row keys",
+                              state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+        }
+        rc |= expect_case(what, "the centre is the row's", opts->rtlsdr_center_freq == row_hz);
+    } else if (outcome == WALK_FAILS_LATE) {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the failure ends a synced reception", dsd_engine_manual_tune_settled_ready() == 1);
+        rc |= expect_case(what, "the failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+        rc |= expect_walk_refused(what, state, dir, row);
+        rc |= expect_case(what, "no boundary", state->carrier_seq == carrier_seq);
+        rc |= expect_case(what, "the centre goes back", opts->rtlsdr_center_freq == (uint32_t)base_hz);
+        rc |= expect_case(what, "no toast", state->ui_msg[0] == '\0');
+    } else {
+        dsd_engine_manual_tune_supersede(state);
+        rc |= expect_case(what, "the drop is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+        rc |= expect_walk_left_alone(what, "dropped", state, carrier_seq);
+        /* Its tune landing after the drop names nothing: what dropped it decides the receiver. */
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "a late landing after the drop is not taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+        rc |= expect_walk_left_alone(what, "after the dropped tune landed", state, carrier_seq);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_waits_for_its_tune(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+            for (int outcome = 0; outcome < WALK_OUTCOMES; outcome++) {
+                rc |= walk_timeout_case(dir, scan_owned, outcome);
+            }
+        }
+    }
+    return rc;
+}
+
+/* A walk the -Y scan owns tunes every configured front end, as the scan's step does: rigctl first, then RTL. The RTL
+   leg refused at once (@p late 0), or timed out and failed later (1), after rigctl moved: the receiver left row 0, so
+   the outgoing boundary runs and the tone heard there goes at once; the row is refused as the walk refuses one, in its
+   direction. */
+static int
+walk_partial_move_case(int dir, int late) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s -Y rigctl moved, RTL %s", dir > 0 ? "next" : "prev",
+                 late ? "fails late" : "refused");
+    const long int base_hz = 1100012500L + (long int)((dir > 0 ? 0 : 1) * 2 + late) * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t tone_generation = state->analog_rx.generation;
+    const int row = dir > 0 ? 1 : 2;
+    const long int row_hz = base_hz + (long int)row * 1000000L;
+    const uint32_t carrier_seq = state->carrier_seq;
+    int rc = 0;
+    if (late) {
+        rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    } else {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+        (void)press_walk(opts, state, dir);
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    }
+    rc |= expect_case(what, "rigctl moved", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == row_hz);
+    rc |= expect_case(what, "then RTL was asked", g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)row_hz);
+    rc |= expect_case(what, "the outgoing boundary ran once", state->carrier_seq == carrier_seq + 1U);
+    rc |= expect_case(what, "the tone went", rx_tone_publication_cleared(state, tone_generation));
+    if (late) {
+        rc |= expect_walk_left_alone(what, "pending", state, carrier_seq + 1U);
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+        rc |= expect_case(what, "no second boundary", state->carrier_seq == carrier_seq + 1U);
+    }
+    rc |= expect_walk_refused(what, state, dir, row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_scan_owned_walk_tunes_both_front_ends(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int late = 0; late <= 1; late++) {
+            rc |= walk_partial_move_case(dir, late);
+        }
+    }
+    return rc;
+}
+
+/* A walk's landing in the middle of a reception ends it, so at most the frame in flight decodes under the row left;
+   the outer pass then commits the row (here a walk off any scan, whose row has a name). */
+static int
+test_walk_landing_ends_a_synced_reception(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_walk_list(opts, state, 0, 1130012500L) != 0 || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
+        || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    rc |= expect_true("walk-mid-reception-pending",
+                      press_walk_into_a_timeout(opts, state, 1) == 1 && g_retune_in_flight.active);
+    run_synced_frames(opts, state, 6, 1);
+    if (g_frame_count != 2) {
+        DSD_FPRINTF(stderr, "walk mid-reception: %d frames decoded in the reception the landing came in (want 2)\n",
+                    g_frame_count);
+    }
+    rc |= expect_true("walk-mid-reception-ends-at-the-landing", g_frame_count == 2 && state->synctype == DSD_SYNC_NONE);
+    rc |= expect_true("walk-mid-reception-before-landing", g_frame_roll[1] == 1);
+    rc |= expect_true("walk-mid-reception-outer-pass-commits",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED && state->lcn_freq_roll == 2
+                          && dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -9265,6 +9555,9 @@ main(void) {
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();
     rc |= test_running_step_dropped_keeps_the_windows();
     rc |= test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing();
+    rc |= test_walk_waits_for_its_tune();
+    rc |= test_scan_owned_walk_tunes_both_front_ends();
+    rc |= test_walk_landing_ends_a_synced_reception();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_targets_on_a_resampled_chain();

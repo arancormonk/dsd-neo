@@ -9,10 +9,10 @@
  * hears, and only a tune that succeeded says where it is.
  *
  * The -Y scan notes a row's frequency once the row committed after a tune that landed (a typed row's commit, an untyped
- * step's, and a manual Next or Previous on an untyped list whose tune the front end confirmed, through
- * dsd_engine_channel_scan_note_manual_step()), and the trunk scan a conventional target's once its retune completed.
- * The record is forgotten before every row or target tune, at a manual untyped step's refused or deferred tune, at
- * every carrier boundary that moves the receiver (a manual tune among them; a step to a row of the list is the scan's
+ * step's, and a manual Next or Previous on an untyped list whose tune the front end confirmed, which installs its row
+ * as the step does: dsd_engine_channel_scan_walk_row()), and the trunk scan a conventional target's once its retune
+ * completed. The record is forgotten before every row or target tune (a manual untyped step's included), at every
+ * carrier boundary that moves the receiver (a manual tune among them; a step to a row of the list is the scan's
  * own, which notes its row again after it) and at the -Y scan's release, which a pause, a stop and a trunk-scan stop
  * run, so the operator's own tune (`=`) leaves none; a placeholder row, a failed, pending or unconfirmed tune and a
  * rollback note none. It reads as none once its scan no longer owns the tuner, and a -Y landing once the scan

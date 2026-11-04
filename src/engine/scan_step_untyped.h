@@ -50,8 +50,11 @@ int dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row,
    tuned. A resume's landing then publishes the scan (dsd_engine_channel_scan_resume_landed()). A failure moves the
    cursor past the row the front end refused and reopens the scan's windows, as a refusal in the step does (issue #666);
    a resume's failure leaves the scan paused instead (dsd_engine_channel_scan_resume_failed()). A row whose scan is no
-   longer current commits nothing: the poll's reconcile of the cached frequency is all. Returns the poll's result.
-   Decoder thread. */
+   longer current commits nothing: the poll's reconcile of the cached frequency is all. A Next or Previous walk's tune
+   (DSD_MANUAL_TUNE_LCN_CYCLE, issue #644) settles by the walk's rules: one the -Y scan owns commits its row the same
+   way, or passes or retries it by its direction on a late failure (dsd_engine_channel_walk_note_outcome()); one off any
+   scan goes to app-control's walk hook (<dsd-neo/runtime/channel_scan_hooks.h>); a drop changes nothing. Returns the
+   poll's result. Decoder thread. */
 int dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state);
 
 /* A resume's row has landed and is installed (issue #671): the scan runs again (scanner_mode 1) and is no longer

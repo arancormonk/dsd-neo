@@ -26,6 +26,8 @@ typedef struct {
     int row;
     uint32_t scan_session;
     uint64_t list_rev;
+    int dir;        /* a walk's direction (DSD_MANUAL_TUNE_LCN_CYCLE): 1 Next, -1 Previous; 0 for any other kind */
+    int scan_owned; /* a walk the running -Y scan owns (DSD_MANUAL_TUNE_LCN_CYCLE) */
 } dsd_manual_tune_settled;
 
 /* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or
@@ -34,8 +36,8 @@ typedef struct {
 void dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out);
 
 /* Whether the noted tune's completion has come, and the next dsd_engine_manual_tune_poll() will act on it: a failure of
-   any tune (the cached centre goes back, an entry's toast), an untyped -Y step's landing (its row commits) or a
-   RadioReference import's landing (its toast, issue #803). The synced-frames loop ends a reception on it, so a frame
+   any tune (the cached centre goes back, an entry's toast), an untyped -Y step's or a Next or Previous walk's landing
+   (its row commits; issue #644) or a RadioReference import's landing (its toast, issue #803). The synced-frames loop ends a reception on it, so a frame
    decoded after it is never named after a frequency the receiver did not reach, nor after the row left, and the outcome
    is posted while the carrier keeps sync. An entry's landing changes nothing the decoder names, so it ends nothing. A
    flag read and one atomic load while nothing is noted. Decoder thread. */

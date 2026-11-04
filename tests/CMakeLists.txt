@@ -9046,6 +9046,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq_tagged"
+            "LINKER:--wrap=io_control_set_rtl_freq_tagged"
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"

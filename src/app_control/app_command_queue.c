@@ -3329,35 +3329,86 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int sym_rate) {
 #ifdef DSD_NEO_TEST_HOOKS
 /* A test's stand-in for the manual retunes' io_control leg (dsd_app_command_test_set_manual_tune_leg()), the sibling of
    the frequency entry's: portable, where a link-time wrap of the io/control tune is not. */
-static int (*g_test_manual_tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz);
+static int (*g_test_manual_tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id);
 
 void
-dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz)) {
+dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz,
+                                                         uint64_t* out_pending_id)) {
     g_test_manual_tune_leg = tune_leg;
 }
 #endif
 
-/* The io_control leg of request_manual_tune(): an RTL_STREAM_TUNE_* result, or -1 refused. */
+/* The io_control leg of request_manual_tune(): an RTL_STREAM_TUNE_* result, or -1 refused. @p out_pending_id (optional)
+   receives the ID a timed-out RTL tune's completion will come under (io_control_set_freq_tagged()). */
 static int
-manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
 #ifdef DSD_NEO_TEST_HOOKS
     if (g_test_manual_tune_leg) {
-        return g_test_manual_tune_leg(opts, state, hz);
+        if (out_pending_id) {
+            *out_pending_id = 0U;
+        }
+        return g_test_manual_tune_leg(opts, state, hz, out_pending_id);
     }
 #endif
-    return io_control_set_freq(opts, state, hz);
+    return io_control_set_freq_tagged(opts, state, hz, out_pending_id);
+}
+
+/* The receiver moved to another carrier under a manual tune (issue #522): with rigctl on PCM input nothing else reports
+   this hop (io_control does not advance the trunk-tuning generation, and there is no RTL stream generation to move), so
+   the tone heard on the old channel goes here; nor does anything else tell the NXDN control-channel hunt, whose
+   attribution of the receiver it outdates. */
+static void
+manual_tune_moved(const dsd_opts* opts, dsd_state* state) {
+    dsd_analog_rx_reset(state);
+    nxdn_cc_hunt_note_retune(opts, state);
+}
+
+/* The io_control leg of request_manual_tune() to @p freq: its RTL_STREAM_TUNE_* result, or -1 for a frequency the
+   tuner path cannot carry. @p tune_result becomes OK for an accepted tune (a timeout included) and DEFERRED for a
+   deferred one, and stays as it was otherwise. With @p pending_id the leg is followed: a timeout's ID lands there (0
+   for any other outcome). */
+static int
+request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trunk_tune_result* tune_result,
+                       uint64_t* pending_id) {
+    /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. The trunk frequency is a long; one the
+       tuner path cannot carry is refused as io_control_set_freq() refuses 0. */
+    int carried = freq > 0;
+#if LONG_MAX > UINT32_MAX
+    carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
+#endif
+    const int result = carried ? manual_tune_io_leg(opts, state, (uint32_t)freq, pending_id) : -1;
+    if (result != RTL_STREAM_TUNE_DEFERRED) {
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
+    } else {
+        *tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
+    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
+        /* This leg has no correlated tune request to await, so an accepted
+         * timeout (issued, not yet confirmed) is reported as complete. */
+        *tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        /* It moves the receiver without the engine's legacy legs, and runs no carrier boundary to tell them (issue
+           #671). */
+        dsd_engine_legacy_tune_caches_forget();
+    }
+    if (pending_id && result != RTL_STREAM_TUNE_TIMEOUT) {
+        *pending_id = 0U;
+    }
+    return result;
 }
 
 /* @p out_result is the CC hook's result on the CC leg. On the io_control leg it is OK for an accepted tune (a timeout
    included), DEFERRED for a deferred one and FAILED otherwise, so a caller can tell a front end's refusal from a tune
-   to retry (issue #666). @p out_landed (optional) is 1 only for an io_control tune the front end confirmed
-   (RTL_STREAM_TUNE_OK), not one accepted but still outstanding (a timeout), nor a CC-leg tune. */
+   to retry (issue #666). @p out_pending_id (optional) is for a caller that follows a timed-out io_control tune to its
+   completion (the channel walk, issue #644): it receives the ID the completion will come under, 0 for any other
+   outcome, and the receiver is then not yet taken to have moved (manual_tune_moved() is the caller's, at the landing).
+   Without it a timeout counts as a move, as the other manual retunes take it. */
 static int
 request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action,
-                    dsd_trunk_tune_result* out_result, uint64_t* out_request_id, int* out_landed) {
+                    dsd_trunk_tune_result* out_result, uint64_t* out_request_id, uint64_t* out_pending_id) {
     int result = 0;
     int accepted = 0;
-    int landed = 0;
+    uint64_t pending_id = 0U;
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (p25_cc_symbol_rate != 0) {
@@ -3366,29 +3417,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         result = (int)tune_result;
         accepted = dsd_trunk_tune_result_is_ok(tune_result);
     } else {
-        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. The trunk frequency is a long;
-           one the tuner path cannot carry is refused as io_control_set_freq() refuses 0. */
-        int carried = freq > 0;
-#if LONG_MAX > UINT32_MAX
-        carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
-#endif
-        result = carried ? manual_tune_io_leg(opts, state, (uint32_t)freq) : -1;
-        if (result != RTL_STREAM_TUNE_DEFERRED) {
-            /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
-            dsd_engine_manual_tune_supersede(state);
-        } else {
-            tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
-        }
-        landed = result == RTL_STREAM_TUNE_OK;
-        accepted = landed || result == RTL_STREAM_TUNE_TIMEOUT;
-        if (accepted) {
-            /* This leg has no correlated tune request to await, so an accepted
-             * timeout (issued, not yet confirmed) is reported as complete. */
-            tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-            /* It moves the receiver without the engine's legacy legs, and runs no carrier boundary to tell them
-               (issue #671). */
-            dsd_engine_legacy_tune_caches_forget();
-        }
+        result = request_manual_tune_io(opts, state, freq, &tune_result, out_pending_id ? &pending_id : NULL);
+        accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
     }
     if (out_result) {
         *out_result = tune_result;
@@ -3396,16 +3426,13 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     if (out_request_id) {
         *out_request_id = request_id;
     }
-    if (out_landed) {
-        *out_landed = landed;
+    if (out_pending_id) {
+        *out_pending_id = pending_id;
     }
     if (accepted) {
-        /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
-           hop: io_control does not advance the trunk-tuning generation, and there is no RTL
-           stream generation to move, so the tone heard on the old channel goes here. */
-        dsd_analog_rx_reset(state);
-        /* Nor does it tell the NXDN control-channel hunt, whose attribution of the receiver it outdates. */
-        nxdn_cc_hunt_note_retune(opts, state);
+        if (pending_id == 0U) {
+            manual_tune_moved(opts, state);
+        }
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -3687,45 +3714,24 @@ lcn_cycle_pick(const dsd_state* state, int start, int dir) {
 }
 
 /* The cursor, the row heard and the retry after a walk in direction @p dir tuned @p row and the tune ended in
-   @p result (issue #666). Landed (either way): the cursor past the row, which becomes the row heard. Deferred: nothing,
-   so the next press tries the same row. Refused: going back, the row is the one to retry; going forward, the cursor
-   moves past it, so a row the tuner never takes cannot hold `L` on it. Either way a recorded row heard stays, and with
-   none the row heard is none rather than the row before the cursor, which names no row tuned. The scan's visit
-   timers read any cursor move as a retune, which a refusal is not, so each one that had seen the cursor is told the
-   new one and keeps its windows. One that had not seen it is left alone: the move it has yet to see (a landing, say)
-   still restarts its windows. */
+   @p result (issue #666): the walk's row rules (dsd_engine_channel_walk_note_outcome()), shared with the walk the -Y
+   scan owns. A deferral changes nothing, so the next press tries the same row. */
 static void
 lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_result result) {
-    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
-        state->lcn_freq_roll = row + 1;
-        dsd_state_lcn_on_air_note(state, row);
-        return;
-    }
     if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
         return;
     }
-    dsd_state_lcn_on_air_note_refused(state);
-    if (dir < 0) {
-        dsd_state_lcn_back_retry_note(state, row);
-        return;
-    }
-    const int seen = state->lcn_freq_roll;
-    state->lcn_freq_roll = row + 1;
-    if (state->scan_voice_gate_roll_seen == seen) {
-        state->scan_voice_gate_roll_seen = state->lcn_freq_roll;
-    }
-    if (state->scan_visit_roll_seen == seen) {
-        state->scan_visit_roll_seen = state->lcn_freq_roll;
-    }
+    dsd_engine_channel_walk_note_outcome(state, row, dir, result == DSD_TRUNK_TUNE_RESULT_OK);
 }
 
-/* A walk's accepted tune of @p row (@p tune_result, @p request_id, @p landed from request_manual_tune()), forward or
-   back: the calls end and what was received goes, the cursor and the row heard follow (lcn_cycle_on_tune_outcome()),
-   the row's keys apply, a confirmed landing on a running untyped -Y list names the row's frequency for an analog call
-   on audio input (issue #667 D9), and a P25 SM that owns the trunk is handed back its control channel. */
+/* A walk off any scan (no -Y running) landed on @p freq for @p row (issue #644 B-2: only once the front end confirmed
+   it): the calls end and what was received goes, the cursor and the row heard follow while @p row_current (the list
+   and the row are still the ones walked; otherwise only the frequency stands), and a P25 SM that owns the trunk is
+   handed back its control channel (@p tune_result, @p request_id from request_manual_tune()). Row keys take effect only
+   under -Y (docs/csv-formats.md), so none apply here. */
 static void
-lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_trunk_tune_result tune_result,
-                 uint64_t request_id, int landed) {
+lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_live, int row_current,
+                 dsd_trunk_tune_result tune_result, uint64_t request_id) {
     reset_call_tracking(opts, state, 0);
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
@@ -3736,21 +3742,50 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_tr
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
-    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)*dsd_state_trunk_lcn_slot(state, row) / 1000000);
-    lcn_cycle_on_tune_outcome(state, row, 1, DSD_TRUNK_TUNE_RESULT_OK);
-    dsd_scan_row_keys_apply(state, row);
-    mark_cc_sync(state, 1);
-    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) {
-        /* A -Y row's visit starts over here, not at the cursor move the timers read as a retune: a landing can leave
-           the cursor where an earlier refusal put it (Next refused on B, then Previous lands B), and B must not
-           inherit the voice gate and visit cap windows of the row before it. */
-        dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
-        /* After the carrier boundary above, which forgot the landing of the row left. The step is the scan's own, to
-           its own row, so the scan still owns the tuner: an operator's own tune (`=`) is the takeover. */
-        dsd_engine_channel_scan_note_manual_step(opts, state, row, landed);
+    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
+    if (row_current) {
+        lcn_cycle_on_tune_outcome(state, row, 1, DSD_TRUNK_TUNE_RESULT_OK);
     }
+    mark_cc_sync(state, 1);
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
+    }
+}
+
+/* Whether @p row of the list @p list_rev is still on @p freq, and no scan has taken the list since: a walk's late
+   outcome names it only then. */
+static int
+lcn_cycle_row_still_current(const dsd_opts* opts, const dsd_state* state, int row, long freq, uint64_t list_rev) {
+    return !dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1 && row >= 0
+           && row < state->lcn_freq_count && state->lcn_list_rev == list_rev
+           && *dsd_state_trunk_lcn_slot_const(state, row) == freq;
+}
+
+void
+dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
+                             uint64_t list_rev, int landed) {
+    if (!opts || !state) {
+        return;
+    }
+    const long freq = (long)requested_hz;
+    const int row_current = lcn_cycle_row_still_current(opts, state, row, freq, list_rev);
+    if (!landed) {
+        /* The front end refused the row late: passed or kept for a retry, as at a refusal in the press. */
+        if (row_current) {
+            lcn_cycle_on_tune_outcome(state, row, dir, DSD_TRUNK_TUNE_RESULT_FAILED);
+        }
+        return;
+    }
+    /* As the press runs it (run_manual_retune_guarded()): the move, its decoder resets and the SM handoff as one step
+       under the watchdog's guard when the P25 SM owns the trunk. */
+    const int p25_live = p25_sm_owns_trunk(opts, state);
+    if (p25_live) {
+        p25_sm_tick_guard_enter();
+    }
+    manual_tune_moved(opts, state);
+    lcn_cycle_finish(opts, state, row, freq, p25_live, row_current, DSD_TRUNK_TUNE_RESULT_OK, 0U);
+    if (p25_live) {
+        p25_sm_tick_guard_leave();
     }
 }
 
@@ -3772,8 +3807,32 @@ lcn_cycle_back_start(const dsd_state* state) {
     return anchor < 0 ? count - 1 : (anchor - 1 + count) % count;
 }
 
+/* The walk to @p row in direction @p dir off any scan (no -Y running; issue #644 B-2): one leg, the backend io_control
+   selects. A tune that timed out is noted (DSD_MANUAL_TUNE_LCN_CYCLE) and settled by the engine's poll through
+   dsd_app_channel_walk_settled(): the row, the call boundary and the handoffs wait for its landing. */
+static int
+lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row, int dir) {
+    const long freq = *dsd_state_trunk_lcn_slot(state, row);
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    uint64_t pending_id = 0U;
+    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", &tune_result, &request_id, &pending_id)) {
+        lcn_cycle_on_tune_outcome(state, row, dir, tune_result);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (pending_id != 0U) {
+        dsd_engine_manual_tune_note_lcn_cycle(state, pending_id, (uint32_t)freq, prior_hz, row, dir, 0);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    lcn_cycle_finish(opts, state, row, freq, p25_live, 1, tune_result, request_id);
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 /* One untyped (or -T) list step in direction @p dir (1 Next, -1 Previous; issue #666). Forward starts at the cursor,
-   whatever a refused Previous left to retry; back, at lcn_cycle_back_start(). */
+   whatever a refused Previous left to retry; back, at lcn_cycle_back_start(). The running untyped -Y scan owns its
+   walk (dsd_engine_channel_scan_walk_row(): both front ends, the row and its keys on the confirmed landing); any other
+   walk is lcn_cycle_walk_off_scan()'s. */
 static int
 apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
     const int count = state->lcn_freq_count;
@@ -3796,19 +3855,13 @@ apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int 
         }
         return UI_CMD_APPLY_COMPLETED;
     }
-    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
-    uint64_t request_id = 0U;
-    int landed = 0;
-    if (!request_manual_tune(opts, state, *dsd_state_trunk_lcn_slot(state, row), 0, "Channel cycle", &tune_result,
-                             &request_id, &landed)) {
-        /* A refused tune may have moved the receiver anyway, a deferred one may move it yet: a -Y landing no longer
-           says where it is. */
-        dsd_engine_channel_scan_note_manual_step(opts, state, row, 0);
-        lcn_cycle_on_tune_outcome(state, row, dir, tune_result);
-        return UI_CMD_APPLY_FAILED;
+    if (opts->scanner_mode != 1) {
+        return lcn_cycle_walk_off_scan(opts, state, p25_live, row, dir);
     }
-    lcn_cycle_finish(opts, state, row, p25_live, tune_result, request_id, landed);
-    return UI_CMD_APPLY_COMPLETED;
+    LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)*dsd_state_trunk_lcn_slot(state, row) / 1000000);
+    const dsd_scan_walk_result walked = dsd_engine_channel_scan_walk_row(opts, state, row, dir);
+    return walked == DSD_SCAN_WALK_LANDED || walked == DSD_SCAN_WALK_PENDING ? UI_CMD_APPLY_COMPLETED
+                                                                             : UI_CMD_APPLY_FAILED;
 }
 
 /* A list step in direction @p dir: a typed -Y list's rows through the channel scan, any other list here. */

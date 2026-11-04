@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -106,6 +107,29 @@ svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place) { // NOLI
     (void)state;
     (void)in_place;
     return 0;
+}
+
+/* A Next or Previous walk off any scan whose tune timed out is settled by app-control while a session runs (issue
+   #644). */
+static dsd_channel_walk_settle_fn g_channel_walk_settle;
+static int g_channel_walk_settle_sets;
+
+void
+dsd_channel_walk_settle_hook_set(dsd_channel_walk_settle_fn fn) { // NOLINT(misc-use-internal-linkage)
+    g_channel_walk_settle = fn;
+    g_channel_walk_settle_sets++;
+}
+
+void
+dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir, // NOLINT(misc-use-internal-linkage)
+                             uint32_t requested_hz, uint64_t list_rev, int landed) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    (void)dir;
+    (void)requested_hz;
+    (void)list_rev;
+    (void)landed;
 }
 
 static dsd_stream_notice_fn g_stream_notice_sink;
@@ -207,8 +231,10 @@ main(void) {
     assert(g_stream_notice_sink == dsd_app_stream_notice_post);
     assert(g_stream_notice_clears == 1);
     assert(g_channel_scan_pause == svc_pause_channel_scan && g_channel_scan_pause_sets == 1);
+    assert(g_channel_walk_settle == dsd_app_channel_walk_settled && g_channel_walk_settle_sets == 1);
     dsd_app_frontend_runtime_stop();
     assert(g_channel_scan_pause == NULL && g_channel_scan_pause_sets == 2);
+    assert(g_channel_walk_settle == NULL && g_channel_walk_settle_sets == 2);
     /* ... and none is left for the next session. */
     assert(g_stream_notice_sink == NULL);
     assert(g_stream_notice_clears == 2);
