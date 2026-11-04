@@ -2704,14 +2704,13 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     return -1;
 }
 
-int
+void
 dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
                                  dsd_scan_entry_tally* tally) {
     (void)opts;
     (void)state;
     (void)hz;
     (void)tally;
-    return 0;
 }
 
 /* A frequency typed by hand picks an nfm row only when the width the row runs fits the DSP rate (issue #644 D5): its

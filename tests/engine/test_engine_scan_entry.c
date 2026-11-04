@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
@@ -171,10 +172,12 @@ test_nothing_matches_without_a_list_in_force(void) {
     rc |= expect_match("a -Y row", opts, state, k_fire_hz, channel_row(0, 1U, 1U, "row 1"));
     rc |= expect_match("0 Hz", opts, state, 0U, k_no_row);
     rc |= expect_match("a frequency on no row", opts, state, k_fire_hz + 1U, k_no_row);
-    /* A map the stopped scan left, and the same map under -T, are no list a typed frequency picks a row of. */
+    /* A map the stopped scan left is no list a typed frequency picks a row of. */
     opts->scanner_mode = 0;
     rc |= expect_match("a stopped scan's map", opts, state, k_fire_hz, k_no_row);
+    /* Under -T the same map is loaded as a list of the user's own; what excludes it is that no -Y scan runs. */
     opts->trunk_enable = 1;
+    rc |= expect(dsd_state_trunk_lcn_user_list_present(opts, state) == 1, "a -T map is the user's own list");
     rc |= expect_match("a -T channel map", opts, state, k_fire_hz, k_no_row);
     opts->trunk_enable = 0;
     /* Channels learned over the air are no list of the user's own. */
@@ -297,8 +300,16 @@ test_y_rows_sharing_a_frequency(void) {
     return rc;
 }
 
-/* An untyped list: a run of adjacent rows on one frequency is one channel, its first row, which decides for the run;
- * the same frequency further down the list is another channel. */
+static want_match
+on_air_row(int row, unsigned ordinal, unsigned count, const char* label) {
+    want_match want = channel_row(row, ordinal, count, label);
+    want.on_air = 1;
+    return want;
+}
+
+/* An untyped list: a run of adjacent rows on one frequency is one channel; the same frequency further down the list is
+ * another channel. The row of the run the scan is confirmed on speaks for the run, avoided neighbours or not, while
+ * that row is in the rotation; with none confirmed, the run's first row decides. */
 static int
 test_untyped_adjacent_rows_are_one_channel(void) {
     dsd_opts* opts = NULL;
@@ -309,10 +320,22 @@ test_untyped_adjacent_rows_are_one_channel(void) {
     const long rows[] = {k_fire_hz, k_fire_hz, k_ops_hz, k_fire_hz};
     y_list(opts, state, rows, 4);
     int rc = expect_match("a run and a later row", opts, state, k_fire_hz, channel_row(0, 1U, 2U, "row 1"));
-    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0, "row 1 avoided");
-    rc |= expect_match("a run's later row avoided", opts, state, k_fire_hz, channel_row(0, 1U, 2U, "row 1"));
+    /* The timed step visits every row of a run: one landed on its second row. */
+    dsd_engine_scan_landing_note_row(state, 1, k_fire_hz);
+    rc |= expect_match("the run's second row on air", opts, state, k_fire_hz, on_air_row(1, 1U, 2U, "row 2"));
     rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0, "row 0 avoided");
+    rc |= expect_match("on air beside the run's avoided first row", opts, state, k_fire_hz,
+                       on_air_row(1, 1U, 2U, "row 2"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0, "row 1 avoided");
+    rc |= expect_match("the row on air avoided too", opts, state, k_fire_hz, channel_row(3, 1U, 1U, "row 4"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 0U, 0) == 0, "row 0 back");
+    rc |= expect_match("the row on air avoided alone", opts, state, k_fire_hz, channel_row(0, 1U, 2U, "row 1"));
+    dsd_engine_scan_landing_forget(state);
+    rc |= expect_match("a run's later row avoided", opts, state, k_fire_hz, channel_row(0, 1U, 2U, "row 1"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0, "row 0 avoided again");
     rc |= expect_match("the run's first row avoided", opts, state, k_fire_hz, channel_row(3, 1U, 1U, "row 4"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 0) == 0, "row 1 back");
+    rc |= expect_match("none on air, the first row avoided", opts, state, k_fire_hz, channel_row(3, 1U, 1U, "row 4"));
     rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 3U, 1) == 0, "row 3 avoided");
     rc |= expect_match("every channel avoided", opts, state, k_fire_hz,
                        not_eligible(DSD_SCAN_ENTRY_AVOIDED, 0, 0, "row 1"));
@@ -346,6 +369,36 @@ write_file(const char* path, const char* content) {
     const size_t len = strlen(content);
     const int failed = fwrite(content, 1, len, fp) != len;
     return fclose(fp) != 0 || failed;
+}
+
+/* The conventional parks a walk fails on purpose print their retune warnings, which name each target's cooldown: they
+   are captured rather than printed, from quiet_begin() to quiet_end(), which wants at least one. */
+static int
+quiet_begin(dsd_test_capture_stderr* cap) {
+    return expect(dsd_test_capture_stderr_begin(cap, "scanentry") == 0, "stderr captured");
+}
+
+static int
+quiet_end(dsd_test_capture_stderr* cap, const char* what) {
+    char text[4096] = {0};
+    (void)dsd_test_capture_stderr_end(cap);
+    (void)dsd_test_capture_stderr_read(cap, text, sizeof text);
+    if (!strstr(text, "retune failed; cooling down briefly")) {
+        DSD_FPRINTF(stderr, "FAIL: %s failed no park; its walk said:\n%s\n", what, text);
+        return 1;
+    }
+    return 0;
+}
+
+/* `b` on the target on air, answering @p want, through a walk that fails conventional parks. */
+static int
+avoid_active_quietly(dsd_opts* opts, dsd_state* state, int want) {
+    dsd_test_capture_stderr cap;
+    if (quiet_begin(&cap) != 0) {
+        return 1;
+    }
+    const int got = dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
+    return quiet_end(&cap, "the avoid") | expect(got == want, "the avoid's answer");
 }
 
 static const char k_targets_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,label\n";
@@ -425,8 +478,7 @@ test_trunk_targets_sharing_a_frequency(void) {
     rc |= expect_match("nxdn and nxdn48", opts, state, k_ops_hz, trunk_row(1, 1U, 2U, 0, "nx"));
     /* `b` on the county system: the conventional targets' parks fail (no tuner takes them) and cool down, and the scan
        parks the copy in list B. */
-    rc |=
-        expect(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE) == 0, "county avoided");
+    rc |= avoid_active_quietly(opts, state, 0);
     rc |= expect(state->trunk_scan_active_ordinal == 5U, "the copy parked");
     on_air = trunk_row(4, 2U, 2U, 1, "County again");
     on_air.on_air = 1;
@@ -460,18 +512,45 @@ test_trunk_ineligible_targets_name_their_reason(void) {
     on_air.on_air = 1;
     rc |= expect_match("a copy in a list that is off", opts, state, k_p25_hz, on_air);
     /* `b` on the county system: ops's park fails, so the receiver falls back onto county, avoided. */
-    rc |=
-        expect(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE) == 1, "county avoided");
+    rc |= avoid_active_quietly(opts, state, 1);
     rc |= expect_match("avoided, its copy off", opts, state, k_p25_hz,
                        not_eligible(DSD_SCAN_ENTRY_AVOIDED, 0, 1, "County P25"));
     rc |= expect_match("cooling down, named by its id", opts, state, k_ops_hz, trunk_row(1, 1U, 1U, 0, "ops"));
-    rc |= expect(dsd_engine_trunk_scan_list_set(opts, state, state->trunk_scan_session, 2, 1, 1U)
-                     == DSD_TRUNK_SCAN_LIST_SET_OK,
-                 "list B on");
-    /* The scan on the avoided target owed a departure, which the list switch gave it somewhere to go for. */
+    /* The scan on the avoided target owes a departure, which list B gives it: fire-b's park fails on the way. */
+    dsd_test_capture_stderr cap;
+    if (quiet_begin(&cap) == 0) {
+        const int set = dsd_engine_trunk_scan_list_set(opts, state, state->trunk_scan_session, 2, 1, 1U);
+        rc |= quiet_end(&cap, "list B on") | expect(set == DSD_TRUNK_SCAN_LIST_SET_OK, "list B on");
+    } else {
+        rc = 1;
+    }
     on_air = trunk_row(3, 1U, 1U, 1, "county-b");
     on_air.on_air = 1;
     rc |= expect_match("its copy's list on", opts, state, k_p25_hz, on_air);
+    trunk_scan_end(opts, state);
+    return rc;
+}
+
+/* A completed park confirms its target until the receiver may have left it: the operator's tune (its carrier
+ * boundary) and a radio stream start (a reopen starts wherever it is told) each take the proof away. */
+static int
+test_trunk_target_unconfirmed_by_a_tune_or_a_reopen(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = trunk_scan_start(&opts, &state, "county,p25-trunk,851012500,,250,250,,,County P25\n", NULL, 0);
+    if (rc != 0) {
+        trunk_scan_end(opts, state);
+        return expect(0, "trunk scan started");
+    }
+    rc |= expect(dsd_engine_trunk_scan_target_confirmed(state, 0), "the park confirmed");
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect(!dsd_engine_trunk_scan_target_confirmed(state, 0), "a manual tune's boundary unconfirms it");
+    rc |= expect(dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0
+                     && dsd_engine_trunk_scan_resume_locked(opts, state) == 0,
+                 "re-parked");
+    rc |= expect(dsd_engine_trunk_scan_target_confirmed(state, 0), "the re-park confirmed");
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= expect(!dsd_engine_trunk_scan_target_confirmed(state, 0), "a stream start unconfirms it");
     trunk_scan_end(opts, state);
     return rc;
 }
@@ -487,6 +566,7 @@ main(void) {
     rc |= test_untyped_adjacent_rows_are_one_channel();
     rc |= test_trunk_targets_sharing_a_frequency();
     rc |= test_trunk_ineligible_targets_name_their_reason();
+    rc |= test_trunk_target_unconfirmed_by_a_tune_or_a_reopen();
     if (rc == 0) {
         printf("ENGINE_SCAN_ENTRY: OK\n");
     }

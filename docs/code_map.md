@@ -167,10 +167,12 @@ Generated (do not edit/commit):
     (`dsd_engine_channel_scan_row_width_fits()`, split out of `channel_scan_row_reachable()`: the effective width, a
     session edit's included, and AM feasibility on audio input; the trunk width skip at the published DSP rate). A
     trunk target's retry cooldown does not exclude it. An untyped -Y list's run of adjacent rows on one frequency is
-    one channel, its first row, as the walk's `lcn_cycle_pick()` treats it; every typed row counts. Of several eligible
-    rows the one confirmed on air wins, else the first; `ordinal`/`count` place it ("1 of 2"), `label` names it (label,
-    else id, else `row N`). With none eligible, `reason` (`AVOIDED`, `LIST_OFF`, `WIDTH`, else `NO_ROW`) and `row`/
-    `label` describe the first row on the frequency. "Confirmed on air" ([F1]) is the landing record below:
+    one channel, as the walk's `lcn_cycle_pick()` treats it: the row of the run the scan is confirmed on speaks for
+    it while that row is in the rotation, whatever its neighbours (the timed step visits every row of a run and passes
+    an avoided one alone), else the run's first row (`scan_entry_run_row()`); every typed row counts. Of several
+    eligible rows the one confirmed on air wins, else the first; `ordinal`/`count` place it ("1 of 2"), `label` names
+    it (label, else id, else `row N`). With none eligible, `reason` (`AVOIDED`, `LIST_OFF`, `WIDTH`, else `NO_ROW`)
+    and `row`/`label` describe the first row on the frequency. "Confirmed on air" ([F1]) is the landing record below:
     `dsd_engine_channel_scan_row_confirmed()` (here) takes that row's landing in this session and list, the row still
     on its frequency, no pause or resume pending, and no movement outstanding (no typed request or retry,
     `dsd_engine_channel_scan_waiting()`; no untyped step's or walk's tune noted,

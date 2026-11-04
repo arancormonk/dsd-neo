@@ -56,17 +56,31 @@ scan_entry_row_reason(const dsd_opts* opts, const dsd_state* state, int row, int
     return dsd_engine_channel_scan_row_width_fits(opts, state, row, rate_hz) ? DSD_SCAN_ENTRY_OK : DSD_SCAN_ENTRY_WIDTH;
 }
 
+/* The row of an untyped run that starts at @p first and holds @p hz that speaks for it (issue #644 D4): the row the
+   scan is confirmed on, while it is in the rotation, whatever its neighbours (the timed step visits every row of a run
+   and passes over an avoided one alone); else the run's first row. */
+static int
+scan_entry_run_row(const dsd_opts* opts, const dsd_state* state, int first, uint32_t hz, int rate_hz) {
+    for (int row = first; row < state->lcn_freq_count && scan_entry_row_on(state, row, hz); row++) {
+        if (dsd_engine_channel_scan_row_confirmed(state, row)) {
+            return scan_entry_row_reason(opts, state, row, rate_hz) == DSD_SCAN_ENTRY_OK ? row : first;
+        }
+    }
+    return first;
+}
+
 /* The -Y rows on @p hz, in file order. On an untyped list a run of adjacent rows on one frequency is one channel, as
-   `L` and `J` walk it: its first row speaks for the run. Every row of a typed list counts (each may run another
-   mode, options or keys). */
+   `L` and `J` walk it, which one row speaks for (scan_entry_run_row()). Every row of a typed list counts (each may
+   run another mode, options or keys). */
 static void
 scan_entry_channel_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz, dsd_scan_entry_tally* tally) {
     const int untyped = !dsd_channel_modes_present(state);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (!scan_entry_row_on(state, row, hz) || (untyped && row > 0 && scan_entry_row_on(state, row - 1, hz))) {
+    for (int first = 0; first < state->lcn_freq_count; first++) {
+        if (!scan_entry_row_on(state, first, hz) || (untyped && first > 0 && scan_entry_row_on(state, first - 1, hz))) {
             continue;
         }
+        const int row = untyped ? scan_entry_run_row(opts, state, first, hz, rate_hz) : first;
         const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)row);
         char label[sizeof tally->out->label];
         if (name && name[0] != '\0') {
@@ -88,7 +102,7 @@ dsd_engine_scan_entry_match(const dsd_opts* opts, const dsd_state* state, uint32
         return 0;
     }
     if (opts->trunk_scan_enabled == 1) {
-        (void)dsd_engine_trunk_scan_entry_rows(opts, state, hz, &tally);
+        dsd_engine_trunk_scan_entry_rows(opts, state, hz, &tally);
     } else if (scan_entry_channel_in_force(opts, state)) {
         scan_entry_channel_rows(opts, state, hz, &tally);
     }

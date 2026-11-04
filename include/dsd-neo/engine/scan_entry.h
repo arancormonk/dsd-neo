@@ -61,7 +61,9 @@ typedef struct {
  * width (a session edit, its own, else the configured width of its kind) at the published DSP rate, and an am row only
  * where something demodulates AM -- the rule by which the scan skips a row at every visit. A trunk-scan target cooling
  * down after a failed retune is eligible: the pick is explicit. In an untyped -Y list a run of adjacent rows on one
- * frequency is one channel, its first row (as `L` and `J` walk it), so that run counts once and its first row decides.
+ * frequency is one channel (as `L` and `J` walk it), so that run counts once: the row of it the scan is confirmed on
+ * speaks for it while that row itself is in the rotation, avoided neighbours or not (the timed step visits every row
+ * of a run); otherwise its first row decides.
  *
  * Of several eligible rows the one confirmed on air (dsd_engine_channel_scan_row_confirmed(),
  * dsd_engine_trunk_scan_target_confirmed()) is chosen, else the first in list order (trunk scan: list number, then file

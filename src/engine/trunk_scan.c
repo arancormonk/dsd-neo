@@ -5846,12 +5846,12 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
     return trunk_scan_target_width_skipped(opts, state, rt, rate_hz) ? DSD_SCAN_ENTRY_WIDTH : DSD_SCAN_ENTRY_OK;
 }
 
-int
+void
 dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
                                  dsd_scan_entry_tally* tally) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     if (!coord) {
-        return 0;
+        return;
     }
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     /* The targets sit in list order already: list number, then each list's file order (trunk_scan_merge_lists()). */
@@ -5866,7 +5866,6 @@ dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, u
                                  dsd_engine_trunk_scan_target_confirmed(state, (int)i),
                                  trunk_scan_target_is_trunked(rt->target.type), label);
     }
-    return 1;
 }
 
 int
