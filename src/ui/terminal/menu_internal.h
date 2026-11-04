@@ -19,10 +19,12 @@
 #include <dsd-neo/core/state_fwd.h>
 #include "dsd-neo/ui/menu_core.h"
 
-// Shared UI context passed to callbacks (full definition; forward-declared in menu_defs.h)
+// Shared UI context passed to callbacks (full definition; forward-declared in menu_defs.h): the current frame's
+// published snapshot pair, read-only (issue #672, B9). menu_core.c keeps one, updated at every entry point, so a
+// callback answered frames later reads the frame it runs in.
 typedef struct UiCtx {
-    dsd_opts* opts;
-    dsd_state* state;
+    const dsd_opts* opts;
+    const dsd_state* state;
 } UiCtx;
 
 // Menu frame in overlay stack (owned/managed by menu_core.c)
@@ -111,7 +113,6 @@ typedef struct {
 
 // Config profile selection context
 typedef struct {
-    dsd_state* state;
     char path[1024];
     const char** labels;
     const char** names;

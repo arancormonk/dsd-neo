@@ -12,7 +12,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static dsd_control_pump_fn g_control_pump_fn = NULL;
-static dsd_controls_pending_fn g_controls_need_frame_loop_fn = NULL;
+static dsd_controls_need_frame_loop_fn g_controls_need_frame_loop_fn = NULL;
 static dsd_controls_pending_fn g_controls_pending_fn = NULL;
 static dsd_controls_pending_fn g_publish_pending_fn = NULL;
 static dsd_mutex_t g_control_pump_mu;
@@ -91,7 +91,7 @@ dsd_runtime_publish_pending(void) {
 }
 
 void
-dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) {
+dsd_runtime_set_controls_need_frame_loop(dsd_controls_need_frame_loop_fn fn) {
     ensure_control_pump_mu_init();
     dsd_mutex_lock(&g_control_pump_mu);
     g_controls_need_frame_loop_fn = fn;
@@ -99,10 +99,10 @@ dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) {
 }
 
 int
-dsd_runtime_controls_need_frame_loop(void) {
+dsd_runtime_controls_need_frame_loop(const dsd_state* state) {
     ensure_control_pump_mu_init();
     dsd_mutex_lock(&g_control_pump_mu);
-    dsd_controls_pending_fn fn = g_controls_need_frame_loop_fn;
+    dsd_controls_need_frame_loop_fn fn = g_controls_need_frame_loop_fn;
     dsd_mutex_unlock(&g_control_pump_mu);
-    return fn ? fn() : 0;
+    return fn ? fn(state) : 0;
 }

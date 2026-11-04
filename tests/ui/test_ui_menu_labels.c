@@ -12,7 +12,6 @@
  */
 
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -24,6 +23,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -88,6 +88,22 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
 int
 dsd_rr_available(void) {
     return g_rr_available;
+}
+
+/* The Avoids rows read only the scan avoid view's summary (issue #672); its list half, which reads the -Y store, links
+   against these. */
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return 0;
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return "";
 }
 
 /* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
@@ -159,6 +175,7 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_env_double_has_value = 0;
     g_infer_mode = DSDCFG_MODE_AUTO;
     g_history_mode = 1;
+    dsd_test_scan_labels_frame(opts, state);
     ctx->opts = opts;
     ctx->state = state;
 }
@@ -213,7 +230,8 @@ test_predicates(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_int("scan rotation trunk scan", scan_rotation_active(&ctx), 1);
-    /* A paused scan has no rotation on air: hold, avoid and clear avoids are refused there (issue #671). */
+    /* A paused scan has no rotation on air: hold and avoid are refused there (issue #671). The list and Clear avoids
+       stay offered while avoids are left (issue #672 D3), below. */
     state.trunk_scan_paused = 1;
     rc |= expect_int("scan rotation paused trunk scan", scan_rotation_active(&ctx), 0);
     state.trunk_scan_paused = 0;
@@ -221,6 +239,47 @@ test_predicates(void) {
     state.lcn_scan_paused = 1;
     rc |= expect_int("scan rotation paused -Y", scan_rotation_active(&ctx), 0);
     state.lcn_scan_paused = 0;
+
+    /* The Avoids list and Clear rows (issue #672 D2/D3): offered while a rotation runs, and outside one while avoids
+       are left -- a stopped -Y list, -T, a paused scan -- or while the copy is incomplete. B1: with -Y stopped they
+       were hidden while its avoids still kept rows out of the -T hunts. */
+    state.scan_avoids_complete = 1;
+    rc |= expect_int("avoids rows null ctx", scan_avoids_manageable(NULL), 0);
+    rc |= expect_int("avoids rows without a scanner", scan_avoids_manageable(&ctx), 0);
+    opts.scanner_mode = 1;
+    rc |= expect_int("avoids rows while -Y runs", scan_avoids_manageable(&ctx), 1);
+    opts.scanner_mode = 0;
+    state.lcn_freq_count = 3;
+    rc |= expect_int("avoids rows: stopped list, none avoided", scan_avoids_manageable(&ctx), 0);
+    state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
+    rc |= expect_int("avoids rows: stopped list with avoids", scan_avoids_manageable(&ctx), 1);
+    rc |= expect_int("avoid row: stopped list", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 1;
+    rc |= expect_int("avoids rows under -T", scan_avoids_manageable(&ctx), 1);
+    rc |= expect_int("avoid row under -T", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 0;
+    state.lcn_scan_paused = 1;
+    rc |= expect_int("avoids rows while -Y is paused", scan_avoids_manageable(&ctx), 1);
+    state.lcn_scan_paused = 0;
+    state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
+    state.scan_avoids_complete = 0;
+    rc |= expect_int("avoids rows: incomplete copy keeps Clear", scan_avoids_manageable(&ctx), 1);
+    state.scan_avoids_complete = 1;
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_avoids_ok = 1;
+    rc |= expect_int("avoids rows while a trunk scan runs", scan_avoids_manageable(&ctx), 1);
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("avoids rows: paused trunk scan, none avoided", scan_avoids_manageable(&ctx), 0);
+    state.trunk_scan_avoid_count = 1;
+    rc |= expect_int("avoids rows: paused trunk scan with avoids", scan_avoids_manageable(&ctx), 1);
+    state.trunk_scan_avoid_count = 0;
+    state.trunk_scan_paused = 0;
+    state.trunk_scan_avoids_ok = 0;
+    opts.trunk_scan_enabled = 0;
+    state.lcn_freq_count = 0;
+    state.scan_avoids_complete = 0;
 
     /* The frequency row (Input, issue #671) is offered where a tune can land: a radio input, or any input but a
        replay with a live rigctl peer. A scan no longer hides it: an accepted tune pauses the scan. */
@@ -282,24 +341,19 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_P25);
     rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
     /* Issue #526: an nfm row reads as its class, beside the configured digital mode it will return to. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     rc |= expect_str("decode mode on an nfm row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan nfm]");
     /* ...and an am row as its own class, not as NFM. */
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_AM);
     rc |= expect_str("decode mode on an am row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan am]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
-    opts.monitor_input_audio = 1;
-    opts.use_cosine_filter = 1;
-    rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
-    rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
-    rc |= expect_str("modulation from live state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    rc |= expect_str("modulation from the frame's state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
     state.rf_mod = 2;
     rc |= expect_str("modulation gfsk", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [GFSK]");
     state.rf_mod = 7;
@@ -324,7 +378,7 @@ test_decoder_labels(void) {
     opts.mod_p25p2_c4fm = 0;
     state.rf_mod = 7;
 
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_P25);
     dsd_scan_settings configured = {0};
     configured.state_rf_mod = 1;
     configured.mod_qpsk = 1;
@@ -341,14 +395,9 @@ test_decoder_labels(void) {
     rc |= expect_str("configured cli p2 lock", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
                      "P25 Phase 2 modulation lock [C4FM]");
     dsd_test_scan_labels_configured(NULL);
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    dsd_state* published_state = (dsd_state*)dsd_app_get_latest_snapshot();
-    if (published_state == NULL) {
-        DSD_FPRINTF(stderr, "published state snapshot unavailable\n");
-        return 1;
-    }
-    published_state->rf_mod = 1;
-    rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
+    state.rf_mod = 1;
+    rc |= expect_str("modulation uses the frame's state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
 
     opts.use_lpf = 1;
     opts.use_hpf = 0;
@@ -360,13 +409,7 @@ test_decoder_labels(void) {
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
     /* The M17 row can disable the effective filter while the configured value
      * shown by this toggle remains enabled. */
-    opts.use_cosine_filter = 0;
-    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published_opts == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published_opts->use_cosine_filter = 1;
+    opts.use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -442,25 +485,49 @@ test_trunking_labels(void) {
     /* The hold and avoid labels read whichever scanner is running. */
     rc |= expect_str("scan hold null ctx", lbl_scan_hold(NULL, b, sizeof(b)), "Scan hold [Off]");
     rc |= expect_str("scan hold off", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
+    rc |= expect_str("avoid clear null ctx", lbl_scan_avoid_clear(NULL, b, sizeof(b)), "Clear avoids [0]");
+    rc |= expect_str("avoid list null ctx", lbl_scan_avoid_list(NULL, b, sizeof(b)), "Avoided channels... [0]");
     rc |= expect_str("avoid clear none", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [0]");
+    rc |= expect_str("avoid list none", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [0]");
+    /* Both counts read the scan avoid view (issue #672 B6): the exact total past the 65,535 lcn_avoid_count saturates
+       at, from the frame's pair. */
+    state.scan_avoids_complete = 1;
     opts.scanner_mode = 1;
     state.lcn_scan_hold = 1;
-    state.lcn_avoid_count = 3;
+    state.lcn_avoid_count = 65535;
+    state.lcn_avoid_total = 65537;
     state.trunk_scan_hold = 0;
     state.trunk_scan_avoided_count = 7;
+    state.trunk_scan_avoid_count = 7;
+    state.trunk_scan_avoids_ok = 1;
     rc |= expect_str("scan hold -Y", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
-    rc |= expect_str("avoid clear -Y", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [3]");
+    rc |= expect_str("avoid clear -Y", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [65537]");
+    rc |= expect_str("avoid list -Y", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [65537]");
+    /* A copy that could not hold the whole store (B2) does not know how many: "?", not the saturating count. */
+    state.scan_avoids_complete = 0;
+    rc |= expect_str("avoid clear -Y incomplete", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [?]");
+    rc |= expect_str("avoid list -Y incomplete", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [?]");
+    state.scan_avoids_complete = 1;
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_str("scan hold trunk scan", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
     rc |= expect_str("avoid clear trunk scan", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [7]");
+    rc |= expect_str("avoid list trunk scan", lbl_scan_avoid_list(&ctx, b, sizeof(b)), "Avoided channels... [7]");
+    /* The coordinator could not allocate the list it published: its count is not the list's. */
+    state.trunk_scan_avoids_ok = 0;
+    rc |= expect_str("avoid list trunk scan unpublished", lbl_scan_avoid_list(&ctx, b, sizeof(b)),
+                     "Avoided channels... [?]");
+    state.trunk_scan_avoids_ok = 1;
     state.trunk_scan_hold = 1;
     rc |= expect_str("scan hold trunk scan on", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
     opts.trunk_scan_enabled = 0;
     state.lcn_scan_hold = 0;
     state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
     state.trunk_scan_hold = 0;
     state.trunk_scan_avoided_count = 0;
+    state.trunk_scan_avoid_count = 0;
+    state.scan_avoids_complete = 0;
     opts.p25_lcw_retune = 1;
     rc |= expect_str("lcw on", lbl_lcw(&ctx, b, sizeof(b)), "LCW explicit retune [On]");
     opts.trunk_use_allow_list = 1;
@@ -470,9 +537,9 @@ test_trunking_labels(void) {
     opts.trunk_tune_data_calls = 1;
     rc |= expect_str("group calls on", lbl_tune_group(&ctx, b, sizeof(b)), "Group calls [On]");
     rc |= expect_str("private calls off", lbl_tune_priv(&ctx, b, sizeof(b)), "Private calls [Off]");
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("data calls on", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     opts.reverse_mute = 1;
     opts.p25_prefer_candidates = 1;
     rc |= expect_str("reverse mute on", lbl_rev_mute(&ctx, b, sizeof(b)), "Reverse mute [On]");
@@ -549,12 +616,12 @@ test_encryption_labels(void) {
     opts.unmute_encrypted_p25 = 1;
     rc |= expect_str("muting off", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [Off]");
 
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     opts.trunk_tune_enc_calls = 0;
     rc |= expect_str("enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [On]");
     opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("enc lockout off", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [Off]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("enc lockout clear count", lbl_enc_lockout_clear(&ctx, b, sizeof(b)), "Clear lockouts [0]");
 
     state.M = 1;
@@ -571,13 +638,8 @@ test_encryption_labels(void) {
     configured.scan_voice_hold_ms = 4000;
     configured.trunk_tune_data_calls = 0;
     configured.trunk_tune_enc_calls = 1;
-    dsd_opts* published = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published->trunk_tune_data_calls = 1;
-    published->trunk_tune_enc_calls = 0;
+    opts.trunk_tune_data_calls = 1;
+    opts.trunk_tune_enc_calls = 0;
     dsd_test_scan_labels_configured(&configured);
     rc |= expect_str("muting configured", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [On]");
     rc |= expect_str("force BP configured", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [On]");
@@ -594,8 +656,8 @@ test_encryption_labels(void) {
     rc |= expect_str("data calls baseline matches target", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
     rc |= expect_str("enc lockout baseline matches target", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
                      "Lock out encrypted calls [On]");
-    published->trunk_tune_data_calls = 0;
-    published->trunk_tune_enc_calls = 1;
+    opts.trunk_tune_data_calls = 0;
+    opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("data calls target disabled", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On] (target: Off)");
     rc |= expect_str("enc lockout target disabled", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
                      "Lock out encrypted calls [On] (target: Off)");
@@ -667,13 +729,7 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("output muted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [On]");
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
-    opts.monitor_input_audio = 0;
-    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
-    if (published_opts == NULL) {
-        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
-        return 1;
-    }
-    published_opts->monitor_input_audio = 1;
+    opts.monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=
@@ -839,7 +895,7 @@ test_input_width_labels(void) {
  * Audio > Tone filter... reads the policy the configuration sets, from the shared app-control view the Call Info line
  * and the Qt monitor read: "off", or the mode and its list, and while a scan row's own policy is on air that policy
  * with the configured one it shadows, "(row; default X)". A long list's overflow mark is ASCII here, as every menu
- * label is. Before the first snapshot it reads the menu's own options, the policy its picker opens on, not "off".
+ * label is. It reads the frame's snapshot pair, the pair its picker opens on (issue #672, B9).
  */
 static int
 test_tone_filter_label(void) {
@@ -887,16 +943,7 @@ test_tone_filter_label(void) {
                      1);
     dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
 
-    /* No snapshot yet: the menu's own options, with no state. */
-    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
-    (void)dsd_tone_set_parse("D023N/100", &opts.analog_tone_set, NULL, 0);
-    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
-    rc |= expect_str("tone filter before snapshots", lbl_tone_filter(&ctx, b, sizeof(b)),
-                     "Tone filter... [allow 100.0 Hz/D023N]");
     rc |= expect_str("tone filter without a context", lbl_tone_filter(NULL, b, sizeof(b)), "Tone filter... [off]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
-    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof(opts.analog_tone_set));
     return rc;
 }
 
@@ -1103,9 +1150,26 @@ test_display_and_advanced_labels(void) {
     rc |= expect_str("tcp waitall on", lbl_tcp_waitall(NULL, b, sizeof(b)), "rtl_tcp MSG_WAITALL [On]");
     g_cfg.rt_sched_enable = 1;
     rc |= expect_str("rt sched on", lbl_rt_sched(NULL, b, sizeof(b)), "Realtime scheduling [On]");
-    g_cfg.mt_is_set = 1;
-    g_cfg.mt_enable = 1;
-    rc |= expect_str("mt on", lbl_mt(NULL, b, sizeof(b)), "Intra-block multithreading [On]");
+
+    /* A start-time setting: the row reports the mode the run started with, never the (re-parsed) config. */
+    g_cfg.ftz_daz_is_set = 1;
+    g_cfg.ftz_daz_enable = 1;
+    if (dsd_runtime_fp_mode_supported()) {
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+        rc |= expect_str("ftz default", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [Default] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_ON);
+        rc |= expect_str("ftz on", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [On] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_OFF);
+        rc |= expect_str("ftz off", lbl_ftz_daz(NULL, b, sizeof(b)),
+                         "SSE FTZ/DAZ [Off] (set DSD_NEO_FTZ_DAZ before start)");
+        dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+    } else {
+        rc |= expect_str("ftz unavailable", lbl_ftz_daz(NULL, b, sizeof(b)), "SSE FTZ/DAZ [Unavailable]");
+    }
+    g_cfg.ftz_daz_is_set = 0;
+    g_cfg.ftz_daz_enable = 0;
 
     return rc;
 }
@@ -1201,10 +1265,44 @@ test_input_freq_label(void) {
     return rc;
 }
 
+/* Scan lists... (issue #697): offered only while a running trunk scan has two or more lists, and its label counts
+   the lists on from the published lists. */
+static int
+test_scan_lists_row(void) {
+    int rc = 0;
+    char b[96];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    rc |= expect_int("scan lists null ctx", scan_lists_offered(NULL), 0);
+    rc |= expect_str("scan lists label null ctx", lbl_scan_lists(NULL, b, sizeof b), "Scan lists... [0 of 0 on]");
+    rc |= expect_int("scan lists without a trunk scan", scan_lists_offered(&ctx), 0);
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_session = 4;
+    state.trunk_scan_list_count = 1;
+    state.trunk_scan_lists[0].enabled = 1;
+    rc |= expect_int("scan lists: one list", scan_lists_offered(&ctx), 0);
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_lists[1].enabled = 0;
+    state.trunk_scan_lists[2].enabled = 1;
+    rc |= expect_int("scan lists: three lists, running", scan_lists_offered(&ctx), 1);
+    rc |= expect_str("scan lists label", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [2 of 3 on]");
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("scan lists: paused hides the row", scan_lists_offered(&ctx), 0);
+    rc |= expect_str("scan lists label while paused", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [2 of 3 on]");
+    state.trunk_scan_paused = 0;
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_int("scan lists: lists left behind by a scan that is off", scan_lists_offered(&ctx), 0);
+    rc |= expect_str("scan lists label: no scan", lbl_scan_lists(&ctx, b, sizeof b), "Scan lists... [0 of 0 on]");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_predicates();
+    rc |= test_scan_lists_row();
     rc |= test_decoder_labels();
     rc |= test_trunking_labels();
     rc |= test_input_freq_label();

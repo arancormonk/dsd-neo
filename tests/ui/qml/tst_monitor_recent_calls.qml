@@ -344,7 +344,8 @@ Item {
         // On-the-fly scan controls (#380). They act on a rotation, so they appear
         // only while one is running, read the engine's hold and avoided count back
         // rather than remembering their own taps, and each button sends the one
-        // command it is labelled with.
+        // command it is labelled with. The avoided reading follows the avoids
+        // (issue #672), not the rotation.
         function test_03c_the_scan_controls_appear_only_while_a_rotation_is_running() {
             var row = findChild(screenLoader.item, "scanControlsRow")
             var hold = findChild(screenLoader.item, "scanHoldButton")
@@ -354,17 +355,25 @@ Item {
             var badge = findChild(screenLoader.item, "scanAvoidRow")
             var value = findChild(screenLoader.item, "scanAvoidValue")
             var clear = findChild(screenLoader.item, "scanAvoidClearButton")
+            var show = findChild(screenLoader.item, "scanAvoidShowButton")
+            var sheet = findChild(screenLoader.item, "scanAvoidSheet")
             verify(row !== null, "the scan controls row is missing")
             verify(hold !== null && avoid !== null && prev !== null && next !== null, "a scan control button is missing")
-            verify(badge !== null && value !== null && clear !== null, "the avoided badge is missing")
+            verify(badge !== null && value !== null && clear !== null && show !== null && sheet !== null,
+                   "the avoided badge is missing")
 
             testContext.setMetric("scanRotationActive", false)
+            testContext.setMetric("scanAvoidsManageable", false)
             testContext.setMetric("scanAvoidCount", 0)
             tryVerify(function () { return !row.visible })
             tryVerify(function () { return !badge.visible })
 
+            // A running rotation can always avoid, so its avoids are manageable;
+            // with none avoided the badge still carries no 0.
             testContext.setMetric("scanRotationActive", true)
+            testContext.setMetric("scanAvoidsManageable", true)
             tryVerify(function () { return row.visible })
+            verify(!badge.visible, "a rotation with nothing avoided showed a 0")
             // One label; the engine's hold shows as checked (#718).
             compare(hold.text, "Hold")
             verify(hold.checkable && !hold.checked)
@@ -391,27 +400,43 @@ Item {
             compare(testContext.previousChannelCalls(), 1)
             compare(testContext.nextChannelCalls(), 1)
             compare(testContext.scanAvoidClearCalls(), 1)
+            // Show opens the list of them.
+            show.clicked()
+            tryVerify(function () { return sheet.visible })
+            sheet.visible = false
 
-            // Leaving scanner mode does not clear session avoids, so the count
-            // outlives the rotation. The badge must follow the rotation, not the
-            // count, or an idle session shows a Clear for a scan that is not running.
+            // Issue #672 (B1): leaving scanner mode does not clear session avoids,
+            // and the -T control-channel hunts go on skipping them, so they stay
+            // manageable after the rotation stops: the badge follows the avoids
+            // (scanAvoidsManageable), not the rotation, and offers the list and
+            // Clear with no scan running.
             testContext.setMetric("scanRotationActive", false)
             tryVerify(function () { return !row.visible })
+            verify(badge.visible, "avoids left by a stopped scan cannot be seen")
+            verify(show.visible && clear.visible)
+            compare(value.text, "2")
+            testContext.setMetric("scanAvoidsManageable", false)
             tryVerify(function () { return !badge.visible })
-            testContext.setMetric("scanRotationActive", true)
-            tryVerify(function () { return badge.visible })
 
+            // A count the list cannot vouch for (an incomplete copy) reads "?",
+            // and Clear stays reachable.
+            testContext.setMetric("scanAvoidsManageable", true)
             testContext.setMetric("scanAvoidCount", 0)
+            testContext.setMetric("scanAvoidsTotalKnown", false)
+            tryVerify(function () { return badge.visible })
+            compare(value.text, "?")
+            testContext.setMetric("scanAvoidsTotalKnown", true)
             tryVerify(function () { return !badge.visible })
-            testContext.setMetric("scanRotationActive", false)
+            testContext.setMetric("scanAvoidsManageable", false)
             tryVerify(function () { return !row.visible })
         }
 
         // Issue #671: a scan the operator paused has nothing on air to hold,
         // avoid or step past, so the row offers the one thing left: Resume scan,
         // across the width the four take. A -Y resume already waiting on its
-        // first channel has nothing to ask for twice. The avoided count waits
-        // with the scan, out of sight, since Clear is refused while it is paused.
+        // first channel has nothing to ask for twice. The avoided count stays in
+        // sight with Show and Clear: the list, Put back and Clear are flag edits
+        // a paused scan takes (issue #672, D3).
         function test_03d_a_paused_scan_offers_resume_in_place_of_the_controls() {
             var row = findChild(screenLoader.item, "scanControlsRow")
             var resume = findChild(screenLoader.item, "scanResumeButton")
@@ -420,6 +445,7 @@ Item {
             var prev = findChild(screenLoader.item, "scanPrevButton")
             var next = findChild(screenLoader.item, "scanNextButton")
             var badge = findChild(screenLoader.item, "scanAvoidRow")
+            var clear = findChild(screenLoader.item, "scanAvoidClearButton")
             verify(resume !== null, "the resume button is missing")
             testContext.setHostRunning(true)
             try {
@@ -428,13 +454,16 @@ Item {
                 verify(!resume.visible, "a running scan offered a resume")
 
                 testContext.setMetric("scanAvoidCount", 2)
+                testContext.setMetric("scanAvoidsManageable", true)
                 testContext.setMetric("scanRotationActive", false)
                 testContext.setMetric("scanPaused", true)
                 testContext.setMetric("scanResumable", true)
                 tryVerify(function () { return resume.visible })
                 verify(row.visible, "the row went with the rotation")
                 verify(!hold.visible && !avoid.visible && !prev.visible && !next.visible, "a paused scan kept its rotation controls")
-                verify(!badge.visible, "a paused scan offered Clear")
+                verify(badge.visible && clear.enabled, "a paused scan hid its avoids")
+                clear.clicked()
+                compare(testContext.scanAvoidClearCalls(), 1)
                 compare(resume.text, "Resume scan")
                 verify(resume.enabled)
                 compare(row.columns, 4)
@@ -455,6 +484,7 @@ Item {
                 testContext.setMetric("scanResumable", false)
                 testContext.setMetric("scanRotationActive", false)
                 testContext.setMetric("scanAvoidCount", 0)
+                testContext.setMetric("scanAvoidsManageable", false)
                 testContext.setHostRunning(false)
             }
         }

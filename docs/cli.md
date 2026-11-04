@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -1099,7 +1099,7 @@ row is on air, rather than accepted and that row skipped at every visit.
 | Change | When it applies |
 | --- | --- |
 | NFM or AM width from the terminal row, the Radio sheet, the Passband sheet or a loaded config | Live, on the next DSP block of a running analog monitor of that kind, with no reopen and no gap: the new filter runs over the signal already received, so no sample is dropped or repeated. The exception is an NFM edit between an explicit width and the unset default where the channel filter is off by default (`DSD_NEO_CHANNEL_LPF=0`, or a DSP rate below 20 kHz): it turns the filter off, dropping the samples it held back (about 1.5 ms), or on, starting it from an empty history. A width that changes the filter the front end runs also starts received-tone detection (below) over. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all); a width the front end refuses where it lands (a retune moved the rate) is put back, with the message. A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA` or `-fM`, applies when the front end returns to the monitor; when a scan stops and the front end refuses the configured width at the rate a row's retune left it on, the front end keeps what it ran, the message says so, and the configured width takes the width a monitor of that kind kept, or else goes back to the kind's default, which the monitor then runs (`Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the width as it was, also when a retune refuses that default where it lands after it was asked for; a DSP-menu CQPSK toggle made before the front end took the return decides instead, and the width stays with no message, the refusal only logged); setting it under a scan row edits the configured width without disturbing the row, and an `nfm` row's own `--nfm-bandwidth-hz` stays in force until the row leaves. A width is held to the DSP rate as above on any session while the scan has an analog row or target of its kind (`nfm`/`nfm-conventional` for NFM, `am`/`am-conventional` for AM) without a width of its own, whichever row is on air, and an `am` row's own `--am-bandwidth-hz` stays in force until the row leaves as an `nfm` row's does. A width of the kind not in use is stored for the next switch to it. With no stream running, the next start uses it. On PCM input with a rigctl peer (`-U`) no channel filter runs and no DSP rate holds the width: while the monitor of that kind runs it is the passband the peer is asked for, so an edit that changes the passband in force is asked of the peer at once, strictly, and one the peer refuses, or whose reply is lost, is put back with the message, the peer asked again for the passband the session then runs; a loaded config whose width the peer refuses puts that width back, keeps the rest applied and fails (`Config applied; the rigctl peer refused AM 10 kHz: the AM width stays 8 kHz`). A width set while a typed digital row is on air, or the other kind's, is stored for the next tune that asks for it. |
-| `-B` on PCM input with a rigctl peer (Trunking > `Rigctl setmod bandwidth...`) | While the FM monitor runs with no NFM width in force (a row's own or the configured one), `-B` is the FM passband the peer is asked for: an edit is asked of the peer at once, and one the peer refuses, or whose reply is lost, goes back to the `-B` it replaced, with the message (`Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband`). Anywhere else it is stored for the next tune that asks for it: off the monitor (a digital mode, an RTL-family input) a tune sends it as before (on audio input the peer's own passband is read first, so a later return can put it back), and on the FM monitor with an NFM width in force the tune sends that width instead. |
+| `-B` on PCM input with a rigctl peer (Input > `Rigctl setmod bandwidth...`) | While the FM monitor runs with no NFM width in force (a row's own or the configured one), `-B` is the FM passband the peer is asked for: an edit is asked of the peer at once, and one the peer refuses, or whose reply is lost, goes back to the `-B` it replaced, with the message (`Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband`). Anywhere else it is stored for the next tune that asks for it: off the monitor (a digital mode, an RTL-family input) a tune sends it as before (on audio input the peer's own passband is read first, so a later return can put it back), and on the FM monitor with an NFM width in force the tune sends that width instead. |
 | A command that moves the session onto, off or between monitors on PCM input with a rigctl peer (a decode-mode or input switch, a channel-map import, a loaded config's `[mode]` or `[input]`) | The peer is asked for the passband the session then runs at once. One brought by the command (a first rigctl connection, a switch onto PCM input) is asked only for a width, as at start; `-B` and its own passband wait for the next tune. Leaving the monitor for a digital mode puts the peer back on `-B`, or on its own passband with `-B` 0, at once when the monitor ran a passband this client set (a width, or `-B` standing in), best-effort as a tune's `-B` is; a `-B` edit on a digital session still waits for the next tune. A refusal leaves the command's change standing, with a warning in the log and the message (`Rigctl peer refused NFM 9 kHz (see log)`), and so does a refused return to `-B` after a loaded config; a loaded config refused on entering the monitor, its width unchanged, stays applied and fails (`Config applied; the rigctl peer refused NFM 12.5 kHz (see log)`). |
 | Decode mode to or from Analog or AM (`-fA`, `-fM`, the NFM and AM chips, `[mode] decode`) | Live: the front end switches receive family, or between FM and AM, between DSP blocks. A switch to Analog with an explicit NFM width, or to AM with an AM width (its default included), the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too); one the front end refuses where it lands (a retune moved the rate) puts the mode back, with the message. A switch made while a scan row runs a digital protocol reaches the front end when the scan stops; should a DSP-menu CQPSK toggle made before the front end took that return decide instead, or the scan go on (a channel map imported with the scanner on leaves the row, and the next row's tune decides, also when it lands before the front end took that return, which then never runs), the mode stays with no message (a refusal only logged), whether the front end stayed on the digital family or on the analog family (where an `-fA` session runs a typed row), and the next return to the monitor the front end refuses while it runs another family or kind, such as CQPSK toggled off or the scanner stopped on an `am` row, puts it back. A switch between FM and AM that a scan stop puts back this way asks the front end for the mode it restores, and when the rate a row's retune left cannot filter that mode's width either (NFM 16 kHz after a switch to AM under an NXDN48 row, left at 7.5 kHz), the width is settled as for any refused scan stop (the NFM or AM width row above): the width a monitor of that kind kept, else the kind's default, which the monitor then runs, and the message says so (`Refused: NFM 16 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the AM width as it was). |
 | DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an I/Q replay it re-plans the replay's rate chain for the bandwidth and reopens the replay where it stopped, about a chunk later, with the decode clock kept on the capture; the bandwidth asked for is kept as asked (under TETRA the replay runs at 72 kHz and returns to it when TETRA ends), a bandwidth that plans the chain already running reopens nothing, and one no chain reaches is refused with the replay running as before (see "Run-time Re-plan" in `docs/iq-capture-replay.md`). On an RTL-SDR or rtl_tcp input (an RTL input whose device string names no SoapySDR, Airspy or replay device opens as one) a bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. The width in use is the configured one under `-fA` or `-fM`, the configured width of a kind on any session while the scan has an analog row or target of that kind without a width of its own, and the own width of an analog scan row on air (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth` from the DSP bandwidth... row). A loaded config is checked at the bandwidth its `[input]` reopens an RTL-SDR or rtl_tcp device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. A config whose `[input]` reopens a SoapySDR or Airspy device (an Airspy source over a running Airspy reopens it for a new sample rate, serial or DSP bandwidth) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. An Airspy source that changes only the volume also reopens the running Airspy, but at the rate it runs now, so the running front end checks the width first, as when nothing reopens, and checks the configured width even when the config leaves it as it was, since the reopened stream opens on it (also while a digital scan row runs, which leaves it unused): a width it cannot filter leaves the config unapplied. A bandwidth from the DSP bandwidth... row whose reopen does not start anyway (on a SoapySDR or Airspy input, a width the rate the device delivers at that bandwidth cannot filter; on any input, a device that does not open) puts the bandwidth that ran back and starts the input again, and says why: `Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...` for a width, `Failed: the RTL-SDR input did not start (see log)` otherwise; with `--iq-capture` that restart runs without the capture (see IQ Capture And Replay). |
@@ -2081,8 +2081,14 @@ is delayed.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
-  later of `-T`/`-Y` wins. For NXDN the hold is refreshed
-  only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
+  later of `-T`/`-Y` wins. For NXDN the hold is refreshed only by frames whose content passed a CRC, so an open squelch
+  on an empty channel no longer parks the scan. `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or
+  an import during the session). With none, at start or after Clear channel map, it stays on its frequency until one is
+  imported: channels a DMR site announces over the air are recorded, but `-Y` never steps to them, and neither the voice
+  gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan Timing row reads `No channel map`
+  meanwhile, with no countdown. With a list, channels learned over the air (a DMR site's announcements, a P25 or NXDN
+  grant resolved) are not a new list: a row whose tune lands late still becomes the row on air, with its name and
+  keys, and no row's warning or `Skipped at every visit` status line is repeated for them.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
@@ -2094,8 +2100,10 @@ is delayed.
   global keys. A row may not mix direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
-  the same rows backward; the scan then carries on forward from there) and clear all avoids; see
-  `docs/ui-terminal.md`.
+  the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and
+  clear all avoids; see `docs/ui-terminal.md`. The avoids outlive `-Y`: with it stopped the DMR and NXDN
+  control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists them, puts them back and
+  clears them.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
@@ -2109,20 +2117,21 @@ is delayed.
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
   it is off by default. The clock starts when the row parks and starts again from zero on every re-park; sync, decoded
   voice, the voice-gate hold and the `-t` hangtime never restart it. Expiry hops only while at least two rows are usable
-  (a non-zero frequency, not avoided); with fewer the limit re-arms instead of firing, so a one-row list is unaffected
-  and a row that becomes usable later gets a full limit rather than an immediate hop. A `Y` hold suspends the limit and
-  releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold suspends it only while the call
-  being followed matches the held talkgroup, and the limit runs again from zero once that call ends. Other calls on the
-  row are still capped. Suspensions observed across stalled input restart at the first eligible decoder tick;
-  operator hold release restarts at the command. A typed row can carry its own `--scan-max-visit-ms <ms>` in the
-  `options` column, where `0` exempts that row; legacy untyped rows apply row keys but not row options, so they always
-  use the global value. A failed legacy hop keeps the row and restarts the visit and qualification windows so decoding
-  can resume before another attempt. Two caveats on legacy lists: a row whose frequency also appears on the next row
-  "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
-  already steps a quiet row about a second after its last sync, so the cap only changes what happens on a row that keeps
-  syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`,
-  `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the mixed-mode
-  example](../examples/conventional_scan_modes.csv) and [the mixed analog
+  (a non-zero frequency, not avoided, and not an analog row skipped at every visit because the DSP rate cannot fit its
+  width); with fewer the limit re-arms instead of firing, so a one-row list is unaffected, a busy row beside rows that
+  are all skipped keeps its call, and a row that becomes usable later gets a full limit rather than an immediate hop.
+  A `Y` hold suspends the limit and releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold
+  suspends it only while the call being followed matches the held talkgroup, and the limit runs again from zero once
+  that call ends. Other calls on the row are still capped. Suspensions observed across stalled input restart at the
+  first eligible decoder tick; operator hold release restarts at the command. A typed row can carry its own
+  `--scan-max-visit-ms <ms>` in the `options` column, where `0` exempts that row; legacy untyped rows apply row keys but
+  not row options, so they always use the global value. A failed legacy hop keeps the row and restarts the visit and
+  qualification windows so decoding can resume before another attempt. Two caveats on legacy lists: a row whose
+  frequency also appears on the next row "hops" to the same frequency, ending the call as an explicit hop rather than
+  moving the receiver, and a low `-t` already steps a quiet row about a second after its last sync, so the cap only
+  changes what happens on a row that keeps syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`,
+  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the
+  mixed-mode example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
   rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
   or the configured NFM width (16 kHz by default; on audio input with a rigctl peer, `-B` stands in for an unset one),
@@ -2153,9 +2162,10 @@ is delayed.
   paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
   leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
   resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused,
-  another entry or a spectrum tap only tunes; `Y`, `b`, `J`, `L` and "Clear avoids" answer `Scan paused: resume it
-  first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference import that
-  replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  another entry or a spectrum tap only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`, while
+  putting avoided rows back (one, or all with "Clear avoids") still works, since it never tunes. Turning trunking on,
+  an input switch that runs, or a channel-map import, clear or RadioReference import that replaces the list stops the
+  paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
   row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
@@ -2163,6 +2173,12 @@ is delayed.
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
     (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`) and analog NFM and AM conventional
     (`nfm-conventional`, `am-conventional`, held on carrier) targets. Full guide: `docs/trunk-scan.md`.
+  - Several lists: repeat `--trunk-scan <file>` to scan the targets of several files in one session (at most 8), and
+    give `--trunk-scan-off <file>` for a list that starts switched off; both also take the `=FILE` form. Lists are
+    numbered in command-line order across both options, and a list's name is its file name without folder and
+    extension. A ninth list, the same path twice, a path of 1024 bytes or more and a start with every list off are
+    refused. Lists on the command line replace a config file's lists as a whole. How the lists behave and are switched
+    while scanning: [Several lists](trunk-scan.md#several-lists).
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
@@ -2191,7 +2207,12 @@ is delayed.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
-  the `2-2630` identifier-channel form printed after every P25 channel in the event history.
+  the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
+  uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
+- File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
+  `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name,
+  `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also
+  take device specs, so theirs is refused with "value is too long".
 - P25 band plan CSV: `--p25-bandplan <file>` — one row per band-plan identifier (base, spacing, type, offset,
   bandwidth, optional WACN/SYS) for sites that never broadcast `IDEN_UP`; rows yield to a real `IDEN_UP`. Format
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.
@@ -2256,7 +2277,7 @@ is delayed.
   back too ([csv-formats.md](csv-formats.md#analog-rows)). The session's width is asked of the peer once the input is
   open at start, again on a rigctl reconnect, and when a symbol replay ends and the session falls back to Pulse, which
   the peer then demodulates, best-effort; `-B` and the peer's own passband wait for the first tune, as before. A width
-  or `-B` changed while running (Input > `NFM passband...`, Trunking > `Rigctl setmod bandwidth...`, the Qt/Android
+  or `-B` changed while running (Input > `NFM passband...`, Input > `Rigctl setmod bandwidth...`, the Qt/Android
   Passband sheet, a loaded config) is asked of the peer at once while it is the passband in force, and
   goes back if the peer refuses it; leaving the monitor for a digital mode puts the peer back on `-B`, or its own
   passband, at once, best-effort ([When changes apply](#when-changes-apply)).
@@ -2858,12 +2879,15 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 
 Misc
 
-- `DSD_NEO_MT=1` — enable light worker pool (2 threads)
 - `DSD_NEO_PDU_JSON=1` — emit P25 PDU JSON to stderr
 - `DSD_NEO_RT_SCHED=1` — enable real‑time thread scheduling (requires privileges)
 - `DSD_NEO_RT_PRIO_USB|DSD_NEO_RT_PRIO_DONGLE|DSD_NEO_RT_PRIO_DEMOD=<1..99>` — per-thread RT priority (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
-- `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
+- `DSD_NEO_FTZ_DAZ=1|0` — SSE flush‑to‑zero / denormals‑are‑zero for every decoding thread. Read once at start and
+  fixed for the run: `1` turns both on, `0` turns both off (even when the build or the host started them on), and
+  unset leaves the threads as they started. x86 and x86‑64 builds only (Windows included); elsewhere it is ignored.
+  Advanced > `SSE FTZ/DAZ` in the terminal menu shows the mode in force
+- `DSD_NEO_MT` — no longer used: the worker pool it enabled ran no work and was removed; the variable is ignored
 - `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
   the decoder in their own process and drive shutdown themselves (a host can also set it in-process with
   `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a

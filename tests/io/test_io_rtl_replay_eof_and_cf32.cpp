@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
@@ -902,7 +903,8 @@ stop_loop_reader(LoopReader* reader) {
         return;
     }
     reader->stop.store(1, std::memory_order_release);
-    for (unsigned int waited = 0U; waited < 2000U && !reader->done.load(std::memory_order_acquire); waited++) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 2000U;
+    while (reader->done.load(std::memory_order_acquire) == 0 && dsd_realtime_mono_ms() < give_up_ms) {
         dsd_sleep_ms(1U);
     }
     if (!reader->done.load(std::memory_order_acquire)) {
@@ -3933,7 +3935,8 @@ test_loop_replay_end_notice_each_pass(void) {
         return 1;
     }
     size_t rewinds = 0U;
-    for (unsigned int waited = 0U; waited < 5000U && rewinds < 3U; waited++) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 5000U;
+    while (rewinds < 3U && dsd_realtime_mono_ms() < give_up_ms) {
         dsd_sleep_ms(1U);
         rewinds = rewind_line_count(end_and_rewind_lines());
     }

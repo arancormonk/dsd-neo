@@ -34,7 +34,9 @@ UiPanel {
         ReadableText {
             width: parent.width
             wrapMode: Text.Wrap
-            text: card.isDraft ? qsTr("Not ready · draft") : qsTr("%1 entries").arg(card.entryCount)
+            // Each count a whole string, as HistoryScreen's: no QTranslator is
+            // installed, so a %n plural would read "1 entries".
+            text: card.isDraft ? qsTr("Not ready · draft") : card.entryCount === 1 ? qsTr("1 entry") : qsTr("%1 entries").arg(card.entryCount)
             color: Theme.textSubdued
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)

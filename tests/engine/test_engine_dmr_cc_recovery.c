@@ -70,6 +70,7 @@ static dsd_opts g_opts;
 static dsd_state g_state;
 static char g_dir[DSD_TEST_PATH_MAX];
 static char g_targets[DSD_TEST_PATH_MAX];
+static char g_targets_2[DSD_TEST_PATH_MAX]; // a second target list (issue #697)
 static char g_channels[DSD_TEST_PATH_MAX];
 static long g_frequency;
 static int g_cc_tunes;
@@ -160,6 +161,10 @@ cleanup(void) {
     trunk_scan_test_clear_now();
     freeState(&g_state);
     (void)remove(g_targets);
+    if (g_targets_2[0] != '\0') {
+        (void)remove(g_targets_2);
+        g_targets_2[0] = '\0';
+    }
     (void)remove(g_channels);
 #if DSD_PLATFORM_WIN_NATIVE
     (void)_rmdir(g_dir);
@@ -200,7 +205,8 @@ setup(float hangtime) {
                                  "nxdn,nxdn-trunk,454000000,,250,1200,\n")) {
         return 1;
     }
-    DSD_SNPRINTF(g_opts.trunk_scan_targets_csv, sizeof(g_opts.trunk_scan_targets_csv), "%s", g_targets);
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[0].path, sizeof g_opts.trunk_scan_lists[0].path, "%s", g_targets);
+    g_opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     char error[256] = {0};
     const int rc = dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error));
@@ -1261,14 +1267,94 @@ visit_hook_defers_tuning_until_decoder_unwinds(void) {
     g_state.lcn_freq_count = 2;
     g_state.trunk_lcn_freq[0] = 451000000L;
     g_state.trunk_lcn_freq[1] = 452000000L;
+    /* Issue #697: with no list imported, those are channels a DMR site announced, which -Y never rotates through: the
+       cap neither runs nor ends the reception. */
+    g_opts.chan_in_file[0] = '\0';
     dsd_scan_voice_gate_note_retune(&g_state, dsd_decode_now_mono_s() - 2.0);
     p25_sm_tick_guard_enter();
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous conventional DMR keeps learned channels' visit");
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof(g_opts.chan_in_file), "%s", g_channels);
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "an imported list grants the visit a fresh limit");
+    dsd_scan_voice_gate_note_retune(&g_state, dsd_decode_now_mono_s() - 2.0);
     rc |= expect(dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
                  "continuous conventional DMR yields on an expired -Y visit");
     g_opts.scan_max_visit_ms = 0;
     rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
                  "disabled -Y cap leaves continuous decoding alone");
     p25_sm_tick_guard_leave();
+    cleanup();
+    return rc;
+}
+
+/* Issue #697: two target lists, the DMR system in list 1 and the P25 one in list 2, through setup()'s session. */
+static int
+setup_two_lists(void) {
+    if (setup(0.0f)) {
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    if (dsd_test_path_join(g_targets_2, sizeof(g_targets_2), g_dir, "p25.csv") != 0
+        || write_file(g_targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                 "tiii,dmr-trunk,451000000,channels.csv,250,1200,\n")
+        || write_file(g_targets_2, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                   "p25,p25-trunk,851000000,,250,1200,\n")) {
+        return 1;
+    }
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[1].path, sizeof g_opts.trunk_scan_lists[1].path, "%s", g_targets_2);
+    g_opts.trunk_scan_list_count = 2;
+    trunk_scan_test_set_now(0.0);
+    char error[512] = {0};
+    if (dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error)) != 0) {
+        DSD_FPRINTF(stderr, "two-list scan init: %s\n", error);
+        return 1;
+    }
+    return expect(dsd_engine_trunk_scan_control(&g_opts, &g_state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1,
+                  "hold enabled")
+           | expect(dsd_engine_trunk_scan_active_dmr_ctx() != NULL, "the scan parked on the DMR system");
+}
+
+/* Issue #697: a departure the target on air owes once its list is off makes a decoder holding a continuous carrier
+   in a loop of its own (dmrBS()) yield at its next boundary, through the frame-sync yield hook the engine installs,
+   with the real DMR and P25 state machines and the operator's hold on: not before another target can take the
+   receiver, never tuning under the decoder, and the coordinator's next tick, after the loop let go of the guard,
+   departs. */
+static int
+list_departure_yields_a_continuous_dmr_carrier(void) {
+    if (setup_two_lists()) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    /* The P25 system's retune fails, and so does the fallback onto the DMR one: the departure is owed. */
+    g_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    trunk_scan_test_set_now(0.10);
+    int rc = expect(dsd_engine_trunk_scan_list_set(&g_opts, &g_state, g_state.trunk_scan_session, 1, 0, 1U)
+                        == DSD_TRUNK_SCAN_LIST_SET_OK,
+                    "list 1 switched off");
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    rc |= expect(dsd_engine_trunk_scan_active_dmr_ctx() != NULL && g_state.trunk_scan_active_list_off == 1U,
+                 "the failed departure stays on the DMR system, its list off");
+    const int tunes = g_cc_tunes;
+    p25_sm_tick_guard_enter();
+    trunk_scan_test_set_now(1.00);
+    aloha(1);
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous DMR keeps the decoder while the P25 system cools down");
+    trunk_scan_test_set_now(2.20);
+    aloha(1);
+    rc |= expect(dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous DMR yields once the departure is due");
+    rc |= expect(g_cc_tunes == tunes && dsd_engine_trunk_scan_active_dmr_ctx() != NULL,
+                 "the yield does not retune under the decoder");
+    p25_sm_tick_guard_leave();
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    rc |= expect(dsd_engine_trunk_scan_active_p25_ctx() != NULL && g_cc_tunes > tunes,
+                 "the tick departs for the P25 system after the decoder let go");
+    rc |= expect(g_state.trunk_scan_hold == 1U && g_state.trunk_scan_active_list == 2U
+                     && !dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "the hold carried over, and nothing more is owed");
     cleanup();
     return rc;
 }
@@ -2493,6 +2579,7 @@ main(void) {
     rc |= pending_probe_timeout();
     rc |= pending_park_timeout();
     rc |= visit_hook_defers_tuning_until_decoder_unwinds();
+    rc |= list_departure_yields_a_continuous_dmr_carrier();
     rc |= dmr_cold_start_hunts_the_map();
     rc |= dmr_live_cc_at_start_never_hunts();
     rc |= dmr_cold_start_holds_validated_content();

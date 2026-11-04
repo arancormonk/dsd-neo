@@ -38,6 +38,14 @@ class AppPrefs : public QObject {
      * auto-start: a recreated Activity takes the identity of the session it finds running from these. Device-local. */
     Q_PROPERTY(QString acceptedStartKind READ acceptedStartKind WRITE setAcceptedStartKind NOTIFY acceptedStartChanged)
     Q_PROPERTY(QString acceptedStartUid READ acceptedStartUid WRITE setAcceptedStartUid NOTIFY acceptedStartChanged)
+    /* Issue #697: the other scan lists a scan session scans with its list (the UID above), in list order: the rest of
+     * the session's identity, written with acceptedStart* and lastStarted* (acceptedStartCompanions,
+     * lastStartedCompanions), empty for every other start. Device-local: a backup carries no list identity a restore
+     * could leave dangling, and a restore clears them (forgetScanCompanions()). */
+    Q_PROPERTY(QStringList acceptedStartCompanions READ acceptedStartCompanions WRITE setAcceptedStartCompanions NOTIFY
+                   acceptedStartChanged)
+    Q_PROPERTY(QStringList lastStartedCompanions READ lastStartedCompanions WRITE setLastStartedCompanions NOTIFY
+                   lastStartedCompanionsChanged)
     Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
     Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
@@ -134,6 +142,9 @@ class AppPrefs : public QObject {
     /** @brief Set every portable key present in @p values, remove every portable key absent from it; ignore other
      *         keys; sync() and return status() == QSettings::NoError. Device-local keys are never touched. */
     static bool replacePortable(const QVariantMap& values);
+    /** @brief Remove both scan-list companion keys (issue #697), as a restore or a repaired list UID must: the UIDs they
+     *         name may now be other lists or none. sync() and return status() == QSettings::NoError. */
+    static bool forgetScanCompanions();
 
     explicit AppPrefs(QObject* parent = nullptr);
     ~AppPrefs() override;
@@ -148,6 +159,10 @@ class AppPrefs : public QObject {
     void setAcceptedStartKind(const QString& value);
     QString acceptedStartUid() const;
     void setAcceptedStartUid(const QString& value);
+    QStringList acceptedStartCompanions() const;
+    void setAcceptedStartCompanions(const QStringList& value);
+    QStringList lastStartedCompanions() const;
+    void setLastStartedCompanions(const QStringList& value);
     double lastLat() const;
     void setLastLat(double value);
     double lastLon() const;
@@ -298,6 +313,7 @@ class AppPrefs : public QObject {
     void lastStartedKindChanged();
     void lastStartedUidChanged();
     void acceptedStartChanged();
+    void lastStartedCompanionsChanged();
     void locationChanged();
 
     void appearanceChanged();

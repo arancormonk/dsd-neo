@@ -198,11 +198,11 @@ const dsd_json_node* dsd_json_obj_get(const dsd_json_node* obj, const char* key)
 /**
  * @brief Integer accessors. Return 0 and write @p out, or -1 (out untouched).
  *
- * A number converts only when it is an integer in range: an integer literal
- * exactly, or a fraction/exponent form whose value is a whole number no larger
- * than 2^53 in magnitude. dsd_json_as_u64() also takes a string holding a
- * decimal or 0x-prefixed hexadecimal value, which is how a client sends 64-bit
- * identifiers and key words without rounding them through a double.
+ * A number converts only when it is an integer literal (no fraction or
+ * exponent: 5.0 and 5e0 are refused) whose value fits the type.
+ * dsd_json_as_u64() also takes a string holding a decimal or 0x-prefixed
+ * hexadecimal value, which is how a client sends 64-bit identifiers and key
+ * words without rounding them through a double.
  */
 int dsd_json_as_i64(const dsd_json_node* n, int64_t* out);
 int dsd_json_as_u64(const dsd_json_node* n, uint64_t* out);

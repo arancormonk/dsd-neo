@@ -396,6 +396,14 @@ dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(m
     return g_lcn_name_stub[index];
 }
 
+/* The printer reads only the scan avoid view's summary (issue #672); its list half links against this. */
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    (void)index;
+    return 0;
+}
+
 /* Mirrors the real resolver's contract over the name stub above, so the Call Info
  * line is checkable without linking core's name store: the trunk-scan target wins,
  * only an idle trunk scan lets the -Y row on air have a say, and that row is the real
@@ -672,7 +680,7 @@ ui_menu_is_open(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -817,7 +825,11 @@ dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out
 }
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     g_metrics_calls++;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
@@ -868,7 +880,9 @@ print_snr_meter_blank(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 ui_snr_readout
-ui_snr_readout_for_mod(int rf_mod) { // NOLINT(misc-use-internal-linkage)
+ui_snr_readout_for_mod(const dsd_opts* opts, const dsd_state* state, int rf_mod) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
     (void)rf_mod;
     ui_snr_readout readout = {0};
     readout.mod_label = "C4FM";
@@ -2128,6 +2142,7 @@ test_scanner_status_row_rendering(void) {
     state.lcn_freq_roll = 1;
     state.trunk_lcn_freq[0] = 462012500;
     state.trunk_lcn_freq[1] = 462037500;
+    state.scan_avoids_complete = 1; /* a whole copy, as live states and good publications hold */
     g_stub_max_x = 200;
 
     /* An unnamed row keeps the row byte-identical to what it has always been. */
@@ -2151,6 +2166,7 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion\n");
     state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals(
@@ -2168,6 +2184,7 @@ test_scanner_status_row_rendering(void) {
     assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Avoids: 2\n");
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
 
     /* The last row of the list is on air once roll has caught up with the count: the bound is
        inclusive, so this row renders like any other. */
@@ -2223,6 +2240,55 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("");
 
+    /* Issue #672 B1: a stopped -Y list's avoids still keep its rows out of the -T control-channel hunts, so while any
+       are left the Scan Mode row stays, saying the scan is off and how many rows it left out. */
+    state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: OFF Avoids: 2\n");
+    opts.trunk_enable = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: OFF Avoids: 2\n");
+    opts.trunk_enable = 0;
+    /* Exact past the 65,535 lcn_avoid_count saturates at (B6), as the Avoids menu rows count. */
+    state.lcn_avoid_count = 65535;
+    state.lcn_avoid_total = 65537;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: OFF Avoids: 65537\n");
+    /* A copy that could not hold the whole store knows only that some exist (B2). */
+    state.scan_avoids_complete = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: OFF Avoids: ?\n");
+    state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("");
+    state.scan_avoids_complete = 1;
+    /* A trunk scan's own rows carry its count; the -Y list's are not its avoids. */
+    state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
+    opts.trunk_scan_enabled = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("");
+    opts.trunk_scan_enabled = 0;
+    /* A running -Y row counts through the view too. */
+    opts.scanner_mode = 1;
+    state.lcn_avoid_count = 65535;
+    state.lcn_avoid_total = 65537;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals(
+        "| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion Avoids: 65537\n");
+    opts.scanner_mode = 0;
+    state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
+
     /* A -Y scan the operator paused (issue #671) keeps its row, saying so and how to resume: the receiver is on the
        operator's frequency, so no row's frequency, hangtime or name shows; the list's avoid count still closes it. A
        resume waiting on its row's tune is still paused. */
@@ -2232,12 +2298,14 @@ test_scanner_status_row_rendering(void) {
     assert_capture_equals("| Scan Mode: PAUSED (y resumes)\n");
     state.lcn_scan_resume_pending = 1;
     state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Scan Mode: PAUSED (y resumes) Avoids: 2\n");
     state.lcn_scan_paused = 0;
     state.lcn_scan_resume_pending = 0;
     state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
 
     /* Issue #669: at 80 columns a named row fits whole, HOLD included; the fields after the name are what a cut takes.
        The frequency and the hangtime keep their columns whatever the channel. */
@@ -2250,6 +2318,7 @@ test_scanner_status_row_rendering(void) {
     assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion\n");
     const int hang_col = capture_column_of(" Hangtime:");
     state.lcn_avoid_count = 2;
+    state.lcn_avoid_total = 2;
     state.lcn_scan_hold = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
@@ -2261,6 +2330,7 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert(capture_column_of(" Hangtime:") == hang_col);
     state.lcn_avoid_count = 0;
+    state.lcn_avoid_total = 0;
 
     reset_lcn_name_stub();
     g_unicode_stub = 1;
@@ -2276,8 +2346,12 @@ test_trunk_scan_status_row_rendering(void) {
 
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
+    /* Issue #697: the position is among the targets of the lists switched on, not the target's place among every
+       loaded one (the identity ordinal), which the row no longer reads. */
+    state.trunk_scan_active_ordinal = 8;
+    state.trunk_scan_target_count = 11;
     g_stub_max_x = 200;
 
     reset_printw_capture();
@@ -2307,22 +2381,22 @@ test_trunk_scan_status_row_rendering(void) {
     state.trunk_scan_avoided_count = 0;
 
     /* No position published yet: name the target without inventing an "n of m". */
-    state.trunk_scan_active_ordinal = 0;
+    state.trunk_scan_rotation_ordinal = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:                      Target: county-p25\n");
 
     /* Half a position is no position: an ordinal with no rotation length behind it prints
        no suffix either. */
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 0;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:                Target: county-p25\n");
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_count = 6;
 
     /* A stale id from an earlier run must not show once scanning is off. */
-    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_rotation_ordinal = 3;
     opts.trunk_scan_enabled = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
@@ -2333,7 +2407,7 @@ test_trunk_scan_status_row_rendering(void) {
     opts.trunk_scan_enabled = 1;
     state.trunk_scan_paused = 1;
     state.trunk_scan_active_id[0] = '\0';
-    state.trunk_scan_active_ordinal = 0;
+    state.trunk_scan_rotation_ordinal = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Trunk Scan: PAUSED (y resumes)\n");
@@ -2343,7 +2417,7 @@ test_trunk_scan_status_row_rendering(void) {
     assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Avoids: 2\n");
     state.trunk_scan_avoided_count = 0;
     state.trunk_scan_paused = 0;
-    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_rotation_ordinal = 3;
     opts.trunk_scan_enabled = 0;
 
     /* Enabled but between targets: nothing is on air to name. */
@@ -2377,10 +2451,10 @@ test_trunk_scan_status_row_rendering(void) {
        whether or not they are shown. */
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
     opts.scanner_mode = 0;
-    state.trunk_scan_target_count = 12;
+    state.trunk_scan_rotation_count = 12;
     int target_col = -1;
     for (unsigned int ordinal = 1; ordinal <= 12U; ordinal++) {
-        state.trunk_scan_active_ordinal = (uint16_t)ordinal;
+        state.trunk_scan_rotation_ordinal = (uint16_t)ordinal;
         state.trunk_scan_hold = (uint8_t)(ordinal % 2U);
         state.trunk_scan_active_avoided = (uint8_t)(ordinal % 3U == 0U);
         reset_printw_capture();
@@ -2396,6 +2470,135 @@ test_trunk_scan_status_row_rendering(void) {
     g_stub_max_x = 80;
 
     reset_lcn_name_stub();
+}
+
+/* Issue #697: with two or more target lists the Trunk Scan row names the list on air after the target, shows
+   [list off] in the room [avoided] has (wider by a cell; [avoided] when both hold), and reads "(-/m)" while the target
+   on air's list is off; one list changes nothing. The paused row says how many lists are on. A narrow terminal drops
+   whole fields from the end, the list's name first, and 80 columns hold a long id and list name whole. */
+static void
+test_trunk_scan_list_fields(void) {
+    /* The cut golden names the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so it selects ASCII. */
+    g_unicode_stub = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+    g_stub_max_x = 200;
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-a");
+    static const char* const names[] = {"security", "hospital", "municipality"};
+    static const uint16_t targets[] = {2, 1, 1};
+    for (int i = 0; i < 3; i++) {
+        DSD_SNPRINTF(state.trunk_scan_lists[i].name, sizeof(state.trunk_scan_lists[i].name), "%s", names[i]);
+        state.trunk_scan_lists[i].enabled = 1;
+        state.trunk_scan_lists[i].targets = targets[i];
+    }
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_session = 7;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_rotation_ordinal = 1;
+    state.trunk_scan_rotation_count = 4;
+
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (1/4)                 Target: gate-a List: security\n");
+    const int target_col = capture_column_of(" Target:");
+
+    /* Hospital off, the receiver still on security's second target: 1..3 of the three left. */
+    state.trunk_scan_lists[1].enabled = 0;
+    state.trunk_scan_rotation_ordinal = 2;
+    state.trunk_scan_rotation_count = 3;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-b");
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (2/3)                 Target: gate-b List: security\n");
+
+    /* Security switched off while on air: no position among the lists on, the flag says why, the column holds. */
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_lists[1].enabled = 1;
+    state.trunk_scan_active_list_off = 1;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_rotation_count = 2;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (-/2)      [list off] Target: gate-b List: security\n");
+    assert(capture_column_of(" Target:") == target_col);
+    state.trunk_scan_hold = 1;
+    state.trunk_scan_active_avoided = 1;
+    state.trunk_scan_avoided_count = 1;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    /* Avoided as well: [avoided] takes the room, and "(-/2)" still says the list is off. */
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided]  Target: gate-b List: security Avoids: 1\n");
+    assert(capture_column_of(" Target:") == target_col);
+
+    /* Cut at a whole field (issue #669): the list's name goes before the target's id, never half of either. */
+    g_stub_max_x = 60;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (-/2) HOLD [avoided]  Target: gate-b...\n");
+    g_stub_max_x = 200;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_active_avoided = 0;
+    state.trunk_scan_avoided_count = 0;
+
+    /* 80 columns: a long id and a long list name fit whole. */
+    g_stub_max_x = 80;
+    state.trunk_scan_lists[0].enabled = 1;
+    state.trunk_scan_active_list = 3;
+    state.trunk_scan_active_list_off = 0;
+    state.trunk_scan_rotation_ordinal = 4;
+    state.trunk_scan_rotation_count = 4;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "public-works");
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (4/4)                 Target: public-works List: municipality\n");
+    g_stub_max_x = 200;
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_active_list_off = 1;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_rotation_count = 2;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "gate-b");
+
+    /* A target on air with no list published names no list. */
+    state.trunk_scan_active_list = 0;
+    state.trunk_scan_active_list_off = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:                       Target: gate-b\n");
+
+    /* One list: no list name and no [list off] room, as before lists existed. */
+    state.trunk_scan_list_count = 1;
+    state.trunk_scan_lists[0].enabled = 1;
+    state.trunk_scan_active_list = 1;
+    state.trunk_scan_rotation_ordinal = 2;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (2/2)                Target: gate-b\n");
+
+    /* Paused: no target, and the count of lists on with two or more. */
+    state.trunk_scan_list_count = 3;
+    state.trunk_scan_lists[0].enabled = 0;
+    state.trunk_scan_paused = 1;
+    state.trunk_scan_active_id[0] = '\0';
+    state.trunk_scan_active_list = 0;
+    state.trunk_scan_rotation_ordinal = 0;
+    state.trunk_scan_avoided_count = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Lists: 2/3 on Avoids: 2\n");
+    state.trunk_scan_list_count = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Avoids: 2\n");
+
+    g_stub_max_x = 80;
+    reset_lcn_name_stub();
+    g_unicode_stub = 1;
 }
 
 static void
@@ -3724,8 +3927,8 @@ test_scan_voice_gate_status_rendering(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
 
     opts.scan_voice_only = 0;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
@@ -4029,6 +4232,11 @@ test_scan_timing_row_phrases(void) {
        and no budget reads as suspended beneath it. */
     seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Tone check");
+    /* Issue #697: -Y with no channel map imported stays where it is, so nothing counts down. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.scanner_mode = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_NO_LIST, 1U, -1.0, 0U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No channel map");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a
@@ -4136,8 +4344,8 @@ test_scan_timing_row_placement(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
-    state.trunk_scan_active_ordinal = 3;
-    state.trunk_scan_target_count = 6;
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25\n"
@@ -4901,6 +5109,7 @@ main(void) {
     test_scanner_status_row_rendering();
     test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
+    test_trunk_scan_list_fields();
     test_scan_timing_row_phrases();
     test_scan_timing_row_clamps_expired_timers();
     test_scan_timing_row_visit_cap();

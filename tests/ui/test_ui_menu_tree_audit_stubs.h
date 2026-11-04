@@ -70,7 +70,6 @@
     X(act_m17_user_data)                                                                                               \
     X(act_mod_cycle)                                                                                                   \
     X(act_mod_p2_toggle)                                                                                               \
-    X(act_mt)                                                                                                          \
     X(act_p25_enc_lockout)                                                                                             \
     X(act_p2_params)                                                                                                   \
     X(act_pbf_toggle)                                                                                                  \
@@ -87,7 +86,9 @@
     X(act_rr_library)                                                                                                  \
     X(act_scan_avoid)                                                                                                  \
     X(act_scan_avoid_clear)                                                                                            \
+    X(act_scan_avoid_list)                                                                                             \
     X(act_scan_hold_toggle)                                                                                            \
+    X(act_scan_lists)                                                                                                  \
     X(act_scan_voice_hold)                                                                                             \
     X(act_scan_voice_only)                                                                                             \
     X(act_scan_voice_qualify)                                                                                          \
@@ -117,7 +118,6 @@
     X(act_tcp_rcvtimeo_prompt)                                                                                         \
     X(act_tcp_waitall)                                                                                                 \
     X(act_tg_hold)                                                                                                     \
-    X(act_toggle_ftz_daz)                                                                                              \
     X(act_toggle_invert)                                                                                               \
     X(act_toggle_payload)                                                                                              \
     X(act_toggle_ui_channels)                                                                                          \
@@ -271,7 +271,6 @@
     X(lbl_m17_user_data)                                                                                               \
     X(lbl_modulation)                                                                                                  \
     X(lbl_monitor)                                                                                                     \
-    X(lbl_mt)                                                                                                          \
     X(lbl_muting)                                                                                                      \
     X(lbl_out_mute)                                                                                                    \
     X(lbl_p25_cc_grace)                                                                                                \
@@ -296,7 +295,9 @@
     X(lbl_rt_sched)                                                                                                    \
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \
+    X(lbl_scan_avoid_list)                                                                                             \
     X(lbl_scan_hold)                                                                                                   \
+    X(lbl_scan_lists)                                                                                                  \
     X(lbl_scan_voice_hold)                                                                                             \
     X(lbl_scan_voice_only)                                                                                             \
     X(lbl_scan_voice_qualify)                                                                                          \
@@ -368,6 +369,8 @@
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
+    X(scan_avoids_manageable)                                                                                          \
+    X(scan_lists_offered)                                                                                              \
     X(scan_rotation_active)                                                                                            \
     X(trunk_enabled)
 

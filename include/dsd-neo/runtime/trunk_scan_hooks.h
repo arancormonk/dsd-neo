@@ -50,14 +50,46 @@ enum {
 };
 
 enum {
-    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,      /**< The scan is paused (issue #671): nothing to hold, avoid or advance */
-    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
-    DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
-    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, a single-target step, or unknown op */
+    DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED = -7, /**< AVOID_ACTIVE on a target already avoided (the parked fallback) */
+    DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED = -6,     /**< Unavoid: the target named is not avoided (already put back) */
+    DSD_TRUNK_SCAN_CONTROL_STALE = -5,           /**< Unavoid: no such target in this scan session */
+    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,          /**< The scan is paused (issue #671): nothing to hold, avoid or step */
+    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3,     /**< Trunk scan is not installed */
+    DSD_TRUNK_SCAN_CONTROL_BUSY = -2,            /**< The coordinator's tick guard is held; try again */
+    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1, /**< Would leave no usable target, a single-target step, or unknown op */
+    DSD_TRUNK_SCAN_CONTROL_OK = 0,       /**< Unavoid: the target is back in the rotation */
     /* >= 0 is op-specific: HOLD_TOGGLE returns the new hold state; AVOID_ACTIVE, ADVANCE and
      * RETREAT return 0 when the receiver moved and 1 when it stayed; AVOID_CLEAR returns how
      * many avoids it cleared. */
 };
+
+/**
+ * @brief What names a --trunk-scan target to a person (issue #672): its 1-based position in the target list, as the
+ * avoid list leads with it, and its label column ("" when it has none). The id alone names nothing on Android, whose
+ * target ids are entry UIDs.
+ */
+typedef struct {
+    uint32_t ordinal;
+    char label[64]; /**< dsd_trunk_scan_target::label, NUL-terminated */
+} dsd_trunk_scan_target_name;
+
+/**
+ * @brief What switching a trunk-scan target list on or off did (dsd_trunk_scan_hook_list_set(), issue #697).
+ *
+ * Its own codes, apart from the control ops' above: a list toggle names a session and a list, so it can be stale.
+ */
+typedef enum {
+    DSD_TRUNK_SCAN_LIST_SET_OK = 0,            /**< The list is switched as asked */
+    DSD_TRUNK_SCAN_LIST_SET_UNCHANGED = 1,     /**< It already was (every list, for DSD_TRUNK_SCAN_LIST_ALL) */
+    DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST = -1, /**< Switching it off would leave nothing to scan */
+    DSD_TRUNK_SCAN_LIST_SET_BUSY = -2,         /**< The coordinator's tick guard is held; try again */
+    DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE = -3,  /**< Trunk scan is not installed */
+    DSD_TRUNK_SCAN_LIST_SET_PAUSED = -4,       /**< The scan is paused (issue #671): resume it first */
+    DSD_TRUNK_SCAN_LIST_SET_STALE = -5,        /**< The session is not this scan's, or it has no such list */
+} dsd_trunk_scan_list_set_result;
+
+/** The list dsd_trunk_scan_hook_list_set() takes for "every list": switched on, all of them at once. */
+enum { DSD_TRUNK_SCAN_LIST_ALL = -1 };
 
 typedef struct {
     void* (*p25_ctx)(void);
@@ -72,6 +104,9 @@ typedef struct {
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
+    int (*unavoid)(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                   dsd_trunk_scan_target_name* name);
+    int (*list_set)(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request);
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
@@ -172,10 +207,46 @@ void dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state);
  * @brief Apply one dsd_trunk_scan_control_op to the parked target list.
  *
  * Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk scan is not installed;
- * otherwise the coordinator's result (see the enum above). Call it on the decoder
+ * otherwise the coordinator's result (see the enum above): a paused scan takes AVOID_CLEAR
+ * alone. Call it on the decoder
  * thread, the way the command queue does: it may retune.
  */
 int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
+
+/**
+ * @brief Put one avoided target back into the rotation (issue #672), named by its identity: the scan session
+ * (dsd_state::trunk_scan_session, nonzero) and the target's id.
+ *
+ * Only the target's avoid flag changes. Nothing retunes, and the hold, every cooldown and the dwell stay as they are;
+ * the visit cap restarts only when the target is the first eligible alternate again, as AVOID_CLEAR's does. Allowed
+ * while the scan is paused (the timing stays cleared then). Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk
+ * scan is not installed; otherwise DSD_TRUNK_SCAN_CONTROL_OK, DSD_TRUNK_SCAN_CONTROL_STALE when the session is not
+ * this scan's or has no such target, or DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED when the target is not avoided. On
+ * DSD_TRUNK_SCAN_CONTROL_OK and DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED, @p name (may be NULL) receives the target's
+ * position and label for the caller's message; otherwise it is left zeroed. Decoder thread only, like
+ * dsd_trunk_scan_hook_control().
+ */
+int dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                dsd_trunk_scan_target_name* name);
+
+/**
+ * @brief Switch trunk-scan target list @p list (1-based, CLI/INI order) on or off for the session (issue #697), or
+ * every list on (DSD_TRUNK_SCAN_LIST_ALL with @p enabled 1).
+ *
+ * @p session names the scan as the frontend saw it (dsd_state::trunk_scan_session, the session a put back names too,
+ * kept while paused): a request made of one scan never lands on the next. Switching off the list that holds the
+ * target on air leaves that target at once, as `b` and `L` do (its call ends and commits under its own name, its
+ * carrier is handed back, the hold carries over); when no other target can take the receiver yet, the scan leaves as
+ * soon as one can. A switch that would leave no target to scan is refused, and so is any while the scan is paused.
+ * Nothing is written to a list file or a config. @p request is the caller's id for the request, which the caller
+ * matches the result to; the switch is the same whoever asks.
+ *
+ * Returns a dsd_trunk_scan_list_set_result; DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE when trunk scan is not installed.
+ * Decoder thread only, like dsd_trunk_scan_hook_control(): it may retune. It takes the P25 SM tick guard (try-enter,
+ * BUSY when held) itself, so the caller must not hold it.
+ */
+int dsd_trunk_scan_hook_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
+                                 uint32_t request);
 
 #ifdef __cplusplus
 }

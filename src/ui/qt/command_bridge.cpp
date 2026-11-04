@@ -54,6 +54,7 @@
 #include "decode_mode_flag.h"
 #include "decryption_profile_provider.h"
 #include "recording_status.h"
+#include "scan_avoid_list_model.h"
 #include "session_args.h"
 
 namespace dsd_qt {
@@ -477,6 +478,85 @@ bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::clearScanAvoids() const {
     return accepted(dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR));
+}
+
+void
+CommandBridge::setScanAvoids(ScanAvoidListModel* list) {
+    m_scanAvoids = list;
+}
+
+bool
+CommandBridge::restoreScanAvoid(const QString& key) const {
+    if (m_scanAvoids == nullptr) {
+        return false;
+    }
+    const QVariantMap entry = m_scanAvoids->entry(key);
+    dsd_app_scan_avoid_remove_payload payload;
+    return !entry.isEmpty() && scanAvoidIdentity(entry, &payload)
+           && accepted(dsd_app_command_scan_avoid_remove(&payload));
+}
+
+namespace {
+
+/* A 64-bit identity field: a decimal string, as QML and the avoid list carry it. */
+bool
+parse_u64_field(const QVariantMap& entry, const char* name, uint64_t* out) {
+    bool ok = false;
+    *out = entry.value(QLatin1String(name)).toString().toULongLong(&ok, 10);
+    return ok;
+}
+
+bool
+scan_avoid_lcn_identity(const QVariantMap& entry, dsd_app_scan_avoid_remove_payload* out) {
+    bool ok = false;
+    const int row = entry.value("row").toInt(&ok);
+    if (!ok || row < 0 || !parse_u64_field(entry, "instance", &out->instance)
+        || !parse_u64_field(entry, "listRev", &out->list_rev)
+        || !parse_u64_field(entry, "frequencyHz", &out->frequency_hz)) {
+        return false;
+    }
+    out->row = row;
+    return true;
+}
+
+bool
+scan_avoid_trunk_identity(const QVariantMap& entry, dsd_app_scan_avoid_remove_payload* out) {
+    bool ok = false;
+    const qulonglong session = entry.value("session").toULongLong(&ok);
+    const QByteArray target = entry.value("targetId").toString().toUtf8();
+    /* Checked before any narrowing; an id that would reach the decoder cut short, or not fit, is refused. */
+    if (!ok || session == 0U || session > UINT32_MAX || target.isEmpty() || target.contains('\0')
+        || static_cast<size_t>(target.size()) >= sizeof(out->target_id)) {
+        return false;
+    }
+    out->session = static_cast<uint32_t>(session);
+    std::memcpy(out->target_id, target.constData(), static_cast<size_t>(target.size()));
+    out->row = -1;
+    return true;
+}
+
+} // namespace
+
+bool
+CommandBridge::scanAvoidIdentity(const QVariantMap& entry, dsd_app_scan_avoid_remove_payload* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    bool ok = false;
+    const int kind = entry.value("kind").toInt(&ok);
+    bool parsed = false;
+    if (ok && kind == DSD_APP_SCAN_AVOID_KIND_LCN) {
+        parsed = scan_avoid_lcn_identity(entry, out);
+    } else if (ok && kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) {
+        parsed = scan_avoid_trunk_identity(entry, out);
+    }
+    if (!parsed) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return false;
+    }
+    out->kind = static_cast<uint32_t>(kind);
+    return true;
 }
 
 bool

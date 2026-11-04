@@ -516,6 +516,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 blank inherits globals.\n");
     printf("                 Scans conventional frequencies; use -T for trunking.\n");
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
+    printf("                 Repeat it to scan several target lists in one session (at most 8, in order).\n");
+    printf("      --trunk-scan-off <targets.csv>  Load a target list that starts switched off.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
     printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold\n");

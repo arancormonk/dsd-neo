@@ -175,7 +175,12 @@ Notes:
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
-  holds that LCN's place. Frequencies learned from site broadcasts (with no list imported) are capped at 26.
+  holds that LCN's place, also when an EDACS site names that LCN as its control channel (the frequency it is heard on
+  is recorded there only with no list imported). Under `-T` that control channel is still learned from the frequency
+  it is heard on, so the returns to it work while the list keeps its 0; on audio input with a rigctl peer that
+  frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
+  itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
+  learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
 
 Example:
 
@@ -540,6 +545,9 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 ```
 
 - Optional columns are allowed after `notes`; recognized optional columns are matched by header name.
+- A UTF-8 byte order mark before the header (a spreadsheet's "CSV UTF-8" export) is accepted.
+- The header and each data row are read up to 4096 bytes, including the line ending (and any byte order mark) and the
+  terminating NUL; a longer line, the header included, rejects the file (`row N is too long`).
 - Every data row must contain the first seven fields, even when optional values are empty. Missing trailing optional
   fields are treated as empty.
 - Blank data rows are skipped.
@@ -548,7 +556,7 @@ Columns:
 
 | Column | Required | Behavior |
 |--------|----------|----------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists (an analog call's label itself, ahead of its frequency; see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)), and in log messages. Empty or too-long IDs are rejected. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists (an analog call's label itself, ahead of its frequency; see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)), and in log messages. Empty or too-long IDs are rejected, and so is an ID that is not valid UTF-8 (save the file as UTF-8): the avoid list puts a target back by its exact ID. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
 | `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |

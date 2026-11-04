@@ -71,6 +71,8 @@
 #include <algorithm>
 #include <array>
 #include <ctime>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -78,6 +80,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -102,7 +105,9 @@
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
+#include "scan_avoid_list_model.h"
 #include "scan_list_starter.h"
+#include "scan_list_toggle_model.h"
 #include "scan_lists_model.h"
 #include "screen_reader_state.h"
 #include "session_args.h"
@@ -413,9 +418,11 @@ class TestUiController : public QObject {
 
     bool autoStartBlocked = true;
 
+    /* Issue #697: @p companions, the other lists a scan target was last started with, ride along as the real
+       controller's do. */
     Q_INVOKABLE void
-    requestAutoStart(const QString& kind, const QString& uid) {
-        Q_EMIT autoStartRequested(kind, uid);
+    requestAutoStart(const QString& kind, const QString& uid, const QStringList& companions = QStringList()) {
+        Q_EMIT autoStartRequested(kind, uid, companions);
     }
 
     Q_INVOKABLE void
@@ -423,7 +430,7 @@ class TestUiController : public QObject {
     flushHistory() {}
 
   Q_SIGNALS:
-    void autoStartRequested(const QString& kind, const QString& uid);
+    void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
     void decryptionResultChanged();
 };
 
@@ -918,6 +925,13 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* Issue #672: each Put back, by the key it names. */
+    Q_INVOKABLE bool
+    restoreScanAvoid(const QString& key) {
+        m_restored_scan_avoids << key;
+        return true;
+    }
+
     Q_INVOKABLE bool
     previousChannel() {
         m_previous_channel_calls++;
@@ -1134,6 +1148,7 @@ class CommandRecorder : public QObject {
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
+        m_restored_scan_avoids.clear();
         m_previous_channel_calls = 0;
         m_next_channel_calls = 0;
         m_resume_scan_calls = 0;
@@ -1164,6 +1179,11 @@ class CommandRecorder : public QObject {
     int
     scanAvoidClearCalls() const {
         return m_scan_avoid_clear_calls;
+    }
+
+    QStringList
+    restoredScanAvoids() const {
+        return m_restored_scan_avoids;
     }
 
     int
@@ -1420,6 +1440,7 @@ class CommandRecorder : public QObject {
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
     int m_scan_avoid_clear_calls = 0;
+    QStringList m_restored_scan_avoids;
     int m_previous_channel_calls = 0;
     int m_next_channel_calls = 0;
     int m_resume_scan_calls = 0;
@@ -3803,6 +3824,128 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->scanAvoidClearCalls() : -1;
     }
 
+    /** @brief Issue #672: the keys the avoid sheet's Put back buttons sent, oldest first. */
+    Q_INVOKABLE QStringList
+    restoredScanAvoids() const {
+        return (m_commands != nullptr) ? m_commands->restoredScanAvoids() : QStringList();
+    }
+
+    /**
+     * @brief Issue #672: make the avoid list (the real ScanAvoidListModel `metrics.scanAvoidModel` is) the entries
+     * @p entries, each {key, label}, in order, as MetricsModel hands it a new list: by key, so a row whose key stays
+     * keeps its delegate. The readings beside it (scanAvoidCount and the rest) are the case's to set.
+     */
+    Q_INVOKABLE void
+    setScanAvoids(const QVariantList& entries) {
+        if (m_scan_avoid_model == nullptr) {
+            return;
+        }
+        QList<dsd_qt::ScanAvoidListModel::Entry> next;
+        for (const QVariant& value : entries) {
+            const QVariantMap entry = value.toMap();
+            dsd_qt::ScanAvoidListModel::Entry row{entry.value("key").toString(), entry.value("label").toString(), {}};
+            row.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+            next.append(row);
+        }
+        m_scan_avoid_model->apply(std::move(next));
+    }
+
+    /**
+     * @brief Issue #697: hand the Scan lists sheet's model (the real ScanListToggleModel `metrics.scanListModel` is) a
+     * frame: @p view is {session, seq, paused, lists: [{name, on, targets, onAir}]}. The readings beside it
+     * (scanListCount and the rest) are the case's to set. Results answered with answerScanList() are read here.
+     */
+    Q_INVOKABLE void
+    setScanLists(const QVariantMap& view) {
+        dsd_app_scan_list_view next{};
+        next.session = view.value("session", 7).toUInt();
+        next.lists_seq = view.value("seq", 1).toUInt();
+        const bool paused = view.value("paused").toBool();
+        const QVariantList lists = view.value("lists").toList();
+        next.list_count = static_cast<uint8_t>(qMin(lists.size(), qsizetype{DSD_TRUNK_SCAN_MAX_LISTS}));
+        next.running = paused ? 0U : 1U;
+        next.paused = paused ? 1U : 0U;
+        next.toggleable = !paused && next.list_count >= 2 ? 1U : 0U;
+        for (int i = 0; i < next.list_count; ++i) {
+            const QVariantMap list = lists.at(i).toMap();
+            dsd_app_scan_list_entry& entry = next.lists[i];
+            entry.number = static_cast<uint8_t>(i + 1);
+            entry.enabled = list.value("on", true).toBool() ? 1U : 0U;
+            entry.targets = static_cast<uint16_t>(list.value("targets").toUInt());
+            entry.has_active = list.value("onAir").toBool() ? 1U : 0U;
+            const QByteArray name = list.value("name").toString().toUtf8();
+            DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", name.constData());
+            if (entry.has_active) {
+                next.active_list = entry.number;
+            }
+        }
+        m_scan_list_view = next;
+        if (m_scan_list_model != nullptr) {
+            m_scan_list_model->refresh(m_scan_list_view);
+        }
+    }
+
+    /** @brief Issue #697: where a manual scan list's generated targets are written (scan_list_csv_path()). */
+    Q_INVOKABLE QString
+    scanListCsvPath(const QString& uid, const QString& name) const {
+        return dsd_qt::scan_list_csv_path(uid, name, 1);
+    }
+
+    /** @brief The switches the sheet sent, oldest first, as {request, session, list, enabled}. */
+    Q_INVOKABLE QVariantList
+    scanListRequests() const {
+        QVariantList out;
+        for (const auto& payload : m_scan_list_sent) {
+            out.append(QVariantMap{{"request", payload.request},
+                                   {"session", payload.session},
+                                   {"list", payload.list},
+                                   {"enabled", payload.enabled}});
+        }
+        return out;
+    }
+
+    /** @brief Answer switch @p request with @p code (dsd_app_scan_list_set_code), the lists then at @p listsSeq, and
+     *  hand the model the last frame again, as the next refresh would. */
+    Q_INVOKABLE void
+    answerScanList(int request, int code, int listsSeq) {
+        dsd_app_scan_list_result result{};
+        result.sequence = ++m_scan_list_latest;
+        result.request = static_cast<uint32_t>(request);
+        result.session = m_scan_list_view.session;
+        result.code = code;
+        result.lists_seq = static_cast<uint32_t>(listsSeq);
+        m_scan_list_results.append(result);
+        if (m_scan_list_model != nullptr) {
+            m_scan_list_model->refresh(m_scan_list_view);
+        }
+    }
+
+    /** @brief Whether the command queue refuses the next switches, as a full queue does. */
+    Q_INVOKABLE void
+    setScanListQueueFull(bool full) {
+        m_scan_list_queue_full = full;
+    }
+
+    /** @brief No scan lists: an empty frame, and every switch and answer forgotten. */
+    Q_INVOKABLE void
+    resetScanLists() {
+        m_scan_list_sent.clear();
+        m_scan_list_results.clear();
+        m_scan_list_queue_full = false;
+        setScanLists({{"session", 0}, {"lists", QVariantList()}});
+    }
+
+    /** @brief Issue #672: @p count entries "k0".., labelled "#n  target-n  851.012500 MHz", for a long list. */
+    Q_INVOKABLE void
+    setManyScanAvoids(int count) {
+        QVariantList entries;
+        for (int i = 0; i < count; ++i) {
+            entries.append(QVariantMap{{"key", QStringLiteral("k%1").arg(i)},
+                                       {"label", QStringLiteral("#%1  target-%1  851.012500 MHz").arg(i + 1)}});
+        }
+        setScanAvoids(entries);
+    }
+
     /** @brief How many times the screens asked to step back one scan channel (issue #666). */
     Q_INVOKABLE int
     previousChannelCalls() const {
@@ -4162,6 +4305,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("autoStartOnAttach")] = false;
         prefs[QStringLiteral("lastStartedKind")] = QString();
         prefs[QStringLiteral("lastStartedUid")] = QString();
+        prefs[QStringLiteral("lastStartedCompanions")] = QStringList();
+        prefs[QStringLiteral("acceptedStartCompanions")] = QStringList();
         prefs[QStringLiteral("acceptedStartKind")] = QString();
         prefs[QStringLiteral("acceptedStartUid")] = QString();
         prefs[QStringLiteral("lastLat")] = 0.0;
@@ -4328,6 +4473,21 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
         metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
+        // Issue #672: the avoid list, as MetricsModel publishes it at rest: whole, empty, nothing to manage.
+        metrics[QStringLiteral("scanAvoidsAvailable")] = true;
+        metrics[QStringLiteral("scanAvoidsTotalKnown")] = true;
+        metrics[QStringLiteral("scanAvoidsManageable")] = false;
+        m_scan_avoid_model = new dsd_qt::ScanAvoidListModel(engine);
+        metrics[QStringLiteral("scanAvoidModel")] = QVariant::fromValue(static_cast<QObject*>(m_scan_avoid_model));
+        // Issue #697: one list or none at rest; the sheet's rows are the real toggle model, answered by the case.
+        metrics[QStringLiteral("scanListCount")] = 0;
+        metrics[QStringLiteral("scanActiveList")] = 0;
+        metrics[QStringLiteral("scanActiveListOff")] = false;
+        metrics[QStringLiteral("scanRotationOrdinal")] = 0;
+        metrics[QStringLiteral("scanRotationCount")] = 0;
+        m_scan_list_model = new dsd_qt::ScanListToggleModel(engine);
+        m_scan_list_model->setBackend(scanListBackend());
+        metrics[QStringLiteral("scanListModel")] = QVariant::fromValue(static_cast<QObject*>(m_scan_list_model));
         metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Why the rotation is staying and how long is left (#508). Nothing is
         // published at rest, so the row is down and every budget reads 0.
@@ -4649,7 +4809,9 @@ class Setup : public QObject {
                     if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
                                                  attachmentHost->sessionState(), controller->autoStartBlocked,
                                                  !target.isEmpty(), kindMatches)) {
-                        controller->requestAutoStart(kind, uid);
+                        controller->requestAutoStart(kind, uid,
+                                                     kind == QStringLiteral("scan") ? app_prefs->lastStartedCompanions()
+                                                                                    : QStringList());
                     }
                 });
         }
@@ -4659,6 +4821,10 @@ class Setup : public QObject {
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        scan_lists->setAcceptedRowsLookup([imported_files](const QString& path) {
+            const int row = imported_files->rowForPath(path);
+            return row >= 0 ? imported_files->get(row).value(QStringLiteral("accepted")).toInt() : -1;
+        });
         starter->setTargetFileLookup([imported_files](const QString& path) {
             const int row = imported_files->rowForPath(path);
             return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
@@ -4697,6 +4863,42 @@ class Setup : public QObject {
     BackupRecorder* m_backup = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
+    /* Issue #672: the Monitor's avoid list, the production model, filled by setScanAvoids(). */
+    dsd_qt::ScanAvoidListModel* m_scan_avoid_model = nullptr;
+    /* Issue #697: the Scan lists sheet's model, the production one, over a scripted app-control side: requests from
+       101, every switch kept, answers queued by answerScanList(). */
+    dsd_qt::ScanListToggleModel* m_scan_list_model = nullptr;
+    dsd_app_scan_list_view m_scan_list_view{};
+    QList<dsd_app_scan_list_set_payload> m_scan_list_sent;
+    QList<dsd_app_scan_list_result> m_scan_list_results;
+    uint64_t m_scan_list_latest = 0;
+    uint32_t m_scan_list_next_request = 101;
+    bool m_scan_list_queue_full = false;
+
+    dsd_qt::ScanListToggleModel::Backend
+    scanListBackend() {
+        dsd_qt::ScanListToggleModel::Backend backend;
+        backend.requestNext = [this] { return m_scan_list_next_request++; };
+        backend.submit = [this](const dsd_app_scan_list_set_payload& payload) {
+            if (m_scan_list_queue_full) {
+                return static_cast<int>(DSD_APP_COMMAND_SUBMIT_REJECTED);
+            }
+            m_scan_list_sent.append(payload);
+            return static_cast<int>(DSD_APP_COMMAND_SUBMIT_QUEUED);
+        };
+        backend.resultsSince = [this](uint64_t after, dsd_app_scan_list_result* out, int cap) {
+            int n = 0;
+            for (const auto& result : m_scan_list_results) {
+                if (result.sequence > after && n < cap) {
+                    out[n++] = result;
+                }
+            }
+            return n;
+        };
+        backend.latestSequence = [this] { return m_scan_list_latest; };
+        return backend;
+    }
+
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;

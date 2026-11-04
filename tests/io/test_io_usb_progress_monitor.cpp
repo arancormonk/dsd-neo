@@ -54,6 +54,23 @@ reset_session(void) {
     dsd_exitflag_store(0);
 }
 
+/* Poll @p done every millisecond until it holds or @p timeout_ms of real time passed: whether it held. The deadline is
+ * on the clock, not a count of sleeps, which a loaded runner stretches. */
+template <typename Done>
+bool
+wait_for(Done done, uint64_t timeout_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + timeout_ms;
+    for (;;) {
+        if (done()) {
+            return true;
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return false;
+        }
+        dsd_sleep_ms(1);
+    }
+}
+
 /* Poll until the receiver's ending is committed: the time it was seen, or 0 when @p timeout_ms passed first. */
 uint64_t
 wait_receiver_ended(uint64_t timeout_ms) {
@@ -88,9 +105,7 @@ expect_running(void) {
 /* Wait until the verdict after @p in_grace began waiting out the unplug-owner grace, however late its thread runs. */
 void
 wait_verdict_in_grace(unsigned int in_grace) {
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
+    (void)wait_for([in_grace] { return rtl_device_test_verdicts_in_grace() != in_grace; }, 5000U);
     assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
 }
 
@@ -98,9 +113,7 @@ wait_verdict_in_grace(unsigned int in_grace) {
  * thread runs. */
 void
 wait_verdict_paused(unsigned int paused) {
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_paused() == paused; ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
+    (void)wait_for([paused] { return rtl_device_test_verdicts_paused() != paused; }, 5000U);
     assert(rtl_device_test_verdicts_paused() == paused + 1U);
 }
 
@@ -108,13 +121,16 @@ wait_verdict_paused(unsigned int paused) {
 
 unsigned char g_rtl_buffer[512];
 
+/* A callback every @p period_ms for @p duration_ms of real time, the last one at its end. */
 void
-deliver_rtl(rtl_device* dev, int callbacks, unsigned int period_ms) {
-    for (int i = 0; i < callbacks; ++i) {
-        if (i > 0) {
-            dsd_sleep_ms(period_ms);
-        }
+deliver_rtl(rtl_device* dev, uint32_t duration_ms, unsigned int period_ms) {
+    const uint64_t end_ms = dsd_realtime_mono_ms() + duration_ms;
+    for (;;) {
         rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, sizeof g_rtl_buffer);
+        if (dsd_realtime_mono_ms() >= end_ms) {
+            break;
+        }
+        dsd_sleep_ms(period_ms);
     }
 }
 
@@ -132,23 +148,20 @@ test_rtl_starvation_from_start(input_ring_state* ring) {
     assert(ended_ms - started_ms >= kLimitMs);
     assert(ended_ms - started_ms < 1000U);
     expect_receiver_ending(-ETIMEDOUT);
-    for (int waited_ms = 0; waited_ms < 1000 && !rtl_device_test_usb_stream_reader_exited(dev); ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
-    assert(rtl_device_test_usb_stream_reader_exited(dev));
+    assert(wait_for([dev] { return rtl_device_test_usb_stream_reader_exited(dev) != 0; }, 1000U));
     rtl_device_test_usb_stream_stop(dev);
     expect_receiver_ending(-ETIMEDOUT);
 }
 
-/* 50 callbacks 10 ms apart (longer than the trip limit), then none: the silence counts from the last one. The trip
- * limit applies once they stop, so a silence that had counted through them would trip at once. */
+/* Callbacks 10 ms apart for 500 ms (longer than the trip limit), then none: the silence counts from the last one. The
+ * trip limit applies once they stop, so a silence that had counted through them would trip at once. */
 void
 test_rtl_silence_after_progress(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
     reset_session();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    deliver_rtl(dev, 50, 10U);
+    deliver_rtl(dev, 500U, 10U);
     const uint64_t last_ms = dsd_realtime_mono_ms();
     rtl_device_test_set_progress_limit_ms(kLimitMs);
     expect_running();
@@ -160,14 +173,14 @@ test_rtl_silence_after_progress(input_ring_state* ring) {
     rtl_device_test_usb_stream_stop(dev);
 }
 
-/* A callback every 10 ms for 2.5 s (longer than the limit), then the session's own stop: nothing is reported. */
+/* A callback every 10 ms for kOutlastMs (longer than the limit), then the session's own stop: nothing is reported. */
 void
 test_rtl_steady_stream_never_trips(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
     reset_session();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    deliver_rtl(dev, 250, 10U);
+    deliver_rtl(dev, kOutlastMs, 10U);
     expect_running();
     rtl_device_test_usb_stream_stop(dev);
     expect_running();
@@ -186,7 +199,8 @@ test_rtl_zero_length_callbacks_do_not_count_as_progress(input_ring_state* ring) 
     const unsigned int generation = dsd_input_failure_generation();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    for (int i = 0; i < 20 && !dsd_input_failure_receiver_ended(); ++i) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 3000U;
+    while (dsd_input_failure_receiver_ended() == 0 && dsd_realtime_mono_ms() < give_up_ms) {
         rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, 0U);
         dsd_sleep_ms(50U);
     }
@@ -200,7 +214,8 @@ test_rtl_zero_length_callbacks_do_not_count_as_progress(input_ring_state* ring) 
     reset_session();
     dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    for (int i = 0; i < (int)(kOutlastMs / 50U); ++i) {
+    const uint64_t end_ms = dsd_realtime_mono_ms() + kOutlastMs;
+    for (int i = 0; dsd_realtime_mono_ms() < end_ms; ++i) {
         rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, (i & 1) ? 0U : (uint32_t)sizeof g_rtl_buffer);
         dsd_sleep_ms(50U);
     }

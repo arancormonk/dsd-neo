@@ -117,7 +117,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_INPUT_WARN_DB",
         "DSD_NEO_IQ_DC_BLOCK",
         "DSD_NEO_IQ_DC_SHIFT",
-        "DSD_NEO_MT",
         "DSD_NEO_NO_BOOTSTRAP",
         "DSD_NEO_NO_SIGNAL_HANDLERS",
         "DSD_NEO_OUTPUT_CLEAR_ON_RETUNE",
@@ -2061,7 +2060,6 @@ test_dsp_misc_env(void) {
     setenv("DSD_NEO_TED_GAIN", "0.06", 1);
     setenv("DSD_NEO_DEEMPH", "75", 1);
     setenv("DSD_NEO_AUDIO_LPF", "5000", 1);
-    setenv("DSD_NEO_MT", "1", 1);
     setenv("DSD_NEO_DISABLE_FS4_SHIFT", "1", 1);
     setenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE", "1", 1);
     setenv("DSD_NEO_RETUNE_DRAIN_MS", "100", 1);
@@ -2135,15 +2133,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
     rc = expect_int_eq(cfg->audio_lpf_cutoff_hz, 5000, 1562, "audio_lpf_cutoff_hz");
-    if (rc != 0) {
-        return rc;
-    }
-
-    rc = expect_int_eq(cfg->mt_is_set, 1, 1570, "mt_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->mt_enable, 1, 1571, "mt_enable");
     if (rc != 0) {
         return rc;
     }
@@ -2243,7 +2232,6 @@ test_dsp_misc_env(void) {
     unsetenv("DSD_NEO_TED_GAIN");
     unsetenv("DSD_NEO_DEEMPH");
     unsetenv("DSD_NEO_AUDIO_LPF");
-    unsetenv("DSD_NEO_MT");
     unsetenv("DSD_NEO_DISABLE_FS4_SHIFT");
     unsetenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
     unsetenv("DSD_NEO_RETUNE_DRAIN_MS");

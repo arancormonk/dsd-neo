@@ -563,8 +563,8 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     // map refused still has to take its slot, as a 0 every consumer reads as
     // "unknown". Dropping it would renumber every LCN below it. Slots past the
     // 26 embedded entries land in the heap tail via dsd_state_trunk_lcn_slot().
-    *dsd_state_trunk_lcn_slot(state, state->lcn_freq_count) = usable ? freq : 0L;
-    state->lcn_freq_count++; // keep tally of number of Frequencies imported
+    (void)dsd_state_trunk_lcn_freq_write(state, state->lcn_freq_count, usable ? freq : 0L);
+    dsd_state_trunk_lcn_count_raise(state, state->lcn_freq_count + 1); // keep tally of number of Frequencies imported
     return 0;
 }
 

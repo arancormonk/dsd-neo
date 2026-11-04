@@ -958,7 +958,8 @@ eye_snr_signal_var(const double mu[4], const long long cnt[4], long long total) 
 }
 
 static double
-eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1, int q2, int q3, double snr_db) {
+eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1, int q2, int q3, double snr_db,
+                          double bias_c4fm) {
     if (sps <= 0 || n <= 100) {
         return snr_db;
     }
@@ -982,9 +983,7 @@ eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1,
     double noise_var = eye_snr_noise_var(buf, n, two_sps, c1, c2, win, q1, q2, q3, mu, total);
     double sig_var = eye_snr_signal_var(mu, cnt, total);
     if (noise_var > 1e-9 && sig_var > 1e-9) {
-        dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(&metrics);
-        double bias = metrics.snr_bias_c4fm;
+        double bias = bias_c4fm;
         if (bias == 0.0) {
             bias = 8.0;
         }
@@ -1121,13 +1120,14 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (state) {
         is_c4fm = is_c4fm && (state->rf_mod == 0);
     }
+    /* One read of the receiver's metrics, from the frame's pair (issue #672, B9). */
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     if (is_c4fm) {
-        dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(&metrics);
         snr_db = metrics.snr_c4fm_db;
     }
     if (is_c4fm && snr_db < -20.0) {
-        snr_db = eye_estimate_snr_fallback(buf, n, sps, two_sps, q1, q2, q3, snr_db);
+        snr_db = eye_estimate_snr_fallback(buf, n, sps, two_sps, q1, q2, q3, snr_db, metrics.snr_bias_c4fm);
     }
     eye_print_rows_line(yq1, yq2, yq3, sps, is_c4fm && snr_db > -50.0, snr_db);
     attron(COLOR_PAIR(4));
@@ -1335,9 +1335,9 @@ print_fsk_hist_view(void) {
 
 #ifdef USE_RADIO
 static int
-spectrum_nfft_clamped(void) {
+spectrum_nfft_clamped(const dsd_opts* opts, const dsd_state* state) {
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     int nfft = metrics.spectrum_size;
     if (nfft < 64) {
         nfft = 64;
@@ -1549,7 +1549,7 @@ spectrum_print_legend(const dsd_opts* opts, const dsd_state* state, int rate, in
                       float vmin) {
     float span_hz = (float)rate;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
     int nfft2 = metrics.spectrum_size;
     const char* df = use_unicode ? "\xCE\x94"
                                    "f"
@@ -1582,7 +1582,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts, const dsd_state* state) {
     static float col[2048];
 
     int rate = 0;
-    int nfft = spectrum_nfft_clamped();
+    int nfft = spectrum_nfft_clamped(opts, state);
     int n = dsd_app_frontend_spectrum_get(bins_static, nfft, &rate);
     ui_print_header("Spectrum Analyzer");
     if (n <= 0) {

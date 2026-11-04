@@ -26,5 +26,6 @@ int user_config_parse_double_value(const char* val, double* out_value);
 char* user_config_trim_ascii_whitespace(char* text);
 void user_config_lowercase_ascii(char* text);
 void user_config_strip_wrapping_quotes(char* val);
+size_t user_config_path_capacity(const char* section, const char* key);
 
 #endif /* DSD_NEO_RUNTIME_CONFIG_USER_INTERNAL_H */

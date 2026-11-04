@@ -20,6 +20,7 @@
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
 #include <dsd-neo/core/safe_api.h>
@@ -86,7 +87,9 @@ typedef struct {
     int trunk_scan_enabled;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
-    char trunk_scan_targets_csv[1024];
+    /* The whole list spec waits as one (DSD_NEXT_START_TRUNK_SCAN_TARGETS): paths and start states (issue #697). */
+    dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    int trunk_scan_list_count;
     char chan_in_file[1024];
     char p25_bandplan_in_file[1024];
 } dsd_opts_next_start;
@@ -506,7 +509,9 @@ struct dsd_opts {
     char rtltcp_hostname[1024];
     char group_in_file[1024];
     char chan_in_file[1024];
-    char trunk_scan_targets_csv[1024];
+    /* --trunk-scan/--trunk-scan-off or [trunk_scan] targets_csv(_N) and lists_off, in list order (issue #697). */
+    dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    int trunk_scan_list_count;
     char src_in_file[1024];              // Source ID alias CSV
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown

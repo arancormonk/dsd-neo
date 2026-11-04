@@ -94,7 +94,7 @@ ui_menu_is_open(void) {
 }
 
 int
-ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
+ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     (void)ch;
     (void)opts;
     (void)state;
@@ -103,7 +103,7 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) {
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
 }
@@ -144,13 +144,16 @@ void
 rr_panel_shutdown(void) {}
 
 void
+ui_overlays_shutdown(void) {}
+
+void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 uint8_t
-dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
     (void)opts;
     (void)state;
     (void)c;

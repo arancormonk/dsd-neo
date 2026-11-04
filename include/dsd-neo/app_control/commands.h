@@ -102,7 +102,8 @@ enum dsd_app_command_id {
     DSD_APP_CMD_WAV_TOGGLE = 214,
     DSD_APP_CMD_ENC_LOCKOUT_CLEAR = 215, // forget all encrypted-target lockouts
     // On-the-fly scan controls (#380): -Y rows or --trunk-scan targets, whichever is running
-    // (a paused scan refuses them, CHANNEL_CYCLE's next included, until it resumes)
+    // (a paused scan refuses hold and avoid, CHANNEL_CYCLE's next included, until it resumes; clear is a flag edit it
+    // takes, issue #672)
     DSD_APP_CMD_SCAN_HOLD_TOGGLE = 216, // hold/release rotation on the channel/target on air
     DSD_APP_CMD_SCAN_AVOID = 217,       // avoid the channel/target on air for the session and step on
     DSD_APP_CMD_SCAN_AVOID_CLEAR = 218, // put every avoided channel/target back into the rotation
@@ -113,6 +114,16 @@ enum dsd_app_command_id {
     // target, -Y row, P25 control-channel candidate (-^) or LCN -- refused as it is (a replay, Signal search, a paused
     // scan, no tuner); no payload. The rotation and Next carry on forward from where it lands.
     DSD_APP_CMD_CHANNEL_CYCLE_PREV = 220,
+    // Put one avoided -Y row or --trunk-scan target back into the rotation by its identity (issue #672); payload
+    // dsd_app_scan_avoid_remove_payload. Never retunes. Unlike hold and avoid, it and SCAN_AVOID_CLEAR are taken while a
+    // scan is paused, and for -Y rows whenever no trunk scan runs (-Y stopped, -T): the avoids still filter the control
+    // channel hunts there.
+    DSD_APP_CMD_SCAN_AVOID_REMOVE = 221,
+    // Switch one --trunk-scan target list on or off for the session, or every list on (issue #697); payload
+    // dsd_app_scan_list_set_payload, submitted with dsd_app_command_scan_list_set(). Set semantics: the list ends in
+    // the state asked for. Switching off the list of the target on air leaves it at once, as `b` does. A paused scan
+    // and Signal search refuse it. Every one gets a retained result (dsd_app_scan_list_results_since()).
+    DSD_APP_CMD_SCAN_LIST_SET = 222,
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
@@ -356,11 +367,14 @@ enum dsd_app_command_id {
     DSD_APP_CMD_DECRYPTION_APPLY = 654,  // sensitive: dsd_app_decryption_payload; retained result
 
     // DSP runtime (rtl_stream_*)
-    DSD_APP_CMD_DSP_OP = 700,               // payload: dsd_app_dsp_payload
-    DSD_APP_CMD_CONFIG_APPLY = 710,         // payload: dsdneoUserConfig, or dsd_app_config_load_payload
-    DSD_APP_CMD_CONFIG_METADATA_SET = 711,  // payload: dsd_app_config_metadata_payload
-    DSD_APP_CMD_SIGNAL_SEARCH_START = 712,  // payload: dsd_signal_search_config
-    DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713 // payload: dsd_signal_search_control
+    DSD_APP_CMD_DSP_OP = 700,                // payload: dsd_app_dsp_payload
+    DSD_APP_CMD_CONFIG_APPLY = 710,          // payload: dsdneoUserConfig, or dsd_app_config_load_payload
+    DSD_APP_CMD_CONFIG_METADATA_SET = 711,   // payload: dsd_app_config_metadata_payload
+    DSD_APP_CMD_SIGNAL_SEARCH_START = 712,   // payload: dsd_signal_search_config
+    DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713, // payload: dsd_signal_search_control
+    // Internal (not in the control API): the terminal menu re-parsed the DSD_NEO_* environment on its own thread, and
+    // the decoder now applies the runtime config's options fields (dsd_apply_runtime_config_to_opts()) to its options.
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY = 714 // no payload
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
@@ -653,6 +667,78 @@ typedef struct {
     dsd_app_receive_payload receive;
 } dsd_app_scan_row_edit_payload;
 
+/** Which store an avoided entry lives in (issue #672): a -Y channel map row, or a --trunk-scan target. */
+typedef enum {
+    DSD_APP_SCAN_AVOID_KIND_NONE = 0,
+    DSD_APP_SCAN_AVOID_KIND_LCN = 1,
+    DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN = 2,
+} dsd_app_scan_avoid_kind;
+
+/** DSD_APP_CMD_SCAN_AVOID_REMOVE (issue #672): the identity of one avoided entry, as the scan avoid view
+ * (<dsd-neo/app_control/scan_avoid_view.h>) lists it, never a list position. A -Y row (KIND_LCN) is
+ * (@c instance, @c list_rev, @c row, @c frequency_hz): dsd_state::state_instance and lcn_list_rev, the row and its
+ * frequency, so it names nothing after a restart, a new channel map or a write to that row. A --trunk-scan target
+ * (KIND_TRUNK_SCAN) is (@c session, @c target_id): dsd_state::trunk_scan_session (nonzero) and the target's id. The
+ * fields the other kind uses are ignored. */
+typedef struct {
+    uint32_t kind; /* dsd_app_scan_avoid_kind */
+    uint32_t session;
+    uint64_t instance;
+    uint64_t list_rev;
+    uint64_t frequency_hz;
+    int32_t row;
+    uint32_t pad; /* explicit, so the payload carries no indeterminate padding */
+    char target_id[64];
+} dsd_app_scan_avoid_remove_payload;
+
+/** The @c list of dsd_app_scan_list_set_payload that names every list: switched on, all of them at once. */
+enum { DSD_APP_SCAN_LIST_ALL = -1 };
+
+/** DSD_APP_CMD_SCAN_LIST_SET (issue #697): switch trunk-scan target list @c list (1-based, CLI/INI order) on or off,
+ * or every list on (DSD_APP_SCAN_LIST_ALL with @c enabled 1). @c session is dsd_state::trunk_scan_session as the
+ * frontend saw it (nonzero), so a request made of one scan never lands on the next. @c request is the caller's id from
+ * dsd_app_scan_list_request_next(), which the retained result carries back. @c enabled is 0 or 1. */
+typedef struct {
+    uint32_t session;
+    uint32_t request;
+    int16_t list;
+    uint8_t enabled;
+    uint8_t pad; /* explicit, so the payload carries no indeterminate padding */
+} dsd_app_scan_list_set_payload;
+
+/** What one DSD_APP_CMD_SCAN_LIST_SET did. 0 to -5 are the coordinator's answers (the same values as
+ * dsd_trunk_scan_list_set_result); the rest are app-control's, for a request the coordinator never saw. */
+typedef enum {
+    DSD_APP_SCAN_LIST_SET_OK = 0,            /**< The list is switched as asked */
+    DSD_APP_SCAN_LIST_SET_UNCHANGED = 1,     /**< It already was (every list, for DSD_APP_SCAN_LIST_ALL) */
+    DSD_APP_SCAN_LIST_SET_REFUSED_LAST = -1, /**< Switching it off would leave nothing to scan */
+    DSD_APP_SCAN_LIST_SET_BUSY = -2,         /**< The coordinator was busy; try again */
+    DSD_APP_SCAN_LIST_SET_UNAVAILABLE = -3,  /**< No trunk scan runs */
+    DSD_APP_SCAN_LIST_SET_PAUSED = -4,       /**< The scan is paused: resume it first */
+    DSD_APP_SCAN_LIST_SET_STALE = -5,        /**< The session is not this scan's, or it has no such list */
+    DSD_APP_SCAN_LIST_SET_INVALID = -6,      /**< The decoder could not take the payload */
+    DSD_APP_SCAN_LIST_SET_SEARCH = -7,       /**< Signal search runs: refused with every receiver command */
+    DSD_APP_SCAN_LIST_SET_DROPPED = -8,      /**< Never applied: the session stopped or the queue overflowed first */
+} dsd_app_scan_list_set_code;
+
+/** The retained outcome of one DSD_APP_CMD_SCAN_LIST_SET: the request as submitted and what it did. @c sequence is
+ * nonzero, process-wide, and advances per result. @c lists_seq is dsd_state::trunk_scan_lists_seq once the request was
+ * handled (for one that never reached the decoder, the value the decoder last published): a snapshot whose
+ * trunk_scan_lists_seq is behind it does not show this answer yet, and one past it shows a later change of the lists,
+ * which a refusal no longer describes. A request dropped before the decoder saw it can carry lists older than the ones
+ * the frontend showed when it asked, so a frontend keys its note on the later of the two. */
+typedef struct {
+    uint64_t sequence;
+    uint32_t request;
+    uint32_t session;
+    int16_t list;
+    uint8_t enabled;
+    uint8_t pad;
+    int32_t code;       /**< dsd_app_scan_list_set_code */
+    uint32_t lists_seq; /**< dsd_state::trunk_scan_lists_seq after the request */
+    uint32_t pad2;      /* explicit, so a copy carries no indeterminate padding */
+} dsd_app_scan_list_result;
+
 typedef enum {
     DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
     DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
@@ -716,6 +802,32 @@ int dsd_app_command_set_tone_filter(int32_t mode, const char* list);
 int dsd_app_command_set_tone_filter_mode(int32_t mode);
 /** Submit DSD_APP_CMD_SCAN_ROW_EDIT. A payload whose strings are not NUL-terminated is rejected here. */
 int dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload);
+/** Submit DSD_APP_CMD_SCAN_AVOID_REMOVE. A NULL payload or a @c target_id that is not NUL-terminated is rejected here;
+ * the decoder checks the rest. */
+int dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload);
+/** Submit DSD_APP_CMD_SCAN_LIST_SET. A NULL payload is rejected here, and so is any submission while the queue is
+ * full: unlike other commands it never evicts the oldest, so a rejected request is never pending and gets no
+ * retained result. The decoder checks the rest. */
+int dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload);
+/** A fresh request id for dsd_app_scan_list_set_payload::request: process-wide, never 0, so the terminal, Qt and the
+ * control API never take each other's results. Any thread. */
+uint32_t dsd_app_scan_list_request_next(void);
+/** Copy the newest retained scan-list result. Returns 1 if one exists, 0 otherwise (out is zeroed) or for NULL out. */
+int dsd_app_scan_list_result_get(dsd_app_scan_list_result* out);
+/** dsd_app_tg_export_results_since() for scan-list results: every DSD_APP_CMD_SCAN_LIST_SET the queue took gets one,
+ * a refusal, an invalid payload, a Signal search refusal and a request dropped unapplied included. A result is
+ * authoritative for what the request did and the toast it showed; dsd_state::trunk_scan_lists_seq in the snapshot is
+ * authoritative for the lists to show. The result can arrive before the snapshot that shows its switch (a watchdog
+ * tick can put that snapshot off), so a frontend clears its pending row on the result and, for OK (and UNCHANGED),
+ * until the snapshot's trunk_scan_lists_seq reaches the result's @c lists_seq, shows the state the switch asked for;
+ * for a refusal it shows the snapshot's lists, and once the snapshot moves past the result's @c lists_seq the refusal
+ * no longer describes them. The code is the coordinator's answer even when a later step of the same command (a rigctl
+ * passband follow-up the peer refused) fails the command: the list did switch. */
+int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
+/** dsd_app_scan_list_results_since() without the results of an earlier decoder run: only those published since the
+ * command session last opened, so a reader that outlives the decoder, such as the control API, never serves a previous
+ * run's answer as this one's. The DROPPED results of requests a stop discarded stay readable until the next open. */
+int dsd_app_scan_list_session_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

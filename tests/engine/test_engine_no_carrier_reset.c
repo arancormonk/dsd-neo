@@ -40,6 +40,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -84,6 +85,7 @@
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
+#include "../../src/app_control/services.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
 #include "scan_step_untyped.h"
@@ -1014,6 +1016,13 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
     free(opts);
 }
 
+/* A -Y list is one the user imported: channels learned over the air are no list to rotate through (issue #697), so a
+ * case that scans rows it writes itself names the map they stand for. */
+static void
+mark_scan_list_imported(dsd_opts* opts) {
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv");
+}
+
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int
 test_dmr_explicit_return_destination(void) {
@@ -1201,6 +1210,7 @@ test_typed_scan_partial_move_is_a_carrier_boundary(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->lcn_freq_count = 2;
@@ -1250,6 +1260,18 @@ test_typed_scan_partial_move_is_a_carrier_boundary(void) {
     return rc;
 }
 
+/* A P25 grant resolves @p channel of IDEN 1 (851 MHz base, 12.5 kHz spacing), not seen before, the way a control
+   channel monitored on a -Y row learns one: through process_channel_to_freq(), which records it in the sparse channel
+   map and moves trunk_chan_map_seq. Returns the frequency resolved. */
+static long int
+learn_p25_channel(const dsd_opts* opts, dsd_state* state, int channel) {
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_iden_fdma[1].base_freq = 851000000L / 5L;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].chan_type = 1;
+    return process_channel_to_freq(opts, state, 0x1000 | channel);
+}
+
 /* Starts a typed scanner step whose RTL leg times out (PENDING), and returns its request. The carrier count and the
    frame sync's carried history are read after the start, so a case sees only what the completion does. */
 static uint64_t
@@ -1267,7 +1289,7 @@ start_pending_typed_step(dsd_opts* opts, dsd_state* state, uint32_t* carrier_seq
 /* A typed scanner step that moved the receiver and then ends unlanded later, when its request completes: the receiver
    is on another carrier all the same, so the completion is a carrier boundary. Three ways:
    - the rigctl leg moved and the RTL leg, which timed out (PENDING), completes FAILED;
-   - the tune completes OK after its row went out of date (the channel map changed under it);
+   - the tune completes OK after its row went out of date (the list was replaced under it);
    - the tune completes OK, its row is restaged (a key change while it was outstanding), and the retry is abandoned
      because the row went out of date.
    An RTL-only tune that completes FAILED moved nothing: no boundary. */
@@ -1283,6 +1305,7 @@ test_typed_scan_async_move_is_a_carrier_boundary(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     opts->setmod_bw = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -1327,10 +1350,10 @@ test_typed_scan_async_move_is_a_carrier_boundary(void) {
     opts->use_rigctl = 0;
     g_rigctl_setfreq_ok = 0;
 
-    /* The tune completes OK after the channel map changed under it: the row does not land, the receiver moved. */
+    /* The tune completes OK after the list was replaced under it: the row does not land, the receiver moved. */
     request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
     rc |= expect_true("out-of-date step pending", request != 0U);
-    state->trunk_chan_map_seq++;
+    dsd_state_trunk_lcn_replace_begin(state);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     (void)dsd_engine_channel_scan_pending(opts, state);
     rc |= expect_true("the out-of-date completion left the row unlanded",
@@ -1340,7 +1363,7 @@ test_typed_scan_async_move_is_a_carrier_boundary(void) {
                       state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
 
     /* The tune completes OK, the row is restaged (a key change while it was outstanding), and the retry is abandoned
-       when the map changes: the row does not land, the receiver moved. */
+       when the list is replaced: the row does not land, the receiver moved. */
     request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
     rc |= expect_true("restaged step pending", request != 0U);
     state->enc_lockout_key_epoch++;
@@ -1352,13 +1375,73 @@ test_typed_scan_async_move_is_a_carrier_boundary(void) {
     carrier_seq = state->carrier_seq;
     state->frame_sync_carry.valid = 1U;
     drops = state->frame_sync_carry.drops;
-    state->trunk_chan_map_seq++;
+    dsd_state_trunk_lcn_replace_begin(state);
     (void)dsd_engine_channel_scan_pending(opts, state);
     rc |= expect_true("the abandoned retry left the row unlanded",
                       !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 0);
     rc |= expect_true("an abandoned retry after a move is a carrier boundary", state->carrier_seq != carrier_seq);
     rc |= expect_true("an abandoned retry after a move forgets the carried history",
                       state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #697 (typed lists): a channel learned over the air while a typed step's tune is pending moves the learned
+   map, not the list. A late success still lands the row it tuned, the row on air is then that one, and a late failure
+   still counts against its row: the cursor moves past it. */
+static int
+test_typed_step_completes_across_a_learned_channel(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 941075000;
+    state->trunk_lcn_freq[1] = 941087500;
+    rc |= expect_true("learned typed row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NXDN48) == 0);
+    rc |= expect_true("learned typed row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NXDN48) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("learned typed first row committed", state->lcn_freq_roll == 1 && state->scan_row_index == 0);
+
+    uint32_t carrier_seq = 0U;
+    uint32_t drops = 0U;
+    uint64_t request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("learned typed step pending", request != 0U);
+    const uint64_t list_rev = state->lcn_list_rev;
+    rc |= expect_true("learned typed channel resolves", learn_p25_channel(opts, state, 5) == 851062500L);
+    rc |= expect_true("learned typed list kept", state->lcn_list_rev == list_rev);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |=
+        expect_true("the typed row lands across a learned channel",
+                    !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 1 && state->lcn_freq_roll == 2);
+    rc |= expect_true("the row on air is the row landed", dsd_engine_channel_scan_on_air_row(state) == 1);
+
+    const int staged_row = state->lcn_freq_roll % state->lcn_freq_count;
+    request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("learned typed second step pending", request != 0U);
+    rc |= expect_true("learned typed second channel resolves", learn_p25_channel(opts, state, 6) == 851075000L);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("a late refusal across a learned channel passes its row",
+                      !dsd_engine_channel_scan_waiting(state) && state->lcn_freq_roll == staged_row + 1);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     dsd_engine_channel_scan_leave(opts, state);
@@ -1382,6 +1465,7 @@ test_refused_scan_tune_reports_no_stale_move(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->use_rigctl = 1;
     opts->setmod_bw = 0;
     g_rigctl_setfreq_ok = 1;
@@ -1551,6 +1635,7 @@ test_typed_scan_tune_boundaries(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->lcn_freq_count = 2;
@@ -1640,6 +1725,7 @@ test_typed_scan_nfm_rows_switch_family(int configured_analog) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     if (configured_analog) {
         rc |= expect_true("analog session",
@@ -1782,7 +1868,8 @@ test_trunk_scan_nfm_target_then_trunked_target(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("nfm trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     rc |= expect_true("nfm target runs the monitor at its width", opts->analog_only == 1 && g_rtl_analog_family == 1
@@ -1825,6 +1912,7 @@ test_legacy_step_retunes_after_a_manual_tune(void) {
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -1860,6 +1948,7 @@ test_legacy_step_retunes_after_a_manual_tune(void) {
     }
     reset_rtl_profile_fakes();
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->setmod_bw = 0;
@@ -1883,22 +1972,9 @@ test_legacy_step_retunes_after_a_manual_tune(void) {
     return rc;
 }
 
-/* An untyped list of two rows with a key set on row 0 (rkey 9 = 999), for the issue #671 B22 cases. */
+/* A key set on @p row of the list: rkey 9 = @p value. */
 static int
-setup_untyped_keyed_list(dsd_opts* opts, dsd_state* state, long int row0_hz, long int row1_hz) {
-    reset_rtl_profile_fakes();
-    dsd_trunk_tuning_requests_reset();
-    dsd_engine_manual_tune_supersede(state);
-    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {} /* and the drops' reports with it */
-    opts->scanner_mode = 1;
-    opts->audio_in_type = AUDIO_IN_RTL;
-    opts->trunk_hangtime = 1;
-    opts->rtlsdr_center_freq = 980012500U;
-    state->rtl_ctx = (RtlSdrContext*)state;
-    state->trunk_lcn_freq[0] = row0_hz;
-    state->trunk_lcn_freq[1] = row1_hz;
-    state->lcn_freq_count = 2;
-    state->lcn_freq_roll = 0;
+set_untyped_row_key(dsd_state* state, size_t row, unsigned long long value) {
     dsd_key_set ks;
     DSD_MEMSET(&ks, 0, sizeof(ks));
     ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
@@ -1909,13 +1985,33 @@ setup_untyped_keyed_list(dsd_opts* opts, dsd_state* state, long int row0_hz, lon
     ks.present = 1;
     ks.keyloader = 1;
     ks.entries[0].index = 9U;
-    ks.entries[0].value = 999ULL;
+    ks.entries[0].value = value;
     ks.entries[0].loaded = 1U;
-    if (dsd_state_trunk_lcn_keys_set(state, 0U, &ks) != 0) {
+    if (dsd_state_trunk_lcn_keys_set(state, row, &ks) != 0) {
         dsd_key_set_free(&ks);
         return -1;
     }
     return 0;
+}
+
+/* An untyped list of two rows with a key set on row 0 (rkey 9 = 999), for the issue #671 B22 cases. */
+static int
+setup_untyped_keyed_list(dsd_opts* opts, dsd_state* state, long int row0_hz, long int row1_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {} /* and the drops' reports with it */
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    opts->rtlsdr_center_freq = 980012500U;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = row0_hz;
+    state->trunk_lcn_freq[1] = row1_hz;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    return set_untyped_row_key(state, 0U, 999ULL);
 }
 
 /* A step whose RTL tune times out, left outstanding on the fake controller (g_retune_in_flight). Returns the deadline
@@ -2013,14 +2109,59 @@ test_legacy_step_commits_a_timed_out_row_when_it_lands(void) {
     return rc;
 }
 
+/* Replaces the -Y list with @p rows (a "channel,frequency_hz" CSV body) through the import every frontend runs
+   (svc_import_channel_map()). Returns 0 once the list is adopted. */
+static int
+import_scan_list(dsd_opts* opts, dsd_state* state, const char* rows) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "scan-list-import-");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (fp == NULL) {
+        (void)remove(path);
+        return -1;
+    }
+    DSD_FPRINTF(fp, "channel,frequency_hz\n%s", rows);
+    (void)fclose(fp);
+    const int rc = svc_import_channel_map(opts, state, path);
+    (void)remove(path);
+    return rc;
+}
+
+/* The change test_legacy_step_landing_after_the_scan_changed_commits_nothing() makes while the step's tune is pending:
+   a stop (variants 0 and 2), an import that replaces the list (1), or a wholesale replacement of the list in place (3).
+   Returns non-zero when the change did not happen. */
+static int
+change_the_untyped_scan(dsd_opts* opts, dsd_state* state, int variant, const char* what) {
+    if (variant == 1) {
+        return expect_case(what, "the import replaces the list",
+                           import_scan_list(opts, state, "1,987012500\n2,989012500\n") == 0
+                               && state->lcn_freq_count == 2 && state->trunk_lcn_freq[1] == 989012500);
+    }
+    if (variant == 3) {
+        /* Synthetic: no real path replaces the list while a -Y scan runs on (each leaves first); this pins the key. */
+        const uint64_t list_rev = state->lcn_list_rev;
+        dsd_state_trunk_lcn_replace_begin(state);
+        return expect_case(what, "the list is another list", state->lcn_list_rev != list_rev);
+    }
+    (void)dsd_engine_channel_scan_leave(opts, state); /* `y` stops the scan; it starts again before the landing */
+    return 0;
+}
+
 /* Issue #671 (N8): a row tune that timed out belongs to its scan. A stop of that scan (the leave every -Y stop runs,
    here followed by a restart before the landing) or a replaced list drops its row, so a late success commits nothing
    and only the frequency stands; a late failure only puts the cached centre back. A late success still moved the
-   receiver, so the carrier boundary runs for the move, once: nothing decoded on the frequency left carries over. */
+   receiver, so the carrier boundary runs for the move, once: nothing decoded on the frequency left carries over. A
+   replaced list is one the import adopts, which leaves the scan, and one a wholesale writer replaces while the scan
+   runs on (dsd_state_trunk_lcn_replace_begin(), every replacement's first step): the list's revision says it is
+   another list (issue #697), even with the same rows. */
 static int
 test_legacy_step_landing_after_the_scan_changed_commits_nothing(void) {
     int rc = 0;
-    for (int variant = 0; variant < 3; variant++) {
+    for (int variant = 0; variant < 4; variant++) {
         dsd_opts* opts = NULL;
         dsd_state* state = NULL;
         if (init_test_runtime(&opts, &state) != 0) {
@@ -2030,17 +2171,12 @@ test_legacy_step_landing_after_the_scan_changed_commits_nothing(void) {
             free_test_runtime(opts, state);
             return 1;
         }
-        static const char* const variant_names[] = {"stop", "list", "stop-fail"};
+        static const char* const variant_names[] = {"stop", "import", "stop-fail", "replaced"};
         const char* what = variant_names[variant];
         (void)step_into_a_timed_out_tune(opts, state);
         rc |= expect_case(what, "the step times out on row 0",
                           g_retune_in_flight.active && g_rtl_tune_freq == 987012500U && state->lcn_freq_roll == 0);
-        if (variant == 1) {
-            state->trunk_chan_map_seq++; /* a list replacement (chan_map_adopt()) */
-        } else {
-            (void)dsd_engine_channel_scan_leave(opts,
-                                                state); /* `y` stops the scan; it starts again before the landing */
-        }
+        rc |= change_the_untyped_scan(opts, state, variant, what);
         const uint32_t carrier_seq = state->carrier_seq;
         const time_t deadline = state->last_cc_sync_time;
         g_rtl_last_applied_hz = 980012500U;
@@ -2060,6 +2196,57 @@ test_legacy_step_landing_after_the_scan_changed_commits_nothing(void) {
                           opts->rtlsdr_center_freq == (variant == 2 ? 980012500U : 987012500U));
         free_test_runtime(opts, state);
     }
+    return rc;
+}
+
+/* Issue #697: a channel learned over the air while an untyped step's tune is pending (here a P25 grant on the row left
+   resolving one not seen before) moves the learned map, not the list. The landing still commits the row it tuned: row
+   1's cursor, its keys and its name, not row 0's left behind for the whole visit. */
+static int
+test_legacy_step_landing_after_a_learned_channel_commits_the_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 989012500, 990012500) != 0 || set_untyped_row_key(state, 1U, 777ULL) != 0
+        || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
+        || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("learned-row-0-lands", state->lcn_freq_roll == 1 && state->rkey_array[9] == 999ULL);
+    (void)step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("learned-row-1-pending",
+                      g_retune_in_flight.active && g_rtl_tune_freq == 990012500U && state->lcn_freq_roll == 1);
+
+    const uint64_t map_seq = state->trunk_chan_map_seq;
+    const uint64_t list_rev = state->lcn_list_rev;
+    rc |= expect_true("learned-channel-resolves", learn_p25_channel(opts, state, 5) == 851062500L);
+    rc |= expect_true("learned-channel-moves-the-map-only",
+                      state->trunk_chan_map_seq != map_seq && state->lcn_list_rev == list_rev);
+
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    const int landed = dsd_engine_scan_untyped_poll(opts, state);
+    if (landed != DSD_MANUAL_TUNE_LANDED || state->lcn_freq_roll != 2) {
+        DSD_FPRINTF(stderr, "learned landing: poll %d, roll %d, rkey %llu (want %d, 2, 777)\n", landed,
+                    state->lcn_freq_roll, (unsigned long long)state->rkey_array[9], DSD_MANUAL_TUNE_LANDED);
+    }
+    rc |= expect_true("learned-landing-polls-landed", landed == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_true("learned-landing-commits-the-cursor",
+                      state->lcn_freq_roll == 2 && dsd_state_lcn_heard_row(state) == 1);
+    rc |= expect_true("learned-landing-installs-the-keys",
+                      state->rkey_array[9] == 777ULL && state->scan_keys_active_set == 1);
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    (void)dsd_channel_label_current(opts, state, label, sizeof label);
+    if (strcmp(label, "BRAVO") != 0) {
+        DSD_FPRINTF(stderr, "learned landing: label \"%s\" (want \"BRAVO\")\n", label);
+        rc = 1;
+    }
+    free_test_runtime(opts, state);
     return rc;
 }
 
@@ -3062,6 +3249,7 @@ test_legacy_step_with_no_row_reopens_its_windows(void) {
         const char* what = empty ? "empty-list" : "all-avoided";
         reset_rtl_profile_fakes();
         opts->scanner_mode = 1;
+        mark_scan_list_imported(opts);
         opts->audio_in_type = AUDIO_IN_RTL;
         opts->trunk_hangtime = 1;
         opts->scan_voice_only = 1;
@@ -3112,6 +3300,7 @@ test_visit_cap_scanner_hops(void) {
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 10;
     opts->scan_max_visit_ms = 2000;
@@ -3297,6 +3486,193 @@ test_visit_cap_scanner_hops(void) {
     return rc;
 }
 
+static void
+write_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A DMR Tier III C_BCAST (opcode 40) announcing @p channel at an absolute frequency: @p rx_int MHz plus @p rx_step
+ * steps of 125 Hz, the same receive and transmit. */
+static void
+build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 40U;
+    write_csbk_bits(bits, 16U, 5U, 5U);
+    write_csbk_bits(bits, 68U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 112U, 0U, 4U);
+    write_csbk_bits(bits, 118U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 130U, rx_int & 0x03FFU, 10U);
+    write_csbk_bits(bits, 140U, rx_step & 0x1FFFU, 13U);
+    write_csbk_bits(bits, 153U, rx_int & 0x03FFU, 10U);
+    write_csbk_bits(bits, 163U, rx_step & 0x1FFFU, 13U);
+}
+
+/* What a DMR site's channel broadcasts (C_BCAST) leave in the list while no list of the user's is loaded: distinct
+ * frequencies and no map path (dmr_cspdu_pf0_c_bcast_track_freq()). */
+static void
+seed_learned_channels(dsd_state* state, long base_hz) {
+    for (int i = 0; i < 3; i++) {
+        *dsd_state_trunk_lcn_slot(state, i) = base_hz + (1000000L * i);
+    }
+    state->lcn_freq_count = 3;
+}
+
+/* On a continuous carrier, synced and silent for longer than the voice gate's qualify window, with a visit older than
+ * the cap, nothing may end the reception for learned channels at any pass, and noCarrier() never retunes: not while
+ * the carrier holds, nor once it is gone. */
+static int
+expect_learned_channels_hold(dsd_opts* opts, dsd_state* state, const char* what) {
+    int rc = 0;
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        const double now_m = dsd_decode_now_mono_s();
+        seed_visit_anchor(state, now_m - 5.0);
+        state->scan_voice_gate_sync_m = now_m - 4.0;
+        state->last_cc_sync_time = time(NULL);
+        dsd_engine_scan_visit_tick(opts, state, now_m);
+        rc |= expect_case(what, "the visit cap never expires", !dsd_engine_scan_visit_expired(opts, state, now_m));
+        rc |= expect_case(what, "the voice gate never steps", !dsd_scan_voice_gate_should_step(opts, state, now_m));
+        rc |= expect_case(what, "a learned channel is nowhere to go",
+                          !dsd_engine_channel_scan_has_other_row(opts, state));
+        noCarrier(opts, state);
+    }
+    rc |= expect_case(what, "the carrier is never retuned", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0);
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "nor once it is gone", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0);
+    return rc;
+}
+
+/*
+ * Issue #697: -Y with no list of the user's -- none at start, or after Clear channel map, which leaves -Y on -- stays
+ * where it is until one is imported. Channels a site announces are appended to the list then, and they never make the
+ * scanner hop, nor arm the per-visit cap or the voice gate that would end the reception for them.
+ */
+static int
+test_learned_channels_never_rotate_the_scanner(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    opts->scan_max_visit_ms = 2000;
+    opts->scan_voice_only = 1;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    seed_learned_channels(state, 962012500L);
+    rc |= expect_learned_channels_hold(opts, state, "no map at start");
+
+    /* An imported list, then Clear channel map (svc_clear_channel_map()): the path and the rows go, -Y stays on. */
+    mark_scan_list_imported(opts);
+    *dsd_state_trunk_lcn_slot(state, 0) = 452012500L;
+    *dsd_state_trunk_lcn_slot(state, 1) = 453012500L;
+    state->lcn_freq_count = 2;
+    opts->chan_in_file[0] = '\0';
+    dsd_state_trunk_lcn_free(state);
+    state->lcn_freq_count = 0;
+    state->lcn_freq_roll = 0;
+    seed_learned_channels(state, 972012500L);
+    rc |= expect_learned_channels_hold(opts, state, "after Clear channel map");
+
+    /* The same through the real tracker: two C_BCAST channel announcements (absolute frequency, 451.0125 and
+       451.0375 MHz) decoded with no map loaded. */
+    dsd_state_trunk_lcn_free(state);
+    state->lcn_freq_count = 0;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("c_bcast: the site's channels are learned",
+                      state->lcn_freq_count == 2 && *dsd_state_trunk_lcn_slot_const(state, 0) == 451012500L);
+    rc |= expect_learned_channels_hold(opts, state, "learned from C_BCAST");
+
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/*
+ * Issue #697: a row skipped at every visit for a width the DSP rate refuses is nowhere for the per-visit cap to go,
+ * as it is for the step. With one busy DMR row the front end receives and one NFM row whose 20 kHz the 16 kHz rate
+ * cannot filter, the cap neither expires nor unwinds the reception, so no step tries the refused row. Once the rate fits
+ * that row the cap counts a fresh limit from then, not one the passes before had already aged.
+ */
+static int
+test_visit_cap_passes_over_a_width_skipped_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_max_visit_ms = 2000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 463012500L;
+    state->trunk_lcn_freq[1] = 156512500L;
+    rc |= expect_true("width-cap: dmr row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    rc |= expect_true("width-cap: nfm row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("width-cap: row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = 20000;
+        rc |= expect_true("width-cap: row width", dsd_channel_profile_set(state, 1, profile) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("width-cap: the dmr row on air", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 463012500U);
+
+    /* Busy: the -t 10 window is fresh and the visit 5 s old against the 2 s cap. */
+    state->last_cc_sync_time = time(NULL);
+    seed_visit_anchor(state, dsd_decode_now_mono_s() - 5.0);
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        const double now_m = dsd_decode_now_mono_s();
+        dsd_engine_scan_visit_tick(opts, state, now_m);
+        rc |= expect_true("width-cap: the cap never expires", !dsd_engine_scan_visit_expired(opts, state, now_m));
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("width-cap: no step tries the refused row", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 1);
+
+    /* The rate now fits the row: it is somewhere to go, from a fresh limit. */
+    g_rtl_request_rate_hz = 48000;
+    const double fits_m = dsd_decode_now_mono_s();
+    dsd_engine_scan_visit_tick(opts, state, fits_m);
+    rc |=
+        expect_true("width-cap: a fresh limit once the row fits", !dsd_engine_scan_visit_expired(opts, state, fits_m));
+    rc |= expect_true("width-cap: which then runs out", dsd_engine_scan_visit_expired(opts, state, fits_m + 2.001));
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
 /* --- Issue #526: a front end whose output rate follows its receive family, as the RTL stream's does at bw=24: the
  * analog monitor resampled to 48 kHz, the digital family at the 24 kHz DSP rate. --- */
 static unsigned int
@@ -3369,6 +3745,7 @@ test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
     install_family_rate_hooks();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->lcn_freq_count = 4;
@@ -3450,6 +3827,7 @@ test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital(void) {
     g_leave_demod_ted_sps = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     /* A configured P25 Phase 1 session on the digital family at 24 kHz. */
@@ -3544,7 +3922,8 @@ test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("family timing trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     rc |= expect_true("family timing nfm target", g_rtl_analog_family == 1 && g_rtl_tune_freq == 154330000U);
@@ -3613,7 +3992,8 @@ start_family_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t pat
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_scan_enabled = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     rc |= expect_true("family scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     return rc;
@@ -4105,6 +4485,7 @@ test_typed_scan_refused_width_skipped_without_the_stream(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_request_rate_hz = 16000;
@@ -4157,6 +4538,7 @@ test_typed_scan_width_skipped_under_channel_lpf_override(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_request_rate_hz = 48000;
@@ -4210,6 +4592,7 @@ typed_scan_am_default_width_skipped_without_the_stream(int lpf_off) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     opts->analog_am_bandwidth_hz = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -4273,6 +4656,7 @@ typed_scan_analog_row_holds_on_carrier(dsd_scan_mode mode) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     opts->audio_out = 0;
     opts->scan_voice_only = 1;
@@ -4360,6 +4744,7 @@ test_typed_scan_nfm_row_tone_rejection_steps(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 30;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->lcn_freq_count = 2;
@@ -4429,6 +4814,7 @@ test_typed_scan_tone_rejection_with_a_refused_row(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_request_rate_hz = 16000;
@@ -4505,6 +4891,7 @@ typed_scan_tone_rejection_weighs_an_am_row(int own_am_hz) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 30;
     opts->analog_nfm_bandwidth_hz = 0;
     opts->analog_am_bandwidth_hz = 20000;
@@ -4623,6 +5010,7 @@ typed_scan_same_frequency_case(const char* stage, dsd_scan_mode mode, int tone_f
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 30;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->lcn_freq_count = 2;
@@ -4707,6 +5095,7 @@ test_typed_scan_respelled_policy_rejects_alike(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->analog_only = 1;
     opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
     rc |= expect_true("respelled: the policy in force",
@@ -4745,6 +5134,7 @@ test_typed_scan_am_row_ignores_the_tone_filter(void) {
     dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_hangtime = 30;
     opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
     rc |= expect_true("am tone list", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
@@ -4813,6 +5203,7 @@ test_rx_tone_rigctl_scan_step(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -4861,6 +5252,7 @@ test_rigctl_reconnect_forgets_the_legacy_tune_cache(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -4932,6 +5324,7 @@ test_legacy_rigctl_step_asks_the_configured_nfm_width(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -5025,6 +5418,7 @@ test_legacy_rigctl_step_resends_b_after_a_live_width(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = (dsd_socket_t)77; // a live peer for the live edit; every request to it is wrapped
@@ -5072,6 +5466,7 @@ test_legacy_rigctl_step_follows_b_where_the_peer_does_not_demodulate(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -5120,6 +5515,7 @@ test_legacy_rigctl_cc_return_weighs_a_typed_list(void) {
         opts->audio_in_type = AUDIO_IN_WAV;
         opts->trunk_enable = 1;
         opts->scanner_mode = 1;
+        mark_scan_list_imported(opts);
         opts->setmod_bw = 12500;
         if (typed) {
             rc |= expect_true("legacy-cc-return-typed-list", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
@@ -5171,6 +5567,7 @@ test_tone_rejection_steps_the_legacy_scan(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -5248,6 +5645,7 @@ test_tone_rejection_stays_on_a_single_row(void) {
     }
     int rc = 0;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -6575,6 +6973,7 @@ feed_rx_silence_until_closed(dsd_opts* opts, dsd_state* state) {
 static void
 setup_tone_rejection_ended(dsd_opts* opts, dsd_state* state, long row0_hz, int rows) {
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_enable = 0;
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 48000;
@@ -6941,6 +7340,7 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
     int rc = 0;
     reset_rtl_profile_fakes();
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -7391,6 +7791,7 @@ main(void) {
     // so a hop that succeeds leaves the finalizer closing a call that belongs to the frequency the
     // receiver just left.
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -7432,6 +7833,7 @@ main(void) {
     // hop through those via dsd_state_trunk_lcn_slot() exactly like the embedded
     // slots, and wrap from the tail back to the head of the list.
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -7539,6 +7941,7 @@ main(void) {
     // so engine.c's tune cache cannot swallow the retune.
     reset_rtl_profile_fakes();
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scan_voice_only = 1;
     opts->scan_voice_qualify_ms = 1000;
@@ -7683,6 +8086,7 @@ main(void) {
     // open call was decoded from. The end must still be EXPLICIT: reporting sync loss would leave
     // the call reacquirable by whatever the new frequency happens to carry.
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -7744,6 +8148,7 @@ main(void) {
     }
 
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     state->trunk_lcn_freq[0] = 938012500;
     state->lcn_freq_count = 1;
     state->lcn_freq_roll = 0;
@@ -7761,6 +8166,7 @@ main(void) {
     }
 
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     state->trunk_lcn_freq[0] = 938012500;
@@ -8014,6 +8420,7 @@ main(void) {
     reset_rtl_profile_fakes();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     state->rtl_ctx = (RtlSdrContext*)state;
     state->trunk_lcn_freq[0] = 773456250;
     state->lcn_freq_count = 1;
@@ -8057,6 +8464,7 @@ main(void) {
     reset_rtl_profile_fakes();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
     opts->mod_qpsk = 1;
@@ -8494,6 +8902,7 @@ main(void) {
                       inactive_failed_request != 0U && dsd_trunk_tuning_pending_request() == inactive_failed_request
                           && !dsd_trunk_tuning_frame_is_current(inactive_generation));
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     noCarrier(opts, state);
     rc |= expect_true("inactive-trunking-retires-failed-gate",
                       dsd_trunk_tuning_pending_request() == 0U && dsd_trunk_tuning_generation() == inactive_generation
@@ -8647,6 +9056,7 @@ main(void) {
     // parks in place keeping the previous set, and a failed tune leg swaps
     // nothing.
     opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -8764,9 +9174,12 @@ main(void) {
     rc |= test_typed_scan_nfm_rows_switch_family(1);
     rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
+    rc |= test_learned_channels_never_rotate_the_scanner();
+    rc |= test_visit_cap_passes_over_a_width_skipped_row();
     rc |= test_legacy_step_retunes_after_a_manual_tune();
     rc |= test_legacy_step_commits_a_timed_out_row_when_it_lands();
     rc |= test_legacy_step_landing_after_the_scan_changed_commits_nothing();
+    rc |= test_legacy_step_landing_after_a_learned_channel_commits_the_row();
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
@@ -8810,6 +9223,7 @@ main(void) {
     rc |= test_direct_return_forgets_the_carried_history();
     rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
     rc |= test_typed_scan_async_move_is_a_carrier_boundary();
+    rc |= test_typed_step_completes_across_a_learned_channel();
     rc |= test_refused_scan_tune_reports_no_stale_move();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();

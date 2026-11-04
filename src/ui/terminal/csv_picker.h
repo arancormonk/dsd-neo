@@ -63,4 +63,9 @@ int ui_csv_picker_collect(const char* dir, const char* kind, char paths[][CSV_PI
 void ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
                                void* user_ctx);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** @brief Test hook: picker contexts allocated and not yet disposed. */
+int ui_csv_picker_live_contexts_for_test(void);
+#endif
+
 #endif /* DSD_NEO_SRC_UI_TERMINAL_CSV_PICKER_H_ */

@@ -9,6 +9,10 @@
  *  - Enter, as '\n', '\r' or KEY_ENTER, starts the import.
  *  - Keypad Enter on a Windows terminal (PDCurses PADENTER) starts it too (B13).
  *  - Any other key does not.
+ * And the Imported Systems browser's context through its three chooser levels
+ * (issue #672, B8): owned by each level's chooser in turn, disposed exactly once
+ * when a level is answered, replaced, cancelled from the render path or closed
+ * at UI exit, and when a hand-off to the next level fails at once.
  *
  * And the Imported Systems browser's "Use this system" / "Load these files"
  * over a real imports directory (issue #803): each asks the session gate
@@ -16,34 +20,44 @@
  * mode, the files-only load for the channel map it loads - and posts nothing
  * when the gate says no.
  *
- * The wizard core, the prompt widgets and the app-control commands are stubbed
- * at the seams rr_panel.c calls; the panel and the library are the real code.
+ * The wizard core and the app-control commands are stubbed at the seams
+ * rr_panel.c calls; the panel, the library and the chooser and prompt widgets
+ * are the real code.
  */
 
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "menu_internal.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
 #include "rr_wizard_core.h"
+#include "scan_list_modal.h"
 #include "test_env.h"
 #include "test_support.h"
 
@@ -206,11 +220,17 @@ static int g_apply_gate_has_chan = -1;
 static int g_files_gate_calls = 0;
 static int g_files_gate_blocks = 0;
 static char g_files_gate_chan[1024];
+/* The pair the gate was handed last. The browser must pass the frame's published pair it was opened with, never
+   acquire one itself (issue #672, B9). */
+static const dsd_opts* g_gate_opts = NULL;
+static const dsd_state* g_gate_state = NULL;
 
 int
-rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
-                                  size_t out_sz) {
+rr_wizard_core_apply_block_reason(const dsd_opts* osnap, const dsd_state* snap, const dsd_rr_import_plan* plan,
+                                  int has_group, int has_chan, char* out, size_t out_sz) {
     g_apply_gate_calls++;
+    g_gate_opts = osnap;
+    g_gate_state = snap;
     g_apply_gate_protocol = plan->protocol;
     g_apply_gate_has_group = has_group;
     g_apply_gate_has_chan = has_chan;
@@ -221,8 +241,11 @@ rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group,
 }
 
 int
-rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz) {
+rr_wizard_core_files_block_reason(const dsd_opts* osnap, const dsd_state* snap, const char* chan_path, char* out,
+                                  size_t out_sz) {
     g_files_gate_calls++;
+    g_gate_opts = osnap;
+    g_gate_state = snap;
     DSD_SNPRINTF(g_files_gate_chan, sizeof g_files_gate_chan, "%s", chan_path != NULL ? chan_path : "(none)");
     if (g_files_gate_blocks) {
         DSD_SNPRINTF(out, out_sz, "%s", k_gate_reason);
@@ -230,43 +253,7 @@ rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_s
     return g_files_gate_blocks;
 }
 
-/* ---- Widget, status and app-control seams: inert ---- */
-
-void
-ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
-                            void* user_ctx) {
-    (void)title;
-    (void)prefill;
-    (void)cap;
-    (void)on_done;
-    (void)user_ctx;
-}
-
-void
-ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx) {
-    (void)title;
-    (void)cap;
-    (void)on_done;
-    (void)user_ctx;
-}
-
-/* The last chooser opened: the browser walks its levels through these callbacks. */
-static const char* const* g_chooser_items = NULL;
-static int g_chooser_count = 0;
-static ui_chooser_done_fn g_chooser_done = NULL;
-static void* g_chooser_user = NULL;
-
-void
-ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
-    (void)title;
-    g_chooser_items = items;
-    g_chooser_count = count;
-    g_chooser_done = on_done;
-    g_chooser_user = user_ctx;
-}
-
-void
-ui_chooser_close(void) {}
+/* ---- Window, status and app-control seams: inert (no window: the render path cancels) ---- */
 
 WINDOW*
 ui_make_window(int h, int w, int y, int x) {
@@ -303,12 +290,33 @@ ui_status_clear_if_expired(time_t now) {
 void
 dsd_app_request_redraw(void) {}
 
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
-    return NULL;
+/* ---- The Scan lists modal (issue #697), which menu_core.c drives: never open here ---- */
+
+int
+scan_list_modal_active(void) {
+    return 0;
 }
 
-/* What the browser posted: the IMPORT_* commands by id, and the apply. */
+int
+scan_list_modal_handle_key(int ch) {
+    (void)ch;
+    return 0;
+}
+
+void
+scan_list_modal_render(void) {}
+
+void
+scan_list_modal_tick(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+scan_list_modal_close(void) {}
+
+/* What the browser posted: the IMPORT_* commands by id and in all, and the apply. */
+static int g_set_string_calls = 0;
 static int g_import_chan_posts = 0;
 static int g_import_group_posts = 0;
 static int g_rr_apply_posts = 0;
@@ -317,6 +325,7 @@ static dsd_app_rr_apply_payload g_rr_apply_payload;
 int
 dsd_app_command_set_string(int cmd_id, const char* value) {
     (void)value;
+    g_set_string_calls++;
     if (cmd_id == DSD_APP_CMD_IMPORT_CHANNEL_MAP) {
         g_import_chan_posts++;
     } else if (cmd_id == DSD_APP_CMD_IMPORT_GROUP_LIST) {
@@ -451,6 +460,8 @@ browser_reset(void) {
     g_files_gate_calls = 0;
     g_files_gate_blocks = 0;
     g_files_gate_chan[0] = '\0';
+    g_gate_opts = NULL;
+    g_gate_state = NULL;
     g_import_chan_posts = 0;
     g_import_group_posts = 0;
     g_rr_apply_posts = 0;
@@ -458,21 +469,25 @@ browser_reset(void) {
     g_status[0] = '\0';
 }
 
-/* Open the browser, pick its only system, then its first action, whose label must be @p want_action. */
+/* The frame's published pair the browser is opened with. File-static: a dsd_opts or dsd_state on the stack is ~41 KB
+   and more. Zeroed options mark no file in use. */
+static dsd_opts g_frame_opts;
+static dsd_state g_frame_state;
+
+/* Open the browser on the frame's pair, pick its only system, then its first action, whose label must be
+   @p want_action, through the real chooser's keys. */
 static void
 browse_first_action(const char* want_action) {
-    g_chooser_done = NULL;
-    rr_panel_open_library(NULL, NULL);
-    assert(g_chooser_done != NULL && g_chooser_count == 1);
-    ui_chooser_done_fn pick_system = g_chooser_done;
-    void* ctx = g_chooser_user;
-    g_chooser_done = NULL;
-    pick_system(ctx, 0);
-    assert(g_chooser_done != NULL && g_chooser_count == 3);
-    assert(strcmp(g_chooser_items[0], want_action) == 0);
-    ui_chooser_done_fn pick_action = g_chooser_done;
-    g_chooser_done = NULL;
-    pick_action(g_chooser_user, 0); /* frees the browser's context */
+    rr_panel_open_library(&g_frame_opts, &g_frame_state);
+    assert(ui_chooser_active() == 1 && ui_chooser_test_snapshot().count == 1);
+    assert(ui_chooser_handle_key('\n') == 1); /* the system: its actions */
+    assert(ui_chooser_active() == 1 && ui_chooser_test_snapshot().count == 3);
+    assert(ui_chooser_test_snapshot().sel == 0);
+    const char* first = ui_chooser_test_item(0);
+    assert(first != NULL && strcmp(first, want_action) == 0);
+    assert(ui_chooser_handle_key('\n') == 1); /* the action, which frees the browser's context */
+    assert(ui_chooser_active() == 0);
+    assert(rr_panel_browse_live_contexts_for_test() == 0);
 }
 
 /* "Use this system" asks the gate for the recipe's own decode mode, and a refusal posts nothing. */
@@ -485,6 +500,7 @@ test_use_this_system_is_checked_for_its_kind(void) {
     g_apply_gate_blocks = 1;
     browse_first_action("Use this system");
     assert(g_apply_gate_calls == 1);
+    assert(g_gate_opts == &g_frame_opts && g_gate_state == &g_frame_state);
     assert(g_apply_gate_protocol == DSD_RR_PROTO_TETRA);
     assert(g_apply_gate_has_group == 1 && g_apply_gate_has_chan == 0);
     assert(g_files_gate_calls == 0);
@@ -515,6 +531,7 @@ test_load_these_files_is_still_checked(void) {
     g_files_gate_blocks = 1;
     browse_first_action("Load these files");
     assert(g_files_gate_calls == 1);
+    assert(g_gate_opts == &g_frame_opts && g_gate_state == &g_frame_state);
     assert(strcmp(g_files_gate_chan, chan) == 0);
     assert(g_apply_gate_calls == 0);
     assert(g_import_chan_posts == 0 && g_import_group_posts == 0);
@@ -528,6 +545,313 @@ test_load_these_files_is_still_checked(void) {
 
     remove_import(group);
     remove_import(chan);
+}
+
+/* ---- The Imported Systems browser (issue #672, B8) ---- */
+
+static int g_other_done_calls;
+
+static void
+other_chooser_done(void* user, int sel) {
+    (void)user;
+    (void)sel;
+    g_other_done_calls++;
+}
+
+static int
+live(void) {
+    return rr_panel_browse_live_contexts_for_test();
+}
+
+/* Level 1: the system list over the one imported system. */
+static void
+open_level(int level) {
+    rr_panel_open_library(NULL, NULL);
+    assert(ui_chooser_active() == 1);
+    assert(ui_chooser_test_snapshot().count == 1);
+    assert(live() == 1);
+    if (level >= 2) {
+        assert(ui_chooser_handle_key('\n') == 1); /* the system: its actions */
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_test_snapshot().count == 3);
+        assert(live() == 1);
+    }
+    if (level >= 3) {
+        assert(ui_chooser_handle_key(KEY_END) == 1); /* "Delete imported files": the confirmation */
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_test_snapshot().count == 2);
+        assert(ui_chooser_test_snapshot().sel == 0); /* Cancel */
+        assert(live() == 1);
+    }
+}
+
+static void
+expect_gone(void) {
+    assert(live() == 0);
+    assert(ui_chooser_active() == 0);
+}
+
+static void
+test_browser_levels(void) {
+    static const char* const other_items[] = {"Other"};
+    for (int level = 1; level <= 3; level++) {
+        /* Esc at the level. */
+        open_level(level);
+        assert(ui_chooser_handle_key(27) == 1);
+        expect_gone();
+
+        /* Replaced by another chooser: disposed with no callback of its own; the new chooser is untouched. */
+        open_level(level);
+        g_other_done_calls = 0;
+        ui_chooser_start("Other", other_items, 1, other_chooser_done, NULL);
+        assert(live() == 0);
+        assert(ui_chooser_active() == 1);
+        assert(ui_chooser_handle_key('\n') == 1);
+        assert(g_other_done_calls == 1);
+        expect_gone();
+
+        /* Cancelled from the render path (no window can be made here). */
+        open_level(level);
+        ui_chooser_render();
+        expect_gone();
+
+        /* UI exit with no wizard core: rr_panel_shutdown() leaves the chooser, the overlay shutdown closes it. */
+        open_level(level);
+        rr_panel_shutdown();
+        assert(live() == 1);
+        ui_chooser_close();
+        expect_gone();
+
+        /* UI exit after an import made the wizard core: rr_panel_shutdown() closes the chooser itself. */
+        rr_panel_open_import(NULL, NULL);
+        rr_panel_close();
+        open_level(level);
+        rr_panel_shutdown();
+        expect_gone();
+    }
+
+    /* A hand-off whose next level answers at once (a start that fails): the context is disposed exactly once. */
+    open_level(1);
+    ui_chooser_test_fail_next_start();
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+    open_level(2);
+    assert(ui_chooser_handle_key(KEY_END) == 1);
+    ui_chooser_test_fail_next_start();
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+
+    /* The confirmation's Cancel answers and disposes; the files stay. */
+    open_level(3);
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+
+    /* Level 2's Use (no saved recipe: the files are loaded by path) answers and disposes. */
+    open_level(2);
+    g_set_string_calls = 0;
+    assert(ui_chooser_handle_key('\n') == 1);
+    assert(g_set_string_calls == 1); /* the group list, the system's one half */
+    expect_gone();
+
+    /* Level 2's Refresh hands the file to the wizard and disposes the browser's context. */
+    open_level(2);
+    assert(ui_chooser_handle_key(KEY_DOWN) == 1);
+    assert(ui_chooser_handle_key('\n') == 1);
+    expect_gone();
+    assert(rr_panel_active() == 1); /* the refresh runs in the panel */
+    rr_panel_shutdown();
+}
+
+/* ---- UI exit over real overlays (issue #672, B17): the menu core's real ui_overlays_shutdown() ---- */
+
+static void
+noop_action(void* ctx) {
+    (void)ctx;
+}
+
+static const NcMenuItem SUB_ITEMS[] = {
+    {.id = "sub", .label = "Sub", .on_select = noop_action},
+};
+
+static const NcMenuItem MAIN_ITEMS[] = {
+    {.id = "main", .label = "Main", .submenu = SUB_ITEMS, .submenu_len = 1},
+};
+
+void
+ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
+    (void)ctx;
+    *out_items = MAIN_ITEMS;
+    *out_n = sizeof MAIN_ITEMS / sizeof MAIN_ITEMS[0];
+}
+
+int
+dsd_app_config_default_missing(char* path, size_t path_size) {
+    (void)path;
+    (void)path_size;
+    return 0;
+}
+
+int
+ui_is_enabled(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it != NULL;
+}
+
+int
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it != NULL && it->kind == NC_ITEM_ACTION;
+}
+
+int
+ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
+    for (size_t i = 0; items != NULL && i < n; i++) {
+        if (ui_is_selectable(&items[i], ctx)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+    (void)items;
+    (void)n;
+    (void)ctx;
+    (void)dir;
+    return from;
+}
+
+int
+ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx) {
+    (void)items;
+    (void)n;
+    (void)ctx;
+    return idx;
+}
+
+int
+ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab) {
+    (void)items;
+    (void)ctx;
+    if (out_maxlab) {
+        *out_maxlab = 8;
+    }
+    return (int)n;
+}
+
+void
+ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
+    (void)ctx;
+    f->h = 10;
+    f->w = 30;
+    f->y = 0;
+    f->x = 0;
+}
+
+void
+ui_overlay_ensure_window(UiMenuFrame* f) {
+    (void)f;
+}
+
+void
+ui_overlay_recreate_if_needed(UiMenuFrame* f) {
+    (void)f;
+}
+
+void
+ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, const void* ctx) {
+    (void)win;
+    (void)items;
+    (void)n;
+    (void)hi;
+    (void)top_io;
+    (void)title;
+    (void)ctx;
+}
+
+static int g_exit_prompt_cancels = 0;
+static int g_exit_prompt_disposed = 0;
+
+static void
+exit_prompt_done(void* user, const char* text) {
+    (void)user;
+    if (!text) {
+        g_exit_prompt_cancels++;
+    }
+}
+
+static void
+exit_prompt_dispose(void* user) {
+    g_exit_prompt_disposed++;
+    free(user);
+}
+
+/* A menu two frames deep, help, an owned prompt and the browser's owned chooser, then exit as the UI thread does it:
+   everything closed, each owned context disposed once; the next start opens on a fresh overlay. */
+static void
+test_exit_over_real_overlays(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    for (int round = 0; round < 2; round++) {
+        g_exit_prompt_cancels = 0;
+        g_exit_prompt_disposed = 0;
+        ui_menu_open_async(opts, state);
+        assert(ui_menu_is_open() == 1);
+        assert(ui_menu_handle_key('\n', opts, state) == 1); /* into the submenu */
+        ui_help_open("help text");
+        ui_prompt_open_string_owned("Name", NULL, 16, exit_prompt_done, calloc(1, 32), exit_prompt_dispose);
+        rr_panel_open_library(NULL, NULL);
+        assert(ui_help_active() == 1 && ui_prompt_active() == 1 && ui_chooser_active() == 1);
+        assert(live() == 1);
+
+        rr_panel_shutdown();
+        ui_overlays_shutdown();
+        assert(ui_help_active() == 0 && ui_prompt_active() == 0 && ui_chooser_active() == 0);
+        assert(ui_menu_is_open() == 0);
+        assert(live() == 0);
+        assert(g_exit_prompt_cancels == 1 && g_exit_prompt_disposed == 1);
+    }
+    /* Nothing open: a second shutdown is harmless. */
+    ui_overlays_shutdown();
+    assert(ui_menu_is_open() == 0);
+    free(state);
+    free(opts);
+}
+
+/* One scratch directory for the process: the config path is resolved once. */
+static void
+test_browser_and_exit(void) {
+    test_browser_levels();
+    test_exit_over_real_overlays();
+}
+
+/* One imported system (a group list and its sidecar) in the scratch imports directory browser_setup() made: the
+   config path latches on its first lookup, so every browser case shares that one directory. */
+static void
+with_one_import(void (*run)(void)) {
+    char csv[DSD_TEST_PATH_MAX];
+    assert(dsd_test_path_join(csv, sizeof csv, g_imports, "Sys group.csv") == 0);
+    FILE* fp = dsd_fopen_private(csv, "w");
+    assert(fp != NULL);
+    assert(fputs("1,x\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_rr_provenance p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    DSD_STRNCPY(p.kind, "group", sizeof p.kind - 1);
+    p.sid = 100;
+    DSD_STRNCPY(p.system_name, "Sys", sizeof p.system_name - 1);
+    p.imported_at = 1755500000LL;
+    assert(dsd_rr_provenance_write(csv, &p) == 0);
+
+    run();
+
+    char side[DSD_TEST_PATH_MAX + 8];
+    (void)DSD_SNPRINTF(side, sizeof side, "%s.rr", csv);
+    assert(remove(side) == 0); /* still there: no level deleted anything */
+    assert(remove(csv) == 0);
 }
 
 int
@@ -547,7 +871,6 @@ main(void) {
     browser_setup();
     test_use_this_system_is_checked_for_its_kind();
     test_load_these_files_is_still_checked();
-    browser_teardown();
 
     /* A blocked plan: the planner's block is said here, a session refusal goes
        to the core, which asks the session again (issue #803). */
@@ -564,6 +887,9 @@ main(void) {
 
     rr_panel_shutdown();
     assert(rr_panel_active() == 0);
+
+    with_one_import(test_browser_and_exit);
+    browser_teardown();
 
     printf("UI_RR_PANEL_KEYS: OK\n");
     return 0;

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
@@ -252,6 +253,43 @@ validate_refused_range_entry(const dsdcfg_schema_entry_t* entry, const char* val
 }
 } // namespace
 
+/* lists_off (issue #697) is refused whole by the loader when it is not a list of list numbers, so that is an error;
+   whether each number has a list is the composed check's question. */
+static int
+validate_trunk_scan_lists_off_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                                    int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "trunk_scan") != 0 || strcmp(entry->key, "lists_off") != 0) {
+        return 0;
+    }
+    uint32_t mask = 0U;
+    if (dsd_trunk_scan_lists_off_parse(val, &mask) != 0) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Expected list numbers 1 to %d, comma-separated, each once",
+                     DSD_TRUNK_SCAN_MAX_LISTS);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
+/* A path the loader cannot expand, or whose expansion does not fit its key (user_config_path_capacity()), is refused
+   by the loader (it keeps the previous value), never cut short. */
+static int
+validate_path_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                    const char* diag_section, const char* diag_key) {
+    if (entry->type != DSDCFG_TYPE_PATH) {
+        return 0;
+    }
+    const size_t capacity = user_config_path_capacity(entry->section, entry->key);
+    char expanded[1024];
+    if (val[0] != '\0'
+        && (dsd_config_expand_path(val, expanded, sizeof expanded) != 0
+            || strlen(expanded) >= (capacity > 0U ? capacity : sizeof expanded))) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key,
+                         "Path cannot be expanded or is too long; the previous value is kept");
+    }
+    return 1;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
@@ -261,7 +299,9 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)
+        || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
+        || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "receive") == 0) {
@@ -442,9 +482,32 @@ struct trunk_scan_start_rule {
     const char* message;
 };
 
+/* The lists of a trunk scan the config turns on (issue #697): list 1 named, no gap, every lists_off entry a list, one
+   list starting on. */
+bool
+trunk_scan_lists_break(const dsdneoUserConfig* cfg, dsd_trunk_scan_lists_fault fault) {
+    return cfg->trunk_scan_enabled != 0
+           && dsd_trunk_scan_lists_check(cfg->trunk_scan_lists, cfg->trunk_scan_list_count, nullptr) == fault;
+}
+
 bool
 trunk_scan_lacks_targets(const dsdneoUserConfig* cfg) {
-    return cfg->trunk_scan_enabled != 0 && cfg->trunk_scan_targets_csv[0] == '\0';
+    return trunk_scan_lists_break(cfg, DSD_TRUNK_SCAN_LISTS_NO_FIRST);
+}
+
+bool
+trunk_scan_lists_gap(const dsdneoUserConfig* cfg) {
+    return trunk_scan_lists_break(cfg, DSD_TRUNK_SCAN_LISTS_GAP);
+}
+
+bool
+trunk_scan_lists_off_past_last(const dsdneoUserConfig* cfg) {
+    return trunk_scan_lists_break(cfg, DSD_TRUNK_SCAN_LISTS_OFF_RANGE);
+}
+
+bool
+trunk_scan_lists_all_off(const dsdneoUserConfig* cfg) {
+    return trunk_scan_lists_break(cfg, DSD_TRUNK_SCAN_LISTS_ALL_OFF);
 }
 
 bool
@@ -469,6 +532,24 @@ const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
         "targets_csv",
         trunk_scan_lacks_targets,
         "targets_csv is required when trunk_scan.enabled is true",
+    },
+    {
+        "trunk_scan",
+        "targets_csv",
+        trunk_scan_lists_gap,
+        "trunk_scan lists are numbered without gaps: each targets_csv_N needs targets_csv and every lower one",
+    },
+    {
+        "trunk_scan",
+        "lists_off",
+        trunk_scan_lists_off_past_last,
+        "trunk_scan.lists_off names a list number that has no targets_csv",
+    },
+    {
+        "trunk_scan",
+        "lists_off",
+        trunk_scan_lists_all_off,
+        "trunk_scan.lists_off switches every list off; at least one list must start on",
     },
     {
         "trunking",

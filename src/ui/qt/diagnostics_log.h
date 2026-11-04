@@ -196,6 +196,11 @@ class DiagnosticsLog {
     // own pair. Only the writer step touches it, except stats, which are under m_statsMutex.
     struct Segments {
         Segments(const char* currentName, const char* previousName, qint64 segmentLimit, const char* what);
+        // Out of line, where QFile is complete: an inline destructor would destroy the unique_ptr<QFile> against the
+        // forward declaration above in any includer that defines it.
+        ~Segments();
+        Segments(const Segments&) = delete;
+        Segments& operator=(const Segments&) = delete;
 
         const char* current;
         const char* previous;

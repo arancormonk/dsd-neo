@@ -92,6 +92,26 @@ void dsd_api_feed_stop(void);
  */
 int dsd_api_feed_latest(const char* what, dsd_json_buf* out);
 
+/** The most entries one `get {"what":"scan_avoids"}` page carries, and its default limit. */
+enum { DSD_API_SCAN_AVOIDS_PAGE_MAX = 64 };
+
+/**
+ * @brief Write the @c data value of a `get {"what":"scan_avoids"}` (issue #672) into @p w.
+ *
+ * An object: the summary status.scan_avoids carries, @c offset and @c limit, and @c entries, up to @p limit of the
+ * avoided entries from @p offset (none past the end) of the list the feed last collected; null before the decoder
+ * has published its options. The list is pinned for the call and formatted outside every lock.
+ */
+void dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t limit);
+
+#ifdef DSD_NEO_TEST_HOOKS
+/** Call @p hook (NULL: none) in dsd_api_feed_scan_avoids_page() after it pinned the list and released the feed lock,
+    before it reads the list, so a test can swap the list under a reader. */
+void dsd_api_feed_test_on_page_pinned(void (*hook)(void));
+/** Fail the feed's next @p count scan avoid block allocations (decode thread). */
+void dsd_api_feed_test_fail_block_allocs(int count);
+#endif
+
 /* ---- commands ---- */
 
 /**

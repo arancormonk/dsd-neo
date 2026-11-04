@@ -65,13 +65,19 @@ struct NcMenuItem {
  */
 void ui_statusf(const char* fmt, ...);
 
+/*
+ * Every entry point takes the frame's published snapshot pair (issue #672, B9), read-only: the overlay, its labels,
+ * predicates, actions and the callbacks of prompts and choosers it opens read only the pair the current frame handed
+ * it, never the decoder's live structs and never a snapshot acquired again mid-frame.
+ */
+
 /**
  * @brief Open the main menu as a nonblocking overlay.
  *
  * Subsequent draws happen via `ui_menu_tick`, and keys are routed via
- * `ui_menu_handle_key`.
+ * `ui_menu_handle_key`. Opens nothing before the first publication (NULL @p state).
  */
-void ui_menu_open_async(dsd_opts* opts, dsd_state* state);
+void ui_menu_open_async(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Open the overlay for one modal alone, over the main screen with no menu frame under it (the '=' key's
  * frequency entry, issue #671).
@@ -80,16 +86,25 @@ void ui_menu_open_async(dsd_opts* opts, dsd_state* state);
  * soon as no modal is left: in this call when the opener opened none, otherwise in the key handling or tick that
  * finds its modal closed (submit, cancel, Esc). A callback that opens a follow-up modal keeps it open.
  */
-void ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state, nc_action_fn open_modal);
+void ui_menu_open_modal_async(const dsd_opts* opts, const dsd_state* state, nc_action_fn open_modal);
 /** @brief Return 1 when the overlay is currently open. */
 int ui_menu_is_open(void);
 /**
  * @brief Handle a key for the overlay; returns 1 if consumed.
  */
-int ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state);
+int ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Draw/update one frame of the overlay (no input read here).
  */
-void ui_menu_tick(dsd_opts* opts, dsd_state* state);
+void ui_menu_tick(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief Close every overlay as the UI thread stops (issue #672, B17), before curses closes.
+ *
+ * Help, any prompt (its callback gets the cancel), any chooser (no callback) and every menu frame window go, owned
+ * prompt and chooser contexts are disposed once, and the overlay's bookkeeping is reset, so a later start begins with
+ * nothing open. Call it after rr_panel_shutdown(), which closes a chooser borrowing the wizard's strings before it
+ * frees them.
+ */
+void ui_overlays_shutdown(void);
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_ */

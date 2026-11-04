@@ -45,12 +45,13 @@ int dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row,
 
 /* The engine loop's poll of a manual tune that timed out (dsd_engine_manual_tune_poll()). An untyped step's row commits
    when its tune lands while its scan is still current: a -Y scan without modes, running or with a resume pending
-   (dsd_state::lcn_scan_resume_pending), in the same session (dsd_state::lcn_scan_session), on the same map
-   (trunk_chan_map_seq), the row still on the frequency tuned. A resume's landing then publishes the scan
-   (dsd_engine_channel_scan_resume_landed()). A failure moves the cursor past the row the front end refused and reopens
-   the scan's windows, as a refusal in the step does (issue #666); a resume's failure leaves the scan paused instead
-   (dsd_engine_channel_scan_resume_failed()). A row whose scan is no longer current commits nothing: the poll's
-   reconcile of the cached frequency is all. Returns the poll's result. Decoder thread. */
+   (dsd_state::lcn_scan_resume_pending), in the same session (dsd_state::lcn_scan_session), on the same list
+   (dsd_state::lcn_list_rev: a channel learned over the air leaves it alone, issue #697), the row still on the frequency
+   tuned. A resume's landing then publishes the scan (dsd_engine_channel_scan_resume_landed()). A failure moves the
+   cursor past the row the front end refused and reopens the scan's windows, as a refusal in the step does (issue #666);
+   a resume's failure leaves the scan paused instead (dsd_engine_channel_scan_resume_failed()). A row whose scan is no
+   longer current commits nothing: the poll's reconcile of the cached frequency is all. Returns the poll's result.
+   Decoder thread. */
 int dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state);
 
 /* A resume's row has landed and is installed (issue #671): the scan runs again (scanner_mode 1) and is no longer

@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
@@ -18,11 +19,17 @@
 #include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/log.h>
+#include <functional>
+#include <stddef.h>
 #include <stdint.h>
 #include <utility>
+#include <vector>
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "json_store.h"
@@ -194,7 +201,164 @@ absolutePaths(QVariantMap map) {
     }
     return map;
 }
+
+/* The CSVs an earlier name of list @p uid left in its folder, and the one older versions wrote beside it
+   (scan_lists/<uid>.csv): every one but @p keep goes. */
+void
+remove_other_list_csvs(const QString& uid, const QString& keep) {
+    QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
+    const QDir folder(QFileInfo(keep).absolutePath());
+    /* Hidden ones too: a stale file is removed whatever its name, keys and all. */
+    for (const QFileInfo& file : folder.entryInfoList({QStringLiteral("*.csv")}, QDir::Files | QDir::Hidden)) {
+        if (file.absoluteFilePath() != QFileInfo(keep).absoluteFilePath()) {
+            QFile::remove(file.absoluteFilePath());
+        }
+    }
+}
+
+/* One companion file a target CSV names: its reference index and where it resolves. */
+struct TargetCompanion {
+    size_t index = 0;
+    QString resolved;
+};
+
+void
+collectTargetCompanion(const dsd_app_scan_csv_reference* ref, void* context) {
+    static_cast<QList<TargetCompanion>*>(context)->append({ref->index, QString::fromUtf8(ref->resolved_path)});
+}
+
+/* Issue #697: copy an imported target CSV to @p destination, so the decoder names the list after its own file there,
+   with every companion it names (channel maps, talkgroup and key files) rewritten to the same file, relative to the
+   copy's folder. The imported original is never written. Empty on success, else why no copy was written (a companion
+   path that cannot be written as a replacement token, among others). */
+QString
+copy_targets_for_list(const QString& source, const QString& destination) {
+    QList<TargetCompanion> refs;
+    const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetCompanion, &refs, nullptr};
+    char error[512] = {};
+    if (dsd_app_scan_csv_inspect(source.toUtf8().constData(), nullptr, 0, &callbacks, error, sizeof error) != 0) {
+        return QString::fromUtf8(error);
+    }
+    if (!QDir().mkpath(QFileInfo(destination).absolutePath())) {
+        return QStringLiteral("cannot create its folder");
+    }
+    const QDir folder(QFileInfo(destination).absolutePath());
+    QList<QByteArray> paths;
+    QList<dsd_app_scan_csv_replacement> mapping;
+    for (const auto& ref : refs) {
+        paths << folder.relativeFilePath(ref.resolved).toUtf8();
+        mapping << dsd_app_scan_csv_replacement{ref.index, nullptr};
+    }
+    for (qsizetype i = 0; i < mapping.size(); ++i) {
+        mapping[i].relative_path = paths.at(i).constData();
+    }
+    if (dsd_app_scan_csv_rewrite(source.toUtf8().constData(), nullptr, 0, destination.toUtf8().constData(),
+                                 mapping.constData(), static_cast<size_t>(mapping.size()), error, sizeof error)
+        != 0) {
+        return QString::fromUtf8(error);
+    }
+    return {};
+}
+
+/* Characters a file name cannot hold on Android or Windows, or that would make it a path. */
+bool
+unsafe_in_file_name(QChar c) {
+    static const QString refused = QStringLiteral("/\\<>:\"|?*");
+    return c.unicode() < 0x20 || c.unicode() == 0x7F || refused.contains(c);
+}
+
+/* @p text cut to at most @p bytes UTF-8 bytes, never inside a character. */
+QString
+cut_utf8(const QString& text, int bytes) {
+    QString out;
+    int used = 0;
+    for (qsizetype i = 0; i < text.size();) {
+        const qsizetype step = text.at(i).isHighSurrogate() && i + 1 < text.size() ? 2 : 1;
+        const QString ch = text.mid(i, step);
+        const int size = static_cast<int>(ch.toUtf8().size());
+        if (used + size > bytes) {
+            break;
+        }
+        out += ch;
+        used += size;
+        i += step;
+    }
+    return out;
+}
+
+/* A CSV list's own fallback talkgroup and source-alias files, where it names them, load. */
+bool
+fallbackFilesValid(const QVariantMap& prepared) {
+    const QStringList fields{QStringLiteral("groupCsvPath"), QStringLiteral("srcCsvPath")};
+    return std::all_of(fields.cbegin(), fields.cend(), [&prepared](const QString& field) {
+        const QByteArray fallback = prepared.value(field).toString().toUtf8();
+        if (fallback.isEmpty()) {
+            return true;
+        }
+        dsd_csv_validation stats{};
+        return (field == QLatin1String("groupCsvPath") ? dsd_csv_validate_group_file(fallback.constData(), &stats)
+                                                       : dsd_csv_validate_src_file(fallback.constData(), &stats))
+               == 0;
+    });
+}
+
 } // namespace
+
+namespace {
+/* @p stem cut to the engine's list name size, whole characters only, so the file says what the engine shows, and
+   without the trailing dots and blanks no Windows file name ends in ("." or ".." is not a file either). */
+QString
+fit_stem(const QString& stem) {
+    QString out = cut_utf8(stem, DSD_TRUNK_SCAN_LIST_NAME_SIZE - 1);
+    while (!out.isEmpty() && (out.endsWith(QLatin1Char('.')) || out.endsWith(QLatin1Char(' ')))) {
+        out.chop(1);
+    }
+    return out;
+}
+
+/* A Windows device name (CON, LPT1, and COM or LPT with a superscript 1 to 3 too) is one whatever follows its first
+   dot, and blanks before that dot do not count: "CON.local" is CON. Such a stem gets a '_' after the device name. */
+QString
+avoid_device_name(const QString& stem) {
+    static const QRegularExpression reserved(
+        QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const qsizetype dot = stem.indexOf(QLatin1Char('.'));
+    QString device = dot < 0 ? stem : stem.left(dot);
+    while (device.endsWith(QLatin1Char(' '))) {
+        device.chop(1);
+    }
+    if (!reserved.match(device).hasMatch()) {
+        return stem;
+    }
+    QString out = stem;
+    out.insert(device.size(), QLatin1Char('_'));
+    return out;
+}
+} // namespace
+
+QString
+scan_list_csv_stem(const QString& name, int listNumber) {
+    QString stem = name;
+    std::replace_if(stem.begin(), stem.end(), unsafe_in_file_name, QChar('_'));
+    /* The engine opens the list through its path expansion (dsd_config_expand_path()), which reads "$NAME" and
+       "${NAME}" as variables and a leading '~' as the home folder: a file name keeps none of them. */
+    std::replace(stem.begin(), stem.end(), QChar('$'), QChar('_'));
+    stem = fit_stem(stem.trimmed());
+    stem = fit_stem(avoid_device_name(stem));
+    /* No '~' to start for the expansion to read, and no '.' to start, which would make a hidden file the folder's
+       cleanup could miss. */
+    if (stem.startsWith(QLatin1Char('~')) || stem.startsWith(QLatin1Char('.'))) {
+        stem[0] = QLatin1Char('_');
+    }
+    return stem.isEmpty() ? QStringLiteral("list %1").arg(listNumber) : stem;
+}
+
+QString
+scan_list_csv_path(const QString& uid, const QString& name, int listNumber) {
+    return json_store_path(QStringLiteral("scan_lists/") + uid + QLatin1Char('/') + scan_list_csv_stem(name, listNumber)
+                           + QStringLiteral(".csv"));
+}
 
 ScanListStarter::ScanListStarter(const AppPrefs* prefs, const SavedSystemsModel* systems, QObject* parent)
     : QObject(parent), m_prefs(prefs), m_systems(systems) {}
@@ -205,18 +369,19 @@ ScanListStarter::build(const QVariantMap& list) const {
 }
 
 QVariantMap
-ScanListStarter::prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording) const {
+ScanListStarter::prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording,
+                                 const QStringList& companionPaths) const {
     // The list's call recording folder goes into its argv (issue #708), so a start that can record checks the list
     // first and asks for the folder only for a list that can start; the build that writes the CSV then names it. A
     // draft never can (only that build refuses it), so it asks for none.
     const bool canRecord = host && m_recordingSessions && !list.value("isDraft").toBool();
-    auto result = prepare(list, !canRecord);
+    auto result = prepare(list, !canRecord, QString(), false, companionPaths);
     *recording = false;
     if (canRecord && result.value("ok").toBool()) {
         *recording = true;
         const QString folder = m_recordingSessions->beginSession(QStringLiteral("scan"), list.value("uid").toString(),
                                                                  list.value("name").toString());
-        result = prepare(list, true, folder, folder.isEmpty());
+        result = prepare(list, true, folder, folder.isEmpty(), companionPaths);
     }
     return result;
 }
@@ -228,10 +393,28 @@ ScanListStarter::endUnstartedRecording(bool recording, bool started, const Decod
     }
 }
 
+void
+ScanListStarter::retainProfiles(const QVariantMap& list) const {
+    for (const auto& value : list.value("entries").toList()) {
+        const auto entry = value.toMap();
+        if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
+            continue;
+        }
+        const QString mode = entry.value("decryptionMode", "inherit").toString();
+        if (mode == "profile") {
+            m_profiles->retainForSession(entry.value("decryptionProfileUid").toString());
+        } else if (mode == "inherit" && entry.value("kind").toString() == "system" && m_systems) {
+            m_profiles->retainForSession(
+                m_systems->getByUid(entry.value("systemUid").toString()).value("decryptionProfileUid").toString());
+        }
+    }
+}
+
 QVariantMap
-ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
+ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths) const {
+    const QVariantMap list = lists.value(0).toMap();
     bool recording = false;
-    auto result = prepareForStart(list, host, &recording);
+    auto result = prepareForStart(list, host, &recording, companionPaths);
     const auto args = result.take("args").toStringList();
     if (result.value("ok").toBool() && host) {
         host->noteStartAttempt(list.value("sourceType").toString());
@@ -240,20 +423,163 @@ ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
     endUnstartedRecording(recording, started, host);
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
-        for (const auto& value : list.value("entries").toList()) {
-            const auto entry = value.toMap();
-            if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
-                continue;
-            }
-            const QString mode = entry.value("decryptionMode", "inherit").toString();
-            if (mode == "profile") {
-                m_profiles->retainForSession(entry.value("decryptionProfileUid").toString());
-            } else if (mode == "inherit" && entry.value("kind").toString() == "system" && m_systems) {
-                m_profiles->retainForSession(
-                    m_systems->getByUid(entry.value("systemUid").toString()).value("decryptionProfileUid").toString());
-            }
+        for (const auto& value : lists) {
+            retainProfiles(value.toMap());
         }
     }
+    return result;
+}
+
+QVariantMap
+ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
+    return startPrepared({list}, host, {});
+}
+
+namespace {
+QString
+quotedName(const QVariantMap& list) {
+    return QStringLiteral("\u201c%1\u201d").arg(list.value("name").toString());
+}
+
+QVariantMap
+listsRefusal(const QString& error) {
+    return {{"ok", false},      {"args", QStringList()}, {"error", error}, {"warnings", QStringList()},
+            {"targetCount", 0}, {"started", false}};
+}
+} // namespace
+
+#ifdef DSD_NEO_TEST_HOOKS
+namespace {
+std::function<void(const QString&)>&
+list_copy_written_hook() {
+    static std::function<void(const QString&)> hook;
+    return hook;
+}
+} // namespace
+
+void
+scan_list_set_copy_written_hook_for_test(std::function<void(const QString&)> hook) {
+    list_copy_written_hook() = std::move(hook);
+}
+#endif
+
+QString
+ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int listNumber) {
+    const QString uid = list.value("uid").toString();
+    QString copy = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
+    /* A copy that cannot be written, or that does not check out as the original does, leaves the list on the
+       imported file itself: it still runs, named after that file, and the log says so. */
+    QString why = copy_targets_for_list(source, copy);
+    char detail[512] = {};
+    if (why.isEmpty()
+        && dsd_app_trunk_scan_validate_bundle(copy.toUtf8().constData(), nullptr, nullptr, detail, sizeof detail)
+               != 0) {
+        why = QString::fromUtf8(detail);
+    }
+    if (why.isEmpty()) {
+        remove_other_list_csvs(uid, copy);
+#ifdef DSD_NEO_TEST_HOOKS
+        if (list_copy_written_hook()) {
+            list_copy_written_hook()(copy);
+        }
+#endif
+        /* The copy is what the decoder will open: one written under another name (a platform layer that read the
+           name in another code page) is gone after the cleanup above, and the imported file runs instead. */
+        if (!QFileInfo(copy).isFile()) {
+            why = QStringLiteral("the copy is not at its path after writing");
+        }
+    }
+    if (!why.isEmpty()) {
+        QFile::remove(copy);
+        LOG_INFO("NOTICE: Scan list \"%s\" runs from its imported file, named after that file: no copy under the "
+                 "list's name (%s)\n",
+                 qUtf8Printable(list.value("name").toString()), qUtf8Printable(why));
+        return source;
+    }
+    return copy;
+}
+
+int
+ScanListStarter::maxLists() {
+    return DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
+QString
+ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other) const {
+    return session_args_scan_join_conflict(primary, other, session_args_prefs(m_prefs));
+}
+
+QString
+ScanListStarter::checkLists(const QVariantList& lists, QStringList* warnings) const {
+    if (lists.size() > DSD_TRUNK_SCAN_MAX_LISTS) {
+        return QStringLiteral("Scan at most %1 lists at once.").arg(DSD_TRUNK_SCAN_MAX_LISTS);
+    }
+    const QVariantMap primary = lists.value(0).toMap();
+    for (const auto& value : lists) {
+        const QVariantMap list = value.toMap();
+        const auto checked = prepare(list, false);
+        if (!checked.value("ok").toBool()) {
+            return quotedName(list) + QStringLiteral(": ") + checked.value("error").toString();
+        }
+        for (const auto& warning : checked.value("warnings").toStringList()) {
+            *warnings << quotedName(list) + QStringLiteral(": ") + warning;
+        }
+        const QString conflict = joinConflict(primary, list);
+        if (!conflict.isEmpty()) {
+            return QStringLiteral("%1 can't scan with %2: %3.")
+                .arg(quotedName(list), quotedName(primary), conflict.left(1).toLower() + conflict.mid(1));
+        }
+    }
+    return {};
+}
+
+QString
+ScanListStarter::materializeLists(const QVariantList& lists, QStringList* paths, int* total) const {
+    QList<QByteArray> pathBytes;
+    QList<QByteArray> nameBytes;
+    for (const auto& value : lists) {
+        const QVariantMap list = value.toMap();
+        const auto built = prepare(list, true, QString(), false, QStringList(), static_cast<int>(paths->size()) + 1);
+        if (!built.value("ok").toBool()) {
+            return quotedName(list) + QStringLiteral(": ") + built.value("error").toString();
+        }
+        *paths << built.value("csvPath").toString();
+        pathBytes << paths->constLast().toUtf8();
+        nameBytes << list.value("name").toString().toUtf8();
+    }
+    std::vector<const char*> cpaths;
+    std::vector<const char*> cnames;
+    for (qsizetype i = 0; i < pathBytes.size(); ++i) {
+        cpaths.push_back(pathBytes.at(i).constData());
+        cnames.push_back(nameBytes.at(i).constData());
+    }
+    char detail[512] = {};
+    if (dsd_app_trunk_scan_validate_target_lists(cpaths.data(), cnames.data(), cpaths.size(), total, detail,
+                                                 sizeof detail)
+        != 0) {
+        return QStringLiteral("Scan lists rejected: ") + QString::fromUtf8(detail);
+    }
+    return {};
+}
+
+QVariantMap
+ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host) const {
+    if (lists.size() <= 1) {
+        return start(lists.value(0).toMap(), host);
+    }
+    QStringList warnings;
+    QString error = checkLists(lists, &warnings);
+    QStringList paths;
+    int total = 0;
+    if (error.isEmpty()) {
+        error = materializeLists(lists, &paths, &total);
+    }
+    if (!error.isEmpty()) {
+        return listsRefusal(error);
+    }
+    auto result = startPrepared(lists, host, paths.mid(1));
+    result.insert("warnings", warnings);
+    result.insert("targetCount", total);
     return result;
 }
 
@@ -376,13 +702,20 @@ validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize
             *error = QStringLiteral("Cannot save the scan-list CSV.");
             return false;
         }
+        /* The engine reads the saved file by its path, through its own opener: checked the same way here, so a path
+           the opener reads as another file cannot pass. */
+        if (dsd_app_trunk_scan_validate_targets_csv(path.toUtf8().constData(), count, detail, sizeof detail) != 0) {
+            QFile::remove(path);
+            *error = QStringLiteral("Scan list rejected: ") + QString::fromUtf8(detail);
+            return false;
+        }
     }
     return true;
 }
 
 QVariantMap
 ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder,
-                         bool recordingUnavailable) const {
+                         bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const {
     const auto fail = [](const QString& error, const QStringList& warnings = QStringList()) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", warnings}, {"targetCount", 0}};
@@ -392,7 +725,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     }
     const QString source = list.value("targetSource", "entries").toString();
     if (source == "csv") {
-        return prepareCsv(list, materialize, recordingFolder, recordingUnavailable);
+        return prepareCsv(list, materialize, recordingFolder, recordingUnavailable, companionPaths, listNumber);
     }
     if (source != "entries" || !list.value("targetsCsvPath").toString().isEmpty()) {
         return fail(QStringLiteral("Choose either manual entries or an imported target CSV."));
@@ -423,9 +756,10 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     auto prefs = session_args_prefs(m_prefs);
     prefs.recordingFolder = recordingFolder;
     prefs.recordingUnavailable = recordingUnavailable;
-    const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));
+    const QString path = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
     QString error;
-    const auto args = session_args_scan_build(prepared, generated.firstFreqMhz, path, prefs, &error);
+    const auto args = session_args_scan_build_lists(prepared, generated.firstFreqMhz,
+                                                    QStringList{path} + companionPaths, prefs, &error);
     if (args.isEmpty()) {
         return fail(error, generated.warnings);
     }
@@ -433,17 +767,18 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     if (!validateAndStoreCsv(generated.csv, path, materialize, &count, &error)) {
         return fail(error, generated.warnings);
     }
+    if (materialize) {
+        remove_other_list_csvs(uid, path);
+    }
 
-    return {{"ok", true},
-            {"args", materialize ? args : QStringList()},
-            {"error", QString()},
-            {"warnings", generated.warnings},
-            {"targetCount", count}};
+    return {{"ok", true},           {"args", materialize ? args : QStringList()},
+            {"error", QString()},   {"warnings", generated.warnings},
+            {"targetCount", count}, {"csvPath", path}};
 }
 
 QVariantMap
 ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
-                            bool recordingUnavailable) const {
+                            bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const {
     const auto fail = [](const QString& error) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", QStringList()}, {"targetCount", 0}};
@@ -464,18 +799,8 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QSt
         return fail(QStringLiteral(
             "The target CSV is missing or was removed. Edit this list and select an imported target CSV."));
     }
-    for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
-        const QString fallback = prepared.value(field).toString();
-        if (fallback.isEmpty()) {
-            continue;
-        }
-        dsd_csv_validation stats{};
-        const int rc = QString(field) == "groupCsvPath"
-                           ? dsd_csv_validate_group_file(fallback.toUtf8().constData(), &stats)
-                           : dsd_csv_validate_src_file(fallback.toUtf8().constData(), &stats);
-        if (rc) {
-            return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));
-        }
+    if (!fallbackFilesValid(prepared)) {
+        return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));
     }
     char detail[512] = {};
     int count = 0;
@@ -483,18 +808,18 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QSt
     if (dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), &count, &first, detail, sizeof detail)) {
         return fail(QString::fromUtf8(detail));
     }
+    const QString runPath = materialize ? listCopyOf(list, path, listNumber) : path;
     QString error;
     auto prefs = session_args_prefs(m_prefs);
     prefs.recordingFolder = recordingFolder;
     prefs.recordingUnavailable = recordingUnavailable;
-    const auto args = session_args_scan_build(prepared, QString::number(first / 1e6, 'f', 6), path, prefs, &error);
+    const auto args = session_args_scan_build_lists(prepared, QString::number(first / 1e6, 'f', 6),
+                                                    QStringList{runPath} + companionPaths, prefs, &error);
     if (args.isEmpty()) {
         return fail(error);
     }
-    return {{"ok", true},
-            {"args", materialize ? args : QStringList()},
-            {"error", QString()},
-            {"warnings", csvAnalogRateWarnings(prepared, path, session_args_prefs(m_prefs))},
-            {"targetCount", count}};
+    return {{"ok", true},           {"args", materialize ? args : QStringList()},
+            {"error", QString()},   {"warnings", csvAnalogRateWarnings(prepared, path, session_args_prefs(m_prefs))},
+            {"targetCount", count}, {"csvPath", runPath}};
 }
 } // namespace dsd_qt

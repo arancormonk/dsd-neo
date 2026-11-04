@@ -101,12 +101,23 @@ int dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* 
  * digital or am row, or one inheriting a decode mode other than the FM monitor) or whose tone policy passes the
  * traffic. A row on the frequency on air that runs the FM monitor under a policy that rejects the traffic too (the
  * same policy, as every row of a list without modes runs) is nowhere to go. The row on air is the one whose tune last
- * landed on this map, which a failed start does not change; for a list without modes, the row heard
+ * landed on this list, which a failed start does not change; for a list without modes, the row heard
  * (dsd_engine_channel_scan_on_air_row()).
  * Without such a row a step would only land on the row on air, or on a row that rejects the traffic alike, end the
  * reception and judge the same traffic once more, so the scanner keeps it, muted. Works on both the typed and the
- * untyped (legacy) -Y list. 0 for NULL arguments. */
+ * untyped (legacy) -Y list. 0 for NULL arguments, and without a list of the user's own
+ * (dsd_state_trunk_lcn_user_list_present()): channels learned over the air are nowhere to go. */
 int dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state);
+/** Whether the -Y list can rotate at all: it is the user's own (dsd_state_trunk_lcn_user_list_present()), so not
+ * channels learned over the air, and at least two of its rows are ones a step can land on -- with a frequency, not
+ * avoided, and not an analog row skipped at every visit for a width the front end refuses at the current DSP rate, as
+ * dsd_engine_channel_scan_has_other_row() judges them. The per-visit cap neither runs nor expires otherwise. 0 for
+ * NULL arguments. */
+int dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state);
+/** How many rows of the -Y list a step can land on, by the rule dsd_engine_channel_scan_can_rotate() counts them
+ * with: a frequency, not avoided, and not an analog row skipped at every visit for its width at the current DSP rate.
+ * The `b` avoid refuses to leave fewer than one. 0 for NULL arguments. */
+int dsd_engine_channel_scan_reachable_rows(const dsd_opts* opts, const dsd_state* state);
 /** The -Y list row the receiver is on (issue #666): on a typed list the row whose tune last landed on the current map,
  * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
  * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */

@@ -1039,7 +1039,7 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "trunking section not parsed correctly\n");
         rc |= 1;
     }
-    if (!cfg.has_trunk_scan || !cfg.trunk_scan_enabled || strcmp(cfg.trunk_scan_targets_csv, "/tmp/targets.csv") != 0
+    if (!cfg.has_trunk_scan || !cfg.trunk_scan_enabled || strcmp(cfg.trunk_scan_lists[0].path, "/tmp/targets.csv") != 0
         || cfg.trunk_scan_idle_dwell_ms != 5000 || cfg.trunk_scan_activity_hold_ms != 2000) {
         DSD_FPRINTF(stderr, "trunk_scan section not parsed correctly\n");
         rc |= 1;
@@ -1097,10 +1097,10 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "trunk_use_allow_list not set\n");
         rc |= 1;
     }
-    if (opts.trunk_scan_enabled != 1 || strcmp(opts.trunk_scan_targets_csv, "/tmp/targets.csv") != 0
+    if (opts.trunk_scan_enabled != 1 || strcmp(opts.trunk_scan_lists[0].path, "/tmp/targets.csv") != 0
         || opts.trunk_scan_idle_dwell_ms != 5000 || opts.trunk_scan_activity_hold_ms != 2000) {
         DSD_FPRINTF(stderr, "trunk scan config not applied correctly enabled=%d targets=%s dwell=%d hold=%d\n",
-                    opts.trunk_scan_enabled, opts.trunk_scan_targets_csv, opts.trunk_scan_idle_dwell_ms,
+                    opts.trunk_scan_enabled, opts.trunk_scan_lists[0].path, opts.trunk_scan_idle_dwell_ms,
                     opts.trunk_scan_activity_hold_ms);
         rc |= 1;
     }
@@ -1704,14 +1704,15 @@ test_snapshot_writes_the_next_start(void) {
     next->trunk_scan_enabled = 1;
     next->trunk_scan_idle_dwell_ms = 4321;
     next->trunk_scan_activity_hold_ms = 2500;
-    DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s", "next-targets.csv");
+    DSD_SNPRINTF(next->trunk_scan_lists[0].path, sizeof next->trunk_scan_lists[0].path, "%s", "next-targets.csv");
+    next->trunk_scan_list_count = 1;
     DSD_SNPRINTF(next->chan_in_file, sizeof next->chan_in_file, "%s", "next.csv");
     DSD_SNPRINTF(next->p25_bandplan_in_file, sizeof next->p25_bandplan_in_file, "%s", "next-plan.csv");
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
     if (snap.frontend_kind != DSD_FRONTEND_TERMINAL || snap.frontend_kind_is_set == 0 || snap.trunk_scan_enabled == 0
         || snap.trunk_scan_idle_dwell_ms != 4321 || snap.trunk_scan_activity_hold_ms != 2500
-        || strcmp(snap.trunk_scan_targets_csv, "next-targets.csv") != 0 || strcmp(snap.trunk_chan_csv, "next.csv") != 0
-        || strcmp(snap.trunk_p25_bandplan_csv, "next-plan.csv") != 0) {
+        || strcmp(snap.trunk_scan_lists[0].path, "next-targets.csv") != 0
+        || strcmp(snap.trunk_chan_csv, "next.csv") != 0 || strcmp(snap.trunk_p25_bandplan_csv, "next-plan.csv") != 0) {
         DSD_FPRINTF(stderr, "next start: the save did not write every waiting setting\n");
         rc |= 1;
     }
@@ -1737,7 +1738,8 @@ test_check_trunk_scan_startable(void) {
         DSD_FPRINTF(stderr, "startable: no list: %s\n", why);
         rc |= 1;
     }
-    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
     if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0) {
         DSD_FPRINTF(stderr, "startable: a trunk scan with its list refused (%s)\n", why);
         rc |= 1;
@@ -1771,7 +1773,8 @@ test_check_trunk_scan_startable(void) {
     /* Against a config that already breaks the map rule: that rule kept, or fixed, passes; another one refuses. */
     DSD_MEMSET(&before, 0, sizeof before);
     before.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(before.trunk_scan_targets_csv, sizeof before.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(before.trunk_scan_lists[0].path, sizeof before.trunk_scan_lists[0].path, "%s", "targets.csv");
+    before.trunk_scan_list_count = 1;
     DSD_SNPRINTF(before.trunk_chan_csv, sizeof before.trunk_chan_csv, "%s", "chan.csv");
     cfg = before;
     DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "other.csv");

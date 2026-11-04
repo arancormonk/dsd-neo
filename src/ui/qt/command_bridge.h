@@ -17,17 +17,21 @@
 // Complete types are needed by inline Qt container and metatype instantiations.
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QSharedPointer> // IWYU pragma: keep
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/recording_view.h>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 class QTemporaryFile;
 
 namespace dsd_qt {
 class DecryptionProfileProvider;
 class RecordingStatus;
+class ScanAvoidListModel;
 
 class CommandBridge : public QObject {
     Q_OBJECT
@@ -205,6 +209,23 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool avoidCurrentChannel() const;
     /** @brief Put every avoided channel/target back into the rotation. */
     Q_INVOKABLE bool clearScanAvoids() const;
+    /**
+     * @brief Put the one avoided channel or target @p key names back into the rotation (issue #672), by the identity
+     * the avoid list holds for that key (never a list position), so a list that changed under the reader puts back the
+     * entry that was shown or nothing. Never retunes. False for a key the list no longer holds or an identity that does
+     * not parse; the decoder answers a stale one with a message in MetricsModel::uiMessage.
+     */
+    Q_INVOKABLE bool restoreScanAvoid(const QString& key) const;
+    /**
+     * @brief The put-back payload for an avoid list entry (ScanAvoidListModel::entry()): the 64-bit fields parsed from
+     * their decimal strings, the row non-negative, the session nonzero and within 32 bits, the target id whole and
+     * NUL-free. False, with @p out zeroed, for anything else.
+     */
+    static bool scanAvoidIdentity(const QVariantMap& entry, dsd_app_scan_avoid_remove_payload* out);
+
+    /** @brief The avoid list restoreScanAvoid() reads (MetricsModel's); nullptr: every put back is refused. */
+    void setScanAvoids(ScanAvoidListModel* list);
+
     /**
      * @brief Step back one channel in the same list Next walks (the previous trunk-scan target under --trunk-scan).
      * The rotation carries on forward from there.
@@ -412,6 +433,7 @@ class CommandBridge : public QObject {
 
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;
+    QPointer<ScanAvoidListModel> m_scanAvoids;
     quint64 m_pendingKeyRequest = 0;
     quint64 m_pendingKeySession = 0;
     QList<QSharedPointer<QTemporaryFile>> m_selectionFiles;

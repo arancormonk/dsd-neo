@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
@@ -524,8 +525,10 @@ cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, in
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
-    if (opts->trunk_scan_targets_csv[0] == '\0') {
-        LOG_ERROR("--trunk-scan requires a target CSV path\n");
+    char why[160];
+    if (dsd_trunk_scan_lists_describe_fault(opts->trunk_scan_lists, opts->trunk_scan_list_count, why, sizeof why)
+        != 0) {
+        LOG_ERROR("%s\n", why);
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
@@ -1010,6 +1013,62 @@ cli_log_iq_replay_wav_summary(const dsd_iq_replay_config* cfg, uint64_t effectiv
 #endif
 
 #define DSD_CLI_LOCAL_PATH_MAX 2048
+
+/* A @p value that does not fit @p capacity bytes is refused, never cut short to a file or device the user did not
+   name; @p noun says what it is ("path", or "value" for an option that also takes a device spec). */
+static int
+cli_value_fits(const char* option_name, const char* noun, const char* value, size_t capacity, int* out_exit_rc) {
+    if (strlen(value) < capacity) {
+        return 1;
+    }
+    LOG_ERROR("%s %s is too long\n", option_name, noun);
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+static int
+cli_path_fits(const char* option_name, const char* path, size_t capacity, int* out_exit_rc) {
+    return cli_value_fits(option_name, "path", path, capacity, out_exit_rc);
+}
+
+/* --trunk-scan and --trunk-scan-off add one list each, in command-line order (issue #697). The first replaces the
+   lists a config file handed down, as a whole; a ninth list, a path that does not fit and a path given twice are
+   refused. */
+static int
+cli_add_trunk_scan_list(dsd_opts* opts, const char* option_name, const char* path, int start_off,
+                        int* trunk_scan_cli_seen, int* out_exit_rc) {
+    if (!*trunk_scan_cli_seen) {
+        DSD_MEMSET(opts->trunk_scan_lists, 0, sizeof opts->trunk_scan_lists);
+        opts->trunk_scan_list_count = 0;
+    }
+    if (path[0] == '\0') {
+        LOG_ERROR("%s requires a target CSV path\n", option_name);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (!cli_path_fits(option_name, path, sizeof opts->trunk_scan_lists[0].path, out_exit_rc)) {
+        return 0;
+    }
+    if (opts->trunk_scan_list_count >= DSD_TRUNK_SCAN_MAX_LISTS) {
+        LOG_ERROR("%s: at most %d trunk-scan lists\n", option_name, DSD_TRUNK_SCAN_MAX_LISTS);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    for (int k = 0; k < opts->trunk_scan_list_count; k++) {
+        if (strcmp(opts->trunk_scan_lists[k].path, path) == 0) {
+            LOG_ERROR("%s: %s is trunk-scan list %d already\n", option_name, path, k + 1);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        }
+    }
+    dsd_trunk_scan_list_spec* list = &opts->trunk_scan_lists[opts->trunk_scan_list_count++];
+    DSD_SNPRINTF(list->path, sizeof list->path, "%s", path);
+    list->start_off = start_off ? 1U : 0U;
+    opts->trunk_scan_enabled = 1;
+    *trunk_scan_cli_seen = 1;
+    opts->trunk_cli_seen = 1;
+    return 1;
+}
 
 static int
 cli_resolve_existing_local_file_option(const char* option_name, const char* requested, char* resolved,
@@ -1616,26 +1675,30 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--trunk-scan") == 0) {                                                                    \
+        if (strcmp(argv[i], "--trunk-scan") == 0 || strcmp(argv[i], "--trunk-scan-off") == 0) {                        \
+            const int start_off = strcmp(argv[i], "--trunk-scan-off") == 0;                                            \
             if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--trunk-scan requires a target CSV path\n");                                                \
+                LOG_ERROR("%s requires a target CSV path\n", argv[i]);                                                 \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",                      \
-                         DSD_PARSE_ARGS_NEXT_ARG());                                                                   \
-            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
-            opts->trunk_scan_enabled = 1;                                                                              \
-            trunk_scan_cli_seen = 1;                                                                                   \
-            opts->trunk_cli_seen = 1;                                                                                  \
+            if (!cli_add_trunk_scan_list(opts, argv[i], DSD_PARSE_ARGS_NEXT_ARG(), start_off, &trunk_scan_cli_seen,    \
+                                         out_exit_rc)) {                                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan=", 13) == 0) {                                                              \
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", argv[i] + 13);       \
-            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
-            opts->trunk_scan_enabled = 1;                                                                              \
-            trunk_scan_cli_seen = 1;                                                                                   \
-            opts->trunk_cli_seen = 1;                                                                                  \
+            if (!cli_add_trunk_scan_list(opts, "--trunk-scan", argv[i] + 13, 0, &trunk_scan_cli_seen, out_exit_rc)) {  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan-off=", 17) == 0) {                                                          \
+            if (!cli_add_trunk_scan_list(opts, "--trunk-scan-off", argv[i] + 17, 1, &trunk_scan_cli_seen,              \
+                                         out_exit_rc)) {                                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--trunk-scan-dwell-ms") == 0) {                                                           \
@@ -2485,6 +2548,9 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     }                                                                                                                  \
                                                                                                                        \
     if (frame_log_cli) {                                                                                               \
+        if (!cli_path_fits("--frame-log", frame_log_cli, sizeof opts->frame_log_file, out_exit_rc)) {                  \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         DSD_SNPRINTF(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_cli);                          \
         opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';                                                  \
         opts->frame_log_open_error_reported = 0;                                                                       \
@@ -2493,10 +2559,16 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         LOG_INFO("NOTICE: Frame log file: %s\n", opts->frame_log_file);                                                \
     }                                                                                                                  \
     if (recording_cli.wav_journal) {                                                                                   \
+        if (!cli_path_fits("--wav-journal", recording_cli.wav_journal, sizeof opts->wav_journal_file, out_exit_rc)) {  \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         DSD_SNPRINTF(opts->wav_journal_file, sizeof opts->wav_journal_file, "%s", recording_cli.wav_journal);          \
         LOG_INFO("NOTICE: Call recording journal: %s\n", opts->wav_journal_file);                                      \
     }                                                                                                                  \
     if (p25_sm_log_cli) {                                                                                              \
+        if (!cli_path_fits("--p25-sm-log", p25_sm_log_cli, sizeof opts->p25_sm_log_file, out_exit_rc)) {               \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", p25_sm_log_cli);                       \
         opts->p25_sm_log_file[sizeof opts->p25_sm_log_file - 1] = '\0';                                                \
         opts->p25_sm_log_open_error_reported = 0;                                                                      \
@@ -2986,6 +3058,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             opts->trunk_cli_seen = 1;                                                                                  \
             break;                                                                                                     \
         case 'k':                                                                                                      \
+            if (!cli_path_fits("-k", optarg, sizeof opts->key_in_file, out_exit_rc)) {                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->key_in_file, optarg, 1023);                                                              \
             opts->key_in_file[1023] = '\0';                                                                            \
             if (csvKeyImportDec(opts, state) != 0) {                                                                   \
@@ -2995,6 +3070,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             state->keyloader = 1;                                                                                      \
             break;                                                                                                     \
         case 'K':                                                                                                      \
+            if (!cli_path_fits("-K", optarg, sizeof opts->key_in_file, out_exit_rc)) {                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->key_in_file, optarg, 1023);                                                              \
             opts->key_in_file[1023] = '\0';                                                                            \
             if (csvKeyImportHex(opts, state) != 0) {                                                                   \
@@ -3004,6 +3082,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             state->keyloader = 1;                                                                                      \
             break;                                                                                                     \
         case 'Q':                                                                                                      \
+            if (!cli_path_fits("-Q", optarg, sizeof dsp_filename, out_exit_rc)) {                                      \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", "./DSP");                                \
             wav_file_directory[1023] = '\0';                                                                           \
             if (dsd_stat_path(wav_file_directory, &st) == -1) {                                                        \
@@ -3123,6 +3204,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: %s", KNRM);                                                                              \
             break;                                                                                                     \
         case 'i':                                                                                                      \
+            if (!cli_value_fits("-i", "value", optarg, sizeof opts->audio_in_dev, out_exit_rc)) {                      \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             if (strcmp(opts->audio_in_dev, optarg) != 0) {                                                             \
                 dsd_opts_clear_staged_file_sample_rate(opts);                                                          \
             }                                                                                                          \
@@ -3151,6 +3235,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             break;                                                                                                     \
         case 'o':                                                                                                      \
+            if (!cli_value_fits("-o", "value", optarg, sizeof opts->audio_out_dev, out_exit_rc)) {                     \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->audio_out_dev, optarg, 1023);                                                            \
             opts->audio_out_dev[1023] = '\0';                                                                          \
             break;                                                                                                     \
@@ -3171,6 +3258,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         case '6':                                                                                                      \
             /* Output raw 48k/1 audio WAV file */                                                                      \
+            if (!cli_path_fits("-6", optarg, sizeof opts->wav_out_file_raw, out_exit_rc)) {                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->wav_out_file_raw, optarg, sizeof opts->wav_out_file_raw - 1);                            \
             opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';                                          \
             openWavOutFileRaw(opts, state);                                                                            \
@@ -3178,6 +3268,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         case 'c':                                                                                                      \
             /* Symbol capture (dibit) output file */                                                                   \
+            if (!cli_path_fits("-c", optarg, sizeof opts->symbol_out_file, out_exit_rc)) {                             \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->symbol_out_file, optarg, sizeof opts->symbol_out_file - 1);                              \
             opts->symbol_out_file[sizeof opts->symbol_out_file - 1] = '\0';                                            \
             opts->symbol_out_file_is_auto = 0;                                                                         \
@@ -3244,6 +3337,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            if (!cli_path_fits("-w", optarg, sizeof opts->wav_out_file, out_exit_rc)) {                                \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             /* Overrides config-derived per-call WAV settings (files not opened yet). */                               \
             DSD_STRNCPY(opts->wav_out_file, optarg, 1023);                                                             \
             opts->wav_out_file[1023] = '\0';                                                                           \
@@ -3255,12 +3351,24 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         case 'C': {                                                                                                    \
             /* Import channel map CSV (channum,freq) */                                                                \
+            /* One map per session: a second one would merge into the first, its channel numbers and EDACS LCN         \
+               slots shadowing the first map's, while only the last path is saved. */                                  \
+            if (cli_chan_csv_seen) {                                                                                   \
+                LOG_ERROR("-C can be given only once: a session uses one channel map (to scan several files, "         \
+                          "give each its own --trunk-scan list)\n");                                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            cli_chan_csv_seen = 1;                                                                                     \
             if (out_chan_csv_cli_seen) {                                                                               \
                 *out_chan_csv_cli_seen = 1;                                                                            \
             }                                                                                                          \
             if (opts->trunk_scan_enabled) {                                                                            \
                 LOG_ERROR("-C cannot be combined with --trunk-scan; use per-target chan_csv\n");                       \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_path_fits("-C", optarg, sizeof opts->chan_in_file, out_exit_rc)) {                                \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             DSD_STRNCPY(opts->chan_in_file, optarg, 1023);                                                             \
@@ -3274,6 +3382,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         }                                                                                                              \
         case 'G': {                                                                                                    \
             /* Import group list CSV (TG,Mode,Name) */                                                                 \
+            if (!cli_path_fits("-G", optarg, sizeof opts->group_in_file, out_exit_rc)) {                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->group_in_file, optarg, 1023);                                                            \
             opts->group_in_file[1023] = '\0';                                                                          \
             if (csvGroupImport(opts, state) != 0) {                                                                    \
@@ -3701,12 +3812,18 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         }                                                                                                              \
         case 'J':                                                                                                      \
             /* Event log output */                                                                                     \
+            if (!cli_path_fits("-J", optarg, sizeof opts->event_out_file, out_exit_rc)) {                              \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->event_out_file, optarg, 1023);                                                           \
             opts->event_out_file[1023] = '\0';                                                                         \
             LOG_INFO("NOTICE: Event log file: %s\n", opts->event_out_file);                                            \
             break;                                                                                                     \
         case 'L':                                                                                                      \
             /* LRRP output */                                                                                          \
+            if (!cli_path_fits("-L", optarg, sizeof opts->lrrp_out_file, out_exit_rc)) {                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->lrrp_out_file, optarg, 1023);                                                            \
             opts->lrrp_out_file[1023] = '\0';                                                                          \
             opts->lrrp_file_output = 1;                                                                                \
@@ -3877,6 +3994,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_dmr_mono_override_seen = 0;
     int cli_source_monitor_seen = 0;
     int cli_p2_identity_seen = 0;
+    int cli_chan_csv_seen = 0;
     enum cli_wav_mode cli_wav_mode = CLI_WAV_MODE_NONE;
     while ((c = getopt(argc, argv, dsd_cli_short_options())) != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

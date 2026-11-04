@@ -405,7 +405,8 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
 
     opts->scanner_mode = 0; //0 disabled, 1 is enabled
     opts->trunk_scan_enabled = 0;
-    opts->trunk_scan_targets_csv[0] = '\0';
+    DSD_MEMSET(opts->trunk_scan_lists, 0, sizeof opts->trunk_scan_lists);
+    opts->trunk_scan_list_count = 0;
     opts->trunk_scan_idle_dwell_ms = 3000;
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
@@ -515,6 +516,67 @@ initOpts(dsd_opts* opts) {
     init_opts_trunking_and_filter_defaults(opts);
 } //initopts
 
+#ifdef DSD_NEO_TEST_HOOKS
+static long init_alloc_fail_after = -1;
+
+void
+dsd_init_test_alloc_fail_after(long successful_allocations) {
+    init_alloc_fail_after = successful_allocations;
+}
+
+/* The test seam's countdown: the one allocation it reaches fails and the seam disarms, so a test fails each of
+ * initState()'s checked allocations on its own. */
+static int
+init_alloc_test_fails(void) {
+    if (init_alloc_fail_after == 0) {
+        init_alloc_fail_after = -1;
+        return 1;
+    }
+    if (init_alloc_fail_after > 0) {
+        init_alloc_fail_after--;
+    }
+    return 0;
+}
+#endif
+
+/* initState()'s checked allocations, which the test seam can fail one at a time. */
+static void*
+init_aligned_alloc(size_t bytes) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (init_alloc_test_fails()) {
+        return NULL;
+    }
+#endif
+    return dsd_aligned_alloc(64, bytes);
+}
+
+static void*
+init_malloc(size_t bytes) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (init_alloc_test_fails()) {
+        return NULL;
+    }
+#endif
+    return malloc(bytes);
+}
+
+static void*
+init_calloc(size_t count, size_t size) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (init_alloc_test_fails()) {
+        return NULL;
+    }
+#endif
+    return calloc(count, size);
+}
+
+/* A buffer decoding needs failed to allocate: the state stays safe to free, and is marked so no frontend runs it. */
+static void
+init_required_failed(dsd_state* state, const char* what) {
+    LOG_ERROR("memory allocation failure for the %s\n", what);
+    state->init_failed = 1U;
+}
+
 static void
 init_state_extension_slots(dsd_state* state) {
     for (int ext_i = 0; ext_i < DSD_STATE_EXT_MAX; ext_i++) {
@@ -523,20 +585,39 @@ init_state_extension_slots(dsd_state* state) {
     }
 }
 
+/* The rolling dibit buffers, each with its cursor 200 entries in over cleared entries -- only once the allocation is
+ * known to have succeeded, so a failed one leaves a NULL buffer and a NULL cursor rather than a bogus pointer past
+ * NULL. The soft-metric buffer is optional (its readers check it); the other two are required. */
 static void
-init_state_core_buffers(dsd_state* state) {
-    state->dibit_buf = dsd_aligned_alloc(64, sizeof(int) * 1000000);
-    state->dibit_buf_p = state->dibit_buf + 200;
-    DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
+init_state_rolling_buffers(dsd_state* state) {
+    state->dibit_buf = init_aligned_alloc(sizeof(int) * 1000000);
+    state->dibit_buf_p = NULL;
+    if (state->dibit_buf) {
+        state->dibit_buf_p = state->dibit_buf + 200;
+        DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
+    } else {
+        init_required_failed(state, "dibit buffer");
+    }
     //dmr buffer -- double check this set up
-    state->dmr_payload_buf = dsd_aligned_alloc(64, sizeof(int) * 1000000);
-    state->dmr_payload_p = state->dmr_payload_buf + 200;
-    DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * 200);
-    state->dmr_soft_buf = dsd_aligned_alloc(64, sizeof(dsd_dibit_soft_t) * 1000000);
+    state->dmr_payload_buf = init_aligned_alloc(sizeof(int) * 1000000);
+    state->dmr_payload_p = NULL;
+    if (state->dmr_payload_buf) {
+        state->dmr_payload_p = state->dmr_payload_buf + 200;
+        DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * 200);
+    } else {
+        init_required_failed(state, "DMR payload buffer");
+    }
+    state->dmr_soft_buf = init_aligned_alloc(sizeof(dsd_dibit_soft_t) * 1000000);
+    state->dmr_soft_p = NULL;
     if (state->dmr_soft_buf) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
         DSD_MEMSET(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * 200);
     }
+}
+
+static void
+init_state_core_buffers(dsd_state* state) {
+    init_state_rolling_buffers(state);
     DSD_MEMSET(state->dmr_stereo_payload, 1, sizeof(int) * 144);
     //dmr buffer end
 
@@ -614,24 +695,46 @@ init_state_core_buffers(dsd_state* state) {
     DSD_MEMSET(state->s_r4u, 0, sizeof(state->s_r4u));
 }
 
+/* One audio output buffer with its cursor 100 entries in over cleared entries, or NULL with a NULL cursor (required). */
+static short*
+init_state_short_output_buffer(dsd_state* state, short** cursor, const char* what) {
+    short* buf = (short*)init_aligned_alloc(sizeof(short) * 1000000);
+    *cursor = NULL;
+    if (!buf) {
+        init_required_failed(state, what);
+        return NULL;
+    }
+    DSD_MEMSET(buf, 0, 100 * sizeof(short));
+    *cursor = buf + 100;
+    return buf;
+}
+
+static float*
+init_state_float_output_buffer(dsd_state* state, float** cursor, const char* what) {
+    float* buf = (float*)init_aligned_alloc(sizeof(float) * 1000000);
+    *cursor = NULL;
+    if (!buf) {
+        init_required_failed(state, what);
+        return NULL;
+    }
+    DSD_MEMSET(buf, 0, 100 * sizeof(float));
+    *cursor = buf + 100;
+    return buf;
+}
+
 static void
 init_state_audio_output_buffers(dsd_state* state) {
-    state->audio_out_buf = dsd_aligned_alloc(64, sizeof(short) * 1000000);
-    state->audio_out_bufR = dsd_aligned_alloc(64, sizeof(short) * 1000000);
-    DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
-    DSD_MEMSET(state->audio_out_bufR, 0, 100 * sizeof(short));
+    state->audio_out_buf = init_state_short_output_buffer(state, &state->audio_out_buf_p, "audio output buffer");
+    state->audio_out_bufR =
+        init_state_short_output_buffer(state, &state->audio_out_buf_pR, "right audio output buffer");
     //analog/raw signal audio buffers
     state->analog_sample_counter = 0; //when it reaches 960, then dump the raw/analog audio signal and reset
     DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
-    state->audio_out_buf_p = state->audio_out_buf + 100;
-    state->audio_out_buf_pR = state->audio_out_bufR + 100;
-    state->audio_out_float_buf = dsd_aligned_alloc(64, sizeof(float) * 1000000);
-    state->audio_out_float_bufR = dsd_aligned_alloc(64, sizeof(float) * 1000000);
-    DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
-    DSD_MEMSET(state->audio_out_float_bufR, 0, 100 * sizeof(float));
-    state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
-    state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
+    state->audio_out_float_buf =
+        init_state_float_output_buffer(state, &state->audio_out_float_buf_p, "float audio output buffer");
+    state->audio_out_float_bufR =
+        init_state_float_output_buffer(state, &state->audio_out_float_buf_pR, "right float audio output buffer");
     state->audio_out_idx = 0;
     state->audio_out_idx2 = 0;
     state->audio_out_idxR = 0;
@@ -733,13 +836,13 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
 
 static int
 init_state_mbe_contexts(dsd_state* state) {
-    state->cur_mp = malloc(sizeof(mbe_parms));
-    state->prev_mp = malloc(sizeof(mbe_parms));
-    state->prev_mp_enhanced = malloc(sizeof(mbe_parms));
+    state->cur_mp = init_malloc(sizeof(mbe_parms));
+    state->prev_mp = init_malloc(sizeof(mbe_parms));
+    state->prev_mp_enhanced = init_malloc(sizeof(mbe_parms));
 
-    state->cur_mp2 = malloc(sizeof(mbe_parms));
-    state->prev_mp2 = malloc(sizeof(mbe_parms));
-    state->prev_mp_enhanced2 = malloc(sizeof(mbe_parms));
+    state->cur_mp2 = init_malloc(sizeof(mbe_parms));
+    state->prev_mp2 = init_malloc(sizeof(mbe_parms));
+    state->prev_mp_enhanced2 = init_malloc(sizeof(mbe_parms));
 
     if (state->cur_mp == NULL || state->prev_mp == NULL || state->prev_mp_enhanced == NULL || state->cur_mp2 == NULL
         || state->prev_mp2 == NULL || state->prev_mp_enhanced2 == NULL) {
@@ -756,6 +859,7 @@ init_state_mbe_contexts(dsd_state* state) {
         state->prev_mp2 = NULL;
         free(state->prev_mp_enhanced2);
         state->prev_mp_enhanced2 = NULL;
+        state->init_failed = 1U;
         dsd_request_shutdown(NULL, NULL);
         return 0;
     }
@@ -1070,6 +1174,23 @@ init_state_p25p1_nid_learning(dsd_state* state) {
     DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 
+/* A new decoder state and a new, empty LCN list (issue #672): fresh stamps from the process-wide counter, so nothing a
+ * frontend copied from an earlier state -- one this state replaces, or this one before a re-init -- reads as current.
+ * The trunk-scan avoid list starts empty and publishable; its revision moves only at the coordinator's rebuilds. It is
+ * released here rather than by the LCN umbrella free, so no other path empties it without a new revision. */
+static void
+init_state_scan_avoid_identity(dsd_state* state) {
+    dsd_state_trunk_scan_avoids_free(state);
+    state->state_instance = dsd_state_rev_next();
+    state->lcn_list_rev = dsd_state_rev_next();
+    state->lcn_avoid_rev = dsd_state_rev_next();
+    state->lcn_avoid_total = 0;
+    state->trunk_scan_avoid_rev = 0;
+    state->trunk_scan_session = 0;
+    state->trunk_scan_avoids_ok = 1U;
+    state->scan_avoids_complete = 1U;
+}
+
 /* Trunk-scan publication for the frontends. Reset here so a re-initialised state
  * cannot keep advertising the target the previous run was parked on. */
 static void
@@ -1091,6 +1212,13 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_gain_override = 0;
     state->trunk_scan_configured_autogain = 0;
     state->trunk_scan_configured_trunk_enable = 0;
+    state->trunk_scan_list_count = 0U;
+    state->trunk_scan_active_list = 0U;
+    state->trunk_scan_active_list_off = 0U;
+    state->trunk_scan_rotation_ordinal = 0U;
+    state->trunk_scan_rotation_count = 0U;
+    state->trunk_scan_lists_seq = 0U;
+    DSD_MEMSET(state->trunk_scan_lists, 0, sizeof(state->trunk_scan_lists));
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -1216,6 +1344,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     // state that was not zero-initialised would leave reserve() calling realloc() on garbage.
     dsd_state_trunk_lcn_free(state);
     init_state_trunk_scan_publication(state);
+    init_state_scan_avoid_identity(state);
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
     state->trunk_chan_map_used_count = 0;
@@ -1405,21 +1534,20 @@ init_state_codec2_and_events(dsd_state* state) {
     state->dmr_t3_syscode = 0;
 
     // Allocate per-slot event history (2 slots)
-    state->event_history_s = calloc(2, sizeof(Event_History_I));
+    state->event_history_s = init_calloc(2, sizeof(Event_History_I));
     DSD_MEMSET(state->event_crc_invalid, 0, sizeof(state->event_crc_invalid));
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
 
-    //debug
-
+    /* Required: the event log writer (write_event_to_log_file()) indexes the ring without checking it, so a state
+       without one refuses to start. The slots are set up only when it exists -- &event_history_s[1] of a NULL ring is
+       a non-NULL pointer, not a usable slot. */
     if (state->event_history_s == NULL) {
-        LOG_ERROR("memory allocation failure! \n");
-    }
-
-    //initialize event history items (0 to 255)
-    for (uint8_t i = 0; i < 2; i++) {
-        init_event_history(&state->event_history_s[i], 0, 255);
-    }
-    if (state->event_history_s != NULL) {
+        init_required_failed(state, "event history");
+    } else {
+        //initialize event history items (0 to 255)
+        for (uint8_t i = 0; i < 2; i++) {
+            init_event_history(&state->event_history_s[i], 0, 255);
+        }
         /* The ring's identity (Event_History_I::instance): a replay decoded again in a fresh state pushes the
            same rows at the same stamps, and only this tells that ring from the one a frontend read before. */
         uint64_t instance = 0U;
@@ -1437,6 +1565,7 @@ init_state_codec2_and_events(dsd_state* state) {
 
 void
 initState(dsd_state* state) {
+    state->init_failed = 0U;
     state->last_dibit = 0;
     init_state_extension_slots(state);
     init_state_core_buffers(state);
@@ -1465,6 +1594,7 @@ freeState(dsd_state* state) {
 
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

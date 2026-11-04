@@ -44,6 +44,18 @@ Item {
         anchors.fill: parent
         source: uiDir + "/NetworkSheet.qml"
     }
+    // Issue #672: the Monitor's avoided-channel list, on the real list model the fixture fills by key.
+    Loader {
+        id: avoidLoader
+        anchors.fill: parent
+        source: uiDir + "/ScanAvoidSheet.qml"
+    }
+    // Issue #697: the session's Scan lists sheet, on the real toggle model the fixture feeds.
+    Loader {
+        id: scanListsLoader
+        anchors.fill: parent
+        source: uiDir + "/ScanListsSheet.qml"
+    }
     Component {
         id: spyComponent
         SignalSpy {
@@ -171,6 +183,137 @@ Item {
             // Closed again, it lets the rows go, at the end of the turn (StableRows).
             keySheet.visible = false;
             tryCompare(rows, "count", 0);
+        }
+
+        function avoidEntries(keys) {
+            return keys.map(function (key, n) {
+                return {key: key, label: "Row " + (n + 1) + "  " + key + "  851.012500 MHz"};
+            });
+        }
+        function putBackFor(list, key) {
+            var kids = list.contentItem.children;
+            for (var i = 0; i < kids.length; ++i) {
+                if (kids[i].key === key) {
+                    for (var k = 0; k < kids[i].children.length; ++k) {
+                        if (kids[i].children[k].objectName === "scanAvoidPutBack")
+                            return kids[i].children[k];
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Issue #672: closed, the avoid sheet hands its list no model, so a list that changes under it makes no rows
+        // and raises nothing. Open, a scan hop (the readings republished, the list unchanged) shows, hides and renames
+        // nothing in it. An equal-count change of membership (one entry put back, another avoided) adds and removes
+        // that row alone: the rows that stay keep their nodes and their names.
+        function test_scan_avoid_sheet_rows() {
+            var sheet = avoidLoader.item;
+            verify(sheet !== null);
+            var list = findChild(sheet, "scanAvoidList");
+            verify(list !== null, "the avoid list is missing");
+            for (var key of ["scanAvoidsManageable", "scanAvoidsAvailable", "scanAvoidsTotalKnown", "scanAvoidCount",
+                             "scanTargetId"]) {
+                if (!(key in restore))
+                    restore[key] = metrics[key];
+            }
+            testContext.publishTarget({scanAvoidsManageable: true, scanAvoidsAvailable: true, scanAvoidsTotalKnown: true,
+                scanAvoidCount: 3});
+            testContext.startAccessibilityCount();
+            for (var i = 0; i < changes; ++i)
+                testContext.setScanAvoids(avoidEntries(["a", "b" + i, "c"]));
+            compare(list.count, 0, "the closed sheet made avoid rows");
+            compare(showHide(sheet), 0, churn());
+            testContext.stopAccessibilityCount();
+
+            testContext.setScanAvoids(avoidEntries(["a", "b", "c"]));
+            sheet.open();
+            tryCompare(list, "count", 3);
+            waitForRendering(sheet);
+            wait(20);
+            var kept = putBackFor(list, "a");
+            verify(kept !== null);
+            var keptName = testContext.accessibleNode(kept).name;
+            compare(keptName, "Put back Row 1  a  851.012500 MHz");
+
+            testContext.startAccessibilityCount();
+            for (var hop = 0; hop < changes; ++hop) {
+                testContext.publishTarget({scanTargetId: "target-" + hop});
+                wait(20);
+            }
+            compare(showHide(sheet), 0, churn());
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0,
+                    JSON.stringify(testContext.accessibilityCount().chains));
+            testContext.stopAccessibilityCount();
+
+            testContext.startAccessibilityCount();
+            testContext.setScanAvoids(avoidEntries(["a", "c", "d"]));
+            tryCompare(list, "count", 3);
+            waitForRendering(sheet);
+            wait(20);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(putBackFor(list, "a"), kept, "a kept row lost its delegate");
+            compare(testContext.accessibleNode(kept).name, keptName);
+            compare(testContext.accessibilityCountWithin(kept, "NameChanged"), 0, JSON.stringify(counts.chains));
+            verify(putBackFor(list, "b") === null && putBackFor(list, "d") !== null, "the membership did not change");
+            var shows = testContext.accessibilityCountWithin(sheet, "ObjectShow");
+            verify(shows <= 3, "the new row raised " + shows + " shows: " + JSON.stringify(counts.chains));
+            // The row whose entry left is gone at once (no remove transition holds it): nothing a press or a swipe
+            // can reach still names it.
+            var stale = testContext.accessibleNodesUnder(sheet).filter(function (node) {
+                return String(node.name).indexOf("  b  ") >= 0;
+            });
+            compare(stale.length, 0, "a removed row is still reachable: " + JSON.stringify(stale.map(function (node) {
+                return node.objectName + " " + node.name;
+            })));
+            // The sheet's buttons are named for what they act on.
+            var names = {scanAvoidPutAllBack: "Put all avoided channels back", scanAvoidDone: "Done"};
+            for (var objectName in names) {
+                var button = findChild(sheet, objectName);
+                verify(button !== null, objectName + " is missing");
+                var node = testContext.accessibleNode(button);
+                verify(node.inTree && node.focusable, objectName + " is a swipe stop");
+                compare(node.name, names[objectName], objectName);
+            }
+            sheet.visible = false;
+            tryCompare(list, "count", 0);
+            testContext.setScanAvoids([]);
+        }
+
+        // Issue #697: closed, the Scan lists sheet builds no rows while the lists change; open, each switch is named
+        // for its list and says its size, and Done is a swipe stop.
+        function test_scan_lists_sheet_rows() {
+            var sheet = scanListsLoader.item;
+            verify(sheet !== null);
+            var rows = findChild(sheet, "scanListsRows");
+            var repeater = repeaters(rows, [])[0];
+            verify(repeater !== undefined, "the rows' Repeater is missing");
+            var frame = function (seq, onAir) {
+                return {session: 7, seq: seq, lists: [{name: "security", targets: 12, onAir: onAir === 1},
+                    {name: "hospital", targets: 1, onAir: onAir === 2}, {name: "parks", targets: 3, onAir: onAir === 3}]};
+            };
+            testContext.setHostRunning(true);
+            testContext.startAccessibilityCount();
+            for (var i = 0; i < changes; ++i)
+                testContext.setScanLists(frame(i + 1, i % 3 + 1));
+            compare(repeater.count, 0, "the closed sheet made list rows");
+            compare(showHide(sheet), 0, churn());
+            testContext.stopAccessibilityCount();
+            sheet.open();
+            tryCompare(repeater, "count", 3);
+            waitForRendering(sheet);
+            var hospital = findChild(sheet, "scanListsRow_2");
+            var node = testContext.accessibleNode(hospital);
+            verify(node.inTree && node.focusable, "a list's switch is a swipe stop");
+            compare(node.name, "hospital");
+            var done = testContext.accessibleNode(findChild(sheet, "scanListsDone"));
+            verify(done.inTree && done.focusable);
+            compare(done.name, "Done");
+            sheet.visible = false;
+            tryCompare(repeater, "count", 0);
+            testContext.resetScanLists();
+            testContext.setHostRunning(false);
         }
 
         function test_closed_site_sheet_leaves_its_fields_unbuilt() {

@@ -19,11 +19,14 @@
  */
 
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/receive_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/site_identity_view.h>
@@ -49,6 +52,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -80,6 +84,33 @@ static uint64_t g_eh_fp[2][DSD_EVENT_HISTORY_LEN];
 static int g_eh_valid = 0;
 
 static uint64_t g_last_telemetry_ms = 0;
+/* Decode thread: the cache (g_latest and the scan avoid copy) holds records of this run, refreshed while a client is
+   connected, and the state instance they describe. */
+static int g_cache_live = 0;
+static uint64_t g_cache_instance = 0;
+
+/* The session's scan avoids (issue #672) as the feed last collected them, for status.scan_avoids and the paged `get`.
+   The decode thread collects raw entries (no formatting) into a new immutable block only when the scan avoid view's
+   key moved, and swaps it in; a session thread pins the block it reads with a reference taken under g_feed_mu and
+   formats its page outside every lock, so a list of any size never holds the lock or the decode thread up. The last
+   holder frees a replaced block. */
+typedef struct {
+    atomic_int refs;
+    dsd_app_scan_avoid_raw raw;
+} api_scan_avoid_block;
+
+static api_scan_avoid_block* g_sa_block = NULL; /* guarded by g_feed_mu; NULL after a failed collection */
+static dsd_app_scan_avoid_summary g_sa_shown;   /* guarded by g_feed_mu; written by the observer (or once it is gone) */
+static int g_sa_shown_valid = 0;                /* guarded by g_feed_mu; 0 until the decoder's options are known */
+/* Decode thread only: the key of the last successful collection, kept apart from what is shown, so a failed
+   collection is retried at the next tick even though the source's key has not moved. */
+static dsd_app_scan_avoid_summary g_sa_built;
+static int g_sa_built_valid = 0;
+
+#ifdef DSD_NEO_TEST_HOOKS
+static void (*g_sa_test_page_pinned)(void) = NULL; /* guarded by g_feed_mu */
+static int g_sa_test_block_alloc_failures = 0;     /* decode thread */
+#endif
 
 static void
 ensure_feed_mu(void) {
@@ -152,6 +183,187 @@ dsd_api_feed_latest(const char* what, dsd_json_buf* out) {
     }
     dsd_mutex_unlock(&g_feed_mu);
     return rc;
+}
+
+/*============================================================================
+ * Scan avoids (issue #672)
+ *============================================================================*/
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_api_feed_test_on_page_pinned(void (*hook)(void)) {
+    ensure_feed_mu();
+    dsd_mutex_lock(&g_feed_mu);
+    g_sa_test_page_pinned = hook;
+    dsd_mutex_unlock(&g_feed_mu);
+}
+
+void
+dsd_api_feed_test_fail_block_allocs(int count) {
+    g_sa_test_block_alloc_failures = count;
+}
+#endif
+
+static api_scan_avoid_block*
+scan_avoid_block_new(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_sa_test_block_alloc_failures > 0) {
+        g_sa_test_block_alloc_failures--;
+        return NULL;
+    }
+#endif
+    return (api_scan_avoid_block*)calloc(1U, sizeof(api_scan_avoid_block));
+}
+
+static void
+scan_avoid_block_release(api_scan_avoid_block* block) {
+    if (block != NULL && atomic_fetch_add(&block->refs, -1) == 1) {
+        dsd_app_scan_avoid_raw_free(&block->raw);
+        free(block);
+    }
+}
+
+/* Swap in @p block (NULL: none) and the summary to report (NULL: nothing, as before the options are known). */
+static void
+scan_avoids_publish(api_scan_avoid_block* block, const dsd_app_scan_avoid_summary* shown) {
+    dsd_mutex_lock(&g_feed_mu);
+    api_scan_avoid_block* old = g_sa_block;
+    g_sa_block = block;
+    if (shown != NULL) {
+        g_sa_shown = *shown;
+    } else {
+        DSD_MEMSET(&g_sa_shown, 0, sizeof g_sa_shown);
+    }
+    g_sa_shown_valid = shown != NULL;
+    dsd_mutex_unlock(&g_feed_mu);
+    scan_avoid_block_release(old);
+}
+
+/* Report nothing and forget the built key (a block exists only with a summary shown); one flag test when already so. */
+static void
+scan_avoids_drop_idle(void) {
+    g_sa_built_valid = 0;
+    if (g_sa_shown_valid) {
+        scan_avoids_publish(NULL, NULL);
+    }
+}
+
+/* Once per telemetry tick: nothing beyond the view's constant-cost summary and a key compare unless the key moved
+   since the last successful collection. A failed collection drops the copy, so status and `get` both report the list
+   unavailable at that revision rather than an older list as current, and the next tick tries again. */
+static void
+scan_avoids_refresh(const dsd_state* state) {
+    dsd_app_scan_avoid_summary seen;
+    if (g_live_opts == NULL || dsd_app_scan_avoid_summary_get(g_live_opts, state, &seen) != 0) {
+        scan_avoids_drop_idle();
+        return;
+    }
+    if (g_sa_built_valid && dsd_app_scan_avoid_summary_same_key(&seen, &g_sa_built)) {
+        return;
+    }
+    api_scan_avoid_block* block = scan_avoid_block_new();
+    if (block != NULL && dsd_app_scan_avoid_raw_collect(g_live_opts, state, &block->raw) == 0) {
+        atomic_store(&block->refs, 1);
+        g_sa_built = block->raw.summary;
+        g_sa_built_valid = 1;
+        scan_avoids_publish(block, &block->raw.summary);
+        return;
+    }
+    if (block != NULL) {
+        dsd_app_scan_avoid_raw_free(&block->raw);
+        free(block);
+    }
+    g_sa_built_valid = 0;
+    seen.available = 0U;
+    seen.total_known = 0U;
+    seen.total = 0U;
+    scan_avoids_publish(NULL, &seen);
+}
+
+static const char*
+scan_avoid_kind_name(uint32_t kind) {
+    switch (kind) {
+        case DSD_APP_SCAN_AVOID_KIND_LCN: return "lcn";
+        case DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN: return "trunk_scan";
+        default: return "none";
+    }
+}
+
+/* The summary's fields, inside an open object: what status.scan_avoids carries and every `get` page starts with. */
+static void
+encode_scan_avoid_summary(dsd_json_writer* w, const dsd_app_scan_avoid_summary* s) {
+    (void)dsd_json_kv_bool(w, "available", s->available);
+    (void)dsd_json_kv_str(w, "kind", scan_avoid_kind_name(s->kind));
+    (void)(s->total_known ? dsd_json_kv_u64(w, "total", s->total) : dsd_json_kv_null(w, "total"));
+    (void)dsd_json_kv_u64_str(w, "instance", s->instance);
+    if (s->kind == DSD_APP_SCAN_AVOID_KIND_LCN) {
+        (void)dsd_json_kv_u64_str(w, "list_rev", s->list_rev);
+    } else if (s->kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) {
+        (void)dsd_json_kv_u64(w, "session", s->session);
+    }
+    (void)dsd_json_kv_u64_str(w, "revision", s->revision);
+}
+
+/* One entry: the identity scan_avoid_remove takes, field for field, then the stored name and the view's label. */
+static void
+encode_scan_avoid_entry(dsd_json_writer* w, const dsd_app_scan_avoid_raw_entry* e) {
+    const dsd_app_scan_avoid_remove_payload* id = &e->identity;
+    char label[DSD_APP_SCAN_AVOID_LABEL_SIZE];
+    (void)dsd_app_scan_avoid_raw_label(e, label, sizeof label);
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_str(w, "kind", scan_avoid_kind_name(id->kind));
+    if (id->kind == DSD_APP_SCAN_AVOID_KIND_LCN) {
+        (void)dsd_json_kv_u64_str(w, "instance", id->instance);
+        (void)dsd_json_kv_u64_str(w, "list_rev", id->list_rev);
+        (void)dsd_json_kv_i64(w, "row", id->row);
+    } else {
+        (void)dsd_json_kv_u64(w, "session", id->session);
+        (void)dsd_json_kv_strn(w, "target_id", id->target_id, sizeof id->target_id);
+    }
+    (void)dsd_json_kv_u64(w, "frequency_hz", id->frequency_hz);
+    (void)dsd_json_kv_strn(w, "name", e->name, sizeof e->name);
+    (void)dsd_json_kv_strn(w, "label", label, sizeof label);
+    (void)dsd_json_obj_end(w);
+}
+
+void
+dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t limit) {
+    dsd_app_scan_avoid_summary shown;
+    ensure_feed_mu();
+    dsd_mutex_lock(&g_feed_mu);
+    const int valid = g_sa_shown_valid;
+    shown = g_sa_shown;
+    api_scan_avoid_block* block = g_sa_block;
+    if (block != NULL) {
+        (void)atomic_fetch_add(&block->refs, 1);
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    void (*pinned)(void) = g_sa_test_page_pinned;
+#endif
+    dsd_mutex_unlock(&g_feed_mu);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (pinned != NULL) {
+        pinned();
+    }
+#endif
+    if (!valid) {
+        (void)dsd_json_value_null(w);
+        scan_avoid_block_release(block);
+        return;
+    }
+    (void)dsd_json_obj_begin(w);
+    encode_scan_avoid_summary(w, &shown);
+    (void)dsd_json_kv_u64(w, "offset", offset);
+    (void)dsd_json_kv_u64(w, "limit", limit);
+    (void)dsd_json_key(w, "entries");
+    (void)dsd_json_arr_begin(w);
+    const size_t count = block != NULL ? block->raw.count : 0U;
+    for (uint64_t i = offset; i < count && i - offset < limit; i++) {
+        encode_scan_avoid_entry(w, &block->raw.entries[i]);
+    }
+    (void)dsd_json_arr_end(w);
+    (void)dsd_json_obj_end(w);
+    scan_avoid_block_release(block);
 }
 
 /*============================================================================
@@ -724,12 +936,71 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
     }
 }
 
+/* The avoid list's summary as the feed last collected it (the decode thread is its only writer, so it reads it without
+   the lock); the entries are paged through `get {"what":"scan_avoids"}`. Null until the options are known. */
+static void
+encode_scan_avoids(dsd_json_writer* w) {
+    if (!g_sa_shown_valid) {
+        (void)dsd_json_kv_null(w, "scan_avoids");
+        return;
+    }
+    (void)dsd_json_key(w, "scan_avoids");
+    (void)dsd_json_obj_begin(w);
+    encode_scan_avoid_summary(w, &g_sa_shown);
+    (void)dsd_json_obj_end(w);
+}
+
+/* The --trunk-scan target lists (issue #697), from the scan list view: the session and the list sequence a
+   scan_list_set and its result quote, the list of the target on air (null when none is), and each list in list order.
+   With no trunk scan: session 0, list null, no lists. */
+static void
+encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
+    (void)dsd_json_kv_u64(w, "session", view->session);
+    (void)dsd_json_kv_u64(w, "lists_seq", view->lists_seq);
+    (void)(view->active_list != 0U ? dsd_json_kv_u64(w, "list", view->active_list) : dsd_json_kv_null(w, "list"));
+    (void)dsd_json_key(w, "lists");
+    (void)dsd_json_arr_begin(w);
+    for (uint8_t i = 0; i < view->list_count; i++) {
+        const dsd_app_scan_list_entry* e = &view->lists[i];
+        (void)dsd_json_obj_begin(w);
+        (void)dsd_json_kv_u64(w, "number", e->number);
+        (void)dsd_json_kv_strn(w, "name", e->name, sizeof e->name);
+        /* 0/1, as scan_list_set takes it. */
+        (void)dsd_json_kv_i64(w, "enabled", e->enabled);
+        (void)dsd_json_kv_u64(w, "targets", e->targets);
+        (void)dsd_json_kv_bool(w, "has_active", e->has_active);
+        (void)dsd_json_obj_end(w);
+    }
+    (void)dsd_json_arr_end(w);
+}
+
+/* The operator's hold on the row or target on air (scan_hold_toggle), and the trunk scan's position as every frontend
+   shows it (issue #697): the target on air's place among the targets of the lists switched on (null while its list
+   is off, or none is on air) and their count, avoided targets included. */
+static void
+encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, const dsd_state* state) {
+    const int trunk = scan->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK;
+    uint8_t hold = 0U;
+    if (trunk) {
+        hold = state->trunk_scan_hold;
+    } else if (scan->kind == (uint8_t)DSD_APP_SCAN_KIND_CHANNEL) {
+        hold = state->lcn_scan_hold;
+    }
+    (void)dsd_json_kv_bool(w, "hold", hold != 0U);
+    const unsigned int ordinal = trunk ? state->trunk_scan_rotation_ordinal : 0U;
+    (void)(ordinal != 0U ? dsd_json_kv_u64(w, "ordinal", ordinal) : dsd_json_kv_null(w, "ordinal"));
+    (void)dsd_json_kv_u64(w, "count", trunk ? state->trunk_scan_rotation_count : 0U);
+}
+
 /* Which scan the session has and whether it runs or the operator paused it (issue #671), as every frontend shows it:
-   "scan_resume" resumes a paused one. Null until the decoder has published its options. */
+   "scan_resume" resumes a paused one; then its hold and position, and its target lists. Null until the decoder has
+   published its options. */
 static void
 encode_scan(dsd_json_writer* w, const dsd_state* state) {
     dsd_app_scan_state_view scan;
-    if (g_live_opts == NULL || dsd_app_scan_state_view_get(g_live_opts, state, &scan) != 0) {
+    dsd_app_scan_list_view lists;
+    if (g_live_opts == NULL || dsd_app_scan_state_view_get(g_live_opts, state, &scan) != 0
+        || dsd_app_scan_list_view_get(g_live_opts, state, &lists) != 0) {
         (void)dsd_json_kv_null(w, "scan");
         return;
     }
@@ -738,6 +1009,8 @@ encode_scan(dsd_json_writer* w, const dsd_state* state) {
     (void)dsd_json_kv_str(w, "kind", dsd_app_scan_kind_name(scan.kind));
     (void)dsd_json_kv_str(w, "state", dsd_app_scan_state_name(&scan));
     (void)dsd_json_kv_u64(w, "targets", scan.target_count);
+    encode_scan_position(w, &scan, state);
+    encode_scan_lists(w, &lists);
     (void)dsd_json_obj_end(w);
 }
 
@@ -786,6 +1059,7 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
         (void)dsd_json_kv_null(&w, "message");
     }
     encode_scan(&w, state);
+    encode_scan_avoids(&w);
     encode_control_context(&w, state);
     return end_line(b, &w);
 }
@@ -947,6 +1221,20 @@ build_quality(const dsd_state* state, dsd_json_buf* b) {
  * Observer
  *============================================================================*/
 
+/* Forget every cached record and the scan avoid copy: `get` answers null until the next update, which the next publish
+   with a client runs at once. */
+static void
+feed_cache_drop(void) {
+    dsd_mutex_lock(&g_feed_mu);
+    for (int i = 0; i < DSD_API_TOPIC_COUNT; i++) {
+        dsd_json_buf_free(&g_latest[i]);
+    }
+    dsd_mutex_unlock(&g_feed_mu);
+    scan_avoids_drop_idle();
+    g_cache_live = 0;
+    g_last_telemetry_ms = 0U;
+}
+
 static void
 emit_topic(uint32_t topic, int built) {
     if (built != 0 || g_line.data == NULL) {
@@ -966,14 +1254,26 @@ feed_state(const dsd_state* state, void* user) {
     }
     track_events(state);
     if (dsd_api_client_count() <= 0) {
+        /* Nothing is refreshed without a client, so nothing is kept that a later client could take for current. */
+        if (g_cache_live) {
+            feed_cache_drop();
+        }
         return;
+    }
+    /* A restarted decoder (a new state instance): no record of the previous run is served, and this publish runs the
+       update. One compare per publish. */
+    if (g_cache_live && state->state_instance != g_cache_instance) {
+        feed_cache_drop();
     }
     const uint64_t now = dsd_realtime_mono_ms();
     if (g_last_telemetry_ms != 0U && now - g_last_telemetry_ms < (uint64_t)DSD_API_TELEMETRY_INTERVAL_MS) {
         return;
     }
     g_last_telemetry_ms = now;
+    g_cache_live = 1;
+    g_cache_instance = state->state_instance;
     /* Every get-able topic is kept current while a client is connected, so a one-shot get never waits. */
+    scan_avoids_refresh(state);
     emit_topic(DSD_API_TOPIC_CALL, build_call(state, &g_line));
     emit_topic(DSD_API_TOPIC_STATUS, build_status(state, &g_line));
     emit_topic(DSD_API_TOPIC_SYSTEM, build_system(state, &g_line));
@@ -998,6 +1298,8 @@ dsd_api_feed_start(void) {
     g_eh_valid = 0;
     g_last_telemetry_ms = 0U;
     g_live_opts = NULL;
+    g_sa_built_valid = 0;
+    g_cache_live = 0;
     g_observer.state = feed_state;
     g_observer.opts = feed_opts;
     g_observer.user = NULL;
@@ -1023,4 +1325,7 @@ dsd_api_feed_stop(void) {
         dsd_json_buf_free(&g_latest[i]);
     }
     dsd_mutex_unlock(&g_feed_mu);
+    /* A session still formatting a page keeps its own reference to the dropped copy. */
+    scan_avoids_publish(NULL, NULL);
+    g_sa_built_valid = 0;
 }

@@ -1332,9 +1332,7 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
     if (freqr == 0 || dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return;
     }
-    if (state->lcn_freq_count < 0) {
-        state->lcn_freq_count = 0;
-    }
+    dsd_state_trunk_lcn_count_raise(state, 0);
     for (int i = 0; i < state->lcn_freq_count; i++) {
         if (*dsd_state_trunk_lcn_slot_const(state, i) == freqr) {
             return;
@@ -1343,11 +1341,10 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
     if (state->lcn_freq_count >= DMR_CSBK_LEARNED_LCN_MAX) {
         return;
     }
-    if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count + 1U) != 0) {
+    if (dsd_state_trunk_lcn_freq_write(state, state->lcn_freq_count, freqr) != 0) {
         return;
     }
-    *dsd_state_trunk_lcn_slot(state, state->lcn_freq_count) = freqr;
-    state->lcn_freq_count++;
+    dsd_state_trunk_lcn_count_raise(state, state->lcn_freq_count + 1);
 }
 
 static void

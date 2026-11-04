@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -40,8 +41,11 @@
 static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
-static dsd_opts* g_ui_opts = NULL;
-static dsd_state* g_ui_state = NULL;
+/* The few start-time options the frame needs before the decoder's first publication (whether curses runs, whether
+   keys are read, whether opening it warns about -Z), copied by ui_start() so the UI thread never reads the decoder's
+   live options. The rest stays zero. Static: a dsd_opts is too large for a stack. */
+static dsd_opts g_ui_start_opts;
+static const dsd_opts* g_ui_opts = NULL;
 static int g_ui_curses_cfg_done = 0;
 static atomic_int g_ui_in_context = 0;
 // UI thread only: when the last wheel notch stepped the channel.
@@ -53,13 +57,45 @@ ui_is_thread_context(void) {
     return atomic_load(&g_ui_in_context);
 }
 
-static const dsd_opts*
-ui_get_opts_snapshot_or_default(void) {
-    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
-    if (!osnap) {
-        osnap = g_ui_opts;
+/*
+ * The frame's snapshot pair (issue #672, B9): acquired once at the start of each frame, here and nowhere else in the
+ * terminal UI, and handed to the key path (the hotkeys, the menu, its labels, actions and the callbacks of prompts and
+ * choosers answered in this frame) and to the draw. Both accessors refresh their single consumer's buffers in place, so
+ * a second acquisition mid-frame would change what the rest of the frame reads; nothing else acquires. Before the first
+ * publication (runtime start publishes before this thread exists, so practically never) the state is NULL, which the
+ * key path honours as Quit only and the draw as nothing to draw, and the options fall back to the start-time copy
+ * ui_start() made (g_ui_start_opts), read only to tell whether curses runs (and warns about -Z) and keys are read. The
+ * decoder's live structs are never read on this thread.
+ */
+typedef struct {
+    const dsd_opts* opts;
+    const dsd_state* state;
+} UiFrame;
+
+/* Keep the start-time fields the frame reads before the first publication. Before the UI thread exists. */
+static void
+ui_keep_start_opts(const dsd_opts* opts) {
+    DSD_MEMSET(&g_ui_start_opts, 0, sizeof g_ui_start_opts);
+    if (opts == NULL) {
+        g_ui_opts = NULL;
+        return;
     }
-    return osnap;
+    g_ui_start_opts.frontend_kind = opts->frontend_kind;
+    g_ui_start_opts.audio_in_type = opts->audio_in_type;
+    g_ui_start_opts.payload = opts->payload; /* dsd_terminal_open()'s -Z warning */
+    g_ui_start_opts.frontend_terminal_display.mouse_wheel = opts->frontend_terminal_display.mouse_wheel;
+    g_ui_opts = &g_ui_start_opts;
+}
+
+static UiFrame
+ui_frame_acquire(void) {
+    UiFrame frame;
+    frame.opts = dsd_app_get_latest_opts_snapshot();
+    frame.state = dsd_app_get_latest_snapshot();
+    if (!frame.opts) {
+        frame.opts = g_ui_opts;
+    }
+    return frame;
 }
 
 static int
@@ -87,16 +123,16 @@ ui_read_key_nonblocking(const dsd_opts* osnap) {
 }
 
 static void
-ui_handle_menu_input(int ch) {
+ui_handle_menu_input(int ch, const dsd_opts* osnap, const dsd_state* ssnap) {
     if (ch != ERR) {
-        ui_menu_handle_key(ch, g_ui_opts, g_ui_state);
+        ui_menu_handle_key(ch, osnap, ssnap);
     }
-    ui_menu_tick(g_ui_opts, g_ui_state);
+    ui_menu_tick(osnap, ssnap);
     ui_commit_frame();
 }
 
 static void
-ui_handle_normal_input(int ch) {
+ui_handle_normal_input(int ch, const dsd_opts* osnap, const dsd_state* ssnap) {
     if (ch == KEY_RESIZE) {
 #if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
         // PDCurses doesn't auto-update dimensions on resize;
@@ -108,7 +144,7 @@ ui_handle_normal_input(int ch) {
         return;
     }
     if (ch != ERR) {
-        (void)dsd_terminal_handle_input(g_ui_opts, g_ui_state, ch);
+        (void)dsd_terminal_handle_input(osnap, ssnap, ch);
     }
 }
 
@@ -189,18 +225,19 @@ ui_process_input_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
         ch = ui_read_past_wheel_burst(osnap);
     }
     if (ui_menu_is_open()) {
-        ui_handle_menu_input(ch);
+        ui_handle_menu_input(ch, osnap, ssnap);
         return;
     }
-    ui_handle_normal_input(ch);
+    ui_handle_normal_input(ch, osnap, ssnap);
 }
 
 static int
 ui_open_curses_if_needed(void) {
-    if (!dsd_opts_frontend_is_terminal(g_ui_opts)) {
+    const UiFrame frame = ui_frame_acquire();
+    if (!dsd_opts_frontend_is_terminal(frame.opts)) {
         return 0;
     }
-    dsd_terminal_open(ui_get_opts_snapshot_or_default(), g_ui_state);
+    dsd_terminal_open(frame.opts, NULL);
     return 1;
 }
 
@@ -213,14 +250,10 @@ ui_close_curses_if_opened(int curses_opened) {
     }
 }
 
+/* The frame's pair, which the printer reads only; nothing is drawn before the first publication. */
 static void
 ui_draw_frame(const dsd_opts* osnap, const dsd_state* ssnap) {
-    /* Draw using the frame's state snapshot when available */
-    if (ssnap) {
-        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)ssnap);
-    } else {
-        dsd_terminal_render((dsd_opts*)osnap, g_ui_state);
-    }
+    dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)ssnap);
 }
 
 static void
@@ -237,11 +270,21 @@ ui_draw_if_needed(const dsd_opts* osnap, const dsd_state* ssnap, uint64_t* last_
     *last_draw_ns = now_ns;
 }
 
+/* One frame of the UI thread: one acquisition, shared by the key path and the draw. */
+static void
+ui_run_frame(uint64_t* last_draw_ns, uint64_t frame_ns) {
+    const UiFrame frame = ui_frame_acquire();
+    if (ui_curses_is_active(frame.opts)) {
+        ui_process_input_frame(frame.opts, frame.state);
+        ui_draw_if_needed(frame.opts, frame.state, last_draw_ns, frame_ns);
+    }
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 void
-dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
-    g_ui_opts = opts;
-    g_ui_state = state;
+dsd_neo_ui_async_test_set_context(const dsd_opts* opts, const dsd_state* state) {
+    (void)state; /* the frame reads only the published state */
+    ui_keep_start_opts(opts);
     g_ui_curses_cfg_done = 0;
     (void)dsd_app_frontend_redraw_consume();
     atomic_store(&g_ui_in_context, 0);
@@ -251,7 +294,7 @@ dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
 
 const dsd_opts*
 dsd_neo_ui_async_test_opts_snapshot_or_default(void) {
-    return ui_get_opts_snapshot_or_default();
+    return ui_frame_acquire().opts;
 }
 
 int
@@ -266,7 +309,7 @@ dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts) {
 
 void
 dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
-    ui_process_input_frame(opts, dsd_app_get_latest_snapshot());
+    ui_process_input_frame(opts, ui_frame_acquire().state);
 }
 
 int
@@ -284,7 +327,15 @@ dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_n
     if (last_draw_ns == NULL) {
         return;
     }
-    ui_draw_if_needed(opts, dsd_app_get_latest_snapshot(), last_draw_ns, frame_ns);
+    ui_draw_if_needed(opts, ui_frame_acquire().state, last_draw_ns, frame_ns);
+}
+
+void
+dsd_neo_ui_async_test_run_frame(uint64_t* last_draw_ns, uint64_t frame_ns) {
+    if (last_draw_ns == NULL) {
+        return;
+    }
+    ui_run_frame(last_draw_ns, frame_ns);
 }
 #endif
 
@@ -312,38 +363,34 @@ static DSD_THREAD_RETURN_TYPE
 
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays are single-owner in the UI thread.
-        const dsd_opts* osnap = ui_get_opts_snapshot_or_default();
-        const dsd_state* ssnap = dsd_app_get_latest_snapshot();
-        if (ui_curses_is_active(osnap)) {
-            ui_process_input_frame(osnap, ssnap);
-            ui_draw_if_needed(osnap, ssnap, &last_draw_ns, frame_ns);
-        }
+        ui_run_frame(&last_draw_ns, frame_ns);
 
         dsd_sleep_ms(sleep_ms);
     }
 
+    /* RadioReference first (it closes a chooser borrowing the wizard's strings before freeing them), then every other
+       overlay, owned contexts disposed, while curses still runs. */
     rr_panel_shutdown();
+    ui_overlays_shutdown();
     ui_close_curses_if_opened(curses_opened);
 
     DSD_THREAD_RETURN;
 }
 
 int
-ui_start(dsd_opts* opts, dsd_state* state) {
+ui_start(const dsd_opts* opts, const dsd_state* state) {
     if (atomic_load(&g_ui_running)) {
         return 0; // already running
     }
 
     dsd_app_frontend_runtime_start(opts, state);
-    g_ui_opts = opts;
-    g_ui_state = state;
+    ui_keep_start_opts(opts);
     dsd_app_frontend_history_set_mode(opts ? opts->frontend_terminal_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {
         dsd_app_frontend_runtime_stop();
         g_ui_opts = NULL;
-        g_ui_state = NULL;
         return -1;
     }
 
@@ -361,5 +408,4 @@ ui_stop(void) {
     dsd_thread_join(g_ui_thread);
     atomic_store(&g_ui_running, 0);
     g_ui_opts = NULL;
-    g_ui_state = NULL;
 }

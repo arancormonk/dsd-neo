@@ -1052,7 +1052,8 @@ test_trunk_scan_hop_and_revisit(void) {
     r.opts->audio_in_type = AUDIO_IN_RTL;
     r.opts->use_rigctl = 1;
     r.opts->trunk_scan_enabled = 1;
-    DSD_SNPRINTF(r.opts->trunk_scan_targets_csv, sizeof r.opts->trunk_scan_targets_csv, "%s", targets);
+    DSD_SNPRINTF(r.opts->trunk_scan_lists[0].path, sizeof r.opts->trunk_scan_lists[0].path, "%s", targets);
+    r.opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_requests_reset();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = tune, .tune_to_cc_request = tune, .return_to_cc_request = return_to_cc});

@@ -409,7 +409,7 @@ test_displaced_step_reports_its_drop(fixture* f) {
     dsd_manual_tune_settled settled;
     dsd_engine_manual_tune_last_settled(&settled);
     assert(settled.kind == DSD_MANUAL_TUNE_UNTYPED_STEP && settled.requested_hz == ENTRY_A_HZ && settled.row == 2
-           && settled.scan_session == 5U && settled.map_seq == 7U);
+           && settled.scan_session == 5U && settled.list_rev == 7U);
     assert(dsd_engine_manual_tune_settled_ready() == 0);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
     take_request(entry_id, ENTRY_B_HZ);

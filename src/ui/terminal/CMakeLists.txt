@@ -16,6 +16,8 @@ target_sources(
         ncurses_trunk_display.c
         ui_prims.c
         ui_row.c
+        ui_text.c
+        ui_text_draw.c
         ui_mouse.c
         ui_async.c
         ui_read_key.c
@@ -32,6 +34,7 @@ target_sources(
         rr_panel.c
         rr_panel_format.c
         rr_library.c
+        scan_list_modal.c
         csv_picker.c
         panels/header.c
         panels/footer.c

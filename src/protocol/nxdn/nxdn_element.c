@@ -2289,14 +2289,12 @@ nxdn_cch_info_adopt_control_channel(const dsd_opts* opts, dsd_state* state, long
         return;
     }
     const long int previous_cc = state->trunk_cc_freq;
-    state->trunk_lcn_freq[0] = freq1;
+    (void)dsd_state_trunk_lcn_freq_write(state, 0, freq1);
     state->p25_cc_freq = freq1;
     state->trunk_cc_freq = freq1;
     // Raise, never assign: reaching here means no operator list is present, but the count can
     // still be above 1 from learned entries that must not be discarded.
-    if (state->lcn_freq_count < 1) {
-        state->lcn_freq_count = 1;
-    }
+    dsd_state_trunk_lcn_count_raise(state, 1);
     // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the park
     // frequency has been corrected the adoption is idempotent.
     if (previous_cc != 0 && previous_cc != freq1) {

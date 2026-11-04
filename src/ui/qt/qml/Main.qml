@@ -167,6 +167,7 @@ Window {
         pendingRestart = {
             kind: attemptedSource.kind,
             uid: attemptedSource.uid,
+            companions: attemptedSource.companions || [],
             system: attemptedSource.system,
             remember: attemptedSource.remember !== false
         };
@@ -285,7 +286,7 @@ Window {
             return;
         }
         if (scan)
-            startScanList(row);
+            startScanBundle(row, request.companions || []);
         else
             startSystem(row);
     }
@@ -380,6 +381,9 @@ Window {
     // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
+    // Issue #697: the other scan lists the waiting start scans with its own,
+    // by uid: the grant starts the lists as they are saved then.
+    property var pendingStartCompanions: []
     // Whether the waiting start, once granted, may become where Explore
     // resumes: an Explore-here start keeps false through the permission dialog.
     property bool pendingStartRemember: true
@@ -427,14 +431,14 @@ Window {
     }
     Connections {
         target: uiController
-        function onAutoStartRequested(kind, uid) {
+        function onAutoStartRequested(kind, uid, companions) {
             var row = kind === "saved" ? savedSystems.rowForUid(uid) : kind === "scan" ? scanLists.rowForUid(uid) : -1;
             if (row < 0)
                 return;
             if (kind === "saved")
                 mainRoot.startSystem(row);
             else
-                mainRoot.startScanList(row);
+                mainRoot.startScanBundle(row, companions || []);
         }
     }
 
@@ -467,6 +471,7 @@ Window {
             host.setDarkAppearance(Theme.dark);
     }
     Component.onCompleted: {
+        mainRoot.pruneScanCompanions();
         updateSystemBars();
         adoptReattachedSession();
         publishChannelNames();
@@ -616,6 +621,68 @@ Window {
     // recorded with no UID could never be resumed.
     property string sessionStartKind: ""
     property string sessionStartUid: ""
+    // Issue #697: a scan session can scan other lists beside its own: their
+    // uids as the start named them (recorded with the two above, so a restart,
+    // a recreated Activity and auto-start bring back the same session), and
+    // the lists themselves, as they were when it started. Empty for any other
+    // start, and for a scan of one list.
+    property var sessionStartCompanions: []
+    property var sessionCompanions: []
+    // The session's lists in list order -- list 1 is the session's own, then
+    // its companions -- for naming a list by the number the decoder gives it.
+    readonly property var sessionLists: {
+        if (!mainRoot.sessionScanList)
+            return [];
+        var own = mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem;
+        return [own || {}].concat(mainRoot.sessionCompanions);
+    }
+    /** The name list @p number (1-based) goes by in this session, or empty. */
+    function sessionListName(number) {
+        var list = mainRoot.sessionLists[number - 1];
+        return list && list.name ? list.name : "";
+    }
+    /** The lists @p uids name that still exist, in order: a list removed since is left out, each on its own. */
+    function scanListsByUid(uids) {
+        var lists = [];
+        for (var uid of uids || []) {
+            var list = scanLists.getByUid(uid);
+            if (list && list.uid)
+                lists.push(list);
+        }
+        return lists;
+    }
+    /** The lists @p uids name, by position: a list removed since keeps its
+     *  place as an empty map, so list N of a running session stays list N
+     *  (the decoder still runs it; its own name stands in). */
+    function scanListsAt(uids) {
+        return (uids || []).map(function (uid) {
+            var list = scanLists.getByUid(uid);
+            return list && list.uid ? list : {};
+        });
+    }
+    /** @p uids without the ones no list has any more. */
+    function existingScanListUids(uids) {
+        return mainRoot.scanListsByUid(uids).map(function (list) {
+            return list.uid;
+        });
+    }
+    // A removed list leaves the remembered scan session with it, so the next
+    // start (an auto-start included) does not look for it; so does one gone
+    // before this start (a restore stopped short of forgetting them). The
+    // accepted start's record is never cut: a recreated Activity names the
+    // running session's lists from it by position (the host can still read
+    // idle when this runs), and every start writes it anew.
+    function pruneScanCompanions() {
+        var started = mainRoot.existingScanListUids(prefs.lastStartedCompanions);
+        if (started.length !== (prefs.lastStartedCompanions || []).length)
+            prefs.lastStartedCompanions = started;
+    }
+    Connections {
+        target: scanLists
+        function onCountChanged() {
+            mainRoot.pruneScanCompanions();
+        }
+    }
 
     property bool sessionReachedRunning: false
 
@@ -627,6 +694,7 @@ Window {
         // post-initialization edge, after file validation and tuner open.
         if (mainRoot.onAndroid && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
             notificationExplanation.visible = true;
+        prefs.lastStartedCompanions = mainRoot.sessionStartKind === "scan" ? mainRoot.sessionStartCompanions : [];
         prefs.lastStartedKind = mainRoot.sessionStartKind;
         prefs.lastStartedUid = mainRoot.sessionStartUid;
         if (mainRoot.sessionStartKind === "scan")
@@ -709,7 +777,8 @@ Window {
     // Issue #671: a trunk-scan target's id is the app's uid for its entry, and a
     // call with no name of its own is named by the channel it was heard on. The
     // names here are what the monitor and History show in place of those ids.
-    readonly property var scanChannelNames: mainRoot.channelNamesOf(mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem)
+    // Issue #697: every list of the session's, merged.
+    readonly property var scanChannelNames: mainRoot.channelNamesOfLists(mainRoot.sessionScanList ? mainRoot.sessionLists : [mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem])
     onScanChannelNamesChanged: mainRoot.publishChannelNames()
     // An Explore asked for and not yet answered: the release is in the queue, or
     // the options that say whether anything owned the tuner have not arrived.
@@ -730,6 +799,8 @@ Window {
             return;
         mainRoot.sessionStartKind = prefs.acceptedStartKind || "";
         mainRoot.sessionStartUid = prefs.acceptedStartUid || "";
+        mainRoot.sessionStartCompanions = mainRoot.sessionStartKind === "scan" ? prefs.acceptedStartCompanions : [];
+        mainRoot.sessionCompanions = mainRoot.scanListsAt(mainRoot.sessionStartCompanions);
         if (mainRoot.sessionStartKind === "scan") {
             mainRoot.sessionScanList = true;
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
@@ -872,6 +943,8 @@ Window {
             var options = {
                 remember: mainRoot.pendingStartRemember
             };
+            var companionUids = mainRoot.pendingStartCompanions;
+            mainRoot.pendingStartCompanions = [];
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
             mainRoot.pendingStartRemember = true;
@@ -889,8 +962,18 @@ Window {
                 mainRoot.abandonSignalSearchStart();
                 mainRoot.signalSearchOpen = false;
             }
-            if (sys)
+            if (sys && scan) {
+                // Issue #697: the lists as they are saved now, by uid; one
+                // removed during the permission dialog is not started from its
+                // old map.
+                var listRow = scanLists.rowForUid(sys.uid || "");
+                if (listRow < 0)
+                    mainRoot.startError = qsTr("This source was removed. Choose another source.");
+                else
+                    mainRoot.startScanBundle(listRow, companionUids);
+            } else if (sys) {
                 mainRoot.startWithMap(sys, row, scan, options);
+            }
         }
     }
 
@@ -982,6 +1065,17 @@ Window {
         }
         return names;
     }
+    // The names of every entry of @a lists, merged (issue #697: a session
+    // scans several). Target ids are unique across a session's lists.
+    function channelNamesOfLists(lists) {
+        var names = {};
+        for (var list of lists) {
+            var listNames = mainRoot.channelNamesOf(list);
+            for (var uid in listNames)
+                names[uid] = listNames[uid];
+        }
+        return names;
+    }
     // History names a call heard under any scan list, not only the running
     // session's: every saved list's targets, then the session's own (a list
     // edited since it started keeps its names until it is started again).
@@ -1012,25 +1106,29 @@ Window {
         var list = mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem;
         if (!list || !list.entries)
             list = prefs.lastStartedKind === "scan" ? scanLists.getByUid(prefs.lastStartedUid) : null;
-        if (list && list.targetSource === "csv")
+        // Issue #697: the target is one of the list on air's, which can be
+        // any of the session's.
+        var lists = mainRoot.sessionLists.length > 1 ? mainRoot.sessionLists : [list];
+        var onAir = lists.length === 1 ? lists[0] : lists[metrics.scanActiveList - 1];
+        if (onAir && onAir.targetSource === "csv")
             return metrics.scanTargetId || qsTr("Target %1").arg(metrics.scanTargetOrdinal);
-        var entries = list && list.entries ? list.entries : [];
-        for (var i = 0; i < entries.length; ++i) {
-            var entry = entries[i];
-            if (entry.uid !== metrics.scanTargetId)
-                continue;
-            if (entry.kind === "system")
-                return savedSystems.getByUid(entry.systemUid).name || qsTr("Saved system");
-            return entry.name || (entry.freqMhz ? entry.freqMhz + " MHz" : qsTr("Frequency"));
-        }
-        return qsTr("Target %1").arg(metrics.scanTargetOrdinal);
+        return mainRoot.channelNamesOfLists(lists)[metrics.scanTargetId] || qsTr("Target %1").arg(metrics.scanTargetOrdinal);
     }
 
     function startScanList(row) {
+        mainRoot.startScanBundle(row, []);
+    }
+    // Issue #697: the list at @a row and the lists @a companionUids name, in
+    // that order, as one session on the first list's receiver, each as it is
+    // saved now. A companion removed since is left out; the rest still start.
+    function startScanBundle(row, companionUids) {
         cancelPendingRestart();
         var list = scanLists.get(row);
-        if (list && list.uid)
-            mainRoot.startWithMap(list, row, true);
+        if (!list || !list.uid)
+            return;
+        mainRoot.startWithMap(list, row, true, {
+            companions: mainRoot.scanListsByUid(companionUids)
+        });
     }
 
     /**
@@ -1053,10 +1151,16 @@ Window {
         if (!sys || !sys.sourceType)
             return;
         var remember = !options || options.remember !== false;
+        // Issue #697: the other lists a scan starts with, in list order.
+        var companions = scan && options && options.companions ? options.companions : [];
+        var companionUids = companions.map(function (list) {
+            return list.uid;
+        });
         var previousSource = attemptedSource;
         attemptedSource = {
             kind: scan ? "scan" : row < 0 ? "explore" : "saved",
             uid: sys.uid || "",
+            companions: companionUids,
             system: Object.assign({}, sys),
             remember: remember
         };
@@ -1073,6 +1177,7 @@ Window {
             mainRoot.pendingStart = sys;
             mainRoot.pendingStartRow = row;
             mainRoot.pendingScanList = !!scan;
+            mainRoot.pendingStartCompanions = companionUids;
             mainRoot.pendingStartRemember = remember;
             decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
@@ -1082,10 +1187,11 @@ Window {
         mainRoot.awaitingUsbAccess = false;
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
+        mainRoot.pendingStartCompanions = [];
         mainRoot.pendingStartRemember = true;
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
-        var built = scan ? scanListStarter.start(sys, decoderHost) : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
+        var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost) : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -1142,6 +1248,9 @@ Window {
         var startExploring = !scan && (row < 0) && !sys.signalSearch;
         mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
         mainRoot.sessionStartUid = startExploring ? "" : sys.uid || "";
+        mainRoot.sessionStartCompanions = companionUids;
+        mainRoot.sessionCompanions = companions;
+        prefs.acceptedStartCompanions = companionUids;
         prefs.acceptedStartKind = mainRoot.sessionStartKind;
         prefs.acceptedStartUid = mainRoot.sessionStartUid;
         mainRoot.forgetOperatorHold();
@@ -1348,6 +1457,9 @@ Window {
             onPlayScanList: function (row) {
                 mainRoot.startScanList(row);
             }
+            onPlayScanLists: function (row, companionUids) {
+                mainRoot.startScanBundle(row, companionUids);
+            }
             onEditScanList: function (row) {
                 scanListEditor.openFor(row);
                 mainRoot.scanListOpen = true;
@@ -1507,6 +1619,11 @@ Window {
                 mainRoot.sessionSystem = savedSystems.getByUid(uid);
         }
         scanTargetName: mainRoot.scanTargetLabel()
+        // Issue #697: the list on air, by the name this session knows it by.
+        // A list removed while this session runs keeps its place; the decoder's
+        // name for it stands in.
+        scanListName: mainRoot.sessionLists.length > 1 ? mainRoot.sessionListName(metrics.scanActiveList) || metrics.scanListModel.listName(metrics.scanActiveList) : ""
+        otherListCount: mainRoot.operatorHolds ? 0 : Math.max(0, mainRoot.sessionLists.length - 1)
         sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
             mainRoot.cancelPendingRestart();
@@ -1877,6 +1994,9 @@ Window {
                 items.push({text: qsTr("Radio"), key: "radio", objectName: "sessionMenuRadio"});
                 items.push({text: qsTr("Spectrum"), key: "spectrum", objectName: "sessionMenuSpectrum"});
             }
+            // Issue #697: a scan of several lists switches them here.
+            if (mainRoot.sessionScanList && metrics.scanListCount > 1)
+                items.push({text: qsTr("Scan lists"), key: "scanLists", objectName: "sessionMenuScanLists"});
             items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
@@ -1894,7 +2014,9 @@ Window {
             else if (key === "spectrum") {
                 spectrumLoader.active = true;
                 mainRoot.spectrumOpen = true;
-            } else if (key === "talkgroups")
+            } else if (key === "scanLists")
+                sessionScanLists.open();
+            else if (key === "talkgroups")
                 mainRoot.talkgroupsOpen = true;
             else if (key === "history" || key === "settings")
                 mainRoot.sessionDestination = key;
@@ -1904,6 +2026,14 @@ Window {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;
             }
+        }
+    }
+
+    ScanListsSheet {
+        id: sessionScanLists
+        anchors.fill: safeArea
+        listName: function (number, fallback) {
+            return mainRoot.sessionListName(number) || fallback;
         }
     }
 

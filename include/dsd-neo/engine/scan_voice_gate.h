@@ -111,7 +111,8 @@ void dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m);
  * hangtime rule instead, so a global --scan-voice-only does not block analog rows. */
 void dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, double now_m);
 
-/** Non-zero when the gate has a visit anchor and owns the scanner's step timing. */
+/** Non-zero when the gate has a visit anchor and owns the scanner's step timing; never without a list of the user's
+ * own (dsd_state_trunk_lcn_user_list_present()), as channels learned over the air are no list to step through. */
 int dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state);
 
 /** Non-zero when the gate says the -Y visit is over and the scan should step. */
@@ -142,16 +143,18 @@ void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, doubl
  * Separate from dsd_scan_voice_gate_tick() because the cap applies with the voice gate off as
  * well as on, and that tick returns early there. Parking and operator hold release also reset
  * the anchor; sync and voice activity never touch it. While the limit cannot count -- suspended
- * by a hold, or with no second row to advance to -- it remembers the suspension. The first
- * eligible tick starts a fresh interval even if input stalled since the last suspended tick.
+ * by a hold, or with no second row to advance to (dsd_engine_channel_scan_can_rotate()) -- it
+ * remembers the suspension. The first eligible tick starts a fresh interval even if input
+ * stalled since the last suspended tick.
  */
 void dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m);
 
 /**
  * The monotonic instant the visit on air runs out, or < 0 when no cap is counting: the cap is
  * disabled, no visit is anchored, a hold suspends it, a row transaction is outstanding, the row on
- * air has changed since the last tick, or there is no second eligible row to advance to. Pure; the
- * predicate and the publication both read it so the countdown on screen is the one that fires.
+ * air has changed since the last tick, or there is no second eligible row to advance to
+ * (dsd_engine_channel_scan_can_rotate()). Pure; the predicate and the publication both read it
+ * so the countdown on screen is the one that fires.
  */
 double dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state);
 

@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -44,6 +45,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -111,6 +113,8 @@
 #include "key_commands.h"
 #include "recording_view_internal.h"
 #include "rr_apply_verdict.h"
+#include "scan_avoid_view_internal.h"
+#include "scan_list_results.h"
 #include "scan_row_edit.h"
 #include "services.h"
 #include "snapshot_internal.h"
@@ -297,12 +301,14 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
     }
     if (open) {
         g_session_generation = g_session_generation == UINT64_MAX ? 1 : g_session_generation + 1;
+        dsd_app_scan_list_note_session_open();
     }
     g_session_open = open != 0;
     atomic_store(&g_overflow_warn_gate, 0);
@@ -4504,9 +4510,16 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
             return DSD_APP_COMMAND_SUBMIT_COALESCED;
         }
     }
+    /* A list toggle never evicts: its caller learns at once that nothing is pending (issue #697), rather than another
+       request losing its place to it. */
+    if (cmd_id == DSD_APP_CMD_SCAN_LIST_SET && q_is_full_unlocked()) {
+        dsd_mutex_unlock(&g_mu);
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
@@ -4624,6 +4637,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
 };
 
 static const int k_ui_cmd_i32_ids[] = {
@@ -4850,6 +4864,22 @@ dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload) {
 }
 
 int
+dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* payload) {
+    if (!payload || memchr(payload->target_id, '\0', sizeof payload->target_id) == NULL) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, payload, sizeof(*payload));
+}
+
+int
+dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
+    if (!payload) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_set_tone_filter_mode(int32_t mode) {
     dsd_app_tone_filter_payload payload;
     DSD_MEMSET(&payload, 0, sizeof payload);
@@ -4893,6 +4923,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
+    {DSD_APP_CMD_SCAN_AVOID_REMOVE, sizeof(dsd_app_scan_avoid_remove_payload)},
+    {DSD_APP_CMD_SCAN_LIST_SET, sizeof(dsd_app_scan_list_set_payload)},
     {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
@@ -7813,17 +7845,72 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
+/* An avoided -Y row's frequency as its avoid and put-back toasts show it (issue #672), after the row number the avoided
+   channel list leads with (two rows can share a frequency): to the Hz, as every frequency is shown (issue #670), or
+   "frequency unknown" for a placeholder, as the list says. A stored row is within the trunk ceiling, so a frequency
+   fits the uint32_t text. */
+static const char*
+scan_avoid_lcn_toast_freq(uint64_t hz, char* out, size_t out_size) {
+    if (hz > 0U && hz <= UINT32_MAX) {
+        char mhz[16];
+        DSD_SNPRINTF(out, out_size, "%s MHz", ui_toast_mhz((uint32_t)hz, mhz, sizeof mhz));
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", "frequency unknown");
+    }
+    return out;
+}
+
+/* "#65535 " and a 63-byte label or id, terminated. */
+#define DSD_TRUNK_SCAN_TOAST_NAME_SIZE 80
+
+/* A --trunk-scan target as its avoid and put-back toasts name it (issue #672): "#<ordinal> <label>", the list position
+   and label column the avoided channel list shows, or the id when the target has no label. The id alone names nothing
+   on Android, whose target ids are entry UIDs. An ordinal of 0 (none known) leaves the position out. */
+static const char*
+trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size) {
+    const char* shown = (label && label[0]) ? label : (id ? id : "");
+    if (ordinal > 0U) {
+        DSD_SNPRINTF(out, out_size, "#%u %s", (unsigned)ordinal, shown);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", shown);
+    }
+    return out;
+}
+
+/* The avoided -Y rows, exact, through the scan avoid view (issue #672 B6): lcn_avoid_count saturates at 65,535. */
+static size_t
+scan_avoid_lcn_total(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_scan_avoid_summary summary;
+    if (dsd_app_scan_avoid_summary_get(opts, state, &summary) != 0 || summary.kind != DSD_APP_SCAN_AVOID_KIND_LCN) {
+        return 0U;
+    }
+    return summary.total;
+}
+
 /* Avoids the row the receiver is on (issue #666), not the one before the cursor: a placeholder the scan parked on, or a
-   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. */
+   typed row whose tune failed or is still pending, moved the cursor while the receiver stayed. A row already avoided (a
+   failed tune can leave the receiver on one) is left as it is, with no step (issue #672 B4). */
 static void
 apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
+    /* Channels learned over the air are never scanned (issue #697), so with no channel map there is nothing to avoid. */
+    if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        ui_set_toast(state, 3, "No channel map: nothing to avoid");
+        return;
+    }
     const int row = dsd_engine_channel_scan_on_air_row(state);
     const long freq = row >= 0 ? *dsd_state_trunk_lcn_slot(state, row) : 0L;
     if (freq == 0) {
         ui_set_toast(state, 3, "No scan channel on air to avoid");
         return;
     }
-    if (dsd_state_trunk_lcn_usable_count(state) <= 1) {
+    char mhz[32];
+    (void)scan_avoid_lcn_toast_freq(freq > 0 ? (uint64_t)freq : 0U, mhz, sizeof mhz);
+    if (dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+        ui_set_toast(state, 3, "Already avoided: row %d (%s)", row + 1, mhz);
+        return;
+    }
+    /* A row skipped at every visit for its width is not one to go to (issue #697). */
+    if (dsd_engine_channel_scan_reachable_rows(opts, state) <= 1) {
         ui_set_toast(state, 3, "Cannot avoid the last usable scan channel");
         return;
     }
@@ -7831,33 +7918,32 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;
     }
-    /* To the Hz, as every frequency is shown: four decimals named another channel of a 6.25 kHz plan (issue #670). A
-       stored row is within the trunk ceiling, so it fits the uint32_t text. */
-    char mhz[16];
-    ui_set_toast(state, 3, "Avoiding %s MHz (%u avoided)",
-                 ui_toast_mhz(freq > 0 ? (uint32_t)freq : 0U, mhz, sizeof mhz), (unsigned)state->lcn_avoid_count);
+    ui_set_toast(state, 3, "Avoiding row %d (%s, %zu avoided)", row + 1, mhz, scan_avoid_lcn_total(opts, state));
     if (scan_control_tuner_present(opts)) {
         (void)apply_manual_lcn_cycle(opts, state);
     }
 }
 
 static void
-apply_manual_scan_avoid_clear(dsd_state* state) {
-    const int cleared = dsd_state_trunk_lcn_avoid_clear(state);
-    ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
+apply_manual_scan_avoid_clear(const dsd_opts* opts, dsd_state* state) {
+    const size_t cleared = scan_avoid_lcn_total(opts, state);
+    (void)dsd_state_trunk_lcn_avoid_clear(state);
+    ui_set_toast(state, 3, "Cleared %zu scan avoid%s", cleared, cleared == 1U ? "" : "s");
 }
 
-/* A scan control (hold, avoid, clear avoids, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the
-   scan has no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
+/* A scan control (hold, avoid, next, previous) asked of a paused scan, -Y or trunk scan (issue #671): the scan has no
+   channel on air to act on until it resumes. The hold and the avoids stay as they were. Clear avoids and put back are
+   flag edits a paused scan takes (issue #672 D3). */
 static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
 
 /* Next or Previous channel with nothing to tune (issue #666): neither a radio input nor a rigctl peer
    (scan_control_tuner_present()). */
 static const char k_channel_cycle_no_tuner[] = "No tuner to change channel: use a radio input or a rigctl peer";
 
-/* The toast for an op the coordinator answered. @p target_id is the target that was on air before the op. */
+/* The toast for an op the coordinator answered. @p target names the target that was on air before the op
+   (trunk_scan_toast_name()). */
 static void
-trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id) {
+trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
             if (rc >= 0) {
@@ -7867,8 +7953,11 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
         case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE:
             if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
                 ui_set_toast(state, 3, "Cannot avoid the last usable trunk scan target");
+            } else if (rc == DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED) {
+                /* The receiver fell back onto an avoided target; nothing changed (issue #672 B4). */
+                ui_set_toast(state, 3, "Already avoided: target %s", target);
             } else {
-                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target_id,
+                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target,
                              (unsigned)state->trunk_scan_avoided_count);
             }
             break;
@@ -7883,8 +7972,12 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
                 ui_set_toast(state, 3, "Trunk scan has only one target");
             } else if (rc == 1) {
                 /* Stayed: nothing else was eligible, no switch could be prepared, or every alternate failed and the
-                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. */
-                ui_set_toast(state, 3, "Staying on target %s", state->trunk_scan_active_id);
+                   receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. The
+                   target is the one on air now, named as the avoid toasts name one (issue #672). */
+                char stayed[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+                (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                            state->trunk_scan_active_id, stayed, sizeof stayed);
+                ui_set_toast(state, 3, "Staying on target %s", stayed);
             }
             break;
         default: break;
@@ -7894,8 +7987,9 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target_id
 /* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
 static int
 apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
-    char target_id[sizeof(state->trunk_scan_active_id)];
-    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
+    char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                state->trunk_scan_active_id, target, sizeof target);
     const int rc = dsd_trunk_scan_hook_control(opts, state, op);
     if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
         ui_set_toast(state, 3, "Trunk scan busy; try again");
@@ -7909,8 +8003,181 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
         ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
         return UI_CMD_APPLY_FAILED;
     }
-    trunk_scan_control_toast(state, op, rc, target_id);
+    trunk_scan_control_toast(state, op, rc, target);
     return UI_CMD_APPLY_COMPLETED;
+}
+
+/* Put back, refused: the identity names nothing in this session's list (another session, map or row, or the other
+   scanner's kind), so the frontend's list is out of date. */
+static const char k_scan_avoid_remove_stale[] = "Scan list changed; nothing put back";
+
+/* What a raw submission can carry, checked before anything indexes or narrows it (issue #672): a known kind, a
+   terminated id, a row that can index, a trunk-scan session that can name one. */
+static int
+scan_avoid_remove_payload_valid(const dsd_app_scan_avoid_remove_payload* p) {
+    if (!memchr(p->target_id, '\0', sizeof p->target_id)) {
+        return 0;
+    }
+    if (p->kind == DSD_APP_SCAN_AVOID_KIND_LCN) {
+        return p->row >= 0;
+    }
+    return p->kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN && p->session != 0U;
+}
+
+/* A -Y row: the same instance, list, row and frequency, and still avoided; the flag alone changes (the drain's visit tick
+   restarts the visit cap as it does for clear). */
+static int
+apply_scan_avoid_remove_lcn(const dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* p) {
+    const int match = dsd_app_scan_avoid_lcn_match(state, p);
+    if (match == DSD_APP_SCAN_AVOID_MATCH_STALE) {
+        ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale);
+        return UI_CMD_APPLY_FAILED;
+    }
+    char mhz[32];
+    (void)scan_avoid_lcn_toast_freq(p->frequency_hz, mhz, sizeof mhz);
+    if (match == DSD_APP_SCAN_AVOID_MATCH_NOT_AVOIDED) {
+        ui_set_toast(state, 3, "Already put back: row %d (%s)", p->row + 1, mhz);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (dsd_state_trunk_lcn_avoid_set(state, (size_t)p->row, 0) != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "Put back row %d (%s, %zu avoided)", p->row + 1, mhz, scan_avoid_lcn_total(opts, state));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/* A --trunk-scan target: the coordinator puts it back (dsd_trunk_scan_hook_unavoid()), paused or not. Its count is the
+   coordinator's own (trunk_scan_avoided_count, which a failed list allocation leaves exact). */
+static int
+apply_scan_avoid_remove_trunk_scan(const dsd_opts* opts, dsd_state* state, const dsd_app_scan_avoid_remove_payload* p) {
+    dsd_trunk_scan_target_name named;
+    const int rc = dsd_trunk_scan_hook_unavoid(opts, state, p->session, p->target_id, &named);
+    char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)trunk_scan_toast_name(named.ordinal, named.label, p->target_id, target, sizeof target);
+    switch (rc) {
+        case DSD_TRUNK_SCAN_CONTROL_OK:
+            ui_set_toast(state, 3, "Put back target %s (%u avoided)", target,
+                         (unsigned)state->trunk_scan_avoided_count);
+            return UI_CMD_APPLY_COMPLETED;
+        case DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED: ui_set_toast(state, 3, "Already put back: target %s", target); break;
+        case DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE: ui_set_toast(state, 3, "Trunk scan is not running"); break;
+        default: ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale); break;
+    }
+    return UI_CMD_APPLY_FAILED;
+}
+
+/* DSD_APP_CMD_SCAN_AVOID_REMOVE (issue #672): put one avoided entry back by its identity. A flag edit that never tunes,
+   so a paused scan, a stopped -Y list, -T and an I/Q replay all take it; Signal search refuses it with the other
+   receiver commands (command_allowed_during_search()). An LCN identity is refused while a trunk scan is configured and a
+   trunk-scan identity without one. */
+static int
+apply_cmd_scan_avoid_remove(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_scan_avoid_remove_payload p;
+    if (!state || c->n != sizeof p) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    if (!scan_avoid_remove_payload_valid(&p)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int trunk_scan = opts->trunk_scan_enabled == 1;
+    if ((p.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) != trunk_scan) {
+        ui_set_toast(state, 3, "%s", k_scan_avoid_remove_stale);
+        return UI_CMD_APPLY_FAILED;
+    }
+    return trunk_scan ? apply_scan_avoid_remove_trunk_scan(opts, state, &p)
+                      : apply_scan_avoid_remove_lcn(opts, state, &p);
+}
+
+/* What a raw submission can carry (issue #697): a session that can name one, a list number or every list, and an on or
+   off. A list past the scan's lists is the coordinator's to call stale. */
+static int
+scan_list_set_payload_valid(const dsd_app_scan_list_set_payload* p) {
+    const int list_ok = p->list == DSD_APP_SCAN_LIST_ALL || (p->list >= 1 && p->list <= DSD_TRUNK_SCAN_MAX_LISTS);
+    return p->session != 0U && list_ok && p->enabled <= 1U;
+}
+
+/* List @p list (1-based) as a toast names it: its number, and its name when it has one. */
+static const char*
+scan_list_toast_name(const dsd_state* state, int list, char* out, size_t out_size) {
+    const char* name = state->trunk_scan_lists[list - 1].name;
+    if (name[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "Scan list %d (%s)", list, name);
+    } else {
+        DSD_SNPRINTF(out, out_size, "Scan list %d", list);
+    }
+    return out;
+}
+
+/* A switch the coordinator made: what is on now, as its own log line counts it (targets in the lists that are on,
+   avoided ones included). */
+static void
+scan_list_switched_toast(dsd_state* state, int list, int enabled) {
+    const int count = state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
+                                                                              : DSD_TRUNK_SCAN_MAX_LISTS;
+    int lists_on = 0;
+    unsigned int targets = 0U;
+    for (int l = 0; l < count; l++) {
+        if (state->trunk_scan_lists[l].enabled) {
+            lists_on++;
+            targets += state->trunk_scan_lists[l].targets;
+        }
+    }
+    const char* noun = targets == 1U ? "target" : "targets";
+    if (list == DSD_APP_SCAN_LIST_ALL) {
+        ui_set_toast(state, 3, "All scan lists on: %u %s", targets, noun);
+        return;
+    }
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE + 24];
+    ui_set_toast(state, 3, "%s %s: %d of %d lists on, %u %s", scan_list_toast_name(state, list, name, sizeof name),
+                 enabled ? "on" : "off", lists_on, count, targets, noun);
+}
+
+/* The toast for a list toggle the coordinator answered, from its code alone, as every frontend shows it. */
+static void
+scan_list_set_toast(dsd_state* state, int code, int list, int enabled) {
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE + 24];
+    switch (code) {
+        case DSD_APP_SCAN_LIST_SET_OK: scan_list_switched_toast(state, list, enabled); break;
+        case DSD_APP_SCAN_LIST_SET_UNCHANGED:
+            if (list == DSD_APP_SCAN_LIST_ALL) {
+                ui_set_toast(state, 3, "All scan lists are on already");
+            } else {
+                ui_set_toast(state, 3, "%s is %s already", scan_list_toast_name(state, list, name, sizeof name),
+                             enabled ? "on" : "off");
+            }
+            break;
+        case DSD_APP_SCAN_LIST_SET_REFUSED_LAST:
+            ui_set_toast(state, 3, "Nothing else to scan: switch on another list first");
+            break;
+        case DSD_APP_SCAN_LIST_SET_BUSY: ui_set_toast(state, 3, "Trunk scan busy; try again"); break;
+        case DSD_APP_SCAN_LIST_SET_PAUSED: ui_set_toast(state, 3, "%s", k_scan_paused_refusal); break;
+        case DSD_APP_SCAN_LIST_SET_STALE:
+            ui_set_toast(state, 3, "%s", "Refused: the scan changed; nothing applied");
+            break;
+        default: ui_set_toast(state, 3, "Trunk scan is not running"); break;
+    }
+}
+
+/* DSD_APP_CMD_SCAN_LIST_SET (issue #697): the coordinator switches the list (dsd_trunk_scan_hook_list_set(), which
+   takes its own try of the P25 SM tick guard, so this command is not apply-guarded) and its answer goes to @p code,
+   the retained result's (left as the caller set it for a payload refused here). A switch, or a list already as asked,
+   completes; every refusal fails. */
+static int
+apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* code_out) {
+    dsd_app_scan_list_set_payload p;
+    if (!state || c->n != sizeof p) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    if (!scan_list_set_payload_valid(&p)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int code = dsd_trunk_scan_hook_list_set(opts, state, p.session, p.list, p.enabled, p.request);
+    *code_out = code;
+    scan_list_set_toast(state, code, p.list, p.enabled);
+    return (code == DSD_APP_SCAN_LIST_SET_OK || code == DSD_APP_SCAN_LIST_SET_UNCHANGED) ? UI_CMD_APPLY_COMPLETED
+                                                                                         : UI_CMD_APPLY_FAILED;
 }
 
 static int
@@ -7920,6 +8187,7 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         case DSD_APP_CMD_SCAN_HOLD_TOGGLE: op = DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE; break;
         case DSD_APP_CMD_SCAN_AVOID: op = DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE; break;
         case DSD_APP_CMD_SCAN_AVOID_CLEAR: op = DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR; break;
+        case DSD_APP_CMD_SCAN_AVOID_REMOVE: return apply_cmd_scan_avoid_remove(opts, state, c);
         default: return 0;
     }
     if (!state) {
@@ -7927,6 +8195,12 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     if (opts->trunk_scan_enabled == 1) {
         return apply_trunk_scan_control(opts, state, op);
+    }
+    /* Clear is a flag edit with no row on air to act on, taken whenever no trunk scan runs (issue #672 B1, D2/D3): a
+       paused or stopped -Y list and -T keep their avoids, which the control-channel hunts skip. */
+    if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR) {
+        apply_manual_scan_avoid_clear(opts, state);
+        return 1;
     }
     if (state->lcn_scan_paused) {
         ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
@@ -7938,8 +8212,7 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: apply_manual_scan_hold_toggle(state); break;
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: apply_manual_scan_avoid(opts, state); break;
-        default: apply_manual_scan_avoid_clear(state); break;
+        default: apply_manual_scan_avoid(opts, state); break;
     }
     return 1;
 }
@@ -8189,6 +8462,15 @@ ui_cmd_handle_reverse_mute_toggle(dsd_opts* opts, dsd_state* state, const struct
     (void)c;
     svc_toggle_reverse_mute(opts);
     return 1;
+}
+
+/* The runtime config the menu re-parsed on its thread reaches the decoder's options here, on the decoder thread, which
+   owns them. */
+static int
+ui_cmd_handle_runtime_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
@@ -8665,16 +8947,16 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
 /* What a save would write once the config (@p ctx) is applied, in @p next (the save as it stands,
    svc_check_next_start()): the fields of the trunk-scan rules a config names replace those the session would save, as
    staging, the next-start hold (cfg_restore_lifecycle_owned()) and the owner settle (cfg_settle_scan_owner()) leave
-   them. A path is named only when the config sets one. A [trunking] names the tuner owner. */
+   them. A path is named only when the config sets one; the trunk-scan lists as the config names them
+   (dsd_user_config_compose_trunk_scan_lists()). A [trunking] names the tuner owner. */
 static void
 cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
     const dsdneoUserConfig* cfg = (const dsdneoUserConfig*)ctx;
     if (cfg->has_trunk_scan) {
         next->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
-        if (cfg->trunk_scan_targets_csv[0]) {
-            DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s",
-                         cfg->trunk_scan_targets_csv);
-        }
+        /* Over the lists the save holds, those waiting for the next start included: a config naming lists_off alone
+           keeps the paths an earlier apply left waiting (issue #697). */
+        dsd_user_config_compose_trunk_scan_lists(cfg, next->trunk_scan_lists, &next->trunk_scan_list_count);
     }
     if (!cfg->has_trunking) {
         return;
@@ -8766,7 +9048,8 @@ typedef struct {
     int trunk_scan_enabled;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
-    char trunk_scan_targets_csv[sizeof(((dsd_opts*)0)->trunk_scan_targets_csv)];
+    dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    int trunk_scan_list_count;
     char chan_in_file[sizeof(((dsd_opts*)0)->chan_in_file)];
     char p25_bandplan_in_file[sizeof(((dsd_opts*)0)->p25_bandplan_in_file)];
 } cfg_lifecycle_owned;
@@ -8777,7 +9060,8 @@ cfg_capture_lifecycle_owned(const dsd_opts* opts, cfg_lifecycle_owned* out) {
     out->trunk_scan_enabled = opts->trunk_scan_enabled;
     out->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
     out->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
-    DSD_SNPRINTF(out->trunk_scan_targets_csv, sizeof out->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
+    DSD_MEMCPY(out->trunk_scan_lists, opts->trunk_scan_lists, sizeof out->trunk_scan_lists);
+    out->trunk_scan_list_count = opts->trunk_scan_list_count;
     DSD_SNPRINTF(out->chan_in_file, sizeof out->chan_in_file, "%s", opts->chan_in_file);
     DSD_SNPRINTF(out->p25_bandplan_in_file, sizeof out->p25_bandplan_in_file, "%s", opts->p25_bandplan_in_file);
 }
@@ -8807,6 +9091,32 @@ cfg_defer_path(char* live, size_t size, const char* before, int named, uint32_t*
     }
     DSD_SNPRINTF(live, size, "%s", before);
     return changed;
+}
+
+/* The same for the trunk-scan list spec (issue #697), deferred whole: paths and start states. What the config names is
+   put over the spec a save would write, the one waiting for the next start when there is one, so a config naming
+   lists_off alone keeps the paths an earlier apply left waiting; the running lists are put back. */
+static int
+cfg_defer_trunk_scan_lists(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
+    DSD_MEMCPY(opts->trunk_scan_lists, before->trunk_scan_lists, sizeof opts->trunk_scan_lists);
+    opts->trunk_scan_list_count = before->trunk_scan_list_count;
+    if (!cfg->has_trunk_scan || !dsd_user_config_names_trunk_scan_lists(cfg)) {
+        return 0; /* names none of them: what waits, waits */
+    }
+    /* Composed in place: the next-start copy is read only while its bit is set. */
+    dsd_opts_next_start* next = &opts->next_start;
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) == 0U) {
+        DSD_MEMCPY(next->trunk_scan_lists, before->trunk_scan_lists, sizeof next->trunk_scan_lists);
+        next->trunk_scan_list_count = before->trunk_scan_list_count;
+    }
+    dsd_user_config_compose_trunk_scan_lists(cfg, next->trunk_scan_lists, &next->trunk_scan_list_count);
+    if (dsd_trunk_scan_lists_equal(next->trunk_scan_lists, next->trunk_scan_list_count, before->trunk_scan_lists,
+                                   before->trunk_scan_list_count)) {
+        next->pending &= ~DSD_NEXT_START_TRUNK_SCAN_TARGETS; /* names the running lists again */
+        return 0;
+    }
+    next->pending |= DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+    return 1;
 }
 
 /* The same for a number. */
@@ -8864,10 +9174,7 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const c
         changed |= CFG_RESTART_CHANNEL_MAP;
     }
     if (before->trunk_scan_enabled == 1) {
-        int list_changed =
-            cfg_defer_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
-                           before->trunk_scan_targets_csv, cfg->has_trunk_scan && cfg->trunk_scan_targets_csv[0],
-                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_TARGETS, next->trunk_scan_targets_csv);
+        int list_changed = cfg_defer_trunk_scan_lists(opts, cfg, before);
         list_changed |=
             cfg_defer_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms, cfg->has_trunk_scan,
                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL, &next->trunk_scan_idle_dwell_ms);
@@ -9477,6 +9784,7 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
         {DSD_APP_CMD_REVERSE_MUTE_TOGGLE, ui_cmd_handle_reverse_mute_toggle},
         {DSD_APP_CMD_CONFIG_APPLY, ui_cmd_handle_config_apply},
         {DSD_APP_CMD_CONFIG_METADATA_SET, ui_cmd_handle_config_metadata_set},
+        {DSD_APP_CMD_RUNTIME_CONFIG_APPLY, ui_cmd_handle_runtime_config_apply},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -9491,8 +9799,9 @@ ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return ui_cmd_dispatch(opts, state, c);
 }
 
+/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did (its retained result); other commands leave it. */
 static int
-apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
         apply_cmd_eye_spectrum,     apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_skip_slot,
@@ -9538,6 +9847,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #endif
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return apply_cmd_scan_list_set(opts, state, c, scan_list_code);
+    }
     for (size_t i = 0; i < (sizeof k_command_groups / sizeof k_command_groups[0]); ++i) {
         r = k_command_groups[i](opts, state, c);
         if (r) {
@@ -9956,7 +10268,8 @@ apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rig
 }
 
 static int
-apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
+apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
+                 int32_t* scan_list_code) {
     /* Before the suspend, so it is the request the row in force made. */
     const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);
@@ -9973,7 +10286,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
        command that leaves the scope in force starts opens on the row's settings with the CQPSK state an open picks,
        and is asked for the row's profile at once (ui_publish_row_to_started_stream()). */
     const unsigned int starts_before = svc_rtl_start_count();
-    const int result = apply_cmd_unscoped(opts, state, c);
+    const int result = apply_cmd_unscoped(opts, state, c, scan_list_code);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
@@ -10040,7 +10353,8 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
             case DSD_APP_CMD_GAIN_DELTA:
             case DSD_APP_CMD_AGAIN_SET:
             case DSD_APP_CMD_AGAIN_DELTA:
-            case DSD_APP_CMD_UI_MSG_CLEAR: break;
+            case DSD_APP_CMD_UI_MSG_CLEAR:
+            case DSD_APP_CMD_RUNTIME_CONFIG_APPLY: break;
             default: ui_set_toast(state, 4, "Stop Signal search before changing receiver settings"); return 0;
         }
     }
@@ -10060,9 +10374,14 @@ recording_command_outcome(const struct dsd_app_command* c, int result) {
     return result == UI_CMD_APPLY_COMPLETED ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
 }
 
+/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did, for its retained result (issue #697): SEARCH when
+   Signal search refuses it, the coordinator's answer once the handler asked it, INVALID for anything that stops it
+   before then. */
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
+    *scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
     if (!command_allowed_during_search(state, c)) {
+        *scan_list_code = DSD_APP_SCAN_LIST_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
@@ -10082,7 +10401,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     }
     g_apply_cmd_guard_held = guarded;
     g_config_recording_applied = 0;
-    const int result = apply_cmd_scoped(opts, state, c, guarded);
+    const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
     g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {
@@ -10311,6 +10630,10 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_BIAS_TEE,
     DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
+    /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
+    /* Put back and clear (issue #672) are judged by their payload: command_scan_flag_edit_needs_frame_loop(). Avoid
+       stays out: it steps the scan off the channel on air. */
 };
 
 /* The Airspy settings that are front-end tweaks; a device serial or a sample rate reopens the input. */
@@ -10348,14 +10671,77 @@ command_dsp_op_deferred(const struct dsd_app_command* c) {
            || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
 }
 
+/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation, its
+   list off or it is the avoided fallback, so the receiver leaves as soon as another target can take it. A scan flag
+   edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's tick runs
+   before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or hold the
+   receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state, which
+   the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
+static int
+scan_departure_owed(const dsd_state* state, uint32_t session) {
+    return session != 0U && session == state->trunk_scan_session
+           && (state->trunk_scan_active_list_off != 0U || state->trunk_scan_active_avoided != 0U);
+}
+
+/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the list that holds the target on air,
+   which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
+   switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
+   and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
+   walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
+   loop: telling that apart walks the targets. Without a state, or with a payload of the wrong size, it takes the frame
+   loop; a payload of the right size that the drain then refuses (session 0, a list the scan does not have) is judged
+   by its fields like any other, so it waits unless it names this scan while its target on air owes a departure. */
+static int
+command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
+    if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
+        return 0;
+    }
+    dsd_app_scan_list_set_payload set;
+    DSD_MEMCPY(&set, c->data, sizeof(set));
+    if (scan_departure_owed(state, set.session)) {
+        return 0;
+    }
+    const int leaves_on_air =
+        set.enabled == 0U && set.list > 0 && set.session != 0U && set.session == state->trunk_scan_session
+        && (uint32_t)set.list == (uint32_t)state->trunk_scan_active_list && state->trunk_scan_active_list_off == 0U;
+    return !leaves_on_air;
+}
+
+/* Put back and clear (issue #672) only edit avoid flags, so they wait for the carrier to end, unless this scan's
+   target on air owes a departure the edit can start or cancel (scan_departure_owed()): a trunk-scan put back of this
+   session, or a clear. A -Y put back, another session's, a malformed one, or any while no state is given keeps
+   waiting. */
+static int
+command_scan_flag_edit_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR) {
+        return scan_departure_owed(state, state->trunk_scan_session);
+    }
+    if (c->n != sizeof(dsd_app_scan_avoid_remove_payload)) {
+        return 0;
+    }
+    dsd_app_scan_avoid_remove_payload put_back;
+    DSD_MEMCPY(&put_back, c->data, sizeof(put_back));
+    return put_back.kind == (uint32_t)DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN
+           && scan_departure_owed(state, put_back.session);
+}
+
 /* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
 static int
-command_needs_frame_loop(const struct dsd_app_command* c) {
+command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
     if (c->id == DSD_APP_CMD_AIRSPY_SET) {
         return !command_airspy_setting_deferred(c);
     }
     if (c->id == DSD_APP_CMD_DSP_OP) {
         return !command_dsp_op_deferred(c);
+    }
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return !command_scan_list_set_deferred(c, state);
+    }
+    if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR || c->id == DSD_APP_CMD_SCAN_AVOID_REMOVE) {
+        return command_scan_flag_edit_needs_frame_loop(c, state);
     }
     for (size_t i = 0; i < sizeof(k_deferred_commands) / sizeof(k_deferred_commands[0]); i++) {
         if (k_deferred_commands[i] == c->id) {
@@ -10366,12 +10752,12 @@ command_needs_frame_loop(const struct dsd_app_command* c) {
 }
 
 int
-dsd_app_commands_need_frame_loop(void) {
+dsd_app_commands_need_frame_loop(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     int needed = 0;
     for (size_t i = g_head; i != g_tail && !needed; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
-        needed = command_needs_frame_loop(&g_q[i]);
+        needed = command_needs_frame_loop(&g_q[i], state);
     }
     dsd_mutex_unlock(&g_mu);
     return needed;
@@ -10470,6 +10856,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
+            dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
             if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
@@ -10479,12 +10866,14 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             n_applied++;
             continue;
         }
-        const int result = apply_cmd(opts, state, &cmd);
+        int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+        const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
+        dsd_app_scan_list_publish_result(&cmd, scan_list_code, state);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
@@ -10502,6 +10891,10 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         ui_request_redraw_if_published();
         n_applied++;
+    }
+    /* A list toggle dropped before a drain reaches it is answered with the lists as they stand now (issue #697). */
+    if (n_applied > 0 && state) {
+        dsd_app_scan_list_note_lists_seq(state->trunk_scan_lists_seq);
     }
     return n_applied;
 }

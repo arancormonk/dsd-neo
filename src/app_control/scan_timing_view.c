@@ -51,11 +51,14 @@ static const dsd_scan_timing_row k_scan_timing_rows[] = {
        check is no activity: it has no window of its own, and whatever ran before it -- the -Y hangtime, a trunk-scan
        hold or idle dwell -- runs on beneath it unchanged, so no budget is shown as suspended. */
     [DSD_SCAN_STAY_TONE_PENDING] = {"Tone check", DSD_APP_SCAN_DWELL_NONE, 0U, 0U, 0U},
+    /* -Y with no channel map imported (issue #697): it stays on the frequency until one is, so no window runs and no
+       budget applies. */
+    [DSD_SCAN_STAY_NO_LIST] = {"No channel map", DSD_APP_SCAN_DWELL_NONE, 0U, 0U, 0U},
 };
 
 /* A reason the decoder can publish but this table cannot render would reach the surfaces
    as a blank phrase. Sized against the last enumerator so adding one fails the build. */
-_Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0])) == (int)DSD_SCAN_STAY_TONE_PENDING + 1,
+_Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0])) == (int)DSD_SCAN_STAY_NO_LIST + 1,
                "every dsd_scan_stay_reason needs a display row");
 
 /** @brief Longest countdown the view will report, guarding the cast below. */
