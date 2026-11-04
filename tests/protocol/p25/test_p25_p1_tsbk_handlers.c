@@ -260,6 +260,17 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
     return (opts != NULL && opts->chan_in_file[0] != '\0') ? 1 : 0;
 }
 
+/* Row 0 is the only row these paths write; the core helper's revision stamps are covered by CORE_STATE_TRUNK_LCN_AVOID. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_state_trunk_lcn_freq_write(dsd_state* state, int row, long int hz) {
+    if (state == NULL || row < 0 || row >= DSD_TRUNK_LCN_EMBEDDED) {
+        return -1;
+    }
+    state->trunk_lcn_freq[row] = hz;
+    return 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {

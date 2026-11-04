@@ -21,18 +21,22 @@
 #include <QStringList>
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <tuple>
 
+#include <QByteArray>
 #include <QChar>
 #include <QtGlobal>
 #include <cmath>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
@@ -43,6 +47,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -375,7 +380,7 @@ bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot
-           && two_slot_carrier == other.two_slot_carrier && controlEquals(other) && scanTimingEquals(other)
+           && two_slot_carrier == other.two_slot_carrier && controlEquals(other) && scanReadingsEqual(other)
            && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text && toneFilterEquals(other)
            && toneFilterSettingEquals(other) && tetraEquals(other) && ui_message == other.ui_message;
 }
@@ -394,6 +399,7 @@ MetricsModel::publish(const View& next) {
     const bool twoSlotMoved = next.two_slot_carrier != m_view.two_slot_carrier;
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
+    const bool scanAvoidsMoved = !next.scanAvoidsEquals(m_view);
     const bool rxToneMoved = !next.rxToneEquals(m_view);
     const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
     const bool toneFilterMoved = !next.toneFilterEquals(m_view);
@@ -425,15 +431,23 @@ MetricsModel::publish(const View& next) {
     if (controlMoved) {
         Q_EMIT controlChanged();
     }
-    if (scanTimingMoved) {
-        Q_EMIT scanTimingChanged();
-    }
+    emitScanSignals(scanTimingMoved, scanAvoidsMoved);
     emitRxToneSignals(rxToneMoved, rxToneConfiguredMoved, toneFilterMoved, toneFilterSettingMoved);
     if (tetraMoved) {
         Q_EMIT tetraChanged();
     }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
+    }
+}
+
+void
+MetricsModel::emitScanSignals(bool timing, bool avoids) {
+    if (timing) {
+        Q_EMIT scanTimingChanged();
+    }
+    if (avoids) {
+        Q_EMIT scanAvoidsChanged();
     }
 }
 
@@ -475,6 +489,9 @@ MetricsModel::clear() {
     cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
     cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
     cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;
+    /* The avoid list goes with the session that had it; the next session's first refresh builds its own. */
+    m_scanAvoidModel.clear();
+    m_scanAvoidsBuilt = false;
     publish(cleared);
 }
 
@@ -487,6 +504,8 @@ MetricsModel::setChannelNames(const QVariantMap& names) {
             m_channelNames.insert(it.key(), name);
         }
     }
+    /* The avoid list names its trunk-scan targets by these too: label it again at the next refresh. */
+    m_scanAvoidsBuilt = false;
 }
 
 /**
@@ -510,7 +529,7 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
 }
 
 /*
- * Scan hold and avoids (#380) read whichever rotation owns the tuner: the coordinator's
+ * Scan hold (#380) reads whichever rotation owns the tuner: the coordinator's
  * publication under --trunk-scan, the scan-list flags under -Y. Plain trunking is not
  * a rotation, so the controls have nothing to act on and the gate stays false.
  *
@@ -547,7 +566,6 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
      * the engine loop, so an affordance gated only on the other two offers a tune the scan then undoes. */
     next.tuner_controlled = next.trunking_enabled || next.scanner_mode || running;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
-    next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
     next.scan_target_avoided = trunk_scan && running && snapshot->trunk_scan_active_avoided != 0;
 }
 
@@ -1282,6 +1300,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, 
     fillCrcPolicy(next, opts_snapshot, snapshot);
 
     fillControlViews(next, opts_snapshot, snapshot, now_m);
+    refreshScanAvoids(next, opts_snapshot, snapshot);
 
     fillUiMessage(next, snapshot);
 
@@ -1306,6 +1325,87 @@ MetricsModel::fillControlViews(View& next, const dsd_opts* opts_snapshot, const 
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
     fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
     fillTetraView(next, opts_snapshot, snapshot);
+}
+
+/*
+ * The avoided -Y rows or trunk-scan targets (issue #672), from the app-control scan avoid view over the held pair: the
+ * summary costs a few loads, and the list is built only when its key (store, instance, revision, availability) moved
+ * since the last build that succeeded. A hop, a call or a pause moves none of it, so the list model sees nothing then.
+ * A build that fails leaves no rows to act on and reads unavailable (Clear stays offered) until a later refresh builds
+ * it at the same key; an incomplete snapshot builds no rows and reads unavailable the same way.
+ */
+void
+MetricsModel::refreshScanAvoids(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_scan_avoid_summary summary{};
+    (void)dsd_app_scan_avoid_summary_get(opts_snapshot, snapshot, &summary);
+    if (!m_scanAvoidsBuilt || dsd_app_scan_avoid_summary_same_key(&summary, &m_scanAvoidsBuiltKey) == 0) {
+        m_scanAvoidsBuilt = buildScanAvoids(opts_snapshot, snapshot, &m_scanAvoidsBuiltKey);
+    }
+    const bool listed = m_scanAvoidsBuilt && summary.available != 0U;
+    next.scan_avoids_available = listed;
+    next.scan_avoids_total_known = listed;
+    next.scan_avoid_count = listed ? m_scanAvoidModel.rowCount() : 0;
+    next.scan_avoids_manageable = summary.can_manage != 0U;
+}
+
+bool
+MetricsModel::buildScanAvoids(const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                              dsd_app_scan_avoid_summary* built) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (m_failScanAvoidBuilds > 0) {
+        --m_failScanAvoidBuilds;
+        m_scanAvoidModel.clear();
+        return false;
+    }
+#endif
+    dsd_app_scan_avoid_raw raw{};
+    /* A count past what a list model can index is refused like a failed allocation. */
+    if (dsd_app_scan_avoid_raw_collect(opts_snapshot, snapshot, &raw) != 0
+        || raw.count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        dsd_app_scan_avoid_raw_free(&raw);
+        m_scanAvoidModel.clear();
+        return false;
+    }
+    QList<ScanAvoidListModel::Entry> entries;
+    entries.reserve(static_cast<qsizetype>(raw.count));
+    for (size_t i = 0; i < raw.count; ++i) {
+        const dsd_app_scan_avoid_raw_entry& entry = raw.entries[i];
+        entries.append({ScanAvoidListModel::keyOf(entry.identity), scanAvoidLabel(entry), entry.identity});
+    }
+    *built = raw.summary;
+    dsd_app_scan_avoid_raw_free(&raw);
+    m_scanAvoidModel.apply(std::move(entries));
+    return true;
+}
+
+/*
+ * An entry as the view labels it, but a trunk-scan target named the way the app names its scan channels (issue #671):
+ * the app writes each target's uid as its id, which is no name a person recognises, so the channel name Main hands
+ * setChannelNames() goes in its place, else the target's label column; the id stays only for a target with neither.
+ * The 1-based position still leads, so two targets of one name read apart.
+ */
+QString
+MetricsModel::scanAvoidLabel(const dsd_app_scan_avoid_raw_entry& entry) const {
+    dsd_app_scan_avoid_raw_entry shown = entry;
+    if (entry.identity.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) {
+        const QString channel = m_channelNames.value(
+            ScanAvoidListModel::fieldText(entry.identity.target_id, sizeof entry.identity.target_id));
+        QByteArray name =
+            (channel.isEmpty() ? ScanAvoidListModel::fieldText(entry.name, sizeof entry.name) : channel).toUtf8();
+        /* A name longer than the id field holds is cut before the character that does not fit, not inside it. */
+        qsizetype fits = qMin(name.size(), static_cast<qsizetype>(sizeof shown.identity.target_id) - 1);
+        while (fits > 0 && fits < name.size() && (static_cast<unsigned char>(name.at(fits)) & 0xC0U) == 0x80U) {
+            --fits;
+        }
+        name.truncate(fits);
+        if (!name.isEmpty()) {
+            DSD_SNPRINTF(shown.identity.target_id, sizeof shown.identity.target_id, "%s", name.constData());
+            shown.name[0] = '\0';
+        }
+    }
+    char label[DSD_APP_SCAN_AVOID_LABEL_SIZE] = "";
+    (void)dsd_app_scan_avoid_raw_label(&shown, label, sizeof label);
+    return QString::fromUtf8(label);
 }
 
 qlonglong

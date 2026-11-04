@@ -15,8 +15,8 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -54,9 +55,10 @@ lbl_num(char* buf, size_t size, double value, int precision) {
     return buf;
 }
 
+/* The scan scope's configured settings in the frame's state snapshot, or NULL when no scope is live. */
 static const dsd_scan_settings*
-menu_configured_scan_settings(void) {
-    return dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+menu_configured_scan_settings(const UiCtx* c) {
+    return dsd_scan_mode_configured_view(c ? c->state : NULL);
 }
 
 static const char*
@@ -113,6 +115,19 @@ scan_rotation_active(const void* ctx) {
         return false;
     }
     return view.running != 0;
+}
+
+/* The Avoids list and Clear rows (issue #672 D2/D3): offered while a rotation runs, and outside one while avoids are
+   left to manage -- a stopped -Y list's rows, -T (whose control-channel hunts skip them) and a paused scan -- or while
+   the copy is incomplete, so Clear stays reachable. */
+bool
+scan_avoids_manageable(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    dsd_app_scan_avoid_summary summary;
+    if (!c || dsd_app_scan_avoid_summary_get(c->opts, c->state, &summary) != 0) {
+        return false;
+    }
+    return summary.can_manage != 0;
 }
 
 /* The frequency entry tunes a radio input, or a connected rigctl peer from any input (issue #671); a running or paused
@@ -202,9 +217,10 @@ rr_key_prompt_offered_and_feature(const void* ctx) {
 #ifdef USE_RADIO
 static dsd_frontend_metrics
 menu_frontend_metrics(const void* v) {
-    (void)v;
+    /* The frame's pair, never a fresh acquisition mid-frame (issue #672, B9). */
+    const UiCtx* c = (const UiCtx*)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c ? c->opts : NULL, c ? c->state : NULL, &metrics, 0U);
     return metrics;
 }
 
@@ -272,10 +288,9 @@ is_ted_allowed(const void* v) {
 const char*
 lbl_decode_mode(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    /* Menu contexts point at the live decoder. Extension-backed reads must use the
-     * published copies, whose lifetime belongs to this UI consumer thread. */
-    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
-    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
+    /* The frame's published pair, whose extension-backed reads belong to this UI consumer thread. */
+    const dsd_state* snapshot = c ? c->state : NULL;
+    const dsd_opts* opts_snapshot = c ? c->opts : NULL;
     dsdneoUserDecodeMode mode =
         opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
     /* "..." because the row opens a picker; without it the grammar promises a toggle. */
@@ -298,9 +313,9 @@ typedef struct {
 
 static menu_modulation_settings
 menu_configured_modulation(const UiCtx* c) {
-    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
-    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
+    const dsd_state* state = c ? c->state : NULL;
+    const dsd_opts* opts = c ? c->opts : NULL;
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     if (configured) {
         const menu_modulation_settings result = {
             configured->state_rf_mod, configured->mod_qpsk, configured->mod_p25p2_c4fm,
@@ -308,8 +323,6 @@ menu_configured_modulation(const UiCtx* c) {
             dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)};
         return result;
     }
-    const dsd_state* state = snapshot ? snapshot : (c ? c->state : NULL);
-    const dsd_opts* opts = opts_snapshot ? opts_snapshot : (c ? c->opts : NULL);
     const menu_modulation_settings result = {state ? state->rf_mod : -1, opts ? opts->mod_qpsk : 0,
                                              opts ? opts->mod_p25p2_c4fm : 0, opts ? opts->mod_p25p2_profile_lock : 0,
                                              dsd_opts_modulation(opts)};
@@ -376,7 +389,7 @@ lbl_crc_relax(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     /* The configured value the toggle edits; a scan row's own -F or --strict-crc says so when the toggle is pressed. */
     dsd_app_crc_policy policy;
-    dsd_app_crc_policy_view(c ? c->opts : NULL, dsd_app_get_latest_snapshot(), &policy);
+    dsd_app_crc_policy_view(c ? c->opts : NULL, c ? c->state : NULL, &policy);
     DSD_SNPRINTF(b, n, "Relaxed CRC checks [%s]", onoff(policy.configured));
     return b;
 }
@@ -550,11 +563,8 @@ lbl_tune_priv(const void* v, char* b, size_t n) {
 const char*
 lbl_tune_data(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-    }
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
+    const dsd_opts* opts = c ? c->opts : NULL;
     const int effective = opts && opts->trunk_tune_data_calls;
     const int enabled = configured ? configured->trunk_tune_data_calls != 0 : effective;
     if (configured && enabled != effective) {
@@ -574,8 +584,8 @@ lbl_tg_lockout_persist(const void* v, char* b, size_t n) {
 
 const char*
 lbl_tg_session_avoid_clear(const void* v, char* b, size_t n) {
-    (void)v;
-    const size_t count = dsd_tg_policy_session_avoid_count(dsd_app_get_latest_snapshot(), 0, UINT32_MAX);
+    const UiCtx* c = (const UiCtx*)v;
+    const size_t count = dsd_tg_policy_session_avoid_count(c ? c->state : NULL, 0, UINT32_MAX);
     DSD_SNPRINTF(b, n, "Clear temporary TG avoids - current list [%zu]", count);
     return b;
 }
@@ -604,7 +614,7 @@ lbl_hangtime(const void* v, char* b, size_t n) {
 const char*
 lbl_scan_voice_only(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     DSD_SNPRINTF(b, n, "Voice-only scan [%s]",
                  onoff(configured ? configured->scan_voice_only : c && c->opts && c->opts->scan_voice_only));
     return b;
@@ -613,7 +623,7 @@ lbl_scan_voice_only(const void* v, char* b, size_t n) {
 const char*
 lbl_scan_voice_qualify(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int ms = configured ? configured->scan_voice_qualify_ms : (c && c->opts) ? c->opts->scan_voice_qualify_ms : 0;
     DSD_SNPRINTF(b, n, "Voice qualify... [%d ms]", ms);
     return b;
@@ -622,7 +632,7 @@ lbl_scan_voice_qualify(const void* v, char* b, size_t n) {
 const char*
 lbl_scan_voice_hold(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int ms = configured ? configured->scan_voice_hold_ms : (c && c->opts) ? c->opts->scan_voice_hold_ms : 0;
     DSD_SNPRINTF(b, n, "Voice hold... [%d ms]", ms);
     return b;
@@ -738,7 +748,7 @@ lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
 const char*
 lbl_muting(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int left = configured ? configured->dmr_mute_encL : c->opts->dmr_mute_encL;
     const int right = configured ? configured->dmr_mute_encR : c->opts->dmr_mute_encR;
     const int dmr = left == 1 && right == 1;
@@ -750,11 +760,8 @@ lbl_muting(const void* v, char* b, size_t n) {
 const char*
 lbl_p25_enc_lockout(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-    }
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
+    const dsd_opts* opts = c ? c->opts : NULL;
     const int effective = opts && opts->trunk_tune_enc_calls == 0;
     const int enabled = configured ? configured->trunk_tune_enc_calls == 0 : effective;
     if (configured && enabled != effective) {
@@ -776,14 +783,35 @@ lbl_scan_hold(const void* v, char* b, size_t n) {
     return b;
 }
 
+/* The count both Avoids rows show, from the frame's pair through the view (issue #672 B2, B6): exact past 65,535, and
+   "?" while the copy could not hold the whole store. */
+static const char*
+scan_avoid_count_text(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    dsd_app_scan_avoid_summary summary;
+    if (!c || dsd_app_scan_avoid_summary_get(c->opts, c->state, &summary) != 0) {
+        DSD_MEMSET(&summary, 0, sizeof summary);
+        summary.total_known = 1;
+    }
+    if (!summary.total_known) {
+        DSD_SNPRINTF(b, n, "?");
+    } else {
+        DSD_SNPRINTF(b, n, "%zu", summary.total);
+    }
+    return b;
+}
+
+const char*
+lbl_scan_avoid_list(const void* v, char* b, size_t n) {
+    char count[24];
+    DSD_SNPRINTF(b, n, "Avoided channels... [%s]", scan_avoid_count_text(v, count, sizeof count));
+    return b;
+}
+
 const char*
 lbl_scan_avoid_clear(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    unsigned count = 0;
-    if (c && c->opts && c->state) {
-        count = (c->opts->trunk_scan_enabled == 1) ? c->state->trunk_scan_avoided_count : c->state->lcn_avoid_count;
-    }
-    DSD_SNPRINTF(b, n, "Clear avoids [%u]", count);
+    char count[24];
+    DSD_SNPRINTF(b, n, "Clear avoids [%s]", scan_avoid_count_text(v, count, sizeof count));
     return b;
 }
 
@@ -798,7 +826,7 @@ lbl_enc_lockout_clear(const void* v, char* b, size_t n) {
 const char*
 lbl_key_force_bp(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int on = configured ? configured->force_key == 1 : (c && c->state && c->state->M == 1);
     DSD_SNPRINTF(b, n, "Force basic/scrambler key [%s]", onoff(on));
     return b;
@@ -807,7 +835,7 @@ lbl_key_force_bp(const void* v, char* b, size_t n) {
 const char*
 lbl_key_force_rc4(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int on = configured ? configured->force_key == 0x21 : (c && c->state && c->state->M == 0x21);
     DSD_SNPRINTF(b, n, "Force RC4 key [%s]", onoff(on));
     return b;
@@ -950,7 +978,7 @@ lbl_input_sql(const void* v, char* b, size_t n) {
     char text[DSD_SQUELCH_TEXT_SIZE] = "off";
     if (c && c->opts) {
         dsd_app_squelch_view view;
-        if (dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view) == 0) {
+        if (dsd_app_squelch_view_get(c->opts, c->state, &view) == 0) {
             const dsd_squelch_setting setting =
                 view.configured_noise  ? dsd_squelch_setting_noise(view.configured_margin_db)
                 : view.configured_auto ? dsd_squelch_setting_auto(view.configured_margin_db)
@@ -977,9 +1005,8 @@ lbl_input_width(const void* v, int kind, char* b, size_t n) {
     DSD_MEMSET(&view, 0, sizeof view);
     int configured_hz = 0;
     if (c) {
-        const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-        (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
-        configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, kind);
+        (void)dsd_app_analog_width_view_get(c->opts, c->state, NULL, &view);
+        configured_hz = dsd_scan_mode_configured_analog_width(c->opts, c->state, kind);
     }
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_setting_text(&view, kind, configured_hz, width, sizeof width);
@@ -1047,11 +1074,8 @@ lbl_gain_ana(const void* v, char* b, size_t n) {
 const char*
 lbl_monitor(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-    }
+    const dsd_opts* opts = c ? c->opts : NULL;
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int enabled = configured ? configured->monitor_input_audio : (opts && opts->monitor_input_audio);
     DSD_SNPRINTF(b, n, "Source audio monitor [%s]", onoff(enabled));
     return b;
@@ -1060,11 +1084,8 @@ lbl_monitor(const void* v, char* b, size_t n) {
 const char*
 lbl_cosine(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-    }
+    const dsd_opts* opts = c ? c->opts : NULL;
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     const int enabled = configured ? configured->use_cosine_filter : (opts && opts->use_cosine_filter);
     DSD_SNPRINTF(b, n, "Cosine filter [%s]", onoff(enabled));
     return b;
@@ -1102,23 +1123,16 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
 
 /* The CTCSS/DCS receive policy (issue #527), read as the Call Info line and the Qt monitor read it (the shared
    received-tone view): "off", or the mode and its list, and while a scan row's own policy is on air that policy with
-   the configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the snapshot
-   pair its picker (act_tone_filter()) opens on, and before the first snapshot the menu's own options with no state,
-   which the view reads as the policy they hold. The value keeps the view's lowercase spelling, as Call Info prints it
-   and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles' grammar. The
-   view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "..."
-   (dsd_tone_display_to_ascii()). */
+   the configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the frame's
+   snapshot pair, which its picker (act_tone_filter()) opens on. The value keeps the view's lowercase spelling, as Call
+   Info prints it and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles'
+   grammar. The view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes
+   "..." (dsd_tone_display_to_ascii()). */
 const char*
 lbl_tone_filter(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* state = dsd_app_get_latest_snapshot();
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-        state = NULL;
-    }
     dsd_app_rx_tone view;
-    (void)dsd_app_rx_tone_view(opts, state, 0.0, &view);
+    (void)dsd_app_rx_tone_view(c ? c->opts : NULL, c ? c->state : NULL, 0.0, &view);
     dsd_tone_display_to_ascii(view.configured_text);
     DSD_SNPRINTF(b, n, "Tone filter... [%s]", view.configured_text);
     return b;
@@ -1430,18 +1444,19 @@ lbl_history_slot(const void* v, char* b, size_t n) {
 
 // ---- Advanced labels ----
 
+/* The mode the run started with: DSD_NEO_FTZ_DAZ is read once at start and applied on every float thread, so the
+   row only reports it (fp_mode.h). */
 const char*
 lbl_ftz_daz(const void* v, char* b, size_t n) {
     (void)v;
-#if defined(__SSE__) || defined(__SSE2__)
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
-    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [%s]", onoff(on));
+    if (!dsd_runtime_fp_mode_supported()) {
+        DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [Unavailable]");
+        return b;
+    }
+    const dsd_fp_mode mode = dsd_runtime_fp_mode_current();
+    const char* state = (mode == DSD_FP_MODE_ON) ? "On" : ((mode == DSD_FP_MODE_OFF) ? "Off" : "Default");
+    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [%s] (set DSD_NEO_FTZ_DAZ before start)", state);
     return b;
-#else
-    DSD_SNPRINTF(b, n, "SSE FTZ/DAZ [Unavailable]");
-    return b;
-#endif
 }
 
 const char*
@@ -1459,15 +1474,6 @@ lbl_rt_sched(const void* v, char* b, size_t n) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     DSD_SNPRINTF(b, n, "Realtime scheduling [%s]", onoff(on));
-    return b;
-}
-
-const char*
-lbl_mt(const void* v, char* b, size_t n) {
-    (void)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
-    DSD_SNPRINTF(b, n, "Intra-block multithreading [%s]", onoff(on));
     return b;
 }
 

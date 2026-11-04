@@ -16,7 +16,6 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -46,25 +45,27 @@ LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
     (void)state;
 }
 
-/* dsd_app_get_latest_opts_snapshot() lives in src/app_control/ui_opts_snapshot.c,
- * which this target does not compile; snapshot.h supplies the prototype
- * -Wmissing-prototypes wants. The backing dsd_opts stays file-static: an
- * automatic one would be 41 KB of stack and an ERROR-level
+/* The frame's published pair the presenter hands the core (RrWizardHooks.session_opts and session_state, issue #672
+ * B9): neither the core nor app-control's pre-check it calls acquires a snapshot, and this target defines no accessor,
+ * so one that did would not link. The backing
+ * dsd_opts stays file-static: an automatic one would be 41 KB of stack and an ERROR-level
  * dsd-neo.no-automatic-full-decoder-state hit. */
 static dsd_opts g_stub_opts;
 static int g_stub_opts_published = 0;
 
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
+static const dsd_opts*
+h_session_opts(void* user) {
+    (void)user;
     return g_stub_opts_published ? &g_stub_opts : NULL;
 }
 
-/* The state half of the published pair, which dsd_app_rr_apply_block_reason() (rr_import_apply.c) reads for the
+/* The state half of the frame's pair, which dsd_app_rr_apply_block_reason() (rr_import_apply.c) is handed for the
  * next-start rule. Heap-allocated by the case that publishes it: a dsd_state is multi-megabyte. */
 static dsd_state* g_stub_state = NULL;
 
-const dsd_state*
-dsd_app_get_latest_snapshot(void) {
+static const dsd_state*
+h_session_state(void* user) {
+    (void)user;
     return g_stub_state;
 }
 
@@ -553,6 +554,8 @@ harness_hooks(RrWizardHooks* hooks) {
     hooks->account_changed = h_account_changed;
     hooks->apply = h_apply;
     hooks->post_import_path = h_post_import_path;
+    hooks->session_opts = h_session_opts;
+    hooks->session_state = h_session_state;
 }
 
 static int
@@ -2480,25 +2483,37 @@ test_browser_gates(void) {
 
     char why[256];
     publish_session(AUDIO_IN_PULSE, "pulse");
-    expect_ll("browser: TETRA recipe on audio refused",
-              rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 1);
+    expect_ll(
+        "browser: TETRA recipe on audio refused",
+        rr_wizard_core_apply_block_reason(h_session_opts(NULL), h_session_state(NULL), &plan, 1, 0, why, sizeof(why)),
+        1);
     expect("browser: TETRA recipe reason", strcmp(why, k_tetra_on_audio_reason) == 0);
-    expect_ll("browser: files alone pass on audio", rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)),
-              0);
+    expect_ll(
+        "browser: files alone pass on audio",
+        rr_wizard_core_files_block_reason(h_session_opts(NULL), h_session_state(NULL), "/x chan.csv", why, sizeof(why)),
+        0);
 
     if (publish_next_start_trunk_scan()) {
         expect_ll("browser: a channel map beside the next start refused",
-                  rr_wizard_core_files_block_reason("/x chan.csv", why, sizeof(why)), 1);
+                  rr_wizard_core_files_block_reason(h_session_opts(NULL), h_session_state(NULL), "/x chan.csv", why,
+                                                    sizeof(why)),
+                  1);
         expect("browser: next-start reason", strcmp(why, k_next_start_map_reason) == 0);
-        expect_ll("browser: a group list alone passes", rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 0);
+        expect_ll(
+            "browser: a group list alone passes",
+            rr_wizard_core_files_block_reason(h_session_opts(NULL), h_session_state(NULL), NULL, why, sizeof(why)), 0);
     }
     g_stub_opts.trunk_scan_enabled = 1;
     expect_ll("browser: files refused while a trunk scan runs",
-              rr_wizard_core_files_block_reason(NULL, why, sizeof(why)), 1);
+              rr_wizard_core_files_block_reason(h_session_opts(NULL), h_session_state(NULL), NULL, why, sizeof(why)),
+              1);
     expect("browser: trunk-scan reason", strcmp(why, k_trunk_scan_reason) == 0);
 
     unpublish_session();
-    expect_ll("browser: nothing published passes", rr_wizard_core_apply_block_reason(&plan, 1, 0, why, sizeof(why)), 0);
+    expect_ll(
+        "browser: nothing published passes",
+        rr_wizard_core_apply_block_reason(h_session_opts(NULL), h_session_state(NULL), &plan, 1, 0, why, sizeof(why)),
+        0);
 }
 
 /* A TETRA site whose description fills the plan's whole site label. */

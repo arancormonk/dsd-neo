@@ -11,11 +11,12 @@
 #include "menu_actions.h"
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/constants.h>
@@ -36,12 +37,10 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__SSE__) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
 #include "csv_picker.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -56,6 +55,13 @@
 #include "rr_panel.h"
 
 // ---- Main menu actions ----
+
+/* The menu's context an action or a prompt or chooser callback is handed (void*, as NcMenuItem.on_select and the
+   callbacks take it): the frame's published pair, read-only (issue #672, B9). */
+static UiCtx*
+ui_ctx_from_action(void* v) {
+    return (UiCtx*)v;
+}
 
 /* A session override (#782). A refused one is reported: the row would otherwise flip back with no word. */
 static void
@@ -139,16 +145,6 @@ act_dsp_out(void* v) {
 
 // ---- Config actions ----
 
-static void
-ui_submit_config_metadata(int autosave_enabled, const char* path) {
-    dsd_app_config_metadata_payload payload;
-    DSD_MEMSET(&payload, 0, sizeof payload);
-    payload.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
-    payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
-}
-
 void
 act_config_load(void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -188,36 +184,9 @@ config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
     return 1;
 }
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
-/* GCC's analyzer loses the tie between pctx->n and the count that filled
- * pctx->names, so it walks a path where the names were allocated but this loop
- * runs zero times and reports them as leaked.
- * The analyzer arrived in GCC 10; before that the option below is unknown,
- * which -Werror turns into a build failure. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
-#endif
-static void
-config_profile_free_context(ProfileSelCtx* pctx) {
-    if (!pctx) {
-        return;
-    }
-    if (pctx->names) {
-        for (int i = 0; i < pctx->n; i++) {
-            free((void*)pctx->names[i]);
-        }
-    }
-    free((void*)pctx->labels);
-    free((void*)pctx->names);
-    free(pctx);
-}
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
-#pragma GCC diagnostic pop
-#endif
-
 static ProfileSelCtx*
-config_profile_create_context(dsd_state* state, const char* path, const char** names, int count) {
-    if (!state || !path || !*path || !names || count <= 0) {
+config_profile_create_context(const char* path, const char** names, int count) {
+    if (!path || !*path || !names || count <= 0) {
         return NULL;
     }
 
@@ -225,25 +194,24 @@ config_profile_create_context(dsd_state* state, const char* path, const char** n
     if (!pctx) {
         return NULL;
     }
-    pctx->state = state;
     pctx->n = count;
     int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path);
     if (n < 0 || n >= (int)sizeof pctx->path) {
-        config_profile_free_context(pctx);
+        config_profile_ctx_dispose(pctx);
         return NULL;
     }
 
     pctx->labels = (const char**)calloc((size_t)count, sizeof(char*));
     pctx->names = (const char**)calloc((size_t)count, sizeof(char*));
     if (!pctx->labels || !pctx->names) {
-        config_profile_free_context(pctx);
+        config_profile_ctx_dispose(pctx);
         return NULL;
     }
 
     for (int i = 0; i < count; i++) {
         pctx->names[i] = dsd_strdup(names[i] ? names[i] : "");
         if (!pctx->names[i]) {
-            config_profile_free_context(pctx);
+            config_profile_ctx_dispose(pctx);
             return NULL;
         }
         pctx->labels[i] = pctx->names[i];
@@ -254,7 +222,7 @@ config_profile_create_context(dsd_state* state, const char* path, const char** n
 
 void
 act_config_load_profile(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     if (!c || !c->state) {
         return;
     }
@@ -267,7 +235,7 @@ act_config_load_profile(void* v) {
     const char* names[32];
     char names_buf[1024];
     int count =
-        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
+        dsd_app_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
     if (count < 0) {
         ui_statusf("Failed to read profiles from %s", path);
         return;
@@ -277,13 +245,14 @@ act_config_load_profile(void* v) {
         return;
     }
 
-    ProfileSelCtx* pctx = config_profile_create_context(c->state, path, names, count);
+    ProfileSelCtx* pctx = config_profile_create_context(path, names, count);
     if (!pctx) {
         ui_statusf("Out of memory");
         return;
     }
 
-    ui_chooser_start("Load Profile", pctx->labels, pctx->n, chooser_done_config_profile, pctx);
+    ui_chooser_start_owned("Load Profile", pctx->labels, pctx->n, 0, chooser_done_config_profile, pctx,
+                           config_profile_ctx_dispose);
 }
 
 void
@@ -305,15 +274,11 @@ act_config_save_current(void* v) {
         return;
     }
 
-    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    if (!opts_snapshot || !snapshot) {
+    if (!c->opts) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+    if (dsd_app_config_save(path, c->opts, c->state, 0) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
@@ -332,16 +297,11 @@ act_config_save_default(void* v) {
         ui_statusf("No default config path; nothing saved");
         return;
     }
-    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    if (!opts_snapshot || !snapshot) {
+    if (!c->opts) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
-        ui_submit_config_metadata(1, path);
+    if (dsd_app_config_save(path, c->opts, c->state, 1) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
@@ -491,7 +451,7 @@ act_hangtime(void* v) {
 void
 act_scan_voice_only(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(c ? c->state : NULL);
     const int active = configured ? configured->scan_voice_only : (c && c->opts && c->opts->scan_voice_only);
     int32_t on = active ? 0 : 1;
     (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, on);
@@ -500,7 +460,7 @@ act_scan_voice_only(void* v) {
 void
 act_scan_voice_qualify(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(c->state);
     const int ms = configured ? configured->scan_voice_qualify_ms : c->opts->scan_voice_qualify_ms;
     ui_prompt_open_int_async("Voice qualify (ms)", ms, cb_scan_voice_qualify, c);
 }
@@ -508,14 +468,14 @@ act_scan_voice_qualify(void* v) {
 void
 act_scan_voice_hold(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(c->state);
     const int ms = configured ? configured->scan_voice_hold_ms : c->opts->scan_voice_hold_ms;
     ui_prompt_open_int_async("Voice hold (ms)", ms, cb_scan_voice_hold, c);
 }
 
 void
 act_rr_import(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     if (!c || !c->opts) {
         return;
     }
@@ -524,7 +484,7 @@ act_rr_import(void* v) {
 
 void
 act_rr_library(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     if (!c || !c->opts) {
         return;
     }
@@ -641,27 +601,6 @@ act_p2_params(void* v) {
 // ---- Env/Advanced actions ----
 
 void
-act_toggle_ftz_daz(void* v) {
-#if defined(__SSE__) || defined(__SSE2__)
-    UiCtx* c = (UiCtx*)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
-    on = on ? 0 : 1; // flip
-    ui_env_override("DSD_NEO_FTZ_DAZ", on ? "1" : "0");
-    unsigned int mxcsr = _mm_getcsr();
-    if (on) {
-        mxcsr |= (1u << 15) | (1u << 6);
-    } else {
-        mxcsr &= ~((1u << 15) | (1u << 6));
-    }
-    _mm_setcsr(mxcsr);
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
-#else
-    UNUSED(v);
-#endif
-}
-
-void
 act_set_input_warn(void* v) {
     UiCtx* c = (UiCtx*)v;
     double thr = c ? c->opts->input_warn_db : env_get_double("DSD_NEO_INPUT_WARN_DB", -40.0);
@@ -670,7 +609,7 @@ act_set_input_warn(void* v) {
 
 void
 act_deemph_cycle(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int mode = cfg ? cfg->deemph_mode : DSD_NEO_DEEMPH_UNSET;
     mode = (mode + 1) % 5; // cycle through UNSET->OFF->50->75->NFM->UNSET
@@ -682,7 +621,7 @@ act_deemph_cycle(void* v) {
         case DSD_NEO_DEEMPH_NFM: ui_env_override("DSD_NEO_DEEMPH", "nfm"); break;
         default: break;
     }
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -761,11 +700,12 @@ scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
    never what was typed. */
 static void
 cb_scope_squelch(void* u, const char* text) {
-    UNUSED(u);
+    const UiCtx* c = ui_ctx_from_action(u);
     if (!text) {
         return;
     }
-    const int audio = dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO;
+    /* The frame this answer arrives in (the menu's context), not the one the prompt opened in. */
+    const int audio = dsd_squelch_input_kind(c ? c->opts : NULL) == DSD_SQUELCH_INPUT_AUDIO;
     dsd_app_scan_row_edit_payload values = {0};
     dsd_squelch_setting setting;
     char why[96];
@@ -862,7 +802,8 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
     }
     /* Audio input takes a level or noise (issue #628): an auto setting, or noise on an am row, does not run there, so
        the prompt offers what does run: off. */
-    if (dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO) {
+    const UiCtx* c = ui_ctx_from_action(u);
+    if (dsd_squelch_input_kind(c ? c->opts : NULL) == DSD_SQUELCH_INPUT_AUDIO) {
         if (strncmp(text, "auto", 4) == 0) {
             DSD_SNPRINTF(text, sizeof text, "%s", "off");
         }
@@ -996,8 +937,12 @@ scope_capture(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*open_default)(void*)) {
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* state = dsd_app_get_latest_snapshot();
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
+    const dsd_opts* opts = c->opts;
+    const dsd_state* state = c->state;
     dsd_app_scan_row_view view;
     (void)dsd_app_scan_row_view_get(opts, state, &view);
     if (!dsd_app_scan_row_view_offers(&view, field)
@@ -1033,7 +978,7 @@ act_set_squelch_default(void* v) {
      * scan row overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
     dsd_app_squelch_view view;
     char text[DSD_SQUELCH_TEXT_SIZE];
-    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
+    (void)dsd_app_squelch_view_get(c->opts, c->state, &view);
     (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
     /* Audio input has no channel power for the auto squelch to learn a floor from, so it takes a level or noise. */
     const char* title = dsd_squelch_input_kind(c->opts) == DSD_SQUELCH_INPUT_AUDIO
@@ -1067,13 +1012,13 @@ is_analog_width_editable(const void* v, int kind) {
         return false;
     }
     dsd_frontend_metrics metrics;
-    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    const dsd_frontend_metrics* running =
+        dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U) == 0 ? &metrics : NULL;
     dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(c->opts, snapshot, running, &view) != 0) {
+    if (dsd_app_analog_width_view_get(c->opts, c->state, running, &view) != 0) {
         return false;
     }
-    return dsd_app_analog_width_offered(c->opts, snapshot, &view, kind) != 0;
+    return dsd_app_analog_width_offered(c->opts, c->state, &view, kind) != 0;
 }
 
 /* The NFM width row (issue #525). */
@@ -1108,11 +1053,12 @@ cb_am_bw(void* u, int ok, int hz) {
 }
 
 /* The scope chooser's title for the width of @p kind: its passband on audio input with a rigctl peer (issue #621), from
-   the snapshot pair the chooser captures, as its this-channel prompt reads it. */
+   the frame's snapshot pair (@p v, the menu's context) the chooser captures, as its this-channel prompt reads it. */
 static const char*
-width_scope_title(int kind) {
+width_scope_title(void* v, int kind) {
+    const UiCtx* c = ui_ctx_from_action(v);
     dsd_app_analog_width_view view;
-    (void)dsd_app_analog_width_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), NULL, &view);
+    (void)dsd_app_analog_width_view_get(c ? c->opts : NULL, c ? c->state : NULL, NULL, &view);
     return width_titles_of(kind, view.peer_passband)->chooser;
 }
 
@@ -1121,10 +1067,9 @@ act_set_nfm_bw_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The command edits the configured width: an nfm scan row that sets its own (issue #526) keeps it, so offer the
        configured width rather than the row's. */
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, DSD_ANALOG_DEMOD_FM);
+    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, c->state, DSD_ANALOG_DEMOD_FM);
     dsd_app_analog_width_view view;
-    (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
+    (void)dsd_app_analog_width_view_get(c->opts, c->state, NULL, &view);
     const char* title = width_titles_of(DSD_ANALOG_DEMOD_FM, view.peer_passband)->configured;
     if (!title) {
         /* On a rigctl peer an unset width asks for -B, or leaves the peer its own passband (issue #621): the prompt
@@ -1140,7 +1085,7 @@ act_set_nfm_bw_default(void* v) {
 
 void
 act_set_nfm_bw(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_FM, width_scope_title(DSD_ANALOG_DEMOD_FM),
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_FM, width_scope_title(v, DSD_ANALOG_DEMOD_FM),
                      act_set_nfm_bw_default);
 }
 
@@ -1148,17 +1093,16 @@ static void
 act_set_am_bw_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The command edits the configured width, as the NFM row's does. */
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, DSD_ANALOG_DEMOD_AM);
+    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, c->state, DSD_ANALOG_DEMOD_AM);
     dsd_app_analog_width_view view;
-    (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
+    (void)dsd_app_analog_width_view_get(c->opts, c->state, NULL, &view);
     ui_prompt_open_int_async(width_titles_of(DSD_ANALOG_DEMOD_AM, view.peer_passband)->configured, configured_hz,
                              cb_am_bw, c);
 }
 
 void
 act_set_am_bw(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, width_scope_title(DSD_ANALOG_DEMOD_AM),
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, width_scope_title(v, DSD_ANALOG_DEMOD_AM),
                      act_set_am_bw_default);
 }
 
@@ -1176,18 +1120,12 @@ _Static_assert(TONE_FILTER_CHOICE_COUNT == (size_t)TONE_FILTER_CHOICE_CLEAR + 1U
 /* The list policy the prompt is open for, from the picker row chosen just before it. */
 static int g_tone_filter_prompt_mode = DSD_TONE_FILTER_ALLOW;
 
-/* The configured policy the editor opens on (dsd_app_tone_filter_setting_get()): from the snapshot pair, so a scan
-   row's own policy, which runs over dsd_opts while the row is on air, is never offered as the one to edit. Before the
-   first snapshot, the menu's options' own with no state: the pair its row's label (lbl_tone_filter()) reads. */
+/* The configured policy the editor opens on (dsd_app_tone_filter_setting_get()): from the frame's snapshot pair, the
+   pair its row's label (lbl_tone_filter()) reads, so a scan row's own policy, which runs over dsd_opts while the row is
+   on air, is never offered as the one to edit. */
 static void
 tone_filter_configured(const UiCtx* c, dsd_app_tone_filter_setting* out) {
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* state = dsd_app_get_latest_snapshot();
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-        state = NULL;
-    }
-    (void)dsd_app_tone_filter_setting_get(opts, state, out);
+    (void)dsd_app_tone_filter_setting_get(c ? c->opts : NULL, c ? c->state : NULL, out);
 }
 
 /* The list as typed goes to the command, which checks it and refuses what it cannot apply with the reason. */
@@ -1238,29 +1176,29 @@ act_tone_filter(void* v) {
 
 void
 act_window_freeze_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->window_freeze_is_set) ? cfg->window_freeze : 0;
     ui_env_override("DSD_NEO_WINDOW_FREEZE", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
 act_auto_ppm_freeze(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->auto_ppm_freeze_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
 act_tcp_waitall(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->tcp_waitall_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_TCP_WAITALL", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
     }
@@ -1268,20 +1206,11 @@ act_tcp_waitall(void* v) {
 
 void
 act_rt_sched(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    UNUSED(v);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     ui_env_override("DSD_NEO_RT_SCHED", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
-}
-
-void
-act_mt(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
-    ui_env_override("DSD_NEO_MT", on ? "0" : "1");
-    env_reparse_runtime_cfg(c ? c->opts : NULL);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -1291,7 +1220,8 @@ act_env_editor(void* v) {
         return;
     }
     ec->c = (UiCtx*)v;
-    ui_prompt_open_string_async("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec);
+    ui_prompt_open_string_owned("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec,
+                                env_edit_ctx_dispose);
 }
 
 // ---- Prompt wrappers for Advanced menu ----
@@ -1566,7 +1496,7 @@ io_set_pulse_device_common(void* vctx, int is_input, const char* chooser_title, 
     pctx->names = names;
     pctx->bufs = bufs;
     pctx->n = n;
-    ui_chooser_start(chooser_title, labels, n, on_done, pctx);
+    ui_chooser_start_owned(chooser_title, labels, n, 0, on_done, pctx, pulse_sel_ctx_dispose);
 }
 
 void
@@ -1906,16 +1836,12 @@ static const char k_freq_key_needs_rigctl[] =
     "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).";
 static const char k_freq_key_replay[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
 
-/* The menu's key handling passes the decoder's live options; '=' decides on the published snapshot instead (the
-   context's options stand in before the decoder's first publication). Where the row would be hidden the reason opens,
-   rather than a prompt whose answer the command then refuses. */
+/* '=' decides on the frame's published options, as the row's predicate does. Where the row would be hidden the reason
+   opens, rather than a prompt whose answer the command then refuses. */
 void
 act_freq_key(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    if (!opts) {
-        opts = c ? c->opts : NULL;
-    }
+    const dsd_opts* opts = c ? c->opts : NULL;
     if (freq_entry_offered(opts)) {
         ui_open_freq_prompt(c, NULL);
         return;
@@ -2079,7 +2005,7 @@ void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     ui_prompt_open_int_async("PPM error (-200..200)", metrics.requested_ppm, cb_rtl_ppm, c);
 }
 
@@ -2123,7 +2049,7 @@ rtl_toggle_auto_ppm(void* v) {
 
 void
 rtl_toggle_tuner_autogain(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = ui_ctx_from_action(v);
     if (c && c->state && c->state->rtl_ctx) {
         dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
         (void)dsd_app_command_dsp_op(&p);
@@ -2131,7 +2057,7 @@ rtl_toggle_tuner_autogain(void* v) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         int on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
         ui_env_override("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1");
-        env_reparse_runtime_cfg(c ? c->opts : NULL);
+        env_reparse_runtime_cfg();
     }
 }
 
@@ -2230,13 +2156,106 @@ act_tg_lockout_persist(void* v) {
 
 void
 act_tg_session_avoid_clear(void* v) {
-    (void)v;
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    const UiCtx* c = ui_ctx_from_action(v);
+    const dsd_state* snapshot = c ? c->state : NULL;
     if (snapshot) {
         uint64_t context = 0;
         dsd_tg_policy_table_version(snapshot, &context, NULL);
         (void)dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context);
     }
+}
+
+/* The avoided-channel chooser's context (issue #672): the list built from the frame's pair, with every label and
+   identity, so a pick answered frames later submits the identity it showed, never an index into newer state. */
+typedef struct {
+    dsd_app_scan_avoid_list list;
+    const char** items;
+    char title[48];
+} ScanAvoidPickCtx;
+
+static void
+scan_avoid_pick_ctx_dispose(void* user) {
+    ScanAvoidPickCtx* ctx = (ScanAvoidPickCtx*)user;
+    if (!ctx) {
+        return;
+    }
+    dsd_app_scan_avoid_list_free(&ctx->list);
+    free((void*)ctx->items);
+    free(ctx);
+}
+
+/* The context the chooser hands its callback; the callback only reads it, the chooser's dispose frees it. */
+static const ScanAvoidPickCtx*
+scan_avoid_pick_ctx_of(void* user) {
+    return (ScanAvoidPickCtx*)user;
+}
+
+/* Enter puts the entry back and the chooser closes (D5); the decoder's toast says what happened, including a list the
+   scan changed under it. */
+static void
+chooser_done_scan_avoid(void* user, int selected) {
+    const ScanAvoidPickCtx* ctx = scan_avoid_pick_ctx_of(user);
+    if (!ctx || selected < 0 || (size_t)selected >= ctx->list.count) {
+        return;
+    }
+    (void)dsd_app_command_scan_avoid_remove(&ctx->list.entries[selected].identity);
+}
+
+static ScanAvoidPickCtx*
+scan_avoid_pick_ctx_create(dsd_app_scan_avoid_list* list) {
+    ScanAvoidPickCtx* ctx = (ScanAvoidPickCtx*)calloc(1, sizeof *ctx);
+    const char** items = (const char**)calloc(list->count, sizeof *items);
+    if (!ctx || !items) {
+        free(ctx);
+        free((void*)items);
+        return NULL;
+    }
+    for (size_t i = 0; i < list->count; i++) {
+        items[i] = list->entries[i].label;
+    }
+    ctx->list = *list;
+    DSD_MEMSET(list, 0, sizeof *list);
+    ctx->items = items;
+    DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Avoided channels (%zu)", ctx->list.count);
+    return ctx;
+}
+
+/* Avoided channels...: the avoided -Y rows or trunk-scan targets from the frame's pair (issue #672). */
+void
+act_scan_avoid_list(void* v) {
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c || !c->opts || !c->state) {
+        return;
+    }
+    dsd_app_scan_avoid_list list;
+    if (dsd_app_scan_avoid_list_build(c->opts, c->state, &list) != 0) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Out of memory");
+        return;
+    }
+    /* The chooser counts its rows in an int; like the trunk-scan target loader's "Too many" refusal, a list past that
+       says so rather than showing part of it. */
+    if (list.count > (size_t)INT_MAX) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Too many avoided channels to list; Clear avoids still works");
+        return;
+    }
+    if (!list.summary.available) {
+        ui_statusf("Avoided channel list not ready; try again");
+        return;
+    }
+    if (list.count == 0) {
+        ui_statusf("No avoided channels");
+        return;
+    }
+    ScanAvoidPickCtx* ctx = scan_avoid_pick_ctx_create(&list);
+    if (!ctx) {
+        dsd_app_scan_avoid_list_free(&list);
+        ui_statusf("Out of memory");
+        return;
+    }
+    ui_chooser_start_owned(ctx->title, ctx->items, (int)ctx->list.count, 0, chooser_done_scan_avoid, ctx,
+                           scan_avoid_pick_ctx_dispose);
 }
 
 void
@@ -2347,8 +2366,8 @@ act_decode_mode(void* v) {
        and Auto is the one choice the command layer never treats as a no-op: it
        re-enables every protocol and resets the modulation, so a stray second Enter
        would drag a settled QPSK session back to C4FM. */
-    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
-    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
+    const dsd_opts* opts_snapshot = c ? c->opts : NULL;
+    const dsd_state* snapshot = c ? c->state : NULL;
     const dsdneoUserDecodeMode now =
         opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
     for (size_t i = 0; i < DECODE_MODE_INPUT_BOUND_COUNT; i++) {
@@ -2375,8 +2394,8 @@ act_decode_mode(void* v) {
    operator never typed. */
 static void
 cb_iq_dc_k(void* u, int ok, int k) {
-    UNUSED(u);
-    if (!ok) {
+    const UiCtx* c = ui_ctx_from_action(u);
+    if (!ok || !c) {
         return;
     }
     if (k < 6) {
@@ -2385,8 +2404,9 @@ cb_iq_dc_k(void* u, int ok, int k) {
     if (k > 15) {
         k = 15;
     }
+    /* The frame this answer arrives in (the menu's context). */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     const int delta = k - metrics.iq_dc_shift_k;
     if (delta == 0) {
         return;
@@ -2397,10 +2417,13 @@ cb_iq_dc_k(void* u, int ok, int k) {
 
 void
 act_iq_dc_k_prompt(void* v) {
-    UNUSED(v);
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
-    ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, NULL);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
+    ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, v);
 }
 
 /* 10, not 1: DSD_APP_DSP_OP_TED_GAIN_SET clamps there, so a lower bound of 1 in
@@ -2423,9 +2446,12 @@ cb_ted_gain(void* u, int ok, int milli) {
 
 void
 act_ted_gain_prompt(void* v) {
-    UNUSED(v);
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c) {
+        return;
+    }
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(c->opts, c->state, &metrics, 0U);
     const int milli = (int)(metrics.ted_gain * 1000.0f + 0.5f);
     ui_prompt_open_int_async("CQPSK timing gain (x0.001, 10..500)", milli, cb_ted_gain, NULL);
 }

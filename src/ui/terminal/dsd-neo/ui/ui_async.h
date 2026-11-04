@@ -25,7 +25,7 @@ extern "C" {
  * @brief Start the async UI subsystem (spawns UI thread).
  * @return 0 on success or when already running; negative on failure.
  */
-int ui_start(dsd_opts* opts, dsd_state* state);
+int ui_start(const dsd_opts* opts, const dsd_state* state);
 
 /** @brief Stop the async UI subsystem and join the UI thread. */
 void ui_stop(void);
@@ -39,7 +39,7 @@ void ui_stop(void);
 int ui_is_thread_context(void);
 
 #ifdef DSD_NEO_TEST_HOOKS
-void dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state);
+void dsd_neo_ui_async_test_set_context(const dsd_opts* opts, const dsd_state* state);
 const dsd_opts* dsd_neo_ui_async_test_opts_snapshot_or_default(void);
 int dsd_neo_ui_async_test_curses_is_active(const dsd_opts* opts);
 int dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts);
@@ -47,6 +47,8 @@ void dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts);
 int dsd_neo_ui_async_test_open_curses_if_needed(void);
 void dsd_neo_ui_async_test_close_curses_if_opened(int curses_opened);
 void dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_ns, uint64_t frame_ns);
+/* One whole frame of the UI thread (acquisition, key path, draw), as ui_thread_main() runs it. */
+void dsd_neo_ui_async_test_run_frame(uint64_t* last_draw_ns, uint64_t frame_ns);
 #endif
 
 #ifdef __cplusplus

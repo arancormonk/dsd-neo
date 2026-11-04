@@ -362,7 +362,7 @@ p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const u
     if (accepted_cc) {
         if (!dsd_state_trunk_lcn_user_list_present(opts, state)
             && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
-            state->trunk_lcn_freq[0] = state->p25_cc_freq;
+            (void)dsd_state_trunk_lcn_freq_write(state, 0, state->p25_cc_freq);
         }
 
         const long neigh[1] = {ct_freq};

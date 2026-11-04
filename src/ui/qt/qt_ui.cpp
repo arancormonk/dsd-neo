@@ -116,6 +116,15 @@ ui_apply_style(void) {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 }
 
+// The command surface QML sends through. A put back (issue #672) names an entry of the avoid list the Monitor shows,
+// by its key, so the bridge reads the metrics' list.
+static CommandBridge*
+make_command_bridge(QQmlApplicationEngine& engine, MetricsModel* metrics) {
+    auto* commands = new CommandBridge(&engine);
+    commands->setScanAvoids(metrics->scanAvoidModel());
+    return commands;
+}
+
 static DecryptionProfilesModel*
 wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, SavedSystemsModel* systems,
                          ScanListsModel* scanLists, SessionArgsBuilder* sessionArgs, ScanListStarter* scanListStarter,
@@ -256,7 +265,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
 
     auto* metrics = new MetricsModel(&engine);
     auto* network = new P25NetworkModel(&engine); // WP-F2
-    auto* commands = new CommandBridge(&engine);
+    auto* commands = make_command_bridge(engine, metrics);
     DiagnosticsLog::installTap();
     // The log is process-lifetime and never destroyed, so its last records are made durable here (or, on Android, by
     // main()'s final flush after the teardown, which this only asks to start).

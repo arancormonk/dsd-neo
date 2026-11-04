@@ -19,9 +19,8 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -45,7 +44,7 @@ static UiCtx g_ctx;
 static int g_modal_only = 0;
 
 static UiCtx*
-ui_menu_stable_ctx(dsd_opts* opts, dsd_state* state) {
+ui_menu_stable_ctx(const dsd_opts* opts, const dsd_state* state) {
     g_ctx.opts = opts;
     g_ctx.state = state;
     return &g_ctx;
@@ -220,6 +219,15 @@ ui_overlay_pop_one(void) {
     if (g_depth <= 0) {
         g_depth = 0;
         g_overlay_open = 0;
+    }
+}
+
+/* A submenu whose every row went away while it was open (Clear avoids empties Trunking > Avoids outside a running scan,
+   issue #672) closes back to its parent, whose row for it the same rule now hides; the root keeps its rows. */
+static void
+ui_menu_pop_emptied_frames(const UiCtx* ctx) {
+    while (g_depth > 1 && !ui_submenu_has_visible(g_stack[g_depth - 1].items, g_stack[g_depth - 1].n, ctx)) {
+        ui_overlay_pop_one();
     }
 }
 
@@ -411,7 +419,10 @@ ui_menu_is_activate_key(int ch) {
 }
 
 void
-ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
+ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return; /* nothing published yet: the menu reads only the frame's snapshot pair */
+    }
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     const NcMenuItem* items = NULL;
     size_t n = 0;
@@ -420,13 +431,11 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
         return;
     }
     // If no default config exists yet, provide a small hint so users starting
-    // from CLI arguments discover the Config menu for saving defaults.
-    const char* cfg_path = dsd_user_config_default_path();
-    if (cfg_path && *cfg_path) {
-        dsd_stat_t st;
-        if (dsd_stat_path(cfg_path, &st) != 0) {
-            ui_statusf("No default config; use Config menu to save to %s", cfg_path);
-        }
+    // from CLI arguments discover the Config menu for saving defaults. The
+    // config service looks at the file; the menu does no I/O (issue #672).
+    char cfg_path[1024];
+    if (dsd_app_config_default_missing(cfg_path, sizeof cfg_path)) {
+        ui_statusf("No default config; use Config menu to save to %s", cfg_path);
     }
     g_overlay_open = 1;
     g_depth = 1;
@@ -442,8 +451,8 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
 
 /* No "No default config" hint: nothing shows a menu toast here, and the entry is not the menu. */
 void
-ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state, nc_action_fn open_modal) {
-    if (!open_modal) {
+ui_menu_open_modal_async(const dsd_opts* opts, const dsd_state* state, nc_action_fn open_modal) {
+    if (!open_modal || !opts || !state) {
         return;
     }
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
@@ -460,8 +469,26 @@ ui_menu_is_open(void) {
     return g_overlay_open;
 }
 
+enum {
+    /* A prompt's cancel can open another prompt or chooser; a few passes close what that opens too. */
+    UI_OVERLAY_SHUTDOWN_PASSES = 4,
+};
+
+void
+ui_overlays_shutdown(void) {
+    ui_help_close();
+    for (int pass = 0; pass < UI_OVERLAY_SHUTDOWN_PASSES && (ui_prompt_active() || ui_chooser_active()); pass++) {
+        ui_prompt_close_all();
+        ui_chooser_close();
+    }
+    ui_overlay_close_all();
+    DSD_MEMSET(g_stack, 0, sizeof(g_stack));
+    g_ctx.opts = NULL;
+    g_ctx.state = NULL;
+}
+
 int
-ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
+ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     if (!g_overlay_open || g_depth <= 0) {
         return 0;
@@ -504,7 +531,7 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ui_menu_tick(dsd_opts* opts, dsd_state* state) {
+ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     const UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     /* A modal closed outside the key handling never leaves a prompt-only overlay's empty frame to draw. */
     ui_menu_close_if_modal_done();
@@ -514,6 +541,7 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     rr_panel_tick(opts, state);
     /* The RR panel's tick can end it: a modal-only overlay that held nothing else closes now, not after an empty frame. */
     ui_menu_close_if_modal_done();
+    ui_menu_pop_emptied_frames(ctx);
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }

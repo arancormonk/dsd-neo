@@ -1398,14 +1398,14 @@ edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int 
     if (opts->use_rigctl == 1) {
         long int lcnfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
         if (lcnfreq != 0) {
-            state->trunk_lcn_freq[lcn - 1] = lcnfreq;
+            (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, lcnfreq);
         }
     }
 
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         long int lcnfreq = (long int)opts->rtlsdr_center_freq;
         if (lcnfreq != 0) {
-            state->trunk_lcn_freq[lcn - 1] = lcnfreq;
+            (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, lcnfreq);
         }
     }
 }

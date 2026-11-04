@@ -14,11 +14,17 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/app_control/config_files.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -67,6 +73,16 @@ static int g_rr_panel_ends_on_tick = 0;
 static int g_draw_menu_calls = 0; /* frames the tick set out to draw */
 static int g_modal_opener_calls = 0;
 static UiCtx* g_modal_opener_ctx = NULL;
+/* Issue #672 (B9): a prompt answered by a later key runs its callback (g_prompt_answer, with the user its opener gave)
+   from inside that key's handling, as the real prompt does; the callback records the pair it reads. */
+static void (*g_prompt_answer)(void* user) = NULL;
+static void* g_prompt_answer_user = NULL;
+static const dsd_opts* g_answer_opts = NULL;
+static const dsd_state* g_answer_state = NULL;
+/* Issue #672 (B17): what the overlay shutdown closed, in order ("help", "prompt", "chooser"), and how many times the
+   prompt's cancel opens a follow-up prompt, as a callback may. */
+static char g_close_log[128];
+static int g_prompt_cancel_reopens = 0;
 
 static void
 capture_action(const char* id) {
@@ -130,6 +146,23 @@ open_prompt_modal(void* ctx) {
     g_modal_opener_calls++;
     g_modal_opener_ctx = (UiCtx*)ctx;
     g_prompt_active = 1;
+}
+
+/* A deferred callback: it reads the menu's context when it runs, the frame's pair at that moment. */
+static void
+record_answer_pair(void* user) {
+    const UiCtx* c = (const UiCtx*)user;
+    g_answer_opts = c ? c->opts : NULL;
+    g_answer_state = c ? c->state : NULL;
+}
+
+static void
+open_answerable_prompt_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_prompt_active = 1;
+    g_prompt_answer = record_answer_pair;
+    g_prompt_answer_user = ctx;
 }
 
 static void
@@ -197,6 +230,29 @@ static const NcMenuItem JUMP_GUARD_ITEMS[] = {
     {.id = "jump2", .label = "Jump 2", .on_select = act_kind2, .no_jump = true},
 };
 
+/* A submenu whose rows all go away while it is open, as Clear avoids empties Trunking > Avoids (issue #672). */
+static bool g_emptiable_rows_on = true;
+
+static bool
+emptiable_row_on(const void* ctx) {
+    (void)ctx;
+    return g_emptiable_rows_on;
+}
+
+static const NcMenuItem EMPTIABLE_ITEMS[] = {
+    {.id = "gone0", .label = "Gone 0", .is_enabled = emptiable_row_on, .on_select = act_sub0},
+    {.id = "gone.sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "gone1", .label = "Gone 1", .is_enabled = emptiable_row_on, .on_select = act_sub1},
+};
+
+static const NcMenuItem EMPTIABLE_ROOT_ITEMS[] = {
+    {.id = "emptiable",
+     .label = "Emptiable",
+     .submenu = EMPTIABLE_ITEMS,
+     .submenu_len = sizeof EMPTIABLE_ITEMS / sizeof EMPTIABLE_ITEMS[0]},
+    {.id = "root6", .label = "Root 6", .on_select = act_root6},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -239,14 +295,30 @@ assert_last_action(const char* want) {
     assert(strcmp(g_last_action, want) == 0);
 }
 
+static char g_status[160];
+
+void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
+
 void
 ui_statusf(const char* fmt, ...) {
-    (void)fmt;
+    va_list ap;
+    va_start(ap, fmt);
+    (void)DSD_VSNPRINTF(g_status, sizeof g_status, fmt, ap);
+    va_end(ap);
 }
 
-const char*
-dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
-    return "";
+/* The config service's look at the default file (issue #672): the menu asks it and does no I/O itself. */
+static const char* g_default_missing_path = NULL;
+static int g_default_missing_calls = 0;
+
+int
+dsd_app_config_default_missing(char* path, size_t path_size) { // NOLINT(misc-use-internal-linkage)
+    g_default_missing_calls++;
+    if (!g_default_missing_path || path_size == 0U) {
+        return 0;
+    }
+    DSD_SNPRINTF(path, path_size, "%s", g_default_missing_path);
+    return 1;
 }
 
 void
@@ -266,6 +338,9 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
     } else if (g_fixture == 4) {
         items = JUMP_GUARD_ITEMS;
         n = sizeof JUMP_GUARD_ITEMS / sizeof JUMP_GUARD_ITEMS[0];
+    } else if (g_fixture == 5) {
+        items = EMPTIABLE_ROOT_ITEMS;
+        n = sizeof EMPTIABLE_ROOT_ITEMS / sizeof EMPTIABLE_ROOT_ITEMS[0];
     }
     if (out_items) {
         *out_items = items;
@@ -284,6 +359,13 @@ int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     g_prompt_key_calls++;
+    if (g_prompt_answer) {
+        void (*answer)(void*) = g_prompt_answer;
+        g_prompt_answer = NULL;
+        g_prompt_active = 0;
+        answer(g_prompt_answer_user);
+        return 1;
+    }
     if (g_prompt_closes_on_key || g_prompt_reopens_on_key) {
         g_prompt_active = 0;
     }
@@ -323,6 +405,34 @@ ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
     g_help_render_calls++;
 }
 
+static void
+log_close(const char* what) {
+    const size_t used = strlen(g_close_log);
+    (void)DSD_SNPRINTF(g_close_log + used, sizeof g_close_log - used, "%s%s", used ? "," : "", what);
+}
+
+void
+ui_help_close(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("help");
+    g_help_active = 0;
+}
+
+void
+ui_prompt_close_all(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("prompt");
+    if (g_prompt_active && g_prompt_cancel_reopens > 0) {
+        g_prompt_cancel_reopens--;
+        return; /* the cancel opened the next prompt */
+    }
+    g_prompt_active = 0;
+}
+
+void
+ui_chooser_close(void) { // NOLINT(misc-use-internal-linkage)
+    log_close("chooser");
+    g_chooser_active = 0;
+}
+
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
     return g_chooser_active;
@@ -358,7 +468,7 @@ rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+rr_panel_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     if (g_rr_panel_ends_on_tick) {
@@ -376,8 +486,9 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
     }
+    /* Selectable, as menu_render.c counts: a separator alone keeps no submenu on screen. */
     for (size_t i = 0; i < n; i++) {
-        if (ui_is_enabled(&items[i], ctx)) {
+        if (ui_is_selectable(&items[i], ctx)) {
             return 1;
         }
     }
@@ -503,12 +614,68 @@ resize_term(int lines, int columns) {
     return OK;
 }
 
+/* Issue #672 (B17): exit closes every overlay - help, the prompt (whose cancel may open a chooser), the chooser and every
+   menu frame - and resets the overlay, so the next start opens on a fresh root menu. */
+static void
+test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state) {
+    g_fixture = 0;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    for (int i = 0; i < 4; i++) { /* root0 -> root2 (root1 is disabled) -> ... -> root5 */
+        assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    }
+    assert(ui_menu_handle_key('\n', opts, state) == 1); /* into root5's submenu: two frames */
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert_last_action("sub0");
+    g_help_active = 1;
+    g_prompt_active = 1;
+    g_chooser_active = 1;
+    g_prompt_cancel_reopens = 1;
+    g_close_log[0] = '\0';
+    ui_overlays_shutdown();
+    /* The prompt's cancel opened a follow-up prompt; a second pass closes it. */
+    assert(strcmp(g_close_log, "help,prompt,chooser,prompt,chooser") == 0);
+    assert(!g_help_active && !g_prompt_active && !g_chooser_active);
+    assert(ui_menu_is_open() == 0);
+    assert(g_rr_panel_close_calls == 1); /* the frames' own close, after rr_panel_shutdown() has run */
+
+    /* Nothing open: help is closed (idempotent) and nothing else runs. */
+    g_close_log[0] = '\0';
+    ui_overlays_shutdown();
+    assert(strcmp(g_close_log, "help") == 0);
+    assert(ui_menu_is_open() == 0);
+
+    /* Restart: the root menu opens fresh at depth one, so Left closes it rather than popping a stale submenu. */
+    reset_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert_last_action("root0");
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* A prompt-only overlay shut down with its modal open does not survive as a modal-only overlay either. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_prompt_modal);
+    assert(ui_menu_is_open() == 1);
+    ui_overlays_shutdown();
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_async(opts, state);
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 1); /* a full menu now, not closed as an empty modal-only frame */
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+}
+
 int
 main(void) {
-    static unsigned char opts_token;
-    static unsigned char state_token;
-    dsd_opts* opts = (dsd_opts*)&opts_token;
-    dsd_state* state = (dsd_state*)&state_token;
+    /* The frame's pair: real objects (only their addresses are compared), on the heap as dsd_opts/dsd_state go. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_opts* next_opts = (dsd_opts*)calloc(1, sizeof(*next_opts));
+    dsd_state* next_state = (dsd_state*)calloc(1, sizeof(*next_state));
+    assert(opts && state && next_opts && next_state);
 
     g_fixture = 1;
     ui_menu_open_async(opts, state);
@@ -835,6 +1002,80 @@ main(void) {
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
 
+    /* Issue #672: opening the menu asks the config service whether the default config is still to be written and
+       says so; with one on disk (or no default path) it says nothing. */
+    ui_menu_handle_key(27, opts, state);
+    g_fixture = 0;
+    g_status[0] = '\0';
+    g_default_missing_calls = 0;
+    g_default_missing_path = "/home/u/.config/dsd-neo/config.ini";
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(g_default_missing_calls == 1);
+    assert(strcmp(g_status, "No default config; use Config menu to save to /home/u/.config/dsd-neo/config.ini") == 0);
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    g_status[0] = '\0';
+    g_default_missing_path = NULL;
+    ui_menu_open_async(opts, state);
+    assert(g_default_missing_calls == 2);
+    assert(g_status[0] == '\0');
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* Issue #672 (B9): the menu reads only the frame's published pair. Before the first publication (no state snapshot)
+       neither the menu nor a prompt-only overlay opens. */
+    reset_capture();
+    reset_modal_capture();
+    g_modal_opener_calls = 0;
+    ui_menu_open_async(opts, NULL);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_async(NULL, state);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_modal_async(opts, NULL, open_prompt_modal);
+    assert(g_modal_opener_calls == 0);
+    assert(ui_menu_is_open() == 0);
+
+    /* A prompt answered frames after it opened, across a publication and a decoder restart, runs its callback with the
+       pair the frame it is answered in handed the menu, never the opener frame's. */
+    reset_modal_capture();
+    g_answer_opts = NULL;
+    g_answer_state = NULL;
+    ui_menu_open_modal_async(opts, state, open_answerable_prompt_modal);
+    assert(g_modal_opener_ctx != NULL && g_modal_opener_ctx->opts == opts && g_modal_opener_ctx->state == state);
+    ui_menu_tick(next_opts, next_state);
+    assert(ui_menu_handle_key('\n', next_opts, next_state) == 1);
+    assert(g_answer_opts == next_opts && g_answer_state == next_state);
+    assert(ui_menu_is_open() == 0);
+
+    test_overlays_shutdown_and_restart(opts, state);
+
+    /* A submenu emptied while open (issue #672: Clear avoids outside a running scan hides all three Avoids rows) goes
+       back to its parent at the next tick, rather than drawing a frame with only its separator and nothing to rest
+       on; the parent's highlight moves off the row that now hides. */
+    g_fixture = 5;
+    g_emptiable_rows_on = true;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    ui_menu_tick(opts, state);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("sub0");
+    g_emptiable_rows_on = false;
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 1);
+    reset_capture();
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("root6");
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+    g_emptiable_rows_on = true;
+    g_fixture = 0;
+
+    free(next_state);
+    free(next_opts);
+    free(state);
+    free(opts);
     printf("UI_MENU_NAVIGATION: OK\n");
     return 0;
 }

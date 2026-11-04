@@ -102,6 +102,7 @@
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
+#include "scan_avoid_list_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "screen_reader_state.h"
@@ -918,6 +919,13 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* Issue #672: each Put back, by the key it names. */
+    Q_INVOKABLE bool
+    restoreScanAvoid(const QString& key) {
+        m_restored_scan_avoids << key;
+        return true;
+    }
+
     Q_INVOKABLE bool
     previousChannel() {
         m_previous_channel_calls++;
@@ -1134,6 +1142,7 @@ class CommandRecorder : public QObject {
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
+        m_restored_scan_avoids.clear();
         m_previous_channel_calls = 0;
         m_next_channel_calls = 0;
         m_resume_scan_calls = 0;
@@ -1164,6 +1173,11 @@ class CommandRecorder : public QObject {
     int
     scanAvoidClearCalls() const {
         return m_scan_avoid_clear_calls;
+    }
+
+    QStringList
+    restoredScanAvoids() const {
+        return m_restored_scan_avoids;
     }
 
     int
@@ -1420,6 +1434,7 @@ class CommandRecorder : public QObject {
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
     int m_scan_avoid_clear_calls = 0;
+    QStringList m_restored_scan_avoids;
     int m_previous_channel_calls = 0;
     int m_next_channel_calls = 0;
     int m_resume_scan_calls = 0;
@@ -3769,6 +3784,43 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->scanAvoidClearCalls() : -1;
     }
 
+    /** @brief Issue #672: the keys the avoid sheet's Put back buttons sent, oldest first. */
+    Q_INVOKABLE QStringList
+    restoredScanAvoids() const {
+        return (m_commands != nullptr) ? m_commands->restoredScanAvoids() : QStringList();
+    }
+
+    /**
+     * @brief Issue #672: make the avoid list (the real ScanAvoidListModel `metrics.scanAvoidModel` is) the entries
+     * @p entries, each {key, label}, in order, as MetricsModel hands it a new list: by key, so a row whose key stays
+     * keeps its delegate. The readings beside it (scanAvoidCount and the rest) are the case's to set.
+     */
+    Q_INVOKABLE void
+    setScanAvoids(const QVariantList& entries) {
+        if (m_scan_avoid_model == nullptr) {
+            return;
+        }
+        QList<dsd_qt::ScanAvoidListModel::Entry> next;
+        for (const QVariant& value : entries) {
+            const QVariantMap entry = value.toMap();
+            dsd_qt::ScanAvoidListModel::Entry row{entry.value("key").toString(), entry.value("label").toString(), {}};
+            row.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+            next.append(row);
+        }
+        m_scan_avoid_model->apply(std::move(next));
+    }
+
+    /** @brief Issue #672: @p count entries "k0".., labelled "#n  target-n  851.012500 MHz", for a long list. */
+    Q_INVOKABLE void
+    setManyScanAvoids(int count) {
+        QVariantList entries;
+        for (int i = 0; i < count; ++i) {
+            entries.append(QVariantMap{{"key", QStringLiteral("k%1").arg(i)},
+                                       {"label", QStringLiteral("#%1  target-%1  851.012500 MHz").arg(i + 1)}});
+        }
+        setScanAvoids(entries);
+    }
+
     /** @brief How many times the screens asked to step back one scan channel (issue #666). */
     Q_INVOKABLE int
     previousChannelCalls() const {
@@ -4294,6 +4346,12 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
         metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
+        // Issue #672: the avoid list, as MetricsModel publishes it at rest: whole, empty, nothing to manage.
+        metrics[QStringLiteral("scanAvoidsAvailable")] = true;
+        metrics[QStringLiteral("scanAvoidsTotalKnown")] = true;
+        metrics[QStringLiteral("scanAvoidsManageable")] = false;
+        m_scan_avoid_model = new dsd_qt::ScanAvoidListModel(engine);
+        metrics[QStringLiteral("scanAvoidModel")] = QVariant::fromValue(static_cast<QObject*>(m_scan_avoid_model));
         metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Why the rotation is staying and how long is left (#508). Nothing is
         // published at rest, so the row is down and every budget reads 0.
@@ -4663,6 +4721,8 @@ class Setup : public QObject {
     BackupRecorder* m_backup = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
+    /* Issue #672: the Monitor's avoid list, the production model, filled by setScanAvoids(). */
+    dsd_qt::ScanAvoidListModel* m_scan_avoid_model = nullptr;
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;

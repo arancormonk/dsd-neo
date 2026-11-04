@@ -562,6 +562,65 @@ test_structured(void) {
     assert(g_last_id == DSD_APP_CMD_RR_APPLY_IMPORT && rr.decode_mode == (int32_t)DSDCFG_MODE_TETRA);
 }
 
+/* scan_avoid_remove (issue #672): each kind's identity reaches the payload exact; a missing field, the other kind's
+   name, a negative row and a session that is 0 or past UINT32_MAX (which would alias another) are refused. */
+static void
+test_scan_avoid_remove(void) {
+    dsd_app_scan_avoid_remove_payload p = {0};
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":\"18446744073709551615\","
+              "\"list_rev\":7,\"row\":3,\"frequency_hz\":851012500}}"));
+    assert(g_last_id == DSD_APP_CMD_SCAN_AVOID_REMOVE && g_last_n == sizeof p);
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.kind == DSD_APP_SCAN_AVOID_KIND_LCN && p.instance == UINT64_MAX && p.list_rev == 7U && p.row == 3);
+    assert(p.frequency_hz == 851012500U && p.session == 0U && p.target_id[0] == '\0' && p.pad == 0U);
+
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":4294967295,"
+              "\"target_id\":\"county-p25\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN && p.session == UINT32_MAX);
+    assert(strcmp(p.target_id, "county-p25") == 0 && p.row == -1 && p.instance == 0U);
+
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"channel\",\"session\":1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,\"row\":-1,"
+            "\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":0,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":4294967297,"
+            "\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"\"}}");
+    /* Session and the 64-bit fields as a client whose numbers are doubles sends them; garbage of each type refused. */
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":\"0x10\",\"list_rev\":\"9\","
+              "\"row\":2147483647,\"frequency_hz\":\"0\",\"label\":\"Row 1\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.instance == 16U && p.list_rev == 9U && p.row == INT32_MAX && p.frequency_hz == 0U);
+    assert(ok(
+        "{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":\"7\",\"target_id\":\"a\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.session == 7U);
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":1,\"session\":1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":-1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":\"4294967296\","
+            "\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":7}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"row\":2147483648,\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":-2,"
+            "\"row\":0,\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"row\":0,\"frequency_hz\":-3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scanx\",\"session\":1,\"target_id\":\"a\"}}");
+    char* long_id = repeat_char('a', sizeof p.target_id);
+    char request[256];
+    DSD_SNPRINTF(
+        request, sizeof request,
+        "{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"%s\"}}",
+        long_id);
+    refused(request);
+    free(long_id);
+}
+
 static void
 test_config(void) {
     assert(ok("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":{\"enabled\":true}}}}"));
@@ -609,6 +668,7 @@ main(void) {
     test_keys();
     test_receive();
     test_structured();
+    test_scan_avoid_remove();
     test_config();
     test_response_framing();
     free(g_last);

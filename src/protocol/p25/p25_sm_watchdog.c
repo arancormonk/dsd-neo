@@ -10,6 +10,8 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
@@ -22,6 +24,11 @@
 
 static dsd_thread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;
+/* Whether g_p25_sm_wd_thread holds a started thread: only that one is joined (a handle never created is not). */
+static int g_p25_sm_wd_thread_created = 0;
+#ifdef DSD_NEO_TEST_HOOKS
+static p25_sm_watchdog_thread_create_fn g_p25_sm_wd_create_for_test = NULL;
+#endif
 static atomic_int g_p25_sm_tick_lock = 0;
 static atomic_int g_p25_sm_in_tick = 0;
 static dsd_opts* g_opts = NULL;
@@ -94,6 +101,7 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     p25_sm_watchdog_thread(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("p25_watchdog");
     (void)arg;
     while (atomic_load(&g_p25_sm_wd_running) && !dsd_exitflag_load()) {
         if (g_opts && g_state) {
@@ -135,18 +143,40 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
         }
     }
     int expected = 0;
-    if (atomic_compare_exchange_strong(&g_p25_sm_wd_running, &expected, 1)) {
-        (void)dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
+    if (!atomic_compare_exchange_strong(&g_p25_sm_wd_running, &expected, 1)) {
+        return;
     }
+#ifdef DSD_NEO_TEST_HOOKS
+    const p25_sm_watchdog_thread_create_fn create = g_p25_sm_wd_create_for_test;
+    const int rc = create ? create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL)
+                          : dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
+#else
+    const int rc = dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
+#endif
+    if (rc != 0) {
+        /* No watchdog this run: the decoder's own ticks keep the state machine going. A later start tries again. */
+        atomic_store(&g_p25_sm_wd_running, 0);
+        LOG_WARN("P25 watchdog thread did not start (%d); trunking ticks only with the decoder.\n", rc);
+        return;
+    }
+    g_p25_sm_wd_thread_created = 1;
 }
 
 void
 p25_sm_watchdog_stop(void) {
-    int was = atomic_exchange(&g_p25_sm_wd_running, 0);
-    if (was != 0) {
+    (void)atomic_exchange(&g_p25_sm_wd_running, 0);
+    if (g_p25_sm_wd_thread_created) {
         dsd_thread_join(g_p25_sm_wd_thread);
+        g_p25_sm_wd_thread_created = 0;
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+p25_sm_watchdog_set_thread_create_for_test(p25_sm_watchdog_thread_create_fn create) {
+    g_p25_sm_wd_create_for_test = create;
+}
+#endif
 
 int
 p25_sm_in_tick(void) {

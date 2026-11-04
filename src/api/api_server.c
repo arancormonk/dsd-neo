@@ -340,17 +340,58 @@ session_error(api_session* s, const dsd_json_node* id, const char* code, const c
  * Request handlers
  *============================================================================*/
 
+/* The page bounds of a `get {"what":"scan_avoids"}`: offset from 0 (default 0; past the end is an empty page), limit
+   1..DSD_API_SCAN_AVOIDS_PAGE_MAX (default the maximum). Returns 0, or -1 for a value out of range or not an integer. */
+static int
+get_scan_avoids_bounds(const dsd_json_node* params, uint64_t* offset, size_t* limit) {
+    const dsd_json_node* offset_node = dsd_json_obj_get(params, "offset");
+    const dsd_json_node* limit_node = dsd_json_obj_get(params, "limit");
+    uint64_t lim = (uint64_t)DSD_API_SCAN_AVOIDS_PAGE_MAX;
+    *offset = 0U;
+    if ((offset_node != NULL && dsd_json_as_u64(offset_node, offset) != 0)
+        || (limit_node != NULL && dsd_json_as_u64(limit_node, &lim) != 0) || lim < 1U
+        || lim > (uint64_t)DSD_API_SCAN_AVOIDS_PAGE_MAX) {
+        return -1;
+    }
+    *limit = (size_t)lim;
+    return 0;
+}
+
+/* One page of the session's scan avoids (issue #672), formatted from the feed's copy on this session thread. */
+static void
+handle_get_scan_avoids(api_session* s, const dsd_json_node* id, const dsd_json_node* params, dsd_json_buf* scratch) {
+    uint64_t offset = 0U;
+    size_t limit = 0U;
+    if (get_scan_avoids_bounds(params, &offset, &limit) != 0) {
+        session_error(s, id, "invalid_params", "offset must be an integer from 0 and limit an integer from 1 to 64", 0,
+                      scratch);
+        return;
+    }
+    dsd_json_writer w;
+    dsd_api_response_begin(scratch, &w, id, 1);
+    (void)dsd_json_kv_str(&w, "what", "scan_avoids");
+    (void)dsd_json_key(&w, "data");
+    dsd_api_feed_scan_avoids_page(&w, offset, limit);
+    if (dsd_api_response_end(scratch, &w) == 0) {
+        session_queue(s, scratch);
+    }
+}
+
 static void
 handle_get(api_session* s, const dsd_json_node* id, const dsd_json_node* params, dsd_json_buf* scratch) {
     const dsd_json_node* what_node = dsd_json_obj_get(params, "what");
     const char* what = (what_node == NULL) ? "status" : dsd_json_as_str(what_node);
+    if (what != NULL && strcmp(what, "scan_avoids") == 0) {
+        handle_get_scan_avoids(s, id, params, scratch);
+        return;
+    }
     dsd_json_buf cached;
     dsd_json_buf_init(&cached);
     const int have = (what != NULL) ? dsd_api_feed_latest(what, &cached) : -1;
     if (have < 0) {
         dsd_json_buf_free(&cached);
-        session_error(s, id, "invalid_params", "what must be status, snapshot, call, system, metrics or quality", 0,
-                      scratch);
+        session_error(s, id, "invalid_params",
+                      "what must be status, snapshot, call, system, metrics, quality or scan_avoids", 0, scratch);
         return;
     }
     dsd_json_writer w;

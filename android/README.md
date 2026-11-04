@@ -2070,6 +2070,12 @@ on forward from there. Both need a radio input (or a rigctl peer) to retune. Wit
 text the four buttons take two rows of two. If trunking or anything else takes the tuner
 while **Go to** is open, the sheet closes and says why.
 
+Once something is avoided, the **SCAN AVOIDS** row shows how many channels (or scan-list
+targets) are out of the rotation, with **Show** and **Clear**. **Show** lists them, each
+with **Put back**, which returns that one to the rotation without retuning; **Put all
+back** does the same for every one, as **Clear** does. Both still work while the scan is
+paused. Avoids last for the session and are never saved.
+
 The line under the Spectrum view's sync and SNR names the system on the carrier
 being decoded, from the same received identity as the Monitor's site row: the
 access code first (**CC 1 · Rest LSN 3**, **NAC 293 · SYS 348 · RFSS 3 · SITE 21

@@ -26,7 +26,9 @@ void dsd_terminal_open(const dsd_opts* opts, dsd_state* state);
 void dsd_terminal_render(dsd_opts* opts, dsd_state* state);
 void dsd_terminal_close(void);
 
-uint8_t dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c);
+/* A main-screen key, on the frame's published snapshot pair (issue #672, B9). Before the first publication (NULL
+   @p state) only Quit is handled. */
+uint8_t dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c);
 
 #ifdef __cplusplus
 }

@@ -18,9 +18,13 @@
 #include <stddef.h>
 #include "scan_mode_label_stubs.h"
 
-static dsd_opts snapshot_opts;
-static dsd_state snapshot_state;
-static int snapshots_available = 1;
+/* The frame's published snapshot pair the menu holds (issue #672, B9): a case's own structs, bound with
+   dsd_test_scan_labels_frame() as it builds its menu context. The menu acquires no snapshot of its own, and these stubs
+   define no snapshot accessor, so a label, action or callback that acquired one would not link. */
+static dsd_opts default_opts;
+static dsd_state default_state;
+static dsd_opts* frame_opts = &default_opts;
+static dsd_state* frame_state = &default_state;
 static dsd_scan_mode active_mode;
 static dsd_scan_settings configured_settings;
 static int have_configured;
@@ -37,7 +41,7 @@ dsd_test_scan_labels_row_options(const dsd_scan_option_values* values) {
 
 const dsd_scan_option_values*
 dsd_scan_mode_row_options(const dsd_state* state) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     return state && have_row_options ? &row_options : NULL;
 }
 
@@ -57,80 +61,85 @@ dsd_test_scan_labels_configured(const dsd_scan_settings* settings) {
 
 void
 dsd_test_scan_labels_input_type(int audio_in_type) {
-    snapshot_opts.audio_in_type = audio_in_type;
+    frame_opts->audio_in_type = audio_in_type;
 }
 
 void
 dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set) {
-    snapshot_opts.analog_tone_filter = mode;
-    DSD_MEMSET(&snapshot_opts.analog_tone_set, 0, sizeof(snapshot_opts.analog_tone_set));
+    frame_opts->analog_tone_filter = mode;
+    DSD_MEMSET(&frame_opts->analog_tone_set, 0, sizeof(frame_opts->analog_tone_set));
     if (set) {
-        snapshot_opts.analog_tone_set = *set;
+        frame_opts->analog_tone_set = *set;
     }
 }
 
 void
 dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint32_t editable, uint32_t listed,
                               uint32_t edited, const char* target_id) {
-    snapshot_state.scan_row_scanner = (uint8_t)scanner;
-    snapshot_state.scan_row_session = session;
-    snapshot_state.scan_row_index = row;
-    snapshot_state.scan_row_editable = (uint8_t)editable;
-    snapshot_state.scan_row_listed = (uint8_t)listed;
-    snapshot_state.scan_row_edited = (uint8_t)edited;
-    DSD_SNPRINTF(snapshot_state.trunk_scan_active_id, sizeof snapshot_state.trunk_scan_active_id, "%s",
+    frame_state->scan_row_scanner = (uint8_t)scanner;
+    frame_state->scan_row_session = session;
+    frame_state->scan_row_index = row;
+    frame_state->scan_row_editable = (uint8_t)editable;
+    frame_state->scan_row_listed = (uint8_t)listed;
+    frame_state->scan_row_edited = (uint8_t)edited;
+    DSD_SNPRINTF(frame_state->trunk_scan_active_id, sizeof frame_state->trunk_scan_active_id, "%s",
                  target_id ? target_id : "");
-    snapshot_opts.trunk_scan_enabled = scanner == 1 ? 1 : 0;
-    snapshot_opts.scanner_mode = scanner == 2 ? 1 : 0;
+    frame_opts->trunk_scan_enabled = scanner == 1 ? 1 : 0;
+    frame_opts->scanner_mode = scanner == 2 ? 1 : 0;
 }
 
 void
 dsd_test_scan_labels_rigctl(int connected, int setmod_bw_hz) {
-    snapshot_opts.use_rigctl = connected ? 1 : 0;
-    snapshot_opts.rigctl_sockfd = connected ? (dsd_socket_t)5 : DSD_INVALID_SOCKET;
-    snapshot_opts.setmod_bw = setmod_bw_hz;
+    frame_opts->use_rigctl = connected ? 1 : 0;
+    frame_opts->rigctl_sockfd = connected ? (dsd_socket_t)5 : DSD_INVALID_SOCKET;
+    frame_opts->setmod_bw = setmod_bw_hz;
 }
 
 void
 dsd_test_scan_labels_analog(int analog_only, int analog_demod) {
-    snapshot_opts.analog_only = analog_only;
-    snapshot_opts.analog_demod = analog_demod;
+    frame_opts->analog_only = analog_only;
+    frame_opts->analog_demod = analog_demod;
 }
 
 void
 dsd_test_scan_labels_rtl_gain(int gain) {
-    snapshot_opts.rtl_gain_value = gain;
+    frame_opts->rtl_gain_value = gain;
 }
 
 void
 dsd_test_scan_labels_squelch(int mode, int margin_db, double level) {
-    snapshot_opts.rtl_squelch_mode = mode;
-    snapshot_opts.rtl_squelch_margin_db = margin_db;
-    snapshot_opts.rtl_squelch_level = level;
+    frame_opts->rtl_squelch_mode = mode;
+    frame_opts->rtl_squelch_margin_db = margin_db;
+    frame_opts->rtl_squelch_level = level;
 }
 
 void
 dsd_test_scan_labels_scope_seq(uint32_t opts_seq, uint32_t state_seq) {
-    snapshot_opts.scan_row_scope_seq = opts_seq;
-    snapshot_state.scan_row_scope_seq = state_seq;
+    frame_opts->scan_row_scope_seq = opts_seq;
+    frame_state->scan_row_scope_seq = state_seq;
 }
 
 /* The row class the scope holds: the stubbed active class. */
 dsd_scan_mode
 dsd_scan_mode_row(const dsd_state* state) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     return state ? active_mode : DSD_SCAN_MODE_INHERIT;
 }
 
 void
-dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
-    snapshots_available = available;
+dsd_test_scan_labels_frame(dsd_opts* opts, dsd_state* state) {
+    frame_opts = opts ? opts : &default_opts;
+    frame_state = state ? state : &default_state;
+}
+
+void
+dsd_test_scan_labels_set(dsd_scan_mode mode) {
     active_mode = mode;
 }
 
 const dsd_scan_settings*
 dsd_scan_mode_configured_view(const dsd_state* state) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     return state && have_configured ? &configured_settings : NULL;
 }
 
@@ -185,33 +194,23 @@ dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* stat
 
 void
 dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {
-    assert(opts == &snapshot_opts);
-    assert(state == &snapshot_state);
+    assert(opts == frame_opts);
+    assert(state == frame_state);
     out->use_cosine_filter = opts->use_cosine_filter;
     out->monitor_input_audio = opts->monitor_input_audio;
 }
 
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
-    return snapshots_available ? &snapshot_opts : NULL;
-}
-
-const dsd_state*
-dsd_app_get_latest_snapshot(void) {
-    return snapshots_available ? &snapshot_state : NULL;
-}
-
-/* Fail if a label or picker passes the live menu context to an extension reader. */
+/* Fail if a label or picker passes anything but the frame's pair to an extension reader. */
 dsdneoUserDecodeMode
 dsd_scan_mode_configured_preset(const dsd_opts* opts, const dsd_state* state) {
-    assert(opts == &snapshot_opts);
-    assert(state == &snapshot_state);
+    assert(opts == frame_opts);
+    assert(state == frame_state);
     return dsd_infer_decode_mode_preset(opts);
 }
 
 dsd_scan_mode
 dsd_scan_mode_active(const dsd_state* state) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     return state ? active_mode : DSD_SCAN_MODE_INHERIT;
 }
 
@@ -236,14 +235,14 @@ dsd_test_tg_avoids(size_t count, uint64_t context) {
 
 size_t
 dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     assert(start == 0 && end == UINT32_MAX);
     return state ? tg_avoid_count : 0;
 }
 
 void
 dsd_tg_policy_table_version(const dsd_state* state, uint64_t* context, unsigned int* generation) {
-    assert(state == &snapshot_state || state == NULL);
+    assert(state == frame_state || state == NULL);
     if (context) {
         *context = state ? tg_context : 0;
     }

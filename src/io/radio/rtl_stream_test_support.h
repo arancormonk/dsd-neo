@@ -198,6 +198,8 @@ typedef struct {
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
                                   uint64_t* dropped);
+/* Called first thing in the Airspy callback's own work (inside its floating-point mode scope); NULL clears it. */
+void rtl_device_test_set_airspy_work_probe(void (*probe)(void));
 
 typedef struct {
     const float* samples; /* the driver's CF32 buffer: pairs complex samples, I then Q */
@@ -336,6 +338,9 @@ void rtl_device_test_soapy_device_free(struct rtl_device* dev);
 /* Run one control transaction on @p dev that holds its soapy_lock for @p ms, as a slow driver call does. 0 on
  * success. */
 int rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms);
+/* Control transactions on @p dev waiting to take its soapy_lock; a driver call reads it to see whether the reader
+ * read ahead of one. */
+int rtl_device_test_soapy_controls_waiting(const struct rtl_device* dev);
 
 /* A SoapySDR device's reader and monitor, and its stream. */
 typedef struct {

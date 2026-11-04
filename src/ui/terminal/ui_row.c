@@ -9,96 +9,8 @@
 
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <stdarg.h>
-#include <stdint.h>
-#include <wchar.h>
-
-/* The cut marker: U+2026 HORIZONTAL ELLIPSIS, or three periods. Arrays, so the choice can be read off the pointer
-   dsd_unicode_or_ascii() returns. */
-static const char k_marker_utf8[] = "\xE2\x80\xA6";
-static const char k_marker_ascii[] = "...";
-
-/* One UTF-8 sequence at s (n bytes left): its length, or 0 when it is not a valid, shortest-form scalar value. */
-static size_t
-ui_row_decode(const unsigned char* s, size_t n, uint32_t* cp) {
-    const unsigned char c = s[0];
-    size_t len = 0;
-    uint32_t v = 0;
-    uint32_t min = 0;
-    if (c < 0x80U) {
-        *cp = c;
-        return 1;
-    }
-    if (c >= 0xC2U && c <= 0xDFU) {
-        len = 2;
-        v = c & 0x1FU;
-        min = 0x80U;
-    } else if (c >= 0xE0U && c <= 0xEFU) {
-        len = 3;
-        v = c & 0x0FU;
-        min = 0x800U;
-    } else if (c >= 0xF0U && c <= 0xF4U) {
-        len = 4;
-        v = c & 0x07U;
-        min = 0x10000U;
-    } else {
-        return 0;
-    }
-    if (n < len) {
-        return 0;
-    }
-    for (size_t i = 1; i < len; i++) {
-        if ((s[i] & 0xC0U) != 0x80U) {
-            return 0;
-        }
-        v = (v << 6) | (s[i] & 0x3FU);
-    }
-    if (v < min || v > 0x10FFFFU || (v >= 0xD800U && v <= 0xDFFFU)) {
-        return 0;
-    }
-    *cp = v;
-    return len;
-}
-
-/* Cells a code point takes, or -1 when the library cannot draw it and it is shown as '?'. */
-static int
-ui_row_code_point_cells(const ui_row* row, uint32_t cp) {
-    if (cp < 0x20U || cp == 0x7FU) {
-        return -1;
-    }
-    if (cp < 0x80U) {
-        return 1;
-    }
-    if (!row->unicode || cp <= 0x9FU) {
-        return -1;
-    }
-#if defined(DSD_USE_PDCURSES)
-    /* PDCurses draws one cell per character and decodes the Basic Multilingual Plane only. */
-    return (cp > 0xFFFFU) ? -1 : 1;
-#else
-    const int w = wcwidth((wchar_t)cp);
-    return (w < 0) ? -1 : w;
-#endif
-}
-
-/* Whether text reaches the screen as UTF-8: on ncurses, the locale dsd_unicode_init_locale() set before initscr(); on
-   PDCurses, a build with its wide-character API (as the SNR meter requires, ncurses_snr.c). */
-static int
-ui_row_locale_is_utf8(void) {
-#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
-    return 1;
-#elif defined(DSD_USE_PDCURSES)
-    /* A narrow PDCurses writes each byte of a UTF-8 sequence as a character of its own: ASCII only. */
-    return 0;
-#else
-    mbstate_t st;
-    DSD_MEMSET(&st, 0, sizeof st);
-    wchar_t wc = 0;
-    const size_t n = mbrtowc(&wc, k_marker_utf8, 3U, &st);
-    return n == 3U && (uint32_t)wc == 0x2026U;
-#endif
-}
+#include "ui_text.h"
 
 void
 ui_row_begin(ui_row* row, int cols, int start_col) {
@@ -110,37 +22,13 @@ ui_row_begin(ui_row* row, int cols, int start_col) {
     row->fields = 0;
     row->ops_count = 0;
     row->budget = cols - 1 - start_col;
-    /* The marker needs both the user's preference (DSD_FORCE_ASCII turns it off, a forced UTF-8 can turn it on under a
-       C locale) and a locale that can actually encode it. */
-    row->unicode = dsd_unicode_or_ascii(k_marker_utf8, k_marker_ascii) == k_marker_utf8 && ui_row_locale_is_utf8();
+    row->unicode = ui_text_unicode_output();
 }
 
 /* Append @p n bytes of formatted text, each code point the row cannot draw as '?'. */
 static void
 ui_row_append_sanitized(ui_row* row, const char* text, size_t n) {
-    const unsigned char* s = (const unsigned char*)text;
-    size_t i = 0;
-    while (i < n) {
-        uint32_t cp = 0;
-        size_t len = ui_row_decode(s + i, n - i, &cp);
-        const char* out = (const char*)(s + i);
-        size_t out_len = len;
-        if (len == 0U) {
-            len = 1U;
-            out = "?";
-            out_len = 1U;
-        } else if (ui_row_code_point_cells(row, cp) < 0) {
-            out = "?";
-            out_len = 1U;
-        }
-        if (row->len + out_len >= sizeof row->text) {
-            break;
-        }
-        DSD_MEMCPY(row->text + row->len, out, out_len);
-        row->len += out_len;
-        row->text[row->len] = '\0';
-        i += len;
-    }
+    row->len += ui_text_sanitize(row->unicode, text, n, row->text + row->len, sizeof row->text - row->len);
 }
 
 void
@@ -193,48 +81,7 @@ ui_row_cells(const ui_row* row, const char* text, size_t len) {
     if (!row || !text) {
         return 0;
     }
-    const unsigned char* s = (const unsigned char*)text;
-    int cells = 0;
-    size_t i = 0;
-    while (i < len) {
-        uint32_t cp = 0;
-        size_t n = ui_row_decode(s + i, len - i, &cp);
-        if (n == 0U) {
-            n = 1U;
-            cells += 1;
-        } else {
-            const int w = ui_row_code_point_cells(row, cp);
-            cells += (w < 0) ? 1 : w;
-        }
-        i += n;
-    }
-    return cells;
-}
-
-/* The longest prefix of the row's text that fits @p limit cells, cut between code points; a zero-width code point
-   (a combining mark) stays with the one before it. */
-static size_t
-ui_row_code_point_cut(const ui_row* row, int limit) {
-    const unsigned char* s = (const unsigned char*)row->text;
-    size_t i = 0;
-    int cells = 0;
-    while (i < row->len) {
-        uint32_t cp = 0;
-        size_t n = ui_row_decode(s + i, row->len - i, &cp);
-        int w = 1;
-        if (n == 0U) {
-            n = 1U;
-        } else {
-            w = ui_row_code_point_cells(row, cp);
-            w = (w < 0) ? 1 : w;
-        }
-        if (cells + w > limit) {
-            break;
-        }
-        cells += w;
-        i += n;
-    }
-    return i;
+    return ui_text_cells(row->unicode, text, len);
 }
 
 static void
@@ -269,10 +116,10 @@ ui_row_fit(const ui_row* row, const char** marker) {
     if (ui_row_cells(row, row->text, row->len) <= row->budget) {
         return row->len;
     }
-    const int marker_cells = row->unicode ? 1 : 3;
+    const int marker_cells = ui_text_marker_cells(row->unicode);
     if (row->budget <= marker_cells) {
         /* No room for a marker beside any text: cut without one. */
-        return ui_row_code_point_cut(row, row->budget);
+        return ui_text_cut(row->unicode, row->text, row->len, row->budget);
     }
     const int room = row->budget - marker_cells;
     int k = -1;
@@ -282,12 +129,12 @@ ui_row_fit(const ui_row* row, const char** marker) {
         }
         k = i;
     }
-    size_t cut = (k >= 0) ? row->field_end[k] : ui_row_code_point_cut(row, room);
+    size_t cut = (k >= 0) ? row->field_end[k] : ui_text_cut(row->unicode, row->text, row->len, room);
     /* The marker follows the last character shown, not the blanks a padded field kept after it. */
     while (cut > 0U && row->text[cut - 1U] == ' ') {
         cut--;
     }
-    *marker = row->unicode ? k_marker_utf8 : k_marker_ascii;
+    *marker = ui_text_marker(row->unicode);
     return cut;
 }
 

@@ -16,6 +16,7 @@ target_sources(
         app_command_queue.c
         key_commands.c
         call_view.c
+        config_files.c
         crc_policy_view.c
         dmr_ras_view.c
         p25_network.c # WP-F2
@@ -24,6 +25,7 @@ target_sources(
         trunk_scan_document.cpp
         frontend.c
         frontend_snr.c
+        import_files.c
         menu_services.c
         next_start_check.c
         notification_status.c
@@ -36,6 +38,7 @@ target_sources(
         receive_note.c
         receive_view.c
         recording_view.c
+        scan_avoid_view.c
         scan_row_edit.c
         scan_row_view.c
         scan_state_view.c

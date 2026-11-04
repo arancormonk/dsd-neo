@@ -12,15 +12,13 @@
 #ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_
 #define DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_
 
-#include <dsd-neo/core/opts_fwd.h>
-
 // Common helpers to get/set numeric env values with defaults.
 int env_get_int(const char* name, int defv);
 double env_get_double(const char* name, double defv);
 void env_set_int(const char* name, int v);
 void env_set_double(const char* name, double v);
 
-// After changing env-backed runtime config, re-parse to apply immediately.
-void env_reparse_runtime_cfg(dsd_opts* opts);
+// After changing env-backed runtime config, re-parse it and ask the decoder to apply it to its options.
+void env_reparse_runtime_cfg(void);
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_ */

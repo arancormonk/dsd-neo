@@ -249,7 +249,11 @@ rtl_stream_spectrum_get(float* out, int max_bins, int* out_rate) { // NOLINT(mis
 }
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
     out->snr_c4fm_db = rtl_stream_get_snr_c4fm();
@@ -536,8 +540,8 @@ test_eye_helpers(void) {
     double mu2[4] = {0.0, 0.0, 0.0, 0.0};
     long long total2 = eye_snr_level_means(cnt2, sum2, mu2);
     assert(eye_snr_noise_var(snr_samples, 800, 8, 2, 6, 1, -60, 0, 60, mu2, total2) > 0.0);
-    assert(eye_estimate_snr_fallback(snr_samples, 800, 4, 8, -60, 0, 60, -100.0) > -20.0);
-    assert(eye_estimate_snr_fallback(snr_samples, 80, 4, 8, -60, 0, 60, -17.5) == -17.5);
+    assert(eye_estimate_snr_fallback(snr_samples, 800, 4, 8, -60, 0, 60, -100.0, 0.0) > -20.0);
+    assert(eye_estimate_snr_fallback(snr_samples, 80, 4, 8, -60, 0, 60, -17.5, 0.0) == -17.5);
     assert(eye_smooth_peak(samples, 8, 64.0f) >= 64);
 
     g_test_rows = 9;

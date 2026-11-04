@@ -19,6 +19,7 @@ Item {
             serviceNamesSheet.visible = false;
             squelchSheet.visible = false;
             passbandSheet.visible = false;
+            scanAvoidSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
             receiverSheet.visible = false;
@@ -2321,20 +2322,29 @@ Item {
             }
 
             // Why the scan stopped moving (#380): channels or targets the operator
-            // avoided for the session, with the way to put them back. Hidden at zero
-            // and outside any rotation, so an idle session never carries a 0. The
-            // [avoided] marker is the trunk-scan fallback: every alternate failed to
-            // retune and the receiver stayed on a target that was avoided.
-            ReadingRow {
+            // avoided for the session, with the list of them and the way to put
+            // them back. Shown while there is something to show or clear (issue
+            // #672): avoids a stopped -Y left behind, which the -T control-channel
+            // hunts still skip, and a paused scan's, but not a 0 while a rotation
+            // runs with none. A count the list cannot vouch for reads "?". The
+            // [avoided] marker is the trunk-scan fallback: every alternate failed
+            // to retune and the receiver stayed on a target that was avoided. A
+            // Flow, as the squelch row is, so the buttons move under the reading
+            // at large text.
+            ReadingFlow {
+                id: scanAvoidRow
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "scanAvoidRow"
                 speechStep: screen.speechStep
 
+                width: parent.width
                 spacing: 8
-                visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0
+                visible: metrics.scanAvoidsManageable === true
+                    && (metrics.scanAvoidCount > 0 || metrics.scanAvoidsTotalKnown !== true)
 
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                    height: scanAvoidShowButton.height
+                    verticalAlignment: Text.AlignVCenter
                     text: metrics.scanTargetAvoided ? qsTr("SCAN AVOIDS [avoided]") : qsTr("SCAN AVOIDS")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
@@ -2344,19 +2354,32 @@ Item {
                 Text {
                     objectName: "scanAvoidValue"
 
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: metrics.scanAvoidCount.toString()
+                    height: scanAvoidShowButton.height
+                    verticalAlignment: Text.AlignVCenter
+                    text: metrics.scanAvoidsTotalKnown === true ? metrics.scanAvoidCount.toString() : "?"
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
 
                 OutlineButton {
+                    id: scanAvoidShowButton
+                    objectName: "scanAvoidShowButton"
+
+                    text: qsTr("Show")
+                    accessibleName: qsTr("Show avoided scan channels")
+                    enabled: decoderHost.running
+                    onClicked: scanAvoidSheet.open()
+                }
+
+                // The default touch height, and the width of its label at any
+                // text scale, so it neither falls under 48 px nor breaks "Clear"
+                // in two. Named for what it clears, like the scan buttons.
+                OutlineButton {
                     objectName: "scanAvoidClearButton"
 
-                    width: 72
-                    implicitHeight: 28
                     text: qsTr("Clear")
+                    accessibleName: qsTr("Clear scan avoids")
                     enabled: decoderHost.running
                     onClicked: commands.clearScanAvoids()
                 }
@@ -2472,6 +2495,12 @@ Item {
     // #621: the passband a rigctl peer is asked for on audio input, over the monitor like the squelch editor.
     PassbandSheet {
         id: passbandSheet
+        z: 10
+    }
+
+    // #672: the avoided channels with Put back, over the monitor like the squelch editor.
+    ScanAvoidSheet {
+        id: scanAvoidSheet
         z: 10
     }
 

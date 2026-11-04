@@ -510,6 +510,66 @@ audit_freq_row(const NcMenuItem* root, size_t n) {
     }
 }
 
+/* FTZ/DAZ is a start-time setting (issue #672 B12): its Advanced row, first there, only reports the mode in force and
+   runs nothing. */
+static void
+audit_ftz_row(void) {
+    const NcMenuItem* it = ADV_MENU_ITEMS_LEN > 0 ? &ADV_MENU_ITEMS[0] : NULL;
+    if (!it || !it->id || strcmp(it->id, "adv.ftz") != 0) {
+        fail("root/advanced", it ? it->id : NULL, "the FTZ/DAZ status row is not Advanced's first row");
+    } else if (it->kind != NC_ITEM_STATUS || it->on_select || it->submenu || it->label_fn != lbl_ftz_daz) {
+        fail("root/advanced", it->id, "the FTZ/DAZ row is not a read-only status row of lbl_ftz_daz");
+    }
+}
+
+static void
+expect_avoid_row(const NcMenuItem* it, const char* id, nc_action_fn on_select, nc_label_fn label_fn,
+                 nc_enabled_fn is_enabled) {
+    if (!it->id || strcmp(it->id, id) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: root/trunk/trunk.avoids: want %s, found %s\n", id, it->id ? it->id : "(no id)");
+        g_rc = 1;
+    } else if (it->on_select != on_select || it->label_fn != label_fn || it->is_enabled != is_enabled) {
+        fail("root/trunk/trunk.avoids", id, "the avoid row runs another handler, label or predicate");
+    }
+}
+
+/* Trunking > Avoids (issue #672 D1): right after Scan hold, it holds Avoid current channel (`b`, a running rotation),
+   Avoided channels... and, last after a separator, Clear avoids (both whenever avoids exist), and Trunking keeps one
+   row of headroom below the fifteen-row limit. */
+static void
+audit_avoid_rows(void) {
+    if (TRUNK_MENU_ITEMS_LEN != 14) {
+        DSD_FPRINTF(stderr, "FAIL: root/trunk: %zu rows, want 14\n", TRUNK_MENU_ITEMS_LEN);
+        g_rc = 1;
+    }
+    size_t hold = TRUNK_MENU_ITEMS_LEN;
+    for (size_t i = 0; i < TRUNK_MENU_ITEMS_LEN; i++) {
+        if (TRUNK_MENU_ITEMS[i].id && strcmp(TRUNK_MENU_ITEMS[i].id, "trunk.hold") == 0) {
+            hold = i;
+        }
+    }
+    const NcMenuItem* avoids = hold + 1 < TRUNK_MENU_ITEMS_LEN ? &TRUNK_MENU_ITEMS[hold + 1] : NULL;
+    if (!avoids || !avoids->id || strcmp(avoids->id, "trunk.avoids") != 0 || avoids->label == NULL
+        || strcmp(avoids->label, "Avoids") != 0) {
+        fail("root/trunk", avoids ? avoids->id : NULL, "no Avoids submenu right after Scan hold");
+        return;
+    }
+    if (avoids->submenu_len != 4) {
+        fail("root/trunk", avoids->id, "the Avoids submenu does not hold its four rows");
+        return;
+    }
+    const NcMenuItem* sub = avoids->submenu;
+    expect_avoid_row(&sub[0], "trunk.avoid", act_scan_avoid, NULL, scan_rotation_active);
+    if (!sub[0].hotkey || strcmp(sub[0].hotkey, "b") != 0) {
+        fail("root/trunk/trunk.avoids", sub[0].id, "Avoid current channel lost its b");
+    }
+    expect_avoid_row(&sub[1], "trunk.avoid_list", act_scan_avoid_list, lbl_scan_avoid_list, scan_avoids_manageable);
+    if (sub[2].kind != NC_ITEM_SEPARATOR) {
+        fail("root/trunk/trunk.avoids", sub[2].id, "no separator before Clear avoids");
+    }
+    expect_avoid_row(&sub[3], "trunk.avoid_clear", act_scan_avoid_clear, lbl_scan_avoid_clear, scan_avoids_manageable);
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -523,6 +583,8 @@ main(void) {
     audit_hotkeys();
     audit_width_rows(root, n);
     audit_freq_row(root, n);
+    audit_ftz_row();
+    audit_avoid_rows();
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

@@ -650,6 +650,29 @@ static const NcMenuItem TRUNK_P25_ITEMS[] = {
      .submenu_len = NC_LEN(P25_TIMING_ITEMS)},
 };
 
+/* Issue #672 D1: avoid, list and put back, Clear last after a separator. The submenu hides itself while none of its
+   rows is offered. */
+static const NcMenuItem TRUNK_AVOID_ITEMS[] = {
+    {.id = "trunk.avoid",
+     .label = "Avoid current channel",
+     .help = "Skip the channel or trunk-scan target on air for the rest of the session and step to the next one.",
+     .hotkey = "b",
+     .is_enabled = scan_rotation_active,
+     .on_select = act_scan_avoid},
+    {.id = "trunk.avoid_list",
+     .label_fn = lbl_scan_avoid_list,
+     .help = "The channels or trunk-scan targets avoided this session. Enter puts one back into the rotation; nothing "
+             "retunes.",
+     .is_enabled = scan_avoids_manageable,
+     .on_select = act_scan_avoid_list},
+    {.id = "trunk.avoid_sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "trunk.avoid_clear",
+     .label_fn = lbl_scan_avoid_clear,
+     .help = "Put every avoided channel or trunk-scan target back into the rotation.",
+     .is_enabled = scan_avoids_manageable,
+     .on_select = act_scan_avoid_clear},
+};
+
 const NcMenuItem TRUNK_MENU_ITEMS[] = {
     {.id = "trunk.on",
      .label_fn = lbl_trunk,
@@ -689,17 +712,11 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .hotkey = "Y",
      .is_enabled = scan_rotation_active,
      .on_select = act_scan_hold_toggle},
-    {.id = "trunk.avoid",
-     .label = "Avoid current channel",
-     .help = "Skip the channel or trunk-scan target on air for the rest of the session and step to the next one.",
-     .hotkey = "b",
-     .is_enabled = scan_rotation_active,
-     .on_select = act_scan_avoid},
-    {.id = "trunk.avoid_clear",
-     .label_fn = lbl_scan_avoid_clear,
-     .help = "Put every avoided channel or trunk-scan target back into the rotation.",
-     .is_enabled = scan_rotation_active,
-     .on_select = act_scan_avoid_clear},
+    {.id = "trunk.avoids",
+     .label = "Avoids",
+     .help = "Avoid the channel on air, list the avoided ones, put them back.",
+     .submenu = TRUNK_AVOID_ITEMS,
+     .submenu_len = NC_LEN(TRUNK_AVOID_ITEMS)},
     {.id = "trunk.sep1", .kind = NC_ITEM_SEPARATOR},
     {.id = "trunk.follow",
      .label = "Follow",
@@ -1185,15 +1202,11 @@ const size_t CONFIG_MENU_ITEMS_LEN = NC_LEN(CONFIG_MENU_ITEMS);
 // Advanced
 // ============================================================================
 const NcMenuItem ADV_MENU_ITEMS[] = {
+    {.id = "adv.ftz", .label_fn = lbl_ftz_daz, .kind = NC_ITEM_STATUS},
     {.id = "adv.rt_sched",
      .label_fn = lbl_rt_sched,
      .help = "Best-effort realtime scheduling for the decode threads (needs privileges).",
      .on_select = act_rt_sched},
-    {.id = "adv.mt", .label_fn = lbl_mt, .help = "Light worker pool for hot DSP loops.", .on_select = act_mt},
-    {.id = "adv.ftz",
-     .label_fn = lbl_ftz_daz,
-     .help = "Flush-to-zero / denormals-are-zero on x86 SSE.",
-     .on_select = act_toggle_ftz_daz},
     {.id = "adv.win_freeze",
      .label_fn = lbl_window_freeze,
      .help = "Freeze the symbol window selection and stop auto-centering.",

@@ -463,6 +463,22 @@ add_test(
         ${PROJECT_SOURCE_DIR}/cmake/canonical_call_state_audit.cmake
 )
 
+# Issue #672 (B9): the terminal UI acquires the published snapshots once per frame, in ui_frame_acquire() alone.
+add_test(
+    NAME UI_TERMINAL_SNAPSHOT_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/terminal_snapshot_audit.cmake
+)
+
+# Issue #672 (B18): the terminal UI does file I/O only through app-control services, never itself.
+add_test(
+    NAME UI_TERMINAL_FILE_IO_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/terminal_file_io_audit.cmake
+)
+
 add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
@@ -764,6 +780,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_fp_mode
+  HEADERS_PUBLIC_RUNTIME_FP_MODE
+  dsd-neo/runtime/fp_mode.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_frame_sync_hooks
   HEADERS_PUBLIC_RUNTIME_FRAME_SYNC_HOOKS
   dsd-neo/runtime/frame_sync_hooks.h
@@ -979,12 +1001,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/unicode.h
   C
 )
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_runtime_worker_pool
-  HEADERS_PUBLIC_RUNTIME_WORKER_POOL
-  dsd-neo/runtime/worker_pool.h
-  C
-)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_call_view
@@ -1112,6 +1128,45 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_row_view_cxx
   HEADERS_PUBLIC_APP_CONTROL_SCAN_ROW_VIEW_CXX
   dsd-neo/app_control/scan_row_view.h
+  CXX
+)
+# Issue #672: the avoided scan channels every frontend lists.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_avoid_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW
+  dsd-neo/app_control/scan_avoid_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_avoid_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW_CXX
+  dsd-neo/app_control/scan_avoid_view.h
+  CXX
+)
+# Issue #672: the config file reads and writes a frontend asks for.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_config_files
+  HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES
+  dsd-neo/app_control/config_files.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_config_files_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CONFIG_FILES_CXX
+  dsd-neo/app_control/config_files.h
+  CXX
+)
+# Issue #672: the imports directory reads and writes a frontend asks for.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_import_files
+  HEADERS_PUBLIC_APP_CONTROL_IMPORT_FILES
+  dsd-neo/app_control/import_files.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_import_files_cxx
+  HEADERS_PUBLIC_APP_CONTROL_IMPORT_FILES_CXX
+  dsd-neo/app_control/import_files.h
   CXX
 )
 # Issue #671: which scan the session has, running or paused.
@@ -2375,16 +2430,17 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_mem PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_MEM COMMAND dsd-neo_test_runtime_mem)
 
-add_executable(
-    dsd-neo_test_runtime_worker_pool
-    runtime/test_runtime_worker_pool.cpp
-)
+# The run's FTZ/DAZ mode: config mapping, entry apply on a new thread, the library-callback scope (issue #672 B12).
+add_executable(dsd-neo_test_runtime_fp_mode runtime/test_runtime_fp_mode.c)
 target_include_directories(
-    dsd-neo_test_runtime_worker_pool
+    dsd-neo_test_runtime_fp_mode
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_runtime_worker_pool PRIVATE dsd-neo_runtime)
-add_test(NAME RUNTIME_WORKER_POOL COMMAND dsd-neo_test_runtime_worker_pool)
+target_link_libraries(
+    dsd-neo_test_runtime_fp_mode
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(NAME RUNTIME_FP_MODE COMMAND dsd-neo_test_runtime_fp_mode)
 
 add_executable(
     dsd-neo_test_runtime_rt_sched
@@ -2757,10 +2813,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
@@ -2796,10 +2854,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
@@ -2915,13 +2975,18 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
-    # The real panel and library; the wizard core, prompt widgets and app-control commands are stubbed in the test.
+    # The real panel, library, chooser/prompt widgets and menu core (its UI-exit shutdown); the wizard core, the menu's
+    # rows and app-control commands are stubbed in the test.
     add_executable(
         dsd-neo_test_ui_rr_panel_keys
         ui/test_ui_rr_panel_keys.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_panel_keys
@@ -2930,16 +2995,28 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
     target_link_libraries(
         dsd-neo_test_ui_rr_panel_keys
-        PRIVATE dsd-neo_runtime dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+            ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
 
+    # The library folds what app-control's imports listing hands it (issue #672); the listing is compiled in, and
+    # dsd-neo_core + dsd-neo_proto_dmr resolve its replace-checked validation (dsd_csv_validate_*).
     add_executable(
         dsd-neo_test_ui_rr_library
         ui/test_ui_rr_library.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_library
@@ -2953,20 +3030,29 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_library
-        PRIVATE dsd-neo_runtime dsd-neo_test_support
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
     )
     add_test(NAME UI_RR_LIBRARY COMMAND dsd-neo_test_ui_rr_library)
 
+    # The picker's flow through the real chooser and prompt widgets (issue #672, B8).
     add_executable(
         dsd-neo_test_ui_csv_picker
         ui/test_ui_csv_picker.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_csv_picker
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_csv_picker
@@ -2974,7 +3060,12 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_csv_picker
-        PRIVATE dsd-neo_runtime dsd-neo_test_support
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+            ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_CSV_PICKER COMMAND dsd-neo_test_ui_csv_picker)
 
@@ -3249,6 +3340,57 @@ target_link_libraries(
 )
 add_test(NAME APP_SCAN_STATE_VIEW COMMAND dsd-neo_test_app_scan_state_view)
 
+# Issue #672: the avoided -Y rows or trunk-scan targets every frontend lists, and the identity put back takes.
+add_executable(
+    dsd-neo_test_app_control_scan_avoid_view
+    ui/test_app_control_scan_avoid_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_scan_avoid_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_avoid_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_AVOID_VIEW
+    COMMAND dsd-neo_test_app_control_scan_avoid_view
+)
+
+# Issue #672: the config file reads and writes the terminal menu asks app-control for, on real files.
+add_executable(
+    dsd-neo_test_app_control_config_files
+    ui/test_app_control_config_files.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/config_files.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_config_files
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_CONFIG_FILES
+    COMMAND dsd-neo_test_app_control_config_files
+)
+
+# Issue #672: the imports directory reads and writes the terminal's CSV picker, Imported Systems browser and
+# RadioReference wizard ask app-control for, on a real scratch directory.
+add_executable(
+    dsd-neo_test_app_control_import_files
+    ui/test_app_control_import_files.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_import_files
+    PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_IMPORT_FILES
+    COMMAND dsd-neo_test_app_control_import_files
+)
+
 # Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.
 add_executable(
     dsd-neo_test_app_control_scan_row_edit
@@ -3380,12 +3522,14 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -3463,6 +3607,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
@@ -3470,6 +3616,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -3590,12 +3737,73 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
 
+    # The text model the status row and the chooser share (issue #672, B7): built for ncurses, and with
+    # DSD_USE_PDCURSES for a wide and a narrow PDCurses (whose ASCII-only path no other build here reaches).
+    add_executable(
+        dsd-neo_test_ui_text
+        ui/test_ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_text
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(dsd-neo_test_ui_text PRIVATE dsd-neo_runtime)
+    add_test(NAME UI_TEXT COMMAND dsd-neo_test_ui_text)
+
+    add_executable(
+        dsd-neo_test_ui_text_pdc_wide
+        ui/test_ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_text_pdc_wide
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_text_pdc_wide
+        PRIVATE DSD_USE_PDCURSES DSD_HAS_PDCURSES_WIDE_API=1
+    )
+    target_link_libraries(dsd-neo_test_ui_text_pdc_wide PRIVATE dsd-neo_runtime)
+    add_test(NAME UI_TEXT_PDC_WIDE COMMAND dsd-neo_test_ui_text_pdc_wide)
+
+    if(NOT DSD_HAS_PDCURSES_WIDE_API)
+        add_executable(
+            dsd-neo_test_ui_text_pdc_narrow
+            ui/test_ui_text.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        )
+        target_include_directories(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE DSD_USE_PDCURSES
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_text_pdc_narrow
+            PRIVATE dsd-neo_runtime
+        )
+        add_test(
+            NAME UI_TEXT_PDC_NARROW
+            COMMAND dsd-neo_test_ui_text_pdc_narrow
+        )
+    endif()
+
     # The status row writer on a real ncurses screen (issue #669): cut between whole fields, never the last column,
     # attributes restored, wcwidth() cells.
     add_executable(
         dsd-neo_test_ui_row
         ui/test_ui_row.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_row
@@ -3639,6 +3847,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_compile_definitions(
@@ -3943,10 +4152,26 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     add_test(NAME UI_MENU_ENV COMMAND dsd-neo_test_ui_menu_env)
 
+    # Issue #672 (B9): the receive editor opens on the frame's published pair and acquires none of its own.
+    add_executable(
+        dsd-neo_test_ui_menu_receive
+        ui/test_ui_menu_receive.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_receive.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_receive
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    add_test(NAME UI_MENU_RECEIVE COMMAND dsd-neo_test_ui_menu_receive)
+
     add_executable(
         dsd-neo_test_ui_chooser_navigation
         ui/test_ui_chooser_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_chooser_navigation
@@ -3961,7 +4186,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_chooser_navigation
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(
         NAME UI_CHOOSER_NAVIGATION
@@ -3972,6 +4197,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_cursor
         ui/test_ui_prompt_cursor.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_cursor
@@ -3986,7 +4212,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_cursor
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
 
@@ -3994,6 +4220,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_validation
         ui/test_ui_prompt_validation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_validation
@@ -4008,17 +4235,28 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_validation
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(
         NAME UI_PROMPT_VALIDATION
         COMMAND dsd-neo_test_ui_prompt_validation
+    )
+    # The same cases with ASCII output, the one-cell path a PDCurses build measures
+    # by (a UTF-8 Linux run never takes it).
+    add_test(
+        NAME UI_PROMPT_VALIDATION_ASCII
+        COMMAND dsd-neo_test_ui_prompt_validation
+    )
+    set_tests_properties(
+        UI_PROMPT_VALIDATION_ASCII
+        PROPERTIES ENVIRONMENT "DSD_FORCE_ASCII=1"
     )
 
     add_executable(
         dsd-neo_test_ui_prompt_secret
         ui/test_ui_prompt_secret.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_prompt_secret
@@ -4033,7 +4271,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prompt_secret
-        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_support dsd-neo_runtime ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
 
@@ -4369,11 +4607,13 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
@@ -4874,6 +5114,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            # Issue #672: the Monitor's avoid sheet lists the real list model, which a case fills by key.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
             # The home screen, the imports library, the wizard's CSV pickers and
             # the explore setup all read these context properties; without them
             # they raised ReferenceError and rendered nothing, so a case could
@@ -5324,6 +5566,7 @@ add_executable(
     dsd-neo_test_runtime_bootstrap_system
     runtime/test_runtime_bootstrap_system.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/system.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_system
@@ -5513,7 +5756,8 @@ if(DSD_HAS_EXPAT)
     # links ${CURSES_LIBRARIES} PRIVATE, which a static library still propagates
     # as $<LINK_ONLY:>, and the target does not exist at all under
     # -DDSD_ENABLE_TERMINAL_UI=OFF. Same reasoning for
-    # src/app_control/rr_import_apply.c: dsd-neo_app_control drags dsd-neo_engine
+    # src/app_control/rr_import_apply.c and import_files.c (the imports
+    # directory's file I/O, issue #672): dsd-neo_app_control drags dsd-neo_engine
     # and every io backend into what is a headless unit test. dsd-neo_core +
     # dsd-neo_proto_dmr are here because the test round-trips the written CSVs
     # through dsd_csv_validate_*, and dsd_import.c calls
@@ -5526,6 +5770,7 @@ if(DSD_HAS_EXPAT)
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rr_apply_verdict.c
         ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard
@@ -6332,6 +6577,10 @@ target_include_directories(
     dsd-neo_test_core_state_trunk_lcn_avoid
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+target_compile_definitions(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 target_link_libraries(
     dsd-neo_test_core_state_trunk_lcn_avoid
     PRIVATE dsd-neo_runtime
@@ -7062,10 +7311,19 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
-add_executable(dsd-neo_test_core_init_state core/test_core_init_state.c)
+# Compiles dsd_init.c itself, with the test hooks, for initState()'s allocation-failure seam (issue #672).
+add_executable(
+    dsd-neo_test_core_init_state
+    core/test_core_init_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_init.c
+)
 target_include_directories(
     dsd-neo_test_core_init_state
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_init_state
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -12975,6 +13233,27 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_cold_start PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_COLD_START COMMAND dsd-neo_test_p25_sm_cold_start)
 
+# P25 SM watchdog thread start: a failed start rolls back and joins nothing; the entry applies FTZ/DAZ (issue #672).
+# The watchdog's source comes in with DSD_NEO_TEST_HOOKS for its thread-start seam.
+add_executable(
+    dsd-neo_test_p25_sm_watchdog_start
+    protocol/p25/test_p25_sm_watchdog_start.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_sm_watchdog.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_watchdog_start
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_SM_WATCHDOG_START COMMAND dsd-neo_test_p25_sm_watchdog_start)
+
 # P25 SM Phase 2 grant gating on decoded WACN/SYSID/NAC
 add_executable(
     dsd-neo_test_p25_p2_grant_site_gate
@@ -16818,6 +17097,27 @@ if(DSD_HAS_RADIO)
         "C_ALOHA_SYS_PARMS|-RAS "
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
+    # The run's FTZ/DAZ mode on every thread an in-process I/Q replay decode starts, across an on-to-off restart
+    # (issue #672 B12): tests/engine/fp_mode_replay.c.
+    add_executable(dsd-neo_test_fp_mode_replay engine/fp_mode_replay.c)
+    target_include_directories(
+        dsd-neo_test_fp_mode_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_fp_mode_replay
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    add_test(
+        NAME DECODE_IQ_FP_MODE
+        COMMAND
+            dsd-neo_test_fp_mode_replay --frontend none -fi --iq-replay
+            "${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn48.iq.json" -o null
+    )
+    set_tests_properties(
+        DECODE_IQ_FP_MODE
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")
@@ -20460,6 +20760,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -21588,7 +21889,7 @@ if(DSD_ENABLE_API)
     add_executable(dsd-neo_test_api_server api/test_server.c)
     target_include_directories(
         dsd-neo_test_api_server
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
     )
     target_link_libraries(
         dsd-neo_test_api_server
@@ -21603,6 +21904,43 @@ if(DSD_ENABLE_API)
         )
     endif()
     set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
+
+    # The feed built with its test hooks, against stand-ins for the server: a page
+    # reader held while the scan avoid list is swapped, and failed allocations.
+    add_executable(
+        dsd-neo_test_api_feed
+        api/test_feed.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_feed.c
+        ${PROJECT_SOURCE_DIR}/src/api/json.c
+    )
+    target_include_directories(
+        dsd-neo_test_api_feed
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_definitions(dsd-neo_test_api_feed PRIVATE DSD_NEO_TEST_HOOKS)
+    target_compile_options(
+        dsd-neo_test_api_feed
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    # Without dsd-neo_api the feed loses what that library carries PUBLIC (app-control, runtime, platform): the
+    # Linux list names app-control in its group, the macOS and Windows list does not.
+    set(_dsd_neo_api_feed_test_deps ${_dsd_neo_api_test_deps})
+    list(REMOVE_ITEM _dsd_neo_api_feed_test_deps dsd-neo_api)
+    list(
+        PREPEND _dsd_neo_api_feed_test_deps
+        dsd-neo_app_control
+        dsd-neo_runtime
+        dsd-neo_platform
+    )
+    target_link_libraries(
+        dsd-neo_test_api_feed
+        PRIVATE ${_dsd_neo_api_feed_test_deps}
+    )
+    add_test(NAME API_FEED COMMAND dsd-neo_test_api_feed)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(dsd-neo_test_api_feed PRIVATE "LINKER:--as-needed")
+    endif()
+    unset(_dsd_neo_api_feed_test_deps)
     unset(_dsd_neo_api_test_deps)
     unset(_dsd_neo_api_ieee_option)
 endif()

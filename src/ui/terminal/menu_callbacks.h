@@ -30,7 +30,9 @@ void cb_rr_account_key(void* v, const char* text);
 // ---- Config callbacks ----
 void cb_config_load(void* v, const char* path);
 void cb_config_save_as(void* v, const char* path);
+/* Owned by the profile chooser (issue #672, B8): the callback only answers; the dispose frees. */
 void chooser_done_config_profile(void* u, int sel);
+void config_profile_ctx_dispose(void* u);
 
 // ---- Typed value callbacks ----
 void cb_setmod_bw(void* v, int ok, int bw);
@@ -108,14 +110,18 @@ void cb_tcp_rcvtimeo(void* v, int ok, int ms);
 void cb_lr_custom(void* v, const char* path);
 
 // ---- Env editor callbacks ----
+/* The EnvEditCtx is owned by the name prompt, then handed to the value prompt (issue #672, B8). */
 void cb_env_edit_name(void* u, const char* name);
 void cb_env_edit_value(void* u, const char* val);
+void env_edit_ctx_dispose(void* u);
 
 // ---- M17 callback ----
 void cb_m17_user_data(void* u, const char* text);
 
 // ---- Chooser completion handlers (from menu_prompts.c) ----
+/* The PulseSelCtx is owned by the device chooser (issue #672, B8). */
 void chooser_done_pulse_out(void* u, int sel);
 void chooser_done_pulse_in(void* u, int sel);
+void pulse_sel_ctx_dispose(void* u);
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_CALLBACKS_H_ */

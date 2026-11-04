@@ -78,6 +78,11 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_SIGNAL_SEARCH_START || value == DSD_APP_CMD_SIGNAL_SEARCH_CONTROL) {
                 continue;
             }
+            /* The terminal menu's own hand-off of a re-parsed environment to the decoder thread: an API client sets no
+               DSD_NEO_* variables in the decoder's process, so there is nothing for it to apply. */
+            if (value == DSD_APP_CMD_RUNTIME_CONFIG_APPLY) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }
@@ -148,6 +153,7 @@ static const sample k_samples[] = {
     {"am_bandwidth_set", "{\"value\":0}"},
     {"tone_filter_set", "{\"mode\":1,\"list\":\"100.0\"}"},
     {"receive_set", "{\"kind\":1,\"enabled\":1,\"allow\":\"7\",\"block\":\"8\"}"},
+    {"scan_avoid_remove", "{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"county-p25\"}"},
     {"scan_row_edit", "{\"scanner\":2,\"session\":1,\"row\":0,\"field\":1,\"action\":1,\"squelch_db\":-50}"},
     {"pulse_out_set", "{\"value\":\"default\"}"},
     {"pulse_in_set", "{\"value\":\"default\"}"},

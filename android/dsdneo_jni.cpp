@@ -420,6 +420,15 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
 
     initOpts(g_opts);
     initState(g_state);
+    if (g_state->init_failed != 0U) {
+        /* initState() logged which buffer it could not allocate; a state missing one cannot decode. */
+        freeState(g_state);
+        free(g_opts);
+        free(g_state);
+        g_opts = nullptr;
+        g_state = nullptr;
+        return kStatusError;
+    }
     g_configured = false;
     g_initialized.store(true);
     return kStatusOk;

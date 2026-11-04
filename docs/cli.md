@@ -2020,8 +2020,10 @@ is delayed.
   global keys. A row may not mix direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
-  the same rows backward; the scan then carries on forward from there) and clear all avoids; see
-  `docs/ui-terminal.md`.
+  the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and
+  clear all avoids; see `docs/ui-terminal.md`. The avoids outlive `-Y`: with it stopped the DMR and NXDN
+  control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists them, puts them back and
+  clears them.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
@@ -2079,9 +2081,10 @@ is delayed.
   paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
   leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
   resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused,
-  another entry or a spectrum tap only tunes; `Y`, `b`, `J`, `L` and "Clear avoids" answer `Scan paused: resume it
-  first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference import that
-  replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  another entry or a spectrum tap only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`, while
+  putting avoided rows back (one, or all with "Clear avoids") still works, since it never tunes. Turning trunking on,
+  an input switch that runs, or a channel-map import, clear or RadioReference import that replaces the list stops the
+  paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
   row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
@@ -2784,12 +2787,15 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 
 Misc
 
-- `DSD_NEO_MT=1` — enable light worker pool (2 threads)
 - `DSD_NEO_PDU_JSON=1` — emit P25 PDU JSON to stderr
 - `DSD_NEO_RT_SCHED=1` — enable real‑time thread scheduling (requires privileges)
 - `DSD_NEO_RT_PRIO_USB|DSD_NEO_RT_PRIO_DONGLE|DSD_NEO_RT_PRIO_DEMOD=<1..99>` — per-thread RT priority (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
-- `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
+- `DSD_NEO_FTZ_DAZ=1|0` — SSE flush‑to‑zero / denormals‑are‑zero for every decoding thread. Read once at start and
+  fixed for the run: `1` turns both on, `0` turns both off (even when the build or the host started them on), and
+  unset leaves the threads as they started. x86 and x86‑64 builds only (Windows included); elsewhere it is ignored.
+  Advanced > `SSE FTZ/DAZ` in the terminal menu shows the mode in force
+- `DSD_NEO_MT` — no longer used: the worker pool it enabled ran no work and was removed; the variable is ignored
 - `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
   the decoder in their own process and drive shutdown themselves (a host can also set it in-process with
   `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a

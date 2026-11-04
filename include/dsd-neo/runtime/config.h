@@ -109,11 +109,6 @@ extern "C" {
  *     Freeze symbol decision window selection and disable auto-centering nudges. Useful for A/B testing.
  *     Values: 1 freeze, else dynamic. Default: 0 (dynamic).
  *
- * Intra-block multithreading
- * - DSD_NEO_MT
- *     Enable a minimal 2-thread worker pool for certain CPU-heavy inner loops.
- *     Values: 1 enable, else disabled. Default: 0 (disabled).
- *
  * Debug/advanced knobs (centralized for maintainability)
  * - DSD_NEO_DEBUG_SYNC, DSD_NEO_DEBUG_CQPSK
  * - DSD_NEO_DEBUG_SYMBOL_TIMING
@@ -391,10 +386,6 @@ typedef struct dsdneoRuntimeConfig {
     int audio_lpf_is_set;
     int audio_lpf_disable;
     int audio_lpf_cutoff_hz; /* >0 when enabled */
-
-    /* Intra-block multithreading */
-    int mt_is_set;
-    int mt_enable;
 
     /* Frontend tuning behavior */
     int combine_rot_is_set;

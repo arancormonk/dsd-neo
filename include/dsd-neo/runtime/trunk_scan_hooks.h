@@ -50,14 +50,28 @@ enum {
 };
 
 enum {
-    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,      /**< The scan is paused (issue #671): nothing to hold, avoid or advance */
-    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
-    DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
-    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, a single-target step, or unknown op */
+    DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED = -7, /**< AVOID_ACTIVE on a target already avoided (the parked fallback) */
+    DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED = -6,     /**< Unavoid: the target named is not avoided (already put back) */
+    DSD_TRUNK_SCAN_CONTROL_STALE = -5,           /**< Unavoid: no such target in this scan session */
+    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,          /**< The scan is paused (issue #671): nothing to hold, avoid or step */
+    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3,     /**< Trunk scan is not installed */
+    DSD_TRUNK_SCAN_CONTROL_BUSY = -2,            /**< The coordinator's tick guard is held; try again */
+    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1, /**< Would leave no usable target, a single-target step, or unknown op */
+    DSD_TRUNK_SCAN_CONTROL_OK = 0,       /**< Unavoid: the target is back in the rotation */
     /* >= 0 is op-specific: HOLD_TOGGLE returns the new hold state; AVOID_ACTIVE, ADVANCE and
      * RETREAT return 0 when the receiver moved and 1 when it stayed; AVOID_CLEAR returns how
      * many avoids it cleared. */
 };
+
+/**
+ * @brief What names a --trunk-scan target to a person (issue #672): its 1-based position in the target list, as the
+ * avoid list leads with it, and its label column ("" when it has none). The id alone names nothing on Android, whose
+ * target ids are entry UIDs.
+ */
+typedef struct {
+    uint32_t ordinal;
+    char label[64]; /**< dsd_trunk_scan_target::label, NUL-terminated */
+} dsd_trunk_scan_target_name;
 
 typedef struct {
     void* (*p25_ctx)(void);
@@ -72,6 +86,8 @@ typedef struct {
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
+    int (*unavoid)(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                   dsd_trunk_scan_target_name* name);
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
@@ -172,10 +188,27 @@ void dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state);
  * @brief Apply one dsd_trunk_scan_control_op to the parked target list.
  *
  * Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk scan is not installed;
- * otherwise the coordinator's result (see the enum above). Call it on the decoder
+ * otherwise the coordinator's result (see the enum above): a paused scan takes AVOID_CLEAR
+ * alone. Call it on the decoder
  * thread, the way the command queue does: it may retune.
  */
 int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
+
+/**
+ * @brief Put one avoided target back into the rotation (issue #672), named by its identity: the scan session
+ * (dsd_state::trunk_scan_session, nonzero) and the target's id.
+ *
+ * Only the target's avoid flag changes. Nothing retunes, and the hold, every cooldown and the dwell stay as they are;
+ * the visit cap restarts only when the target is the first eligible alternate again, as AVOID_CLEAR's does. Allowed
+ * while the scan is paused (the timing stays cleared then). Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk
+ * scan is not installed; otherwise DSD_TRUNK_SCAN_CONTROL_OK, DSD_TRUNK_SCAN_CONTROL_STALE when the session is not
+ * this scan's or has no such target, or DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED when the target is not avoided. On
+ * DSD_TRUNK_SCAN_CONTROL_OK and DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED, @p name (may be NULL) receives the target's
+ * position and label for the caller's message; otherwise it is left zeroed. Decoder thread only, like
+ * dsd_trunk_scan_hook_control().
+ */
+int dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                dsd_trunk_scan_target_name* name);
 
 #ifdef __cplusplus
 }

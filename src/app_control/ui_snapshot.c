@@ -43,6 +43,36 @@ static int g_pub_eh_present = 0;
 /* A publication the P25 SM tick guard put off (dsd_app_telemetry_snapshot_pending()). */
 static atomic_int g_pub_pending = 0;
 
+/* What a snapshot holds of a store the copies below fill (issue #672): the source's state instance and revision it was
+ * copied at, and whether the copy is whole -- the source's own copy was whole and this one allocated all it needed. A
+ * zeroed (never copied) mark holds nothing, so the first copy always runs. */
+typedef struct {
+    uint64_t instance;
+    uint64_t rev;
+    uint8_t valid;
+} ui_snapshot_store_mark;
+
+/* One per snapshot. The LCN tail, names and avoid flags are copied at every hop and share one validity; the sparse
+ * channel map and the trunk-scan avoid list are copied only when their (instance, revision) moved or the copy held is
+ * not whole. */
+typedef struct {
+    uint8_t lcn_valid;
+    ui_snapshot_store_mark chan_map;
+    ui_snapshot_store_mark trunk_scan_avoids;
+} ui_snapshot_marks;
+
+static ui_snapshot_marks g_pub_marks;
+static ui_snapshot_marks g_consume_marks;
+/* The live decoder state holds the originals, whole by definition. */
+static const ui_snapshot_marks k_live_marks = {
+    .lcn_valid = 1U,
+    .chan_map = {.valid = 1U},
+    .trunk_scan_avoids = {.valid = 1U},
+};
+/* The consumer copy holds a store that is not whole: the next read copies again even with no new publication, so a
+ * consumer-side allocation that failed recovers without waiting for the decoder to publish. */
+static int g_consume_needs_retry = 0;
+
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
 #define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   g_eh_copy_counts.source_to_published[(slot)]++
@@ -77,11 +107,27 @@ ui_snapshot_copy_trunk_cc_candidates(dsd_state* dst, const dsd_state* src, dsd_t
     dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
 }
 
+static int
+ui_snapshot_mark_current(const ui_snapshot_store_mark* mark, uint64_t instance, uint64_t rev) {
+    return mark->valid && mark->instance == instance && mark->rev == rev;
+}
+
 static void
-ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
-    if (dst->trunk_chan_map_seq == src->trunk_chan_map_seq
+ui_snapshot_mark_set(ui_snapshot_store_mark* mark, uint64_t instance, uint64_t rev, int valid) {
+    mark->instance = instance;
+    mark->rev = rev;
+    mark->valid = valid ? 1U : 0U;
+}
+
+/* Copied only when the map moved. initState() restarts trunk_chan_map_seq, so a later session's map can come back at
+ * the sequence and count an earlier one's had: the state instance is part of the key, or the snapshot would keep the
+ * old session's channels. The map is fixed-size inline storage, so the copy cannot fail: it returns 0, like the heap
+ * copies below on success. */
+static int
+ui_snapshot_copy_trunk_chan_map(dsd_state* dst, ui_snapshot_store_mark* mark, const dsd_state* src, uint8_t src_valid) {
+    if (ui_snapshot_mark_current(mark, src->state_instance, src->trunk_chan_map_seq)
         && dst->trunk_chan_map_used_count == src->trunk_chan_map_used_count) {
-        return;
+        return 0;
     }
 
     uint32_t old_count = dst->trunk_chan_map_used_count;
@@ -114,6 +160,8 @@ ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
         dst->trunk_chan_map_used[dst->trunk_chan_map_used_count++] = channel;
     }
     dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
+    ui_snapshot_mark_set(mark, src->state_instance, src->trunk_chan_map_seq, src_valid);
+    return 0;
 }
 
 /* The heap tail must stay outside every UI_SNAPSHOT_COPY_RANGE: a raw byte copy of the
@@ -152,12 +200,26 @@ _Static_assert(offsetof(dsd_state, trunk_lcn_keys) >= UI_SNAPSHOT_FIELD_END(trun
                "trunk_lcn_keys must sit after the dibit_buf..trunk_lcn_freq copy range");
 _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state, audio_out_idx),
                "trunk_lcn_keys..scan_keys_active_set must sit before the audio_out_idx..lastsample copy range");
+/* The published trunk-scan avoid list (issue #672) is a fifth heap allocation with the same hazard. */
+_Static_assert(offsetof(dsd_state, trunk_scan_avoids) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_scan_avoids must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_scan_avoid_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_scan_avoids must sit before the audio_out_idx..lastsample copy range");
 /* The trunk-scan publication and the scan hold/avoid scalars are plain inline bytes, so
  * unlike the stores above they want to be inside a copy range -- left out of one they
  * would silently never reach the UI. */
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(scan_row_scope_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..scan_row_scope_seq must ride the vertex_ks_count..ui_msg range");
+/* The avoid stores' identities, revisions and exact count (issue #672) ride the same range: a frontend keys its avoid
+ * list on them. */
+_Static_assert(offsetof(dsd_state, state_instance) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_avoids_ok) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "state_instance..trunk_scan_avoids_ok must ride the vertex_ks_count..ui_msg range");
+/* scan_avoids_complete rides it as well, and ui_snapshot_copy_render_state() lowers it after that range is copied. */
+_Static_assert(offsetof(dsd_state, scan_avoids_complete) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(scan_avoids_complete) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "scan_avoids_complete must ride the vertex_ks_count..ui_msg range");
 /* The -Y pause flags and operator_tuned (issue #671) sit beside the scan hold, inside that range: every frontend's scan
  * state reads them. */
 _Static_assert(
@@ -206,8 +268,9 @@ _Static_assert(offsetof(dsd_state, rx_id_trunk_tune_pending) >= UI_SNAPSHOT_FIEL
  * above; the scan-list heap tail past it needs an explicit deep copy.
  * Runs after the range that carries lcn_freq_count/lcn_freq_roll so dst is
  * never left claiming more entries than its tail holds: on reserve failure the
- * count is clamped back to the embedded slots and the roll restarted. */
-static void
+ * count is clamped back to the embedded slots and the roll restarted, and -1
+ * says the copy is short. */
+static int
 ui_snapshot_copy_trunk_lcn_freq_ext(dsd_state* dst, const dsd_state* src) {
     const int count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
     /* A protocol writer can shrink lcn_freq_count without touching lcn_freq_roll, so the
@@ -217,22 +280,24 @@ ui_snapshot_copy_trunk_lcn_freq_ext(dsd_state* dst, const dsd_state* src) {
         dst->lcn_freq_roll = 0;
     }
     if (count <= DSD_TRUNK_LCN_EMBEDDED) {
-        return;
+        return 0;
     }
     const size_t ext_count = (size_t)count - (size_t)DSD_TRUNK_LCN_EMBEDDED;
     if (dsd_state_trunk_lcn_reserve(dst, (size_t)count) != 0) {
         dst->lcn_freq_count = DSD_TRUNK_LCN_EMBEDDED;
         dst->lcn_freq_roll = 0;
-        return;
+        return -1;
     }
     DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext, ext_count * sizeof(dst->trunk_lcn_freq_ext[0]));
+    return 0;
 }
 
 /* The optional per-row names are a separate heap allocation and need their own deep copy.
  * Runs after the tail copy above so it reads the clamped lcn_freq_count and never publishes
  * a name for a row the snapshot does not carry; the store is shorter than the list whenever
- * only the leading rows were named, so the source capacity bounds it too. */
-static void
+ * only the leading rows were named, so the source capacity bounds it too. Returns -1 when
+ * a failed reserve left the snapshot without names the source has. */
+static int
 ui_snapshot_copy_trunk_lcn_name(dsd_state* dst, const dsd_state* src) {
     const int count = dst->lcn_freq_count > 0 ? dst->lcn_freq_count : 0;
     size_t copy_count = (size_t)count;
@@ -241,9 +306,13 @@ ui_snapshot_copy_trunk_lcn_name(dsd_state* dst, const dsd_state* src) {
     }
     /* Nothing to publish: drop dst's store rather than leaving it, so a map the operator
      * cleared does not keep showing the names it used to have. */
-    if (src->trunk_lcn_name == NULL || copy_count == 0 || dsd_state_trunk_lcn_name_reserve(dst, copy_count) != 0) {
+    if (src->trunk_lcn_name == NULL || copy_count == 0) {
         dsd_state_trunk_lcn_name_free(dst);
-        return;
+        return 0;
+    }
+    if (dsd_state_trunk_lcn_name_reserve(dst, copy_count) != 0) {
+        dsd_state_trunk_lcn_name_free(dst);
+        return -1;
     }
     DSD_MEMCPY(dst->trunk_lcn_name, src->trunk_lcn_name, copy_count * sizeof(dst->trunk_lcn_name[0]));
     /* dst keeps whatever capacity a longer previous map grew it to, so clear the entries
@@ -253,32 +322,72 @@ ui_snapshot_copy_trunk_lcn_name(dsd_state* dst, const dsd_state* src) {
         DSD_MEMSET(dst->trunk_lcn_name[copy_count], 0,
                    (dst->trunk_lcn_name_capacity - copy_count) * sizeof(dst->trunk_lcn_name[0]));
     }
+    return 0;
 }
 
 /* The session avoid flags are the third heap store beside the scan list. Same shape as the
  * name copy: bounded by the clamped count and the source capacity, dropped outright when
  * the source has none so a cleared map does not keep its old avoids in the snapshot. */
-static void
+static int
 ui_snapshot_copy_trunk_lcn_avoid(dsd_state* dst, const dsd_state* src) {
     const int count = dst->lcn_freq_count > 0 ? dst->lcn_freq_count : 0;
     size_t copy_count = (size_t)count;
     if (copy_count > src->trunk_lcn_avoid_capacity) {
         copy_count = src->trunk_lcn_avoid_capacity;
     }
-    if (src->trunk_lcn_avoid == NULL || copy_count == 0 || dsd_state_trunk_lcn_avoid_reserve(dst, copy_count) != 0) {
+    if (src->trunk_lcn_avoid == NULL || copy_count == 0) {
         dsd_state_trunk_lcn_avoid_free(dst);
-        return;
+        return 0;
+    }
+    if (dsd_state_trunk_lcn_avoid_reserve(dst, copy_count) != 0) {
+        dsd_state_trunk_lcn_avoid_free(dst);
+        return -1;
     }
     DSD_MEMCPY(dst->trunk_lcn_avoid, src->trunk_lcn_avoid, copy_count);
     if (dst->trunk_lcn_avoid_capacity > copy_count) {
         DSD_MEMSET(dst->trunk_lcn_avoid + copy_count, 0, dst->trunk_lcn_avoid_capacity - copy_count);
     }
+    return 0;
 }
 
+/* The published trunk-scan avoid list changes only with trunk_scan_avoid_rev or a new state instance, so it is copied
+ * only then, or while the copy held is not whole, into the destination's own store: a snapshot never aliases the
+ * decoder's buffer, and a failed reserve leaves the copy empty rather than stale and returns -1. A skipped copy
+ * returns 0: the store it keeps is whole. */
+static int
+ui_snapshot_copy_trunk_scan_avoids(dsd_state* dst, ui_snapshot_store_mark* mark, const dsd_state* src,
+                                   uint8_t src_valid) {
+    if (ui_snapshot_mark_current(mark, src->state_instance, src->trunk_scan_avoid_rev)) {
+        return 0;
+    }
+    const int rc = dsd_state_trunk_scan_avoids_set(dst, src->trunk_scan_avoids, src->trunk_scan_avoid_count);
+    ui_snapshot_mark_set(mark, src->state_instance, src->trunk_scan_avoid_rev, src_valid && rc == 0);
+    return rc;
+}
+
+/* The scan-list stores beside the list (issue #672 B2): a copy that comes out short -- here, or at the hop before --
+ * is marked not whole, so the snapshot's scan_avoids_complete says so instead of a short avoid list passing as whole. */
 static void
-ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
+ui_snapshot_copy_scan_lists(dsd_state* dst, ui_snapshot_marks* marks, const dsd_state* src,
+                            const ui_snapshot_marks* src_marks) {
+    const int tail_ok = ui_snapshot_copy_trunk_lcn_freq_ext(dst, src) == 0;
+    const int names_ok = ui_snapshot_copy_trunk_lcn_name(dst, src) == 0;
+    const int flags_ok = ui_snapshot_copy_trunk_lcn_avoid(dst, src) == 0;
+    marks->lcn_valid = (src_marks->lcn_valid && tail_ok && names_ok && flags_ok) ? 1U : 0U;
+    (void)ui_snapshot_copy_trunk_scan_avoids(dst, &marks->trunk_scan_avoids, src, src_marks->trunk_scan_avoids.valid);
+}
+
+static int
+ui_snapshot_marks_whole(const ui_snapshot_marks* marks) {
+    return marks->lcn_valid && marks->chan_map.valid && marks->trunk_scan_avoids.valid;
+}
+
+/* @p marks records what @p dst holds; @p src_marks what @p src holds (k_live_marks for the decoder's own state). */
+static void
+ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const dsd_state* src,
+                              const ui_snapshot_marks* src_marks) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
-    ui_snapshot_copy_trunk_chan_map(dst, src);
+    (void)ui_snapshot_copy_trunk_chan_map(dst, &marks->chan_map, src, src_marks->chan_map.valid);
     dst->keyloader = src->keyloader;
     DSD_MEMCPY(dst->key_profile_ref, src->key_profile_ref, sizeof(dst->key_profile_ref));
     dst->key_profile_ref[sizeof(dst->key_profile_ref) - 1U] = '\0';
@@ -297,11 +406,13 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dmr_alias_format, DMRvcR);
     UI_SNAPSHOT_COPY_RANGE(dst, src, octet_counter, p25_p2_audio_allowed);
     UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_active_slot, dstar_gps);
-    ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
-    ui_snapshot_copy_trunk_lcn_name(dst, src);
-    ui_snapshot_copy_trunk_lcn_avoid(dst, src);
+    ui_snapshot_copy_scan_lists(dst, marks, src, src_marks);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
+    /* The range carried the source's flag (1 on a live state); a copy here that came out short takes it down, and a
+     * later whole copy of a whole source puts it back. */
+    dst->scan_avoids_complete =
+        (src->scan_avoids_complete && marks->lcn_valid && marks->trunk_scan_avoids.valid) ? 1U : 0U;
 }
 
 static void
@@ -341,16 +452,26 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
 }
 #endif
 
+/* Whether the ring the decoder holds is another ring than the one the published copy came from. A restarted decoder's
+ * ring can be allocated at the freed ring's address and reach the revision the copy holds, so the pointer and the
+ * per-slot revision alone would skip the copy and keep the previous session's rows: the ring's identity
+ * (Event_History_I::instance, drawn per initState()) is part of the key. */
+static int
+ui_snapshot_eh_ring_replaced(const Event_History_I* source) {
+    return g_pub_eh_source != source || g_pub_eh[0].instance != source[0].instance
+           || g_pub_eh[1].instance != source[1].instance;
+}
+
 static void
 ui_snapshot_publish(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
-    ui_snapshot_copy_render_state(&g_pub, state);
+    ui_snapshot_copy_render_state(&g_pub, &g_pub_marks, state, &k_live_marks);
     dsd_scan_mode_copy_snapshot(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
-        const int force_copy = !g_have || !g_pub_eh_present || g_pub_eh_source != state->event_history_s;
+        const int force_copy = !g_have || !g_pub_eh_present || ui_snapshot_eh_ring_replaced(state->event_history_s);
         uint8_t copied[2] = {0U, 0U};
         (void)dsd_event_state_copy_snapshot_incremental(&g_pub, state, g_pub_eh, g_pub_eh_source_revision, force_copy,
                                                         copied);
@@ -412,14 +533,16 @@ dsd_app_get_latest_snapshot(void) {
         dsd_mutex_unlock(&g_mu);
         return NULL;
     }
-    if (g_consume_seq != g_pub_seq) {
-        ui_snapshot_copy_render_state(&g_consume, &g_pub);
+    if (g_consume_seq != g_pub_seq || g_consume_needs_retry) {
+        ui_snapshot_copy_render_state(&g_consume, &g_consume_marks, &g_pub, &g_pub_marks);
         dsd_scan_mode_copy_snapshot(&g_consume, &g_pub);
         ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
         (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;
+        g_consume_needs_retry = !ui_snapshot_marks_whole(&g_consume_marks);
     }
-    // Deep copy event history only when the published history changed.
+    // Deep copy event history only when the published history changed. g_pub_eh_seq counts this module's own copies
+    // into g_pub_eh and never restarts, so unlike the decoder's revision it needs no ring identity beside it.
     if (g_pub.event_history_s != NULL) {
         for (size_t slot = 0; slot < 2U; slot++) {
             if (g_consume_eh_seq[slot] != g_pub_eh_seq[slot]) {

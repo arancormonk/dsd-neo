@@ -8,6 +8,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -184,4 +185,16 @@ dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
     }
     return g_trunk_scan_hooks.control(opts, state, op);
+}
+
+int
+dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                            dsd_trunk_scan_target_name* name) {
+    if (name) {
+        DSD_MEMSET(name, 0, sizeof(*name));
+    }
+    if (!g_trunk_scan_hooks.unavoid) {
+        return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    return g_trunk_scan_hooks.unavoid(opts, state, session, target_id, name);
 }

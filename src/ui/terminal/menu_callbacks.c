@@ -10,18 +10,15 @@
 
 #include "menu_callbacks.h"
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -77,6 +74,13 @@ clamp_double_with_notice(const char* label, double value, double min_v, double m
 static UiCtx*
 mutable_ui_ctx_from_callback(void* user) {
     return (UiCtx*)user;
+}
+
+/* An owned chooser's or prompt's context (issue #672, B8): the callback reads it, the widget's dispose frees it. The
+   parameter stays void*, as the widgets' callback types have it. */
+static const void*
+owned_context(void* user) {
+    return user;
 }
 
 // ---- Simple path callbacks ----
@@ -252,31 +256,6 @@ cb_keys_hex(void* v, const char* p) {
 
 // ---- Config callbacks ----
 
-static void
-ui_submit_config_metadata(int autosave_enabled, const char* path) {
-    dsd_app_config_metadata_payload payload;
-    DSD_MEMSET(&payload, 0, sizeof payload);
-    payload.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
-    payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
-}
-
-/* A loaded file's apply (dsd_app_config_load_payload): the autosave it brings (@p autosave_enabled, @p path) is adopted
-   by the decoder only once the config stays applied, so a refused load leaves the autosave where it was. Heap: the
-   config is tens of KB. */
-static dsd_app_config_load_payload*
-ui_new_config_load(int autosave_enabled, const char* path, const char* profile) {
-    dsd_app_config_load_payload* load = (dsd_app_config_load_payload*)calloc(1, sizeof *load);
-    if (!load) {
-        return NULL;
-    }
-    load->autosave.autosave_enabled = autosave_enabled ? 1 : 0;
-    DSD_SNPRINTF(load->autosave.path, sizeof load->autosave.path, "%s", path ? path : "");
-    DSD_SNPRINTF(load->profile, sizeof load->profile, "%s", profile ? profile : "");
-    return load;
-}
-
 void
 cb_config_load(void* v, const char* path) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
@@ -287,24 +266,15 @@ cb_config_load(void* v, const char* path) {
         ui_statusf("Config load canceled");
         return;
     }
-
-    dsd_app_config_load_payload* load = ui_new_config_load(1, path, "");
-    if (!load) {
-        ui_statusf("Failed to load config from %s", path);
-        return;
-    }
-    if (dsd_user_config_load(path, &load->config) != 0) {
-        ui_statusf("Failed to load config from %s", path);
-        free(load);
-        return;
-    }
     /* The decoder says whether it loaded: "Config loaded from ..." or "Config not applied: ...". */
-    (void)dsd_app_command_load_config(load);
-    free(load);
+    if (dsd_app_config_load_submit(path) != 0) {
+        ui_statusf("Failed to load config from %s", path);
+    }
 }
 
-static void
-config_profile_free_context(ProfileSelCtx* pctx) {
+void
+config_profile_ctx_dispose(void* u) {
+    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
     if (!pctx) {
         return;
     }
@@ -320,24 +290,18 @@ config_profile_free_context(ProfileSelCtx* pctx) {
 
 void
 chooser_done_config_profile(void* u, int sel) {
-    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
+    const ProfileSelCtx* pctx = (const ProfileSelCtx*)owned_context(u);
     if (!pctx) {
         return;
     }
 
     if (sel >= 0 && sel < pctx->n && pctx->names && pctx->names[sel] && pctx->path[0] != '\0') {
         const char* profile = pctx->names[sel];
-        dsd_app_config_load_payload* load = ui_new_config_load(0, pctx->path, profile);
-        if (!load || dsd_user_config_load_profile(pctx->path, profile, &load->config) != 0) {
+        /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
+        if (dsd_app_config_load_profile_submit(pctx->path, profile) != 0) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
-        } else {
-            /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
-            (void)dsd_app_command_load_config(load);
         }
-        free(load);
     }
-
-    config_profile_free_context(pctx);
 }
 
 void
@@ -350,16 +314,12 @@ cb_config_save_as(void* v, const char* path) {
         ui_statusf("Config save canceled");
         return;
     }
-    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    if (!opts_snapshot || !snapshot) {
+    /* The frame this answer arrives in (the menu's context), not the one the prompt opened in. */
+    if (!c->opts || !c->state) {
         ui_statusf("Decoder settings are not available yet");
         return;
     }
-    dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
-    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
-        ui_submit_config_metadata(1, path);
+    if (dsd_app_config_save(path, c->opts, c->state, 1) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
@@ -1228,7 +1188,7 @@ cb_audio_lpf(void* v, int ok, int hz) {
     } else {
         env_set_int("DSD_NEO_AUDIO_LPF", hz);
     }
-    env_reparse_runtime_cfg(c->opts);
+    env_reparse_runtime_cfg();
 }
 
 void
@@ -1325,13 +1285,14 @@ cb_lr_custom(void* v, const char* path) {
 // ---- Env editor callbacks ----
 
 void
+env_edit_ctx_dispose(void* u) {
+    free(u);
+}
+
+void
 cb_env_edit_value(void* u, const char* val) {
-    EnvEditCtx* ec = (EnvEditCtx*)u;
-    if (!ec) {
-        return;
-    }
-    if (!val) {
-        free(ec);
+    const EnvEditCtx* ec = (const EnvEditCtx*)owned_context(u);
+    if (!ec || !val) {
         return;
     }
     /* A session override (#782): the process environment is never written while the decoder reads it. */
@@ -1345,36 +1306,35 @@ cb_env_edit_value(void* u, const char* val) {
         ui_statusf("Cleared %s", ec->name);
     }
     // Apply to runtime config as appropriate
-    env_reparse_runtime_cfg(ec->c ? ec->c->opts : NULL);
-    free(ec);
+    env_reparse_runtime_cfg();
 }
 
 void
 cb_env_edit_name(void* u, const char* name) {
-    EnvEditCtx* ec = (EnvEditCtx*)u;
-    if (!ec) {
-        return;
-    }
+    (void)u; /* the context is taken below, once the name is good */
     if (!name || !*name) {
-        free(ec);
-        return;
+        return; /* the name prompt disposes the context */
     }
     // Require DSD_NEO_ prefix for safety
     if (dsd_strncasecmp(name, "DSD_NEO_", 8) != 0) {
         ui_statusf("Variable name must start with DSD_NEO_");
-        free(ec);
         return;
     }
     if (strchr(name, '=') != NULL) {
         ui_statusf("Variable name cannot contain =");
-        free(ec);
+        return;
+    }
+    /* Taken from the name prompt and handed to the value prompt, which disposes it when it completes. */
+    EnvEditCtx* ec = (EnvEditCtx*)ui_prompt_take_context();
+    if (!ec) {
         return;
     }
     DSD_SNPRINTF(ec->name, sizeof ec->name, "%s", name);
     /* The prompt copies the prefill; the copy here is zeroed, since a value may be a key or token. */
     char cur[256];
     (void)dsd_env_copy(ec->name, cur, sizeof cur);
-    ui_prompt_open_string_async("Enter value (empty to clear)", cur, sizeof cur, cb_env_edit_value, ec);
+    ui_prompt_open_string_owned("Enter value (empty to clear)", cur, sizeof cur, cb_env_edit_value, ec,
+                                env_edit_ctx_dispose);
     DSD_SECURE_ZERO(cur, sizeof cur);
 }
 
@@ -1410,29 +1370,30 @@ chooser_free_lists(const char** names, char** bufs, int n, const char** labels) 
 }
 
 void
-chooser_done_pulse_out(void* u, int sel) {
+pulse_sel_ctx_dispose(void* u) {
     PulseSelCtx* pc = (PulseSelCtx*)u;
     if (pc) {
-        if (sel >= 0 && sel < pc->n) {
-            const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, name);
-            ui_statusf("Pulse out requested: %s", name);
-        }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
         free(pc);
     }
 }
 
 void
+chooser_done_pulse_out(void* u, int sel) {
+    const PulseSelCtx* pc = (const PulseSelCtx*)owned_context(u);
+    if (pc && sel >= 0 && sel < pc->n) {
+        const char* name = pc->names[sel];
+        (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, name);
+        ui_statusf("Pulse out requested: %s", name);
+    }
+}
+
+void
 chooser_done_pulse_in(void* u, int sel) {
-    PulseSelCtx* pc = (PulseSelCtx*)u;
-    if (pc) {
-        if (sel >= 0 && sel < pc->n) {
-            const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_IN_SET, name);
-            ui_statusf("Pulse in requested: %s", name);
-        }
-        chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
-        free(pc);
+    const PulseSelCtx* pc = (const PulseSelCtx*)owned_context(u);
+    if (pc && sel >= 0 && sel < pc->n) {
+        const char* name = pc->names[sel];
+        (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_IN_SET, name);
+        ui_statusf("Pulse in requested: %s", name);
     }
 }

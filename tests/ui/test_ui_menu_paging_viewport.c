@@ -12,9 +12,12 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -49,9 +52,11 @@ ui_statusf(const char* fmt, ...) {
     (void)fmt;
 }
 
-const char*
-dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
-    return "";
+int
+dsd_app_config_default_missing(char* path, size_t path_size) { // NOLINT(misc-use-internal-linkage)
+    (void)path;
+    (void)path_size;
+    return 0;
 }
 
 void
@@ -100,6 +105,18 @@ void
 ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
+void
+ui_help_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+ui_prompt_close_all(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+ui_chooser_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
@@ -131,7 +148,7 @@ rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+rr_panel_tick(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -252,10 +269,10 @@ resize_term(int lines, int columns) {
 
 int
 main(void) {
-    static unsigned char opts_token;
-    static unsigned char state_token;
-    dsd_opts* opts = (dsd_opts*)&opts_token;
-    dsd_state* state = (dsd_state*)&state_token;
+    /* The frame's pair: real objects (the stubs never read them), on the heap as dsd_opts/dsd_state go. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
 
     ui_menu_open_async(opts, state);
     assert(ui_menu_is_open() == 1);
@@ -285,6 +302,8 @@ main(void) {
     assert(g_last_hi == 0);
     assert(g_last_top == 0);
 
+    free(state);
+    free(opts);
     printf("UI_MENU_PAGING_VIEWPORT: OK\n");
     return 0;
 }

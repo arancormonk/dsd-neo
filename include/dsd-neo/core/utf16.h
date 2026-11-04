@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief UTF-16 decoding and UTF-8 encoding for radio-sourced text.
+ * @brief UTF-16 decoding, UTF-8 encoding and UTF-8 validation for radio-sourced and file text.
  *
  * DMR UDT/SMS text and talker aliases arrive as UTF-16 code units that may be garbage (an
  * OTA-encrypted or CRC-failed payload) or may legitimately contain surrogate pairs. Printing
@@ -24,6 +24,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -169,6 +170,66 @@ dsd_utf8_encode_scalar(uint32_t scalar, char* out, size_t out_size) {
     }
     out[n] = '\0';
     return n;
+}
+
+/**
+ * @brief The UTF-8 sequence a lead byte starts: its length (1 for ASCII), or 0 when @p c cannot lead one.
+ *
+ * @p lo and @p hi get the range the byte after it must fall in (RFC 3629: no overlong forms, no surrogates, nothing
+ * above U+10FFFF); every later byte is a plain continuation byte.
+ */
+static inline size_t
+dsd_utf8_lead(unsigned char c, unsigned char* lo, unsigned char* hi) {
+    *lo = 0x80U;
+    *hi = 0xBFU;
+    if (c < 0x80U) {
+        return 1;
+    }
+    if (c >= 0xC2U && c <= 0xDFU) {
+        return 2;
+    }
+    if (c >= 0xE0U && c <= 0xEFU) {
+        *lo = (c == 0xE0U) ? 0xA0U : 0x80U;
+        *hi = (c == 0xEDU) ? 0x9FU : 0xBFU;
+        return 3;
+    }
+    if (c >= 0xF0U && c <= 0xF4U) {
+        *lo = (c == 0xF0U) ? 0x90U : 0x80U;
+        *hi = (c == 0xF4U) ? 0x8FU : 0xBFU;
+        return 4;
+    }
+    return 0;
+}
+
+/**
+ * @brief Return 1 when the NUL-terminated @p s is well-formed UTF-8, else 0 (NULL is not).
+ *
+ * Well-formed as RFC 3629 defines it: shortest form only, no surrogate code points, nothing above
+ * U+10FFFF. Control characters are well-formed; a caller that refuses them checks for them itself.
+ */
+static inline int
+dsd_utf8_is_valid(const char* s) {
+    if (s == NULL) {
+        return 0;
+    }
+    const size_t n = strlen(s);
+    size_t i = 0;
+    while (i < n) {
+        unsigned char lo;
+        unsigned char hi;
+        const size_t length = dsd_utf8_lead((unsigned char)s[i], &lo, &hi);
+        if (length == 0U || n - i < length
+            || (length > 1U && ((unsigned char)s[i + 1] < lo || (unsigned char)s[i + 1] > hi))) {
+            return 0;
+        }
+        for (size_t k = 2; k < length; k++) {
+            if (((unsigned char)s[i + k] & 0xC0U) != 0x80U) {
+                return 0;
+            }
+        }
+        i += length;
+    }
+    return 1;
 }
 
 #ifdef __cplusplus
