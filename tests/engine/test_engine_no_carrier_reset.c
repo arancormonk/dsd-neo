@@ -15,6 +15,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -86,6 +87,7 @@
 #include <dsd-neo/io/control.h>
 #include "../../src/app_control/services.h"
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #endif
 
@@ -1679,6 +1681,8 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed timeout leaves outgoing mode", pending != 0 && opts->frame_nxdn48
                                                                 && state->lcn_freq_roll == 1
                                                                 && dsd_engine_channel_scan_pending(opts, state));
+    /* Issue #667 D9: a tune still pending lands nothing, and its landing names the row. */
+    rc |= expect_true("typed pending hop names no landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     dsd_call_snapshot pending_call;
     rc |= expect_true("typed pending hop keeps outgoing call", dsd_call_state_get(state, 0, &pending_call) == 1);
     rc |= expect_true("typed pending hop avoids premature sync loss", pending_call.phase == DSD_CALL_PHASE_ACTIVE);
@@ -1687,6 +1691,8 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed async completion commits",
                       !dsd_engine_channel_scan_pending(opts, state) && opts->frame_p25p1 && opts->frame_p25p2
                           && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
+    rc |=
+        expect_true("typed async completion names its landing", dsd_engine_scan_landing_hz(opts, state) == 941012500U);
     dsd_call_snapshot ended;
     rc |= expect_true("typed pending hop retains call", dsd_call_state_get(state, 0, &ended) == 1);
     rc |= expect_true("typed pending hop ends explicitly", ended.end_reason == DSD_CALL_END_EXPLICIT);
@@ -2319,27 +2325,37 @@ test_untyped_find_and_enter_row(void) {
     rc |= expect_true("enter-row-failed",
                       dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_FAILED
                           && state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL);
+    /* Issue #667 D9: the landing each step confirms, and none for a failed, placeholder or pending one. */
+    rc |= expect_true("enter-row-failed-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     uint32_t carrier_seq = state->carrier_seq;
     rc |= expect_true("enter-row-ok", dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_OK);
     rc |=
         expect_true("enter-row-ok-commits", state->lcn_freq_roll == 1 && state->rkey_array[9] == 999ULL
                                                 && state->carrier_seq != carrier_seq && g_rtl_tune_freq == 992012500U);
+    rc |= expect_true("enter-row-ok-names-its-landing", dsd_engine_scan_landing_hz(opts, state) == 992012500U);
     carrier_seq = state->carrier_seq;
     rc |= expect_true("enter-row-placeholder-parks",
                       dsd_engine_scan_untyped_enter_row(opts, state, 2, now) == DSD_UNTYPED_STEP_OK
                           && state->lcn_freq_roll == 3 && state->carrier_seq == carrier_seq
                           && state->rkey_array[9] == 999ULL);
+    rc |= expect_true("enter-row-placeholder-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
+    rc |=
+        expect_true("enter-row-ok-again", dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_OK
+                                              && dsd_engine_scan_landing_hz(opts, state) == 992012500U);
+    state->lcn_freq_roll = 3;
     g_rtl_timeout_outstanding = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rc |= expect_true("enter-row-pending",
                       dsd_engine_scan_untyped_enter_row(opts, state, 3, now) == DSD_UNTYPED_STEP_PENDING
                           && state->lcn_freq_roll == 3 && state->rkey_array[9] == 999ULL);
+    rc |= expect_true("enter-row-pending-names-no-landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                                      && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
+    rc |= expect_true("enter-row-pending-landing-names-its-row", dsd_engine_scan_landing_hz(opts, state) == 994012500U);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -6029,6 +6045,9 @@ test_replay_leave_closes_the_nfm_recording(void) {
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
+    /* A radio input's analog calls need a squelch above the startup default (issue #667 D2). */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
     int rc = expect_true("replay leave nfm: the tone-name rule parses",
                          dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts->receive.names, NULL, 0) == 0);
     rc |= expect_true("replay leave nfm: tone detection runs", dsd_analog_tone_detection_active(opts));
@@ -6042,7 +6061,12 @@ test_replay_leave_closes_the_nfm_recording(void) {
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
     }
-    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    /* A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS (issue #667): 20 ms blocks on the capture's clock, from
+       0.1 s in, so the call starts in the capture's first second. */
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_decode_clock_set_media_ns(100000000ULL + (uint64_t)(i + 1) * 20000000ULL);
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    }
     rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
 
     /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */

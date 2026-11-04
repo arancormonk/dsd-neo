@@ -37,7 +37,7 @@
  * own the columns; a detector that wants more adds its own field and column. The contract, which replay_ab.sh relies on
  * because it splits the line on spaces:
  *   tone=<label>        the received tone or code as the decoder names it, with no whitespace: "151.4" (Hz, one
- *                       decimal) for CTCSS; for DCS both standard spellings of the code's signal, canonical first
+ *                       decimal) for CTCSS; for DCS both supported spellings of the code's signal, canonical first
  *                       (dsd_dcs_canonical(), then dsd_dcs_alias()), joined by a slash, such as "D023N/D047I": the
  *                       log's "DCS D023N / D047I" as one token. A receiver cannot tell the two spellings apart, so
  *                       neither alone names what was received. NA when none was confirmed.
@@ -79,9 +79,15 @@
  * 0.3, 0.6, 1.5 and 3.0 s between them, writes it to the private directory and adds `--iq-replay` for it (the case
  * names no capture of its own); with --analog-pcm-tap the run takes its discriminator tap as `-i` instead. With per-call
  * recording on (-P), the stop hook, which runs after the engine committed the session's last calls, also prints one
- * "ANALOG CALL ROW: start=S end=E" line per NFM call history row, oldest first (decode time, whole seconds).
+ * "ANALOG CALL ROW: start=S end=E tone=T" line per analog call history row, oldest first (decode time, whole seconds;
+ * T the row's received tone as its text names it, "CTCSS 100.0 Hz", or "none").
  * tests/analog_recording_check.cmake reads those lines with the recordings and the journal.
  *
+ * --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS (issue #667) replays the first AT_MS of the --iq-replay capture, then
+ * a GAP_MS gap in the radio stream as a USB recovery records one (a RETUNE to the same centre, the muted samples and a
+ * RESET, each named usb_recovery), then the first THEN_MS of FIXTURE, another committed 48 kHz capture named without
+ * its .iq.json and found by its directory entry there, as the scaled copy's capture is. The joined copy goes to the
+ * private directory, as the scaled copy does.
  * --analog-scene NAME (issue #668) makes one of the scenes below at run time and takes it as the input instead:
  * bursts of voice-band noise that never repeats, as I/Q, as audio input at --analog-pcm-tap's rate, or sent live over
  * UDP. With -P and --wav-journal, once the engine has stopped, the host finds every published recording in the scene
@@ -98,10 +104,12 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -266,6 +274,18 @@ static int g_reported;
 static const char k_scene_arg[] = "--analog-scene";
 static const char k_keep_output_arg[] = "--analog-keep-output";
 
+/* The stream gap the replayed capture is joined across (--analog-gap-join); unset joins none. */
+typedef struct {
+    int set;
+    long at_ms;
+    long gap_ms;
+    char then[128];
+    long then_ms;
+} analog_gap_join;
+
+static analog_gap_join g_gap_join;
+static const char k_gap_join_arg[] = "--analog-gap-join";
+
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
 typedef struct {
@@ -351,6 +371,8 @@ analog_usage(void) {
                 "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
                 "  --analog-raw-wav-min-rms-dbfs DB  record the -6 raw WAV to a private file; RMS level of that WAV\n"
                 "  --analog-synth-pauses SEED        replay a made NFM capture of bursts with pauses between them\n"
+                "  --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS  replay the capture to AT_MS, a recorded stream\n"
+                "                                    gap, then FIXTURE to THEN_MS\n"
                 "  --analog-scene NAME               replay a made scene of voice bursts, find each recording in it\n"
                 "  --analog-record-{min,max}-start-ms MS  where each recording starts against its burst\n"
                 "  --analog-record-{min,max}-audio-ms MS  where its first sample that is not 0 is\n"
@@ -435,7 +457,48 @@ analog_find_probe_limit(const char* name) {
 static int
 analog_is_host_option(const char* name) {
     return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0
-           || strcmp(name, k_scene_arg) == 0 || strcmp(name, k_keep_output_arg) == 0;
+           || strcmp(name, k_gap_join_arg) == 0 || strcmp(name, k_scene_arg) == 0
+           || strcmp(name, k_keep_output_arg) == 0;
+}
+
+/* One ':'-ended field of @p *text, a whole number of ms from 1 to 60000; advances past it. */
+static int
+analog_parse_gap_ms(const char** text, long* out) {
+    char field[16];
+    const char* colon = strchr(*text, ':');
+    const size_t len = colon != NULL ? (size_t)(colon - *text) : strlen(*text);
+    if (len == 0U || len >= sizeof field) {
+        return -1;
+    }
+    DSD_MEMCPY(field, *text, len);
+    field[len] = '\0';
+    *text = colon != NULL ? colon + 1 : *text + len;
+    return dsd_parse_long_strict(field, 10, 1L, 60000L, out);
+}
+
+/* AT_MS:GAP_MS:FIXTURE:THEN_MS (--analog-gap-join). */
+static int
+analog_parse_gap_join(const char* text) {
+    const char* p = text;
+    if (analog_parse_gap_ms(&p, &g_gap_join.at_ms) != 0 || analog_parse_gap_ms(&p, &g_gap_join.gap_ms) != 0) {
+        DSD_FPRINTF(stderr, "%s: expected AT_MS:GAP_MS:FIXTURE:THEN_MS, got '%s'\n", k_gap_join_arg, text);
+        return -1;
+    }
+    const char* colon = strchr(p, ':');
+    const size_t len = colon != NULL ? (size_t)(colon - p) : 0U;
+    if (len == 0U || len >= sizeof g_gap_join.then) {
+        DSD_FPRINTF(stderr, "%s: expected AT_MS:GAP_MS:FIXTURE:THEN_MS, got '%s'\n", k_gap_join_arg, text);
+        return -1;
+    }
+    DSD_MEMCPY(g_gap_join.then, p, len);
+    g_gap_join.then[len] = '\0';
+    p = colon + 1;
+    if (analog_parse_gap_ms(&p, &g_gap_join.then_ms) != 0 || *p != '\0') {
+        DSD_FPRINTF(stderr, "%s: expected AT_MS:GAP_MS:FIXTURE:THEN_MS, got '%s'\n", k_gap_join_arg, text);
+        return -1;
+    }
+    g_gap_join.set = 1;
+    return 0;
 }
 
 static int analog_apply_scene(const char* value);
@@ -443,6 +506,9 @@ static int analog_apply_scene(const char* value);
 /* Applies one host option (name already known to be one); returns 0, or -1 on a bad value. */
 static int
 analog_apply_option(const char* name, const char* value) {
+    if (strcmp(name, k_gap_join_arg) == 0) {
+        return analog_parse_gap_join(value);
+    }
     const analog_scalar_arg* scalar = analog_find_scalar(name);
     if (scalar != NULL) {
         scalar->target->set = 1;
@@ -1338,6 +1404,128 @@ analog_replay_synth(char** args, int* count) {
     return rc;
 }
 
+/* ---- a recorded stream gap (--analog-gap-join) ---------------------------------------------------------------- */
+
+/* Issue #667 A3: two committed captures joined across a gap in the radio stream, as a capture records a USB recovery
+ * (rtl_stream_note_discontinuity()): a RETUNE to the centre it was on, the samples the gap lost as a MUTE (left out of
+ * the data), and the RESET whose usb_recovery reason replays as a stream gap. A fixed start after 2000-01-01, so the
+ * decode clock reads the capture's time in every run. */
+#define ANALOG_GAP_RATE_HZ   48000
+#define ANALOG_GAP_CENTRE_HZ 851375000
+#define ANALOG_GAP_JSON_MAX  2048
+
+static int
+analog_gap_sidecar(analog_capture* cap, size_t data_bytes, size_t gap_at, size_t gap_bytes) {
+    cap->json = (unsigned char*)malloc(ANALOG_GAP_JSON_MAX);
+    if (cap->json == NULL) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(
+        (char*)cap->json, ANALOG_GAP_JSON_MAX,
+        "{\n  \"format\": \"dsd-neo-iq\",\n  \"version\": 2,\n  \"sample_format\": \"cu8\",\n  \"iq_order\": \"IQ\",\n"
+        "  \"endianness\": \"none\",\n  \"capture_stage\": \"post_mute_pre_widen\",\n  \"sample_rate_hz\": %d,\n"
+        "  \"center_frequency_hz\": %d,\n  \"capture_center_frequency_hz\": %d,\n  \"ppm\": 0,\n"
+        "  \"tuner_gain_tenth_db\": 270,\n  \"rtl_dsp_bw_khz\": 48,\n  \"base_decimation\": 1,\n"
+        "  \"post_downsample\": 1,\n  \"demod_rate_hz\": %d,\n  \"offset_tuning_enabled\": false,\n"
+        "  \"fs4_shift_enabled\": false,\n  \"combine_rotate_enabled\": false,\n  \"muted_bytes_excluded\": true,\n"
+        "  \"contains_retunes\": true,\n  \"capture_retune_count\": 1,\n  \"source_backend\": \"rtl\",\n"
+        "  \"source_args\": \"fixture\",\n  \"capture_started_utc\": \"2026-07-30T00:00:00Z\",\n"
+        "  \"data_file\": \"" ANALOG_SCALED_DATA "\",\n  \"data_bytes\": %zu,\n  \"capture_drops\": 0,\n"
+        "  \"capture_drop_blocks\": 0,\n  \"input_ring_drops\": 0,\n  \"notes\": \"made by the analog replay host\",\n"
+        "  \"events\": [\n"
+        "    {\"kind\": \"RETUNE\", \"byte_offset\": %zu, \"center_frequency_hz\": %d, "
+        "\"capture_center_frequency_hz\": %d, \"sample_rate_hz\": %d, \"reason\": \"usb_recovery\"},\n"
+        "    {\"kind\": \"MUTE\", \"byte_offset\": %zu, \"duration_bytes\": %zu, \"reason\": \"usb_recovery\"},\n"
+        "    {\"kind\": \"RESET\", \"byte_offset\": %zu, \"center_frequency_hz\": %d, "
+        "\"capture_center_frequency_hz\": %d, \"sample_rate_hz\": %d, \"reason\": \"usb_recovery\"}\n"
+        "  ]\n}\n",
+        ANALOG_GAP_RATE_HZ, ANALOG_GAP_CENTRE_HZ, ANALOG_GAP_CENTRE_HZ, ANALOG_GAP_RATE_HZ, data_bytes, gap_at,
+        ANALOG_GAP_CENTRE_HZ, ANALOG_GAP_CENTRE_HZ, ANALOG_GAP_RATE_HZ, gap_at, gap_bytes, gap_at, ANALOG_GAP_CENTRE_HZ,
+        ANALOG_GAP_CENTRE_HZ, ANALOG_GAP_RATE_HZ);
+    if (n <= 0 || n >= ANALOG_GAP_JSON_MAX) {
+        return -1;
+    }
+    cap->json_len = (size_t)n;
+    return analog_sidecar_data_file((const char*)cap->json, &cap->name_at, &cap->name_len);
+}
+
+/* The cu8 bytes of @p ms at the capture rate. */
+static size_t
+analog_gap_bytes(long ms) {
+    return (size_t)ms * (ANALOG_GAP_RATE_HZ / 1000U) * 2U;
+}
+
+/* Joins the first AT_MS of @p before and the first THEN_MS of @p after across the gap into @p out; 0, or -1. */
+static int
+analog_gap_join_captures(const analog_capture* before, const analog_capture* after, analog_capture* out) {
+    const size_t at = analog_gap_bytes(g_gap_join.at_ms);
+    const size_t then = analog_gap_bytes(g_gap_join.then_ms);
+    if (analog_tap_capture_rate((const char*)before->json) != ANALOG_GAP_RATE_HZ
+        || analog_tap_capture_rate((const char*)after->json) != ANALOG_GAP_RATE_HZ || at > before->data_len
+        || then > after->data_len) {
+        DSD_FPRINTF(stderr, "analog replay: %s joins %d Hz captures within their lengths\n", k_gap_join_arg,
+                    ANALOG_GAP_RATE_HZ);
+        return -1;
+    }
+    out->data = (unsigned char*)malloc(at + then);
+    if (out->data == NULL) {
+        return -1;
+    }
+    DSD_MEMCPY(out->data, before->data, at);
+    DSD_MEMCPY(out->data + at, after->data, then);
+    out->data_len = at + then;
+    return analog_gap_sidecar(out, out->data_len, at, analog_gap_bytes(g_gap_join.gap_ms));
+}
+
+/* Writes the joined copy of the capture meta_path names (see above); 0, or -1 with a message. */
+static int
+analog_make_gap_copy(const char* meta_path) {
+    char then_meta[DSD_TEST_PATH_MAX];
+    analog_capture before;
+    analog_capture after;
+    analog_capture joined;
+    DSD_MEMSET(&before, 0, sizeof before);
+    DSD_MEMSET(&after, 0, sizeof after);
+    DSD_MEMSET(&joined, 0, sizeof joined);
+    int rc = -1;
+    /* FIXTURE is looked up by its directory entry in tests/fixtures/iq, never used as a path. */
+    char then_name[sizeof g_gap_join.then + 16];
+    const int n = DSD_SNPRINTF(then_name, sizeof then_name, "%s.iq.json", g_gap_join.then);
+    if (n <= 0 || (size_t)n >= sizeof then_name
+        || analog_fixture_path(then_name, (size_t)n, then_meta, sizeof then_meta) != 0
+        || analog_capture_load(meta_path, &before) != 0 || analog_capture_load(then_meta, &after) != 0
+        || analog_gap_join_captures(&before, &after, &joined) != 0
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_gap") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: %s cannot join '%s' and '%s'\n", k_gap_join_arg, meta_path,
+                    g_gap_join.then);
+        g_scaled_dir[0] = '\0';
+    } else if (analog_capture_write(&joined) != 0) {
+        DSD_FPRINTF(stderr, "analog replay: %s cannot write the joined copy\n", k_gap_join_arg);
+    } else {
+        rc = 0;
+    }
+    analog_capture_free(&joined);
+    analog_capture_free(&after);
+    analog_capture_free(&before);
+    return rc;
+}
+
+/* Points the --iq-replay argument (as two arguments) at the joined copy of its capture; 0, or -1. */
+static int
+analog_replay_gap(char** args, int count) {
+    for (int i = 1; i + 1 < count; i++) {
+        if (strcmp(args[i], "--iq-replay") == 0) {
+            if (analog_make_gap_copy(args[i + 1]) != 0) {
+                return -1;
+            }
+            args[i + 1] = g_scaled_meta;
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "analog replay: %s needs an --iq-replay capture (as two arguments)\n", k_gap_join_arg);
+    return -1;
+}
+
 /* ---- scenes for where a recording starts (--analog-scene, issue #668) ------------------------------------------ */
 
 /* Issue #668: where a per-call NFM recording starts against the transmission it holds. A scene is a few bursts of
@@ -2001,7 +2189,7 @@ analog_score_block(const double* x, size_t n, double block_start_ms) {
 }
 
 /* A DCS code in the tone= field's spelling (see the file comment): the published, canonical spelling, a slash and the
- * signal's other standard spelling, "D023N/D047I". A publication that names no supported signal leaves the last
+ * signal's other supported spelling, "D023N/D047I". A publication that names no supported signal leaves the last
  * label as it was. */
 static void
 analog_format_dcs_label(int code, int inverted) {
@@ -2906,7 +3094,21 @@ analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
     return 0;
 }
 
-/* With per-call recording on (-P), one line per NFM call history row the run committed, oldest first: when its call
+/* The tone an analog row names (its confirmed CTCSS tone or DCS code, as the row's text spells it), or "none". */
+static void
+analog_row_tone(const dsd_receive_identity* id, char* out, size_t cap) {
+    int written = -1;
+    if (id->known && id->kind == (uint8_t)DSD_RECEIVE_CTCSS) {
+        written = dsd_ctcss_format_label((int)id->value, out, cap);
+    } else if (id->known && id->kind == (uint8_t)DSD_RECEIVE_DCS) {
+        written = dsd_dcs_format_label((int)(id->value / 2U), (int)(id->value % 2U), out, cap);
+    }
+    if (written <= 0) {
+        DSD_SNPRINTF(out, cap, "%s", "none");
+    }
+}
+
+/* With per-call recording on (-P), one line per analog call history row the run committed, oldest first: when its call
    began and ended, in whole seconds of decode time. The stop hook runs after the engine committed the session's last
    calls, so a call still held when the input ended is among them (issue #756). */
 static void
@@ -2917,9 +3119,11 @@ analog_print_call_rows(const dsd_opts* opts, const dsd_state* state) {
     const Event_History_I* history = &state->event_history_s[0];
     for (int i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
         const Event_History* row = &history->Event_History_Items[i];
-        if (strcmp(row->sysid_string, "NFM") == 0) {
-            DSD_FPRINTF(stderr, "ANALOG CALL ROW: start=%lld end=%lld\n", (long long)row->event_start_time,
-                        (long long)row->event_time);
+        if (row->systype == DSD_SYNC_ANALOG) {
+            char tone[ANALOG_TONE_LABEL_SIZE];
+            analog_row_tone(&row->receive_identity, tone, sizeof tone);
+            DSD_FPRINTF(stderr, "ANALOG CALL ROW: start=%lld end=%lld tone=%s\n", (long long)row->event_start_time,
+                        (long long)row->event_time, tone);
         }
     }
 }
@@ -2992,6 +3196,17 @@ analog_selftest(void) {
     return same && gap ? 0 : 1;
 }
 
+/* --analog-gap-join, which replays a joined copy of the capture and so takes no other option that replaces it; 0, or -1
+   with a message. */
+static int
+analog_prepare_gap(char** args, int count) {
+    if (g_iq_gain_db.set || g_pcm_tap_hz.set || g_synth_pauses.set) {
+        DSD_FPRINTF(stderr, "analog replay: %s replays a joined copy of the capture, alone\n", k_gap_join_arg);
+        return -1;
+    }
+    return analog_replay_gap(args, count);
+}
+
 /* Applies the host options that change the dsd-neo arguments: the capture replayed (a scaled copy, a made one, or its
    discriminator tap as audio input) and the raw WAV. 0, or -1 with a message. */
 static int
@@ -3003,6 +3218,9 @@ analog_prepare_args(char** args, int* count) {
     }
     if (g_scene.scene != NULL && (g_synth_pauses.set || g_iq_gain_db.set)) {
         DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input, as --analog-synth-pauses does\n");
+        return -1;
+    }
+    if (g_gap_join.set && analog_prepare_gap(args, *count) != 0) {
         return -1;
     }
     if (g_iq_gain_db.set && analog_replay_scaled(args, *count) != 0) {

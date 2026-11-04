@@ -164,7 +164,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"alerts", "data", "Beep when a data call is logged", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [recording] section */
-    {"recording", "per_call_wav", "Enable per-call WAV output (decoded voice, and conventional NFM calls)", "false",
+    {"recording", "per_call_wav", "Enable per-call WAV output (decoded voice, and conventional analog calls)", "false",
      NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"recording", "static_wav", "Static decoded voice WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
@@ -172,7 +172,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"recording", "unknown_talkgroups_only", "Record only talkgroups not in the group list", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
     {"recording", "analog_max_gap_ms",
-     "Longest pause in ms that keeps one NFM call and its recording going, saved as silence (its end as heard while "
+     "Longest pause in ms that keeps one analog call and its recording going, saved as silence (its end as heard while "
      "analog_preroll_ms is on); 200 or less is off",
      DSDCFG_SCHEMA_STR(DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS), NULL, DSDCFG_TYPE_INT, 0,
      DSD_ANALOG_RECORD_MAX_GAP_MAX_MS},
@@ -199,7 +199,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {
         "recording",
         "rdio_analog_system_id",
-        "rdio-scanner system ID for NFM calls; 0 uses rdio_system_id",
+        "rdio-scanner system ID for analog calls; 0 uses rdio_system_id",
         "0",
         NULL,
         DSDCFG_TYPE_INT,
@@ -209,7 +209,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {
         "recording",
         "rdio_analog_talkgroup",
-        "rdio-scanner talkgroup for NFM calls with no known frequency (audio input); 0 leaves them unexported",
+        "rdio-scanner talkgroup for analog calls with no known frequency (audio input); 0 leaves them unexported",
         "0",
         NULL,
         DSDCFG_TYPE_INT,
@@ -263,7 +263,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "tone_list tone or code, block mutes it; off (the default) keeps tone_list. The received tone is shown apart",
      "off", "off|allow|block", DSDCFG_TYPE_ENUM, 0, 0},
     {"analog", "tone_list",
-     "Tones and codes for tone_filter: '/'-separated standard CTCSS tones (150.0 too) and DCS codes, e.g. "
+     "Tones and codes for tone_filter: '/'-separated supported CTCSS tones (150.0 too) and DCS codes, e.g. "
      "67.0/100.0/D023N (a bare D023 is D023N; commas are refused)",
      "", NULL, DSDCFG_TYPE_STRING, 0, 0},
 };

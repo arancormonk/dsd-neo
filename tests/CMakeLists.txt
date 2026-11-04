@@ -1506,6 +1506,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_mode
+  HEADERS_PUBLIC_CORE_ANALOG_MODE
+  dsd-neo/core/analog_mode.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_mode_cxx
+  HEADERS_PUBLIC_CORE_ANALOG_MODE_CXX
+  dsd-neo/core/analog_mode.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_crc_provenance
   HEADERS_PUBLIC_CORE_CRC_PROVENANCE
   dsd-neo/core/crc_provenance.h
@@ -3718,8 +3730,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
@@ -3733,7 +3748,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_callbacks
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
@@ -5673,7 +5688,7 @@ add_test(NAME RUNTIME_NUMBER_TEXT COMMAND dsd-neo_test_runtime_number_text)
 
 # The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
 # views and the policy: the tone table, the DCS codes, their Golay words against the published
-# reference words, the alias rule and its golden table, the two standard spellings of every
+# reference words, the alias rule and its golden table, the two supported spellings of every
 # code's signal, and the formatters.
 add_executable(
     dsd-neo_test_runtime_analog_tones
@@ -6348,12 +6363,15 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# call_state.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_core's copy, so a test can fail the call state's
+# allocation under the analog tracker's BEGIN (issue #667).
 add_executable(
     dsd-neo_test_core_receive
     core/test_core_receive.c
     ../src/engine/analog_call.c
     ../src/engine/analog_preroll.c
     ../src/app_control/receive_view.c
+    ../src/core/util/call_state.c
 )
 target_link_libraries(
     dsd-neo_test_core_receive
@@ -6361,7 +6379,10 @@ target_link_libraries(
 )
 target_include_directories(
     dsd-neo_test_core_receive
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file ${PROJECT_SOURCE_DIR}/src/engine
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core/file
+        ${PROJECT_SOURCE_DIR}/src/core/util
+        ${PROJECT_SOURCE_DIR}/src/engine
 )
 # The NFM pre-roll's allocation failure seam (issue #668).
 target_compile_definitions(dsd-neo_test_core_receive PRIVATE DSD_NEO_TEST_HOOKS)
@@ -7949,6 +7970,45 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_INPUT_BOUNDARY
         COMMAND dsd-neo_test_engine_input_boundary
     )
+    # The scanners and the analog call tracker together (issue #667): -Y and trunk-scan departures
+    # end an analog call or discard a candidate, and a scan's confirmed landing names an analog
+    # call's frequency on audio input (D9), until the rigctl connection changes (app-control's
+    # connect service), a manual step of an untyped list included. A rigctl peer on audio input,
+    # which radio-off builds have too, stood in for by --wrap.
+    add_executable(
+        dsd-neo_test_engine_analog_scan_calls
+        engine/test_engine_analog_scan_calls.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_analog_scan_calls
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_analog_scan_calls
+        PRIVATE
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RestoreScanModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=dsd_scan_key_change_prepare"
+            "-Wl,--wrap=Connect"
+            "-Wl,--wrap=io_control_set_freq_tagged"
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_ANALOG_SCAN_CALLS
+        COMMAND dsd-neo_test_engine_analog_scan_calls
+    )
     # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
     # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
     # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
@@ -8301,6 +8361,91 @@ add_test(
     NAME ENGINE_SILENT_INPUT_PUBLISH
     COMMAND dsd-neo_test_engine_silent_input_publish
 )
+
+# A stdin source that stops sending, the pipe held open (osmocom rtl_fm -l while squelched): the analog call ends on
+# its stale deadline and its row is written during the stall, stamped with its own end (issue #667 A2). POSIX only:
+# PLATFORM_PCM_STREAM covers the Windows pipe wait.
+if(NOT WIN32)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_PCM_ANALOG_STDIN_STALL
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/stdin_stall_check.py
+                $<TARGET_FILE:dsd-neo>
+        )
+        set_tests_properties(
+            DECODE_PCM_ANALOG_STDIN_STALL
+            PROPERTIES LABELS "analog" TIMEOUT 120
+        )
+    endif()
+endif()
+
+# EDACS analog voice and the M17 encoder over a TCP sender quiet past the 1.5 s receive timeout keep the connection; a
+# real close still shuts down; the encoder's silent stdin read gives way to shutdown (issue #667 D12).
+# edacs-fme.c is compiled in with DSD_NEO_TEST_HOOKS, for the clock a network stall is measured on
+# (edacs_test_set_quiet_clock()); the library's own copy is then never pulled in.
+add_executable(
+    dsd-neo_test_protocol_net_quiet_sender
+    protocol/test_protocol_net_quiet_sender.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/edacs/edacs-fme.c
+)
+target_include_directories(
+    dsd-neo_test_protocol_net_quiet_sender
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+        ${PROJECT_SOURCE_DIR}/src/protocol/m17
+        ${_PUBLIC_INCLUDES}
+)
+target_compile_definitions(
+    dsd-neo_test_protocol_net_quiet_sender
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+# The library builds edacs-fme.c with these features; the test's copy is built the same way.
+target_link_libraries(
+    dsd-neo_test_protocol_net_quiet_sender
+    PRIVATE dsd-neo_feature_colors dsd-neo_feature_radio dsd-neo_feature_rtlsdr
+)
+# The test calls the EDACS and M17 readers itself, so the libraries link as a group (as RUNTIME_CLI_PARSE's do): the
+# static order the engine gives them leaves cross-library references unresolved.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_protocol_net_quiet_sender
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_protocol_net_quiet_sender
+        PRIVATE
+            dsd-neo_engine
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            ${LIBS}
+            dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME PROTOCOL_NET_QUIET_SENDER
+    COMMAND dsd-neo_test_protocol_net_quiet_sender
+)
+
+# A TCP PCM input that goes quiet (issue #667 D12, B7): an idle connection is kept past its receive timeout, and a
+# reconnect to a silent or half-sample connection gives the hunt to the engine's tick, which ends the cut reception.
+add_executable(
+    dsd-neo_test_engine_pcm_input_wait
+    engine/test_engine_pcm_input_wait.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_pcm_input_wait
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(NAME ENGINE_PCM_INPUT_WAIT COMMAND dsd-neo_test_engine_pcm_input_wait)
 
 # Per-target squelch overrides (issue #521) observed through the production frame-sync power
 # gate: the real trunk scan coordinator moves between targets while the channel power is held.
@@ -15213,6 +15358,21 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
+# The buffered PCM16LE reader the stdin and TCP inputs share (issue #667 D12): real pipes, sockets and files.
+add_executable(
+    dsd-neo_test_platform_pcm_stream
+    platform/test_platform_pcm_stream.c
+)
+target_include_directories(
+    dsd-neo_test_platform_pcm_stream
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_pcm_stream
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
+
 # A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
 if(UNIX)
     add_executable(
@@ -17322,6 +17482,21 @@ if(DSD_HAS_RADIO)
             DECODE_IQ_RECEIVE_POLICY
             PROPERTIES LABELS "iq-decode" TIMEOUT 180
         )
+        # M17 and EDACS decode the same from a PCM file, stdin and TCP (issue #667 D12): stdin and TCP share one
+        # buffered reader with bounded waits. POSIX only, for the pipe and the SIGINT that ends an M17-only session.
+        if(NOT WIN32)
+            add_test(
+                NAME DECODE_PCM_INPUT_PATHS
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/pcm_input_paths_check.py
+                    $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_PCM_INPUT_PATHS
+                PROPERTIES LABELS "iq-decode" TIMEOUT 180
+            )
+        endif()
     endif()
 
     # Reject case: the fixture must run (expected) and must not produce a decode
@@ -18904,7 +19079,7 @@ if(DSD_HAS_RADIO)
     )
     # Received DCS on the analog FM monitor (issue #523): synthetic NFM with voice and a DCS
     # word at 600 Hz deviation, correct by construction (tools/build_iq_fixtures.py), replayed
-    # the same way. Each asserts the signal the log names by both of its standard spellings,
+    # the same way. Each asserts the signal the log names by both of its supported spellings,
     # canonical first -- D023N is also D047I, and the inverted word is the signal of D047N,
     # also D023I, so it must read "D047N / D023I", never "D023N / D047I" -- and that nothing
     # else was reported: any label led by another spelling. "Any other code" is spelled out
@@ -18986,6 +19161,83 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
         PROPERTIES LABELS "iq-decode;analog"
     )
+
+    # Analog receptions in the event history (issue #667): each replay writes -J, which must hold exactly event_count
+    # analog rows. A case with one names its mode, the fixture's frequency and the received tone or code (no tone on
+    # AM), and that row is the only one. A radio input makes analog calls only under a squelch above the startup
+    # default (D2), so each sets one its fixture clears. A "." stands for each ";" of the row, which an add_test
+    # argument would split at.
+    function(
+        dsd_neo_add_iq_analog_row_test
+        test_name
+        fixture
+        mode
+        expected
+        event_expected
+        event_count
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}" "-DEVENT_EXPECTED=${event_expected}"
+                "-DEVENT_COUNT_REGEX= ANALOG" "-DEVENT_COUNT=${event_count}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/${test_name}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_ROW
+        nfm_ctcss_synth_1000
+        "-fA --squelch -60"
+        "Received tone: CTCSS 100\\.0 Hz"
+        " ANALOG NFM. FREQ: 851\\.375000 MHz. CTCSS 100\\.0 Hz.  *\n"
+        1
+    )
+    # Both spellings of the code, normal first, as the log names it.
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_DCS_023N_ROW
+        nfm_dcs_synth_023n
+        "-fA --squelch -60"
+        "Received tone: DCS D023N / D047I"
+        " ANALOG NFM. FREQ: 851\\.375000 MHz. DCS D023N / D047I.  *\n"
+        1
+    )
+    # AM (D8): the mode and the frequency, and no tone token, since dsd-neo detects none on AM.
+    dsd_neo_add_iq_analog_row_test(
+        DECODE_IQ_ANALOG_AM_ROW
+        am_tone_synth
+        "-fM --squelch -60"
+        "IQ replay: end of capture after 72000 samples"
+        " ANALOG AM. FREQ: 851\\.375000 MHz.  *\n"
+        1
+    )
+
+    # Analog calls sound no call alert (issue #667 A1): with -a, stdout carries the same analog monitor bytes, and over
+    # UDP every byte goes to the analog port (base+2), none to the digital base port. POSIX, as the stdout cases are.
+    if(UNIX)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test(
+                NAME DECODE_IQ_ANALOG_NO_CALL_ALERT
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/analog_alert_output_check.py
+                    $<TARGET_FILE:dsd-neo>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}/nfm_ctcss_synth_1000.iq.json
+            )
+            set_tests_properties(
+                DECODE_IQ_ANALOG_NO_CALL_ALERT
+                PROPERTIES LABELS "iq-decode;analog" TIMEOUT 240
+            )
+        endif()
+    endif()
 
     # MBE capture (-d), issue #661: tests/iq_mbe_capture_check.cmake replays a fixture with -d <dir>/caps (no
     # trailing separator) and checks the files it leaves: inside the folder, each headed by its own extension and
@@ -20111,6 +20363,63 @@ if(DSD_HAS_RADIO)
         "fast,realtime"
         1000
     )
+    # A gap in the radio stream (issue #667 A3), as a capture records a USB recovery: the host
+    # joins two committed captures across a 2 s gap (--analog-gap-join; no fixture is committed)
+    # and the stream-gap boundary ends the analog reception at its last block and starts analog
+    # reception over. A call on CTCSS 100.0 Hz before the gap makes its own row and recording
+    # (980 ms of its 1 s), and the reception after it is a call of its own with its own tone, 67.0
+    # Hz or none (1960 ms of 2 s); two 350 ms receptions, one each side, are two candidates too
+    # short for a row. Fast and paced legs record the same.
+    function(
+        dsd_neo_add_analog_stream_gap_test
+        test_name
+        join
+        files
+        durations
+        rows
+        min_realtime_s
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch -60 --iq-replay ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_ctcss_synth_1000.iq.json --analog-gap-join ${join}"
+                "-DFILES=${files}" "-DDURATIONS_MS=${durations}"
+                "-DROWS_EXPECTED=${rows}" "-DRATES=fast,realtime"
+                "-DMIN_REALTIME_S=${min_realtime_s}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/${test_name}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_NEW_TONE
+        "1000:2000:nfm_ctcss_synth_670:2000"
+        2
+        "980,1960"
+        "^ANALOG CALL ROW: [^\n]* tone=CTCSS 100[.]0 Hz\nANALOG CALL ROW: [^\n]* tone=CTCSS 67[.]0 Hz$"
+        4
+    )
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_NO_TONE
+        "1000:2000:nfm_notone_synth:2000"
+        2
+        "980,1960"
+        "^ANALOG CALL ROW: [^\n]* tone=CTCSS 100[.]0 Hz\nANALOG CALL ROW: [^\n]* tone=none$"
+        4
+    )
+    dsd_neo_add_analog_stream_gap_test(
+        DECODE_IQ_ANALOG_STREAM_GAP_SHORT_BURSTS
+        "350:2000:nfm_ctcss_synth_1000:350"
+        0
+        ""
+        "^$"
+        2
+    )
     dsd_neo_add_analog_recording_test(
         DECODE_IQ_ANALOG_RECORD_GAP_NO_PREROLL
         "--analog-synth-pauses 756 -fA --squelch noise+6 --analog-record-max-gap-ms 1000 --analog-record-preroll-ms 0"
@@ -20240,12 +20549,13 @@ dsd_neo_add_analog_record_start_test(
     1
 )
 # A 40 ms burst inside a 117 ms block at 8192 Hz opens the level squelch in one tap
-# read while the block's level stays under it: the monitor plays nothing, and the call
-# begins with the burst in its recording.
+# read while the block's level stays under it: the monitor plays nothing. The read
+# qualifies the block (DSP_SYMBOL_REPLAY pins that), but a 40 ms burst is a kerchunk,
+# shorter than a call must run (issue #667, 500 ms), so it leaves no recording.
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_LEVEL_BLIP_8K
     "--analog-scene level-blip --analog-pcm-tap 8192 -fA --squelch -23 --analog-max-audible-ms 0 --analog-min-total-ms 2400 --analog-record-max-start-ms 0"
-    1
+    0
 )
 # B7: a UDP input at 8192 Hz stops for a second 200 samples into a block that holds the
 # end of one source, and another source fills the block: that block begins no call,
@@ -20265,12 +20575,13 @@ dsd_neo_add_analog_record_start_test(
     1
 )
 # rdio-scanner DirWatch (issue #668): an audio input's calls have no frequency, so they
-# go under --rdio-analog-talkgroup, labelled NFM, in --rdio-system-id's system.
+# go under --rdio-analog-talkgroup, labelled ANALOG (the mode is not known there, issue
+# #667), in --rdio-system-id's system.
 dsd_neo_add_analog_record_start_test(
     DECODE_PCM_ANALOG_RECORD_RDIO_DIRWATCH
     "${_pcm_record_gap_mode} --rdio-mode dirwatch --rdio-system-id 7 --rdio-analog-talkgroup 4242"
     5
-    "talkgroup=4242,talkgroup_tag=NFM,freq=0,system=7,short_name=NFM,srcList=[]"
+    "talkgroup=4242,talkgroup_tag=ANALOG,freq=0,system=7,short_name=ANALOG,srcList=[]"
 )
 if(DSD_HAS_RADIO)
     set(_iq_record_start_mode "--analog-scene onsets -fA --squelch noise+6")
@@ -20574,7 +20885,7 @@ if(DSD_HAS_RADIO)
     )
     # Received DCS through the host (issue #523): the synthetic DCS fixtures carry the code
     # from their start, and the host's tone= field reads the publication's code as both of
-    # its standard spellings, canonical first, joined by a slash with no space:
+    # its supported spellings, canonical first, joined by a slash with no space:
     # D023N/D047I for the normal word, D047N/D023I for the inverted D023 word. Each locks
     # within the 10 dB lock bound (360 ms measured, 83% of the run locked) and reports no
     # other code, no tone and no "none".
@@ -20982,6 +21293,24 @@ if(DSD_HAS_RADIO)
         "-fM --squelch -30 ${_sql_level_burst_bounds}"
         ""
         "${_analog_off_path}"
+    )
+    # A kerchunk (issue #667 D1): the same burst, through the same gate and held to the same bounds in this run (250-270
+    # ms audible, so the carrier opened the squelch and reached the monitor and the tracker), with -P on: 260 ms and the
+    # 200 ms hangover are 460 ms, under the 500 ms a reception needs to be a call. No recording, no journal line and no
+    # analog history row (analog_recording_check.cmake). Earlier versions made a row and a recording of it.
+    add_test(
+        NAME DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=-fA --squelch -28 --iq-replay ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_burst_synth.iq.json ${_sql_level_burst_bounds}"
+            "-DFILES=0" "-DDURATIONS_MS=" "-DROWS_EXPECTED=^$"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/analog_recording/DECODE_IQ_ANALOG_KERCHUNK_NO_ROW"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/analog_recording_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_KERCHUNK_NO_ROW
+        PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
     )
     set(_scan_sql_level_csv
         "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_level_row.csv"

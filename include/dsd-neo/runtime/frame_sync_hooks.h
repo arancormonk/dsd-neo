@@ -31,11 +31,14 @@ extern "C" {
  * tap noted has moved since its last read (dsd_analog_rx_boundaries_current()), or the tone policy rejected the
  * reception. RECEPTION: the block is the call's audio, as the per-call recording writes it. HOLDABLE: none of the
  * BREAK reasons, but nothing to record either: the carrier has closed (after its hangover) or the tone policy is still
- * checking it. 0 and 1 keep the meaning the hook's old accepted flag gave them. */
+ * checking it. PENDING: a HOLDABLE block whose carrier is open while the tone policy checks it (issue #667); it is a
+ * HOLDABLE block to a call, and the lead-in of a reception that has none yet. 0 and 1 keep the meaning the hook's old
+ * accepted flag gave them. */
 enum {
     DSD_ANALOG_CALL_BREAK = 0,
     DSD_ANALOG_CALL_RECEPTION = 1,
     DSD_ANALOG_CALL_HOLDABLE = 2,
+    DSD_ANALOG_CALL_PENDING = 3,
 };
 
 /** One processed conventional NFM monitor block as the analog_call_block hook hands it to the engine's call (issues

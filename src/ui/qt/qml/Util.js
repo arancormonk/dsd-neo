@@ -767,7 +767,7 @@ function playbackLengthText(ms) {
     return fmtDuration(value > 0 ? Math.max(1, Math.round(value / 1000)) : 0)
 }
 
-// Issue #756: the NFM pause hold, in ms, as Settings shows it: "Off" at 200 or
+// Issue #756: the analog pause hold, in ms, as Settings shows it: "Off" at 200 or
 // less (the carrier's own 200 ms hangover), else seconds spelled out, as the
 // Screen delay is, and as exact as the value: "0.5 seconds", "1 second",
 // "1.25 seconds". A value Settings does not offer reads as itself. 200 (the

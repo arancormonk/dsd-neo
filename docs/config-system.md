@@ -447,17 +447,18 @@ only. See `docs/radioreference-import.md`.
 
 A transmission the decoder loses and regains is one call, so it beeps `voice_start` once at the
 start and `voice_end` once at the end. The end alert is held for roughly half a second after sync
-is lost, since the call may still resume; a terminator alerts immediately.
+is lost, since the call may still resume; a terminator alerts immediately. Conventional analog calls (NFM, AM, or analog
+audio input) sound no alert.
 
 **[recording] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `per_call_wav` | BOOL | Enable per-call WAV output: decoded voice, and conventional NFM calls | `false` |
+| `per_call_wav` | BOOL | Enable per-call WAV output: decoded voice, and conventional analog calls | `false` |
 | `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
-| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional NFM call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
+| `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
@@ -477,17 +478,17 @@ and radio ID list (`--src-csv`) rows do not count as rows. Tuning and playback a
 unchanged. Applying a config in a running session changes it at once.
 `analog_max_gap_ms` outside 0 to 10000, or not a whole number, is refused with a warning, and the value already loaded
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a
-running session changes it from the next block of audio: a lower value, or off, ends an NFM call already paused
-longer than that. The hold works only while `per_call_wav` is on; with it off, NFM calls end as before. How pauses
-are counted, and the limits, are in `docs/cli.md`, "Pauses in an NFM recording".
+running session changes it from the next block of audio: a lower value, or off, ends an analog call already paused
+longer than that. The hold works only while `per_call_wav` is on; with it off, analog calls end as before. How pauses
+are counted, and the limits, are in `docs/cli.md`, "Pauses in an analog recording".
 `analog_preroll_ms` outside 0 to 1000, or not a whole number, is refused with a warning, and the value already loaded
 stays (the default, 200, for a base file); `--validate-config` reports it as an error. A config applied in a running
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
 `rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
-warning, and the value already loaded stays; `--validate-config` reports them as errors. An NFM call with a frequency
-is exported under it in kHz; how NFM calls are exported, and the limits, are in `docs/cli.md`, "NFM calls in
+warning, and the value already loaded stays; `--validate-config` reports them as errors. An analog call with a frequency
+is exported under it in kHz; how analog calls are exported, and the limits, are in `docs/cli.md`, "Analog calls in
 rdio-scanner".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
@@ -536,7 +537,7 @@ A name for an identifier the `[receive]` filters or the `[analog]` tone filter r
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. On audio input with a rigctl peer (`-U`), which demodulates it, the FM passband the peer is asked for, in place of `-B`, while the FM monitor runs. Same as `--nfm-bandwidth-hz` | (unset: `16000`; on audio input with a rigctl peer, `-B`, or the peer's own passband with `-B` 0) |
 | `am_bandwidth_hz` | INT (5000-20000) | AM channel-filter width in whole Hz, likewise, for native AM (`decode = "am"`); on audio input with a rigctl peer, the AM passband an `am` row or `am-conventional` target without its own width asks the peer for. Same as `--am-bandwidth-hz` | (unset: `6000`, with a rigctl peer too) |
 | `tone_filter` | ENUM (`off`, `allow`, `block`) | CTCSS/DCS receive policy on the analog FM monitor and `nfm` scan rows: `allow` hears only traffic carrying a `tone_list` tone or code, `block` mutes it. Same as `--tone-allow`/`--tone-block`/`--no-tone-filter` | `off` |
-| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: standard CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
+| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: supported CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
 force, so within the section the key left out and the default are the same thing, and a later default reaches the
@@ -1083,7 +1084,7 @@ The following can be changed without restarting:
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
 - The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
-- The NFM recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
+- The analog recording pause limit (`[recording] analog_max_gap_ms`), from the next block of audio
 - The NFM recording pre-roll (`[recording] analog_preroll_ms`), at once
 - TCP/UDP connection parameters
 - File input path

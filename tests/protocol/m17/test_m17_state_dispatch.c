@@ -23,6 +23,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -37,11 +38,11 @@
 #endif
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
-#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -2261,43 +2262,33 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     return err;
 }
 
-static int
-open_empty_m17_wav_input(char* path, size_t path_size, SNDFILE** input) {
-    if (path == NULL || path_size == 0U || input == NULL) {
-        return -1;
-    }
-    *input = NULL;
-
-    int fd = dsd_test_mkstemp(path, path_size, "m17_stdin_eof");
+/* A raw PCM16LE stdin stand-in, a temporary file holding @p count samples, read through the stdin input's one reader as
+   `-i -` opens it. Returns the open file (the reader does not own its descriptor), or NULL. */
+static FILE*
+open_m17_stdin_input(char* path, size_t path_size, const int16_t* samples, size_t count, dsd_pcm_stream** reader) {
+    *reader = NULL;
+    const int fd = dsd_test_mkstemp(path, path_size, "m17_stdin");
     if (fd < 0) {
-        return -1;
+        return NULL;
     }
-    if (dsd_close(fd) != 0) {
+    int ok = 1;
+    for (size_t i = 0; i < count && ok; i++) {
+        const uint8_t bytes[2] = {(uint8_t)((uint16_t)samples[i] & 0xFFU), (uint8_t)((uint16_t)samples[i] >> 8)};
+        ok = dsd_write(fd, bytes, sizeof bytes) == (ssize_t)sizeof bytes;
+    }
+    ok &= dsd_close(fd) == 0;
+    FILE* file = ok ? dsd_fopen_existing_regular_file(path, "rb") : NULL;
+    if (file != NULL) {
+        *reader = dsd_pcm_stream_open_fd(dsd_fileno(file));
+    }
+    if (*reader == NULL) {
+        if (file != NULL) {
+            (void)fclose(file);
+        }
         (void)remove(path);
-        return -1;
+        return NULL;
     }
-
-    SF_INFO info = {0};
-    info.samplerate = 8000;
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-    SNDFILE* output = sf_open(path, SFM_WRITE, &info);
-    if (output == NULL) {
-        (void)remove(path);
-        return -1;
-    }
-    if (sf_close(output) != 0) {
-        (void)remove(path);
-        return -1;
-    }
-
-    DSD_MEMSET(&info, 0, sizeof(info));
-    *input = sf_open(path, SFM_READ, &info);
-    if (*input == NULL) {
-        (void)remove(path);
-        return -1;
-    }
-    return 0;
+    return file;
 }
 
 static int
@@ -2308,8 +2299,9 @@ test_stream_encoder_treats_stdin_eof_as_clean_shutdown(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    if (open_empty_m17_wav_input(path, sizeof(path), &opts.audio_in_file) != 0) {
-        DSD_FPRINTF(stderr, "failed to create empty M17 stdin fixture: %s\n", sf_strerror(NULL));
+    FILE* file = open_m17_stdin_input(path, sizeof(path), NULL, 0U, &opts.audio_in_stdin);
+    if (file == NULL) {
+        DSD_FPRINTF(stderr, "failed to create empty M17 stdin fixture\n");
         return 1;
     }
     opts.audio_in_type = AUDIO_IN_STDIN;
@@ -2319,13 +2311,50 @@ test_stream_encoder_treats_stdin_eof_as_clean_shutdown(void) {
 
     int err = 0;
     err |= expect_int("stream encoder treats stdin EOF as success", encodeM17STR(&opts, &state), 0);
-    err |= expect_int("stream encoder closes exhausted stdin", opts.audio_in_file == NULL, 1);
+    err |= expect_int("stream encoder closes exhausted stdin", opts.audio_in_stdin == NULL, 1);
 
-    if (opts.audio_in_file != NULL) {
-        (void)sf_close(opts.audio_in_file);
-        opts.audio_in_file = NULL;
-    }
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
     exitflag = 0;
+    (void)fclose(file);
+    (void)remove(path);
+    return err;
+}
+
+/* Issue #667 D12: the encoder reads stdin through the input's one reader, blocking as before, and gets every raw
+   little-endian sample in order (at 8 kHz no filter runs, so the block is the samples themselves). */
+static int
+test_stream_encoder_reads_stdin_samples(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char path[DSD_TEST_PATH_MAX] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int16_t samples[160];
+    for (int i = 0; i < 160; i++) {
+        samples[i] = (int16_t)((i - 80) * 397);
+    }
+    FILE* file = open_m17_stdin_input(path, sizeof(path), samples, 160U, &opts.audio_in_stdin);
+    if (file == NULL) {
+        DSD_FPRINTF(stderr, "failed to create M17 stdin fixture\n");
+        return 1;
+    }
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    opts.input_volume_multiplier = 1;
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 8000);
+    short out[160];
+    int err =
+        expect_int("stream encoder reads a stdin block", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    int same = 1;
+    for (int i = 0; i < 160; i++) {
+        same &= out[i] == samples[i];
+    }
+    err |= expect_int("stream encoder reads stdin samples in order", same, 1);
+    err |= expect_int("the reader stays open", opts.audio_in_stdin != NULL, 1);
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
+    (void)fclose(file);
     (void)remove(path);
     return err;
 }
@@ -4281,6 +4310,7 @@ main(void) {
     err |= test_monitored_stream_call_follows_tx_lifecycle();
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
     err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
+    err |= test_stream_encoder_reads_stdin_samples();
     err |= test_ip_decoder_propagates_udp_backend_failure();
 
     if (err == 0) {

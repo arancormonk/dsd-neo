@@ -711,6 +711,39 @@ dsd_read(int fd, void* buf, size_t count) {
     return (ssize_t)_read(fd, buf, (unsigned int)count);
 }
 
+/* Windows has no wait on a CRT descriptor. An anonymous pipe (stdin from another program) reports the bytes it holds
+   (PeekNamedPipe()), so it is polled in short sleeps up to the bound; a pipe whose writer has gone fails the peek and
+   counts as ready, so the read reports its end. Any other handle (a console, a regular file) is ready at once, and the
+   read that follows may block. */
+enum { DSD_FD_WAIT_PIPE_SLICE_MS = 5 };
+
+int
+dsd_fd_wait_readable(int fd, unsigned int timeout_ms) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
+    const HANDLE handle = (HANDLE)_get_osfhandle(fd);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    if (GetFileType(handle) != FILE_TYPE_PIPE) {
+        return 1;
+    }
+    const ULONGLONG start_ms = GetTickCount64();
+    for (;;) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(handle, NULL, 0, NULL, &available, NULL) || available > 0) {
+            return 1;
+        }
+        const ULONGLONG waited_ms = GetTickCount64() - start_ms;
+        if (waited_ms >= (ULONGLONG)timeout_ms) {
+            return 0;
+        }
+        const ULONGLONG left_ms = (ULONGLONG)timeout_ms - waited_ms;
+        Sleep(left_ms < DSD_FD_WAIT_PIPE_SLICE_MS ? (DWORD)left_ms : (DWORD)DSD_FD_WAIT_PIPE_SLICE_MS);
+    }
+}
+
 ssize_t
 dsd_write(int fd, const void* buf, size_t count) {
     if (dsd_fd_is_negative(fd)) {

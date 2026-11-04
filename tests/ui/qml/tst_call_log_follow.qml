@@ -559,6 +559,54 @@ Item {
             compare(tc.rowNamed(name).metaText, "TG 4003 · SRC 7003 · 0:04 · 851.9 backup · 851.0125 MHz")
         }
 
+        // Issue #667: an analog reception has no ids and no access code. Its
+        // tone takes the code's place on the meta line, the frequency still
+        // closes it, and the details read the tone alone on the code's line and
+        // what the call was heard in on the Encrypted line's. No site line.
+        function test_06p_analog_rows_data() {
+            return [
+                {tag: "nfm-ctcss", name: "Fire", mode: "NFM", tone: "CTCSS 100.0 Hz", channel: "Fire Dispatch", freq: 154430000, mhz: "154.4300",
+                    meta: "CTCSS 100.0 Hz · 0:04 · Fire Dispatch · 154.4300 MHz", kind: "Analog NFM"},
+                {tag: "nfm-dcs", name: "NFM", mode: "NFM", tone: "DCS D023N / D047I", channel: "", freq: 154445000, mhz: "154.4450",
+                    meta: "DCS D023N / D047I · 0:04 · 154.4450 MHz", kind: "Analog NFM"},
+                {tag: "am", name: "AM", mode: "AM", tone: "", channel: "", freq: 119100000, mhz: "119.1000",
+                    meta: "0:04 · 119.1000 MHz", kind: "Analog AM"},
+                {tag: "unknown-mode", name: "Analog", mode: "", tone: "CTCSS 100.0 Hz", channel: "", freq: 0, mhz: "",
+                    meta: "CTCSS 100.0 Hz · 0:04", kind: "Analog"}
+            ]
+        }
+
+        function test_06p_analog_rows(data) {
+            var name = callHistory.pushAnalog(data.name, data.mode, data.tone, data.channel, data.freq)
+            compare(tc.rowNamed(name).metaText, data.meta)
+            var sheet = tc.openDetails(name)
+            verify(sheet.record.analog, "the details lost the analog flag")
+            compare(sheet.record.analogMode, data.mode)
+            compare(sheet.detailLines[0], data.name)
+            compare(sheet.detailLines[4], "")
+            compare(sheet.detailLines[6], "")
+            compare(sheet.detailLines[7], data.tone)
+            compare(sheet.detailLines[8], data.freq > 0 ? "Frequency " + data.mhz + " MHz" : "")
+            compare(sheet.detailLines[9], "")
+            compare(sheet.detailLines[11], data.kind)
+            verify(sheet.detailLines.indexOf("Unencrypted") < 0, "an analog call reads as unencrypted: " + sheet.detailLines)
+            verify(sheet.detailLines.join("|").indexOf("Received tone") < 0, "the tone is listed twice: " + sheet.detailLines)
+            // The tone line is an ordinary line; the site line's own rendering
+            // stays on the site's place, empty here.
+            var site = findChild(sheet, "historyDetailSite")
+            verify(site !== null, "the site line is missing")
+            compare(site.text, "")
+            verify(!site.visible, "an analog call shows a site line")
+            sheet.visible = false
+            // A frequency search still leads with the frequency it found.
+            if (data.freq > 0) {
+                historyView.filterText = data.mhz
+                tryCompare(tc.list, "count", 1)
+                verify(tc.startsWith(tc.rowNamed(name).metaText, data.mhz + " MHz · "),
+                       "the frequency the search found does not lead: " + tc.rowNamed(name).metaText)
+            }
+        }
+
         // On an emergency call the frequency leads ahead of EMERGENCY, which the
         // badge also shows, and it fits on a phone at the larger text sizes: the
         // meta line is only as wide as the badge and the time leave it.

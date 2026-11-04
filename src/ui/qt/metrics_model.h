@@ -1861,8 +1861,8 @@ class MetricsModel : public QObject {
     /**
      * @brief The locked DCS code is named in inverted polarity.
      *
-     * Always false for the standard codes: every standard code's inverted signal is another
-     * standard code's normal one, and that normal name is shown first. Kept because a code is
+     * Always false for the supported codes: every supported code's inverted signal is another
+     * supported code's normal one, and that normal name is shown first. Kept because a code is
      * named with its polarity everywhere else (the publication, the formatters).
      */
     bool
@@ -1871,7 +1871,7 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The other standard spelling of the locked code's signal, shown second (047 for
+     * @brief The other supported spelling of the locked code's signal, shown second (047 for
      * D023N), 0 otherwise.
      *
      * A receiver cannot tell which of the two a transmitter was set to, so both are shown.
@@ -1881,7 +1881,7 @@ class MetricsModel : public QObject {
         return m_view.rx_tone_dcs_alias_code;
     }
 
-    /** @brief The second spelling is in inverted polarity: always true for a standard code. */
+    /** @brief The second spelling is in inverted polarity: always true for a supported code. */
     bool
     rxToneDcsAliasInverted() const {
         return m_view.rx_tone_dcs_alias_inverted;

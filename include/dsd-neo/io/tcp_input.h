@@ -7,10 +7,8 @@
  * @file
  * @brief TCP PCM16LE audio input backend.
  *
- * Provides a cross-platform abstraction for TCP audio input. On POSIX systems
- * (Linux, macOS), this uses libsndfile's sf_open_fd() to wrap the socket.
- * On native Windows, sockets are not file descriptors, so we read
- * directly from the socket using recv() and buffer samples manually.
+ * Provides a cross-platform abstraction for TCP audio input over one buffered
+ * PCM reader on the socket (<dsd-neo/platform/pcm_stream.h>).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_INPUT_H_
@@ -24,12 +22,6 @@
 extern "C" {
 #endif
 
-/**
- * @brief Opaque TCP input context.
- *
- * On POSIX, wraps a SNDFILE* handle. On Windows native, manages a socket
- * read buffer for direct sample extraction.
- */
 /**
  * @brief Open TCP audio input on an already-connected socket.
  *
@@ -52,15 +44,18 @@ tcp_input_ctx* tcp_input_open(dsd_socket_t sockfd, int samplerate);
 void tcp_input_close(tcp_input_ctx* ctx);
 
 /**
- * @brief Read one PCM16 sample from TCP input.
+ * @brief Read one PCM16 sample from TCP input, waiting at most @p timeout_ms.
  *
- * Blocking read; returns when a sample is available or on error/EOF.
+ * A sender that is quiet (a squelched network audio source) is no disconnect:
+ * the read times out and the connection stays (issue #667 B7). Only the
+ * connection's end or a socket error ends it.
  *
  * @param ctx TCP input context.
  * @param out [out] Receives one sample.
- * @return 1 on success, 0 on EOF/error/disconnect.
+ * @param timeout_ms Longest wait for a whole sample.
+ * @return 1 with a sample, 0 on EOF/error/disconnect, -1 when none came in time.
  */
-int tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out);
+int tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms);
 
 /**
  * @brief Check if TCP input context is valid and connected.

@@ -12,6 +12,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
@@ -32,10 +33,12 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/tuner_owner.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -119,6 +122,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].scan_member = 0;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
+        event_struct->Event_History_Items[i].analog_mode = (uint8_t)DSD_ANALOG_MODE_UNKNOWN;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
         event_struct->Event_History_Items[i].access_code = 0;
@@ -202,6 +206,7 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].call_channel_kind =
             event_struct->Event_History_Items[i - 1].call_channel_kind;
+        event_struct->Event_History_Items[i].analog_mode = event_struct->Event_History_Items[i - 1].analog_mode;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
             event_struct->Event_History_Items[i - 1].access_code_kind;
@@ -550,6 +555,15 @@ watchdog_event_reset_post_push(dsd_state* state) {
     DSD_MEMSET(state->dstar_txt, 0, sizeof(state->dstar_txt));
 }
 
+// An analog row sounds no call alert, START or END (issue #667 A1): on -o - the 8 kHz alert blocks would be spliced into
+// the 48 kHz monitor stream (on UDP they go to the digital port, never the analog one at base port + 2). Decided from
+// the row of the epoch the alert is for, never from the call that takes the slot next, so a digital END still pending
+// when an analog call begins still sounds.
+static int
+watchdog_event_row_is_analog(const Event_History* row) {
+    return row->systype == DSD_SYNC_ANALOG;
+}
+
 static void
 watchdog_event_maybe_beep_call_end(dsd_opts* opts, dsd_state* state, uint8_t slot, int last_event_is_data) {
     if (!last_event_is_data
@@ -591,9 +605,11 @@ watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     if (end_disposition != DSD_EVENT_END_NONE) {
         watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final, owner);
     }
+    // Read before the clear below: the alert is the outgoing row's.
+    const int analog = watchdog_event_row_is_analog(&event_struct->Event_History_Items[0]);
     init_event_history(event_struct, 0, 1);
     watchdog_event_reset_post_push(state);
-    if (alert_on_final && end_disposition == DSD_EVENT_END_FINAL) {
+    if (alert_on_final && end_disposition == DSD_EVENT_END_FINAL && !analog) {
         watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
     }
 }
@@ -1043,6 +1059,9 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
         retained->call_channel_kind = staged->call_channel_kind;
     }
     watchdog_event_merge_tuning(retained, staged);
+    if (retained->analog_mode == (uint8_t)DSD_ANALOG_MODE_UNKNOWN) {
+        retained->analog_mode = staged->analog_mode;
+    }
     if (retained->gi < 0 && staged->gi >= 0) {
         retained->gi = staged->gi;
     }
@@ -1378,7 +1397,9 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
         watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle, 1);
     }
     lifecycle->start_alert_pending = 0U;
-    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA && !reacquired
+    // An analog call neither sounds a START nor withholds one for later (watchdog_event_row_is_analog()).
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA && call->protocol != DSD_SYNC_ANALOG
+        && !reacquired
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         if (call->receive_verdict == DSD_RECEIVE_CHECKING) {
             lifecycle->start_alert_pending = 1U;
@@ -1445,6 +1466,9 @@ typedef struct {
     char s_mode[200];
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
     char service_label[DSD_SERVICE_LABEL_SIZE];
+    /* The call's received identity beside its service label: an analog row prints its confirmed tone from it. */
+    dsd_receive_identity receive_identity;
+    uint8_t analog_mode; /* dsd_analog_mode of an analog call; unknown otherwise */
     uint8_t channel_label_resolved;
     uint8_t operator_tuned;
     uint8_t scan_member;
@@ -1489,6 +1513,9 @@ typedef struct {
      * the pair's difference is exactly the epoch's elapsed. */
     double call_elapsed_s;
     uint8_t call_elapsed_valid;
+    /* The call's first sample in decode-clock wall seconds (dsd_call_snapshot::start_wall), or 0: anchors an analog
+     * row's stamps in place of the render's clock (issue #667). */
+    double start_wall;
 } watchdog_event_current_ctx;
 
 typedef struct {
@@ -1594,6 +1621,8 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->protocol = call->protocol;
     ctx->crc_invalid = call->crc_invalid;
     DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", call->service_label);
+    ctx->receive_identity = call->receive_identity;
+    ctx->analog_mode = call->analog_mode;
     ctx->kind = call->kind;
     ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
     ctx->crypto = call->crypto;
@@ -1616,11 +1645,13 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
             ctx->call_elapsed_valid = 1U;
         }
     }
+    ctx->start_wall = call->start_wall;
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
     if (call->protocol == DSD_SYNC_ANALOG) {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NFM");
+        /* NFM or AM as the demodulator ran; ANALOG on audio input, where the mode is not known (issue #667). */
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", dsd_analog_mode_name(call->analog_mode));
     }
     // The system and site ids are loaded from the received identity record
     // (watchdog_event_current_load_system()) and the access code's slot with the row's code
@@ -2053,6 +2084,44 @@ watchdog_event_current_load_tuning(const dsd_opts* opts, const dsd_state* state,
     }
 }
 
+// Whether @p ctx stamps its row from the call's own first-sample wall anchor: an analog row whose call was begun with
+// one (issue #667). Every other row, and an analog one begun without it, is stamped from the render's clock.
+static int
+watchdog_event_ctx_wall_anchored(const watchdog_event_current_ctx* ctx) {
+    return ctx->protocol == DSD_SYNC_ANALOG && ctx->start_wall > 0.0;
+}
+
+// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row).
+static void
+watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, time_t now) {
+    item->event_time = now;
+    if (watchdog_event_ctx_wall_anchored(ctx)) {
+        // Both from the fractional anchor, the end from the full sum before it is truncated: a call that began at
+        // x.9 and ran 0.6 s ends in the next second, which start + (time_t)elapsed would put a second early.
+        item->event_start_time = (time_t)floor(ctx->start_wall);
+        if (ctx->call_elapsed_valid) {
+            item->event_time = (time_t)floor(ctx->start_wall + ctx->call_elapsed_s);
+        }
+        return;
+    }
+    if (ctx->call_elapsed_valid) {
+        // Stamped once, on the epoch's first render: re-deriving it every pass
+        // from two independently truncated clocks makes the stamp jitter by a
+        // second between renders, and the committed value is whatever the last
+        // render happened to say. The retire/commit paths clear the staged row
+        // between epochs and the caller drops another epoch's, so a nonzero
+        // stamp here is always this epoch's own.
+        if (item->event_start_time == 0) {
+            item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+        }
+        // Anchored to the fixed start plus the canonical epoch's own elapsed, so
+        // event_time - event_start_time is exactly the epoch's elapsed on every
+        // render — including under Android doze and NTP steps, which move the
+        // wall clock without moving the call's monotonic timeline.
+        item->event_time = item->event_start_time + (time_t)ctx->call_elapsed_s;
+    }
+}
+
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
                                    const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
@@ -2086,6 +2155,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->stream_blocked = ctx->stream_blocked;
     item->channel = ctx->channel;
     item->call_channel_kind = ctx->channel_kind;
+    item->analog_mode = ctx->analog_mode;
     item->freq_hz = ctx->freq_hz;
     item->access_code_kind = ctx->access_code_kind;
     item->access_code = ctx->access_code;
@@ -2099,23 +2169,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
         item->event_start_time = 0;
     }
     if (opts->playfiles == 0) {
-        item->event_time = now;
-        if (ctx->call_elapsed_valid) {
-            // Stamped once, on the epoch's first render: re-deriving it every pass
-            // from two independently truncated clocks makes the stamp jitter by a
-            // second between renders, and the committed value is whatever the last
-            // render happened to say. The retire/commit paths clear the staged row
-            // between epochs and the line above drops another epoch's, so a nonzero
-            // stamp here is always this epoch's own.
-            if (item->event_start_time == 0) {
-                item->event_start_time = now - (time_t)ctx->call_elapsed_s;
-            }
-            // Anchored to the fixed start plus the canonical epoch's own elapsed, so
-            // event_time - event_start_time is exactly the epoch's elapsed on every
-            // render — including under Android doze and NTP steps, which move the
-            // wall clock without moving the call's monotonic timeline.
-            item->event_time = item->event_start_time + (time_t)ctx->call_elapsed_s;
-        }
+        watchdog_event_current_stamp_item(item, ctx, now);
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
@@ -2619,6 +2673,48 @@ watchdog_event_mark_crc(char* text, size_t cap, uint8_t old_flags, uint8_t new_f
     text[prefix + marker_len + rest] = '\0';
 }
 
+// The tone token of an analog row: the CTCSS tone or DCS code the call's carrier was confirmed on, as Call Info's Rx
+// tone line spells it (both DCS spellings, the canonical one first), or nothing for an untoned call or one whose tone
+// was never confirmed. The call keeps its confirmed tone after the carrier drops, so a tone lost at the end (a reverse
+// burst, a turn-off code) still shows.
+static void
+watchdog_event_analog_tone_text(const dsd_receive_identity* identity, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!identity->known) {
+        return;
+    }
+    int written = -1;
+    if (identity->kind == (uint8_t)DSD_RECEIVE_CTCSS) {
+        written = dsd_ctcss_format_label((int)identity->value, out, out_size);
+    } else if (identity->kind == (uint8_t)DSD_RECEIVE_DCS) {
+        /* The value is the canonical code * 2 + its polarity (dsd_receive_identity_current()). */
+        written = dsd_dcs_format_label((int)(identity->value / 2U), (int)(identity->value % 2U), out, out_size);
+    }
+    if (written > 0) {
+        watchdog_event_str_append(out, out_size, "; ");
+    }
+}
+
+// The analog row (issue #667): the mode word as the demodulator ran (NFM or AM; none on audio input, where another
+// receiver demodulated), the frequency in MHz as the digital rows give it (left out when there is none: an audio input
+// tunes nothing), then the confirmed tone.
+static void
+watchdog_event_current_build_event_analog(const watchdog_event_current_ctx* ctx, const char* datestr,
+                                          const char* timestr, const char* sys, char* event_string, size_t event_size) {
+    const int mode_known = dsd_analog_mode_known(ctx->analog_mode);
+    char freq_str[40];
+    freq_str[0] = '\0';
+    if (ctx->freq_hz > 0 && ctx->freq_hz <= (int64_t)UINT32_MAX) {
+        char mhz[16];
+        (void)dsd_freq_hz_mhz_text((uint32_t)ctx->freq_hz, mhz, sizeof mhz);
+        DSD_SNPRINTF(freq_str, sizeof freq_str, "FREQ: %s MHz; ", mhz);
+    }
+    char tone_str[DSD_CTCSS_LABEL_SIZE + DSD_DCS_LABEL_SIZE + 2]; /* room for either label, and its "; " */
+    watchdog_event_analog_tone_text(&ctx->receive_identity, tone_str, sizeof tone_str);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s%s%s; %s%s", datestr, timestr, sys, mode_known ? " " : "",
+                 mode_known ? dsd_analog_mode_name(ctx->analog_mode) : "", freq_str, tone_str);
+}
+
 // Every builder renders purely from ctx -- the identity and metadata copied off the call or the
 // row, plus the render env captured with it. Nothing here reads live decoder state, so the same
 // ctx always produces the same string no matter when it is rebuilt.
@@ -2648,15 +2744,7 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
     } else if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
         watchdog_event_current_build_event_tetra(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (ctx->protocol == DSD_SYNC_ANALOG) {
-        // As the digital rows: the frequency in MHz, left out when there is none (an audio input tunes nothing).
-        char freq_str[40];
-        freq_str[0] = '\0';
-        if (ctx->freq_hz > 0 && ctx->freq_hz <= (int64_t)UINT32_MAX) {
-            char mhz[16];
-            (void)dsd_freq_hz_mhz_text((uint32_t)ctx->freq_hz, mhz, sizeof mhz);
-            DSD_SNPRINTF(freq_str, sizeof freq_str, "FREQ: %s MHz; ", mhz);
-        }
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s NFM; %s", datestr, timestr, sys, freq_str);
+        watchdog_event_current_build_event_analog(ctx, datestr, timestr, sys, event_string, event_size);
     }
     // A fresh string carries no marker yet.
     watchdog_event_mark_crc(event_string, event_size, 0U, ctx->crc_invalid);
@@ -2756,6 +2844,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->s_mode, sizeof(ctx->s_mode), "%s", item->s_mode);
     DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", item->channel_label);
     DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", item->service_label);
+    ctx->receive_identity = item->receive_identity;
+    ctx->analog_mode = item->analog_mode;
     ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->operator_tuned = item->operator_tuned;
     ctx->scan_member = item->scan_member;
@@ -2768,7 +2858,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
 // parseable prefix -- a row a protocol staged directly rather than rendering.
 //
 // The displayed string is preferred rather than the stamp because the two are not always the same
-// clock. Every builder renders the prefix from dsd_decode_time(), but watchdog_event_current_update_item()
+// clock. Every builder renders the prefix from dsd_decode_time() (an ended analog row's from its own
+// event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
 // only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
 // is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
 // rewrite a committed row's visible date and time to a value none of its siblings use, purely
@@ -2983,6 +3074,8 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         if (watchdog_event_drop_verdict_held(lifecycle, call, event_struct, deferred_end)) {
             return;
         }
+        // Read before the commit below clears the staged row: an analog row holds no END either.
+        const int analog = watchdog_event_row_is_analog(&event_struct->Event_History_Items[0]);
         // The staged row is about to leave index 0, where views of the ended call read its source and target labels.
         watchdog_event_cache_source_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
         watchdog_event_cache_target_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
@@ -2992,7 +3085,7 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         // has nothing to commit; enrichment resolves that case by push sequence and declines.
         const int committed = watchdog_event_commit_staged_row((dsd_opts*)opts, state, event_struct, slot, lifecycle,
                                                                call->kind == DSD_CALL_KIND_DATA, 1, disposition);
-        if (deferred_end && committed) {
+        if (deferred_end && committed && !analog) {
             // Armed only where a row reached history, which is what makes this the same rule the
             // FINAL disposition follows: its alert is emitted inside the commit above, so it too
             // cannot fire for a staged row with nothing in it. A signal that renders no event
@@ -3014,6 +3107,18 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     lifecycle->drop_hold_pending = 0U;
     lifecycle->drop_hold_due_m = 0.0;
     lifecycle->ended_committed = 1U;
+}
+
+// The time a rendered row's text is stamped with: the render's, except an ended analog row's, which reads its own end
+// (event_time), so a commit the input delayed (a stalled stdin) still reads when the call ended (issue #667 A2). Every
+// other row, and --playfiles, keeps the render's clock: the visible prefix a merge then preserves.
+static time_t
+watchdog_event_text_time(const dsd_opts* opts, const dsd_call_snapshot* call, const Event_History* item, time_t now) {
+    if (opts->playfiles == 0 && call->protocol == DSD_SYNC_ANALOG && call->phase == DSD_CALL_PHASE_ENDED
+        && item->event_time > 0) {
+        return item->event_time;
+    }
+    return now;
 }
 
 static void
@@ -3060,13 +3165,13 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
+    const time_t now = dsd_decode_time();
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
     char timestr[9];
     char datestr[11];
-    time_t now = dsd_decode_time();
-    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
+    const time_t text_time = watchdog_event_text_time(opts, call, &candidate, now);
+    (void)dsd_format_local_datetime(text_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(text_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     DSD_SNPRINTF(candidate.service_label, sizeof(candidate.service_label), "%s", call->service_label);
     candidate.receive_identity = call->receive_identity;
 
@@ -3834,6 +3939,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     dsd_event_history_item_set_metadata(
         item, dsd_crc_is_failed(item->crc_invalid) ? DSD_EVENT_SEVERITY_WARNING : DSD_EVENT_SEVERITY_INFO, category);
     item->systype = observation->protocol;
+    item->analog_mode = observation->analog_mode;
     dsd_receive_identity_current(state, observation->protocol, slot, &item->receive_identity);
     DSD_SNPRINTF(item->service_label, sizeof(item->service_label), "%s",
                  dsd_receive_service_name(&opts->receive.names, &item->receive_identity));

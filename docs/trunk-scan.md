@@ -831,7 +831,7 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   (`--tone-allow`/`--tone-block`, `[analog] tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`).
   The list takes `/` between entries: an unquoted comma ends the `options` cell, and a row whose list runs on past one
   (into a field past the header, or into a column whose whole field is then a run of `/`-separated entries with no
-  space, starting with a standard tone or code, alone or followed by another row option such as `--squelch-db -60`) is
+  space, starting with a supported tone or code, alone or followed by another row option such as `--squelch-db -60`) is
   refused with `use / between entries, not commas`, as is a quoted cell with a comma. The Qt/Android preview of an
   imported target file names it (`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on
   an `nfm-conventional` target without one. The policy is a setting, shown apart from the tone or code received. Under a
@@ -1133,8 +1133,8 @@ hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The na
 event history and the per-call recording's file name (`-P`, as an `_SVC_` component; an NFM call's name also carries its
 frequency and tone, [CLI reference](cli.md)). Rdio-scanner exports of digital calls carry it as the talkgroup label. An
 NFM call is exported under its frequency in kHz and labelled by the row's `id` instead, since the services on one
-channel share its talkgroup (see [NFM calls in rdio-scanner](cli.md#nfm-calls-in-rdio-scanner)). The CSV file itself is
-never changed. Quote a name with spaces in single or double quotes.
+channel share its talkgroup (see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)). The CSV file
+itself is never changed. Quote a name with spaces in single or double quotes.
 
 Naming adds no separate wait and takes no time from a visit: the name is looked up from the identifier the call is
 received with. A matching identifier must be validated during the reception (a verified colour code, RAN or NAC, a slot

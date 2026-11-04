@@ -1611,10 +1611,18 @@ test_search_live_read_bound(void) {
         expect_int_eq("NFM read hook", rtl_stream_test_search_live_read_bound(0U, &nfm, 3000, &got, &waited_ms), 0);
     failed |= expect_int_eq("an idle NFM monitor yields without ending the stream", got, 0);
     failed |= expect_waited("an idle NFM read", waited_ms, 100U, 2000U);
-    /* Issue #637: the mode in force decides, so an NFM session switched to AM waits for its producer again. */
-    failed |= expect_int_eq("AM read hook", rtl_stream_test_search_live_read_bound(0U, &am, 300, &got, &waited_ms), 0);
-    failed |= expect_int_eq("an AM monitor waits for the producer", got, 1);
-    failed |= expect_waited("an AM read", waited_ms, 250U, 60000U);
+    /* Issue #667 D8: an AM monitor's calls expire as NFM ones do, so it yields alike. The mode in force still decides
+     * (issue #637): the same session with its monitor off waits for its producer again. */
+    failed |= expect_int_eq("AM read hook", rtl_stream_test_search_live_read_bound(0U, &am, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("an idle AM monitor yields without ending the stream", got, 0);
+    failed |= expect_waited("an idle AM read", waited_ms, 100U, 2000U);
+    static dsd_opts monitor_off;
+    monitor_off = am;
+    monitor_off.monitor_input_audio = 0;
+    failed |= expect_int_eq("monitor-off read hook",
+                            rtl_stream_test_search_live_read_bound(0U, &monitor_off, 300, &got, &waited_ms), 0);
+    failed |= expect_int_eq("with the monitor off the read waits for the producer", got, 1);
+    failed |= expect_waited("a monitor-off read", waited_ms, 250U, 60000U);
     return failed;
 }
 

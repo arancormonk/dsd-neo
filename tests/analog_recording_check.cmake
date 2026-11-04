@@ -6,8 +6,10 @@
 # Each leg must, as in iq_decode_check.cmake, exit 0, show no sanitizer report
 # and print "ANALOG AUDIO OK", and then:
 #   - its folder holds exactly FILES recordings (*.wav), and no TEMP_ file;
-#   - its journal has FILES "publish" lines, each an NFM recording pending its
-#     call's history row and not failed, naming a file in the folder, and one
+#   - its journal has FILES "publish" lines, each an analog recording pending its
+#     call's history row and not failed, its system the call's mode (NFM from an
+#     I/Q replay, ANALOG from the discriminator tap, an audio input whose mode is
+#     unknown), naming a file in the folder, and one
 #     "link" line for each of them; no "unlink" and no "error" line;
 #   - the host printed FILES "ANALOG CALL ROW:" lines: one history row a file.
 #
@@ -38,6 +40,8 @@
 #                 audible audio (the host's total_ms and last_audible_ms), so
 #                 the run's last call was still held through a pause when the
 #                 input ended and the engine's normal teardown closed it.
+#   ROWS_EXPECTED a regex the host's "ANALOG CALL ROW:" lines, oldest first and
+#                 one a line, must match (the tone each row names, issue #667).
 foreach(_var HOST_BIN MODE WORK_DIR FILES)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "analog_recording_check: missing -D${_var}")
@@ -62,6 +66,11 @@ if(DEFINED SIDECAR)
 endif()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
+if(MODE MATCHES "--analog-pcm-tap")
+    set(_system "ANALOG")
+else()
+    set(_system "NFM")
+endif()
 set(_rates "-")
 if(DEFINED RATES)
     string(REPLACE "," ";" _rates "${RATES}")
@@ -159,11 +168,11 @@ function(_analog_recording_leg leg rate out_files out_summary)
                 NOT _line MATCHES "\"id\":\"[^\"]+\""
                 OR NOT _line MATCHES "\"pending\":true"
                 OR NOT _line MATCHES "\"failed\":false"
-                OR NOT _line MATCHES "\"system\":\"NFM\""
+                OR NOT _line MATCHES "\"system\":\"${_system}\""
             )
                 message(
                     FATAL_ERROR
-                    "analog_recording_check: ${leg}: not a pending NFM publish: '${_line}'"
+                    "analog_recording_check: ${leg}: not a pending analog publish: '${_line}'"
                 )
             endif()
             string(REGEX MATCH "\"id\":\"([^\"]+)\"" _unused "${_line}")
@@ -283,6 +292,15 @@ function(_analog_recording_leg leg rate out_files out_summary)
         )
     endif()
     list(APPEND _summary ${_rows})
+    if(DEFINED ROWS_EXPECTED)
+        string(REPLACE ";" "\n" _row_text "${_rows}")
+        if(NOT "${_row_text}" MATCHES "${ROWS_EXPECTED}")
+            message(
+                FATAL_ERROR
+                "analog_recording_check: ${leg}: rows do not match '${ROWS_EXPECTED}':\n${_row_text}"
+            )
+        endif()
+    endif()
 
     if(DEFINED HELD_AT_END_MS)
         if(

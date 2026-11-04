@@ -364,8 +364,14 @@ analog_stall_step(dsd_opts* opts, dsd_state* state) {
         opts->monitor_input_audio = 1;
         opts->audio_in_type = AUDIO_IN_UDP;
         state->analog_rx.carrier_open = 1;
-        const float samples[2] = {1000.0f, 1000.0f};
-        dsd_test_analog_call_feed(opts, state, samples, 2, 48000, 1);
+        static float samples[960];
+        for (int i = 0; i < 960; i++) {
+            samples[i] = 1000.0f;
+        }
+        /* A reception is a call once it ran DSD_ANALOG_CALL_MIN_MS (issue #667). */
+        for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+            dsd_test_analog_call_feed(opts, state, samples, 960, 48000, 1);
+        }
         expect("NFM reception starts a call", dsd_engine_analog_call_active(state));
         state->analog_rx.stale_after_ms = 1U;
         state->input_interrupted = 1; /* An idle read yields, with no replacement input. */

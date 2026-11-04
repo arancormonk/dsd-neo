@@ -204,7 +204,7 @@ Item {
         if (recordingLive && prefs.recordCalls)
             sendRecordingSwitch(function () { return commands.setRecordUnknownOnly(on); });
     }
-    // Issue #756: the NFM pause hold travels with Record calls, as unknown-only
+    // Issue #756: the analog pause hold travels with Record calls, as unknown-only
     // does, and the row shows the preference, as the switches do. A hold in Extra
     // decoder arguments wins at every start, so the row then changes nothing and
     // says why, and Record calls on leaves the session's own hold alone. The
@@ -724,7 +724,7 @@ Item {
 
                     DisclosureRow {
                         objectName: "analogMaxGapRow"
-                        title: qsTr("NFM pause hold")
+                        title: qsTr("Analog pause hold")
                         subtitle: Util.pauseHoldOn(prefs.analogMaxGapMs) ? qsTr("%1 · Pauses up to this long stay in one recording").arg(Util.pauseHoldText(prefs.analogMaxGapMs)) : qsTr("Off · Each pause over 0.2 seconds starts a new recording")
                         enabled: prefs.recordCalls && !screen.analogMaxGapInExtras
                         showCaret: enabled

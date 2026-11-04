@@ -111,7 +111,7 @@ Connect(char* hostname, int portno) {
     return sockfd;
 }
 
-/* The receive timeout and options every connection Connect() and ConnectBounded() make runs with. */
+/* The receive timeout, keepalive and options every connection Connect() and ConnectBounded() make runs with. */
 static int
 connect_apply_options(dsd_socket_t sockfd) {
 #ifdef SO_NOSIGPIPE
@@ -141,6 +141,12 @@ connect_apply_options(dsd_socket_t sockfd) {
         int nodelay = 1;
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
+    /* A receive timeout keeps the connection (a TCP audio sender may be quiet for as long as its squelch is shut), so
+       only keepalive finds a peer that vanished without closing (its host lost power, the network dropped): a read
+       then fails within about 35 s and the input reconnects, as after a close. Best effort, as on the rtl_tcp link; a
+       rigctl connection, made here too, gets it alike, and its next command then fails at once. */
+    (void)dsd_socket_set_keepalive(sockfd, DSD_SOCKET_KEEPALIVE_IDLE_S, DSD_SOCKET_KEEPALIVE_INTERVAL_S,
+                                   DSD_SOCKET_KEEPALIVE_COUNT);
 
     /* A new connection on the number of a socket closed before it is a peer nothing was asked of. */
     rigctl_peer_forget(sockfd);

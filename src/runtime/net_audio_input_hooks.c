@@ -32,11 +32,11 @@ dsd_net_audio_input_hook_tcp_close(tcp_input_ctx* ctx) {
 }
 
 int
-dsd_net_audio_input_hook_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
-    if (!g_net_audio_input_hooks.tcp_read_sample) {
+dsd_net_audio_input_hook_tcp_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
+    if (!g_net_audio_input_hooks.tcp_read_sample_wait) {
         return 0;
     }
-    return g_net_audio_input_hooks.tcp_read_sample(ctx, out);
+    return g_net_audio_input_hooks.tcp_read_sample_wait(ctx, out, timeout_ms);
 }
 
 int

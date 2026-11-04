@@ -956,7 +956,7 @@ static const NcMenuItem REC_WAV_ITEMS[] = {
      .on_select = io_enable_per_call_wav},
     {.id = "wav.analog_gap",
      .label_fn = lbl_analog_record_max_gap,
-     .help = "Keep an NFM call in one recording and one history row through a pause of up to this many ms "
+     .help = "Keep an analog call in one recording and one history row through a pause of up to this many ms "
              "(0..10000); the pause is saved as silence, its end as heard while the NFM pre-roll is on. 200 or less "
              "is off: a pause over 200 ms starts a new recording.",
      .on_select = act_analog_record_max_gap},

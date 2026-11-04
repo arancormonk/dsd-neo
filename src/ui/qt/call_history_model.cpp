@@ -22,6 +22,7 @@
 #include <QLatin1String>
 #include <QLocale>
 #include <QPair>
+#include <QStringView>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -30,6 +31,7 @@
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -47,7 +49,7 @@
 #endif
 
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include "call_history_merge.h"
 #include "call_history_tap.h"
 #include "call_recording_provider.h"
@@ -114,6 +116,13 @@ note_store_build() {
 void
 note_store_build() {}
 #endif
+
+/** @brief An analog row's name when nothing else names it (issue #667): its mode, "Analog" when not known. */
+QString
+analog_fallback_name(uint8_t mode) {
+    return dsd_analog_mode_known(mode) != 0 ? QString::fromLatin1(dsd_analog_mode_name(mode))
+                                            : QStringLiteral("Analog");
+}
 
 /** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
 qint64
@@ -344,13 +353,26 @@ row_carrier_value(const CallHistoryModel::Row& row, int role) {
     }
 }
 
+/** @brief The confirmed tone in the words every surface uses ("CTCSS 100.0 Hz", "DCS D023N / D047I"), else empty. */
 QString
 row_received_tone(const CallHistoryModel::Row& row) {
-    char tone[32] = "";
-    if (row.receiveKnown && (row.receiveKind == DSD_RECEIVE_CTCSS || row.receiveKind == DSD_RECEIVE_DCS)) {
-        (void)dsd_receive_value_format(row.receiveKind, static_cast<unsigned int>(row.receiveValue), tone, sizeof tone);
+    constexpr int kToneSize = std::max(static_cast<int>(DSD_CTCSS_LABEL_SIZE), static_cast<int>(DSD_DCS_LABEL_SIZE));
+    char tone[kToneSize] = "";
+    if (row.receiveKnown && row.receiveKind == DSD_RECEIVE_CTCSS) {
+        (void)dsd_ctcss_format_label(row.receiveValue, tone, sizeof tone);
+    } else if (row.receiveKnown && row.receiveKind == DSD_RECEIVE_DCS) {
+        // The stored value is the canonical code * 2 + polarity (receive_types.h).
+        (void)dsd_dcs_format_label(row.receiveValue / 2, row.receiveValue % 2, tone, sizeof tone);
     }
     return QString::fromUtf8(tone);
+}
+
+/** @brief An analog row's mode as the analogMode role reads it: "NFM", "AM", or empty when unknown or not analog. */
+QString
+row_analog_mode_text(const CallHistoryModel::Row& row) {
+    return row.analog && dsd_analog_mode_known(row.analogMode) != 0
+               ? QString::fromLatin1(dsd_analog_mode_name(row.analogMode))
+               : QString();
 }
 
 /** @brief One row's value for @p role; an unknown role reads as null. */
@@ -371,6 +393,8 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::ReceivedToneRole: {
             return row_received_tone(row);
         }
+        case CallHistoryModel::AnalogRole: return row.analog;
+        case CallHistoryModel::AnalogModeRole: return row_analog_mode_text(row);
         case CallHistoryModel::SessionRole: return row.session;
         default: return row_carrier_value(row, role);
     }
@@ -445,6 +469,8 @@ CallHistoryModel::recordFor(const QString& uid) const {
         {"serviceName", ServiceNameRole},
         {"receivedTone", ReceivedToneRole},
         {"siteText", SiteTextRole},
+        {"analog", AnalogRole},
+        {"analogMode", AnalogModeRole},
     };
 
     bool parsed = false;
@@ -544,6 +570,8 @@ CallHistoryModel::roleNames() const {
     roles.insert(RecordingsRole, QByteArrayLiteral("recordings"));
     roles.insert(HasRecordingRole, QByteArrayLiteral("hasRecording"));
     roles.insert(SiteTextRole, QByteArrayLiteral("siteText"));
+    roles.insert(AnalogRole, QByteArrayLiteral("analog"));
+    roles.insert(AnalogModeRole, QByteArrayLiteral("analogMode"));
     return roles;
 }
 
@@ -910,8 +938,8 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
          * operator recognises it by, and "Talkgroup 0" is not. */
         row.name = QString::fromUtf8(item->channel_label);
     } else {
-        row.name =
-            item->systype == DSD_SYNC_ANALOG ? QStringLiteral("NFM") : QStringLiteral("Talkgroup %1").arg(row.tg);
+        row.name = item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode)
+                                                    : QStringLiteral("Talkgroup %1").arg(row.tg);
     }
 }
 
@@ -949,6 +977,9 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.channel = QString::fromUtf8(item->channel_label);
     row.service = QString::fromUtf8(item->service_label);
     row.analog = item->systype == DSD_SYNC_ANALOG;
+    row.analogMode = row.analog && dsd_analog_mode_known(item->analog_mode) != 0
+                         ? item->analog_mode
+                         : static_cast<uint8_t>(DSD_ANALOG_MODE_UNKNOWN);
     row.receiveKind = item->receive_identity.kind;
     row.receiveValue = item->receive_identity.value;
     row.receiveKnown = item->receive_identity.known != 0;
@@ -1208,8 +1239,8 @@ receive_adopt_identity(CallHistoryModel::Row& existing, const CallHistoryModel::
    (row_take_name()). A label changes as the call is confirmed (issue #637); a textual target does not. */
 QString
 row_textual_destination(const CallHistoryModel::Row& row) {
-    if (row.analog || (!row.service.isEmpty() && row.name == row.service)
-        || (!row.channel.isEmpty() && row.name == row.channel) || row.name == QStringLiteral("Talkgroup 0")) {
+    if ((!row.service.isEmpty() && row.name == row.service) || (!row.channel.isEmpty() && row.name == row.channel)
+        || row.name == QStringLiteral("Talkgroup 0")) {
         return QString();
     }
     return row.name;
@@ -1223,14 +1254,15 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
     }
     // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
     // tg == 0, so the numeric check cannot tell two destinations apart;
-    // the target text is their identity. A name that is only a label (an analog
-    // transmission's, a service or channel name) is no destination of its own.
+    // the target text is their identity. A name that is only a label (a service
+    // or channel name) is no destination of its own. Analog rows never get here
+    // (rows_mergeable()).
     const QString existingTarget = row_textual_destination(existing);
     const QString rowTarget = row_textual_destination(row);
     if (!existingTarget.isEmpty() && !rowTarget.isEmpty() && existingTarget != rowTarget) {
         return false;
     }
-    // A row with no IDs at all (a conventional NFM transmission, issue #637) is named only by where it was heard:
+    // A digital row with no IDs at all (issue #637) is named only by where it was heard:
     // two such transmissions on different frequencies are two calls, whatever the gap between them. Trunked fragments
     // keep a talkgroup, so their retunes still fold.
     return existing.src != 0 || row.src != 0 || existing.freqHz == 0 || row.freqHz == 0
@@ -1240,7 +1272,9 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
 /** @brief Whether two voice rows are one conversation the merge may fold together. */
 bool
 rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    if (existing.kind != CallHistoryModel::KindVoice) {
+    // Each analog reception is a row of its own (issue #667): the tracker already joined what one reception holds
+    // (its hangover, the pause hold), so two analog rows, or an analog and a digital row, are two calls.
+    if (existing.kind != CallHistoryModel::KindVoice || existing.analog || row.analog) {
         return false;
     }
     if (!receive_services_compatible(existing, row)) {
@@ -1267,6 +1301,73 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     const bool srcKnownMatch = existing.src != 0 && existing.src == row.src;
     return call_history_merge_within_window(existing.when, row_end_secs(existing), row.when, row_end_secs(row),
                                             srcKnownMatch);
+}
+
+/**
+ * @brief Whether analog row @p row is the reception @p existing logged, read again (issue #667).
+ *
+ * Exactly the same: its start, its tone (or the same lack of one), its frequency, and the system and channel it was
+ * logged under. A replay in a fresh ring pushes that, and so does the ring an update of a row an older build stored
+ * (with no fragments) comes from.
+ */
+bool
+rows_same_reception(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (existing.kind != CallHistoryModel::KindVoice || row.kind != CallHistoryModel::KindVoice || !existing.analog
+        || !row.analog) {
+        return false;
+    }
+    const bool sameTone =
+        existing.receiveKnown == row.receiveKnown
+        && (!row.receiveKnown
+            || (existing.receiveKind == row.receiveKind && existing.receiveValue == row.receiveValue));
+    // One system's reception never stands for another's, as rows_mergeable() keeps two systems apart: the same capture
+    // replayed under another saved system (or channel) is that one's.
+    const bool sameSystem =
+        existing.systemName == row.systemName && existing.systemUid == row.systemUid && existing.channel == row.channel;
+    return existing.when == row.when && existing.freqHz == row.freqHz && sameTone && sameSystem;
+}
+
+/** @brief The ring a call_history_fragment_key() names: the instance before its first ':'. */
+QStringView
+fragment_ring(const QString& fragment) {
+    const qsizetype colon = fragment.indexOf(QLatin1Char(':'));
+    return colon > 0 ? QStringView(fragment).left(colon) : QStringView();
+}
+
+/** @brief Whether @p existing already holds a fragment, other than @p row's own, of a ring @p row comes from. */
+bool
+row_holds_ring_of(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return std::any_of(row.fragments.cbegin(), row.fragments.cend(), [&existing](const QString& own) {
+        const QStringView ring = fragment_ring(own);
+        return !ring.isEmpty()
+               && std::any_of(existing.fragments.cbegin(), existing.fragments.cend(),
+                              [&own, ring](const QString& held) { return held != own && fragment_ring(held) == ring; });
+    });
+}
+
+/**
+ * @brief The row of the first @p scanRows that analog row @p row is the reception of, read again, or -1.
+ *
+ * One to one: a row's start is a whole second, so two receptions on one frequency and tone can share it. A row that
+ * already took another reception of @p row's ring is that reception's, never this one's; among the rest, a row that
+ * also ends when @p row does (a replay pushes the same span) comes before one that does not (an update ran on).
+ */
+int
+same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryModel::Row& row, int scanRows) {
+    int first = -1;
+    for (int i = 0; i < rows.size() && i < scanRows; i++) {
+        const CallHistoryModel::Row& existing = rows.at(i);
+        if (!rows_same_reception(existing, row) || row_holds_ring_of(existing, row)) {
+            continue;
+        }
+        if (row_end_secs(existing) == row_end_secs(row)) {
+            return i;
+        }
+        if (first < 0) {
+            first = i;
+        }
+    }
+    return first;
 }
 
 CallHistoryProvenance
@@ -1384,11 +1485,19 @@ fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
 } // namespace
 
 int
-CallHistoryModel::tryMerge(const Row& row, int scanRows) {
+CallHistoryModel::tryMerge(const Row& row, int scanRows, bool sameReception) {
     if (row.kind != KindVoice) {
         // Notices are discrete deliveries: two SMS a second apart are two
         // messages, never fragments of one.
         return -1;
+    }
+    if (row.analog) {
+        // An analog row never merges (rows_mergeable()); it lands only on the reception it is, read again.
+        const int same = sameReception ? same_reception_row(m_rows, row, scanRows) : -1;
+        if (same >= 0) {
+            foldRow(m_rows[same], row);
+        }
+        return same;
     }
     for (int i = 0; i < m_rows.size() && i < scanRows; i++) {
         if (rows_mergeable(m_rows.at(i), row)) {
@@ -1416,6 +1525,10 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     fold_carrier(existing, row);
     fold_site(existing, row);
+    // The same analog reception read again: a row an older build stored learns the mode it did not keep.
+    if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
+        existing.analogMode = row.analogMode;
+    }
     const qint64 start = qMin(existing.when, row.when);
     const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
     existing.when = start;
@@ -1502,10 +1615,11 @@ CallHistoryModel::keyFor(const Row& row) {
 
 void
 CallHistoryModel::settleMerged(int merged) {
-    static const QVector<int> mergeRoles = {
-        WhenRole,        SrcRole,          SourceNameRole, EncRole,        DurationSecsRole, DayLabelRole,
-        TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,   AccessCodeTextRole,
-        ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole, SiteTextRole};
+    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,          SourceNameRole, EncRole,
+                                            DurationSecsRole, DayLabelRole,     TimeTextRole,   EmergencyRole,
+                                            SessionRole,      FreqHzRole,       AccessCodeRole, AccessCodeTextRole,
+                                            ServiceNameRole,  ReceivedToneRole, NameRole,       RecordingsRole,
+                                            HasRecordingRole, SiteTextRole,     AnalogModeRole};
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -1538,7 +1652,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // lands on the row the newest rows hold for it. A first sighting still searches the newest rows only,
     // so a call the first replay logged as two rows, its fragments landing apart under newer rows, stays
     // two, and the repeat folds into the newer of them.
-    const bool wholeLog = again || isUpdate;
+    // An analog row's first sighting searches as far (issue #667): a replay whose receptions took other push stamps (a
+    // tone filter that leaves an earlier one out) is read as new, yet it is a reception already logged, matched exactly
+    // and one to one (same_reception_row()), so never one a live reception or a same-ring neighbour could be.
+    const bool wholeLog = again || isUpdate || row.analog;
     // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
     // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
     // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.
@@ -1546,7 +1663,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     if (merged >= 0) {
         foldRow(m_rows[merged], row);
     } else {
-        merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
+        merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows, wholeLog);
     }
     if (merged >= 0) {
         settleMerged(merged);
@@ -2119,6 +2236,24 @@ row_carrier_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.acSlot = static_cast<int>(json_i64_or(obj, "acSlot", row.slot));
 }
 
+/**
+ * @brief Read a stored analog row's mode (issue #667), and name a row stored with no name by it.
+ *
+ * A store older builds wrote keeps no mode: its rows read unknown, never a mode guessed from their name (which every
+ * analog row had as "NFM"), and keep the name they were stored with.
+ */
+void
+row_analog_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    const qint64 mode = json_i64_or(obj, "analogMode", DSD_ANALOG_MODE_UNKNOWN);
+    row.analogMode =
+        row.analog && mode >= 0 && mode <= UINT8_MAX && dsd_analog_mode_known(static_cast<uint8_t>(mode)) != 0
+            ? static_cast<uint8_t>(mode)
+            : static_cast<uint8_t>(DSD_ANALOG_MODE_UNKNOWN);
+    if (row.analog && row.kind == CallHistoryModel::KindVoice && row.name.isEmpty()) {
+        row.name = analog_fallback_name(row.analogMode);
+    }
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -2139,6 +2274,7 @@ row_from_json(const QJsonObject& obj) {
     row.channelName = obj.value(QLatin1String("channelName")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
     row.analog = obj.value(QLatin1String("analog")).toBool();
+    row_analog_from_json(row, obj);
     row.receiveKind = obj.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
     row.receiveValue = obj.value(QLatin1String("receiveValue")).toInt();
     row.receiveKnown = obj.value(QLatin1String("receiveKnown")).toBool();
@@ -2223,6 +2359,9 @@ row_to_json(const CallHistoryModel::Row& row) {
     if (row.analog) {
         obj.insert(QLatin1String("analog"), true);
     }
+    if (row.analog && dsd_analog_mode_known(row.analogMode) != 0) {
+        obj.insert(QLatin1String("analogMode"), static_cast<int>(row.analogMode));
+    }
     if (row.receiveKnown) {
         obj.insert(QLatin1String("receiveKind"), row.receiveKind);
         obj.insert(QLatin1String("receiveValue"), row.receiveValue);
@@ -2295,7 +2434,7 @@ CallHistoryModel::load() {
                                              it->session,
                                              0U,
                                              QString()});
-        if (tryMerge(*it, kMergeScanRows) < 0) {
+        if (tryMerge(*it, kMergeScanRows, false) < 0) {
             m_rows.prepend(*it);
         }
     }

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/receive_types.h>
@@ -210,7 +211,10 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
         return;
     }
     if (call->protocol == DSD_SYNC_ANALOG) {
-        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->channel[0] ? out->channel : "NFM");
+        /* No channel: the mode the call was heard in names it, "Analog" on audio input where the mode is unknown. */
+        const char* mode =
+            dsd_analog_mode_known(call->analog_mode) ? dsd_analog_mode_name(call->analog_mode) : "Analog";
+        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->channel[0] ? out->channel : mode);
         return;
     }
     if (out->tg_label[0] != '\0') {

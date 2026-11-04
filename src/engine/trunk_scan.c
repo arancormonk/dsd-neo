@@ -66,6 +66,7 @@
 #include <time.h>
 
 #include "scan_analog_internal.h"
+#include "scan_landing.h"
 #include "scan_owner.h"
 #include "scan_step_untyped.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
@@ -3148,6 +3149,15 @@ trunk_scan_arm_visit(dsd_trunk_scan_target_runtime* rt, double parked_m) {
     rt->retry_released_park = 0;
 }
 
+/* The retune to @p rt completed: a conventional target is on its own frequency, which an analog call on audio input is
+   heard on (issue #667 D9). A trunked target's park is its control channel, never a call's frequency. */
+static void
+trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_target_runtime* rt) {
+    if (trunk_scan_type_is_conventional(rt->target.type)) {
+        dsd_engine_scan_landing_note_target(state, (long)rt->target.frequency_hz);
+    }
+}
+
 /*
  * Hand the tuned carrier back before the receiver is moved off it. Only a forced advance owes
  * this: an ordinary rotation leaves a row that is not following anything. Both trunked state
@@ -3206,6 +3216,9 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     }
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
+    if (dsd_trunk_tune_result_is_complete(tune_result)) {
+        trunk_scan_note_landing(state, rt);
+    }
     double completed_m = 0.0;
     (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
     if (p25) {
@@ -3449,6 +3462,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     if (trunk_scan_prepare_target_switch(opts, state, &coord->targets[next], &key_change)) {
         return TRUNK_SCAN_PREPARE_FAILED;
     }
+    /* The receiver leaves the target it is on: only a retune that completes says where it is next (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     if (save_current && coord->active < coord->count) {
         dsd_trunk_scan_target_runtime* outgoing = &coord->targets[coord->active];
         /* A forced advance is the one rotation allowed to interrupt a call (#507). The release
@@ -4054,6 +4069,7 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
+        trunk_scan_note_landing(state, rt);
         trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed. */
         trunk_scan_arm_visit(rt, completed_m);
@@ -4075,7 +4091,6 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
     rt->tune_pending = 0;
     rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
     LOG_WARN("WARNING: Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
-    (void)state;
     return -1;
 }
 

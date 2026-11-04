@@ -65,6 +65,12 @@ enum { DSD_SQUELCH_FLAG_CLOSED = 0x01 };
 enum { DSD_SQUELCH_CLOSE_DELAY_MS = 85 };
 
 /**
+ * @brief The level squelch a session starts with until a spec, a config or `--squelch` sets one, in dB: on, but below
+ * any receiver's noise, so on a radio input it opens for noise as for signal.
+ */
+enum { DSD_SQUELCH_STARTUP_DB = -110 };
+
+/**
  * @brief The margin an AUTO squelch opens above the noise floor, and the quieting a NOISE squelch opens at, in whole dB.
  */
 enum {

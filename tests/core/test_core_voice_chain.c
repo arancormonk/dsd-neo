@@ -466,6 +466,44 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
     return rc;
 }
 
+static size_t g_analog_port_samples;
+
+static void
+capture_analog_port(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)data;
+    g_analog_port_samples += nsam;
+}
+
+/* On UDP output an alert is digital audio: it goes to the digital port (the base port), never to the analog one (base
+   port + 2) the analog monitor writes, so an alert a session sounds there lands beside the analog stream rather than in
+   it (issue #667 A1, where an analog row sounds none). */
+static int
+test_beeper_on_udp_uses_the_digital_port(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->pulse_digi_out_channels = 1;
+    g_tone_float = 0;
+    g_tone_count = 0;
+    g_analog_port_samples = 0;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_tone, .blast_analog = capture_analog_port});
+    beeper(opts, state, 0, 40, 86, 3);
+    int rc = expect_true("the alert reaches the digital port", g_tone_count == (size_t)6U * 160U);
+    rc |= expect_true("the alert never reaches the analog port", g_analog_port_samples == 0U);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -475,6 +513,7 @@ main(void) {
     rc |= test_high_pass_restarts_at_reception_boundaries();
     rc |= test_chain_gain_laws();
     rc |= test_beeper_tone_is_the_same_in_both_formats();
+    rc |= test_beeper_on_udp_uses_the_digital_port();
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_VOICE_CHAIN: OK\n");
     }

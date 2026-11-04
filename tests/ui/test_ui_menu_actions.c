@@ -1200,13 +1200,13 @@ test_simple_commands_and_prompts(void) {
     act_slot_pref(&ctx);
     rc |= expect_int("slot pref initial", g_prompt.initial_int, 2);
 
-    /* The NFM max gap (issue #756): the prompt opens on the value in force, as stored. */
+    /* The analog pause hold (issues #756 and #667): the prompt opens on the value in force, as stored. */
     reset_capture();
     opts.analog_record_max_gap_ms = 2000;
     act_analog_record_max_gap(&ctx);
-    rc |= expect_str("nfm pause hold prompt", g_prompt.title, "NFM pause hold (ms, 0 = off)");
-    rc |= expect_int("nfm pause hold initial", g_prompt.initial_int, 2000);
-    rc |= expect_int("nfm pause hold callback", g_prompt.int_cb == cb_analog_record_max_gap, 1);
+    rc |= expect_str("analog pause hold prompt", g_prompt.title, "Analog pause hold (ms, 0 = off)");
+    rc |= expect_int("analog pause hold initial", g_prompt.initial_int, 2000);
+    rc |= expect_int("analog pause hold callback", g_prompt.int_cb == cb_analog_record_max_gap, 1);
 
     /* The NFM pre-roll (issue #668): the prompt opens on the value in force. */
     reset_capture();

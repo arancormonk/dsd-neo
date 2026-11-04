@@ -275,7 +275,7 @@ Main Menu
 │   │   └── Stop replay [Off]                    s (a file or symbol playback, onto Pulse input)
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
-│   │   ├── NFM pause hold... [Off]              (one NFM recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
+│   │   ├── Analog pause hold... [Off]           (one analog recording through a pause up to N ms; 200 or less is off; works only while per-call recording is on)
 │   │   ├── NFM pre-roll... [200 ms]             (each new NFM recording starts with up to N ms heard just before the call; 0 is off; works only while per-call recording is on)
 │   │   ├── Static WAV file...
 │   │   └── Raw input WAV file...
@@ -668,8 +668,9 @@ Its `Service names...` row edits a naming table using options
 such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed
-history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone, and an NFM recording's file name
-carries the frequency and that tone.
+history and named per-call WAVs; an analog call is named by the CTCSS tone or DCS code it
+was received with, and its recording's file name carries its mode, frequency and that tone. Its history row also prints
+that tone, named or not (see "Event History Rows").
 The single-slot DMR decoder (`-fr`, `-nm`) shows every call in its `SLOT 1` block, its one
 lane; a `--slot-name` there names the over-the-air slot the call was proven on, as the `-J`
 slot field does.
@@ -1101,9 +1102,10 @@ manual channel cycle, a scan row or target change, a mode change, an input switc
 makes on its own, such as `rtl_fm` scanning several frequencies into stdin, is not one of these: after a hop that leaves
 a gap shorter than half a second, the previous channel's tone can show for a few hundred milliseconds until it is
 dropped. The same text comes from the shared app-control view the Qt/Android monitor uses, so both always agree.
-Supported tones and codes, timing, the DCS alias table and the requirements on externally demodulated audio are in the
-CLI guide: [CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and
-[DCS](cli.md#received-code-dcs-on-the-analog-monitor).
+A call's history row ends with the same text (`CTCSS 100.0 Hz;`, `DCS D023N / D047I;`) for the tone or code the call
+was confirmed on, kept when the tone is lost just before the end; see "Event History Rows". Supported tones and codes,
+timing, the DCS alias table and the requirements on externally demodulated audio are in the CLI guide:
+[CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and [DCS](cli.md#received-code-dcs-on-the-analog-monitor).
 
 ### Tone filter
 
@@ -1290,6 +1292,25 @@ radio heard under two sites inside the reacquire window gives two rows. Earlier 
 without padding (`SYS: A3F;`), `:0.0` for a P25 site not yet received, nothing of a P25 system without a WACN,
 `SYS: 0.5;` for an IDAS site, and an EDACS part never received as 0. The `-J` log and the control API's `event` text
 are the same lines.
+
+An analog call row names its mode after the `ANALOG` token, then the frequency and the received tone:
+`2026-04-30 09:12:04 ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `... ANALOG NFM; FREQ: 154.430000 MHz;
+DCS D023N / D047I;`, `... ANALOG AM; FREQ: 119.100000 MHz;`. The mode is `NFM` or `AM` as dsd-neo demodulated it. On
+audio input another receiver demodulated the audio, so the row names no mode and, unless dsd-neo tuned that receiver,
+no frequency: `... ANALOG; CTCSS 100.0 Hz;`. When a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional
+`--trunk-scan` target confirmed it tuned the rigctl peer, the analog row names that frequency; digital rows on audio
+input still name none, and a frequency changed on the peer itself is not seen. The tone is the CTCSS tone or DCS code
+the call was confirmed on, written as Call Info's `Rx tone:` line writes it (see "Received Tone"); a call with no tone,
+or one never confirmed, has none. Two receptions on one channel that differ only by tone now read differently. Earlier
+versions wrote `NFM` on every analog row, audio input included, and no tone. An ended analog row is stamped with the
+time its call ended, even when an input that stopped sending held the row back. Analog rows sound no call alert (`-a`).
+On a radio input an analog call needs a squelch above the -110 dB default (Input > `Squelch...`): at the default, or
+off, the receiver's noise would hold one call open, so no analog row is made and dsd-neo logs one notice until a squelch
+is set (see [Analog calls need a squelch](cli.md#analog-calls-need-a-squelch-on-a-radio-input)). A reception becomes a
+row only once it has lasted 500 ms, the 200 ms hangover included, so a kerchunk with less than about 300 ms of signal
+leaves none (see [Receive filters and service names](cli.md#receive-filters-and-service-names)). Analog rows are kept
+with slot 1's rows: each slot keeps its last 254 rows, so in a session that hears both (a `-Y` list with analog and
+digital rows), analog calls and slot 1's digital calls push each other's older rows out.
 
 ### Scoped scan controls and loaded keys
 

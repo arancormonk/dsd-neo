@@ -466,6 +466,7 @@ test_raw_open_closes_the_previous_raw_wav(void) {
     return rc;
 }
 
+/* An NFM call on an audio input, where the mode is not known: its recording is named _ANALOG (issue #667). */
 static void
 setup_nfm(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -479,13 +480,22 @@ setup_nfm(dsd_opts* opts, dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1413;
 }
 
+/* One NFM block. A reception becomes a call only once it ran DSD_ANALOG_CALL_MIN_MS (issue #667), so a block that
+   would begin one comes after its tone check, as the symbol path hands it over under a tone filter: enough PENDING
+   blocks (recorded nowhere) that this block brings the reception to the minimum. */
 static void
 nfm_block(dsd_opts* opts, dsd_state* state) {
     static float block[960];
+    static const float checked[960] = {0};
     for (int i = 0; i < 960; i++) {
         block[i] = (float)((i % 48) * 400 - 9600);
     }
-    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    if (!dsd_engine_analog_call_active(state)) {
+        for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
+            dsd_test_analog_call_feed(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+        }
+    }
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
 }
 
 /* B4: a stop closes and publishes a conventional NFM call's recording at once, under the call's row, and the call goes
@@ -509,7 +519,7 @@ test_stop_publishes_the_nfm_recording_at_once(void) {
     const dir_count c = count_dir(r.dir);
     rc |= expect_int("no temp file left", c.temp, 0);
     rc |= expect_int("the nfm recording published", c.published, 1);
-    rc |= expect_true("published under the nfm name", strstr(c.published_name, "_NFM") != NULL);
+    rc |= expect_true("published under the analog name", strstr(c.published_name, "_ANALOG_FREQ_UNKNOWN") != NULL);
     rc |= expect_true("the call goes on", dsd_engine_analog_call_active(r.state));
     dsd_call_snapshot after;
     DSD_MEMSET(&after, 0, sizeof after);
@@ -1382,7 +1392,8 @@ test_stop_publishes_the_nfm_recording_in_its_folder(void) {
     submit(DSD_APP_CMD_WAV_STOP);
     (void)drain(&r);
     const dir_count c = count_dir(r.dir);
-    rc |= expect_true("published in its own folder", c.published == 1 && strstr(c.published_name, "_NFM") != NULL);
+    rc |= expect_true("published in its own folder",
+                      c.published == 1 && strstr(c.published_name, "_ANALOG_FREQ_UNKNOWN") != NULL);
     rc |= expect_int("nothing in the new folder", count_dir(other).files, 0);
     rig_close(&r);
     remove_folder(other);
@@ -1411,7 +1422,7 @@ nfm_epoch(const rig* r) {
 static long long
 take_nfm_frames(const char* dir) {
     const dir_count c = count_dir(dir);
-    if (c.published != 1 || strstr(c.published_name, "_NFM") == NULL) {
+    if (c.published != 1 || strstr(c.published_name, "_ANALOG_FREQ_UNKNOWN") == NULL) {
         return -1;
     }
     char path[DSD_TEST_PATH_MAX * 2];
@@ -1563,6 +1574,19 @@ nfm_quiet(rig* r, int blocks) {
     r->state->analog_rx.carrier_open = 1;
 }
 
+/* @p blocks RECEPTION blocks and no tone check before them, as with no tone filter: the first opens the recording,
+   with the pre-roll before it, and the reception becomes a call once it ran DSD_ANALOG_CALL_MIN_MS (issue #667). */
+static void
+nfm_receive_only(dsd_opts* opts, dsd_state* state, int blocks) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = (float)((i % 48) * 400 - 9600);
+    }
+    for (int i = 0; i < blocks; i++) {
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
+    }
+}
+
 /* What happens between the pre-roll filling and the reception after it. */
 enum {
     PREROLL_NOTHING,
@@ -1654,11 +1678,15 @@ test_preroll_across_recording_transitions(void) {
         rc |= expect_int(tag, r.opts->analog_record_preroll_ms, what == PREROLL_FOLDER_FAILED_CHANGED ? 300 : 200);
         DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the folder", what);
         rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, what == PREROLL_FOLDER_MOVED ? other : r.dir) == 0);
-        nfm_block(r.opts, r.state);
+        nfm_receive_only(r.opts, r.state, DSD_ANALOG_CALL_MIN_MS / 20);
+        DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: a call", what);
+        rc |= expect_true(tag, dsd_engine_analog_call_active(r.state));
         dsd_engine_analog_call_end(r.opts, r.state);
         const int kept = what == PREROLL_NOTHING || what == PREROLL_FOLDER_FAILED || what == PREROLL_CONFIG_SAME;
+        const long long call_frames = (long long)(DSD_ANALOG_CALL_MIN_MS / 20) * 960;
         DSD_SNPRINTF(tag, sizeof tag, "pre-roll case %d: the recording", what);
-        rc |= expect_int(tag, take_nfm_frames(what == PREROLL_FOLDER_MOVED ? other : r.dir), kept ? 4 * 960 : 960);
+        rc |= expect_int(tag, take_nfm_frames(what == PREROLL_FOLDER_MOVED ? other : r.dir),
+                         kept ? 3LL * 960 + call_frames : call_frames);
         rig_close(&r);
         remove_folder(other);
     }
@@ -1694,7 +1722,8 @@ test_max_gap_set_applies_and_reports(void) {
     rc |= expect_int("max gap applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
     rc |= expect_int("the max gap is set", r.opts->analog_record_max_gap_ms, 2000);
     rc |= expect_int("the view shows it", v.analog_max_gap_ms, 2000);
-    rc |= expect_true("the toast names the value", strstr(r.state->ui_msg, "2000 ms") != NULL);
+    rc |= expect_true("the toast names the setting and the value",
+                      strstr(r.state->ui_msg, "Applied: Analog pause hold -> 2000 ms") != NULL);
     rc |= expect_int("recording itself stays off", v.mode, DSD_APP_RECORDING_MODE_OFF);
 
     static const int32_t k_refused[] = {-1, 10001, INT32_MIN, INT32_MAX};
@@ -1708,7 +1737,7 @@ test_max_gap_set_applies_and_reports(void) {
         DSD_SNPRINTF(tag, sizeof tag, "%ld changes nothing", (long)k_refused[i]);
         rc |= expect_int(tag, r.opts->analog_record_max_gap_ms, 2000);
         DSD_SNPRINTF(tag, sizeof tag, "%ld says why", (long)k_refused[i]);
-        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused") != NULL && strstr(r.state->ui_msg, "10000") != NULL);
+        rc |= expect_true(tag, strstr(r.state->ui_msg, "Refused: Analog pause hold must be 0..10000 ms") != NULL);
     }
     rc |= expect_int("the view still shows it", view_now().analog_max_gap_ms, 2000);
 
@@ -1717,7 +1746,7 @@ test_max_gap_set_applies_and_reports(void) {
     rc |= expect_int("10000 applies", r.opts->analog_record_max_gap_ms, 10000);
     (void)set_max_gap(&r, 150);
     rc |= expect_int("150 is stored as given", r.opts->analog_record_max_gap_ms, 150);
-    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "Off") != NULL);
+    rc |= expect_true("and reads as off", strstr(r.state->ui_msg, "Applied: Analog pause hold -> Off") != NULL);
     (void)set_max_gap(&r, 0);
     v = view_now();
     rc |= expect_int("0 applies", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);

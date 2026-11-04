@@ -1620,8 +1620,8 @@ fixed-seed start there locks within 700 ms.
   78.125 kHz), replayed exactly, show the code 346 and 357 ms after its onset; a rule that let the first lock keep the
   publication showed D122N only after 535 ms, when the tone was lost.
 - Rejection: ten minutes of random bits at 134.4 bit/s; the 74 rotation classes of the Golay (23,12) code that carry
-  no standard code, in both polarities; every standard word sent bit-reversed that is more than one bit from every
-  standard word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB, never locking even for a moment; and two
+  no supported code, in both polarities; every supported word sent bit-reversed that is more than one bit from every
+  supported word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB, never locking even for a moment; and two
   minutes each of unfiltered and transmitter-filtered speech: none locks. A carrier with no code reads `detecting`
   until 500 ms, then `none`, and a code that starts later still locks within its bound. A rate beyond the detector's
   sample ring (none the front end delivers) leaves it inert, reporting no code.
@@ -1648,12 +1648,12 @@ shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW
 `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N / D047I` text (both spellings of the signal,
 canonical first, with the second one's code and polarity beside the first's), the names the view refuses (an unsupported
 code, a rotation alias, a non-canonical polarity), and the received code kept apart from a configured policy value.
-`RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the canonical normal code and
-one inverted code, against the golden alias table, and the label that names both; and that every supported code's word
-carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies on. `RUNTIME_ANALOG_TONES`
-and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS
-page), 047 a standard code of its own and 020 a word of another rotation class, so check bits that do not follow from
-023's, before and after the mapping onto `Golay24.hpp`.
+`RUNTIME_ANALOG_TONES` pins that every supported signal has exactly two supported spellings, the canonical normal code
+and one inverted code, against the golden alias table, and the label that names both; and that every supported code's
+word carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies on.
+`RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020 and
+000 (onfreq's DPL/DCS page), 047 a supported code of its own and 020 a word of another rotation class, so check bits
+that do not follow from 023's, before and after the mapping onto `Golay24.hpp`.
 
 Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model through the pure receive core, a random code and polarity
 per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets its ceilings above the slowest event):
@@ -1963,7 +1963,8 @@ write or two).
 | `--analog-max-delivery-error-pct PCT` | How far the length of the delivered audio strays from the input its blocks span, at the sink rate (issue #633). Measured on audio input, where each block spans 960 samples at the monitor's rate; fails as not measured otherwise. |
 | `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
-| `--analog-synth-pauses SEED` | Make the NFM recording cases' capture at run time (issue #756) and replay it: five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, 0.8 s of noise after the last; see [NFM recordings through pauses](#nfm-recordings-through-pauses-issue-756). The case names no `--iq-replay` of its own (the host refuses one). With `-P` the host also prints an `ANALOG CALL ROW: start=S end=E` line per NFM history row after the run. |
+| `--analog-synth-pauses SEED` | Make the NFM recording cases' capture at run time (issue #756) and replay it: five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, 0.8 s of noise after the last; see [NFM recordings through pauses](#nfm-recordings-through-pauses-issue-756). The case names no `--iq-replay` of its own (the host refuses one). With `-P` the host also prints an `ANALOG CALL ROW: start=S end=E tone=T` line per analog history row after the run (`T` the row's tone as its text names it, such as `CTCSS 100.0 Hz`, or `none`). |
+| `--analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS` | Replay the first `AT_MS` of the `--iq-replay` capture, a `GAP_MS` gap in the radio stream as a capture records a USB recovery (a `RETUNE` to the same centre, the gap's samples as a `MUTE` and a `RESET`, each `usb_recovery`), then the first `THEN_MS` of `FIXTURE`, another committed 48 kHz capture named without `.iq.json` and found by its directory entry in `tests/fixtures/iq`, never as a path (issue #667). The joined copy goes to the private directory, as the scaled copy does, and no fixture is committed. |
 | `--analog-scene NAME` | Make one of the host's scenes at run time and take it as the input (issue #668): bursts of voice-band noise that never repeats, so each recording can be found in it; see [Where an NFM recording starts](#where-an-nfm-recording-starts-issue-668). The `pcm` and `udp` scenes need `--analog-pcm-tap RATE` for their rate. With `-P` and `--wav-journal` the host reads every published recording after the run and prints `ANALOG RECORDING: n=N burst=B score=S start_ms=X audio_ms=Y ms=L`. |
 | `--analog-record-{min,max}-start-ms MS` | Bounds on `start_ms`, where each recording's first sample was against its burst's start (negative: before it). |
 | `--analog-record-{min,max}-audio-ms MS` | Bounds on `audio_ms`, where its first sample that is not 0 was. |
@@ -2118,7 +2119,7 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_dcs_synth_023i` | synthetic, seed 5231023 | the same with D023 in inverted polarity, the signal of D047N |
 | `nfm_dcs_synth_noisy` | synthetic, seed 5232023 | the same with D023N's word two bits wrong in every repetition: no code |
 | `nfm_dcs_synth_drop` | synthetic, seed 5233023 | 2 s: D023N that stops at 1.2 s, with no turn-off tone, while the carrier and voice carry on |
-| `nfm_burst_synth` | synthetic, seed 5311 | 0.75 s: complex noise at 3 LSB a component, the 1 kHz test tone at 3 kHz deviation keyed from 0.30 to 0.55 s (2 ms ramps) 16 dB over the noise across 48 kHz, unnormalised so a +10 dB copy stays within the cu8 rails (auto squelch) |
+| `nfm_burst_synth` | synthetic, seed 5311 | 0.75 s: complex noise at 3 LSB a component, the 1 kHz test tone at 3 kHz deviation keyed from 0.30 to 0.55 s (2 ms ramps) 16 dB over the noise across 48 kHz, unnormalised so a +10 dB copy stays within the cu8 rails (auto squelch; the #667 kerchunk case) |
 | `am_burst_synth` | synthetic, seed 5312 | the same with 1 kHz at 50% AM depth on a carrier 12 dB over the noise |
 
 `tools/build_iq_fixtures.py` pins each zip's SHA-256, reads the WAV members sample-exact (u8 centred on 127.5),
@@ -2683,11 +2684,48 @@ pause cut begins nothing, so the recording starts one block later, from a fresh 
 | the same five with `_NO_PREROLL` | No pre-roll: a burst alone is 700 or 680 ms; joined, 1500 ms (500), 2600 (1000), 4580 (2000) and 8100 (3500). |
 | the `_1000`, `_2000` and `_3500` cases | The input ends 740 ms after the last audible audio (`total_ms - last_audible_ms`, held under the max gap by `HELD_AT_END_MS`), so the last call is still held then: the engine's normal teardown publishes it, and its row commits and links it. With `dsd_engine_analog_call_end()` skipping a held call, these three cases and `_PACED` fail and the other two pass. |
 | `DECODE_IQ_ANALOG_RECORD_GAP_PACED` | The same capture replayed as I/Q at max gap 1000 (radio builds), once `--iq-replay-rate fast` and once `realtime`. The paced leg must take at least 8 s. Both give 3 recordings with identical payloads, in publication order. Their journal `start`, `duration_ms`, `epoch` and linked `row` values and their rows' start and end match: the hold decides on samples, never a clock. The lengths are held to 2780, 880 and 880 ms, as measured, within 20 ms. |
+| `DECODE_IQ_ANALOG_STREAM_GAP_NEW_TONE`, `_NO_TONE`, `_SHORT_BURSTS` | A gap in the radio stream (issue #667 A3; radio builds), fast and paced: 1 s of `nfm_ctcss_synth_1000`, a recorded 2 s USB recovery (`--analog-gap-join`), then 2 s of `nfm_ctcss_synth_670` or `nfm_notone_synth`. The call before the gap is a row and a recording of its own (980 ms) on CTCSS 100.0 Hz, and the one after it a call with its own tone, 67.0 Hz or none (1960 ms; `ROWS_EXPECTED` matches the rows' `tone=`). Two 350 ms receptions of `nfm_ctcss_synth_1000`, one each side of the gap, leave no row and no recording. |
 | `DECODE_IQ_ANALOG_RECORD_GAP_NO_PREROLL` | The I/Q capture once, without the pre-roll: 2580, 680 and 680 ms. |
 
 The largest silence one resume writes (a 10 s hold that is all tone check, 480000 samples) is timed by `CORE_RECEIVE`,
 which prints `a 10 s pause written as silence in N ms`. That is about 0.5 ms in `dev-debug` with the temporary
 directory on tmpfs, and about 1.6 ms on btrfs: well under one 20 ms block.
+
+#### Analog calls on a radio input need a squelch (issue #667 D2)
+
+On a radio input an analog reception becomes a call (a row, a `-J` line, a per-call recording) only under a squelch
+above the -110 dB startup default, a dynamic squelch, or a tone allow list on NFM. So every end-to-end case that
+replays I/Q under `-fA` or `-fM` and expects analog rows or recordings sets a squelch, and cases whose payloads are
+compared set the same one: `tests/receive_iq_check.py` adds `ANALOG_SQUELCH` (`--squelch -60`, a level its fixtures'
+signals clear, so the payloads match those of the open squelch they ran at before) to every `-fA` replay, and the
+`DECODE_*_ANALOG_RECORD_GAP_*` cases run `--squelch noise+6`. Its `nfm-default-squelch` and `am-default-squelch` cases
+pin the pause itself: at the default, no row, no recording, and the notice once, with `--tone-allow` among the remedies
+on NFM only. Audio input (`DECODE_PCM_*`, PCM taps) is never paused and needs nothing.
+
+#### Analog rows in the event history (issue #667)
+
+The three `_ROW` cases replay a committed fixture through `iq_decode_check.cmake` with `-J` and check the analog rows
+it publishes. `EVENT_EXPECTED` must match the event history, and `EVENT_COUNT_REGEX` must match it exactly
+`EVENT_COUNT` times (the script refuses either count option without the other, and both without `EVENT_EXPECTED`).
+Here the count regex is ` ANALOG`, so a case expecting a row pins that it is the only one. A `.` stands for each `;`
+of a row, which an `add_test` argument would split at. The kerchunk case runs the analog replay host through
+`analog_recording_check.cmake`, and the alert case runs `tests/analog_alert_output_check.py`.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_ANALOG_CTCSS_1000_ROW` | `nfm_ctcss_synth_1000` under `-fA --squelch -60`: one row, `ANALOG NFM; FREQ: 851.375000 MHz; CTCSS 100.0 Hz;` |
+| `DECODE_IQ_ANALOG_DCS_023N_ROW` | `nfm_dcs_synth_023n`, the same: one row, `... DCS D023N / D047I;` (both spellings, normal first) |
+| `DECODE_IQ_ANALOG_AM_ROW` | `am_tone_synth` under `-fM --squelch -60`: one row, `ANALOG AM; FREQ: 851.375000 MHz;`, no tone token |
+| `DECODE_IQ_ANALOG_KERCHUNK_NO_ROW` | `nfm_burst_synth` under `-fA --squelch -28` with `-P`, through the analog replay host and `analog_recording_check.cmake`: in the same run the host holds the monitor to the bounds of `DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST` (250-270 ms audible, first audible at 270-290 ms), so the burst did open the squelch, and the run leaves no recording, no journal line and no analog history row. 260 ms of signal and the 200 ms hangover are 460 ms, under the 500 ms minimum. With the squelch at -5 dB, which the burst never opens, the case fails on its audible bounds. |
+| `DECODE_IQ_ANALOG_NO_CALL_ALERT` | `tests/analog_alert_output_check.py` (POSIX, Python): `nfm_ctcss_synth_1000` with one analog row in `-J`, replayed to `-o -` with and without `-a`, writes the same stdout bytes, and to `-o udp:127.0.0.1:<base>` sends every byte to `<base>+2` and none to `<base>`, with and without `-a` (A1). The script drains both ports on a thread while the replay runs, so the receive buffer never drops a datagram. |
+
+Before issue #667 each case failed: the row cases on the old row text (`ANALOG NFM; FREQ: 851.375000 MHz;`
+with no tone; no AM row at all), the kerchunk on its row, and the alert case with 3840 bytes more on stdout and 3840
+bytes on the digital port. The row counts of the real capture (`nfm_ctcss_real`: two rows, both `CTCSS 151.4 Hz;`) and
+of the AM excerpt (`am_airband_real`: one row) are in `DECODE_IQ_RECEIVE_POLICY`.
+
+No fixture is added: the kerchunk is `nfm_burst_synth`, whose carrier is keyed for 250 ms, so the analog fixture budget
+above stays at 4,992,000 bytes.
 
 #### Where an NFM recording starts (issue #668)
 
@@ -2728,10 +2766,10 @@ the recording.
 | `DECODE_PCM_ANALOG_RECORD_TONE_SHORT_8K` | B1 and B6 at 8192 Hz: `level-ctcss-short` under `--squelch -40` and `--tone-allow 100.0`. The short carriers leave nothing (main left two 117 ms silent recordings and rows), and the 0.6 s burst's recording starts at the verdict, 285 ms in, part-way through its block (bound 275; main recorded the whole block from 185 ms, audio still being checked included). |
 | `_TONE_SHORT_8K_NO_PREROLL` | The same with `--analog-record-preroll-ms 0`: one recording, which still starts at the verdict, 285 ms in (bounds 275 to 295), with its first block's silenced head trimmed rather than written as silence (B6 at pre-roll 0; before the final fix wave it started at 185, its first 100 ms silent). |
 | `DECODE_PCM_ANALOG_RECORD_LEVEL_44K` | `onsets-late` as the 44.1 kHz tap under `noise+6`: the sink gate's 5 ms ramp-in, which starts in the last samples of the block the recording opens with (written as heard), runs on into the next block, and the recording takes that block as heard until the ramp is done. Each recording's level stays at 0.62 or more of its median over the burst's first 300 ms (bound 0.5); writing the next block as the gate left it, faded, drops it to 0.32 to 0.44 (the final review's I1). |
-| `DECODE_PCM_ANALOG_RECORD_LEVEL_BLIP_8K` | `level-blip` under `--squelch -23`: the block's level stays under the squelch, so the monitor plays nothing (`--analog-max-audible-ms 0`), but one tap read of the burst opens it, and the call begins with the burst in its recording (it starts 246 ms before the burst with the pre-roll). |
+| `DECODE_PCM_ANALOG_RECORD_LEVEL_BLIP_8K` | `level-blip` under `--squelch -23`: the block's level stays under the squelch, so the monitor plays nothing (`--analog-max-audible-ms 0`), but one tap read of the burst opens it, which qualifies the block (`DSP_SYMBOL_REPLAY`'s `test_qualified_carrier_*` pin that). A 40 ms burst is a kerchunk, shorter than a call must run (issue #667, 500 ms), so it leaves no recording. |
 | `DECODE_UDP_ANALOG_RECORD_PAUSE_8K` | B7: `udp-pause` under `--squelch -40` with `-o null` kept. The block the pause cuts begins no call, so the one recording starts with the block after it, 92 ms into the new burst, and holds nothing of the old source or of the pre-roll from before the pause (bound 0; main started the recording with the old source, at -26). |
 | `DECODE_UDP_ANALOG_RECORD_NOISE_PAUSE` | `udp-tap-pause` under `--squelch noise+6` with `-o null` kept: the squelch is open when the stream stops; the one recording is the burst's (starting before it, bound -120), and nothing after the stop opens another. The read the pause drops holds the squelch's open flags from before the stop; the squelch then starts over closed, and the tap keeps the gate the squelch really had at the dropped read's end. |
-| `DECODE_PCM_ANALOG_RECORD_RDIO_DIRWATCH` | `--rdio-mode dirwatch` on the 48 kHz tap of `--analog-synth-pauses 756`: every recording has a sidecar with talkgroup `4242` (`--rdio-analog-talkgroup`, as an audio input has no frequency), tag `NFM`, `freq` 0, system 7 (`--rdio-system-id`), `short_name` `NFM` and an empty `srcList` (the checker's `SIDECAR`). |
+| `DECODE_PCM_ANALOG_RECORD_RDIO_DIRWATCH` | `--rdio-mode dirwatch` on the 48 kHz tap of `--analog-synth-pauses 756`: every recording has a sidecar with talkgroup `4242` (`--rdio-analog-talkgroup`, as an audio input has no frequency), tag `ANALOG` (the mode is not known on audio input, issue #667), `freq` 0, system 7 (`--rdio-system-id`), `short_name` `ANALOG` and an empty `srcList` (the checker's `SIDECAR`). |
 | `DECODE_IQ_ANALOG_RECORD_RDIO_DIRWATCH` | The same on I/Q at 851.375 MHz: talkgroup `851375` (the frequency in kHz), tag `NFM 851.3750 MHz`, `freq` 851375000 and system 9 (`--rdio-analog-system-id` over `--rdio-system-id 7`). |
 
 The pre-roll's cost is measured by `dsd-neo_bench_analog_record` ([docs/dsp-benchmarking.md](dsp-benchmarking.md)).

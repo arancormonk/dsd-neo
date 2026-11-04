@@ -170,9 +170,9 @@ enum dsd_app_command_id {
     // payload: int32_t 0/1; opts->record_unknown_only: record only calls no talkgroup row knows (issue #708). Waits
     // while a decoder holds a carrier, refused during Signal search; the recording view reports it.
     DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET = 448,
-    // payload: int32_t ms 0..10000 (200 or less is off); opts->analog_record_max_gap_ms: the longest pause one NFM call
-    // and its recording survive (issue #756). Out of range fails and changes nothing. A held call takes a new value at
-    // its next block or tick. Waits while a decoder holds a carrier, refused during Signal search; the recording view
+    // payload: int32_t ms 0..10000 (200 or less is off); opts->analog_record_max_gap_ms: the longest pause one analog
+    // call and its recording survive (issue #756). Out of range fails and changes nothing. A held call takes a new value
+    // at its next block or tick. Waits while a decoder holds a carrier, refused during Signal search; the recording view
     // reports it.
     DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET = 449,
     // payload: int32_t ms 0..1000 (0 is off); opts->analog_record_preroll_ms: the audio heard just before an NFM call

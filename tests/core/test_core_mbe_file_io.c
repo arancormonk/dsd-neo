@@ -7,6 +7,7 @@
  */
 
 #include <dsd-neo/core/ambe_interleave.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
@@ -3754,6 +3755,7 @@ nfm_name_case_run(const nfm_name_case* c) {
         Event_History* item = &history.Event_History_Items[0];
         item->event_time = (time_t)1700000000;
         item->systype = DSD_SYNC_ANALOG;
+        item->analog_mode = DSD_ANALOG_MODE_NFM; /* an empty mode word falls back to it (issue #667) */
         item->freq_hz = c->freq_hz;
         item->receive_identity.kind = c->kind;
         item->receive_identity.known = c->known;
@@ -3820,7 +3822,7 @@ test_close_and_rename_wav_names_an_nfm_recording(void) {
         {"tone not known", 154430000, DSD_RECEIVE_CTCSS, 0, 1000, NULL, "154430000", NULL, NULL, NULL},
         {"no frequency", 0, DSD_RECEIVE_CTCSS, 1, 1000, "Traveler", NULL, "CTCSS_100.0", "Traveler", NULL},
         {"no frequency, no tone", 0, DSD_RECEIVE_NONE, 0, 0, NULL, NULL, NULL, NULL, NULL},
-        {"an empty mode word is NFM", 154430000, DSD_RECEIVE_NONE, 0, 0, NULL, "154430000", NULL, NULL, ""},
+        {"an empty mode word is the row's mode", 154430000, DSD_RECEIVE_NONE, 0, 0, NULL, "154430000", NULL, NULL, ""},
         {"a mode word of its own", 118100000, DSD_RECEIVE_NONE, 0, 0, NULL, "118100000", NULL, NULL, "AM"},
         {
             "a long mode word kept whole",
@@ -3839,8 +3841,9 @@ test_close_and_rename_wav_names_an_nfm_recording(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         rc |= nfm_name_case_run(&cases[i]);
     }
-    // The teardown close has no row: it is named from the parts the call kept, or NFM_FREQ_UNKNOWN with none.
-    static const dsd_analog_wav_name k_kept = {154437500, {1413, DSD_RECEIVE_CTCSS, 1, 0, 0}, "Traveler /West?"};
+    // The teardown close has no row: it is named from the parts the call kept, or ANALOG_FREQ_UNKNOWN with none.
+    static const dsd_analog_wav_name k_kept = {
+        154437500, {1413, DSD_RECEIVE_CTCSS, 1, 0, 0}, "Traveler /West?", DSD_ANALOG_MODE_NFM};
     const dsd_analog_wav_name* const names[] = {NULL, &k_kept};
     char dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_name")) {
@@ -3860,8 +3863,8 @@ test_close_and_rename_wav_names_an_nfm_recording(void) {
         (void)dsd_dir_list(dir, count_dir_entry, &found);
         const int named =
             names[i] ? dsd_test_nfm_recording_name_is(found.last, "154437500", "CTCSS_141.3", "Traveler__West_")
-                     : dsd_test_nfm_recording_name_is(found.last, NULL, NULL, NULL);
-        rc |= expect_true(names[i] ? "teardown names the kept parts" : "teardown names NFM_FREQ_UNKNOWN",
+                     : dsd_test_analog_recording_name_is(found.last, "ANALOG", NULL, NULL, NULL);
+        rc |= expect_true(names[i] ? "teardown names the kept parts" : "teardown names ANALOG_FREQ_UNKNOWN",
                           found.count == 1 && named);
         char done[DSD_TEST_PATH_MAX * 2];
         if (found.count == 1 && dsd_test_path_join(done, sizeof done, dir, found.last) == 0) {

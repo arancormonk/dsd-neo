@@ -399,7 +399,8 @@ dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
 }
 
 /**
- * Whether @p name is a published conventional analog per-call recording of mode word @p mode,
+ * Whether @p name is a published conventional analog per-call recording of mode word @p mode (`NFM`, `AM`, or
+ * `ANALOG` on audio input; issue #667),
  * `<date>_<time>_<5 digits>_<mode>_<freq Hz | FREQ_UNKNOWN>[_<tone>][_SVC_<service>].wav` (issues #637, #668): no
  * talkgroup, source or call type. @p freq is the frequency's digits, or NULL for FREQ_UNKNOWN. @p tone is the tone part
  * without its leading '_' (`CTCSS_141.3`, `DCS_D023N`), or NULL for none. @p service is the sanitized service

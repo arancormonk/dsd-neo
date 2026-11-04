@@ -8,7 +8,7 @@ the fixture with numpy (brick-wall channel filter, phase-difference discriminato
 
   CTCSS  takes one zero-padded, Hann-windowed FFT of the whole excerpt's sub-audible band
          and accepts its strongest line only when it stands clear of everything else in
-         60-260 Hz and lies within 0.5% of exactly one tone of the 50-tone EIA table or
+         60-260 Hz and lies within 0.5% of exactly one of the 50 tones radios commonly offer or
          150.0 Hz (a line within 0.5% of both 150.0 and 151.4 Hz names neither);
   DCS    low-passes the discriminator to 300 Hz, slices it at 134.4 bit/s at sixteen bit
          phases and both polarities, and checks every 23-bit window against its own
@@ -62,8 +62,8 @@ CTCSS_MIN_PROMINENCE_DB = 10.0
 CTCSS_MIN_FLOOR_DB = 20.0
 POWER_FLOOR = 1e-30
 
-# The 50-tone EIA table and 150.0 Hz, the tone many radios offer as a 51st (Hz). A line within tolerance of two
-# tones (150.0 and 151.4 Hz, 1.4 Hz apart) matches both, and so names neither.
+# The 50 tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz, the tone many radios offer as a 51st
+# (Hz). A line within tolerance of two tones (150.0 and 151.4 Hz, 1.4 Hz apart) matches both, and so names neither.
 CTCSS_TONES = (
     67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9, 114.8,
     118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 150.0, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3, 173.8,
@@ -80,7 +80,7 @@ DCS_MIN_WORDS = 3
 DATA_MAX_FIT = 0.08  # mean distance of zero-crossing intervals from whole bits
 DATA_MIN_PERIOD_CORR = 0.8
 
-# The standard 104 DCS codes (octal).
+# The 104 DCS codes radios commonly offer (the 83 standard codes and 21 more; octal).
 DCS_CODES = tuple(int(code, 8) for code in (
     "023 025 026 031 032 036 043 047 051 053 054 065 071 072 073 074 114 115 116 122 125 131 132 134 143 145 "
     "152 155 156 162 165 172 174 205 212 223 225 226 243 244 245 246 251 252 255 261 263 265 266 271 274 306 "
@@ -240,14 +240,14 @@ def dcs_label(freq_hz, rate_hz):
                 best[key] = max(best.get(key, 0), hits)
     needed = max(DCS_MIN_WORDS, words_available // 2)
     solid = {key: hits for key, hits in best.items() if hits >= needed}
-    standard = sorted((key for key in solid if key[0] in DCS_CODES), key=lambda k: (-solid[k], k[1], k[0]))
+    supported = sorted((key for key in solid if key[0] in DCS_CODES), key=lambda k: (-solid[k], k[1], k[0]))
     result = {"words": words_available, "needed": needed,
               "readings": sorted(f"D{code:03o}{pol}:{hits}" for (code, pol), hits in solid.items())}
-    if not standard:
+    if not supported:
         result["label"] = None
-        result["why"] = "no DCS word repeats" if not solid else "only non-standard aliases repeat"
+        result["why"] = "no DCS word repeats" if not solid else "only unsupported aliases repeat"
         return result
-    result["label"] = " = ".join(f"D{code:03o}{pol}" for code, pol in standard)
+    result["label"] = " = ".join(f"D{code:03o}{pol}" for code, pol in supported)
     return result
 
 
@@ -357,7 +357,8 @@ def self_test():
     inverted = {dcs_code_of(rotate(word ^ 0x7FFFFF, k)) for k in range(DCS_WORD_BITS)} - {None}
     check("the inverted D023 word reads as 047", 0o47 in inverted)
     check("the DCS table holds 104 codes", len(set(DCS_CODES)) == 104)
-    check("the CTCSS table holds the 50 EIA tones and 150.0", len(CTCSS_TONES) == 51 and 150.0 in CTCSS_TONES)
+    check("the CTCSS table holds the 51 supported tones, 150.0 among them",
+          len(CTCSS_TONES) == 51 and 150.0 in CTCSS_TONES)
 
     rate = 48000.0
     count = int(4 * rate)

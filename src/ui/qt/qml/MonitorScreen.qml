@@ -1486,17 +1486,18 @@ Item {
                     return parts.join(" · ");
                 }
                 // Same meta rules as the history row: a zero talkgroup is
-                // not printed, the access code follows the ids, the channel
-                // follows the duration unless it is already the name, and
-                // the frequency closes the line, the first thing a narrow
-                // phone elides.
+                // not printed, the access code (an analog reception's tone)
+                // follows the ids, the channel follows the duration unless it
+                // is already the name, and the frequency closes the line, the
+                // first thing a narrow phone elides.
                 var meta = [];
                 if (model.tg > 0)
                     meta.push("TG " + model.tg);
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
-                if (model.accessCode.length > 0)
-                    meta.push(model.accessCode);
+                var code = model.analog ? model.receivedTone : model.accessCode;
+                if (code.length > 0)
+                    meta.push(code);
                 if (model.enc)
                     meta.push(qsTr("encrypted"));
                 if (model.durationSecs >= 0)

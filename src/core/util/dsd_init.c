@@ -164,7 +164,7 @@ init_opts_output_defaults(dsd_opts* opts) {
    ready for a switch to it. */
 static void
 init_opts_squelch_defaults(dsd_opts* opts) {
-    opts->rtl_squelch_level = dB_to_pwr(-110);
+    opts->rtl_squelch_level = dB_to_pwr(DSD_SQUELCH_STARTUP_DB);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
 }

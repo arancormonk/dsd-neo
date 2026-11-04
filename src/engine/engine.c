@@ -115,6 +115,7 @@
 #include "engine_hooks_install.h"
 #include "engine_test_support.h"
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 
 struct CODEC2;
@@ -173,6 +174,11 @@ no_carrier_clear_generic_recovery_tracking(void) {
 void
 dsd_engine_rigctl_tune_cache_forget(void) {
     s_last_rigctl_freq = -1;
+}
+
+void
+dsd_engine_rigctl_landing_forget(dsd_state* state) {
+    dsd_engine_scan_landing_forget(state);
 }
 
 void
@@ -1472,16 +1478,19 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* 
 
 /* Commit @p row of the untyped list as the row on air: the cursor past it, the row recorded as the one heard (issue
  * #666), its keys, the received tone cleared (the untyped step never runs the acquisition reset the typed rows do, so a
- * new channel must not inherit the old one's, issue #522), and fresh scan clocks. A placeholder (0 Hz) row parks where
- * the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still on. Runs after
- * the carrier boundary has ended the calls of the row left, under its keys and its name. */
+ * new channel must not inherit the old one's, issue #522), the frequency an analog call on audio input is heard on
+ * (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row parks where the receiver is: only the cursor and the
+ * clocks, so the row heard stays the one the receiver is still on. Runs after the carrier boundary has ended the calls
+ * of the row left, under its keys and its name. */
 static void
 untyped_install_row(dsd_state* state, int row, time_t now) {
     state->lcn_freq_roll = row + 1;
-    if (*dsd_state_trunk_lcn_slot(state, row) != 0) {
+    const long int freq = *dsd_state_trunk_lcn_slot(state, row);
+    if (freq != 0) {
         dsd_state_lcn_on_air_note(state, row);
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
+        dsd_engine_scan_landing_note_row(state, freq);
     }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
@@ -1575,6 +1584,9 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
         return DSD_UNTYPED_STEP_FAILED;
     }
     const time_t now_s = (time_t)now;
+    /* The row landed last is no longer known to be on air, whatever this step comes to: a placeholder tunes nothing,
+       and a tune that fails or is still pending lands nothing (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq == 0) {
         untyped_install_row(state, row, now_s);
@@ -1697,6 +1709,8 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
         return 0;
     }
     state->lcn_freq_roll = row;
+    /* The row landed last is no longer known to be on air, whatever this step comes to (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
 
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq == 0) {
@@ -3097,16 +3111,20 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
    others followed, so what was being decoded across the gap cannot go on. The calls end as on a sync loss, after the
    P25 Phase 2 playout takes their verdicts; the DMR confirmation restarts (candidate, lock, voice gate), apart from the
    colour code it published, which dsd_engine_forget_carrier_codes() would forget with it; the evidence and the
-   multi-frame assemblies go, with every buffered burst through the carrier count. The carrier stays: its codes, its
-   received identity, the voice channel a trunking session follows and trunk-scan ownership are kept, and the hangtime
-   and visit timers decide what follows, as after a fade. Unlike noCarrier(), nothing here waits on a pending scan
-   tune. */
+   multi-frame assemblies go, with every buffered burst through the carrier count. An analog call ends at its last
+   accepted block, a candidate unpublished, and analog reception starts over as at a retune (dsd_analog_rx_reset(): the
+   received tone, the tone policy's verdict, the monitor's audio chain and its converter), whether or not the stream's
+   generation moved with the gap (issue #667 A3). The carrier stays: its codes, its received identity, the voice
+   channel a trunking session follows and trunk-scan ownership are kept, and the hangtime and visit timers decide what
+   follows, as after a fade. Unlike noCarrier(), nothing here waits on a pending scan tune. */
 static void
 carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dsd_p25p2_playout_note_policy(opts, state);
+    dsd_engine_analog_call_end(opts, state);
     no_carrier_finalize_canonical_calls(opts, state, 0);
     dmr_confidence_reset(state);
     dsd_engine_forget_carrier_decoding(opts, state);
+    dsd_analog_rx_reset(state);
     state->carrier_seq++;
     dsd_state_note_carrier_change(state);
 }
@@ -3133,6 +3151,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     // The calls end below before the P25 Phase 2 playout drains (step 3): it takes their talkgroup verdict while they
     // are still active (issue #651).
     dsd_p25p2_playout_note_policy(opts, state);
+    // The receiver leaves the carrier a scan last landed on (issue #667 D9).
+    dsd_engine_scan_landing_forget(state);
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);

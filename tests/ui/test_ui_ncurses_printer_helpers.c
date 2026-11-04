@@ -2732,7 +2732,7 @@ test_call_info_rx_tone_line_rendering(void) {
     seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
     assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
 
-    /* A received DCS code: both standard spellings of its signal, canonical first, each three
+    /* A received DCS code: both supported spellings of its signal, canonical first, each three
        octal digits with leading zeros and the polarity letter. The policy gate the publication
        carries is configuration's business and never changes the received line. */
     seed_rx_code(state, 0023, 0);

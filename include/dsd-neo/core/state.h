@@ -438,6 +438,9 @@ typedef struct {
     // The numbering channel was named in, a dsd_call_channel_kind (<dsd-neo/core/call_channel.h>): the DMR call's own
     // LSN, LPCN or LCN; DSD_CALL_CHANNEL_NONE for other protocols. Meaningful only with channel != 0, and set with it.
     uint8_t call_channel_kind;
+    // An analog row's mode, a dsd_analog_mode (<dsd-neo/core/analog_mode.h>): NFM or AM as the demodulator ran, unknown
+    // (0) on audio input. A row is analog by its systype (DSD_SYNC_ANALOG); the mode means nothing on any other row.
+    uint8_t analog_mode;
     // The system and site the call was heard on: the site parts (dsd_rxid_site_snapshot(),
     // <dsd-neo/core/received_identity_site.h>) of the received identity record the sys_id parts come from, taken under
     // the same rule and frozen with them -- what the carrier sent while the call was heard, never a part of the moment
@@ -872,7 +875,7 @@ struct dsd_analog_rx_publication {
     int ctcss_off_value;
     int dcs_code;     /**< locked DCS code as its value (023 octal = 19); 0 = none */
     int dcs_inverted; /**< 1 = the locked code is named in inverted polarity (the canonical member
-                              of its alias class, runtime/analog_tones.h: never, for the standard set) */
+                              of its alias class, runtime/analog_tones.h: never, for the supported set) */
     /** 1 while, with a carrier and nothing locked -- or only an off-value CTCSS tone (ctcss_off_value) -- the DCS
         detector holds a candidate code it has not confirmed: some slicer read a supported code's word once (issue
         #527). The tone policy waits past its window for it. Not tone_state's ACQUIRING, which turns NONE 500 ms into a
@@ -2173,10 +2176,11 @@ struct dsd_state {
     float rtl_gap_held_sample;
     uint32_t rtl_gap_held_generation;
     /* The EDACS analog call loop's reads while the RTL device has no stream (issue #518 D4: DSD_RTL_READ_NO_STREAM),
-       which it plays as closed squelch at the stream's rate for the time that passes: whether such a run is on (the
-       stream delivered nothing since it began), when it began (realtime ms), the silent samples that time has paid for
-       so far and those still owed, and whether the triplet being collected took any (it then has no RF power).
-       Decoder-thread owned. */
+       or while a TCP or UDP sender is quiet past a stream pause (issue #667 D12), which it plays as silence at the
+       input's rate for the time that passes: whether such a run is on (the input delivered nothing since it began),
+       when it began (realtime ms), the silent samples that time has paid for so far and those still owed, and whether
+       the triplet being collected took any from a missing RTL stream (it then has no RF power). Decoder-thread
+       owned. */
     uint8_t edacs_no_stream_active;
     uint8_t edacs_no_stream_seen;
     uint64_t edacs_no_stream_since_ms;

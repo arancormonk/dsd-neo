@@ -6,7 +6,7 @@
 /*
  * The CTCSS/DCS receive policy (issue #527) in sample time, with the detectors' verdicts injected as the tap would
  * publish them: disabled, allow and block, each against a matching value, a nonmatching one, no tone, a value outside
- * the standard sets, acquisition, loss and reacquisition, a late blocked value, a carrier drop or retune, and a tone
+ * the supported sets, acquisition, loss and reacquisition, a late blocked value, a carrier drop or retune, and a tone
  * named off its value (issue #643), whose rejection waits for the window's end. The window is bounded: nothing is ever
  * rejected before a value is confirmed or the window ends, and the window's end is pinned to the read that crosses it
  * at several rates and read sizes.
@@ -298,13 +298,13 @@ test_block_carrier_drop_and_retune(void) {
     assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED && policy.no_tone == 0);
 }
 
-/* A value the detectors publish as locked but that is no standard tone or code is not confirmed: it is judged as no
+/* A value the detectors publish as locked but that is no supported tone or code is not confirmed: it is judged as no
    tone, at the window's end, under both lists, and never rejected or passed as a value before then. */
 static void
 test_unknown_value_is_no_tone(void) {
     dsd_analog_rx_publication unknown_tone = rx_ctcss(1610); /* 161.0 Hz: on no table */
     dsd_analog_rx_publication unknown_code = rx_dcs(0023, 0);
-    unknown_code.dcs_code = 0777; /* no standard code */
+    unknown_code.dcs_code = 0777; /* no supported code */
     const dsd_analog_rx_publication unknown[] = {unknown_tone, unknown_code};
     for (size_t k = 0; k < sizeof(unknown) / sizeof(unknown[0]); k++) {
         dsd_analog_tone_policy policy;
