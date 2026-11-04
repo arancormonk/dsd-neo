@@ -202,16 +202,22 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     if (state->lcn_scan_paused || state->lcn_scan_resume_pending) {
         return scan_resume_channel(opts, state);
     }
-    const int was_scanner = opts->scanner_mode ? 1 : 0;
-    if (!was_scanner && scanner_start_refused_for_next_start(opts, state)) {
-        return TRUNK_ACTION_REFUSED;
+    if (!opts->scanner_mode) {
+        if (scanner_start_refused_for_next_start(opts, state)) {
+            return TRUNK_ACTION_REFUSED;
+        }
+        /* The calls heard so far end as they began, the operator's or trunking's, then the tuner is the scan's (issue
+           #644 B-4). */
+        dsd_engine_channel_scan_start(opts, state);
+        opts->trunk_enable = 0;
+        return TRUNK_ACTION_DONE;
     }
-    opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
-    if (was_scanner) {
-        (void)svc_leave_channel_scan(opts, state);
-        dsd_scan_keys_leave(state);
-    }
+    /* The scanner flag stays on through the leave, so a running untyped list's calls end under the row heard and its
+       keys, which only then go back to the configured ones (issue #644 B-3). */
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_scan_keys_leave(state);
+    opts->scanner_mode = 0;
     return TRUNK_ACTION_DONE;
 }
 

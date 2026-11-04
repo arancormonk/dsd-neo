@@ -3511,7 +3511,13 @@ manual frequency while its row was outstanding stays one call. A resume while on
 running, changes nothing; one of a scan neither paused nor running, or under a trunk scan, is refused with a toast.
 Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the guarded scanner commands. The
 pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
-pause and a pending resume, and leaves `operator_tuned` set. A paused list (no resume pending) was already left by its
+pause and a pending resume, and leaves `operator_tuned` set. A running untyped list has no extension or
+scope for the leave to find, yet its calls are named after its rows and keyed with their keys: the leave recognises it
+(`channel_scan_untyped_runs()`: `scanner_mode` over a list of the user's own) and ends its calls, before the caller
+clears `scanner_mode` and the row keys leave, so they commit under the row heard (issue #644 B-3); it restores nothing
+else, since untyped rows run the configured decoder and front end. Learned channels are no list, and an untyped resume
+still waiting on its row hears the manual session on the manual frequency: a leave over either ends nothing. A paused
+list (no resume pending) was already left by its
 pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not
 reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service clears the flags
 after the engine's leave, which reads them; the engine's shutdown leave clears neither flag, so the
@@ -3708,20 +3714,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `operator_tuned` itself whenever it releases trunking, and the pauses set it. `SCANNER_TOGGLE` (`y`) and
     `SCAN_RESUME` (219, API `scan_resume`, `CommandBridge::resumeScan()`) live in `actions/actions_trunk.c`: `y` resumes
     a paused scan, pauses a running trunk scan in place (a pending trunk-scan resume counts as running), and stops or
-    starts `-Y` as before; `SCAN_RESUME` resumes only a paused scan (`Not paused: the scan is running`, `Not scanning:
-    no paused scan to resume`), and a second one while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are
-    refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
-    stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
-    and trunking off leaves the pause. Hold, avoid and Next and Previous channel on a paused scan answer
-    `Scan paused: resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan
-    keeps its hold, while a `-Y` pause already dropped the hold), while `MANUAL_TUNE`, clear avoids and put back
-    (flag edits, issue #672) are allowed. A paused `-Y` scan
-    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
-    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
-    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
-    `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
-    followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
-    `API_COMMANDS`.
+    starts `-Y`. The stop leaves with `scanner_mode` still 1, then the row keys leave, then the flag clears, so a
+    running untyped list's calls end under its row and keys (issue #644 B-3); the start goes through
+    `dsd_engine_channel_scan_start()`, which ends the calls heard so far under what they began with and then gives the
+    tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; B-4), before trunking goes off; `SCAN_RESUME` resumes only
+    a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one while
+    a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator (`Trunk
+    scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call (B5). Over a
+    paused `-Y` scan, trunking on stops it as it stops a running one, and trunking off leaves the pause. Hold, avoid and
+    Next and Previous channel on a paused scan answer `Scan paused: resume it first` (a failed command that changes
+    nothing: the avoids stay, and a paused trunk scan keeps its hold, while a `-Y` pause already dropped the hold),
+    while `MANUAL_TUNE`, clear avoids and put back (flag edits, issue #672) are allowed. A paused `-Y` scan ends at an
+    input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference
+    adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`,
+    `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
+    `operator_tuned` is cleared by a resume, by `y` starting `-Y` (issue #644 B-4: the scan's calls were filed as
+    "Exploring") and at session start, never by turning trunking on (an Explore followed by "Follow this system" stays
+    the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`, `APP_CONTROL_ACTIONS`,
+    `ENGINE_CHANNEL_SCAN` and `ENGINE_NO_CARRIER_RESET` (the stop and start, issue #644).
   - Scan avoid commands (issue #672): `SCAN_AVOID_REMOVE` (221, `dsd_app_scan_avoid_remove_payload`, typed submit
     `dsd_app_command_scan_avoid_remove()`, which refuses an unterminated `target_id`; min-size rule; not coalescible;
     API `scan_avoid_remove`) puts one avoided entry back by the identity the scan avoid view lists, never a list

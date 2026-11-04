@@ -11,13 +11,33 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "channel_scan_stubs.h"
+
+static int g_leave_saw_scanner_mode = -1;
+static int g_leave_saw_row_keys = -1;
+
+void
+dsd_test_channel_scan_leave_seen(int* scanner_mode, int* row_keys) {
+    *scanner_mode = g_leave_saw_scanner_mode;
+    *row_keys = g_leave_saw_row_keys;
+}
 
 /* Action-only tests have no tuner; exercise the production scoped-settings teardown. Nothing is asked of a monitor. */
 int
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
+    g_leave_saw_scanner_mode = opts->scanner_mode;
+    g_leave_saw_row_keys = state->scan_keys_active_set;
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
     dsd_scan_mode_leave(opts, state);
     return 0;
+}
+
+/* Nor calls to end at a -Y start: the start's ownership flags only. ENGINE_CHANNEL_SCAN and ENGINE_NO_CARRIER_RESET
+   drive the engine's, which ends the calls first (issue #644 B-4). */
+void
+dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
+    opts->scanner_mode = 1;
+    state->operator_tuned = 0U;
 }
 
 /* Nor a -Y scan to pause or resume (issue #671): ENGINE_CHANNEL_SCAN and ENGINE_NO_CARRIER_RESET drive the engine's. */

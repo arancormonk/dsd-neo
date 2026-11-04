@@ -7980,6 +7980,180 @@ test_walk_landing_ends_a_synced_reception(void) {
     teardown_walk_list(opts, state);
     return rc;
 }
+
+/* --- Issue #644 (Task 2): the -Y scan's stop, start and held avoid, driven through the command queue. --- */
+
+/* The history row of talkgroup @p tg's call, NULL with none. */
+static const Event_History*
+history_row_of(const dsd_state* state, uint32_t tg) {
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == tg && row->channel_label_resolved) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+/* Whether talkgroup @p tg's call has a history row with the tuner owner stamps @p scan_member and @p operator_tuned. */
+static int
+history_stamps_are(const dsd_state* state, uint32_t tg, int scan_member, int operator_tuned) {
+    const Event_History* row = history_row_of(state, tg);
+    return row != NULL && row->scan_member == (uint8_t)scan_member && row->operator_tuned == (uint8_t)operator_tuned;
+}
+
+/* Post the action @p id and drain, as a frontend's key does. Returns the drain's count. */
+static int
+press_action(dsd_opts* opts, dsd_state* state, int id) {
+    state->ui_msg[0] = '\0';
+    if (dsd_app_command_action(id) <= 0) {
+        return 0;
+    }
+    return dsd_app_drain_cmds(opts, state);
+}
+
+static int
+slot0_call_active(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+/* The walk list of setup_walk_list() with its rows named ALPHA, BRAVO and CHARLIE. */
+static int
+setup_named_walk_list(dsd_opts* opts, dsd_state* state, int scan_owned, long int base_hz) {
+    static const char* const k_names[] = {"ALPHA", "BRAVO", "CHARLIE"};
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        return -1;
+    }
+    for (size_t row = 0; row < 3U; row++) {
+        if (dsd_state_trunk_lcn_name_set(state, row, k_names[row]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* B-3: `y` stopping a running untyped -Y list ended no call: the leave found no scan object or scope, and the stop had
+   cleared the scanner flag before it, so a call heard on row BRAVO (keyed) went on past the stop, and was named after
+   no row once it ended. It ends at the stop, named BRAVO and a scan member, before the row's keys leave. */
+static int
+y_stop_running_case(void) {
+    const char* what = "y stop of a running untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1210012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO, keyed",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5401U) == 0);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "the scanner stops", opts->scanner_mode == 0 && state->lcn_scan_paused == 0U);
+    rc |= expect_case(what, "the call ended at the stop", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, 5401U), "BRAVO");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, 5401U, 1, 0));
+    rc |= expect_case(what, "then the row keys left", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* B-3: a stop over a paused list (trunking turned on here) still ends no call of the manual session. */
+static int
+y_stop_paused_case(void) {
+    const char* what = "stop of a paused untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1220012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "the release pauses the scan",
+                      press_action(opts, state, DSD_APP_CMD_TUNER_RELEASE) == 1 && state->lcn_scan_paused == 1U);
+    rc |= expect_case(what, "a manual call is heard", open_unrendered_call(state, 5402U) == 0);
+    rc |= expect_case(what, "trunking on is queued",
+                      dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "trunking on is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the pause ended", state->lcn_scan_paused == 0U && opts->trunk_enable == 1);
+    rc |= expect_case(what, "the manual call goes on", slot0_call_active(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* B-3: a walk's tune still pending at the stop: its landing names no row of the list the stop left (the session
+   moved), whose row and keys stay as the stop left them; the move only runs its boundary. */
+static int
+y_stop_walk_pending_case(void) {
+    const char* what = "y stop over a pending walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1230012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the walk is pending",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && g_retune_in_flight.active);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    const uint32_t carrier_seq = state->carrier_seq;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |=
+        expect_case(what, "the landing is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "one boundary for the move", state->carrier_seq == carrier_seq + 1U);
+    rc |= expect_case(what, "no row is named",
+                      opts->scanner_mode == 0 && state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0
+                          && state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_live_label(what, opts, state, "");
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_y_stop_ends_the_untyped_scans_calls(void) {
+    return y_stop_running_case() | y_stop_paused_case() | y_stop_walk_pending_case();
+}
+
+/* B-4: `y` starting a stopped -Y scan after a manual tune left operator_tuned 1, so the scan's calls were filed as the
+   operator's (history "Exploring", Qt an Explore session). The operator's call ends at the start as the operator's;
+   the tuner is the scan's from then on, and the next call is a scan member, not operator tuned. */
+static int
+test_y_start_gives_the_tuner_to_the_scan(void) {
+    const char* what = "y start after a manual tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1240012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc =
+        expect_case(what, "the tune is queued",
+                    dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 1245012500U) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "the tune is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the tuner is the operator's", state->operator_tuned == 1U && opts->scanner_mode == 0);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5501U) == 0);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "the scan owns the tuner", opts->scanner_mode == 1 && state->operator_tuned == 0U);
+    rc |= expect_case(what, "the operator's call ended at the start", !slot0_call_active(state));
+    rc |= expect_case(what, "as the operator's", history_stamps_are(state, 5501U, 0, 1));
+    rc |= expect_case(what, "the next call is heard", open_unrendered_call(state, 5502U) == 0);
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+    rc |= expect_case(what, "the scan's call is a scan member", history_stamps_are(state, 5502U, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
 #endif
 
 int
@@ -9760,6 +9934,8 @@ main(void) {
     rc |= test_walk_waits_for_its_tune();
     rc |= test_scan_owned_walk_tunes_both_front_ends();
     rc |= test_walk_landing_ends_a_synced_reception();
+    rc |= test_y_stop_ends_the_untyped_scans_calls();
+    rc |= test_y_start_gives_the_tuner_to_the_scan();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();

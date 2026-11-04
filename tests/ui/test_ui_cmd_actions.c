@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "../test_support/channel_scan_stubs.h"
 #include "command_dispatch.h"
 #include "services.h"
 
@@ -874,18 +875,25 @@ test_scanner_toggle_pauses_and_resumes(void) {
     rc |= expect_int("y on a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
     rc |= expect_true("no row: still paused", state.lcn_scan_paused == 1U && opts.scanner_mode == 0);
 
-    /* Not paused: y starts the scanner and stops it. The tuner stays the operator's in the record: only a resume, or a
-       new session, clears that (issue #671 ruling). */
+    /* Not paused: y starts the scanner and stops it. A start after a manual tune gives the tuner to the scan, through
+       the engine's start (issue #644 B-4: it used to keep operator_tuned, so frontends showed a manual session). */
     state.lcn_scan_paused = 0U;
     state.operator_tuned = 1U;
     rc |= expect_int("resume with nothing paused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("nothing paused toast", strcmp(state.ui_msg, "Not scanning: no paused scan to resume") == 0);
     rc |= expect_int("y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
-    rc |= expect_true("started; operator_tuned kept", opts.scanner_mode == 1 && state.operator_tuned == 1U);
+    rc |= expect_true("started; the tuner is the scan's", opts.scanner_mode == 1 && state.operator_tuned == 0U);
     rc |= expect_int("resume of a running list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("running list toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
+    /* The stop leaves the scan while it still runs under its row keys (issue #644 B-3), then the keys and the flag go. */
+    state.scan_keys_active_set = 1;
     rc |= expect_int("y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
-    rc |= expect_int("stopped", opts.scanner_mode, 0);
+    int leave_saw_scanner = -1;
+    int leave_saw_row_keys = -1;
+    dsd_test_channel_scan_leave_seen(&leave_saw_scanner, &leave_saw_row_keys);
+    rc |= expect_true("the stop's leave saw the scan running under its row keys",
+                      leave_saw_scanner == 1 && leave_saw_row_keys == 1);
+    rc |= expect_true("stopped", opts.scanner_mode == 0 && state.scan_keys_active_set == 0);
     return rc;
 }
 

@@ -2089,7 +2089,9 @@ is delayed.
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
   `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving or
   pausing `-Y` (scanner toggle, trunk set, tuner release, a frequency entry) hands the foreground keyring back to the
-  global keys. A row may not mix direct and file sources.
+  global keys. A row may not mix direct and file sources. Stopping `-Y` with `y` ends the calls heard on the row on air
+  under its name and keys before they go; starting it with `y` ends the calls heard before under the name they had
+  (after a manual tune, the operator's), and from then on the calls heard are the scan's.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
   the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and

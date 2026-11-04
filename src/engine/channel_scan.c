@@ -1382,11 +1382,25 @@ dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
+/* Whether an untyped -Y list runs (issue #644 B-3): scanner_mode over a list of the user's own, and nothing typed. Such
+   a list has no scan object and no scope for a leave to find, yet its calls are named after its rows and keyed with
+   their keys. Not a resume still waiting on its row: the calls heard meanwhile are the manual session's, on the manual
+   frequency, which the stop leaves the receiver on. Channels learned over the air are no list: the scan never moved for
+   them. */
+static int
+channel_scan_untyped_runs(const dsd_opts* opts, const dsd_state* state) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && !dsd_channel_modes_present(state)
+           && dsd_state_trunk_lcn_user_list_present(opts, state);
+}
+
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
-   has no scope, F3); a leave ends them only where a scan is active, as it always has. A paused list (no resume pending)
-   was already left by its pause, which kept only its list state: its leave drops that and leaves the manual session
-   alone, so a stop over a pause ends no call, resets no acquisition and asks the monitor for nothing. */
+   has no scope, F3); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
+   the caller still has its row named and keyed: they end under that row, before the configured keys come back. The
+   untyped list's leave stops there: its rows ran the configured decoder and front end, so nothing else goes back. A
+   paused list (no resume pending) was already left by its pause, which kept only its list state: its leave drops that
+   and leaves the manual session alone, so a stop over a pause ends no call, resets no acquisition and asks the monitor
+   for nothing. */
 static int
 channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
@@ -1397,7 +1411,7 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     const int active =
         !already_left
         && (scan != NULL || dsd_scan_mode_configured_view(state) != NULL || dsd_scan_mode_updating(state));
-    if (active || keep) {
+    if (active || keep || (!already_left && channel_scan_untyped_runs(opts, state))) {
         channel_scan_end_calls(opts, state);
     }
     if (keep && in_place) {
@@ -1450,6 +1464,18 @@ dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 1U;
     return monitor_request;
+}
+
+void
+dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune): only
+       then does the tuner become the scan's, so what is heard next is the scan's, as a resume's landing does. */
+    channel_scan_end_calls(opts, state);
+    opts->scanner_mode = 1;
+    state->operator_tuned = 0U;
 }
 
 void

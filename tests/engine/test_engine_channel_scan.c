@@ -3021,6 +3021,116 @@ test_pause_in_place_forgets_the_carrier(void) {
     free(opts);
 }
 
+/* An untyped -Y list of the user's own (two named rows on audio input), row 0 heard and keyed, the scan running. */
+static void
+untyped_running_fixture(dsd_opts* opts, dsd_state* state) {
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv");
+    state->R = 999;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 151000000;
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = k_row0_scalar;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    assert(dsd_state_trunk_lcn_name_set(state, 0, "Mall") == 0);
+    (void)dsd_scan_row_keys_apply(state, 0);
+    dsd_state_lcn_on_air_note(state, 0);
+    state->lcn_freq_roll = 1;
+    assert(state->R == k_row0_scalar && state->scan_keys_active_set == 1);
+}
+
+static void
+untyped_fixture_free(dsd_opts* opts, dsd_state* state) {
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/* Issue #644 (B-3): the leave of a running untyped list ends its calls, where the scan still names the row heard and
+   its keys are in force (the stop leaves before it clears the flag and the keys); it found no scan object and no scope
+   and ended none, so the call went on past the stop. Nothing else of the configured session changes. A stop over a
+   paused untyped list still ends no manual call, nor does a stop over an untyped resume still waiting on its row, nor the
+   leave of a -Y session with no list of the user's own (channels learned over the air), which the scan never moved
+   for. */
+static void
+test_untyped_leave_ends_the_running_lists_calls(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    open_manual_call(state);
+    char label[64];
+    assert(dsd_channel_label_current(opts, state, label, sizeof(label)) > 0 && strcmp(label, "Mall") == 0);
+    const uint32_t session = state->lcn_scan_session;
+    g_rigctl_restores = 0;
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(!slot0_call_open(state));
+    assert(state->lcn_scan_session == session + 1U && g_rigctl_restores == 0);
+    assert(state->R == k_row0_scalar && state->scan_keys_active_set == 1); /* the caller's keys leave comes after */
+    untyped_fixture_free(opts, state);
+
+    /* Paused: the pause ended the row's calls; the leave ends none of the manual session's. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    assert(state->lcn_scan_paused == 1 && opts->scanner_mode == 0);
+    open_manual_call(state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(slot0_call_open(state));
+    untyped_fixture_free(opts, state);
+
+    /* A resume still waiting on its row: the calls heard meanwhile are the manual session's, on the frequency the stop
+       leaves the receiver on, so the stop ends none. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    state->lcn_scan_resume_pending = 1U;
+    open_manual_call(state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(slot0_call_open(state));
+    untyped_fixture_free(opts, state);
+
+    /* Learned channels only: no list of the user's own. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    opts->chan_in_file[0] = '\0';
+    open_manual_call(state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(slot0_call_open(state));
+    untyped_fixture_free(opts, state);
+}
+
+/* Issue #644 (B-4): `y` starting a stopped -Y scan after a manual tune ends the operator's calls first, named after no
+   row (the scanner flag still off), and only then gives the tuner to the scan: scanner_mode 1, operator_tuned 0. The
+   start left operator_tuned 1, so frontends showed a manual session and history filed the scan's calls under it. */
+static void
+test_start_gives_the_tuner_to_the_scan(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    untyped_running_fixture(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    (void)dsd_engine_channel_scan_leave(opts, state); /* a stop over the pause */
+    state->lcn_scan_paused = 0U;
+    assert(opts->scanner_mode == 0 && state->operator_tuned == 1U);
+    open_manual_call(state);
+    assert(no_row_named(opts, state));
+    dsd_engine_channel_scan_start(opts, state);
+    assert(!slot0_call_open(state));
+    assert(opts->scanner_mode == 1 && state->operator_tuned == 0U);
+    untyped_fixture_free(opts, state);
+}
+
 /* N2, N9: a resume first finds a row to land on. With none it never starts: the manual session and its call go on,
    and nothing names it. A row whose tune is refused leaves the scan paused too, with what the attempt began undone:
    its scope (so a Signal search begins its own and a manual rigctl request is the session's), its staged options and
@@ -3762,6 +3872,8 @@ main(void) {
     test_receive_row_session_edits();
     test_pause_keeps_the_scan_and_drops_its_row();
     test_pause_in_place_forgets_the_carrier();
+    test_untyped_leave_ends_the_running_lists_calls();
+    test_start_gives_the_tuner_to_the_scan();
     test_resume_without_a_landing_stays_paused();
     test_resume_pending_waits_for_its_row();
     test_typed_unlanded_step_keeps_the_row_heard();

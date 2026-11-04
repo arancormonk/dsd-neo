@@ -42,8 +42,11 @@ int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
  * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. A paused scan
  * (dsd_state::lcn_scan_paused, no resume pending; issue #671) is not active: its pause already left the row, so its
  * leave only drops the list state the pause kept, and ends no call, resets no acquisition and asks the monitor for
- * nothing of the manual session. The interactive leaves go through svc_leave_channel_scan(), which records the result
- * for the decoder (issue #578) and then clears the pause. */
+ * nothing of the manual session. A running untyped list of the user's own (issue #644 B-3) has no scope, yet its leave
+ * ends its calls, and changes nothing else (its rows ran the configured settings); a caller that stops the scan keeps
+ * scanner_mode and the row keys until after the leave, so the calls end under the row heard and its keys. The
+ * interactive leaves go through svc_leave_channel_scan(), which records the result for the decoder (issue #578) and
+ * then clears the pause. */
 int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
 /** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
@@ -58,6 +61,13 @@ int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
  * interactive pause goes through svc_pause_channel_scan(). Safe under the P25 SM tick guard: nothing under it takes
  * the guard its caller holds. Decoder thread. */
 int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place);
+
+/** Start a stopped -Y scan (`y`; issue #644 B-4): the calls heard so far end and commit under the attribution they
+ * began with (the operator's tuner after a manual tune, no row), then the scan owns the tuner: scanner_mode 1 and
+ * operator_tuned 0, so the calls heard next are the scan's, and frontends show a scan, not a manual session. The scan's
+ * first step tunes as any timed step does. Not for a paused scan, which resumes (dsd_engine_channel_scan_resume()).
+ * Under the P25 SM tick guard the guarded scanner commands hold. Decoder thread. */
+void dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
 
 /** dsd_engine_channel_scan_resume() results. */
 enum {
