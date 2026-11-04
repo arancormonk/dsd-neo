@@ -485,7 +485,8 @@ test_bom_target_file_bundle(void) {
     DSD_SNPRINTF(path, sizeof path, "%s/targets.csv", dir);
     assert(dsd_app_trunk_scan_validate_bundle(path, &count, NULL, err, sizeof err) == 0 && count == 1);
 
-    check_quoted_rewrite(dir, "targets.csv", 0, "old keys.csv", "targets2.csv", ",,,keys.csv\n");
+    /* No line end in the cell: the file was written in text mode, so it ends CRLF on Windows. */
+    check_quoted_rewrite(dir, "targets.csv", 0, "old keys.csv", "targets2.csv", ",,,keys.csv");
     char text[1024];
     read_file_in(dir, "targets2.csv", text, sizeof text);
     static const char bom[] = "\xEF\xBB\xBF";

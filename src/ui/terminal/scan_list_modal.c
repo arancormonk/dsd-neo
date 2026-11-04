@@ -62,7 +62,9 @@ static const char k_all_lists_on[] = "All lists on";
 
 static int
 scan_list_modal_row_count(void) {
-    return (int)g_modal.view.list_count + 1;
+    /* The view holds at most DSD_TRUNK_SCAN_MAX_LISTS lists; the bound keeps every row walk inside rows[]. */
+    const int n = (int)g_modal.view.list_count + 1;
+    return n < SCAN_LIST_MODAL_ROWS_MAX ? n : SCAN_LIST_MODAL_ROWS_MAX;
 }
 
 /* Short forms of the decoder's toasts, beside the row they answer; the main screen's toast line has the whole one. */

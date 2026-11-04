@@ -2478,6 +2478,9 @@ test_trunk_scan_status_row_rendering(void) {
    whole fields from the end, the list's name first, and 80 columns hold a long id and list name whole. */
 static void
 test_trunk_scan_list_fields(void) {
+    /* The cut golden names the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so it selects ASCII. */
+    g_unicode_stub = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -2595,6 +2598,7 @@ test_trunk_scan_list_fields(void) {
 
     g_stub_max_x = 80;
     reset_lcn_name_stub();
+    g_unicode_stub = 1;
 }
 
 static void
