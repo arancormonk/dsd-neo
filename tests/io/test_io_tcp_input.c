@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Regression test: TCP PCM input must preserve the caller-owned descriptor,
- * read raw little-endian PCM16 samples, and invalidate itself at EOF.
+ * read raw little-endian PCM16 samples through its bounded read, and invalidate
+ * itself at EOF.
  */
 
 #include <dsd-neo/io/tcp_input.h>
@@ -66,7 +67,7 @@ main(void) {
         return 1;
     }
     int16_t sample = 123;
-    if (tcp_input_read_sample(NULL, &sample) != 0 || sample != 123) {
+    if (tcp_input_read_sample_wait(NULL, &sample, 10U) != 0 || sample != 123) {
         DSD_FPRINTF(stderr, "NULL read changed output or reported success\n");
         return 1;
     }
@@ -96,7 +97,7 @@ main(void) {
     const int16_t expected[] = {4660, INT16_MIN, INT16_MAX};
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
         sample = 0;
-        if (!tcp_input_read_sample(ctx, &sample)) {
+        if (tcp_input_read_sample_wait(ctx, &sample, 100U) != 1) {
             DSD_FPRINTF(stderr, "read_sample failed at sample %zu\n", i);
             tcp_input_close(ctx);
             close(fd);
@@ -111,7 +112,7 @@ main(void) {
     }
 
     sample = 321;
-    if (tcp_input_read_sample(ctx, &sample) != 0) {
+    if (tcp_input_read_sample_wait(ctx, &sample, 100U) != 0) {
         DSD_FPRINTF(stderr, "EOF read unexpectedly succeeded\n");
         tcp_input_close(ctx);
         close(fd);
@@ -123,7 +124,7 @@ main(void) {
         close(fd);
         return 1;
     }
-    if (tcp_input_read_sample(ctx, &sample) != 0) {
+    if (tcp_input_read_sample_wait(ctx, &sample, 100U) != 0) {
         DSD_FPRINTF(stderr, "invalidated context read unexpectedly succeeded\n");
         tcp_input_close(ctx);
         close(fd);
@@ -136,6 +137,7 @@ main(void) {
         close(fd);
         return 1;
     }
+
     close(fd);
     return 0;
 #endif

@@ -85,6 +85,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
     `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>` or `--squelch <setting>` in
     its `options` column (whole dB, `-100..0`, `0` = off, `auto[+N]` on analog rows, `noise[+N]` on nfm rows, omitted
     = inherit this value); see `docs/csv-formats.md`.
+    An analog session makes calls (history rows, `-J` lines, recordings) only under a squelch above -110 dB, the
+    startup default: see [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input).
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
   Connects to an rtl_tcp server (`rtl_tcp` itself, or another server that speaks its protocol) for unsigned 8-bit
   I/Q, and tunes it over the connection. It is the only network input that carries I/Q: `tcp` and `udp` below carry
@@ -96,6 +98,17 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
+- A TCP or stdin source that goes quiet keeps its input, in every mode. TCP audio stays connected however long its
+  sender is silent (a squelched network audio source). Only a connection that closes or fails is lost: decoding then
+  reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) close the input and end the session, as
+  before. A sender that goes away without closing the connection (its machine lost power, or the network dropped) counts
+  as a failed connection about 35 seconds after its last data, when TCP keepalive gets no answer (longer on a system
+  that does not let a program set the keepalive timing). While stdin or TCP sends nothing, the decoder still ends an
+  analog call on time, applies menu commands and runs its timers, as on UDP. An EDACS analog call, on TCP or UDP, hears
+  a quiet spell of half a second or more as silence and ends as it does on a quiet channel; a shorter stall is waited
+  out. The M17 encoder waits for audio. Ctrl-C ends a silent stdin or TCP wait at once. A source that stops in the
+  middle of a digital frame is waited for, as before. On Windows only a pipe (`rtl_fm ... | dsd-neo -i -`) is waited on
+  this way: console stdin and a redirected file block in their read until data comes.
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
@@ -269,35 +282,35 @@ Windows console runs:
 - `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
   length, and the call history row it belongs to), each one deleted for holding no audio (`discard`) or kept under
   its `TEMP_` name (`error`), and `link`/`unlink` lines for a recording closed before its call's history row
-  (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
+  (a WAV stop mid-call, a conventional analog call's end) once that row commits or never will. A program that manages
   the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
-  torn line gets a newline first. A record's `start` is when the call started, or when the recording opened if that
-  was later (recording switched on mid-call); an NFM recording's is its own first sample, the pre-roll included. A
-  journal that cannot be opened or written is turned off for the rest of the run with one error in the log; decoding and
-  recording go on. A run with a journal keeps every file it uploads: while the journal is set,
+  torn line gets a newline first. A record's `start` is when the call started, or when the recording opened if that was
+  later (recording switched on mid-call); an analog recording's is its own first sample (an NFM one's pre-roll
+  included). A journal that cannot be opened or written is turned off for the rest of the run with one error in the log;
+  decoding and recording go on. A run with a journal keeps every file it uploads: while the journal is set,
   `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes nothing, with one warning in
   the log, because the journal's owner manages the recordings' retention. The option keeps its value, so a config saved
   from the run (the exit's autosave included) still has it. The record format is in `docs/code_map.md` ("Recording
   journal").
-- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional NFM call in one
-  recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on
-  (`-P`); without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as
-  heard, with the pre-roll below), so the recording keeps time. A longer pause ends the call at its last audio, and the
-  next transmission starts a new one. 200 or less turns it off, the default: a call then ends 200 ms after its carrier
-  drops, as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI:
-  `[recording] analog_max_gap_ms`. How pauses are counted, and the limits, are under
-  [Pauses in an NFM recording](#pauses-in-an-nfm-recording---analog-record-max-gap-ms).
+- `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call in one
+  recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on (`-P`);
+  without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as heard,
+  with the pre-roll below), so the recording keeps time. A longer pause ends the call at its last audio, and the next
+  transmission starts a new one. 200 or less turns it off, the default: a call then ends 200 ms after its carrier drops,
+  as before. A value outside 0 to 10000 is refused. Digital calls are not affected. INI: `[recording]
+  analog_max_gap_ms`. How pauses are counted, and the limits, are under [Pauses in an analog
+  recording](#pauses-in-an-analog-recording---analog-record-max-gap-ms).
 - `--analog-record-preroll-ms <ms>` (or `--analog-record-preroll-ms=<ms>`) Start each new conventional NFM recording
   with up to `<ms>` of the audio heard just before the call, so its first word is not cut off. It works only with
   per-call recording on (`-P`). Only audio the tone filter allows is kept: audio it is still checking or has rejected
-  never is. In a recording that resumes after a pause (`--analog-record-max-gap-ms`), the last `<ms>` of the pause
-  is saved as heard rather than as silence, the same way. 200 is the default; 0 turns it off, and recordings then
-  start as before. A value outside 0 to 1000 is refused. Setting it in a running session (the API, the terminal menu,
-  the app) drops the audio held so far, even when the value is the same; a config applied in a running session drops
-  it only when it changes the value. INI: `[recording] analog_preroll_ms`. What it holds, and the limits, are under
-  [Where an NFM recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
-- `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls
-  and conventional NFM calls ([NFM calls in rdio-scanner](#nfm-calls-in-rdio-scanner))
+  never is. In a recording that resumes after a pause (`--analog-record-max-gap-ms`), the last `<ms>` of the pause is
+  saved as heard rather than as silence, the same way. 200 is the default; 0 turns it off, and recordings then start as
+  before. A value outside 0 to 1000 is refused. Setting it in a running session (the API, the terminal menu, the app)
+  drops the audio held so far, even when the value is the same; a config applied in a running session drops it only when
+  it changes the value. INI: `[recording] analog_preroll_ms`. What it holds, and the limits, are under [Where an NFM
+  recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
+- `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls and
+  conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner))
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
   `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:
@@ -363,9 +376,24 @@ Windows console runs:
   decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
   none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
-  FDMA rows carry no slot tag. An analog (NFM) line names the tuned frequency as digital lines do,
-  `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
-  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). The control API's `event` text is the same row.
+  FDMA rows carry no slot tag. An analog line names its mode after the `ANALOG` token, `NFM` or `AM` as dsd-neo
+  demodulated it, and no mode on audio input, where another receiver did. It names the tuned frequency as digital lines
+  do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
+  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input an analog line names the
+  frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan` target confirmed it
+  tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency changed on the peer
+  itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was received with, as Call
+  Info's `Rx tone:` line writes it:
+  `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
+  `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
+  `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
+  before the end (a reverse burst) still shows. Earlier versions wrote `NFM` on every analog line, audio input included,
+  and no tone. A reception shorter than 500 ms makes no analog line (see `-P` below for how it is counted), and on a
+  radio input neither does one heard while the squelch is off or at -110 dB or below (see
+  [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input)). An analog
+  line is stamped with the time its call ended, even when it is written later (an input that
+  stopped sending held the end back); earlier versions stamped it when it was written. The control API's `event` text
+  is the same row.
   A call line names the system and site the call was heard on, and a DMR trunked call's own channel by its numbering
   (`LSN:`, `LPCN:`, `LCN:`), from the parts the carrier sent: see [Event History Rows](ui-terminal.md#event-history-rows)
   for the tokens per protocol. A part never received is left out, never printed as 0.
@@ -582,7 +610,9 @@ Notes
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
   plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output.
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output. Conventional
+  analog calls sound no alert: the beep would land in the analog audio on `-o -` (on UDP output an alert goes to the
+  digital port, never the analog one).
 
 ## Modes & Decoders (`-f`)
 
@@ -1342,8 +1372,9 @@ for a CTCSS (PL) tone and reports what it hears. Detection only reports: it neve
 tone setting, and it runs with `-o null` too. Muting by tone is the separate
 [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
-- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1), and 150.0 Hz,
-  which many radios offer as a 51st. A tone is confirmed from estimates within 0.5 Hz of a table value, or further off
+- Supported tones: the 50 tones radios commonly offer (the 39 of TIA-603-E and 11 more), 67.0-254.1 Hz (67.0, 69.3,
+  71.9 ... 250.3, 254.1), and 150.0 Hz, which many radios offer as a 51st. A tone is confirmed from estimates within
+  0.5 Hz of a table value, or further off
   by a transmitter's tone error (below), and a confirmed tone is held only while it stays within 0.8 Hz of it, or 0.5 %
   of it from 162.2 Hz up while its estimate is steady enough to say so -- 0.7 Hz for 150.0 and 151.4 Hz, which sit 1.4
   Hz apart, so no estimate is ever within reach of both. Any other frequency within the sub-audible band, such as 68.2
@@ -1364,7 +1395,7 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   only while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
   folds down from the voice band and far below any real CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
-  each, tones of the standard table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
+  each, tones of the table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
   all starts and on all but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest
   at 553 ms); 150.0 and 151.4 Hz set off toward each other take a little longer (above). Encoders are specified to
   0.5 % of their tone, and some radios run near that: the ones in issue #643 sent 150.6 Hz for 150.0. A tone up to 0.5 %
@@ -1488,25 +1519,28 @@ Beside the CTCSS tone, the analog FM monitor listens for a DCS code (Digital-Cod
 detection it only reports: it never mutes or gates audio, it needs no setting, and it runs with `-o null` too. Muting by
 code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
-- Supported codes: the standard 104-code set, 023, 025, 026, 031, 032, 036, 043, 047, 051, 053, 054, 065, 071, 072,
+- Supported codes: the 104 codes radios commonly offer (the 83 standard codes and 21 more), 023, 025, 026, 031, 032,
+  036, 043, 047, 051, 053, 054, 065, 071, 072,
   073, 074, 114, 115, 116, 122, 125, 131, 132, 134, 143, 145, 152, 155, 156, 162, 165, 172, 174, 205, 212, 223, 225,
   226, 243, 244, 245, 246, 251, 252, 255, 261, 263, 265, 266, 271, 274, 306, 311, 315, 325, 331, 332, 343, 346, 351,
   356, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 446, 452, 454, 455, 462, 464, 465, 466, 503, 506, 516, 523,
   526, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743 and 754. A code is
   written as `D`, its three octal digits with leading zeros, and its polarity, `N` (normal) or `I` (inverted), such as
   `D023N`. A received code is shown by both spellings of its signal, the normal one first: `DCS D023N / D047I` (see
-  Aliases).
+  Aliases). A code outside these reads as no code: the eight more some scanners detect (006, 007, 015, 017, 021, 050,
+  141 and 214) are signals of their own and show none. 645, which some radios and decoders offer, sends the signal of
+  D526N, so a radio set to D645N reads `DCS D526N / D325I`.
 - What is sent: a DCS transmitter repeats one 23-bit word at 134.4 bit/s, the code's nine bits (least significant
   first), the fixed bits 0, 0, 1 and 11 Golay (23,12) check bits. Normal polarity sends a one as positive deviation (the
   carrier above the tuned frequency); inverted polarity sends the complement of the word. This convention and the bit
   order follow the published reference words; checking them on the air against a transmitter with a known code, in
   both polarities, is still to be done.
 - Aliases: a receiver cannot tell where a word starts, and the complement of a code's word is another code's word
-  shifted in time, so every standard code sent in inverted polarity is exactly the signal of one standard code in
-  normal polarity: D023I is D047N, and D047I is D023N. Every signal therefore has two standard spellings, one in each
+  shifted in time, so every supported code sent in inverted polarity is exactly the signal of one supported code in
+  normal polarity: D023I is D047N, and D047I is D023N. Every signal therefore has two supported spellings, one in each
   polarity, and nothing in it says which of the two a transmitter was set to. DSD-neo shows both, the normal one first:
   a radio set to D023N or to D047I reads `DCS D023N / D047I`, and one set to D023I or to D047N reads
-  `DCS D047N / D023I`. Every standard code appears twice below, once in each polarity; find a radio's setting to see
+  `DCS D047N / D023I`. Every supported code appears twice below, once in each polarity; find a radio's setting to see
   what it reads as:
 
 | Shown as | Shown as | Shown as | Shown as |
@@ -1579,8 +1613,8 @@ code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
   Unfiltered speech 10 dB above the code (a voice fundamental in the band, which a transmitter's voice high-pass
   removes) is outside these bounds: it lost the lock about 7 times a minute, each time confirming the code again, so the
   code showed 96% of the time.
-- Rejection: in the tests random bits, the Golay code words that carry no standard code, every CTCSS tone and speech
-  never read as a code. A signal one bit from a standard code's word may read as that code, the way DCS decoders
+- Rejection: in the tests random bits, the Golay code words that carry no supported code, every CTCSS tone and speech
+  never read as a code. A signal one bit from a supported code's word may read as that code, the way DCS decoders
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
   in 6 x 10^8 bits for each of the detector's four droop slicers, some 50 days of continuous noise each, and about 2.3
   times as often for its balance slicer, which reads noise in windows balanced the way a code's words are; any of the
@@ -1653,19 +1687,34 @@ A policy change ends only an active call it now rejects; a call it still admits,
 name edit relabels it. Completed history retains its service
 identity and label, and different confirmed identifiers do not merge into one call.
 
-`-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
-History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
+`-P` also records conventional analog transmissions, NFM (`-fA`) and AM (`-fM`) on a radio input and analog audio
+input, independently of speaker muting or null playback.
+History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions. AM carries no
+CTCSS or DCS that dsd-neo detects, so an AM call names no tone. Earlier versions made no AM calls at all: no history
+row, `-J` line or recording.
+
+A reception becomes a call only once it has lasted 500 ms. The time counts the 200 ms hangover after the carrier
+drops, and, under a tone filter, the time the tone is checked before it is allowed. A shorter reception (a kerchunk,
+a radio keyed by mistake) leaves no history row, no `-J` line, no live call and no recording: what was recorded of it
+is deleted, never published. So a burst with less than about 300 ms of signal leaves nothing. The time is counted on
+whole blocks of audio: 20 ms on a radio input, 960 samples on audio input (384 ms at 2500 Hz). A call that counts
+starts when its carrier opened, the tone check included, and its recording starts with its first allowed audio.
+Earlier versions made a row and a recording of every reception, however short, and under a tone filter started the
+row when the tone was allowed.
 Carrier end (200 ms after the carrier drops, or after a longer pause with `--analog-record-max-gap-ms`, below),
 rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
-include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
-`<date>_<time>_<nnnnn>_NFM_<frequency in Hz>[_<tone>][_SVC_<name>].wav`
-(`20261021_142839_51828_NFM_154430000_CTCSS_141.3_SVC_20R_Traveler.wav`). The tone is the received `CTCSS_<Hz>`
-or `DCS_D<code><N|I>` (the standard code, as `DCS_D023N`); it is left out when no tone was received or it was not
-confirmed. A call with no known frequency (an audio input) has `FREQ_UNKNOWN` in place of the frequency.
+include a sanitized `_SVC_` component. An analog recording has no talkgroup, source or call type, so it is named
+`<date>_<time>_<nnnnn>_<mode>_<frequency in Hz>[_<tone>][_SVC_<name>].wav`
+(`20261021_142839_51828_NFM_154430000_CTCSS_141.3_SVC_20R_Traveler.wav`). The mode is the one the call was heard in:
+`NFM`, `AM` for an AM call, and `ANALOG` on audio input, where another receiver demodulated it
+(`20261021_142839_51828_ANALOG_FREQ_UNKNOWN_CTCSS_141.3_SVC_20R_Traveler.wav`); earlier versions named every one
+`NFM`. The tone is the received `CTCSS_<Hz>` or `DCS_D<code><N|I>` (the standard code, as `DCS_D023N`); it is left out
+when no tone was received or it was not confirmed. A call with no known frequency (an audio input) has `FREQ_UNKNOWN`
+in place of the frequency.
 By default each new recording starts with up to 200 ms of what was heard just before the call
 ([below](#where-an-nfm-recording-starts---analog-record-preroll-ms)).
-With `--rdio-mode`, NFM recordings are exported to rdio-scanner too, named or not
-([below](#nfm-calls-in-rdio-scanner)). See
+With `--rdio-mode`, analog recordings are exported to rdio-scanner too, named or not
+([below](#analog-calls-in-rdio-scanner)). See
 [receive configuration](config-system.md) and [row options](csv-formats.md).
 
 #### Where an NFM recording starts (`--analog-record-preroll-ms`)
@@ -1708,12 +1757,14 @@ picked up, as before.
   the terminal menu or the app, even to the value it already has. A retune, a scan step or an input switch drops it
   too, as above. A config applied in a running session drops it for these same reasons and no other, except that a new
   tone filter can start a fresh tone check, whose audio is never held.
-- AM (`-fM`) calls have no per-call recording yet, so no pre-roll either. Digital calls are not affected.
+- AM (`-fM`) calls have no pre-roll: the AM squelch opens without the noise squelch's delay, so a recording starts
+  with the call. Digital calls are not affected.
 
-#### NFM calls in rdio-scanner
+#### Analog calls in rdio-scanner
 
-With `--rdio-mode` set, each NFM recording is exported like a digital call's: a DirWatch sidecar, an API upload, or
-both. rdio-scanner needs a talkgroup number, and an NFM call has none, so dsd-neo gives it one:
+With `--rdio-mode` set, each analog recording (NFM, AM, or an audio input's) is exported like a digital call's: a
+DirWatch sidecar, an API upload, or both. rdio-scanner needs a talkgroup number, and an analog call has none, so
+dsd-neo gives it one:
 
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 154.4375 MHz is talkgroup `154437`.
   This is rdio-scanner's own way of numbering conventional channels. The number is used only for the export; the call
@@ -1721,18 +1772,18 @@ both. rdio-scanner needs a talkgroup number, and an NFM call has none, so dsd-ne
 - On an audio input (PulseAudio, UDP, TCP or a WAV file, even with rigctl) the frequency is not known. Those calls are
   exported under `--rdio-analog-talkgroup <n>` when it is set, and are not exported otherwise. The first time that
   happens in a run, one log line says so.
-- The talkgroup label (`talkgroup_tag`) is the channel's name from a `-Y` channel map or a `--trunk-scan` row, else
-  the frequency (`NFM 154.4375 MHz`), else `NFM`. It is never a tone's service name: rdio-scanner can rename a
-  talkgroup after each call's label, and every service on one frequency shares that frequency's talkgroup. The
-  service name stays in the file name and the call history.
-- The sidecar lists no radio (`srcList` is empty), is never encrypted, has `short_name` `NFM`, and its `freq` is the
-  call's frequency (0 below 1 MHz or when it is not known).
-- `--rdio-analog-system-id <n>` sends NFM calls to their own rdio-scanner system: the sidecar's `system` and the API
+- The talkgroup label (`talkgroup_tag`) is the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the
+  call's mode and frequency (`NFM 154.4375 MHz`, `AM 119.1000 MHz`), else the mode alone (`ANALOG` on an audio input).
+  It is never a tone's service name: rdio-scanner can rename a talkgroup after each call's label, and every service on
+  one frequency shares that frequency's talkgroup. The service name stays in the file name and the call history.
+- The sidecar lists no radio (`srcList` is empty), is never encrypted, has the call's mode as its `short_name` (`NFM`,
+  `AM` or `ANALOG`), and its `freq` is the call's frequency (0 below 1 MHz or when it is not known).
+- `--rdio-analog-system-id <n>` sends analog calls to their own rdio-scanner system: the sidecar's `system` and the API
   upload's `system` field use it. In DirWatch mode rdio-scanner ignores the sidecar's `system`. rdio-scanner 6 files
-  every call in a watched folder under that folder's system, so to keep NFM calls apart there, run them in a separate
-  dsd-neo session that writes to a second folder. rdio-scanner 7 picks the system by `short_name`, which is already
-  `NFM`.
-- An NFM call has no talkgroup or radio list row, so `stream=off` never applies to it.
+  every call in a watched folder under that folder's system, so to keep analog calls apart there, run them in a separate
+  dsd-neo session that writes to a second folder. rdio-scanner 7 picks the system by `short_name`, which is already the
+  mode.
+- An analog call has no talkgroup or radio list row, so `stream=off` never applies to it.
 
 Limits:
 
@@ -1747,10 +1798,31 @@ Limits:
 - rdio-scanner 7 (not released yet) ignores the sidecar's top-level `freq` and files a call at the time it arrives,
   not at its `start_time`. dsd-neo does not work around that.
 
-#### Pauses in an NFM recording (`--analog-record-max-gap-ms`)
+#### Analog calls need a squelch on a radio input
 
-By default an NFM call ends 200 ms after its carrier drops (the carrier hangover). Every longer pause starts a new
-call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
+On a radio input (`rtl`, `rtltcp`, `soapy`, Airspy, `--iq-replay`) an analog reception becomes a call only when the
+squelch keeps the receiver's own noise out. The startup squelch (-110 dB) and an off one let noise through, and noise
+would hold one reception open for the whole session. So while the squelch is off or at -110 dB or below, analog calls
+leave no history row, no `-J` line, no live call and no recording, and dsd-neo logs once:
+
+`NOTICE: Analog call history and recordings are paused: the squelch is off or at -110 dB or below, so noise would
+hold one call open. Set --squelch <dB>, --squelch auto or noise, or --tone-allow.`
+
+Any one of these lifts it: a level above -110 dB (`--squelch -60`), `--squelch auto`, `--squelch noise` on NFM, or on
+NFM a `--tone-allow` list, which lets only its tones through. A `--tone-block` list does not, as noise carries no tone
+to block. On AM dsd-neo checks no tones, so the AM notice names only `--squelch <dB>` and `--squelch auto`. A squelch
+set while dsd-neo runs (the terminal's `Squelch...` row, the Qt/Android radio panel, the API) or a scan row's own
+`--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged once
+too: `NOTICE: Analog call history and recordings are back on.` The monitor audio is not affected either way. Audio input
+is never paused: another receiver may squelch it, and its silence closes the carrier. Earlier versions made analog calls
+at any squelch. A known limit: the notices follow the squelch in force, so on a `-Y` scan whose rows differ (some rows
+with their own `--squelch`, others left at the default) a paused or back-on notice is logged at each hop where that
+changes.
+
+#### Pauses in an analog recording (`--analog-record-max-gap-ms`)
+
+By default an analog call ends 200 ms after its carrier drops (the carrier hangover). Every longer pause
+starts a new call, with its own history row and its own recording. `--analog-record-max-gap-ms <ms>` (INI `[recording]
 analog_max_gap_ms`) keeps the call going through a pause of up to `<ms>`, so one exchange stays one row and one
 recording. It changes nothing else: the hangover, the squelch, the scan and the tone filter work as before.
 
@@ -1768,8 +1840,8 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   applies from the next block of audio: a lower limit, or off, ends a call already paused longer than that, and a
   higher one lets it wait longer. A call that already ended stays ended.
 - While a call is paused it still shows as active, and its timer keeps running, in the terminal, the app and the API.
-  Its history row, the call-end alert (`-a`) and the event log entry come when the pause is decided. The row ends at
-  the last audio received, not when the wait ran out.
+  Its history row and the event log entry come when the pause is decided (an analog call sounds no `-a` alert). The
+  row ends at the last audio received, not when the wait ran out.
 - A tone check counts as part of the pause. Under a tone filter, the decoder checks the tone again each time the
   carrier comes back, which takes about 0.4 to 0.8 seconds, and that time is saved as silence too. So a short limit,
   such as 500 ms, rarely joins transmissions under a tone filter; allow for the check.
@@ -1784,14 +1856,16 @@ recording. It changes nothing else: the hangover, the squelch, the scan and the 
   block is 960 samples, about 117 ms at 8192 Hz. A pause shorter than one block is not seen.
 - An input that stops sending is not a pause in the signal, and still ends the call: a stream on stdin, UDP or TCP that
   sends nothing for about half a second (`rtl_fm` without `-E pad`, a UDP sender that stops between transmissions),
-  or a radio input that stops delivering. On UDP and radio input the call ends at once; on stdin and TCP it ends when
-  data comes back or the input ends, and its row still ends at its last audio. A shorter stall is joined without any
+  or a radio input that stops delivering. The call ends at once, and its row ends at its last audio (on Windows, stdin
+  that is a console or a redirected file ends it only when data comes back or the input ends). A shorter stall is
+  joined without any
   silence. To join pauses, keep the stream running while the channel is quiet (`rtl_fm -E pad`, or a channelizer that
   keeps sending the channel's noise).
 - A scan leaving the channel, a retune, an input switch, a decode mode change or stopping the decoder ends a paused
   call at once, with no silence added. Scanning is not held up by a paused call.
-- AM (`-fM`) has no per-call recording, and EDACS analog calls have their own; neither has this hold. There is no
-  minimum or maximum file length.
+- AM (`-fM`) calls are held the same way. EDACS analog calls have their own recording and do not have this hold.
+  There is no maximum file length. The shortest call is the 500 ms a reception needs to count as one (see
+  [Receive filters and service names](#receive-filters-and-service-names)).
 
 ### Tone filter (CTCSS/DCS receive policy)
 
@@ -1803,7 +1877,7 @@ setting, shown apart from what is received, and it is off by default: then the o
   `[analog] tone_filter = off|allow|block` and `tone_list` (see `docs/config-system.md`); a `-Y` channel-map row or
   `--trunk-scan` target of mode `nfm` takes the same three options for itself, and an `am` one refuses them (see
   [scoped row options](csv-formats.md#scoped-row-options)).
-- `<list>` is standard CTCSS tones (the [supported tones](#received-tone-ctcss-on-the-analog-monitor), 150.0 Hz
+- `<list>` is CTCSS tones (any of the [supported tones](#received-tone-ctcss-on-the-analog-monitor), 150.0 Hz
   included) and DCS codes separated by `/`, such as `67.0/100.0/D023N`: a tone as `100` or `100.0`, a code as `D` and
   three octal digits with `N` or `I` (any case; a bare `D023` is `D023N`). Commas are refused
   (`use / between entries, not commas`), as are a tone or code outside those sets (161.0 Hz, say), an empty

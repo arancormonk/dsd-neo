@@ -37,6 +37,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
@@ -1825,18 +1826,30 @@ enum m17_str_read_result {
 
 enum { M17_STR_INPUT_WAIT_SLICE_MS = 100 };
 
-/* Wait for the next UDP sample, leaving the wait for a queued command, or for a frontend publication a P25 watchdog
-   tick put off (dsd_runtime_publish_pending()), once the input has been silent for a stream pause
-   (DSD_ANALOG_STREAM_PAUSE_MIN_MS), counted from the first wait that came back empty, as the decoder's frame-sync hunt
-   does (issue #634). Returns 1 with a sample, 0 when the input stopped, -1 when a command or a publication waits. */
+/* A bounded read of the encoder's input: 1 with a sample, 0 when the input ended, -1 when none came within the
+   timeout. */
+typedef int (*m17_str_read_wait_fn)(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+
+/* What m17_str_wait_sample() returns when shutdown ends a silent wait. */
+enum { M17_STR_WAIT_SHUTDOWN = -2 };
+
+/* Wait for the next sample of an input that may go quiet (UDP, TCP or stdin, issue #667 D12), leaving the wait for a
+   queued command, or for a frontend publication a P25 watchdog tick put off (dsd_runtime_publish_pending()), once the
+   input has been silent for a stream pause (DSD_ANALOG_STREAM_PAUSE_MIN_MS), counted from the first wait that came
+   back empty, as the decoder's frame-sync hunt does (issue #634). A quiet sender is no end of input. Returns 1 with a
+   sample, 0 when the input ended, -1 when a command or a publication waits, and M17_STR_WAIT_SHUTDOWN when shutdown
+   was asked for meanwhile. */
 static int
-m17_str_wait_udp_sample(dsd_opts* opts, int16_t* out) {
+m17_str_wait_sample(dsd_opts* opts, int16_t* out, m17_str_read_wait_fn read_wait) {
     uint64_t silent_since_ms = 0U;
     int silent = 0;
     for (;;) {
-        const int got = dsd_net_audio_input_hook_udp_read_sample_wait(opts, out, M17_STR_INPUT_WAIT_SLICE_MS);
+        const int got = read_wait(opts, out, M17_STR_INPUT_WAIT_SLICE_MS);
         if (got >= 0) {
             return got;
+        }
+        if (dsd_exitflag_load() == 1) {
+            return M17_STR_WAIT_SHUTDOWN;
         }
         const uint64_t now_ms = dsd_realtime_mono_ms();
         if (!silent) {
@@ -1849,6 +1862,23 @@ m17_str_wait_udp_sample(dsd_opts* opts, int16_t* out) {
             return -1;
         }
     }
+}
+
+static int
+m17_str_tcp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    return dsd_net_audio_input_hook_tcp_read_sample_wait(opts->tcp_in_ctx, out, timeout_ms);
+}
+
+static int
+m17_str_stdin_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    return dsd_pcm_stream_read_wait(opts->audio_in_stdin, out, timeout_ms);
+}
+
+/* What a wait that brought no sample makes of the block: shutdown stops the encoder, a waiting command gives the block
+   up for it. */
+static int
+m17_str_wait_gave_up(int got) {
+    return got == M17_STR_WAIT_SHUTDOWN ? M17_STR_READ_STOP : M17_STR_READ_AGAIN;
 }
 
 /* One input sample through the anti-alias low-pass, which runs at the input rate; the reader keeps the last of every dec
@@ -1872,31 +1902,42 @@ m17_str_read_block_pulse(dsd_opts* opts, m17_encoder_input* in, short* out, size
     return M17_STR_READ_OK;
 }
 
+/* stdin's end of input: the reader closed, and the session ends; a read error is reported as one. */
+static int
+m17_str_stdin_ended(dsd_opts* opts) {
+    const int read_error = dsd_pcm_stream_failed(opts->audio_in_stdin);
+    if (read_error) {
+        LOG_ERROR("M17 stream encoder failed to read STDIN");
+    }
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    dsd_exitflag_store(1);
+    if (read_error) {
+        return M17_STR_READ_ERROR;
+    }
+    DSD_FPRINTF(stderr, "Connection to STDIN Disconnected.\n");
+    DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
+    return M17_STR_READ_STOP;
+}
+
+/* stdin through the input's one reader (issue #667 D12), the symbol path's too, in bounded waits: a quiet pipe is no end
+   of input, and shutdown or a queued command still gets through. */
 static int
 m17_str_read_block_stdin(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
-    if (opts->audio_in_file == NULL) {
+    if (opts->audio_in_stdin == NULL) {
         LOG_ERROR("M17 stream encoder has no STDIN audio handle");
         return M17_STR_READ_ERROR;
     }
 
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
-            short s = 0;
-            const sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
-            if (result != 1) {
-                const int read_error = sf_error(opts->audio_in_file);
-                if (read_error != SF_ERR_NO_ERROR) {
-                    LOG_ERROR("M17 stream encoder failed to read STDIN: %s", sf_strerror(opts->audio_in_file));
-                }
-                sf_close(opts->audio_in_file);
-                opts->audio_in_file = NULL;
-                dsd_exitflag_store(1);
-                if (read_error != SF_ERR_NO_ERROR) {
-                    return M17_STR_READ_ERROR;
-                }
-                DSD_FPRINTF(stderr, "Connection to STDIN Disconnected.\n");
-                DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-                return M17_STR_READ_STOP;
+            int16_t s = 0;
+            const int got = m17_str_wait_sample(opts, &s, m17_str_stdin_read_wait);
+            if (got < 0) {
+                return m17_str_wait_gave_up(got);
+            }
+            if (got == 0) {
+                return m17_str_stdin_ended(opts);
             }
             in->sample = m17_str_input_filter(&in->lowpass, (float)s);
         }
@@ -1905,13 +1946,18 @@ m17_str_read_block_stdin(dsd_opts* opts, m17_encoder_input* in, short* out, size
     return M17_STR_READ_OK;
 }
 
+/* TCP in bounded waits (issue #667 D12): a sender quiet past the socket's receive timeout keeps the connection, and only
+   its close or an error ends the session, as before. */
 static int
 m17_str_read_block_tcp(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
-            short s = 0;
-            const int result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
-            if (result == 0) {
+            int16_t s = 0;
+            const int got = m17_str_wait_sample(opts, &s, m17_str_tcp_read_wait);
+            if (got < 0) {
+                return m17_str_wait_gave_up(got);
+            }
+            if (got == 0) {
                 dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                 opts->tcp_in_ctx = NULL;
                 DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
@@ -1931,9 +1977,9 @@ m17_str_read_block_udp(dsd_opts* opts, m17_encoder_input* in, short* out, size_t
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
             short s = 0;
-            const int got = m17_str_wait_udp_sample(opts, (int16_t*)&s);
+            const int got = m17_str_wait_sample(opts, (int16_t*)&s, dsd_net_audio_input_hook_udp_read_sample_wait);
             if (got < 0) {
-                return M17_STR_READ_AGAIN;
+                return m17_str_wait_gave_up(got);
             }
             if (got == 0) {
                 DSD_FPRINTF(stderr, "UDP input stopped.\n");

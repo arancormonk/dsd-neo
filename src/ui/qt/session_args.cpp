@@ -317,7 +317,7 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
 /**
  * @brief Append the call recording the app owns (issue #708), before the extra options: the store's folder and its
  * journal always, so a -P among the extra options records into a folder the app manages, then -P,
- * --record-unknown-only, the NFM pause hold (--analog-record-max-gap-ms, issue #756) and the NFM pre-roll
+ * --record-unknown-only, the analog pause hold (--analog-record-max-gap-ms, issue #756) and the NFM pre-roll
  * (--analog-record-preroll-ms, issue #668) as the preferences say.
  * Nothing without a folder.
  */

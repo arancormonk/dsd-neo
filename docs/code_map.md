@@ -161,26 +161,27 @@ Generated (do not edit/commit):
     `src/core/util/dsd_state_lcn_nav.c` declared in `<dsd-neo/core/state.h>`. It is written by exactly the events that
     move the cursor past a row the receiver was put on: `untyped_install_row()` (`engine.c`) for a non-zero row (the
     timed step, an asynchronous landing, both resumes), `channel_scan_commit()` together with `roll = row + 1` (after
-    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), a manual untyped
-    step (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`, and a P25 hunt probe
-    on a `-T` channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it picked past
-    a duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a placeholder park, a
-    deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted
-    step `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads as none once its row leaves the list or holds
-    another frequency (no map generation: protocols move `trunk_chan_map_seq` whenever they learn a channel), and with
-    none the heard row falls back to `roll - 1` when that row exists and is not 0 Hz. A hard-failed step (either
-    direction, manual or timed, typed or untyped, late failures included, and a refused P25 hunt probe of a `-T`
-    channel-map row) that finds no valid record calls `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the
-    `roll - 1` the failure moved past, until a step records a row or `dsd_state_lcn_nav_reset()` runs; a valid record
-    is left alone. The value rides both snapshots with the record. `lcn_back_retry_row`/`_freq`
-    (the row a hard-failed backward step tried) follow the same rule and any position write clears them. The row
-    heard is what the channel label (`channel_label.c`), the terminal Scan Mode line and the untyped branch of
-    `dsd_engine_channel_scan_on_air_row()` read; Avoid (`apply_manual_scan_avoid()`) flags that row, which on a typed
-    list is the landed row (`tuned_row`). `dsd_state_lcn_nav_reset()` runs wherever the list or its session is
-    replaced (`initState()`, `chan_map_adopt()`, `svc_clear_channel_map()`, the P25 CC selection's automatic anchor);
-    the four fields ride the UI snapshot's `p25_p2_active_slot..dstar_gps` range (a static assert pins them) and each
-    trunk-scan target's snapshot with its cursor (tests: `CORE_STATE_LCN_NAV`, `CORE_CHANNEL_LABEL`,
-    `ENGINE_NO_CARRIER_RESET`, `ENGINE_CHANNEL_SCAN`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`).
+    the outgoing carrier boundary, so calls ending there still take the outgoing row's label), a manual untyped step
+    (`L` or `J`) that tuned, where `lcn_cycle_on_tune_outcome()` writes `roll = row + 1`, and a P25 hunt probe on a `-T`
+    channel map whose tune was accepted (`try_next_cc()`; `next_lcn_freq()` hands back the row it picked past a
+    duplicate and a wrap, and a 0 Hz row's control-channel fallback records nothing). Never at a placeholder park, a
+    deferral, a pending or failed step, a pause, a late failure or a resume rollback. So after every accepted step
+    `dsd_state_lcn_heard_row()` equals `roll - 1`; it differs only where `roll - 1` named the wrong row. A record reads
+    as none once its row leaves the list or holds another frequency (no map generation: protocols move
+    `trunk_chan_map_seq` whenever they learn a channel), and with none the heard row falls back to `roll - 1` when that
+    row exists and is not 0 Hz. A hard-failed step (either direction, manual or timed, typed or untyped, late failures
+    included, and a refused P25 hunt probe of a `-T` channel-map row) that finds no valid record calls
+    `dsd_state_lcn_on_air_note_refused()`, which sets `lcn_on_air_row` to -2: the heard row is then none, not the `roll
+    - 1` the failure moved past, until a step records a row or `dsd_state_lcn_nav_reset()` runs; a valid record is left
+    alone. The value rides both snapshots with the record. `lcn_back_retry_row`/`_freq` (the row a hard-failed backward
+    step tried) follow the same rule and any position write clears them. The row heard is what the channel label
+    (`channel_label.c`), the terminal Scan Mode line and the untyped branch of `dsd_engine_channel_scan_on_air_row()`
+    read; Avoid (`apply_manual_scan_avoid()`) flags that row, which on a typed list is the landed row (`tuned_row`).
+    `dsd_state_lcn_nav_reset()` runs wherever the list or its session is replaced (`initState()`, `chan_map_adopt()`,
+    `svc_clear_channel_map()`, the P25 CC selection's automatic anchor); the four fields ride the UI snapshot's
+    `p25_p2_active_slot..dstar_gps` range (a static assert pins them) and each trunk-scan target's snapshot with its
+    cursor (tests: `CORE_STATE_LCN_NAV`, `CORE_CHANNEL_LABEL`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_CHANNEL_SCAN`,
+    `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`).
   - A row a front end refuses on an untyped list moves only the cursor past it (issue #666), so a row the tuner never
     takes (a rigctl peer answering `RPRT -1` out of its band) cannot hold `L` or the timed `-Y` step on it. The timed
     step (`no_carrier_step_scanner_mode_if_needed()`, a refusal by any leg, a partial move included) and a late failure
@@ -1045,6 +1046,20 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - TCP keepalive: `dsd_socket_set_keepalive()` turns on SO_KEEPALIVE with the idle time, probe interval and probe
+    count each platform lets a socket set (TCP_KEEPIDLE, or macOS's TCP_KEEPALIVE; TCP_KEEPINTVL; TCP_KEEPCNT; on
+    Windows those options, else `SIO_KEEPALIVE_VALS`), each guarded where a platform lacks it.
+    `DSD_SOCKET_KEEPALIVE_*` (15 s idle, 5 s apart, 4 probes, about 35 s) is the half-open bound the rtl_tcp link and
+    every `Connect()`/`ConnectBounded()` connection (TCP audio, rigctl) run with
+  - Buffered PCM input (issue #667 D12): `dsd_pcm_stream` in `include/dsd-neo/platform/pcm_stream.h`
+    (`src/platform/pcm_stream.c`) reads raw PCM16LE mono from a descriptor (stdin) or a socket (TCP audio). One reader
+    per stream serves every consumer, so the stdin input and the TCP input each have exactly one buffer. Every read is
+    bounded (`dsd_pcm_stream_read_wait()`): it returns SAMPLE, TIMEOUT or END, keeps a part sample for the next call,
+    and checks readiness only when the buffer runs dry, refilling it at most once per wait. A socket's receive timeout
+    is never the end: the read waits for readiness first, and a read that would block is a TIMEOUT. On
+    sockets it waits with `dsd_socket_wait()`. On descriptors it waits with `dsd_fd_wait_readable()` (`file_compat.h`):
+    `poll()` on POSIX, and on Windows `PeekNamedPipe()` in 5 ms sleeps for an anonymous pipe. A Windows console or
+    regular file reports ready at once and its read blocks. `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -1561,10 +1576,10 @@ suite runs under this compiler.
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
   - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
     rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
-    failure that keeps the temp file. `open_wav_file()` journals an open failure. The NFM teardown close
-    (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) writes nothing. Each
-    segment's id is its temp name's token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and
-    its errors name one id.
+    failure that keeps the temp file. `open_wav_file()` journals an open failure. The analog teardown close
+    (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) and the discard of an
+    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's
+    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
     (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
@@ -1583,15 +1598,15 @@ suite runs under this compiler.
     runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
-    NFM call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
+    analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
     (recording switched on mid-call, a reacquired segment whose file opened at the previous segment's commit), else
     `event_time`, else the decode clock. `wav_close_and_publish()` works it out for the journal and hands the exporter
     the same stamps (`opened`, `started`) and row, from which `dsd_rdio_meta_fields_from_event()` works it out again
     with the same function, so the journal's `start` and the sidecar's `start_time` agree. Every stamp is on the
     decode clock, so a replay's records carry the capture's times.
-  - One NFM recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held call is one row
-    and one recording, published once and linked once. Its `start` is the first burst's, and its `duration_ms`
-    includes the silence written for the pause.
+  - One conventional analog recording may cover a held pause (`opts->analog_record_max_gap_ms`, issue #756): the held
+    call is one row and one recording, published once and linked once. Its `start` is the first burst's, and its
+    `duration_ms` includes the silence written for the pause.
   - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
     escaped (quotes, backslashes, control characters, U+2028/U+2029; a byte that starts no UTF-8 character becomes
     U+FFFD). A reader skips a line that does not parse (a torn tail) and a record whose `v` it does not know. Every
@@ -1661,14 +1676,16 @@ suite runs under this compiler.
   staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
   (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built
   (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional analog calls,
-  M17 and identities wider than 32 bits are never judged. An analog row also needs an export talkgroup (issue #668):
-  `wav_close_export_rdio()` exports it when `dsd_rdio_analog_talkgroup()` gives one (its frequency in kHz, or
-  `--rdio-analog-talkgroup`), and otherwise skips it with no failure line, logging one LOG_WARN per decoder run while
-  `--rdio-mode` is on (`wav_recording_analog_rdio_skip_first_this_run()`, reset by `dsd_wav_recording_session_reset()`
-  at engine start). A digital row without a talkgroup still warns ("skipped", then "export failed"). An NFM export keeps
-  the #708 contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the
-  file, and a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
-  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
+  M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue #667) also needs
+  an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when `dsd_rdio_analog_talkgroup()` gives one
+  (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it with no failure line, logging one
+  LOG_WARN per decoder run while `--rdio-mode` is on (`wav_recording_analog_rdio_skip_first_this_run()`, reset by
+  `dsd_wav_recording_session_reset()` at engine start). Its tag and `short_name` take the row's mode word
+  (`sysid_string`: `NFM`, `AM` or `ANALOG`). A digital row without a talkgroup still warns ("skipped", then "export
+  failed"). An analog export keeps the #708 contract: the upload is queued before the journal's `publish` record (its
+  `rdio` flag), the queue holds the file, and a journal suppresses delete-after-upload. Neither field is shown,
+  persisted or part of the control API's row fingerprint; exports already queued are not recalled. Tests:
+  `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
   `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
@@ -1715,6 +1732,48 @@ suite runs under this compiler.
   `dsd_nxdn_location_valid()`, and the row-level `dsd_call_site_compatible()` and whole-record
   `dsd_call_record_site_compatible()` the call-state reacquisition guard above uses. Tests:
   `CORE_RECEIVED_IDENTITY_SITE`, `CORE_CALL_ALERT_HISTORY`, `CORE_CALL_STATE`.
+- Analog rows (issue #667; `dsd_events.c`, `call_state.c`). A row is analog by its protocol (`DSD_SYNC_ANALOG`). Its
+  mode, `dsd_analog_mode` (`<dsd-neo/core/analog_mode.h>`, pinned values: unknown 0, NFM 1, AM 2), rides as a uint8_t
+  on the observation (`dsd_call_observation::analog_mode`), the canonical call (`dsd_call_snapshot::analog_mode`) and the
+  row (`Event_History::analog_mode`). The canonical call takes it from the observation that begins the epoch and keeps
+  it: a CONTINUE never changes it, a reacquired epoch is seeded with the ending one's. The event layer copies it with
+  the row's other per-call fields (init, push, the render context both ways, a merge that fills an unknown one, a data
+  notice from its observation); trunk-scan snapshots copy whole rows and calls. On any other protocol the mode is 0 and
+  means nothing. `sysid_string` is the mode's name (`dsd_analog_mode_name()`: `NFM`, `AM`, `ANALOG` when unknown), and
+  the row text (`watchdog_event_current_build_event_analog()`) is the protocol token, the mode word (none when unknown:
+  `dsd_analog_mode_known()`, which the live call view's name fallback uses too), the frequency, then the receive
+  identity's confirmed tone, copied into the render context beside the service label:
+  `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`, `ANALOG NFM; FREQ: ...; DCS D023N / D047I;`
+  (`dsd_dcs_format_label()` of the canonical value `value / 2`, `value % 2`: both spellings, the canonical one first),
+  `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input `ANALOG; CTCSS 100.0 Hz;`. An untoned or never confirmed call
+  has no tone token; the call keeps its confirmed tone after the carrier drops, so a tone lost at the end still shows.
+  Call alerts (A1): an analog row sounds no VOICE_START or VOICE_END and arms neither (no withheld START, no END held
+  for the reacquire window). The END is decided from the outgoing row's protocol, read before the staged row is cleared
+  (`watchdog_event_row_is_analog()` in `watchdog_event_retire_staged_row()` and `watchdog_event_finalize_ended()`), so a
+  digital END still pending when an analog call takes the slot sounds as before. On `-o -` the 8 kHz alert blocks would
+  land in the 48 kHz monitor stream; on UDP an alert goes to the digital port, never the analog one (base port + 2).
+  Tests: `CORE_RECEIVE` (`test_analog_row_text`, `test_analog_mode_rows`), `CORE_CALL_ALERT_HISTORY`
+  (`test_analog_call_sounds_no_alerts`, `test_digital_end_sounds_when_an_analog_call_takes_the_slot`,
+  `test_digital_call_after_an_analog_call_sounds_only_its_start`), `CORE_VOICE_CHAIN` (the alert's UDP port),
+  `DECODE_IQ_ANALOG_NO_CALL_ALERT` (end to end: `-a` leaves `-o -` byte-identical and sends nothing to the UDP digital
+  port). The row text end to end: `DECODE_IQ_ANALOG_CTCSS_1000_ROW`, `_DCS_023N_ROW`, `_AM_ROW`, `_KERCHUNK_NO_ROW`.
+- Explicit BEGIN (issue #667; `call_state.c`, `dsd_events.c`). Two optional observation fields let the analog tracker
+  begin a call it qualified late with what it saw first. `has_receive_seed` + `receive_seed`: on a BEGIN the seed is
+  the identity the call is heard with, instead of the live publication (`call_state_observed_identity()`); a CONTINUE
+  ignores it. The service name follows it: `dsd_call_state_refresh_receive()` names an analog call by the identity it
+  holds even while the live one reads another tone (that change is the tracker's boundary, which ends the call), and a
+  live identity still being acquired never erases it. `start_wall`: decode-clock wall seconds of the call's first
+  sample (the `dsd_decode_*` wall domain), kept fractional on the canonical call (`dsd_call_snapshot::start_wall`) and
+  in the render context. Without either field nothing changes.
+- Analog stamps (issue #667). An analog row whose call has a `start_wall` is stamped from it on every render
+  (`watchdog_event_current_stamp_item()`): `event_start_time = floor(start_wall)` and
+  `event_time = floor(start_wall + elapsed)`, the end from the full sum, so 1000.9 s + 0.6 s ends in 1001 where
+  `start + (time_t)elapsed` gave 1000. Without one it is stamped as every row is (the first render's clock minus the
+  elapsed, then start + elapsed). An ended analog row's text prefix is its `event_time`, not the render's clock
+  (`watchdog_event_text_time()`), so a commit an input stall delayed still reads when the call ended (A2). Digital rows
+  ignore `start_wall`, keep the render's clock in their prefix, and `--playfiles` keeps the stamp the file reader gave
+  the row: the visible-prefix contract merges preserve. Tests: `CORE_RECEIVE` (`test_analog_seeded_begin`,
+  `test_analog_wall_anchored_stamps`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1819,8 +1878,8 @@ suite runs under this compiler.
   and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls" below), not
   through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
-  (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
-  and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
+  (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per supported CTCSS tone; one per supported DCS
+  code and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
   scopes and frontend snapshots. Parsing, formatting and matching are runtime's (`runtime/analog_tones.h`). Any analog
   audio writer (the monitor sink in `dsd_symbol.c` today; a future analog `-w`/`-P` writer too) must consult the
   verdict through `dsd_analog_tone_gate_in_force()` and write only OFF and ALLOWED; the `-6` raw WAV stays ungated.
@@ -2862,7 +2921,12 @@ suite runs under this compiler.
     scan runs no row, issue #671), where the engine refuses `--squelch noise` at startup and `svc_rtl_set_sql_setting()`
     refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`); it refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`,
     issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
-    below). The decoder's comparisons go through `dsd_squelch_dynamic_in_force()` (an RTL-family input's AUTO or NOISE,
+    below). `dsd_squelch_analog_calls_allowed()` (issue #667 D2) is whether an analog reception may become a call:
+    always off a radio input; on one only under a dynamic squelch in force, a level above `DSD_SQUELCH_STARTUP_DB`
+    (-110, `<dsd-neo/core/power.h>`, which `dsd_init.c` starts from; within the levels' 1e-9 relative tolerance), or a
+    non-empty ALLOW tone list with FM detection running; it reads `dsd_opts` as it stands, a scan row's squelch and tone
+    policy included; the engine's analog tracker asks it. The decoder's comparisons go through
+    `dsd_squelch_dynamic_in_force()` (an RTL-family input's AUTO or NOISE,
     or the PCM noise squelch while `dsd_state::squelch_noise_state` says it is learning or holds a reference),
     `dsd_squelch_flags_in_force()` (whether the monitor's per-sample flags carry the gate: that, or the PCM noise
     squelch running at all, whose flags read open with no band or no room, so a block shut up to the decision stays
@@ -2875,7 +2939,8 @@ suite runs under this compiler.
     and elsewhere it clears them; the frame sync's throttled UI publish calls it. Tests: `RUNTIME_SQUELCH`,
     `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
-    the standard 50-tone CTCSS table and 150.0 Hz in tenths of a hertz, index lookup and the
+    the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
+    lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
     the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_monitor_tap_active()`, the
     one answer to "does the receive tap run": the analog monitor of either kind, FM or AM, on PCM input, or on an RTL
@@ -2890,7 +2955,7 @@ suite runs under this compiler.
     lets through, OFF and ALLOWED: the one rule for what the monitor plays and what is scan activity (a PENDING carrier
     holds a row only while it lasts, leaving no tail). Tone
     lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
-    as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
+    as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, unsupported
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
     written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit
     (`dsd_tone_display_to_ascii()` respells that mark `...` in place, the same three bytes, for ASCII surfaces: the
@@ -2903,11 +2968,12 @@ suite runs under this compiler.
     list, off takes one or none, the parser refuses the rest with its entry-numbered reason; the tone-filter command and
     the Qt editor's inline message both ask it.
     `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
-    the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check bits;
+    the 104 codes radios commonly offer (the 83 standard codes and 21 more), `dsd_dcs_word()` (any 9-bit code's
+    23-bit Golay word: code, the fixed 100, 11 check bits;
     bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the signal
     in 23 received bits when some rotation, in either polarity, is a supported code's word), `dsd_dcs_canonical()` (the
-    alias rule: normal polarity first, then the lowest code, so every inverted standard code is named by its one normal
-    alias, D023I by D047N), `dsd_dcs_alias()` (the signal's other standard spelling, its one inverted code: D047I for
+    alias rule: normal polarity first, then the lowest code, so every inverted supported code is named by its one normal
+    alias, D023I by D047N), `dsd_dcs_alias()` (the signal's other supported spelling, its one inverted code: D047I for
     D023N) and the `D023N` / `DCS D023N / D047I` formatters, leading zeros always. A received code is labelled with both
     spellings, canonical first, because a receiver cannot tell which one a transmitter was set to. The DSP detector
     cannot link `dsd-neo_fec`, so runtime has its own encoder; `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against
@@ -3128,8 +3194,8 @@ publication is put off and the tick has left the guard (`p25_sm_tick_guard_busy(
 pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`) of the silence or one wait slice (100 ms) after the tick ends, whichever is
 later; on an RTL device with no stream, at the read's next empty poll after the tick. It is not folded into the
 controls-pending query, whose signal-search and TCP-reconnect callers it would cut. A connected TCP or stdin input
-blocks in its read with no slices, so there the retry waits for the next sample or command, as a queued command already
-does. The hold is one copy long, and a watchdog tick that meets it waits for its next period.
+waits in the same slices (issue #667 D12), except Windows console stdin and a regular file, which block in their read.
+The hold is one copy long, and a watchdog tick that meets it waits for its next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 
@@ -4164,7 +4230,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   decoded; `src_id`, `src_label` alone), the call `kind`, `protocol_label` (the protocol's display name from
   `dsd_synctype_to_string()`, with its frame-type and family names spelled as the protocol: `X2-TDMA`, `ProVoice`,
   `EDACS`, `D-STAR`, `M17`; empty for analog and the generic digital sync), crypto and service
-  metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
+  metadata, with the 3 s ended hold. An analog call no service or channel names is named by its `analog_mode`
+  (`NFM`, `AM`, or `Analog` when unknown on audio input; issue #667), every analog call alike. An epoch with no
+  identity reads idle, except on the
   protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
   call only from a CRC-checked carrier and publishes speech no D-SETUP named, and a direct mode DM-2-C call (whose
   security class encrypts every identity), as a voice call with no parties (issue #773). The Qt hero and second-slot
@@ -4352,9 +4420,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
   frequency, a DCS code that is unsupported or not the canonical member of its alias class) reads `detecting`, never a
   value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
-  signal's other standard spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first. The
-  first polarity reads normal and the second inverted for every standard code, whose
-  inverted signal is another standard code's normal one; both are kept because a code is named with its polarity
+  signal's other supported spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first.
+  The first polarity reads normal and the second inverted for every supported code, whose
+  inverted signal is another supported code's normal one; both are kept because a code is named with its polarity
   everywhere. The same view carries `configured_text`, the CTCSS/DCS receive policy in force (issue #527): `off`, or its
   mode and display list (`allow 100.0 Hz/D023N`, `dsd_tone_set_format_display()`), and while a scan row's own policy
   runs (`dsd_scan_mode_row_options()`) ` (row; default X)` naming the configured policy it shadows
@@ -4536,34 +4604,36 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     1 MiB is disconnected, never shown a stream with gaps. An unauthenticated connection is closed at the auth
     deadline, one wrong token or one line that is not JSON ends the connection (the latter keeps a web page's HTTP
     request from driving the port), and the token is compared over its full buffer width
-  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history rings
-    at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of any
-    committed row) and sends the rows pushed or changed since its last look to event subscribers; following them whether
-    or not anyone listens is what lets a new subscriber get every row committed after its subscription. An event row
-    carries every field a client sees of the row, the call's `freq_hz` and access code included (issue #575), and the
-    fingerprint covers the same fields, so a row that learns one in place is sent again. While an authenticated client
-    is connected it also encodes the call/status/system/metrics/quality records every 250 ms (cached for `get`). The
-    cache (those records and the scan avoid copy below) only ever holds the current run as a client sees it: the first
-    publish that finds no client drops it all (nothing refreshes it then) and makes the next publish with a client run
-    the update at once, and a publish from a new state instance (a restarted decoder) drops it and runs the update at
-    that publish (one flag test per publish without clients, one instance compare with them), so `get` answers `null`
-    rather than the previous run's or previous client's record. The `status` record carries what the stateful commands
-    must quote back: the talkgroup policy version, the decryption context and the scan row view. Its `scan` object
-    (issue #697) adds, from the scan state view, the scan list view and the published position fields only:
-    `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's "n of m" `ordinal` (null while
-    the target on air is outside the lists switched on) and `count` (`trunk_scan_rotation_ordinal`/`_count`), and
-    `session`, `lists_seq`, `list` (the list on air, or null) and `lists[]` that `scan_list_set` and its results quote;
-    the avoid count stays in `status.scan_avoids`. RF metrics follow the
-    shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick the feed
-    reads the scan avoid view's constant-cost summary and, only when its key (`dsd_app_scan_avoid_summary_same_key()`)
-    moved since the last successful collection, collects the raw entries (`dsd_app_scan_avoid_raw_collect()`, no
-    formatting) into a new immutable, reference-counted block swapped in under `g_feed_mu`. A failed collection drops
-    the block and reports the list unavailable at that revision (never the older list as current), and the next tick
-    retries at the same key. Feed stop drops it, as do the no-client and restart drops above. A collection reports the
-    entries it found as its total. `status.scan_avoids` is the held summary; `get
-    {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a reference under
-    the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on the session thread
-    outside every lock, so the replaced block is freed by its last reader
+  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history
+    rings at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of
+    any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
+    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. An
+    event row carries every field a client sees of the row, the call's `freq_hz` and access code included (issue
+    #575), and the fingerprint covers the same fields, so a row that learns one in place is sent again. Event rows and
+    `call` slots carry `analog_mode` (`nfm`/`am`/`unknown` on an analog call, `""` on any other; issue #667), the
+    row's in its fingerprint; the slot's is read off the call snapshot, as `frequency_hz` is. While an authenticated
+    client is connected it also encodes the call/status/system/metrics/quality records every 250 ms (cached for
+    `get`). The cache (those records and the scan avoid copy below) only ever holds the current run as a client sees
+    it: the first publish that finds no client drops it all (nothing refreshes it then) and makes the next publish
+    with a client run the update at once, and a publish from a new state instance (a restarted decoder) drops it and
+    runs the update at that publish (one flag test per publish without clients, one instance compare with them), so
+    `get` answers `null` rather than the previous run's or previous client's record. The `status` record carries what
+    the stateful commands must quote back: the talkgroup policy version, the decryption context and the scan row view.
+    Its `scan` object (issue #697) adds, from the scan state view, the scan list view and the published position
+    fields only: `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's "n of m"
+    `ordinal` (null while the target on air is outside the lists switched on) and `count`
+    (`trunk_scan_rotation_ordinal`/`_count`), and `session`, `lists_seq`, `list` (the list on air, or null) and
+    `lists[]` that `scan_list_set` and its results quote; the avoid count stays in `status.scan_avoids`. RF metrics
+    follow the shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick
+    the feed reads the scan avoid view's constant-cost summary and, only when its key
+    (`dsd_app_scan_avoid_summary_same_key()`) moved since the last successful collection, collects the raw entries
+    (`dsd_app_scan_avoid_raw_collect()`, no formatting) into a new immutable, reference-counted block swapped in under
+    `g_feed_mu`. A failed collection drops the block and reports the list unavailable at that revision (never the
+    older list as current), and the next tick retries at the same key. Feed stop drops it, as do the no-client and
+    restart drops above. A collection reports the entries it found as its total. `status.scan_avoids` is the held
+    summary; `get {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a
+    reference under the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on
+    the session thread outside every lock, so the replaced block is freed by its last reader
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
@@ -4636,7 +4706,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   components, preserving the reversed-tap convention and sample-window bounds. Tests: `DSP_FLL_BAND_EDGE`
   (independent complex convolution over every history position), `DSP_MMSE_INTERP`, and `DSP_COSTAS`.
 - Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync) waits
-  on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted a
+  on a UDP, TCP or stdin input in 100 ms slices (`symbol_wait_pcm_sample()` over `udp_read_sample_wait` and
+  `tcp_read_sample_wait` in the network-audio hooks, and the stdin reader's `dsd_pcm_stream_read_wait()`, issue #667
+  D12). A TCP timeout never reaches the reconnect: only the connection's close or an error does (B7), and the first
+  sample of a new connection is scaled by the input volume like every other (B5). Shutdown ends the wait. Once the
+  silence has lasted a
   stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
   runtime's controls-pending query reports a queued command, or decoder-thread trunking timers are due
   (`dsd_frame_sync_hook_decoder_ticks_due()`: a startup control-channel hunt armed, running or due to arm
@@ -4685,27 +4759,26 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
-  `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, the per-block tone
-  eligibility `dsd_analog_rx_block_begin()` / `dsd_analog_rx_block_eligible_from()` /
-  `dsd_analog_rx_block_qualified_carrier()` (issue #668, below), `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_carrier_open_now()` (the published carrier held to `dsd_analog_rx_boundaries_current()`: no retune
-  unresolved and the boundaries the tap noted at its last read still current, the hard-boundary test the NFM call's
-  block input uses, issue #756), `dsd_analog_rx_carrier_observed_now()` (the tap has judged the channel on air,
-  so a closed carrier is a verdict rather than no read yet), `dsd_analog_rx_block_straddles_boundary()`, the monitor
-  playback bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
-  `dsd_analog_rx_input_wait_begin()` / `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing
-  contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
-  per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
-  `DSP_ANALOG_CTCSS` asserts them on every timing row, and a tone policy's acquisition window must exceed the lock
-  ceiling by at least 100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md`
-  (1,000,000 starts per condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The
-  header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the
-  first lock has to budget for. A tone off its value by transmitter tone error has its own lock bounds from a carrier's
-  start, `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS` and `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_CEILING_MS` (issue #643), which
+  `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, the per-block tone eligibility
+  `dsd_analog_rx_block_begin()` / `dsd_analog_rx_block_eligible_from()` / `dsd_analog_rx_block_qualified_carrier()`
+  (issue #668, below), `dsd_analog_rx_reset()`, `dsd_analog_rx_carrier_open_now()` (the published carrier held to
+  `dsd_analog_rx_boundaries_current()`: no retune unresolved and the boundaries the tap noted at its last read still
+  current, the hard-boundary test the NFM call's block input uses, issue #756), `dsd_analog_rx_carrier_observed_now()`
+  (the tap has judged the channel on air, so a closed carrier is a verdict rather than no read yet),
+  `dsd_analog_rx_block_straddles_boundary()`, the monitor playback bracket `dsd_analog_rx_playback_begin()` /
+  `dsd_analog_rx_playback_end()` and the live input read bracket `dsd_analog_rx_input_wait_begin()` /
+  `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing contract in sample time: p95 targets
+  `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event ceilings
+  `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800). `DSP_ANALOG_CTCSS` asserts them
+  on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least 100 ms. Each
+  ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md` (1,000,000 starts per condition at 0
+  dB, 800,000 stops), as the header states; change them only with new sweeps. The header also states the measured
+  wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the first lock has to budget for. A
+  tone off its value by transmitter tone error has its own lock bounds from a carrier's start,
+  `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS` and `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_CEILING_MS` (issue #643), which
   `DSP_ANALOG_CTCSS_TONE_ERROR` asserts on its off-value rows. The DCS timing contract sits beside it, built the same
-  way, for the demodulator's DC
-  block at 8 to 78.125 kHz: `DSD_ANALOG_DCS_LOCK_MS` (520, every start at 10 dB in-band or better; 7,000,000 starts
-  over those rates), at 3 dB the p95 target `DSD_ANALOG_DCS_LOCK_P95_MS` (450) and the ceiling
+  way, for the demodulator's DC block at 8 to 78.125 kHz: `DSD_ANALOG_DCS_LOCK_MS` (520, every start at 10 dB in-band or
+  better; 7,000,000 starts over those rates), at 3 dB the p95 target `DSD_ANALOG_DCS_LOCK_P95_MS` (450) and the ceiling
   `DSD_ANALOG_DCS_LOCK_CEILING_MS` (1,500; lock time in noise has no absolute bound), and for loss the p95 targets
   `DSD_ANALOG_DCS_LOSS_P95_MS` (350) and `DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS` (150) with the ceilings
   `DSD_ANALOG_DCS_LOSS_CEILING_MS` (600) and `DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS` (400). The bounds hold with a DC
@@ -4713,81 +4786,82 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   block, a DC-coupled PCM input or a 1 Hz coupling; PCM input through a sound card's coupling keeps the 10 dB bound up
   to a 10 Hz corner but not the 3 dB target or ceiling, as the header states. Each DCS ceiling sits above the slowest
   event of the long-run sweeps in `docs/testing.md` (8,500,000 starts at 3 dB, 1,000,000 stops and 1,000,000 turn-offs);
-  change them only with new sweeps. `DSP_ANALOG_DCS` holds every fixed-seed case to the p95 targets (at 3 dB through
-  the demodulator's DC block, every start within 700 ms; the coupled row has pins of its own). A policy window must
-  exceed the DCS lock ceiling by 100 ms too. `dsd_symbol.c` taps each unsynced analog block while it is still raw:
+  change them only with new sweeps. `DSP_ANALOG_DCS` holds every fixed-seed case to the p95 targets (at 3 dB through the
+  demodulator's DC block, every start within 700 ms; the coupled row has pins of its own). A policy window must exceed
+  the DCS lock ceiling by 100 ms too. `dsd_symbol.c` taps each unsynced analog block while it is still raw:
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
-  block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
-  `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
-  `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before the audio chain
-  (`symbol_process_unsynced_audio()`), whose in-place voice band-pass takes every CTCSS tone 40 dB down. It then hands
-  the processed block to the engine's NFM call through the `analog_call_block` frame-sync hook, as a block descriptor
-  (`dsd_analog_call_block`, `runtime/frame_sync_hooks.h`, issue #668) whose input is one of three
-  (`DSD_ANALOG_CALL_*`, issue #756; `symbol_analog_call_input()`): RECEPTION, the block
-  the per-call recording writes (carrier open on the channel on air, tone policy passing); BREAK, a block no call can
-  span (dropped at a boundary or mixing two rates, trunking, digital sync, detection off, a retune unresolved or a
-  boundary not yet read past, a REJECTED tone); HOLDABLE, the rest (the carrier closed after its hangover, or the tone
-  still being checked). Which blocks are processed and recorded still follows RECEPTION alone. The descriptor also
+  block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20
+  ms) of input, at the input's current rate, has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest
+  after the raw WAV write and before the audio chain (`symbol_process_unsynced_audio()`), whose in-place voice band-pass
+  takes every CTCSS tone 40 dB down. It then hands the processed block to the engine's analog call through the
+  `analog_call_block` frame-sync hook, as a block descriptor (`dsd_analog_call_block`, `runtime/frame_sync_hooks.h`,
+  issue #668) whose input is one of four (`DSD_ANALOG_CALL_*`, issue #756; `symbol_analog_call_input()`): RECEPTION, the
+  block the per-call recording writes (carrier open on the channel on air, tone policy passing;
+  `symbol_unsynced_reception()`, on the FM or the AM monitor, issue #667); BREAK, a block no call can span (dropped at a
+  boundary or mixing two rates, trunking, digital sync, the monitor tap off (FM or AM), a retune unresolved or a
+  boundary not yet read past, a REJECTED tone); PENDING (issue #667), the tone policy still checking under an open
+  carrier with no retune pending (its `eligible_from` is the block's length); HOLDABLE, the rest (the carrier closed
+  after its hangover). PENDING is a HOLDABLE block to a call; before a reception's first RECEPTION block it is the
+  reception's lead-in. Which blocks are processed and recorded still follows RECEPTION alone. The descriptor also
   carries `samples` (after the chain and the sink gate, as before), `heard` (the same block before the sink gate, copied
   into `dsd_state::analog_heard_f` only while `-P` records with `opts->analog_record_preroll_ms` above 0 in a mode where
-  a block can be the call's reception, `symbol_call_wants_heard()`: the FM monitor
-  (`dsd_analog_tone_detection_active()`) without trunking; on the level path, which runs no sink gate, the block itself,
-  or a copy from before its ramp-in when one runs, below; NULL otherwise), `count`, `sample_rate`, `eligible_from`,
-  `ramp_end` (how far a ramp-in the block before began ran on into this block: the open samples from the first on while
-  the gain carried in stayed under 1, until it reached 1 or the gate closed; 0 when the block began at full gain or from
-  silence), `qualified_carrier` and `wall_end_s` (`dsd_decode_now_realtime_s()` read before the block's `-6` raw WAV
-  write and sync, only while `-P` records; 0 otherwise). The engine reads the samples, count, rate and input, `heard`,
-  `ramp_end` (after a block written as heard, below), `qualified_carrier` (a call begins only on a RECEPTION block that
-  has it, B1) and `wall_end_s` (the recording's start stamp).
-  Tone eligibility inside a block (issue #668, B6): the tap tracks it per block. `dsd_analog_rx_block_begin()` (from
-  `symbol_analog_block_begin()`) starts the block under the gate in force; every read of it then moves the eligible
-  point by the verdict it published, positioned at the read's start (the verdict describes that read's samples), so
-  `dsd_analog_rx_block_eligible_from()` is the first sample from which the gate stayed OFF or ALLOWED to the block's
-  end, or the block's length when the gate in force at its end does not pass. `dsd_analog_rx_block_qualified_carrier()`
-  says whether a read starting at or after that point found the carrier itself (`dsd_analog_rx_core::carrier_now`: the
-  level squelch above the floor, or the auto or noise squelch's flags with the gate open at the read's last sample or
-  opening inside the read), never only the hangover. A per-sample squelch keeps its own 20 ms grid, which a block need
-  not share (44.1 kHz input; at 48 kHz the PCM noise squelch starts with the stream's second sample, so its decisions
-  land one sample into each block), so a read that only carries an open gate to its close is that carrier going, not
-  one found. A gate that opens inside a read counts however soon it closes again (a flicker on a real carrier's first
-  read, a short kerchunk): the session keeps whether the last read ended open (`read_ended_open`: the squelch's own
-  gate at the last read's last sample, a read the tap dropped at a boundary or skipped as backlog included, so a drop
-  never turns a gate the squelch kept open into an edge; closed again by every reset and while the tap is not
-  running), so a read that starts open after a closed one opens at its first sample. A dropped or skipped read finds
-  nothing itself, so a carrier that opens inside a dropped read's own samples and closes before the next read ends
-  (at most about 40 ms, just after a stall) begins no call: the drop refuses those samples by design (decided limit).
-  The finalizer splits a block that ends under a passing gate at that point where the chain's runs are chosen
-  (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run that does not play,
-  so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink and the hook; the
-  sink gate ramps in from silence after it. The level path, which has no sink gate, ramps the rest in the same way
-  (`symbol_apply_level_ramp()`, 5 ms, the gain in `dsd_state::analog_level_gain` while `analog_level_ramp` is set,
-  carried into the next block when the verdict came in the block's last 5 ms and ended by a block that neither plays
-  nor records), so neither the speaker nor a recording that goes on through the block steps from silence to full
+  a block can be the call's reception with a pre-roll, `symbol_call_wants_heard()`: the FM monitor
+  (`dsd_analog_tone_detection_active()`) without trunking (an AM call has no pre-roll, issue #667); on the level path,
+  which runs no sink gate, the block itself, or a copy from before its ramp-in when one runs, below; NULL otherwise),
+  `count`, `sample_rate`, `eligible_from`, `ramp_end` (how far a ramp-in the block before began ran on into this block:
+  the open samples from the first on while the gain carried in stayed under 1, until it reached 1 or the gate closed; 0
+  when the block began at full gain or from silence), `qualified_carrier` and `wall_end_s`
+  (`dsd_decode_now_realtime_s()` read before the block's `-6` raw WAV write and sync, only while `-P` records; 0
+  otherwise). The engine reads the samples, count, rate and input, `heard`, `ramp_end` (after a block written as heard,
+  below), `qualified_carrier` (a reception begins only on a RECEPTION block that has it, B1) and `wall_end_s` (the
+  recording's start stamp). Tone eligibility inside a block (issue #668, B6): the tap tracks it per block.
+  `dsd_analog_rx_block_begin()` (from `symbol_analog_block_begin()`) starts the block under the gate in force; every
+  read of it then moves the eligible point by the verdict it published, positioned at the read's start (the verdict
+  describes that read's samples), so `dsd_analog_rx_block_eligible_from()` is the first sample from which the gate
+  stayed OFF or ALLOWED to the block's end, or the block's length when the gate in force at its end does not pass.
+  `dsd_analog_rx_block_qualified_carrier()` says whether a read starting at or after that point found the carrier itself
+  (`dsd_analog_rx_core::carrier_now`: the level squelch above the floor, or the auto or noise squelch's flags with the
+  gate open at the read's last sample or opening inside the read), never only the hangover. A per-sample squelch keeps
+  its own 20 ms grid, which a block need not share (44.1 kHz input; at 48 kHz the PCM noise squelch starts with the
+  stream's second sample, so its decisions land one sample into each block), so a read that only carries an open gate to
+  its close is that carrier going, not one found. A gate that opens inside a read counts however soon it closes again (a
+  flicker on a real carrier's first read, a short kerchunk): the session keeps whether the last read ended open
+  (`read_ended_open`: the squelch's own gate at the last read's last sample, a read the tap dropped at a boundary or
+  skipped as backlog included, so a drop never turns a gate the squelch kept open into an edge; closed again by every
+  reset and while the tap is not running), so a read that starts open after a closed one opens at its first sample. A
+  dropped or skipped read finds nothing itself, so a carrier that opens inside a dropped read's own samples and closes
+  before the next read ends (at most about 40 ms, just after a stall) begins no call: the drop refuses those samples by
+  design (decided limit). The finalizer splits a block that ends under a passing gate at that point where the chain's
+  runs are chosen (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run
+  that does not play, so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink
+  and the hook; the sink gate ramps in from silence after it. The level path, which has no sink gate, ramps the rest in
+  the same way (`symbol_apply_level_ramp()`, 5 ms, the gain in `dsd_state::analog_level_gain` while `analog_level_ramp`
+  is set, carried into the next block when the verdict came in the block's last 5 ms and ended by a block that neither
+  plays nor records), so neither the speaker nor a recording that goes on through the block steps from silence to full
   level. The `-6` WAV and the filters' history are untouched. At 48 kHz, with one read per block, no block is split.
   `DSP_SYMBOL_REPLAY` scripts the verdicts inside 8192 Hz blocks (`dsd_analog_rx_test_set_gate()`, a test-hook-build
-  seam) and runs the real AGC over the chain's runs. The
-  block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
-  publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
-  only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
-  `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526): the stamp that holds a -Y
-  row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`, which reports none once the
-  tap's own generation check sees a retune or profile change since its last read, and while a retune is unresolved, so
-  a channel a failed retune left the receiver on lets the row's hangtime run out) while the analog monitor runs, FM or
-  AM, whether or not the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and
-  the gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`: in flight, or failed
-  after the scanner moved on, until a later retune lands or the scan's end retires it, as for digital frames) or, on
-  the analog monitor, from a block that began before a retune, profile change or reset the tap noticed, before the tap
-  started, or before a boundary the tap has not read past yet (`dsd_analog_rx_block_straddles_boundary()`, 0 while the
-  tap is not running, so the `-8` monitor under digital decoding plays every block as before). The tap runs while
-  `dsd_analog_monitor_tap_active()` (runtime, above) says so: the analog monitor of either kind on PCM input or on RTL
-  with an AUDIO_MONITOR output kind. On the AM monitor (issue #524) it keeps only the carrier and those boundaries
-  (`dsd_analog_rx_core_track_carrier()`), publishing no tone (`tone_state` INACTIVE) and logging nothing; the detectors
-  run while `dsd_analog_tone_detection_active()` says so, and a switch between the kinds starts the core over. The rate
-  comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
-  The sync hunt keeps that output kind: the analog family stands the modulation auto-switch down, and in analog-only
-  mode `dsd_frame_sync.c` never sends the RTL front end any symbol profile the hunt requests, the profile a two-level
-  hunt re-normalises included (a CQPSK one would turn the monitor audio into symbols and silence the tap, and a digital
-  channel profile would narrow it), as `app_control/symbol_profile.c` does not.
+  seam) and runs the real AGC over the chain's runs. The block is 20 ms on RTL but 960 samples on PCM at any rate (384
+  ms at 2500 Hz), and read only at block ends the publication would trail the sample-time contract by up to a block. One
+  decoder-thread tap covers RTL and PCM, sees only live (not seam-replayed) samples, only reads the block, and runs
+  whatever `audio_out` says. `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526):
+  the stamp that holds a -Y row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`,
+  which reports none once the tap's own generation check sees a retune or profile change since its last read, and while
+  a retune is unresolved, so a channel a failed retune left the receiver on lets the row's hangtime run out) while the
+  analog monitor runs, FM or AM, whether or not the block plays (the `-8` monitor under digital decoding keeps stamping
+  only what it plays), and the gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`:
+  in flight, or failed after the scanner moved on, until a later retune lands or the scan's end retires it, as for
+  digital frames) or, on the analog monitor, from a block that began before a retune, profile change or reset the tap
+  noticed, before the tap started, or before a boundary the tap has not read past yet
+  (`dsd_analog_rx_block_straddles_boundary()`, 0 while the tap is not running, so the `-8` monitor under digital
+  decoding plays every block as before). The tap runs while `dsd_analog_monitor_tap_active()` (runtime, above) says so:
+  the analog monitor of either kind on PCM input or on RTL with an AUDIO_MONITOR output kind. On the AM monitor (issue
+  #524) it keeps only the carrier and those boundaries (`dsd_analog_rx_core_track_carrier()`), publishing no tone
+  (`tone_state` INACTIVE) and logging nothing; the detectors run while `dsd_analog_tone_detection_active()` says so, and
+  a switch between the kinds starts the core over. The rate comes from the RTL output-rate hook or
+  `dsd_opts_current_input_timing_rate()`. The sync hunt keeps that output kind: the analog family stands the modulation
+  auto-switch down, and in analog-only mode `dsd_frame_sync.c` never sends the RTL front end any symbol profile the hunt
+  requests, the profile a two-level hunt re-normalises included (a CQPSK one would turn the monitor audio into symbols
+  and silence the tap, and a digital channel profile would narrow it), as `app_control/symbol_profile.c` does not.
   - `src/dsp/analog_rx.c` holds the pure core behind the module-private `src/dsp/analog_rx_internal.h` (no `dsd_state`,
     no clock, so `DSP_ANALOG_CTCSS` drives it in sample time): the shared sub-audible front end (stage 1 a Blackman FIR
     decimating by `floor(fs / 2400)`, evaluated only when an output is due; stage 2 a Blackman LPF at the ~2.4 kHz rate,
@@ -4970,7 +5044,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     verdict it goes on judging: an allow list's allowed value lost goes PENDING with a fresh window, a confirmed
     nonpassing value rejects, a block list keeps a pass on loss, and a rejection holds until the reception ends except
     for a newly confirmed passing value; another confirmed nonpassing value becomes the rejection's reason (a "no tone"
-    rejection that hears an unlisted tone names it). A locked value outside the standard sets is not confirmed: it is
+    rejection that hears an unlisted tone names it). A locked value outside the supported sets is not confirmed: it is
     judged as no tone at the window's end. The tap's glue (`analog_rx.c`) configures it from `dsd_opts` on every read
     (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost; a
     list that only respells a code is the same policy, `dsd_tone_set_same_signals()`),
@@ -5402,24 +5476,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the `DECODE_PCM_*` cases (the analog replay host's `--analog-pcm-tap`, which runs a capture's discriminator audio as a
   WAV input in every build).
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
-  `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
-  |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
-  AM never runs where an I/Q replay decimates after the demodulator). It writes silence and holds C while
-  `channel_squelched`, counting the closed run in `demod_state::am_squelched_samples`; past
-  `DSD_AM_CARRIER_HOLD_MS` (100 ms) the next unsquelched block starts C over, since what opens the squelch then is
-  another transmission. It warm-starts C from the block's mean magnitude when it is 0, and is silent below a 1e-9
-  carrier. `dsd_demod_am_active()` says whether it produces the monitor audio: installed, and the
-  monitor on its own channel (`dsd_demod_analog_monitor_active()`). A typed digital scan row's profile on an AM session
-  is FM-demodulated instead, as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone;
-  the AM session runs no de-emphasis, so, unlike under `-fA`, the row's discriminator output is not de-emphasized.
-  While `dsd_demod_am_active()` the squelch's channel power is the plain mean square of the I/Q floats, the carrier
-  measured whole (receiver DC included, as a vector sum), not `mean_power()`'s pooled-mean removal, which reads an
-  0 Hz carrier as A²(1 - sin 2φ)/4 and so chopped an AM channel's squelch as the carrier's phase drifted (issue #518
-  follow-up, `DSP_SQUELCH`). FM and digital keep `mean_power()`.
-  `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()`
-  uses; `dsd_demod_iq_balance_active()` is I/Q balance's (enabled, CQPSK off, and not under AM), which
-  `full_demod_apply_iq_balance()` uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep
-  `$FLOAT_FIELD` list with it. Tests: `DSP_AM_DEMOD`, `DSP_CHANNEL_FILTERS` (AM widths).
+  `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of |z|
+  with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`: AM
+  never runs where an I/Q replay decimates after the demodulator). It writes silence and holds C while
+  `channel_squelched`, counting the closed run in `demod_state::am_squelched_samples`; past `DSD_AM_CARRIER_HOLD_MS`
+  (100 ms) the next unsquelched block starts C over, since what opens the squelch then is another transmission. It
+  warm-starts C from the block's mean magnitude when it is 0, and is silent below a 1e-9 carrier.
+  `dsd_demod_am_active()` says whether it produces the monitor audio: installed, and the monitor on its own channel
+  (`dsd_demod_analog_monitor_active()`). A typed digital scan row's profile on an AM session is FM-demodulated instead,
+  as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone; the AM session runs no
+  de-emphasis, so, unlike under `-fA`, the row's discriminator output is not de-emphasized. While
+  `dsd_demod_am_active()` the squelch's channel power is the plain mean square of the I/Q floats, the carrier measured
+  whole (receiver DC included, as a vector sum), not `mean_power()`'s pooled-mean removal, which reads an 0 Hz carrier
+  as A²(1 - sin 2φ)/4 and so chopped an AM channel's squelch as the carrier's phase drifted (issue #518 follow-up,
+  `DSP_SQUELCH`). FM and digital keep `mean_power()`. `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate
+  (enabled, and not under AM), which `iq_dc_block()` uses; `dsd_demod_iq_balance_active()` is I/Q balance's (enabled,
+  CQPSK off, and not under AM), which `full_demod_apply_iq_balance()` uses. `am_carrier` is a float in a scanned header,
+  so `tools/semgrep_float_fields.py` regenerated the semgrep `$FLOAT_FIELD` list with it. Tests: `DSP_AM_DEMOD`,
+  `DSP_CHANNEL_FILTERS` (AM widths).
 - `frame_sync_maybe_auto_switch_modulation()` (`dsd_frame_sync.c`) votes the C4FM/CQPSK/GFSK choice from SNR and
   sync hamming and applies the winner's demod profile to the RTL front end. It stands down under a modulation lock
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
@@ -7163,11 +7237,26 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
-  apply a queued command while the input is silent (issue #634); `ConnectBounded()` (`dsd_rigctl.c`) connects within
+  apply a queued command while the input is silent (issue #634). `tcp_input.c` reads its socket through one
+  `dsd_pcm_stream` (platform). Its one read, `tcp_input_read_sample_wait()` (issue #667 D12), times out and keeps the
+  connection, so only a real close or socket error is a lost connection (B7): the symbol path reconnects, and EDACS
+  analog voice and the M17 encoder close the input and shut down, as they did. EDACS analog voice reads TCP and UDP in
+  bounded waits (`edacs_read_sample_net()`): once a quiet spell lasts a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`)
+  all of it plays as zero-power silence paced by real time (`edacs_net_quiet_pay()`, as a missing RTL stream's
+  `edacs_no_stream_pay()`), so the call ends on its own squelch count or watchdog; a shorter stall inserts nothing, and
+  only a stopped UDP input or a closed connection shuts down. The M17 encoder reads TCP, UDP and stdin through one wait
+  (`m17_str_wait_sample()`), which gives the block up for a queued command after a stream pause and stops at shutdown.
+  There is no blocking TCP hook (`PROTOCOL_NET_QUIET_SENDER`). `ConnectBounded()` (`dsd_rigctl.c`) connects within
   `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
   the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
-  startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine
-  installs both in the network-audio hook table (`udp_read_sample_wait`, `tcp_connect`).
+  startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. Both connect
+  with keepalive on (`connect_apply_options()`, `DSD_SOCKET_KEEPALIVE_*`): since a receive timeout keeps the
+  connection, it is what fails a read on a sender that vanished without a FIN or RST, so the reconnect runs within
+  about 35 s (`IO_RIGCTL_CONTROL` asserts the call, `ENGINE_PCM_INPUT_WAIT` the options on real connections). The engine
+  installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`). The
+  stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0 (`dsd_opts::audio_in_stdin`,
+  raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share, both in bounded waits, and an
+  input switch holds and closes like the other handles.
 - M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
   `include/dsd-neo/io/m17_udp.h`.
 
@@ -7729,13 +7818,19 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   playout takes the calls' verdicts, the calls end as on a sync loss, the DMR confirmation restarts
   (`dmr_confidence_reset()`: candidate, lock, voice gate, without the colour code
   `dsd_engine_forget_carrier_codes()` would take with it), `dsd_engine_forget_carrier_decoding()` runs, and the
-  carrier count moves with the carrier change noted. The codes, the received identity, the followed voice channel and
-  trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes the tick guard as a tune
-  does. A cut frame unwinds before the boundary runs, outside its tick guard and before any scan or trunk tick; a
-  gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which makes `noCarrier()`
-  return early) never skips it. An older symbol cache is dropped when a direct reader has already acknowledged its
-  gap, without moving the consumed count backwards. Tests:
-  `ENGINE_STREAM_GAP`.
+  carrier count moves with the carrier change noted. An analog call ends at its last accepted block, a candidate
+  unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
+  (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
+  issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
+  followed voice channel and trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes
+  the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
+  scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which
+  makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a direct reader has already
+  acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone (samples dropped, as a
+  driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP` (the analog side on a
+  replay's clock and a live input's: a toned call's row, the next reception's own tone or none, two short receptions
+  that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined captures, fast
+  and paced).
 
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
@@ -10029,19 +10124,19 @@ Qt Quick frontend (`src/ui/qt`):
     every folder until it ends; an Idle report between a start's mark and its Starting changes nothing.
   - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
     `recordCalls`, `recordUnknownOnly`, `recordingLimitMb`, `analogMaxGapMs` and `analogPrerollMs` (keys `recording/*`,
-    portable; the limit one of `recordingLimitChoices`, 1000 by default; the NFM pause hold any value 0..10000 the
+    portable; the limit one of `recordingLimitChoices`, 1000 by default; the analog pause hold any value 0..10000 the
     decoder takes, kept as it is when not one of `analogMaxGapChoices`, else 200, off, issue #756; the NFM pre-roll the
     same over 0..1000 and `analogPrerollChoices`, else `DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS`, issue #668) map to
     `SessionArgPrefs`; the starter puts the folder `beginSession()` returned in `SessionArgPrefs::recordingFolder` and
     builds again, so the argv names, after `-t`/`-F` and before the extra options, `-7 <folder> --wav-journal
     <folder>/recordings.jsonl` (always, so an extra `-P` records into a managed folder), then `-P` when Record calls is
-    on, with `--record-unknown-only`, `--analog-record-max-gap-ms <ms>` and `--analog-record-preroll-ms <ms>`
-    (always, off included) only beside it (all travel with Record calls, so a disabled setting never filters, holds or
-    pre-rolls the user's own `-w`, extra `-P` or MBE capture; an extra hold or pre-roll comes later and wins); no folder
-    (no root available, or a validation-only build) names no recording at all. A scan list passes it through its tuner
-    build, once; a draft list asks for no folder. The caller says what a start is (`SessionArgsBuilder::start(system,
-    host, kind)`: "saved", "explore", "search"), since an edited Explore map can carry a saved system's uid. Extra
-    options naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse
+    on, with `--record-unknown-only`, `--analog-record-max-gap-ms <ms>` and `--analog-record-preroll-ms <ms>` (always,
+    off included) only beside it (all travel with Record calls, so a disabled setting never filters, holds or pre-rolls
+    the user's own `-w`, extra `-P` or MBE capture; an extra hold or pre-roll comes later and wins); no folder (no root
+    available, or a validation-only build) names no recording at all. A scan list passes it through its tuner build,
+    once; a draft list asks for no folder. The caller says what a start is (`SessionArgsBuilder::start(system, host,
+    kind)`: "saved", "explore", "search"), since an edited Explore map can carry a saved system's uid. Extra options
+    naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse
     the start (`SessionArgsError::CallRecordingOption`), `-w` does while Record calls is on (`CallRecordingStaticWav`),
     and an extra `-P` does when the store had no folder to give (`CallRecordingNoStorage`, `SessionArgPrefs::
     recordingUnavailable`: it would record outside the app's storage); `CallRecordingOption` and
@@ -10060,7 +10155,7 @@ Qt Quick frontend (`src/ui/qt`):
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs, analogPrerollMs)` sends the
-    NFM pause hold (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756) and the NFM pre-roll
+    analog pause hold (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756) and the NFM pre-roll
     (`DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, issue #668), each none when negative, so the session keeps its own, then
     unknown-only, then WAV start (a refused submission sends nothing after it), or WAV stop then unknown-only off, best
     effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps describing the stop, whose outcome
@@ -10078,7 +10173,7 @@ Qt Quick frontend (`src/ui/qt`):
     does not, so a second change behind a queued start is not lost) and are otherwise inert: they travel with the next
     Record calls on.
     `RecordingStatus` (`recording_status.{h,cpp}`, context property `recordingStatus`, refreshed every UI tick by
-    `UiController`) reads `recording_view` for QML: per-call, slot files, unknown-only, the NFM pause hold
+    `UiController`) reads `recording_view` for QML: per-call, slot files, unknown-only, the analog pause hold
     (`analogMaxGapMs`), the NFM pre-roll (`analogPrerollMs`), static WAV, `storageNamed`, journal, the last command and
     its state ("pending" is Settings' "Applying..."; the hold's command reads "analogMaxGap", the pre-roll's
     "analogPreroll"), failures by kind and the last one, and the bridge's
@@ -10101,42 +10196,41 @@ Qt Quick frontend (`src/ui/qt`):
     `RecordingStore::selectPath()` and `releaseSelection()`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
-    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); NFM pause hold
+    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
     (issue #756) is a ChoiceSheet of `analogMaxGapChoices` that goes live through `setAnalogRecordMaxGap()`, disabled
     and travelling with Record calls the same way; it shows the preference, as the switches do, any value as itself
     (`Util.pauseHoldText()`). A hold in the app's Extra decoder arguments wins at every start
-    (`sessionArgs.extraArgsSetPauseHold`, `session_args_extra_sets_pause_hold()`: the options walked as the decoder reads
-    them, as `session_args_recording_extra_error()` walks them, so a hold that is another option's value or follows a
-    "--" is none): the row is then shut with a note saying so, and Record calls on sends no hold (-1), so the session
-    keeps its own; a saved system's own extra options are not seen there. NFM pre-roll (issue #668) follows right under
-    it the same way: a ChoiceSheet of `analogPrerollChoices` (`Util.prerollText()`, 0 is Off), live through
+    (`sessionArgs.extraArgsSetPauseHold`, `session_args_extra_sets_pause_hold()`: the options walked as the decoder
+    reads them, as `session_args_recording_extra_error()` walks them, so a hold that is another option's value or
+    follows a "--" is none): the row is then shut with a note saying so, and Record calls on sends no hold (-1), so the
+    session keeps its own; a saved system's own extra options are not seen there. NFM pre-roll (issue #668) follows
+    right under it the same way: a ChoiceSheet of `analogPrerollChoices` (`Util.prerollText()`, 0 is Off), live through
     `setAnalogRecordPreroll()`, shut with its own note by `sessionArgs.extraArgsSetPreroll`
     (`session_args_extra_sets_preroll()`), -1 to `setRecordCalls()` then. The lines under them come from
-    `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next start, judged
-    per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped
-    command, recording failures, a failed journal); Storage limit (a ChoiceSheet of `recordingLimitChoices`), then the
-    store's lines (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage
-    call recordings (usage, or "Counting recordings..." until `indexed`). The limit's removals and failed deletes count
-    until the Call recordings screen shows them: it takes them and calls `RecordingStore::acknowledgeNotices()`, which
-    starts both counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with
-    recordings, Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed
-    picker releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of
-    its own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen
-    opened, and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose
-    `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
-    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
-    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek, the parts (the one shown kept on its recording
-    by path) with a Play all parts action (the host keeps no queue: a part that stopped at its end, path kept and
-    position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
-    there), Save to file and Delete. A part the host reports "missing" leaves the block at once, until the store lists it as away
-    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
-    storage is back, without reopening the sheet; closing the sheet stops
-    what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record switch
-    follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where
-    it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows
-    `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
-    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
-    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next start, judged per
+    switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped command, recording
+    failures, a failed journal); Storage limit (a ChoiceSheet of `recordingLimitChoices`), then the store's lines
+    (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage call recordings
+    (usage, or "Counting recordings..." until `indexed`). The limit's removals and failed deletes count until the Call
+    recordings screen shows them: it takes them and calls `RecordingStore::acknowledgeNotices()`, which starts both
+    counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with recordings,
+    Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
+    releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
+    own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
+    and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
+    is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
+    its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
+    play/pause, position and seek, the parts (the one shown kept on its recording by path) with a Play all parts action
+    (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
+    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
+    the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
+    on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
+    reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
+    Paused. The talkgroup editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when
+    tuned) and is sent with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it
+    for a row added listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS`
+    (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`,
+    `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
@@ -10376,6 +10470,32 @@ Qt Quick frontend (`src/ui/qt`):
     channel, and an object that fails `dsd_rxid_site_consistent()` or has a value that does not fit its field loads as
     unknown, never as a made-up site. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`,
     `UI_QT_CALL_HISTORY_TAP`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`, `tst_monitor_recent_calls.qml`).
+  - ll history analog receptions (issue #667; `call_history_model.{h,cpp}`, `HistoryScreen.qml`, `MonitorScreen.qml`,
+    `HistoryDetailSheet.qml`). Each analog row (`Row::analog`, `DSD_SYNC_ANALOG`) is one reception: the engine's tracker
+    already joined its hangover and pause hold, so `rows_mergeable()` refuses a pair when either row is analog (no
+    analog row folds with another, or with a digital row; digital folding is unchanged). A reception read again still
+    lands on its row: a row heard again (a replay in a fresh ring) and an update of a row an older build stored without
+    fragments search the whole log with `rows_same_reception()`, an exact match of two analog rows on start, tone
+    (`receiveKnown`, and kind and value when known), frequency, and system and channel (as `rows_mergeable()` keeps two
+    systems apart), and fold in as any match does (the fragment, so its recordings, and the running session). The match
+    is one to one (`same_reception_row()`), since a start is a whole second and two receptions can share it: a row that
+    already took another fragment of the same ring is skipped, and a row that also ends in the same second comes first.
+    A first sighting uses it too (a replay whose receptions took other push stamps, as a changed tone filter gives,
+    reads as new), so it searches the whole log for an analog row; load folding never uses it. The row keeps its mode
+    (`Row::analogMode`, a `dsd_analog_mode` from `Event_History::analog_mode`; stored as `analogMode` only when NFM or
+    AM). A row an older build stored has none and reads unknown, never a mode guessed from its saved name, and keeps
+    that name; a stored analog row with no name, and a live one nothing else names, is named by its mode (`NFM`, `AM`,
+    `Analog` when unknown). An update of an old row's reception fills its unknown mode. Decided limit: a row an older
+    build stored (no fragments) no longer matches an update whose tone or frequency became known after the row was
+    saved; that update logs a new row or is dropped. Roles: `analog` (bool) and `analogMode` (`"NFM"`, `"AM"`, `""`),
+    also in `recordFor()`. `receivedTone` is the confirmed CTCSS/DCS tone spelled by `dsd_ctcss_format_label()` /
+    `dsd_dcs_format_label()` (`CTCSS 100.0 Hz`, `DCS D023N / D047I`), as the event row, the terminal and the API spell
+    it. On screen an analog row's tone takes the access code's place on the History and Monitor "Recent" meta lines
+    (`CTCSS 100.0 Hz · 0:04 · Fire Dispatch · 154.4300 MHz`; the frequency still closes the line, or leads it on a
+    History row a frequency search found). The details sheet reads the tone alone on the code's line (index 7) and the
+    mode (`Analog NFM`, `Analog AM`, `Analog`) on the Encrypted/Unencrypted line (index 11); every line keeps its place,
+    so `siteLineIndex` stays 9. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`,
+    `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -11361,7 +11481,7 @@ External dependencies (resolved via CMake):
   CSV splitters end the options cell at an unquoted comma, so both importers (`chan_import_options_split()` in
   `dsd_import.c`, `scan_check_options_split()` in `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the
   cell ends with a tone list and the field after it goes on with it (any text past the header; in a named column, a
-  field that is one space-free run of `/`-separated entries starting with a standard tone or code, alone or followed by
+  field that is one space-free run of `/`-separated entries starting with a supported tone or code, alone or followed by
   a row option's switch, the rest of the cell, so a name such as `100 Main St` stays the column's own) and refuse the
   row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
   import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the
@@ -12488,7 +12608,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (`dmr_data_sync()` sets the mono proof aside for it), an MS-mode data burst takes its lane's slot as its voice does,
   the LC path holds the voice channel only for admitted slots, and enrichment (`dsd_event_enrich_epoch()`) skips a
   Checking/rejected call. Anonymous history rows (no target or source) heard on different frequencies never merge;
-  analog rows (`Row::analog`) are not told apart by their label, so a confirmed tone folds into its fragment. Code
+  analog rows (`Row::analog`) never merge at all (issue #667): each is one reception, matched only by the same
+  reception read again (same start, tone and frequency). Code
   freshness is decided at the tune (`dsd_state::receive_codes_fresh_freq`), a mono-slot proof survives a standalone data
   burst only on the same carrier, an interrupted CACH proves no slot, and a trunk-scan conventional target whose
   admitted activity hold (data included) still runs is never released by the receive check. The receive policy boundary
@@ -12551,78 +12672,159 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   EDACS analog voice (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the
   call, which cannot be re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored,
   and the runtime config's snapshot comparison includes `no_signal_handlers_*`.
-- `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
-  frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency, each as a `dsd_analog_call_block`
-  descriptor with its input (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, see `dsd_symbol.c` above); a
-  RECEPTION block continues or begins the call, and a BREAK ends it. The state splits the logical call (`active`,
-  `held`, the gap counters, `last_m`, `boundaries_seen`, the identity, the pre-roll ring and what a hold put in it) from
-  its recording segment (`analog_call_recording`: file, folder, open stamp, `started`, `spans_pause`), which a stop or
-  folder change closes while the call goes on. The extension exists from the first block, call or not, since
-  `boundaries_seen` is kept for every block.
-  - Begin (issue #668, B1): a RECEPTION block begins a call only when it carries `qualified_carrier` (a tap read at
-    or after the block's tone-eligible point found the carrier itself; under a per-sample squelch, a read whose gate
-    ends open or opens inside it, see `dsd_symbol.c` in the DSP section). A block that holds only the carrier's 200 ms
-    hangover, as when a short burst's tone verdict lands after the carrier went, begins nothing: no row, no file (main
-    published an all-zero WAV and an NFM row for it). Such a block still goes on with a call already running, held or
-    not; a new identity's end (D4) does not begin a call on one either.
+- `engine/analog_call.c` owns the conventional analog call/recording lifecycle (NFM, AM and analog audio input) in
+  the engine scan-owner extension. Runtime's frame-sync hooks accept DSP monitor blocks without a backend-to-engine
+  dependency, each as a `dsd_analog_call_block` descriptor with its input
+  (`DSD_ANALOG_CALL_BREAK`, `_RECEPTION`, `_HOLDABLE`, `_PENDING`, see `dsd_symbol.c` above); a RECEPTION block
+  continues or begins the reception, and a BREAK ends it. The state splits the logical reception (`active` for a
+  call, `candidate`/`received` for one not yet a call, `held`, the gap counters, `last_m`, `boundaries_seen`, the
+  identity, mode and frequency, the pre-roll ring and what a hold put in it) from its recording segment
+  (`analog_call_recording`: file, folder, open stamp, `started`, `spans_pause`, the name parts kept for a teardown),
+  which a stop or folder change closes while the reception goes on. The extension exists from the first block, call
+  or not, since `boundaries_seen` is kept for every block. Its observations carry the
+  call's mode (`analog_call_mode()`, issue #667): the analog demodulator in force on a radio input
+  (`dsd_opts_input_is_radio()`: NFM, or AM for `DSD_ANALOG_DEMOD_AM`), unknown on audio input, taken with the
+  frequency at the reception's first block (`analog_call_frequency_hz()`: the tuned one, else a scan's confirmed
+  landing, below), and never rewritten.
+  - Confirmed landing (issue #667 D9, `engine/scan_landing.h`, kept in `dsd_engine_scan_owner::landing`). On audio
+    input `dsd_opts_tuned_freq_hz()` is 0, so an analog call heard through a rigctl peer takes the frequency a scan
+    confirmed it landed the peer on: a -Y row's (`dsd_engine_scan_landing_note_row()`, at the typed commit's end in
+    `channel_scan_commit()` and in `untyped_install_row()` for an untyped step, pending ones once they land, and for a
+    manual step of a running untyped list -- Next, Previous, an avoid's step -- in app-control's `lcn_cycle_finish()`
+    through the public `dsd_engine_channel_scan_note_manual_step()`, after its carrier boundary, once the front end
+    confirmed the tune: `RTL_STREAM_TUNE_OK`, not a timeout) or a trunk-scan conventional target's
+    (`trunk_scan_note_landing()`, once its retune completed; never a trunked target's control channel). A manual step
+    to the list's own row is the scan's step: the scan still owns the tuner. The operator's own tune (`=`, issue #671)
+    is the takeover: its carrier boundary forgets the landing and its pause leaves the scan. It is forgotten before
+    every row start (`channel_scan_start_row()`, the untyped steps), every target switch after its preparation, at a
+    manual untyped step's refused or deferred tune, at every carrier boundary but a stream gap (a manual tune among
+    them) and at the -Y release (a leave, a pause, a trunk-scan pause or stop), and at every rigctl connection change
+    (`dsd_engine_rigctl_landing_forget()`, which `svc_rigctl_connect()` calls on a reconnect, a new peer and a connect
+    that leaves rigctl off); a placeholder row, a failed, pending or unconfirmed tune and a rollback note none.
+    `dsd_engine_scan_landing_hz()` reads 0 once its scan no longer owns the tuner, and a -Y landing once the scan
+    session or channel map (`trunk_chan_map_seq`, a map replacement) moved. As with `dsd_opts_tuned_freq_hz()`, a
+    frequency changed on the peer itself is not seen. Analog rows only: digital rows on a rigctl -Y channel keep the
+    `dsd_opts_tuned_freq_hz()` rule. Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
+    real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
+    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps), `APP_COMMAND_QUEUE` (a manual step's confirmed,
+    timed-out, refused and deferred tunes), `UI_RIGCTL_CONNECT`.
+  - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
+    discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
+    preparation fails leaves either running, and a rollback or a revisit restores neither; the carrier boundary a
+    Signal search pause or failure runs discards a candidate.
+  - AM (issue #667 D8). The tracker follows the analog monitor's tap, FM or AM (`analog_call_follows()`:
+    `dsd_analog_monitor_tap_active()` with trunking off), not FM tone detection, in the block path and the tick; so do
+    `symbol_analog_call_input()`, the RTL idle-read yield and the zero-sample acceptance (IO and DSP below). The tone
+    gate stays FM-only (`dsd_analog_tone_gate_in_force()` reads OFF on AM), so an AM block is RECEPTION or HOLDABLE,
+    never PENDING, and an AM call names no tone. It qualifies, records (`_AM`) and ends as an NFM call does.
+  - Minimum squelch (issue #667 D2): `analog_call_allowed()` asks `dsd_squelch_analog_calls_allowed()` (runtime
+    squelch, below) on every eligible block, before the hold or lead-in rules, and in the tick (with nothing running
+    too, for the notice). While it is 0 no candidate begins, and a running call or candidate ends at its last
+    reception (`analog_call_end_reception()`), at its next block or, for a live change with no further sample, at the
+    tick. Each change is logged once (`NOTICE:` via `LOG_INFO`, `analog_call_say_off()`): paused, naming the FM
+    monitor's remedies (a level, `--squelch auto` or `noise`, `--tone-allow`) or AM's (a level, `--squelch auto`), a
+    switch between the two while paused, and back on. `analog_call::off_notice` holds what was said last.
+  - Candidate and qualification (issue #667 D1, `DSD_ANALOG_CALL_MIN_MS` 500 in `engine/analog_call.h`). A reception is
+    a call only once its spans reach 24000 samples at 48 kHz (`qual48`, counted with `analog_call_span48()`'s carried
+    remainder at the block rate, never a clock): its RECEPTION blocks (the 200 ms hangover's included) and, before the
+    first of them only, a lead-in of PENDING blocks (`analog_call_admit()`); a PENDING block that ends a call or a
+    received candidate (the hold off, or a hold past the max gap, whether the hold or the reconciliation before the
+    block ends it) is the next reception's first lead-in block. Until then it is a candidate nothing else sees: no
+    observation, so no canonical call, staged row, live call (`dsd_engine_analog_call_active()` stays 0) or alert.
+    Before its first RECEPTION block any other HOLDABLE block, a BREAK or a boundaries move discards the lead-in, and
+    the tick ends it only on a closed carrier, the monitor tap off, a REJECTED tone, D2, a boundary not current, a moved
+    epoch or the stale deadline (`analog_call_tick_closes()`). After it, a candidate follows a call's rules for HOLDABLE
+    and PENDING blocks: the hold below, its held spans not counted toward the minimum. It qualifies only on a RECEPTION
+    block (`analog_call_qualify()`): a BEGIN at the reception's first sample (the first block's decode-mono stamp less
+    its span, and the wall anchor of that instant, `analog_call_wall_at()`, as `start_wall`), seeded with the last
+    identity the candidate confirmed (`has_receive_seed`), then the crypto and media updates and
+    `dsd_event_sync_slot()`, which names the seeded call. Its recording, opened at its first RECEPTION block, goes on. A
+    BEGIN that fails (the call state could not be allocated) leaves the candidate, which tries again on its next
+    RECEPTION block. Identity before qualification: a lead-in (PENDING) block names nothing, as the tone policy has not
+    decided (a DCS code locks slower than "none" is read), so the first RECEPTION block takes the identity; from there
+    unknown to known goes on, a confirmed change (to another code, or to none) discards the candidate and begins the
+    next with the block, and a tone confirmed and then lost still seeds the BEGIN. A call's confirmed change ends it
+    before the CONTINUE that would split it inside the call state.
+  - Discard (`analog_call_discard_candidate()`): every end of a candidate goes through `analog_call_end_reception()`,
+    which ends a call at its last reception or discards a candidate: `dsd_engine_analog_call_end()` (every boundary that
+    calls it), the tick, the block path and a hold past the max gap. It clears the reception, discards the temporary
+    recording through `discard_analog_wav_file()` (no publish, journal record or rdio export) and clears the pre-roll
+    ring with the CALL_WAV lane, as a call's end does (issue #668), so audio from before a kerchunk never opens the next
+    reception's recording. `dsd_engine_analog_call_stop_recording()` (`p`, a folder change) discards a candidate's
+    recording and keeps the candidate, whose next block opens a new one. `dsd_engine_analog_call_due()` covers a
+    candidate.
+  - Stamps: a reception starts at its first block's first sample and ends at its last RECEPTION block's end
+    (`last_m`). A recording segment's start is the recording start below; a block with no wall time (only with `-P`
+    off) is stamped at its first sample's wall second (`analog_call_wall_at()`, floored), never read after the open.
+  - Begin (issue #668, B1): a RECEPTION block begins a reception (a candidate's first RECEPTION block, which opens its
+    recording) only when it carries `qualified_carrier` (a tap read at or after the block's tone-eligible point found
+    the carrier itself; under a per-sample squelch, a read whose gate ends open or opens inside it, see `dsd_symbol.c`
+    in the DSP section). A block that holds only the carrier's 200 ms hangover, as when a short burst's tone verdict
+    lands after the carrier went, begins nothing: no row, no file (main published an all-zero WAV and an NFM row for
+    it), and a lead-in that reaches no such block is discarded. Such a block still goes on with a reception already
+    recording (a call, or a candidate past its first RECEPTION block), held or not; a new identity's end (D4) does not
+    begin one on it either.
   - Recording start (issue #668): `analog_call_recording_start()` takes the opening block's `wall_end_s` less the part
     of the block the file keeps and the pre-roll written before it, floored once to whole seconds (with 1 us of slack
     for the clock's double rounding), into `rec.started` and `rec.opened`; no clock is read, so a slow disk or a
     recording closed first does not move it. The close passes it to `close_and_publish_call_wav_ex()`, so the journal
-    and the sidecar file the recording at its first sample, before the row's start (the row starts at the block's end).
-    A block with no wall time (only with `-P` off) keeps the old open stamp, read after the open.
+    and the sidecar file the recording at its first sample, the pre-roll's included, which can come before the row's
+    start (the reception's first sample, issue #667). A block with no wall time (only with `-P` off) is stamped as
+    above.
   - Pre-roll (issue #668, `opts->analog_record_preroll_ms`, default `DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS` (200), only
     while `-P` records; 0 is off and records what main did, byte for byte, apart from B1, B5, B6 and B7).
     `engine/analog_preroll.{c,h}` is the ring: int16 at 48 kHz, `ms * 48` samples, allocated by
-    `analog_call_preroll_sync()` at the first block that needs it (only in a mode where a block can be the call's
-    reception: the FM monitor without trunking, the rule `heard` follows; never in a digital mode, on the AM monitor or
-    under trunking), freed with `-P` or the setting off and sized anew when the setting changes; no allocation per
-    block, clears reset two indexes. Without memory there is no pre-roll (one log line), never a failed call. It is
-    filled from `heard` (the block before the sink gate) of every clean HOLDABLE block (`eligible_from == 0`; D2: a
-    block whose tone was PENDING or REJECTED at any read never enters it, the OFF/ALLOWED rule above), call or no call,
-    through the CALL_WAV lane's converter (`dsd_analog_sink_write()` with the ring as writer), so the lane stays
-    continuous from the ring into the file. The ring and the lane share one fate, in that the lane is reset whenever the
-    ring or a hold could carry audio across a break: `analog_call_preroll_invalidate()` drops the ring and ends the lane
-    (`dsd_analog_sink_end_call()`), and the ring keeps the lane's continuity generation
-    (`dsd_analog_sink_generation()`). That is read before each append and each release, which drop the ring when it
-    moved, and after each append, where a move (a converter restart inside that write) keeps only that block. The
-    block's own write after a release (a new file's opening block, or a resumed one) is not checked: a converter restart
-    inside it would leave a seam between the pre-roll and the block. Nothing reaches one there today: the restarts no
-    mark announces are a new block rate, a moved reception, the first conversion and history a sink-rate write passed
-    by, and a ring that holds audio has already run the converter at the block's rate, while a rate or reception that
-    moves since comes with a boundary (a moved epoch, or a retune or input switch that ends the call) that drops the
-    ring first. The ring is dropped by a HOLDABLE block that is not clean, a BREAK, a block with a moved epoch, a
-    RECEPTION that begins no call (B1), every call end (`analog_call_finish()` clears it before the block that caused
-    the end is looked at, so an allowed HOLDABLE block that ended the call starts the ring afresh),
-    `dsd_engine_analog_call_end()` with no call, the tick with no call on a moved epoch,
-    `dsd_engine_analog_call_stop_recording()` (every recording transition that commits: P, p, a menu or config change, a
-    folder change, file open or not; a transition that fails never calls it), and
+    `analog_call_preroll_sync()` at the first block that needs it (only on the FM monitor without trunking, the rule
+    `heard` follows; never in a digital mode, on the AM monitor or under trunking: an AM call, issue #667, has no
+    pre-roll, as its level squelch opens without the noise squelch's delay), freed with `-P` or the setting off and
+    sized anew when the setting changes; no allocation per block, clears reset two indexes. Without memory there is no
+    pre-roll (one log line), never a failed call. It is filled from `heard` (the block before the sink gate) of every
+    clean HOLDABLE block (`eligible_from == 0`; D2: a block whose tone was PENDING or REJECTED at any read never enters
+    it, the OFF/ALLOWED rule above), call or no call, through the CALL_WAV lane's converter (`dsd_analog_sink_write()`
+    with the ring as writer), so the lane stays continuous from the ring into the file. The ring and the lane share one
+    fate, in that the lane is reset whenever the ring or a hold could carry audio across a break:
+    `analog_call_preroll_invalidate()` drops the ring and ends the lane (`dsd_analog_sink_end_call()`), and the ring
+    keeps the lane's continuity generation (`dsd_analog_sink_generation()`). That is read before each append and each
+    release, which drop the ring when it moved, and after each append, where a move (a converter restart inside that
+    write) keeps only that block. The block's own write after a release (a new file's opening block, or a resumed one)
+    is not checked: a converter restart inside it would leave a seam between the pre-roll and the block. Nothing reaches
+    one there today: the restarts no mark announces are a new block rate, a moved reception, the first conversion and
+    history a sink-rate write passed by, and a ring that holds audio has already run the converter at the block's rate,
+    while a rate or reception that moves since comes with a boundary (a moved epoch, or a retune or input switch that
+    ends the call) that drops the ring first. The ring is dropped by a HOLDABLE block that is not clean and by every
+    PENDING one, a BREAK, a block with a moved epoch, a RECEPTION that begins no reception (B1), every call end
+    (`analog_call_finish()` clears it before the block that caused the end is looked at, so an allowed HOLDABLE block
+    that ended the call starts the ring afresh) and every candidate's discard (`analog_call_discard_candidate()`, the
+    same way, issue #667), `dsd_engine_analog_call_end()` with no reception, the tick with none on a moved epoch, D2's
+    pause, `dsd_engine_analog_call_stop_recording()` (every recording transition that commits: P, p, a menu or config
+    change, a folder change, file open or not; a transition that fails never calls it), and
     `dsd_engine_analog_call_preroll_changed()` (the setting applied, at once, so `200 -> 0 -> 200` inside one drain
     drops it too: `DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, API `analog_record_preroll_set`, the terminal's Recording &
     logs > WAV files > `NFM pre-roll...` row, or a config whose `[recording] analog_preroll_ms` changes it). A setting
     change, by those or by `analog_call_preroll_sync()` seeing a rolled-back config at the next block, goes through
-    `analog_call_preroll_drop()`: in a call recording on, not held, the ring is empty (each reception consumed it), so
-    it is only cleared, claiming no lane generation, and the file's conversion runs on unbroken; a hold that follows
-    then buffers nothing and resumes with the owed silence. With no call, or a held one, it is the invalidate. Release,
-    on a RECEPTION block that heard its carrier (`qualified_carrier`): a new recording (a new call, or a new segment
-    after a stop or folder change) writes the ring, then the block from `heard` (no ramp-in). A new segment that opens
-    on a block without `qualified_carrier` (one that only goes on with the call, such as its hangover), or a failed
-    open, drops the ring and writes the block as the sink gate left it; an opening block that is not clean drops the
-    ring too, and the file starts at its `eligible_from`, the silenced start trimmed, and the start stamp counts from
-    there. That trim is B6's and holds at pre-roll 0 too, on every new file (a new call, or a new segment after a stop
-    or folder change): the lane starts over at the cut itself (`dsd_analog_sink_end_call()`), never left to the
-    invalidate, so the file's first sample is converted from silence. A held call resumed into the file that spans its
-    pause, with the lane unbroken since the hold began (`hold_buffering`), writes `held_frames` (what the lane made of
-    the held blocks, those fallen out of the ring too) as silence up to the newest the ring kept, then those, then the
-    block from `heard`: the file equals one conversion frame for frame (at 44.1 kHz three receptions, four held blocks
-    and three receptions are 10,449 frames). Any drop inside a hold, or a resumed block that is not a clean reception of
-    its carrier, ends the buffering for that hold, and the resume writes `owed48` zeros and starts the lane over,
-    exactly as without a pre-roll. A RECEPTION block written into a call consumes the ring (it empties; the lane's
-    history is the file's). A block written as heard (a new file's opening block, or a resumed one) is followed by one
-    whose `samples` may still be ramping in from the sink gate's gain at that block's end: the next block goes in as
-    `heard` up to its `ramp_end`, then from `samples` (`analog_call_write_block()`, `rec.follows_heard`; a ramp through
-    the whole block carries on to the one after), so the file keeps its level across the seam (final review I1: the 44.1
-    kHz noise squelch opens a few samples before a block ends on about one call in four).
+    `analog_call_preroll_drop()`: in a call (or a candidate past its first RECEPTION block) recording on, not held, the
+    ring is empty (each reception consumed it), so it is only cleared, claiming no lane generation, and the file's
+    conversion runs on unbroken; a hold that follows then buffers nothing and resumes with the owed silence. With no
+    reception, or a held one, it is the invalidate. Release, on a RECEPTION block that heard its carrier
+    (`qualified_carrier`): a new recording (a new reception's, at its first RECEPTION block, or a new segment after a
+    stop or folder change) writes the ring, then the block from `heard` (no ramp-in). A new segment that opens on a
+    block without `qualified_carrier` (one that only goes on with the call, such as its hangover), or a failed open,
+    drops the ring and writes the block as the sink gate left it; an opening block that is not clean drops the ring too,
+    and the file starts at its `eligible_from`, the silenced start trimmed, and the start stamp counts from there. That
+    trim is B6's and holds at pre-roll 0 too, on every new file (a new call, or a new segment after a stop or folder
+    change): the lane starts over at the cut itself (`dsd_analog_sink_end_call()`), never left to the invalidate, so the
+    file's first sample is converted from silence. A held call resumed into the file that spans its pause, with the lane
+    unbroken since the hold began (`hold_buffering`), writes `held_frames` (what the lane made of the held blocks, those
+    fallen out of the ring too) as silence up to the newest the ring kept, then those, then the block from `heard`: the
+    file equals one conversion frame for frame (at 44.1 kHz three receptions, four held blocks and three receptions are
+    10,449 frames). Any drop inside a hold, or a resumed block that is not a clean reception of its carrier, ends the
+    buffering for that hold, and the resume writes `owed48` zeros and starts the lane over, exactly as without a
+    pre-roll. A RECEPTION block written into a call consumes the ring (it empties; the lane's history is the file's). A
+    block written as heard (a new file's opening block, or a resumed one) is followed by one whose `samples` may still
+    be ramping in from the sink gate's gain at that block's end: the next block goes in as `heard` up to its `ramp_end`,
+    then from `samples` (`analog_call_write_block()`, `rec.follows_heard`; a ramp through the whole block carries on to
+    the one after), so the file keeps its level across the seam (final review I1: the 44.1 kHz noise squelch opens a few
+    samples before a block ends on about one call in four).
   - Hold (issue #756, `opts->analog_record_max_gap_ms`, default 200; at most `DSD_ANALOG_CARRIER_HANGOVER_MS` is off).
     It is a recording setting: it holds a call only while per-call recording is on (`opts->dmr_stereo_wav`, `-P`), and
     is off otherwise (`analog_call_max_gap48()`). With the hold off a HOLDABLE block ends the call, as every
@@ -12634,41 +12836,55 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     decided on the same samples. Reconciliation runs first on every block and tick, and again right after a hold begins:
     a held call ends when the hold is off (per-call recording stopped included) or its gap is over the max gap (equal
     still joins), so a live change (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, API `analog_record_max_gap_set`, the
-    terminal's Recording & logs > WAV files > `NFM pause hold...` row) applies at the next block or tick and never
+    terminal's Recording & logs > WAV files > `Analog pause hold...` row) applies at the next block or tick and never
     reopens an ended call. A RECEPTION block resumes a held call unless its identity is confirmed different (known
     against known, `dsd_receive_identity_changed()`), which ends it and begins a new call with the block. A resumed call
     writes the owed silence first (chunks of `DSD_ANALOG_SINK_CHUNK` zeros through `dsd_wav_segment_write()`, so a short
     write's latch stops the rest), only into a file written before the pause (`spans_pause`; a file opened after a stop
-    or folder change starts at the resumed block). Without a pre-roll the CALL_WAV lane starts over at the resumed
-    block on its own, as no held block was written to it (with one, see Pre-roll). The tick ends a call, held or not,
-    first on a moved epoch (B6 below), then on detection off, a REJECTED tone or a boundary not current; with the hold
+    or folder change starts at the resumed block). Without a pre-roll the CALL_WAV lane starts over at the resumed block
+    on its own, as no held block was written to it (with one, see Pre-roll). The tick ends a call, held or not, first on
+    a moved epoch (B6 below), then on the monitor tap off, a REJECTED tone, a boundary not current or D2; with the hold
     off also on a closed carrier or a tone check; and on the stale deadline. With the hold on a closed carrier waits for
-    the next block. `dsd_engine_analog_call_due()` is unchanged. `dsd_engine_analog_call_end()` (every scan leave,
-    retune, input switch, mode change, Stop, finalize) ends a held call at once without the pause;
-    `dsd_engine_analog_call_stop_recording()` closes the segment (and drops the pre-roll) only. A held call then ends at
-    its next block or tick if recording stays off; a folder change (stop and start inside one recording transition)
-    keeps it held, and the next file starts at the resumed block.
+    the next block. `dsd_engine_analog_call_due()` also covers a candidate (below) and wakes on a moved epoch.
+    `dsd_engine_analog_call_end()` (every scan leave, retune, input switch, mode change, Stop, finalize) ends a held
+    call at once without the pause; `dsd_engine_analog_call_stop_recording()` closes the segment (and drops the
+    pre-roll) only. A held call then ends at its next block or tick if recording stays off; a folder change (stop and
+    start inside one recording transition) keeps it held, and the next file starts at the resumed block.
   - End stamp (B1): every end passes `last_m`, the decode-mono end of the call's last RECEPTION block, to
     `dsd_call_state_end_ex()`, so the row never claims a pause, a hold or a stalled input (stdin and TCP block in the
     read, so their call ends only when data returns). With the hold off a row ends one block earlier than "now" did.
   - Boundaries (B6; issue #668 B5/B7): `boundaries_seen` is the published `state->analog_rx.boundaries` at the last
-    block, call or not (the epoch in force when the extension is made, at the first block). A block that carries
-    another epoch crossed a hard boundary since: `analog_call_crossed_boundary()`, the block's first step, before the
-    live max gap's reconciliation (B5: that end left no call to compare the epoch with), ends any call at `last_m`,
-    drops the block (it straddles the boundary, its first part from before) and takes the new epoch, so the next
-    block begins afresh. This catches a stream pause or reconnect inside a long PCM block, which no straddle marks,
-    with no call running too (B7: main began a call with that block's pre-boundary audio). The tick compares the epoch
-    too: a reset with no block after it (a TCP reconnect that yields to a queued command, then a stream with no whole
-    block) leaves the boundaries current, so only the epoch shows it. The tick ends the call but leaves the epoch seen
-    as the last block's, so the first block after the reset is dropped as well. Tests: `CORE_RECEIVE` (the hold at
+    block, call or not (the epoch in force when the extension is made, at the first block). A block that carries another
+    epoch crossed a hard boundary since: `analog_call_crossed_boundary()`, the block's first step, before the live max
+    gap's reconciliation (B5: that end left no call to compare the epoch with), ends any call at `last_m` (a candidate
+    unpublished), drops the block (it straddles the boundary, its first part from before) and takes the new epoch, so
+    the next block begins afresh. This catches a stream pause or reconnect inside a long PCM block, which no straddle
+    marks, with no call running too (B7: main began a call with that block's pre-boundary audio). The tick compares the
+    epoch too: a reset with no block after it (a TCP reconnect that yields to a queued command, then a stream with no
+    whole block) leaves the boundaries current, so only the epoch shows it. The tick ends the call but leaves the epoch
+    seen as the last block's, so the first block after the reset is dropped as well. Tests: `CORE_RECEIVE` (the hold at
     48 kHz, 8192 Hz and 44100 Hz, tone checks, identity, ends, tick order, live changes, the hold off without per-call
     recording, the default's payloads, the write latch, teardown and its name, B1, B6 on a block and on the tick, issue
     #668's B1, B5 and B7; the pre-roll: a new recording at 48 kHz, 44.1 kHz, 8192 Hz and an approximated ratio against
     one continuous conversion, overflow, resumes as one conversion, a broken hold or unclean resume byte for byte as
     pre-roll 0, lane breaks, every drop with no call, the tick, every call end at 44.1 kHz, the trimmed opening at any
     pre-roll, the ramp after a block written as heard, a setting change mid-call as one conversion, no ring where no
-    call can be, no work while off, no memory), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its
-    first block, moved back by its pre-roll or to an unclean opening's eligible point, at pre-roll 0 too),
+    call can be, no work while off, no memory; issue #667: the minimum below, at and above it and at 44100 Hz, a tone
+    check after the first block with the hold off and on and ending rejected, a lead-in start across a second and the
+    recording stamps, identity before qualification, every end of a candidate, `p` and a folder change, owed silence in
+    a held candidate at 48 kHz and 44100 Hz, a failed BEGIN through `dsd_call_state_test_alloc_fail_after()`
+    (call_state.c built in with `DSD_NEO_TEST_HOOKS`), teardown of a candidate and of a call on audio and radio input,
+    the tick over a lead-in, a lead-in begun by the block that ends a hold on either path, a seeded call ended by a new
+    confirmed tone; D8: an AM call's row, system string, `_AM` recording, expiry and resume; D2: the default and off
+    squelch, a level, a dynamic squelch, allow and block lists, AM with a list, audio input, the tick's live change,
+    each notice once, a scan row's squelch; the hold tests' calls begin with a lead-in; the pre-roll with the minimum: a
+    kerchunk discarded with its ring and the lane), `DSP_SYMBOL_REPLAY` (PENDING from the real tone policy; the AM
+    monitor's RECEPTION and HOLDABLE blocks), `DSP_SYMBOL_RTL_YIELD` and `IO_RTL_RETUNE_PREPARE` (the AM monitor's empty
+    read and yield), `RUNTIME_SQUELCH` (`dsd_squelch_analog_calls_allowed()`), `DECODE_IQ_RECEIVE_POLICY`
+    (`nfm_ctcss_real` under `-fA` and an explicit squelch makes two toned rows; its 400 ms untoned stretch makes none;
+    `am_airband_real` under `-fM` makes one AM row and an `_AM` recording; at the default squelch neither makes any,
+    with one notice), `CORE_WAV_JOURNAL` (one publish and link; the recording's start at its first block, moved back by
+    its pre-roll or to an unclean opening's eligible point, at pre-roll 0 too),
     `APP_CONTROL_RECORDING` (a stop while held ends the call, a folder change keeps it; no hold without per-call
     recording; the max gap command's states, refusals, and raising, lowering and turning it off while held; the pre-roll
     command's states and refusals; the pre-roll dropped by a folder change, P and p in one drain, a config apply, the
@@ -12684,23 +12900,37 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     start written as heard; B1, B6 and B7 end to end; the DirWatch sidecar), see `docs/testing.md`. `DSP_SYMBOL_REPLAY`
     pins `ramp_end`, the level path's ramp-in after a mid-block verdict (and into the next block at 44.1 kHz) and
     `heard` only where a call can be.
+  - Teardown without finalize (`analog_call_free()`): a candidate's temporary recording is discarded; a call's is
+    published under the name its row gave it.
   - Speaker output is independent of reception and recording. The existing analog sink provides a separate 48 kHz
     call-WAV conversion lane; `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing
-    diagnostic raw capture. An NFM recording is published as
-    `<date>_<time>_<nnnnn>_NFM_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>][_SVC_<name>].wav` (no
+    diagnostic raw capture. An analog recording is published as
+    `<date>_<time>_<nnnnn>_<mode>_<freq Hz | FREQ_UNKNOWN>[_CTCSS_<x.y> | _DCS_D<nnn><N|I>][_SVC_<name>].wav` (no
     talkgroup, source or call type; `wav_rename_build_final_filename()`), chosen by the row's `systype`; the mode word
-    is the row's, the frequency its `freq_hz`, and the tone part appears only for a confirmed CTCSS/DCS identity,
-    formatted by `dsd_receive_value_format()` and not run through the name sanitizer; a teardown that no longer has the
-    row publishes it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no rdio export) under the
-    name the row gave it: the engine keeps the row's frequency, tone and service (`dsd_analog_wav_name`) after each
-    write into the file (issue #668), so it is never left under its temp name, given the digital shape or named
-    `FREQ_UNKNOWN` for a frequency that was known. The call's
-    own close exports it to rdio-scanner under its frequency in kHz (issue #668; Core, "rdio-scanner export
-    verdict").
-  - A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption, and
+    is the row's `sysid_string` (`NFM`, `AM`, or `ANALOG` on audio input, issue #667), the frequency its `freq_hz`, and
+    the tone part appears only for a confirmed CTCSS/DCS identity, formatted by `dsd_receive_value_format()` and not run
+    through the name sanitizer; a teardown that no longer has the row publishes it through
+    `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no rdio export) under the name the row gave it:
+    the engine keeps the row's frequency, tone and service (`dsd_analog_wav_name`) after each write into the file
+    (issue #668), and the mode the call began in (`analog_call::mode`, set when the file opens), so it is never left
+    under its temp name, given the digital shape or named `FREQ_UNKNOWN` for a frequency that was known. The call's own
+    close exports it to rdio-scanner under its frequency in kHz (issue #668; Core, "rdio-scanner export verdict"). A
+    short write is logged as `NFM call`, `AM call` or `Analog call` (`analog_call_label()`).
+    `discard_analog_wav_file()` drops a temporary recording that is never published: it closes through the segment
+    table (`wav_segment_close()`, so a short write's latch goes with it) and removes the file, even after a failed
+    close, with no rename, journal record or rdio export; an open or write failure it had stays logged (an open failure
+    journaled) as before. Tests: `CORE_WAV_JOURNAL` (`test_analog_recordings_are_named_by_mode`,
+    `test_unpublished_analog_recording_is_discarded`, `test_failed_analog_open_keeps_its_error_through_a_discard`).
+  - A live radio read on the analog monitor, NFM or AM (issue #667 D8), yields with zero samples after 100 ms without
+    output; DSP marks that as an interruption, and
     the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing received-tone
-    freshness deadline closes stalled calls and WAVs on the decoder thread (UDP and RTL; stdin and TCP only when data
-    returns), each ended at its last reception. Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
+    freshness deadline closes stalled calls and WAVs on the decoder thread (UDP, RTL, and since the bounded reads, issue
+    #667 D12, stdin and TCP too; Windows console stdin and a regular file only when data returns), each ended at its
+    last reception. A reset that moves the boundaries epoch under a running call or candidate (a TCP reconnect, which
+    clears that deadline) makes `dsd_engine_analog_call_due()` true by itself, so a hunt read on a new connection that
+    stays silent, or sends part of a sample, still gives way to the tick that ends the cut reception.
+    `CORE_RECEIVE` and `ENGINE_PCM_INPUT_WAIT` (over a real socket) cover it, and `DECODE_PCM_ANALOG_STDIN_STALL`
+    covers a stdin stall. Replay reads keep their sample-driven behavior. `IO_RTL_RETUNE_PREPARE`,
     `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
 - App-control receive commands validate complete edits before application. Row commands retain scanner session and
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.

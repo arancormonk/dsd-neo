@@ -11,6 +11,9 @@
 # EXPECTED2/MIN_MATCHES2 and EXPECTED3/MIN_MATCHES3 (further payloads the same
 # run must print, at least as often; a MIN_MATCHESn of its own defaults to 1),
 # EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match),
+# EVENT_COUNT_REGEX with EVENT_COUNT, each refused without the other (with
+# EVENT_EXPECTED: the event history must hold exactly EVENT_COUNT
+# non-overlapping matches of it, 0 included),
 # and AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
 # at least that many bytes, not all of them zero).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
@@ -28,6 +31,18 @@ separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 # history (-J) into WORK_DIR, which must match EVENT_EXPECTED, for what a decoder
 # publishes as a call rather than prints.
 set(_event_args)
+if(DEFINED EVENT_COUNT_REGEX AND NOT DEFINED EVENT_EXPECTED)
+    message(
+        FATAL_ERROR
+        "iq_decode_check: EVENT_COUNT_REGEX needs -DEVENT_EXPECTED"
+    )
+endif()
+if(DEFINED EVENT_COUNT AND NOT DEFINED EVENT_COUNT_REGEX)
+    message(
+        FATAL_ERROR
+        "iq_decode_check: EVENT_COUNT needs -DEVENT_COUNT_REGEX"
+    )
+endif()
 if(DEFINED EVENT_EXPECTED)
     if(NOT DEFINED WORK_DIR)
         message(FATAL_ERROR "iq_decode_check: EVENT_EXPECTED needs -DWORK_DIR")
@@ -174,5 +189,22 @@ if(DEFINED EVENT_EXPECTED)
             FATAL_ERROR
             "iq_decode_check: /${EVENT_EXPECTED}/ not found in the event history\n${_events}"
         )
+    endif()
+    # Optional -DEVENT_COUNT_REGEX/-DEVENT_COUNT: how many rows of a kind the run
+    # published, exactly; 0 pins that a run published none.
+    if(DEFINED EVENT_COUNT_REGEX)
+        if(NOT DEFINED EVENT_COUNT OR NOT "${EVENT_COUNT}" MATCHES "^[0-9]+$")
+            message(
+                FATAL_ERROR
+                "iq_decode_check: EVENT_COUNT_REGEX needs -DEVENT_COUNT, a whole number"
+            )
+        endif()
+        dsd_test_count_regex_matches(_event_count "${EVENT_COUNT_REGEX}" "${_events}")
+        if(NOT _event_count EQUAL EVENT_COUNT)
+            message(
+                FATAL_ERROR
+                "iq_decode_check: /${EVENT_COUNT_REGEX}/ matched ${_event_count} times in the event history, expected ${EVENT_COUNT}\n${_events}"
+            )
+        endif()
     endif()
 endif()

@@ -496,13 +496,16 @@ Item {
             tryCompare(detail, "visible", true);
             return detail;
         }
+        // Issue #667: the tone is an analog reception's, spelled as the model
+        // spells it, and read alone on the access code's line.
         function test_home_details_show_received_tone() {
-            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 151820000, "", "");
-            verify(callHistory.updateRow(callHistory.newestUid(), {receivedTone: "100.0 Hz", serviceName: "Fire"}));
+            var name = callHistory.pushAnalog("Fire", "NFM", "", "Fire Dispatch", 151820000);
+            verify(callHistory.updateRow(callHistory.newestUid(), {receivedTone: "CTCSS 100.0 Hz", serviceName: "Fire"}));
             var detail = openHomeRecent(name);
-            compare(detail.record.receivedTone, "100.0 Hz");
+            compare(detail.record.receivedTone, "CTCSS 100.0 Hz");
             compare(detail.record.serviceName, "Fire");
-            verify(detail.detailLines.indexOf("Received tone 100.0 Hz") >= 0, "no tone line: " + detail.detailLines);
+            compare(detail.detailLines[7], "CTCSS 100.0 Hz");
+            compare(detail.detailLines[11], "Analog NFM");
             detail.visible = false;
         }
         function test_home_details_show_site_line() {

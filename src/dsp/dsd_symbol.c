@@ -38,6 +38,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
@@ -1846,29 +1847,36 @@ symbol_analog_block_collect(const dsd_opts* opts, dsd_state* state, uint32_t rtl
     }
 }
 
-/* What the block is to the engine's NFM call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
-   rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no detection, a channel the
+/* What the block is to the engine's analog call (DSD_ANALOG_CALL_*, issue #756): @p reception as it stands, and of the
+   rest a block the call cannot span (one dropped at a boundary, trunking, digital sync, no monitor tap, a channel the
    tap has not read yet, a rejected tone) from one it may hold through (the carrier closed, or its tone still checked).
-   Only a block that is no reception pays for the checks, the boundaries' read last. */
+   A tone still checked under an open carrier is PENDING, which a reception not yet a call counts as its lead-in (issue
+   #667). Only a block that is no reception pays for the checks, the boundaries' read last. */
 static int
 symbol_analog_call_input(const dsd_opts* opts, const dsd_state* state, int discard, int reception) {
     if (reception) {
         return DSD_ANALOG_CALL_RECEPTION;
     }
-    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)
-        || dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED
-        || !dsd_analog_rx_boundaries_current(opts, state)) {
+    if (discard || opts->trunk_enable != 0 || state->carrier != 0 || !dsd_analog_monitor_tap_active(opts)) {
         return DSD_ANALOG_CALL_BREAK;
+    }
+    const int gate = dsd_analog_tone_gate_in_force(opts, state);
+    if (gate == DSD_ANALOG_TONE_GATE_REJECTED || !dsd_analog_rx_boundaries_current(opts, state)) {
+        return DSD_ANALOG_CALL_BREAK;
+    }
+    if (gate == DSD_ANALOG_TONE_GATE_PENDING && dsd_trunk_tuning_pending_request() == 0U
+        && dsd_analog_rx_carrier_open_now(opts, state)) {
+        return DSD_ANALOG_CALL_PENDING;
     }
     return DSD_ANALOG_CALL_HOLDABLE;
 }
 
-/* Whether the block is the NFM call's reception, as the per-call recording writes it: on the FM monitor, no trunking,
-   digital carrier or retune unresolved, the tap's carrier open now (its hangover included) and the tone policy passing
-   it. */
+/* Whether the block is the analog call's reception, as the per-call recording writes it: on the analog monitor (FM or
+   AM, issue #667 D8), no trunking, digital carrier or retune unresolved, the tap's carrier open now (its hangover
+   included) and the tone policy passing it. */
 static inline int
 symbol_unsynced_reception(const dsd_opts* opts, const dsd_state* state, int discard) {
-    return !discard && dsd_analog_tone_detection_active(opts) && opts->trunk_enable == 0 && state->carrier == 0
+    return !discard && dsd_analog_monitor_tap_active(opts) && opts->trunk_enable == 0 && state->carrier == 0
            && dsd_trunk_tuning_pending_request() == 0U && dsd_analog_rx_carrier_open_now(opts, state)
            && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
 }
@@ -1903,8 +1911,9 @@ symbol_silence_ineligible_prefix(dsd_state* state, unsigned int prefix) {
     }
 }
 
-/* Whether the NFM call wants each block before the sink gate too: -P records with a pre-roll (issue #668), in a mode
-   where a block can be the call's reception at all (the FM monitor, no trunking), as the engine's ring follows. */
+/* Whether the NFM call wants each block before the sink gate too: -P records with a pre-roll (issue #668) on the FM
+   monitor, no trunking, as the engine's ring follows. An AM call has no pre-roll: its level squelch opens without the
+   noise squelch's delay (issue #667). */
 static inline int
 symbol_call_wants_heard(const dsd_opts* opts) {
     return opts->dmr_stereo_wav && opts->analog_record_preroll_ms > 0 && opts->trunk_enable == 0
@@ -2238,32 +2247,56 @@ symbol_input_ended(dsd_state* state, const symbol_work_ctx* work, float* sample_
     return 1;
 }
 
-static inline int
-symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
-    if (symbol_stop_after_shutdown(sample_out)) {
-        return 0;
-    }
-    if (opts->audio_in_file == NULL) {
-        dsd_request_shutdown(opts, state);
-        return 0;
-    }
+/* A bounded PCM read: 1 with a sample, 0 when the input ended, -1 when none came within the timeout. */
+typedef int (*symbol_pcm_read_wait_fn)(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
 
-    short s = 0;
-    sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
-    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
-    *sample_out = (float)s;
-    if (result == 0) {
-        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
-            return 1;
-        }
-        symbol_close_audio_in_file(opts);
-        dsd_request_shutdown(opts, state);
-        return 0;
-    }
+static int symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
+                                  symbol_pcm_read_wait_fn read_wait);
+
+/* A PCM sample as the decoder takes it: scaled by the input volume, then through the staged resampler when the input
+   rate needs it. */
+static inline void
+symbol_take_pcm_sample(dsd_opts* opts, int16_t s, float* sample_out) {
+    *sample_out = (float)symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
     if (dsd_pcm_input_uses_staged_resampler(opts)) {
         dsd_pcm_input_stage_resample(opts, *sample_out);
         *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
     }
+}
+
+static int
+symbol_stdin_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    return dsd_pcm_stream_read_wait(opts->audio_in_stdin, out, timeout_ms);
+}
+
+/* stdin waits in bounded slices as UDP does (issue #667 D12): a source that stops sending (rtl_fm -l while squelched
+   writes nothing) leaves the hunt for the engine's tick, which ends a stalled analog call on time. */
+static inline int
+symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    if (symbol_stop_after_shutdown(sample_out)) {
+        return 0;
+    }
+    if (opts->audio_in_stdin == NULL) {
+        dsd_request_shutdown(opts, state);
+        return 0;
+    }
+
+    int16_t s = 0;
+    const int got = symbol_wait_pcm_sample(opts, state, work, &s, symbol_stdin_read_wait);
+    *sample_out = 0.0f;
+    if (got < 0) {
+        return 0;
+    }
+    if (got == 0) {
+        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+            return 1;
+        }
+        dsd_pcm_stream_close(opts->audio_in_stdin);
+        opts->audio_in_stdin = NULL;
+        dsd_request_shutdown(opts, state);
+        return 0;
+    }
+    symbol_take_pcm_sample(opts, s, sample_out);
     return 1;
 }
 
@@ -2576,7 +2609,7 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
         symbol_rtl_read_yielded(state);
         return 0;
     }
-    if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
+    if (read_rc == 0 && got == 0 && dsd_analog_monitor_tap_active(opts)) {
         state->input_interrupted = 1;
         return 0;
     }
@@ -2773,61 +2806,89 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
 }
 
 static int
-symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
-    short s = 0;
-    int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
-    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
-    *sample_out = (float)s;
-    if (tcp_result == 0) {
-        if (state->input_fallback_pending) {
-            return symbol_input_ended(state, work, sample_out);
-        }
-        const dsd_socket_cancel_fn cancelled =
-            work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
-        const int reconnected = symbol_tcp_reconnect(opts, state, cancelled);
-        if (reconnected < 0) {
-            return symbol_tcp_reconnect_gave_up(opts, state);
-        }
+symbol_tcp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    return dsd_net_audio_input_hook_tcp_read_sample_wait(opts->tcp_in_ctx, out, timeout_ms);
+}
 
-        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
-            return 1;
-        }
-        if (reconnected) {
-            dsd_opts_reset_pcm_input_state(opts);
-        }
-
-        short s_retry = 0;
-        tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
-        *sample_out = (float)s_retry;
-        if (tcp_result == 0) {
-            symbol_tcp_close(opts);
-            DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
-            return symbol_input_ended(state, work, sample_out);
-        }
+/* The TCP connection ended (a real close or socket error, never a quiet sender: issue #667 B7). Reconnect and read the
+   new connection's first sample into @p s. Returns 1 with it, 0 with @p sample_out set when the read is done (the
+   staged tail's sample, a cancelled reconnect, a lost input, a wait the new connection gave up), and sets @p done. */
+static int
+symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work, int16_t* s,
+                          int* done) {
+    *done = 1;
+    if (state->input_fallback_pending) {
+        return symbol_input_ended(state, work, sample_out);
     }
-    if (opts->audio_in_type == AUDIO_IN_TCP && dsd_pcm_input_uses_staged_resampler(opts)) {
-        dsd_pcm_input_stage_resample(opts, *sample_out);
-        *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    const dsd_socket_cancel_fn cancelled =
+        work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
+    const int reconnected = symbol_tcp_reconnect(opts, state, cancelled);
+    if (reconnected < 0) {
+        return symbol_tcp_reconnect_gave_up(opts, state);
     }
+    if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+        return 1;
+    }
+    if (reconnected) {
+        dsd_opts_reset_pcm_input_state(opts);
+    }
+    /* The new connection is waited on as any other: one that stays quiet, or sends a part of a sample, leaves the
+       hunt for the engine's tick, which ends the reception the reconnect cut (dsd_engine_analog_call_due()). */
+    const int got = symbol_wait_pcm_sample(opts, state, work, s, symbol_tcp_read_wait);
+    if (got < 0) {
+        return 0;
+    }
+    if (got == 0) {
+        symbol_tcp_close(opts);
+        DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
+        return symbol_input_ended(state, work, sample_out);
+    }
+    *done = 0;
     return 1;
 }
 
-/* Wait for the next UDP sample. A frame-sync hunt read leaves the wait for a queued command (issue #634), for
-   decoder-thread trunking timers that are due (a startup control-channel hunt or DMR recovery, issue #703), or for a
-   frontend publication a P25 watchdog tick put off (dsd_runtime_publish_pending()), but only
-   once the input has been silent for a stream pause, as long as the analog receiver takes for a boundary
-   (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and sync history it gives up then belong to a paused stream,
-   and a shorter gap never costs a sync. The silence is counted from the first wait that came back empty, with nothing
-   credited for that wait, which may have ended early. Returns 1 with a sample, 0 when the input stopped, and -1 when
-   the read left for a command (state->input_interrupted). */
 static int
-symbol_wait_udp_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out) {
+symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    int16_t s = 0;
+    const int got = symbol_wait_pcm_sample(opts, state, work, &s, symbol_tcp_read_wait);
+    *sample_out = 0.0f;
+    if (got < 0) {
+        return 0;
+    }
+    if (got == 0) {
+        int done = 0;
+        const int taken = symbol_tcp_reconnect_read(opts, state, sample_out, work, &s, &done);
+        if (done) {
+            return taken;
+        }
+    }
+    /* The first sample of a new connection is scaled like every other (issue #667 B5). */
+    symbol_take_pcm_sample(opts, s, sample_out);
+    return 1;
+}
+
+/* Wait for the next sample of a PCM input that may go quiet: UDP, TCP or stdin (issue #667 D12), each read through its
+   bounded read (@p read_wait) in slices of SYMBOL_INPUT_WAIT_SLICE_MS. A frame-sync hunt read leaves the wait for a
+   queued command (issue #634), for decoder-thread timers that are due (a startup control-channel hunt or DMR recovery,
+   issue #703; an analog call past its stale deadline, or one a reset ended, issue #667), or for a frontend publication
+   a P25 watchdog tick put off (dsd_runtime_publish_pending()), but only once the input has been silent for a stream
+   pause, as long as the analog receiver takes for a boundary (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and
+   sync history it gives up then belong to a paused stream, and a shorter gap never costs a sync. The silence is counted
+   from the first wait that came back empty, with nothing credited for that wait, which may have ended early. Frame
+   decoding waits on for its samples. Shutdown ends the wait. Returns 1 with a sample, 0 when the input stopped, and -1
+   when the read left with none (for a command: state->input_interrupted). */
+static int
+symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
+                       symbol_pcm_read_wait_fn read_wait) {
     uint64_t silent_since_ms = 0U;
     int silent = 0;
     for (;;) {
-        const int got = dsd_net_audio_input_hook_udp_read_sample_wait(opts, out, SYMBOL_INPUT_WAIT_SLICE_MS);
+        const int got = read_wait(opts, out, SYMBOL_INPUT_WAIT_SLICE_MS);
         if (got >= 0) {
             return got;
+        }
+        if (dsd_exitflag_load() == 1) {
+            return -1;
         }
         if (!work->hunting) {
             continue;
@@ -2850,7 +2911,8 @@ symbol_wait_udp_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
 static inline int
 symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
     short s = 0;
-    const int got = symbol_wait_udp_sample(opts, state, work, (int16_t*)&s);
+    const int got =
+        symbol_wait_pcm_sample(opts, state, work, (int16_t*)&s, dsd_net_audio_input_hook_udp_read_sample_wait);
     if (got < 0) {
         *sample_out = 0.0f;
         return 0;
@@ -2887,7 +2949,7 @@ symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work)
         return symbol_read_sample_pulse(opts, &work->sample);
     }
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
-        return symbol_read_sample_stdin(opts, state, &work->sample);
+        return symbol_read_sample_stdin(opts, state, &work->sample, work);
     }
     if (opts->audio_in_type == AUDIO_IN_WAV) {
         return symbol_read_sample_wav(opts, state, &work->sample, work);

@@ -27,6 +27,7 @@
 #endif
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -114,6 +115,9 @@ struct dsd_opts {
     FILE* mbe_in_f;
     SNDFILE* audio_in_file;
     SF_INFO* audio_in_file_info;
+    /* The stdin input's one reader (`-i -`, raw PCM16LE mono), which every consumer of stdin shares: the symbol path's
+       bounded read and the M17 encoder's blocking read (issue #667 D12). */
+    dsd_pcm_stream* audio_in_stdin;
     SNDFILE* audio_out_file;
     SF_INFO* audio_out_file_info;
     FILE* mbe_out_f;
@@ -210,11 +214,11 @@ struct dsd_opts {
     /* The rdio-scanner system a conventional analog (NFM) call is exported to, 0..65535 (issue #668); 0 uses
        rdio_system_id. */
     int rdio_analog_system_id;
-    /* The rdio-scanner talkgroup of an NFM call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
+    /* The rdio-scanner talkgroup of an analog call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
        leaves such calls unexported. A call with a frequency is exported under it in kHz. */
     int rdio_analog_talkgroup;
     int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
-    /* The longest pause, in ms, one conventional NFM call (its history row and per-call WAV) survives (issue #756);
+    /* The longest pause, in ms, one conventional analog call (its history row and per-call WAV) survives (issue #756);
        the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the
        call ends when the carrier's hangover does. */
     int analog_record_max_gap_ms;

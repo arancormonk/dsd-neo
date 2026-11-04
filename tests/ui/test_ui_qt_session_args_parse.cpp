@@ -210,7 +210,7 @@ test_saved_system(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("the saved system's argv parses", parse(host.argv, decoder));
     expectRecording("a saved system records each call, unknown talkgroups only, into its folder", decoder,
                     sessions.folder, true, true);
-    expect("with the NFM pause hold Settings shows (issue #756)", decoder.opts->analog_record_max_gap_ms == 2500);
+    expect("with the analog pause hold Settings shows (issue #756)", decoder.opts->analog_record_max_gap_ms == 2500);
     expect("and the NFM pre-roll (issue #668)", decoder.opts->analog_record_preroll_ms == 300);
     // One in the extra options comes later and wins.
     prefs.setExtraArgs(QStringLiteral("--analog-record-max-gap-ms 4000 --analog-record-preroll-ms 700"));
@@ -327,7 +327,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("unknown-only while Record calls is off sends nothing", bridge.setRecordUnknownOnly(true));
     expect("nothing queued", live.drain() == 0 && opts->record_unknown_only == 0);
 
-    expect("the NFM pause hold while Record calls is off sends nothing", bridge.setAnalogRecordMaxGap(3000));
+    expect("the analog pause hold while Record calls is off sends nothing", bridge.setAnalogRecordMaxGap(3000));
     expect("nothing queued for it", live.drain() == 0 && opts->analog_record_max_gap_ms == 200);
     expect("the NFM pre-roll while Record calls is off sends nothing", bridge.setAnalogRecordPreroll(500));
     expect("nothing queued for the pre-roll",
@@ -349,7 +349,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("unknown-only off while recording is queued", bridge.setRecordUnknownOnly(false));
     expect("and applied", live.drain() == 1 && opts->record_unknown_only == 0);
 
-    // Issue #756: the NFM pause hold while recording goes live, reads as itself, and a value the decoder refuses
+    // Issue #756: the analog pause hold while recording goes live, reads as itself, and a value the decoder refuses
     // fails without changing the session's.
     expect("the pause hold while recording is queued", bridge.setAnalogRecordMaxGap(10000));
     status.refresh();
@@ -429,7 +429,7 @@ test_live_unknown_only_first(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
 }
 
-/* Issue #756: with the NFM pause hold in the extra options, Settings sends no hold with Record calls on (a negative
+/* Issue #756: with the analog pause hold in the extra options, Settings sends no hold with Record calls on (a negative
  * one), so the session keeps the hold its extra options set; issue #668: the NFM pre-roll the same way. */
 void
 test_live_record_on_keeps_extra_hold(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
@@ -470,7 +470,7 @@ struct LiveBridge {
 
 /* A setting changed twice while Record calls on still waits in the queue (a carrier holds it; nothing drains): both
  * changes go, so the session ends at the last one. The first change is then the view's latest command, not the start,
- * and the second was lost for the NFM pause hold (issue #756) and Only unknown talkgroups (issue #708) alike. The NFM
+ * and the second was lost for the analog pause hold (issue #756) and Only unknown talkgroups (issue #708) alike. The NFM
  * pre-roll (issue #668) goes the same way behind them. */
 void
 test_live_settings_behind_a_queued_start(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
@@ -924,7 +924,7 @@ test_status_readings(void) {
     expect("each move signalled once", changes == 4 && status.commandState() == "dropped" && status.command() == "stop"
                                            && status.refusal() == "static-wav"
                                            && status.refusalCount() == refusals + 2);
-    // Issue #756: the NFM pause hold alone moving is a move too, so Settings follows a hold another frontend set.
+    // Issue #756: the analog pause hold alone moving is a move too, so Settings follows a hold another frontend set.
     view.analog_max_gap_ms = 2000;
     status.apply(view);
     expect("the pause hold moving is a change", changes == 5 && status.analogMaxGapMs() == 2000);

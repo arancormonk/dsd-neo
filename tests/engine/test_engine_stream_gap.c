@@ -21,16 +21,23 @@
  * ESS state and the DMR confirmation (candidate, lock, voice gate), and moves the carrier count, but keeps the
  * carrier's codes, its received identity and the voice channel a trunking session follows. A stream start takes up the
  * stream's count, so a gap before it is never raised on the next stream.
+ * The analog side of the boundary (issue #667 A3), through the real tracker, on a replay's clock and on a live input's:
+ * a call ends at its last accepted block, a candidate unpublished, and analog reception starts over (the received tone,
+ * its policy verdict), so the next reception is heard with its own tone or none; the received identity stays. The gap
+ * does this itself, whether or not the stream's generation moved with it.
  */
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -39,7 +46,9 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
@@ -47,6 +56,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "analog_call_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -625,6 +635,165 @@ test_stream_start_takes_up_the_count(dsd_opts* opts, dsd_state* state) {
     g_seq_base = 0U;
 }
 
+/* ---------------- The analog reception the gap cuts (issue #667 A3) ---------------- */
+
+enum { kAnalogBlock = 960 }; /* one 20 ms monitor block at 48 kHz */
+
+static uint64_t g_media_ns = 0U;
+
+static int
+monitor_output_kind(void) {
+    return RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+}
+
+/* A fresh session on the FM monitor of a radio input, with a squelch analog calls run under (issue #667 D2), on a
+   replay's clock (@p replay) or the system's (a live input). */
+static int
+analog_session(dsd_opts** out_opts, dsd_state** out_state, int replay) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    /* The radio stream delivers the analog monitor's audio, which the tap reads. */
+    static const dsd_rtl_stream_metrics_hooks hooks = {
+        .output_kind = monitor_output_kind,
+        .stream_generation = fake_generation,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_media_ns = 0U;
+    if (replay) {
+        dsd_decode_clock_use_replay((int64_t)4102444800LL); /* 2100-01-01T00:00:00Z */
+    } else {
+        dsd_decode_clock_use_system();
+    }
+    *out_opts = opts;
+    *out_state = state;
+    return 0;
+}
+
+static void
+analog_session_free(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_analog_call_end(opts, state);
+    dsd_decode_clock_use_system();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/* What the tap publishes on an open carrier: CTCSS @p tenths locked, or the untoned verdict (0). */
+static void
+publish_tone(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = tenths > 0 ? DSD_ANALOG_TONE_STATE_LOCKED : DSD_ANALOG_TONE_STATE_NONE;
+    state->analog_rx.tone_kind = tenths > 0 ? DSD_ANALOG_TONE_KIND_CTCSS : DSD_ANALOG_TONE_KIND_NONE;
+    state->analog_rx.ctcss_tenths_hz = tenths > 0 ? tenths : 0;
+}
+
+/* @p blocks RECEPTION blocks, each 20 ms on in media time (a replay's clock follows it). */
+static void
+feed_reception(dsd_opts* opts, dsd_state* state, int blocks) {
+    static float block[kAnalogBlock];
+    for (int i = 0; i < kAnalogBlock; i++) {
+        block[i] = 2000.0f; /* Monitor blocks carry signed-16 PCM units in floats. */
+    }
+    for (int b = 0; b < blocks; b++) {
+        g_media_ns += 20000000ULL;
+        dsd_decode_clock_set_media_ns(g_media_ns);
+        dsd_test_analog_call_feed(opts, state, block, kAnalogBlock, 48000, DSD_ANALOG_CALL_RECEPTION);
+    }
+}
+
+/* The analog history rows committed, and the newest one's received tone (CTCSS tenths, 0 untoned or none). */
+static int
+analog_rows(const dsd_state* state, int* newest_tenths) {
+    int rows = 0;
+    *newest_tenths = -1;
+    for (int i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->systype != DSD_SYNC_ANALOG) {
+            continue;
+        }
+        rows++;
+        const dsd_receive_identity* id = &row->receive_identity;
+        *newest_tenths = id->known && id->kind == (uint8_t)DSD_RECEIVE_CTCSS ? (int)id->value : 0;
+    }
+    return rows;
+}
+
+static void
+run_gap(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+}
+
+/* A call on CTCSS 100.0 Hz when the gap comes, then the next reception on @p after_tenths (see publish_tone()). */
+static void
+test_gap_ends_the_analog_call(int replay, int after_tenths) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (analog_session(&opts, &state, replay) != 0) {
+        expect("analog gap: a session", 0);
+        return;
+    }
+    state->rx_id.valid = 0x1U;
+    state->rx_id.nxdn_sys = 0x123U;
+    const dsd_received_identity identity = state->rx_id;
+    publish_tone(state, 1000);
+    feed_reception(opts, state, DSD_ANALOG_CALL_MIN_MS / 20 + 5);
+    int tenths = -1;
+    expect(replay ? "analog gap: a call before the gap (replay)" : "analog gap: a call before the gap (live)",
+           dsd_engine_analog_call_active(state) && analog_rows(state, &tenths) == 0);
+    const uint32_t generation = state->analog_rx.generation;
+
+    run_gap(opts, state);
+
+    expect("analog gap: the call ends at the gap", !dsd_engine_analog_call_active(state));
+    expect("analog gap: its row is committed with its tone", analog_rows(state, &tenths) == 1 && tenths == 1000);
+    expect("analog gap: the received tone starts over",
+           state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE && state->analog_rx.ctcss_tenths_hz == 0
+               && state->analog_rx.carrier_open == 0 && state->analog_rx.generation != generation);
+    expect("analog gap: the received identity stays", rxid_equal(&identity, &state->rx_id));
+
+    publish_tone(state, after_tenths);
+    feed_reception(opts, state, DSD_ANALOG_CALL_MIN_MS / 20 + 5);
+    dsd_engine_analog_call_end(opts, state);
+    expect("analog gap: the next reception is a call of its own, with its own tone",
+           analog_rows(state, &tenths) == 2 && tenths == after_tenths);
+    analog_session_free(opts, state);
+}
+
+/* Two receptions shorter than an analog call, one on each side of the gap, are two candidates: neither makes a row. */
+static void
+test_gap_splits_two_short_receptions(int replay) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (analog_session(&opts, &state, replay) != 0) {
+        expect("analog gap bursts: a session", 0);
+        return;
+    }
+    const int short_blocks = (DSD_ANALOG_CALL_MIN_MS / 20) * 3 / 5; /* 300 ms each, 600 ms together */
+    publish_tone(state, 1000);
+    feed_reception(opts, state, short_blocks);
+    run_gap(opts, state);
+    publish_tone(state, 1000);
+    feed_reception(opts, state, short_blocks);
+    expect("analog gap bursts: the second burst is no call", !dsd_engine_analog_call_active(state));
+    dsd_engine_analog_call_end(opts, state);
+    int tenths = -1;
+    expect("analog gap bursts: neither burst makes a row", analog_rows(state, &tenths) == 0);
+    analog_session_free(opts, state);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -652,6 +821,11 @@ main(void) {
     test_gap_resets_dmr_confirmation_keeps_colour_code(opts, state);
     test_stream_gap_mid_call_keeps_follow(opts, state);
     test_stream_start_takes_up_the_count(opts, state);
+    for (int replay = 1; replay >= 0; replay--) {
+        test_gap_ends_the_analog_call(replay, 670);
+        test_gap_ends_the_analog_call(replay, 0);
+        test_gap_splits_two_short_receptions(replay);
+    }
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);

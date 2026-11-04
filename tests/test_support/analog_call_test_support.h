@@ -8,8 +8,9 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stddef.h>
 
-/* One block as the monitor hands it (issue #668): clean, with no wall time, and on a RECEPTION its own carrier. A test
-   that needs another descriptor builds it and calls dsd_engine_analog_call_block() itself. */
+/* One block as the monitor hands it (issue #668): clean, with no wall time, and on a RECEPTION its own carrier. A
+   PENDING block (issue #667), a tone still checked, is eligible nowhere, as the monitor marks it. A test that needs
+   another descriptor builds it and calls dsd_engine_analog_call_block() itself. */
 static inline void
 dsd_test_analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
                           int input) {
@@ -18,6 +19,7 @@ dsd_test_analog_call_feed(dsd_opts* opts, dsd_state* state, const float* samples
         .count = count,
         .sample_rate = sample_rate,
         .input = input,
+        .eligible_from = input == DSD_ANALOG_CALL_PENDING ? count : 0U,
         .ramp_end = 0,
         .qualified_carrier = input == DSD_ANALOG_CALL_RECEPTION,
     };

@@ -6,6 +6,7 @@
 /* The RTL squelch setting's grammar, text and resolution (issue #518 follow-up). */
 
 #include <ctype.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -15,6 +16,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -402,6 +404,23 @@ dsd_squelch_stream_gate_running(const dsd_opts* opts, const dsd_state* state) {
     }
     dsd_rtl_squelch_status st;
     return dsd_rtl_stream_io_hook_squelch_status(state, &st) == 0 && st.active && st.plan_valid;
+}
+
+int
+dsd_squelch_analog_calls_allowed(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    if (!dsd_opts_input_is_radio(opts) || dsd_squelch_dynamic_in_force(opts, state)) {
+        return 1;
+    }
+    /* The startup level as dB_to_pwr() makes it, within the relative tolerance two equal levels share. */
+    const double startup = dsd_squelch_level_from_sql((double)DSD_SQUELCH_STARTUP_DB);
+    if (dsd_squelch_level_in_force(opts) > startup * (1.0 + k_level_same_relative)) {
+        return 1;
+    }
+    return opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW && dsd_tone_set_count(&opts->analog_tone_set) > 0
+           && dsd_analog_tone_detection_active(opts);
 }
 
 double

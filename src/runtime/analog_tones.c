@@ -17,10 +17,10 @@
 #include <string.h>
 
 /*
- * The standard 50-tone EIA/TIA CTCSS table in tenths of a hertz, ascending, with 150.0 Hz, the
- * tone many radios offer as a 51st, in its place between 146.2 and 151.4 Hz. It sits 1.4 Hz from
- * 151.4 Hz, closer than any other two tones; the detector keeps the two apart with gates of half
- * that distance (src/dsp/analog_ctcss.c).
+ * The 50 CTCSS tones radios commonly offer (the 39 of TIA-603-E and 11 more) in tenths of a hertz,
+ * ascending, with 150.0 Hz, the tone many radios offer as a 51st, in its place between 146.2 and
+ * 151.4 Hz. It sits 1.4 Hz from 151.4 Hz, closer than any other two tones; the detector keeps the
+ * two apart with gates of half that distance (src/dsp/analog_ctcss.c).
  */
 static const uint16_t k_ctcss_tones_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
@@ -29,7 +29,7 @@ static const uint16_t k_ctcss_tones_tenths[] = {
 };
 
 _Static_assert(sizeof(k_ctcss_tones_tenths) / sizeof(k_ctcss_tones_tenths[0]) == DSD_CTCSS_TONE_COUNT,
-               "the CTCSS table holds the standard 50 tones and 150.0 Hz");
+               "the CTCSS table holds the 50 common tones and 150.0 Hz");
 
 int
 dsd_ctcss_tone_count(void) {
@@ -94,7 +94,8 @@ dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size) {
  * DCS (issue #523)
  * ---------------------------------------------------------------------------------------- */
 
-/* The standard 104-code DCS set, ascending, each code as its value (023 octal = 19). */
+/* The 104 DCS codes radios commonly offer (the 83 standard codes and 21 more), ascending, each code as its value
+ * (023 octal = 19). */
 static const uint16_t k_dcs_codes[] = {
     0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073, 0074, 0114, 0115,
     0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162, 0165, 0172, 0174, 0205, 0212, 0223,
@@ -105,7 +106,7 @@ static const uint16_t k_dcs_codes[] = {
 };
 
 _Static_assert(sizeof(k_dcs_codes) / sizeof(k_dcs_codes[0]) == DSD_DCS_CODE_COUNT,
-               "the DCS table holds exactly the standard 104 codes");
+               "the DCS table holds exactly the 104 common codes");
 
 /* Golay (23,12) generator x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1, bit i the coefficient of x^i. */
 #define DCS_GOLAY_GENERATOR 0xC75U
@@ -236,10 +237,10 @@ dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted) 
 /*
  * A code sent inverted sends the complement of its normal word, so the inverted spellings of a
  * signal are the normal spellings of its complement, and the other way round: the complement's
- * canonical member, in the other polarity, spells this signal too. In the standard set every
+ * canonical member, in the other polarity, spells this signal too. In the supported set every
  * signal has exactly one spelling in each polarity, so the complement's canonical member is its
  * normal spelling, and in the other polarity it is this signal's one inverted spelling, never
- * the canonical (normal) one. RUNTIME_ANALOG_TONES checks that over every standard code in both
+ * the canonical (normal) one. RUNTIME_ANALOG_TONES checks that over every supported code in both
  * polarities.
  */
 int
@@ -401,7 +402,7 @@ tone_entry_dcs_code(const char* text, size_t len, int* inverted) {
     return code;
 }
 
-/* The standard tone or code an entry of @p len bytes names; 0, or -1 when it names none. */
+/* The supported tone or code an entry of @p len bytes names; 0, or -1 when it names none. */
 static int
 tone_entry_read(const char* text, size_t len, tone_entry* out) {
     const int tenths = tone_entry_ctcss_tenths(text, len);
@@ -457,7 +458,7 @@ tone_list_add_dcs(tone_list_parse* parse, const tone_entry* entry, int number, c
     int canon_code = -1;
     int canon_inverted = 0;
     if (dsd_dcs_canonical(dsd_dcs_code(entry->index), entry->inverted, &canon_code, &canon_inverted) != 0) {
-        return tone_list_error(err, err_size, "internal error: a standard code has no signal");
+        return tone_list_error(err, err_size, "internal error: a supported code has no signal");
     }
     const int signal = dsd_dcs_code_index(canon_code);
     const int bit = (2 * entry->index) + entry->inverted;

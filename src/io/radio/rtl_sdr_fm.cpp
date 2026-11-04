@@ -9680,7 +9680,7 @@ rtl_live_read_idle_expired(rtl_live_read_idle* idle, int* result) {
     if (idle->analog_monitor < 0) {
         /* The receive mode in force now (an NFM monitor switched to AM, or a digital session to NFM, changes it while
            the stream runs): the decoder's options, which this read runs on the thread of. */
-        idle->analog_monitor = dsd_analog_tone_detection_active(idle->live_opts) ? 1 : 0;
+        idle->analog_monitor = dsd_analog_monitor_tap_active(idle->live_opts) != 0 ? 1 : 0;
     }
     const int searching = rtl_signal_search_owner() != 0U;
     if (!searching && !idle->analog_monitor) {
@@ -9695,8 +9695,8 @@ rtl_live_read_idle_expired(rtl_live_read_idle* idle, int* result) {
     if (now_ms - idle->empty_since_ms < 100U) {
         return 0;
     }
-    /* An NFM monitor yields without ending its stream, so the decoder can expire a stalled call and its recording. A
-       search retains its existing failed-read contract. */
+    /* An analog monitor, NFM or AM (issue #667), yields without ending its stream, so the decoder can expire a stalled
+       call and its recording. A search retains its existing failed-read contract. */
     *result = searching ? -1 : 0;
     return 1;
 }

@@ -59,7 +59,7 @@ rx_tone_fill_ctcss(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
 _Static_assert((int)DSD_APP_RX_TONE_TEXT_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS label fits the view's text");
 
 /* A locked DCS code, as the detector names it: a supported code under the canonical name of
-   its alias class (runtime/analog_tones.h), shown with the other standard spelling of the same
+   its alias class (runtime/analog_tones.h), shown with the other supported spelling of the same
    signal, or 0. */
 static int
 rx_tone_fill_dcs(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {

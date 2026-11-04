@@ -251,6 +251,29 @@ int dsd_socket_set_recv_timeout(dsd_socket_t sock, unsigned int timeout_ms);
  */
 int dsd_socket_set_send_timeout(dsd_socket_t sock, unsigned int timeout_ms);
 
+/** Keepalive timing that finds a half-open TCP link (a peer that vanished without closing: its host lost power, a
+ *  network or NAT mapping dropped) on a connection that may carry nothing for a long time: probes start after 15 s
+ *  with nothing received, go out every 5 s, and the fourth unanswered one fails the connection, about 35 s in all. */
+#define DSD_SOCKET_KEEPALIVE_IDLE_S     15U
+#define DSD_SOCKET_KEEPALIVE_INTERVAL_S 5U
+#define DSD_SOCKET_KEEPALIVE_COUNT      4U
+
+/**
+ * @brief Turn on TCP keepalive, so a read on a connection whose peer vanished fails instead of waiting forever.
+ *
+ * SO_KEEPALIVE, then the timing wherever the platform lets a socket set it: the idle time (TCP_KEEPIDLE; macOS's
+ * TCP_KEEPALIVE; on Windows TCP_KEEPIDLE, else SIO_KEEPALIVE_VALS), the probe interval (TCP_KEEPINTVL, or
+ * SIO_KEEPALIVE_VALS) and the probe count (TCP_KEEPCNT; where Windows lacks it, its fixed 10). A platform with none of
+ * the timing options keeps its system-wide keepalive timing (on Linux, hours).
+ *
+ * @param sock        Connected (or connecting) TCP socket.
+ * @param idle_s      Seconds with nothing received before the first probe.
+ * @param interval_s  Seconds between unanswered probes.
+ * @param count       Unanswered probes that fail the connection.
+ * @return 0 when keepalive is on with every timing option the platform has, non-zero when any option failed.
+ */
+int dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s, unsigned int count);
+
 /**
  * @brief Resolve hostname to address.
  *

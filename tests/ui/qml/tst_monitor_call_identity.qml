@@ -91,9 +91,14 @@ Item {
                 // A scan channel names the call's place, not its parties: still a TETRA call, heard on that channel.
                 {tag: "tetra-anonymous-on-channel", call: {kind: kindVoice, name: "Site 1", protocol: "TETRA"}, channel: "Site 1",
                     headline: "TETRA call", ids: "", privateTag: false, note: "identity not decoded"},
-                // Analog has no protocol label: its channel names its call.
+                // Analog has no protocol label: its channel names its call, else
+                // the mode it was heard in, "Analog" when that is not known (#667).
                 {tag: "analog", call: {kind: kindVoice, name: "NFM"},
-                    headline: "NFM", ids: "", privateTag: false, note: ""}
+                    headline: "NFM", ids: "", privateTag: false, note: ""},
+                {tag: "analog-am", call: {kind: kindVoice, name: "AM"},
+                    headline: "AM", ids: "", privateTag: false, note: ""},
+                {tag: "analog-unknown-mode", call: {kind: kindVoice, name: "Analog"},
+                    headline: "Analog", ids: "", privateTag: false, note: ""}
             ];
         }
         function test_hero_words_the_call(data) {

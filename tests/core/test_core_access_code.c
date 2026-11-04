@@ -281,6 +281,32 @@ test_codeless_protocols(dsd_state* state) {
     return rc;
 }
 
+/* Issue #667 (D5): an analog call records no access code, even on a carrier whose checked messages named one -- a -Y
+   list or a trunk scan that moves from a DMR, P25, NXDN, dPMR or M17 row to an NFM or AM row. Its CTCSS/DCS tone is its
+   receive identity, never an access code. */
+static int
+test_analog_after_every_code(dsd_state* state) {
+    static const struct {
+        dsd_rxid_family family;
+        dsd_access_code_kind kind;
+        uint16_t value;
+    } k_codes[] = {
+        {DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 9U}, {DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U},
+        {DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U},       {DSD_RXID_FAMILY_DPMR, DSD_ACCESS_CODE_COLOR_CODE, 7U},
+        {DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 3U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_codes / sizeof k_codes[0]; i++) {
+        reset_sources(state);
+        dsd_rxid_note_access(state, k_codes[i].family, (uint8_t)k_codes[i].kind, k_codes[i].value);
+        rc |= expect_none("analog after a checked code", state, DSD_SYNC_ANALOG, 0U, 0U);
+        rc |= expect_none("analog after a checked code, svc", state, DSD_SYNC_ANALOG, k_codes[i].value, 1U);
+    }
+    reset_sources(state);
+    return rc;
+}
+
 static int
 test_null_inputs(void) {
     int rc = expect_none("NULL state", NULL, DSD_SYNC_DMR_BS_VOICE_POS, 0U, 0U);
@@ -312,6 +338,7 @@ main(void) {
     rc |= test_m17_can(state);
     rc |= test_tetra_colour_code(state);
     rc |= test_codeless_protocols(state);
+    rc |= test_analog_after_every_code(state);
     rc |= test_null_inputs();
     dsd_state_ext_free_all(state);
     free(state);

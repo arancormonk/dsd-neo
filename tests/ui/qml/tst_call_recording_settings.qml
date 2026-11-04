@@ -85,7 +85,7 @@ Item {
             compare(unknown.subtitle, "Skip talkgroups in your talkgroup list");
             verify(!unknown.enabled, "unknown-only waits for Record calls");
             var hold = item("analogMaxGapRow");
-            compare(hold.title, "NFM pause hold");
+            compare(hold.title, "Analog pause hold");
             compare(hold.subtitle, "Off · Each pause over 0.2 seconds starts a new recording");
             compare(hold.accessibleDescription, hold.subtitle, "a screen reader reads what the row shows");
             verify(!hold.enabled, "the pause hold waits for Record calls");
@@ -350,7 +350,7 @@ Item {
             compare(prefs.recordingLimitMb, 2000);
         }
 
-        // Issue #756: the NFM pause hold, a choice like Storage limit, saved while nothing runs.
+        // Issue #756: the analog pause hold, a choice like Storage limit, saved while nothing runs.
         function test_analog_max_gap_choice() {
             openScreen();
             item("recordCallsToggle").activate();
@@ -360,7 +360,7 @@ Item {
             row.activate();
             var sheet = item("screenChoices");
             verify(sheet.visible);
-            compare(sheet.accessibleName, "NFM pause hold");
+            compare(sheet.accessibleName, "Analog pause hold");
             compare(sheet.choices, ["Off", "0.5 seconds", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"]);
             findChild(sheet, "screenChoice3").activate();
             compare(prefs.analogMaxGapMs, 2000);

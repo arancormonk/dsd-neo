@@ -976,21 +976,21 @@ test_recording_labels(void) {
     rc |= expect_str("per call wav off with a handle", lbl_per_call_wav(&ctx, b, sizeof(b)), "Per-call WAV [Off]");
     opts.dmr_stereo_wav = 1;
 
-    /* The NFM max gap (issue #756): 200 ms or less is off, whatever value is stored. */
-    rc |=
-        expect_str("nfm pause hold null ctx", lbl_analog_record_max_gap(NULL, b, sizeof(b)), "NFM pause hold... [Off]");
+    /* The analog pause hold (issues #756 and #667): 200 ms or less is off, whatever value is stored. */
+    rc |= expect_str("analog pause hold null ctx", lbl_analog_record_max_gap(NULL, b, sizeof(b)),
+                     "Analog pause hold... [Off]");
     const int k_gap_off[] = {0, 150, 200};
     for (size_t i = 0; i < sizeof k_gap_off / sizeof k_gap_off[0]; i++) {
         opts.analog_record_max_gap_ms = k_gap_off[i];
-        rc |=
-            expect_str("nfm pause hold off", lbl_analog_record_max_gap(&ctx, b, sizeof(b)), "NFM pause hold... [Off]");
+        rc |= expect_str("analog pause hold off", lbl_analog_record_max_gap(&ctx, b, sizeof(b)),
+                         "Analog pause hold... [Off]");
     }
     opts.analog_record_max_gap_ms = 201;
-    rc |= expect_str("nfm pause hold just on", lbl_analog_record_max_gap(&ctx, b, sizeof(b)),
-                     "NFM pause hold... [201 ms]");
+    rc |= expect_str("analog pause hold just on", lbl_analog_record_max_gap(&ctx, b, sizeof(b)),
+                     "Analog pause hold... [201 ms]");
     opts.analog_record_max_gap_ms = 10000;
-    rc |=
-        expect_str("nfm pause hold max", lbl_analog_record_max_gap(&ctx, b, sizeof(b)), "NFM pause hold... [10000 ms]");
+    rc |= expect_str("analog pause hold max", lbl_analog_record_max_gap(&ctx, b, sizeof(b)),
+                     "Analog pause hold... [10000 ms]");
     opts.analog_record_max_gap_ms = 200;
 
     /* The NFM pre-roll (issue #668): Off at 0 only, any other value as stored. */

@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -486,22 +487,49 @@ test_service_name_names_the_call_and_keeps_its_channel(void) {
     destroy_state(state);
 }
 
-/* An NFM call no name labels is named by the channel it was heard on, else "NFM". */
+/* An analog call no name labels is named by the channel it was heard on, else by the mode it was heard in (issue #667):
+   "NFM" or "AM" as the demodulator ran, "Analog" on audio input, where the mode is unknown. An AM call shows live as an
+   NFM call does, and neither carries a protocol label: its channel or mode names it. */
 static void
-test_unnamed_nfm_call_is_named_by_its_channel(void) {
-    Event_History_I* history = NULL;
-    dsd_state* state = make_state_with_history(&history);
-    dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
-    observation.observed_m = 10.0;
-    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
-    dsd_app_slot_call view;
-    dsd_app_slot_call_view(state, 0U, 10.5, &view);
-    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
-    assert(strcmp(view.name, "NFM") == 0 && view.service[0] == '\0');
-    stage_channel_label(history, 0U, "20R Local");
-    dsd_app_slot_call_view(state, 0U, 10.5, &view);
-    assert(strcmp(view.name, "20R Local") == 0 && strcmp(view.channel, "20R Local") == 0);
-    destroy_state(state);
+test_unnamed_analog_call_is_named_by_its_channel_else_its_mode(void) {
+    static const struct {
+        uint8_t mode;
+        const char* name;
+    } cases[] = {
+        {DSD_ANALOG_MODE_NFM, "NFM"},
+        {DSD_ANALOG_MODE_AM, "AM"},
+        {DSD_ANALOG_MODE_UNKNOWN, "Analog"},
+        {0xFFU, "Analog"}, /* a value no mode has */
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Event_History_I* history = NULL;
+        dsd_state* state = make_state_with_history(&history);
+        dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+        observation.analog_mode = cases[i].mode;
+        observation.observed_m = 10.0;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        dsd_app_slot_call view;
+        dsd_app_slot_call_view(state, 0U, 10.5, &view);
+        assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+        if (strcmp(view.name, cases[i].name) != 0) {
+            DSD_FPRINTF(stderr, "analog mode %u: name '%s', want '%s'\n", (unsigned)cases[i].mode, view.name,
+                        cases[i].name);
+            assert(0);
+        }
+        assert(view.service[0] == '\0' && view.protocol_label[0] == '\0' && view.tg_text[0] == '\0');
+        /* A channel names the call whatever its mode. */
+        stage_channel_label(history, 0U, "20R Local");
+        dsd_app_slot_call_view(state, 0U, 10.5, &view);
+        assert(strcmp(view.name, "20R Local") == 0 && strcmp(view.channel, "20R Local") == 0);
+        assert(view.protocol_label[0] == '\0');
+        /* The ended call keeps its mode's name through the hold. */
+        stage_channel_label(history, 0U, "");
+        assert(dsd_call_state_end(state, 0U, 11.0) > 0);
+        dsd_app_slot_call_view(state, 0U, 11.5, &view);
+        assert(view.state == DSD_APP_CALL_LINE_ENDED && strcmp(view.name, cases[i].name) == 0);
+        destroy_state(state);
+    }
 }
 
 static void
@@ -1136,7 +1164,7 @@ main(void) {
     test_staged_group_name_ignored_for_other_talkgroup();
     test_staged_group_name_ignored_when_empty();
     test_service_name_names_the_call_and_keeps_its_channel();
-    test_unnamed_nfm_call_is_named_by_its_channel();
+    test_unnamed_analog_call_is_named_by_its_channel_else_its_mode();
     test_staged_channel_label_names_a_call_with_no_name_of_its_own();
     test_staged_group_name_beats_channel_label();
     test_target_text_beats_channel_label();

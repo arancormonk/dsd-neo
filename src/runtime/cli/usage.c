@@ -59,9 +59,9 @@ static void
 dsd_cli_usage_rdio_options(void) {
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
-    printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for NFM calls\n");
+    printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for analog calls\n");
     printf("                 (0 to 65535; 0 = use --rdio-system-id, the default)\n");
-    printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for NFM calls with no known frequency\n");
+    printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for analog calls with no known frequency\n");
     printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
     printf("                 is exported under it in kHz.)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
@@ -132,10 +132,10 @@ dsd_cli_usage_section_io(void) {
     printf(
         "  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
     printf("                 (Per Call works with everything now and doesn't require terminal frontend!)\n");
-    printf("                 (Also records conventional NFM transmissions, named by their service.)\n");
+    printf("                 (Also records conventional analog transmissions, named by their service.)\n");
     printf("      --wav-journal <file>  Append a JSON line for each per-call WAV published, discarded or failed\n");
     printf("      --record-unknown-only  Record only calls whose talkgroup has no row in the group list (-G)\n");
-    printf("      --analog-record-max-gap-ms <ms>  Keep an NFM call in one recording through pauses up to <ms>\n");
+    printf("      --analog-record-max-gap-ms <ms>  Keep an analog call in one recording through pauses up to <ms>\n");
     printf("                 (0 to 10000; the pause is saved as silence; 200 or less is off, the default)\n");
     printf("                 (Works only while -P per-call recording is on)\n");
     printf(
@@ -289,7 +289,7 @@ dsd_cli_usage_section_decode(void) {
     printf(
         "      --tone-allow <list>      Hear only analog FM traffic carrying a listed CTCSS tone or DCS code; mute\n");
     printf("                               the rest, and traffic with none after the tone check (800 ms, to 1.6 s\n");
-    printf("                               for a DCS code). <list> is '/'-separated standard tones (150.0 too) and\n");
+    printf("                               for a DCS code). <list> is '/'-separated supported tones (150.0 too) and\n");
     printf(
         "                               codes, e.g. 67.0/100.0/D023N (a bare D023 is D023N). The received tone is\n");
     printf("                               shown apart; a scanner moves on from rejected traffic.\n");

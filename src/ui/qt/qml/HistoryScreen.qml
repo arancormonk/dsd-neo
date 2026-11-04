@@ -242,9 +242,11 @@ Item {
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 // The code the call's carrier was confirmed on ("CC 1", "NAC 293"),
-                // which belongs with the ids that name the call.
-                if (model.accessCode.length > 0)
-                    meta.push(model.accessCode);
+                // which belongs with the ids that name the call. An analog
+                // reception has none: its tone ("CTCSS 100.0 Hz") takes the place.
+                var code = model.analog ? model.receivedTone : model.accessCode;
+                if (code.length > 0)
+                    meta.push(code);
                 if (model.enc)
                     meta.push(qsTr("encrypted"));
                 if (model.durationSecs >= 0)

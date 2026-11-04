@@ -3351,12 +3351,14 @@ manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
 
 /* @p out_result is the CC hook's result on the CC leg. On the io_control leg it is OK for an accepted tune (a timeout
    included), DEFERRED for a deferred one and FAILED otherwise, so a caller can tell a front end's refusal from a tune
-   to retry (issue #666). */
+   to retry (issue #666). @p out_landed (optional) is 1 only for an io_control tune the front end confirmed
+   (RTL_STREAM_TUNE_OK), not one accepted but still outstanding (a timeout), nor a CC-leg tune. */
 static int
 request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action,
-                    dsd_trunk_tune_result* out_result, uint64_t* out_request_id) {
+                    dsd_trunk_tune_result* out_result, uint64_t* out_request_id, int* out_landed) {
     int result = 0;
     int accepted = 0;
+    int landed = 0;
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (p25_cc_symbol_rate != 0) {
@@ -3378,7 +3380,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         } else {
             tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
         }
-        accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
+        landed = result == RTL_STREAM_TUNE_OK;
+        accepted = landed || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
             /* This leg has no correlated tune request to await, so an accepted
              * timeout (issued, not yet confirmed) is reported as complete. */
@@ -3393,6 +3396,9 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     }
     if (out_request_id) {
         *out_request_id = request_id;
+    }
+    if (out_landed) {
+        *out_landed = landed;
     }
     if (accepted) {
         /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
@@ -3517,7 +3523,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
-    if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC", &tune_result, &request_id)) {
+    if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC", &tune_result, &request_id, NULL)) {
         return UI_CMD_APPLY_FAILED;
     }
     reset_call_tracking(opts, state, 1);
@@ -3562,7 +3568,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
         if (cc_freq != 0
-            && !request_manual_tune(opts, state, cc_freq, sym_rate, tune_reason, &tune_result, &request_id)) {
+            && !request_manual_tune(opts, state, cc_freq, sym_rate, tune_reason, &tune_result, &request_id, NULL)) {
             return UI_CMD_APPLY_FAILED;
         }
     }
@@ -3634,7 +3640,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
-    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id)) {
+    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id, NULL)) {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
             /* Nothing was tuned, so nothing was tried: the next press picks the same candidate (issue #666). A
                refusal keeps it passed, as before. */
@@ -3714,12 +3720,13 @@ lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_res
     }
 }
 
-/* A walk's accepted tune of @p row (@p tune_result, @p request_id from request_manual_tune()), forward or back:
-   the calls end and what was received goes, the cursor and the row heard follow (lcn_cycle_on_tune_outcome()), the
-   row's keys apply, and a P25 SM that owns the trunk is handed back its control channel. */
+/* A walk's accepted tune of @p row (@p tune_result, @p request_id, @p landed from request_manual_tune()), forward or
+   back: the calls end and what was received goes, the cursor and the row heard follow (lcn_cycle_on_tune_outcome()),
+   the row's keys apply, a confirmed landing on a running untyped -Y list names the row's frequency for an analog call
+   on audio input (issue #667 D9), and a P25 SM that owns the trunk is handed back its control channel. */
 static void
 lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_trunk_tune_result tune_result,
-                 uint64_t request_id) {
+                 uint64_t request_id, int landed) {
     reset_call_tracking(opts, state, 0);
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
@@ -3739,6 +3746,9 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, int p25_live, dsd_tr
            the cursor where an earlier refusal put it (Next refused on B, then Previous lands B), and B must not
            inherit the voice gate and visit cap windows of the row before it. */
         dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+        /* After the carrier boundary above, which forgot the landing of the row left. The step is the scan's own, to
+           its own row, so the scan still owns the tuner: an operator's own tune (`=`) is the takeover. */
+        dsd_engine_channel_scan_note_manual_step(opts, state, row, landed);
     }
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
@@ -3789,12 +3799,16 @@ apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int 
     }
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
+    int landed = 0;
     if (!request_manual_tune(opts, state, *dsd_state_trunk_lcn_slot(state, row), 0, "Channel cycle", &tune_result,
-                             &request_id)) {
+                             &request_id, &landed)) {
+        /* A refused tune may have moved the receiver anyway, a deferred one may move it yet: a -Y landing no longer
+           says where it is. */
+        dsd_engine_channel_scan_note_manual_step(opts, state, row, 0);
         lcn_cycle_on_tune_outcome(state, row, dir, tune_result);
         return UI_CMD_APPLY_FAILED;
     }
-    lcn_cycle_finish(opts, state, row, p25_live, tune_result, request_id);
+    lcn_cycle_finish(opts, state, row, p25_live, tune_result, request_id, landed);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -8339,9 +8353,9 @@ ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const st
     return UI_CMD_APPLY_COMPLETED;
 }
 
-/* The NFM max gap (issue #756): the analog call reconciles a held call with the value on its next block or tick, so a
-   change applies there (lowered below the pause so far, or turned off, it ends the call at its last audio). A value out
-   of range is refused as typed, never clamped, as the CLI and INI refuse it. */
+/* The analog pause hold (issues #756 and #667): the analog call reconciles a held call with the value on its
+   next block or tick, so a change applies there (lowered below the pause so far, or turned off, it ends the call at its
+   last audio). A value out of range is refused as typed, never clamped, as the CLI and INI refuse it. */
 static int
 ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t ms = 0;
@@ -8349,15 +8363,15 @@ ui_cmd_handle_analog_record_max_gap_set(dsd_opts* opts, dsd_state* state, const 
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     if (ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
-        ui_set_toast(state, 5, "Refused: NFM pause hold must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
+        ui_set_toast(state, 5, "Refused: Analog pause hold must be 0..%d ms, not %ld", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
                      (long)ms);
         return UI_CMD_APPLY_FAILED;
     }
     opts->analog_record_max_gap_ms = (int)ms;
     if (ms > DSD_ANALOG_CARRIER_HANGOVER_MS) {
-        ui_set_toast(state, 3, "Applied: NFM pause hold -> %d ms", (int)ms);
+        ui_set_toast(state, 3, "Applied: Analog pause hold -> %d ms", (int)ms);
     } else {
-        ui_set_toast(state, 3, "Applied: NFM pause hold -> Off");
+        ui_set_toast(state, 3, "Applied: Analog pause hold -> Off");
     }
     return UI_CMD_APPLY_COMPLETED;
 }

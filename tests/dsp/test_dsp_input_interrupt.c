@@ -275,9 +275,10 @@ static int g_tcp_ctx_token;
 static int g_command_during_connect = 0; /* a command is queued while the connect waits */
 
 static int
-fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
     (void)ctx;
     (void)out;
+    (void)timeout_ms;
     return 0; /* the stream ended */
 }
 
@@ -327,7 +328,7 @@ init_tcp_session(dsd_opts* opts, dsd_state* state, int m17) {
     g_tcp_connect_result = DSD_INVALID_SOCKET;
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_connect = fake_tcp_connect;
     dsd_net_audio_input_hooks_set(hooks);

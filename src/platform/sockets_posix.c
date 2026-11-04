@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -268,6 +269,41 @@ dsd_socket_set_send_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (suseconds_t)(timeout_ms % 1000U) * 1000;
     return setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+/* One TCP-level keepalive option as the int setsockopt() takes, a value past it clamped. */
+static int
+keepalive_tcp_option(dsd_socket_t sock, int name, unsigned int value) {
+    const int v = value > (unsigned int)INT_MAX ? INT_MAX : (int)value;
+    return setsockopt(sock, IPPROTO_TCP, name, &v, sizeof(v)) == 0 ? 0 : -1;
+}
+
+int
+dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s, unsigned int count) {
+    const int on = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) != 0) {
+        return -1;
+    }
+    int rc = 0;
+#if defined(TCP_KEEPIDLE)
+    rc |= keepalive_tcp_option(sock, TCP_KEEPIDLE, idle_s);
+#elif defined(TCP_KEEPALIVE)
+    /* macOS names the idle time TCP_KEEPALIVE. */
+    rc |= keepalive_tcp_option(sock, TCP_KEEPALIVE, idle_s);
+#else
+    (void)idle_s;
+#endif
+#if defined(TCP_KEEPINTVL)
+    rc |= keepalive_tcp_option(sock, TCP_KEEPINTVL, interval_s);
+#else
+    (void)interval_s;
+#endif
+#if defined(TCP_KEEPCNT)
+    rc |= keepalive_tcp_option(sock, TCP_KEEPCNT, count);
+#else
+    (void)count;
+#endif
+    return rc;
 }
 
 int

@@ -64,8 +64,8 @@ typedef struct {
     int32_t command_id;    /**< the dsd_app_command_id @c command_state is about; 0 for NONE */
     uint32_t failures[DSD_WAV_RECORDING_ERROR_KINDS]; /**< this decoder run's failures by dsd_wav_recording_error */
     int32_t last_error;                               /**< the latest failure's kind, NONE for none */
-    /** the longest pause, in ms, one NFM call and its recording survive (opts->analog_record_max_gap_ms, issue #756);
-     *  200 or less is off */
+    /** the longest pause, in ms, one analog call and its recording survive (opts->analog_record_max_gap_ms, issue
+     *  #756); 200 or less is off */
     int32_t analog_max_gap_ms;
     /** the audio, in ms, heard just before an NFM call that each new recording starts with
      *  (opts->analog_record_preroll_ms, issue #668); 0 is off */

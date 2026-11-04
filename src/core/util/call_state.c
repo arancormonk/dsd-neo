@@ -535,6 +535,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->protocol = previous->protocol;
     snapshot->channel = previous->channel;
     snapshot->channel_kind = previous->channel_kind;
+    snapshot->analog_mode = previous->analog_mode;
     snapshot->frequency_hz = previous->frequency_hz;
     snapshot->reacquire_rx_id = previous->reacquire_rx_id;
     snapshot->crypto = previous->crypto;
@@ -668,6 +669,17 @@ call_state_reset_voice_errors(dsd_state* state, uint8_t slot) {
     state->p25_p2_voice_err_hist_sum[slot] = 0;
 }
 
+/* The receive identity @p observation is heard with: a BEGIN's seed (issue #667), else what the receiver publishes now. */
+static void
+call_state_observed_identity(const dsd_state* state, const dsd_call_observation* observation, uint8_t slot,
+                             dsd_call_boundary boundary, dsd_receive_identity* out) {
+    if (boundary == DSD_CALL_BOUNDARY_BEGIN && observation->has_receive_seed != 0U) {
+        *out = observation->receive_seed;
+        return;
+    }
+    dsd_receive_identity_current(state, observation->protocol, slot, out);
+}
+
 int
 dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary) {
     if (!state || !observation || observation->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -683,7 +695,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     dsd_receive_identity received;
-    dsd_receive_identity_current(state, observation->protocol, slot, &received);
+    call_state_observed_identity(state, observation, slot, boundary, &received);
     const int service_changed = dsd_receive_identity_changed(&snapshot->receive_identity, &received);
     const int begins_epoch = service_changed || call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
@@ -705,6 +717,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
+        if (observation->start_wall > 0.0) {
+            snapshot->start_wall = observation->start_wall;
+        }
         snapshot->rx_id_epoch = state->rx_id.epoch;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
@@ -731,6 +746,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
             dsd_receive_identity_merge(&snapshot->receive_identity, &received);
         } else {
             snapshot->receive_identity = received;
+            /* The demodulator the call is heard through is the one its first observation names (issue #667). */
+            snapshot->analog_mode = observation->analog_mode;
         }
     } else {
         dsd_receive_identity_merge(&snapshot->receive_identity, &received);
@@ -1512,13 +1529,18 @@ dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t s
         dsd_receive_identity identity;
         dsd_receive_identity_current(state, call->protocol, slot, &identity);
         if (dsd_receive_identity_changed(&call->receive_identity, &identity)) {
-            const int analog = call->protocol == DSD_SYNC_ANALOG;
-            dsd_call_state_ext_unlock(ext);
-            /* An NFM call's tone change is its own lifecycle's boundary (dsd_engine_analog_call_block()), which closes
-               its per-call recording against the call's row before that row is committed (issue #637). */
-            if (!analog) {
-                (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
+            if (call->protocol == DSD_SYNC_ANALOG) {
+                /* An analog call's tone change is its own lifecycle's boundary (dsd_engine_analog_call_block()), which
+                   closes its per-call recording against the call's row before that row is committed (issue #637).
+                   Until then the call keeps the identity it began with, a BEGIN's seed included, and is named by it
+                   (issue #667). */
+                DSD_SNPRINTF(call->service_label, sizeof(call->service_label), "%s",
+                             dsd_receive_service_name(&opts->receive.names, &call->receive_identity));
+                dsd_call_state_ext_unlock(ext);
+                return;
             }
+            dsd_call_state_ext_unlock(ext);
+            (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
             return;
         }
         call->receive_verdict = (uint8_t)dsd_receive_policy_match(&opts->receive, &identity);

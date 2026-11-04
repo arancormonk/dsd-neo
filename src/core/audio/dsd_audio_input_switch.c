@@ -25,6 +25,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -43,6 +44,7 @@ enum {
 typedef struct {
     SNDFILE* file;
     SF_INFO* file_info;
+    dsd_pcm_stream* stdin_reader;
     FILE* symbolfile;
     tcp_input_ctx* tcp_in_ctx;
     dsd_socket_t tcp_sockfd;
@@ -102,12 +104,14 @@ static void
 switch_detach(dsd_opts* opts, switch_handles* held) {
     held->file = opts->audio_in_file;
     held->file_info = opts->audio_in_file_info;
+    held->stdin_reader = opts->audio_in_stdin;
     held->symbolfile = opts->symbolfile;
     held->tcp_in_ctx = opts->tcp_in_ctx;
     held->tcp_sockfd = opts->tcp_sockfd;
     held->stream = opts->audio_in_stream;
     opts->audio_in_file = NULL;
     opts->audio_in_file_info = NULL;
+    opts->audio_in_stdin = NULL;
     opts->symbolfile = NULL;
     opts->tcp_in_ctx = NULL;
     opts->tcp_sockfd = DSD_INVALID_SOCKET;
@@ -118,6 +122,7 @@ static void
 switch_reattach(dsd_opts* opts, const switch_handles* held) {
     opts->audio_in_file = held->file;
     opts->audio_in_file_info = held->file_info;
+    opts->audio_in_stdin = held->stdin_reader;
     opts->symbolfile = held->symbolfile;
     opts->tcp_in_ctx = held->tcp_in_ctx;
     opts->tcp_sockfd = held->tcp_sockfd;
@@ -130,6 +135,7 @@ switch_close_held(const switch_handles* held) {
         sf_close(held->file);
     }
     free(held->file_info);
+    dsd_pcm_stream_close(held->stdin_reader);
     if (held->symbolfile) {
         fclose(held->symbolfile);
     }

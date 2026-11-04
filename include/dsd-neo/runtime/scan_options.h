@@ -90,7 +90,7 @@ typedef struct {
     int channel_bw_kind;
     /** The row's tone policy (dsd_tone_filter_mode; OFF for --no-tone-filter, the explicit row disable). */
     int tone_filter;
-    /** Its list: every entry a standard tone or code, held once (core/analog_tone.h); empty with --no-tone-filter. */
+    /** Its list: every entry a supported tone or code, held once (core/analog_tone.h); empty with --no-tone-filter. */
     dsd_tone_set tone_set;
     dsd_receive_policy receive;
     int mute_dmr;
@@ -176,10 +176,10 @@ int dsd_scan_options_visit_cell_files(const char* legacy, const char* content, s
  * has none) and @p next_past_header whether that field lies past the header's columns, where nothing reads it.
  * A cell that ends with a --tone-allow/--tone-block list is refused when the field after it goes on with it: any
  * text past the header, or, in one of the file's own columns, a field that can only be the rest of a list -- one run
- * of '/'-separated entries with no space in it, starting with a standard CTCSS tone or DCS code ("67.0",
+ * of '/'-separated entries with no space in it, starting with a supported CTCSS tone or DCS code ("67.0",
  * "67.0/D023N"), alone or followed by a row option's switch, the rest of the cell the comma cut off too ("67.0
  * --squelch-db -60"). An RTL gain, and any other name with a space in it ("100 Main St", "D023 Repeater"), are that
- * column's own; a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
+ * column's own; a one-word name that is itself a supported tone or code ("100") reads as the list's rest.
  * A receive filter list (--slot/dcc/ran/nac-allow or -block, issue #637) is judged the same way, by the values that
  * filter takes ("370", "4/7"); a service name (--*-name) only past the header, since the rest of a name cannot be told
  * from a column's own text.

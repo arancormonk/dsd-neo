@@ -5,7 +5,7 @@
 
 /*
  * The received-tone text every frontend shows (issues #522, #523): one phrase per detection
- * state, a CTCSS tone, or a DCS code under both standard spellings of its signal, the canonical
+ * state, a CTCSS tone, or a DCS code under both supported spellings of its signal, the canonical
  * one first, hidden whenever detection is not running or cannot run at the input rate, and the
  * configured policy carried as separate text that the received tone never feeds.
  */
@@ -124,7 +124,7 @@ test_states_and_formats(void) {
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.kind == 0U && view.dcs_code == 0 && view.dcs_inverted == 0U);
     assert(view.dcs_alias_code == 0 && view.dcs_alias_inverted == 0U);
-    /* A received DCS code: both standard spellings of its signal, three octal digits with
+    /* A received DCS code: both supported spellings of its signal, three octal digits with
        leading zeros and the polarity each, the published (canonical, normal) one first. A radio
        set to D023N and one set to D047I send the same signal, so neither is named alone. */
     publish_dcs(state, 0023, 0);

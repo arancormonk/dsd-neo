@@ -24,6 +24,7 @@
 #include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -2440,8 +2441,9 @@ fake_tcp_close(tcp_input_ctx* ctx) {
 }
 
 static int
-fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
     (void)ctx;
+    (void)timeout_ms;
     if (g_tcp_drops_left > 0) {
         g_tcp_drops_left--;
         g_fake_now_ms += 300U;
@@ -2500,7 +2502,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 1;
@@ -4545,7 +4547,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
-    hooks.tcp_read_sample = fake_tcp_read_sample;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 0;
@@ -4569,6 +4571,90 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
     dsd_socket_cleanup();
+}
+
+/* The samples the decoder took from a TCP input at @p rate_hz with the input volume at 3, over its first @p count reads
+   (the matched filter seam's raw history, oldest first), after a connection that drops @p drops times before its first
+   sample. A reconnect starts a new PCM stream, so its resampler starts afresh, as a session's first read does. */
+static void
+tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
+    static dsd_opts opts;
+    static dsd_state state;
+    assert(dsd_socket_init() == 0);
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.analog_only = 0;
+    opts.monitor_input_audio = 0;
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = rate_hz;
+    opts.input_volume_multiplier = 3;
+    opts.tcp_sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    g_connect_socket = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    assert(opts.tcp_sockfd != DSD_INVALID_SOCKET && g_connect_socket != DSD_INVALID_SOCKET);
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_tcp_ctx_token;
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.jitter = -1;
+    exitflag = 0;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 960000U;
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.tcp_open = fake_tcp_open;
+    hooks.tcp_connect = fake_tcp_connect;
+    hooks.tcp_close = fake_tcp_close;
+    hooks.tcp_read_sample_wait = fake_tcp_read_sample;
+    dsd_net_audio_input_hooks_set(hooks);
+    g_tcp_opens = 0;
+    g_tcp_drops_left = drops;
+    g_tcp_sample_n = 0;
+    for (int n = 0; n < count; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(exitflag == 0 && g_tcp_opens == drops);
+    assert(state.matched_filter.raw_count >= count);
+    for (int n = 0; n < count; n++) {
+        int idx = state.matched_filter.raw_head - count + n;
+        while (idx < 0) {
+            idx += DSD_MATCHED_FILTER_HISTORY;
+        }
+        out[n] = state.matched_filter.raw[idx];
+    }
+
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    (void)dsd_socket_close(opts.tcp_sockfd);
+    opts.tcp_sockfd = 0;
+    opts.tcp_in_ctx = NULL;
+    g_connect_socket = DSD_INVALID_SOCKET;
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_resampler_reset(&opts.input_resampler); /* the next call's fixture clears opts */
+    dsd_state_ext_free_all(&state);
+    dsd_socket_cleanup();
+}
+
+/* Issue #667 B5: the first sample of a new TCP connection is scaled by the input volume like every other, on a native
+   (48 kHz) and a staged (16 kHz) input: the decoder takes the same samples after a reconnect as from a connection that
+   never dropped. It used to take that one sample raw, a third of its level here. */
+static void
+test_pcm_tcp_reconnect_scales_the_first_sample(void) {
+    static const int rates[] = {48000, 16000};
+    int differs = 0;
+    for (size_t r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+        float kept[48];
+        float reconnected[48];
+        tcp_samples_taken(rates[r], 0, kept, 48);
+        tcp_samples_taken(rates[r], 1, reconnected, 48);
+        assert(fabsf(kept[0]) > 1000.0f); /* the tone's first sample, three times 3000 at 48 kHz */
+        for (int n = 0; n < 48; n++) {
+            if (fabsf(kept[n] - reconnected[n]) > 1e-3f) {
+                DSD_FPRINTF(stderr, "B5 at %d Hz: sample %d after the reconnect is %g, want %g\n", rates[r], n,
+                            (double)reconnected[n], (double)kept[n]);
+                differs = 1;
+                break;
+            }
+        }
+    }
+    assert(!differs);
 }
 
 /* The passband the fake rigctl peer runs, as the client knows it. */
@@ -5418,9 +5504,45 @@ test_call_input_follows_the_flag_squelch(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is a block the call may hold
-   through, one the policy passed is its reception, and one it rejected breaks it. Returns how many blocks were
-   checked. */
+/* Issue #667 D8: the AM monitor's blocks are calls' inputs as the FM monitor's are (the tracker admits the monitor tap,
+   FM or AM): an open carrier is the call's reception, and so is its hangover, then blocks it may hold through; a
+   carrier that comes back is the reception again. The tone policy never runs on AM, so no block waits on it. */
+static void
+test_call_input_on_the_am_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0;
+    g_chain_removes_tone = 0;
+    dsd_trunk_tuning_requests_reset();
+    start_call_capture();
+    for (int b = 0; b < 5; b++) {
+        assert(push_flagged_call_block(&opts, &state, 1000.0f, 0U)->input == DSD_ANALOG_CALL_RECEPTION);
+    }
+    const int quiet = g_call_blocks;
+    const uint32_t boundaries = last_call_block()->boundaries;
+    for (int b = 0; b < 25; b++) {
+        (void)push_flagged_call_block(&opts, &state, 1000.0f, (uint8_t)DSD_SQUELCH_FLAG_CLOSED);
+    }
+    expect_hangover_then_holdable(quiet, boundaries);
+    const call_block_seen* seen = push_flagged_call_block(&opts, &state, 1000.0f, 0U);
+    assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->boundaries == boundaries);
+    stop_call_capture();
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    g_chain_removes_tone = 1;
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* @p blocks blocks of a @p hz tone under a list policy: a carrier still being checked is PENDING (a block a call may
+   hold through, and a reception's lead-in before it is a call, issue #667), one the policy passed is its reception,
+   and one it rejected breaks it. Returns how many blocks were checked. */
 static int
 push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
     int checked = 0;
@@ -5430,7 +5552,7 @@ push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz)
         if (!seen->carrier_open) {
             assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
         } else if (seen->gate == DSD_ANALOG_TONE_GATE_PENDING) {
-            assert(seen->input == DSD_ANALOG_CALL_HOLDABLE);
+            assert(seen->input == DSD_ANALOG_CALL_PENDING);
             checked++;
         } else if (seen->gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
             assert(seen->input == DSD_ANALOG_CALL_RECEPTION);
@@ -5441,7 +5563,7 @@ push_policy_call_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz)
     return checked;
 }
 
-/* The real tone detector and policy: PENDING is holdable, ALLOWED is reception, REJECTED is a break, and a block list
+/* The real tone detector and policy: PENDING is PENDING, ALLOWED is reception, REJECTED is a break, and a block list
    that passes a carrier for carrying no tone at all makes it reception like any other pass. */
 static void
 test_call_input_follows_the_tone_policy(void) {
@@ -5797,7 +5919,8 @@ test_tone_verdict_inside_a_block_cuts_its_ineligible_start(void) {
         {"allowed, tone lost, allowed again", B6_AT_READ3, A, DSD_ANALOG_CALL_RECEPTION, {A, P, P, A, A, A}},
         {"allowed only at the finalize read", B6_AT_READ5, P, DSD_ANALOG_CALL_RECEPTION, {P, P, P, P, P, A}},
         {"allowed throughout", 0, A, DSD_ANALOG_CALL_RECEPTION, {A, A, A, A, A, A}},
-        {"tone lost at the last read", 960, A, DSD_ANALOG_CALL_HOLDABLE, {A, A, A, A, A, P}},
+        /* A tone checked again under the open carrier: PENDING, a hold or a lead-in to the call (issue #667). */
+        {"tone lost at the last read", 960, A, DSD_ANALOG_CALL_PENDING, {A, A, A, A, A, P}},
     };
     static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
@@ -6709,6 +6832,7 @@ main(void) {
     test_rx_tone_stalled_radio_stream_goes_stale();
     test_rx_tone_tcp_reconnect_starts_a_new_reception();
     test_pcm_tcp_reconnect_is_a_new_stream();
+    test_pcm_tcp_reconnect_scales_the_first_sample();
     test_rx_tone_retune_skips_the_input_backlog();
     test_rx_tone_backlog_skip_is_bounded();
     test_rx_tone_backlog_skip_ignores_playback_time();
@@ -6743,6 +6867,7 @@ main(void) {
     test_sink_allocation_failure_is_said_once_per_rate();
     test_call_input_follows_the_level_squelch();
     test_call_input_follows_the_flag_squelch();
+    test_call_input_on_the_am_monitor();
     test_call_input_follows_the_tone_policy();
     test_call_input_breaks_at_a_hard_boundary();
     test_call_input_breaks_at_an_rtl_profile_change();

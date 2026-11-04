@@ -48,6 +48,7 @@
 
 #include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 
 /* One row's session edit (issue #518). */
@@ -391,6 +392,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->request = 0;
     scan->needs_commit = 0;
     dsd_engine_channel_scan_resume_landed(opts, state);
+    /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9). */
+    dsd_engine_scan_landing_note_row(state, *dsd_state_trunk_lcn_slot(state, scan->row));
     return 1;
 }
 
@@ -937,6 +940,22 @@ dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
     return state ? channel_scan_on_air_row(state) : -1;
 }
 
+void
+dsd_engine_channel_scan_note_manual_step(const dsd_opts* opts, dsd_state* state, int row, int landed) {
+    /* scanner_mode 1 is a -Y scan running, which owns the tuner (dsd_channel_scan_owns_tuner()); one paused or with
+       its resume pending is 0. */
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || dsd_channel_modes_present(state)
+        || row < 0 || row >= state->lcn_freq_count) {
+        return;
+    }
+    const long freq = *dsd_state_trunk_lcn_slot(state, row);
+    if (landed && freq != 0) {
+        dsd_engine_scan_landing_note_row(state, freq);
+    } else {
+        dsd_engine_scan_landing_forget(state);
+    }
+}
+
 /* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
  * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
  * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */
@@ -1097,6 +1116,9 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     if (row < 0 || row >= state->lcn_freq_count) {
         return 0;
     }
+    /* Whatever this start comes to, the receiver is no longer known to be on the row last landed: a placeholder row
+       tunes nothing, and a tune that fails or is still pending lands nothing (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     const long freq = *dsd_state_trunk_lcn_slot(state, row);
     if (!freq) {
         state->lcn_freq_roll = row + 1;
@@ -1383,6 +1405,8 @@ dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
 static int
 channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
+    /* The scan no longer says where the receiver is (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
     channel_scan* scan = channel_scan_get(state);
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
     const int active =

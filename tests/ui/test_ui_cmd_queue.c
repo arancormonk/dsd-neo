@@ -73,6 +73,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -118,6 +119,7 @@
 #include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/runtime/config.h"
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "services.h"
 #include "test_env.h"
@@ -218,8 +220,8 @@ bool __real_SetFreq(dsd_socket_t sockfd, long int freq);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 int __real_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
-int __real_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
-int __wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
+int __real_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
+int __wrap_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
@@ -299,7 +301,7 @@ __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host,
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the real service does: rigctl
    on over a new socket to the requested endpoint. */
 int
-__wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port) {
+__wrap_svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port) {
     if (!g_rigctl_connect_stub_armed) {
         return __real_svc_rigctl_connect(opts, state, host, port);
     }
@@ -2440,6 +2442,56 @@ test_manual_scan_steps_clear_received_tone(void) {
                                                 && state.analog_rx.ctcss_tenths_hz == 1000
                                                 && state.analog_rx.generation == seeded);
         }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/*
+ * A manual step of a running untyped -Y list (Next, Previous) is the scan's own step to its own row, so a tune the
+ * front end confirmed names that row's frequency for an analog call on audio input (issue #667 D9). One accepted but
+ * not confirmed (a timeout), a refused one and a deferred one name none: the receiver may be anywhere. The row left's
+ * landing never survives either.
+ */
+static int
+test_manual_scan_steps_note_landing(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        long landed_hz;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 462012500L, "confirmed Next names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE_PREV, RTL_STREAM_TUNE_OK, 463012500L, "confirmed Previous names its row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 0L, "unconfirmed Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0L, "refused Next names no row"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_DEFERRED, 0L, "deferred Next names no row"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 462012500L, "confirmed avoid step names its row"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = 1;
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv"); /* an imported list (issue #697) */
+        opts.use_rigctl = 1;
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        state.lcn_freq_count = 3;
+        state.trunk_lcn_freq[0] = 461012500L;
+        state.trunk_lcn_freq[1] = 462012500L;
+        state.trunk_lcn_freq[2] = 463012500L;
+        state.lcn_freq_roll = 1; /* row 0 is on air, landed by the scan */
+        dsd_state_lcn_on_air_note(&state, 0);
+        dsd_engine_scan_landing_note_row(&state, 461012500L);
+        rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == (uint32_t)cases[i].landed_hz);
         freeState(&state);
     }
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
@@ -11663,7 +11715,9 @@ static int
 count_nfm_recording(const char* name, void* user) {
     nfm_recording_names* names = (nfm_recording_names*)user;
     names->files++;
-    names->named += strstr(name, "_NFM_") != NULL && strstr(name, "_SVC_Traveler") != NULL && !strstr(name, "TEMP");
+    /* An audio input's call: its mode is not known, so it is named _ANALOG (issue #667). */
+    names->named +=
+        strstr(name, "_ANALOG_FREQ_UNKNOWN") != NULL && strstr(name, "_SVC_Traveler") != NULL && !strstr(name, "TEMP");
     return 0;
 }
 
@@ -11693,10 +11747,16 @@ start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     state->analog_rx.ctcss_tenths_hz = 1413;
     static float block[960];
+    static const float checked[960] = {0};
     for (int i = 0; i < 960; i++) {
         block[i] = 2000.0f;
     }
-    dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    /* The tone check before it (PENDING, recorded nowhere) brings the reception to the minimum a call needs (issue
+       #667) at its first block. */
+    for (int i = 0; i < (DSD_ANALOG_CALL_MIN_MS * 48 - 960) / 960; i++) {
+        dsd_test_analog_call_feed(opts, state, checked, 960, 48000, DSD_ANALOG_CALL_PENDING);
+    }
+    dsd_test_analog_call_feed(opts, state, block, 960, 48000, DSD_ANALOG_CALL_RECEPTION);
     rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
     return rc;
 }
@@ -26824,6 +26884,7 @@ main(void) {
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
     rc |= test_operator_retune_rearms_cold_start();
     rc |= test_manual_scan_steps_clear_received_tone();
+    rc |= test_manual_scan_steps_note_landing();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
     rc |= test_retune_commands_clear_received_tone();
