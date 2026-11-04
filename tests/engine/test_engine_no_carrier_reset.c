@@ -8283,6 +8283,53 @@ test_first_row_landing_takes_the_tuner(void) {
     return rc;
 }
 
+/* Fix round 3: a config that would turn -Y off but is refused (an invalid Airspy serial, cfg_prepare_runtime_apply())
+   changes nothing: the running list's call goes on and the scan runs. Round 2 ended the calls before the config was
+   validated, so a refused config split the call. @p typed: a typed list (NXDN48 rows) rather than the untyped walk
+   list. */
+static int
+refused_config_case(int typed) {
+    const char* what = typed ? "refused config over a typed list" : "refused config over an untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_named_walk_list(opts, state, 1, 1340012500L + (long int)typed * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    if (typed) {
+        for (int row = 0; row < 3; row++) {
+            rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+        }
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+        rc |= expect_case(what, "a typed row lands", dsd_engine_channel_scan_on_air_row(state) >= 0);
+    } else {
+        rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    }
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5801U) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    cfg.airspy_invalid = 1;
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is drained", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scan still runs", opts->scanner_mode == 1);
+    rc |= expect_case(what, "the call goes on", slot0_call_active(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_refused_config_leaves_the_scan_alone(void) {
+    return refused_config_case(0) | refused_config_case(1);
+}
+
 static int
 test_running_list_left_by_a_config_or_a_map_clear(void) {
     return running_list_left_case(0) | running_list_left_case(1) | typed_list_left_by_a_config_case();
@@ -10312,6 +10359,7 @@ main(void) {
     rc |= test_y_start_gives_the_tuner_to_the_scan();
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_first_row_landing_takes_the_tuner();
+    rc |= test_refused_config_leaves_the_scan_alone();
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_avoided_row_departs_under_a_carrier();
     rc |= test_walk_press_while_pending_steps_on();
