@@ -399,6 +399,10 @@ checkCsvStem() {
         {"~home", "_home"},
         {"  ~home", "_home"},
         {"a~b", "a~b"},
+        /* No hidden file: a leading dot becomes '_'. */
+        {".Dispatch", "_Dispatch"},
+        {"  .Dispatch", "_Dispatch"},
+        {"Dispatch.v2", "Dispatch.v2"},
         {"0123456789012345678901234567890123456789", "0123456789012345678901234567890"},
         /* 15 two-byte characters fit in 30 bytes; the 16th would make 32. */
         {"\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3"
@@ -470,12 +474,21 @@ checkCsvFolder() {
     check(args.value(args.indexOf("--trunk-scan") + 1) == first.value("csvPath").toString());
     check(QFile::exists(first.value("csvPath").toString()) && !QFile::exists(legacy));
     check(model.update(row, {{"name", "Fire"}}));
+    /* A hidden CSV left in the folder (a list name that once started with a dot) goes at the next build too. */
+    const QString hidden = json_store_path("scan_lists/" + uid + "/.Dispatch.csv");
+    QFile stale(hidden);
+    check(stale.open(QIODevice::WriteOnly) && stale.write("id,type\n") > 0);
+    stale.close();
     const auto renamed = starter.build(model.get(row));
     check(renamed.value("ok").toBool() && renamed.value("csvPath").toString().endsWith("/" + uid + "/Fire.csv"));
     const QDir folder(json_store_path("scan_lists/" + uid));
-    check(folder.entryList({"*.csv"}, QDir::Files) == QStringList{"Fire.csv"});
+    check(folder.entryList({"*.csv"}, QDir::Files | QDir::Hidden) == QStringList{"Fire.csv"} && !QFile::exists(hidden));
+    /* And removing the list removes the folder, a hidden file in it included. */
+    QFile stale2(hidden);
+    check(stale2.open(QIODevice::WriteOnly) && stale2.write("id,type\n") > 0);
+    stale2.close();
     check(model.remove(row));
-    check(!folder.exists() && !QFile::exists(legacy));
+    check(!folder.exists() && !QFile::exists(legacy) && !QFile::exists(hidden));
 }
 
 namespace {

@@ -214,7 +214,8 @@ ScanListsModel::remove(int row) {
     m_rows = std::move(next);
     endRemoveRows();
     if (QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
-        // The generated targets: the list's folder (issue #697), and the file older versions wrote beside it.
+        // The generated targets: the list's folder (issue #697), hidden files included (removeRecursively() takes
+        // every entry), and the file older versions wrote beside it.
         QDir(json_store_path(QStringLiteral("scan_lists/") + uid)).removeRecursively();
         QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
     }

@@ -208,7 +208,8 @@ void
 remove_other_list_csvs(const QString& uid, const QString& keep) {
     QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
     const QDir folder(QFileInfo(keep).absolutePath());
-    for (const QFileInfo& file : folder.entryInfoList({QStringLiteral("*.csv")}, QDir::Files)) {
+    /* Hidden ones too: a stale file is removed whatever its name, keys and all. */
+    for (const QFileInfo& file : folder.entryInfoList({QStringLiteral("*.csv")}, QDir::Files | QDir::Hidden)) {
         if (file.absoluteFilePath() != QFileInfo(keep).absoluteFilePath()) {
             QFile::remove(file.absoluteFilePath());
         }
@@ -345,7 +346,9 @@ scan_list_csv_stem(const QString& name, int listNumber) {
     std::replace(stem.begin(), stem.end(), QChar('$'), QChar('_'));
     stem = fit_stem(stem.trimmed());
     stem = fit_stem(avoid_device_name(stem));
-    if (stem.startsWith(QLatin1Char('~'))) {
+    /* No '~' to start for the expansion to read, and no '.' to start, which would make a hidden file the folder's
+       cleanup could miss. */
+    if (stem.startsWith(QLatin1Char('~')) || stem.startsWith(QLatin1Char('.'))) {
         stem[0] = QLatin1Char('_');
     }
     return stem.isEmpty() ? QStringLiteral("list %1").arg(listNumber) : stem;
