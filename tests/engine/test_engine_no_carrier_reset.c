@@ -8196,6 +8196,47 @@ running_list_left_case(int map_clear) {
     return rc;
 }
 
+/* Fix round 2: a `y` start with no channel map of the user's own leaves the tuner the operator's (the scan cannot
+   move). Once a map arrives (here an import) and the scan first lands a row, the tuner is the scan's: the operator's
+   call ended at that step as the operator's, and the scan's calls are scan members, not the operator's. The flag stayed
+   1 until a resume or a new session, so every call the scan heard was filed as "Exploring". */
+static int
+test_first_row_landing_takes_the_tuner(void) {
+    const char* what = "first row landing after a start with no map";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1330012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    opts->chan_in_file[0] = '\0';
+    int rc =
+        expect_case(what, "the tune is queued",
+                    dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 1335012500U) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "the tune is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "no map: the tuner stays the operator's",
+                      opts->scanner_mode == 1 && state->operator_tuned == 1U);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5701U) == 0);
+    rc |= expect_case(what, "a map is imported",
+                      import_scan_list(opts, state, "1,1336012500\n2,1337012500\n") == 0
+                          && opts->chan_in_file[0] != '\0' && opts->scanner_mode == 1);
+    untyped_step_now(opts, state);
+    rc |= expect_case(what, "the step lands a row", dsd_state_lcn_heard_row(state) >= 0);
+    rc |= expect_case(what, "the tuner is the scan's", state->operator_tuned == 0U);
+    rc |= expect_case(what, "the operator's call ended as the operator's",
+                      !slot0_call_active(state) && history_row_of(state, 5701U) != NULL
+                          && history_row_of(state, 5701U)->operator_tuned == 1U);
+    rc |= expect_case(what, "the next call is heard", open_unrendered_call(state, 5702U) == 0);
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+    rc |= expect_case(what, "the scan's call is a scan member", history_stamps_are(state, 5702U, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_running_list_left_by_a_config_or_a_map_clear(void) {
     return running_list_left_case(0) | running_list_left_case(1);
@@ -10224,6 +10265,7 @@ main(void) {
     rc |= test_y_stop_ends_the_untyped_scans_calls();
     rc |= test_y_start_gives_the_tuner_to_the_scan();
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
+    rc |= test_first_row_landing_takes_the_tuner();
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_avoided_row_departs_under_a_carrier();
     rc |= test_walk_press_while_pending_steps_on();

@@ -71,7 +71,8 @@ int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place
  * began with (the operator's tuner after a manual tune, no row), then the scan owns the tuner: scanner_mode 1 and
  * operator_tuned 0, so the calls heard next are the scan's, and frontends show a scan, not a manual session. The scan's
  * first step tunes as any timed step does. With no list of the user's own (dsd_state_trunk_lcn_user_list_present())
- * the scan never moves the receiver: only scanner_mode is set, no call ends and operator_tuned stays as it is. A
+ * the scan never moves the receiver: only scanner_mode is set, no call ends and operator_tuned stays as it is until
+ * the scan first lands a row (every landing clears it, after the boundary has ended the operator's calls). A
  * paused scan, or one whose resume is pending, is refused (nothing changes): it resumes through
  * dsd_engine_channel_scan_resume(). Under the P25 SM tick guard the guarded scanner commands hold. Decoder thread. */
 void dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);

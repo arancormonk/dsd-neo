@@ -372,6 +372,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     }
     state->lcn_freq_roll = scan->row + 1;
     dsd_state_lcn_on_air_note(state, scan->row);
+    /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended above, so a start that found
+       no list, or turned the scanner on over a manual tune, stops filing its calls as the operator's here. */
+    state->operator_tuned = 0U;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));

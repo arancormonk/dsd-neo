@@ -1508,11 +1508,11 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
 }
 
 /* Commit @p row of the untyped list as the row on air: the cursor past it, the row recorded as the one heard (issue
- * #666), its keys, the received tone cleared (the untyped step never runs the acquisition reset the typed rows do, so a
- * new channel must not inherit the old one's, issue #522), the frequency an analog call on audio input is heard on
- * (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row parks where the receiver is: only the cursor and the
- * clocks, so the row heard stays the one the receiver is still on. Runs after the carrier boundary has ended the calls
- * of the row left, under its keys and its name. */
+ * #666), the tuner the scan's (operator_tuned 0, issue #644), its keys, the received tone cleared (the untyped step
+ * never runs the acquisition reset the typed rows do, so a new channel must not inherit the old one's, issue #522), the
+ * frequency an analog call on audio input is heard on (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row
+ * parks where the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still
+ * on. Runs after the carrier boundary has ended the calls of the row left, under its keys and its name. */
 static void
 untyped_install_row(dsd_state* state, int row, time_t now) {
     state->lcn_freq_roll = row + 1;
@@ -1522,6 +1522,10 @@ untyped_install_row(dsd_state* state, int row, time_t now) {
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
         dsd_engine_scan_landing_note_row(state, freq);
+        /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended at the boundary, so a
+           start that found no list, or turned the scanner on over a manual tune, stops filing its calls as the
+           operator's here, whichever way the list arrived. */
+        state->operator_tuned = 0U;
     }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
