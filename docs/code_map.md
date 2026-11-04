@@ -3664,12 +3664,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
     on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
     main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
-    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
-    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
-    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
-    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
-    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
-    `UI_MENU_SERVICES`.
+    point at a release; the running trunk scan's gate comes first among those, so a trunked target it parks on (trunking
+    on, the target's) is refused as `Trunk scan active`, not `Trunking active` (issue #644 C-B1); every refusal of the
+    tap, the owner gates included, is a failed command with its reason toasted, as the frequency entry's are. Qt and the
+    control API learn it from the toast: they see only whether the command was queued. Qt's Spectrum screen offers none
+    of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call codes and replay tuning on
+    screen"). `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading follows (see IO, "I/Q replay
+    tuned frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
     the `-Y` avoid (`Avoiding row <N> (<MHz>, <n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads

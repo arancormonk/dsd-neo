@@ -2212,7 +2212,18 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    /* Either automatic controller owns the tuner. Trunking parks on a control
+    /* The trunk scan, the owner a release cannot clear (see apply_tuner_release):
+     * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
+     * its own, so a tap accepted under it is undone within a dwell -- and it is the
+     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. It comes
+     * first: a trunked target it parks on runs trunking, which is the target's, so the
+     * refusal names the scan, not trunking (issue #644). A paused scan owns nothing:
+     * the operator holds the tuner (issue #671). */
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
+        ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Either other automatic controller owns the tuner. Trunking parks on a control
      * channel; conventional scanner mode steps the channel map on its own once
      * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
      * tap accepted under it would be silently undone seconds later — worse than
@@ -2225,15 +2236,6 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     }
     if (opts->scanner_mode) {
         ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
-        return UI_CMD_APPLY_FAILED;
-    }
-    /* The third owner, and the one a release cannot clear (see apply_tuner_release):
-     * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
-     * its own, so a tap accepted under it is undone within a dwell -- and it is the
-     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. A paused scan
-     * owns nothing: the operator holds the tuner (issue #671). */
-    if (dsd_trunk_scan_owns_tuner(opts, state)) {
-        ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
     }
     if (ui_cmd_freq_payload_refused(state, v, &result)) {

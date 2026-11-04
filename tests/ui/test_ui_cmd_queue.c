@@ -2796,6 +2796,22 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     opts.trunk_scan_enabled = 0;
     freeState(&state);
 
+    /* Issue #644 (C-B1): parked on a trunked target, the scan has trunking on for it, and the scan is still the owner
+       the refusal names: trunking is the target's, which a release would not take back. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("manual tune under a trunked target drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under a trunked target never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_str("manual tune under a trunked target names the trunk scan", state.ui_msg,
+                     "Trunk scan active: tap-to-tune disabled");
+    rc |= expect_int("manual tune under a trunked target is a failed command", dsd_app_command_test_last_failed(), 1);
+    opts.trunk_scan_enabled = 0;
+    opts.trunk_enable = 0;
+    freeState(&state);
+
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1201);
